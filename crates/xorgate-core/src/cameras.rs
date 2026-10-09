@@ -16,6 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hardware_block::Platform;
+use crate::js::is_js_whitespace;
 
 /// `EnumeratedCamera` (`cameras.ts:19-26`). `connector` serialises as
 /// `null` when unknown — the TS object always carries the key.
@@ -49,27 +50,6 @@ pub fn connector_for_path(platform: Platform, camera_name: &str) -> Option<&'sta
         .map(|(_, connector)| *connector)
 }
 
-/// JS `\s` (ECMAScript WhiteSpace + LineTerminator), which differs from
-/// `char::is_whitespace` at U+0085 (JS: no) and U+FEFF (JS: yes).
-pub(crate) fn js_ws(c: char) -> bool {
-    matches!(
-        c,
-        '\t' | '\n' | '\u{000B}' | '\u{000C}' | '\r' | ' ' | '\u{00A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202F}'
-                | '\u{205F}'
-                | '\u{3000}'
-                | '\u{FEFF}'
-    )
-}
-
-/// JS `String.prototype.trim` (strips exactly the [`js_ws`] set at both ends).
-pub(crate) fn js_trim(s: &str) -> &str {
-    s.trim_matches(js_ws)
-}
-
 /// JS `LineTerminator` — the characters `.` does NOT match (no `s` flag).
 fn js_line_terminator(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
@@ -77,7 +57,7 @@ fn js_line_terminator(c: char) -> bool {
 
 /// Hand-rolled equivalent of the TS line regex
 /// `/^\s*\d+\s*:\s*(\S+)\s.*\((\S+)\)\s*$/` (`cameras.ts:54`), returning
-/// `(sensor, cameraName)`. `\d` is ASCII-only in JS; `\s` is [`js_ws`].
+/// `(sensor, cameraName)`. `\d` is ASCII-only in JS; `\s` is [`is_js_whitespace`].
 ///
 /// Backtracking semantics reproduced: `(\S+)\s` forces the sensor to be the
 /// whole first token after the colon followed by at least one whitespace
@@ -86,30 +66,30 @@ fn js_line_terminator(c: char) -> bool {
 /// run of non-whitespace, and whose prefix (the `.*`) holds no line
 /// terminator (`.` matches none without the `s` flag).
 fn match_camera_line(line: &str) -> Option<(&str, &str)> {
-    let s = line.trim_start_matches(js_ws);
+    let s = line.trim_start_matches(is_js_whitespace);
     let digits = s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
     if digits == 0 {
         return None;
     }
-    let s = s[digits..].trim_start_matches(js_ws);
+    let s = s[digits..].trim_start_matches(is_js_whitespace);
     let s = s.strip_prefix(':')?;
-    let s = s.trim_start_matches(js_ws);
-    let sensor_len = s.len() - s.trim_start_matches(|c: char| !js_ws(c)).len();
+    let s = s.trim_start_matches(is_js_whitespace);
+    let sensor_len = s.len() - s.trim_start_matches(|c: char| !is_js_whitespace(c)).len();
     if sensor_len == 0 {
         return None;
     }
     let sensor = &s[..sensor_len];
     let mut rest = s[sensor_len..].chars();
     // The mandatory single `\s` after the sensor token.
-    if !rest.next().is_some_and(js_ws) {
+    if !rest.next().is_some_and(is_js_whitespace) {
         return None;
     }
     let rest = rest.as_str();
     // `\((\S+)\)\s*$`: strip trailing whitespace, require a final `)`.
-    let body = rest.trim_end_matches(js_ws).strip_suffix(')')?;
+    let body = rest.trim_end_matches(is_js_whitespace).strip_suffix(')')?;
     for (open, _) in body.rmatch_indices('(') {
         let name = &body[open + 1..];
-        if name.is_empty() || name.chars().any(js_ws) {
+        if name.is_empty() || name.chars().any(is_js_whitespace) {
             // A longer tail (an earlier `(`) still contains this whitespace,
             // but an EMPTY tail can grow into a valid one: keep looking.
             if name.is_empty() {

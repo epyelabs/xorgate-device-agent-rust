@@ -24,8 +24,8 @@
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-use crate::cameras::js_trim;
 use crate::clock::Clock;
+use crate::js::trim as js_trim;
 use crate::round::js_math_round;
 use crate::types::TimeSource;
 use crate::video_capture::posix_join;

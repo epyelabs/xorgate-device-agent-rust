@@ -13,8 +13,8 @@
 //! caps are MANDATORY for WebRTC (browser renders black otherwise). The HW
 //! encoder is deliberately NOT named `sampleVideoEncoder` (TWCC skip, D5).
 
-use crate::cameras::js_trim;
 use crate::hardware_block::EncoderToken;
+use crate::js::trim as js_trim;
 
 /// `SHM_BRIDGE_CAPS` (`pipeline-builder.ts:27`): fixed low-res bridge caps —
 /// MUST match the capture daemon's shmsink caps (agent-anatomy invariant 8:
@@ -113,7 +113,7 @@ pub fn build_record_encode_args(
 /// `.gst` content look like something this builder rendered? The reconciler
 /// only overwrites files it recognises, never an operator's hand-tuned pipeline.
 ///
-/// `content.trim()` is JS `trim` ([`crate::cameras::js_trim`]: it also strips
+/// `content.trim()` is JS `trim` ([`crate::js::trim`]: it also strips
 /// a BOM and leaves U+0085, unlike Rust `str::trim`).
 pub fn is_recognized_bridged_render(content: &str, shm_socket_path: &str) -> bool {
     let t = js_trim(content);

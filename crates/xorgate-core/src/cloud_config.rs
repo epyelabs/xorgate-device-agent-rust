@@ -133,7 +133,7 @@ pub struct CloudConfigMessage {
 /// `"1"` does not).
 pub fn parse_cloud_message(payload: &str) -> Option<CloudConfigMessage> {
     // `JSON.parse` key order (integer-like keys first at every level).
-    let obj: Value = crate::config_report::js_parsed_key_order(serde_json::from_str(payload).ok()?);
+    let obj: Value = crate::js::parsed_key_order(serde_json::from_str(payload).ok()?);
     let Value::Object(raw) = obj else {
         return None;
     };

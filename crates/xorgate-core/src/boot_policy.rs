@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::clock::{Clock, MonoMs};
-use crate::js_fmt::{date_parse, number_to_string, to_fixed};
+use crate::js::{date_parse, number_to_string, to_fixed};
 use crate::round::js_math_round;
 pub use crate::settings::BootDeferMode;
 use crate::types::{GnssView, PowerSampleReading, ShedConfig, SkyState};

@@ -22,7 +22,7 @@ use crate::telemetry::{MetricGroup, MetricLeaf};
 /// trims whitespace, `""` → 0, decimal/exponent floats, `0x`/`0o`/`0b`
 /// integers, `[+-]Infinity`; anything else → NaN.
 pub fn js_number(s: &str) -> f64 {
-    let t = s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    let t = crate::js::trim(s);
     if t.is_empty() {
         return 0.0;
     }
@@ -34,6 +34,10 @@ pub fn js_number(s: &str) -> f64 {
     let lower = t.to_ascii_lowercase();
     for (prefix, radix) in [("0x", 16), ("0o", 8), ("0b", 2)] {
         if let Some(digits) = lower.strip_prefix(prefix) {
+            // `from_str_radix` takes a leading sign; a JS radix literal does not.
+            if digits.starts_with(['+', '-']) {
+                return f64::NAN;
+            }
             return u64::from_str_radix(digits, radix)
                 .map(|v| v as f64)
                 .unwrap_or(f64::NAN);

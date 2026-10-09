@@ -18,7 +18,8 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::sms_pdu::{iso_seconds_utc, SenderType, SmsMessage, SmsStorage};
+use crate::js::iso_seconds_utc;
+use crate::sms_pdu::{SenderType, SmsMessage, SmsStorage};
 
 /// `SmsReadStatus` (`sms-modem.ts:34`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -16,9 +16,8 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::settings::{
-    js_object_key_order, parse_settings_object, AgentSettings, RecordingSettings, VideoSettings,
-};
+use crate::js::object_key_order;
+use crate::settings::{parse_settings_object, AgentSettings, RecordingSettings, VideoSettings};
 
 /// `MediaEnabledMigration` (`settings-migrate.ts:12`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +88,7 @@ pub fn migrate_media_enabled(
     }
     settings.recording = Some(RecordingSettings {
         video: Some(VideoSettings {
-            cameras: Some(js_object_key_order(merged)),
+            cameras: Some(object_key_order(merged)),
             ..video
         }),
         ..recording
