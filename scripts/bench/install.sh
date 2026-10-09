@@ -13,8 +13,10 @@
 #      /opt/xorgate-rs (previous install kept at /opt/xorgate-rs.prev)
 #   2. /usr/local/bin/xorgate-rs wrapper (XORGATE_HOME defaults to
 #      /var/lib/xorgate-rs on the bench; the SHIPPED default is /var/lib/xorgate)
-#   3. /etc/systemd/system/xorgate-agent-rs.service — the shipped unit, verbatim
-#      from the tarball — plus the bench-only drop-in
+#   3. /etc/systemd/system/xorgate-agent-rs.service — the shipped unit from
+#      the tarball with its ONE `Conflicts=xorgate-agent.service` line
+#      commented out (systemd cannot reset a dependency list from a drop-in;
+#      an empty `Conflicts=` is ignored on 252) — plus the bench-only drop-in
 #      xorgate-agent-rs.service.d/90-bench-dev.conf (plan D0.1)
 #   4. /etc/xorgate/agent-rs-dev.env, created ONCE from the parked dev bundle
 #      /etc/xorgate/dev-backup-20260823/agent.env with CERT_PATH/KEY_PATH
@@ -129,12 +131,23 @@ fi
 rm -f "$WRAPPER"
 
 echo "== 3. unit + bench drop-in"
-if [ -f "/etc/systemd/system/$UNIT" ] && cmp -s "$RS_ROOT/systemd/xorgate-agent-rs.service" "/etc/systemd/system/$UNIT"; then
+# BENCH DEVIATION from "shipped unit, verbatim": systemd (252 on Bookworm)
+# cannot reset a dependency list such as Conflicts= from a drop-in — an empty
+# "Conflicts=" is silently ignored (verified on the bench 2026-10-08), so the
+# shipped unit's Conflicts=xorgate-agent.service would stop the JS prod agent
+# the moment this unit starts. The bench copy therefore has that ONE line
+# commented out; everything else is the shipped unit byte for byte.
+UNIT_TMP=$(mktemp)
+sed -e 's|^Conflicts=xorgate-agent.service$|# BENCH (scripts/bench/install.sh): Conflicts=xorgate-agent.service stripped — both agents coexist on the bench|' \
+  "$RS_ROOT/systemd/xorgate-agent-rs.service" > "$UNIT_TMP"
+grep -q '^Conflicts=' "$UNIT_TMP" && { echo "unit still carries a Conflicts= line after the bench strip — refusing"; rm -f "$UNIT_TMP"; exit 1; }
+if [ -f "/etc/systemd/system/$UNIT" ] && cmp -s "$UNIT_TMP" "/etc/systemd/system/$UNIT"; then
   echo "  - $UNIT unchanged"
 else
-  install -m 0644 "$RS_ROOT/systemd/xorgate-agent-rs.service" "/etc/systemd/system/$UNIT"
-  note "/etc/systemd/system/$UNIT installed (shipped unit, verbatim)"
+  install -m 0644 "$UNIT_TMP" "/etc/systemd/system/$UNIT"
+  note "/etc/systemd/system/$UNIT installed (shipped unit with Conflicts= line stripped, bench-only)"
 fi
+rm -f "$UNIT_TMP"
 DROPIN_SRC="$RS_ROOT/systemd/bench/90-bench-dev.conf"
 [ -f "$DROPIN_SRC" ] || { echo "tarball lacks systemd/bench/90-bench-dev.conf (bench drop-in)"; exit 1; }
 install -d -m 0755 "/etc/systemd/system/$UNIT.d"

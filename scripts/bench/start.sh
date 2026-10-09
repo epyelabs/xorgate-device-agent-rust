@@ -17,10 +17,13 @@ UNIT=xorgate-agent-rs
 [ -f /etc/systemd/system/$UNIT.service ] || { echo "unit not installed — run scripts/bench/install.sh first"; exit 1; }
 [ -f /etc/systemd/system/$UNIT.service.d/90-bench-dev.conf ] || { echo "bench drop-in missing — run scripts/bench/install.sh first"; exit 1; }
 [ -f /etc/xorgate/agent-rs-dev.env ] || { echo "/etc/xorgate/agent-rs-dev.env missing — run scripts/bench/install.sh first"; exit 1; }
-# Belt + braces: the effective Conflicts= must be empty, else starting us
-# would stop the JS prod agent.
+# Belt + braces: the effective Conflicts= must not name the JS prod agent,
+# else starting us would stop it. (shutdown.target is always listed
+# implicitly, so "empty" is not the test.)
 CONFLICTS=$(systemctl show $UNIT -p Conflicts --value)
-[ -z "$CONFLICTS" ] || { echo "effective Conflicts='$CONFLICTS' — drop-in not applied; refusing (daemon-reload?)"; exit 1; }
+case " $CONFLICTS " in
+  *" xorgate-agent.service "*) echo "effective Conflicts='$CONFLICTS' names xorgate-agent.service — install.sh's bench strip not applied; refusing (daemon-reload?)"; exit 1 ;;
+esac
 systemctl reset-failed $UNIT 2>/dev/null || true
 systemctl enable --now $UNIT
 sleep 2
