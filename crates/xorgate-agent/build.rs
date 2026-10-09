@@ -16,14 +16,20 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
-    let sha = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    let dirty = git(&["status", "--porcelain"])
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    println!(
-        "cargo:rustc-env=XORGATE_GIT_SHA={sha}{}",
-        if dirty { "-dirty" } else { "" }
-    );
+    // A source tree without .git (rsync'd to the bench, CI tarball) can hand
+    // the sha in via the environment instead.
+    println!("cargo:rerun-if-env-changed=XORGATE_GIT_SHA");
+    let baked = std::env::var("XORGATE_GIT_SHA")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let sha = baked.unwrap_or_else(|| {
+        let sha = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
+        let dirty = git(&["status", "--porcelain"])
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        format!("{sha}{}", if dirty { "-dirty" } else { "" })
+    });
+    println!("cargo:rustc-env=XORGATE_GIT_SHA={sha}");
     // Re-run when HEAD moves (best effort; a stale sha is cosmetic).
     if let Some(dir) = git(&["rev-parse", "--git-dir"]) {
         println!("cargo:rerun-if-changed={dir}/HEAD");

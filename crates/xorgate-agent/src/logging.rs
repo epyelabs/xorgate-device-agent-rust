@@ -1,6 +1,7 @@
 //! tracing setup: journald layer when running under systemd (`JOURNAL_STREAM`
-//! is set), human `fmt` on a terminal otherwise. Message text keeps the TS
-//! `[agent] …` prefixes so operators can grep the same lines.
+//! is set), human `fmt` on **stderr** otherwise (stdout is reserved for
+//! `--offline`'s payload lines). Message text keeps the TS `[agent] …`
+//! prefixes so operators can grep the same lines.
 
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -21,6 +22,7 @@ pub fn init() -> &'static str {
         .with(filter)
         .with(
             tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
                 .with_target(false)
                 .with_ansi(false)
                 .compact(),
