@@ -22,9 +22,14 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+indexmap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-journald = { workspace = true }
 sd-notify = { workspace = true }
 nix = { workspace = true }
 gstreamer = { workspace = true }
+
+[dev-dependencies]
+# `start_paused` tests of the spine (tokio::time::pause).
+tokio = { workspace = true, features = ["test-util"] }

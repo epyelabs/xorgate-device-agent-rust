@@ -2287,6 +2287,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gstreamer",
+ "indexmap",
  "nix",
  "sd-notify",
  "serde",
@@ -2337,10 +2338,12 @@ dependencies = [
 name = "xorgate-hal"
 version = "0.0.1"
 dependencies = [
+ "hex",
  "libc",
  "nix",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "xorgate-core",

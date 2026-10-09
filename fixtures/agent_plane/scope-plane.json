@@ -1,0 +1,47 @@
+{
+  "jsSourceFile": "src/agent/telemetry-scope.ts (TelemetryScope) + src/worker.ts:739-779 (noteScopeChange wording)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-scope-plane.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP1)",
+  "cases": [
+    {
+      "name": "badCycle loop through the plane → fallback → timed re-probe",
+      "input": {
+        "deviceId": "dev-scope",
+        "scope": {
+          "organizationId": "org-1",
+          "workspaceId": "ws-a"
+        },
+        "cyclePeriodMs": 3300,
+        "closeAfterMs": 1300,
+        "publishAfterMs": 1000,
+        "tickMs": 1000
+      },
+      "expected": {
+        "events": [
+          {
+            "at": 0,
+            "level": "info",
+            "log": "[agent] telemetry topic -> xorgate/orgs/org-1/ws/ws-a/devices/dev-scope/telemetry",
+            "msg": "telemetry topic scoped to ws ws-a"
+          },
+          {
+            "at": 34300,
+            "level": "warn",
+            "log": "[agent] telemetry topic FALLBACK -> xorgate/devices/dev-scope/telemetry: the broker refused ws ws-a on 11 consecutive connections. Publishing on the unscoped topic (still ingested); re-probing in ~30 min.",
+            "msg": "telemetry topic fallback to unscoped: ws ws-a refused (11 cycles); re-probe in ~30 min"
+          },
+          {
+            "at": 1834300,
+            "level": "info",
+            "log": "[agent] telemetry topic -> xorgate/orgs/org-1/ws/ws-a/devices/dev-scope/telemetry (re-probe after fallback)",
+            "msg": "telemetry topic scoped to ws ws-a (re-probe after fallback)"
+          }
+        ],
+        "fallbackAfterCycles": 11,
+        "reprobeAfterTicks": 1798,
+        "topicsAfterScope": "xorgate/orgs/org-1/ws/ws-a/devices/dev-scope/telemetry",
+        "topicAfterReprobe": "xorgate/orgs/org-1/ws/ws-a/devices/dev-scope/telemetry"
+      }
+    }
+  ]
+}
