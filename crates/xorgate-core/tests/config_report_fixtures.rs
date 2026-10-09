@@ -185,8 +185,8 @@ fn config_report_suites() {
         };
         assert_eq!(got, c.expected_json, "{}", c.name);
     }
-    assert_eq!(f.cases.len(), 147);
-    assert_eq!(ops["buildEffective"], 24);
+    assert_eq!(f.cases.len(), 149);
+    assert_eq!(ops["buildEffective"], 25);
     assert_eq!(ops["buildStatus"], 36);
     assert_eq!(ops["buildConfigReport"], 18);
 }

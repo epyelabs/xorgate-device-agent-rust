@@ -177,7 +177,7 @@ fn cloud_config_suites() {
             }
         }
     }
-    assert_eq!(f.cases.len(), 42);
-    assert_eq!(parse_steps, 56);
-    assert_eq!(apply_steps, 43);
+    assert_eq!(f.cases.len(), 45);
+    assert_eq!(parse_steps, 57);
+    assert_eq!(apply_steps, 47);
 }

@@ -29,7 +29,7 @@ use serde_json::{Map, Value};
 use crate::boot_config::{js_trim, CameraMountState, CameraMountVerdict};
 use crate::build_info::BuildInfo;
 use crate::cloud_config::CloudConfig;
-use crate::settings::{AgentSettings, CameraMountSettings, CellularSettings};
+use crate::settings::{js_object_key_order, AgentSettings, CameraMountSettings, CellularSettings};
 use crate::telemetry::JsNumber;
 use crate::telemetry_scope::TelemetryScopeReport;
 use crate::types::{ApnState, SimRegistration, SimState};
@@ -343,6 +343,26 @@ impl<'de> Deserialize<'de> for ConfigSyncState {
     }
 }
 
+/// The key order `JSON.parse` leaves behind, applied recursively: V8 own-key
+/// order at every object level (integer-like keys first, ascending, then the
+/// rest in text order). serde_json with `preserve_order` keeps TEXT order, so
+/// any object parsed from JSON text that can be re-serialised (the
+/// `config-sync.json` `namespaces` baseline re-persisted by `{...state, …}`,
+/// the cloud message's `raw` half) goes through this to stringify like the TS.
+pub fn js_parsed_key_order(v: Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let m: IndexMap<String, Value> = m
+                .into_iter()
+                .map(|(k, v)| (k, js_parsed_key_order(v)))
+                .collect();
+            Value::Object(js_object_key_order(m).into_iter().collect())
+        }
+        Value::Array(a) => Value::Array(a.into_iter().map(js_parsed_key_order).collect()),
+        other => other,
+    }
+}
+
 /// `Number.isFinite(v) && v > 0 ? Math.floor(v) : 0` (`config-sync.ts:210-211`).
 fn positive_floor(v: Option<&Value>) -> f64 {
     match v.and_then(Value::as_f64) {
@@ -359,7 +379,8 @@ pub fn parse_config_sync_state(text: Option<&str>) -> ConfigSyncState {
     let Some(text) = text else {
         return ConfigSyncState::default();
     };
-    let Ok(Value::Object(src)) = serde_json::from_str::<Value>(text) else {
+    let Ok(Value::Object(src)) = serde_json::from_str::<Value>(text).map(js_parsed_key_order)
+    else {
         // `obj && typeof obj === "object"` — arrays pass in the TS but every
         // field then reads as undefined, which is the zero state anyway.
         return ConfigSyncState::default();
@@ -1009,8 +1030,11 @@ pub fn effective_camera_mount(
         );
         Value::Object(m)
     };
-    let mut cameras = Map::new();
-    let mut pending = Map::new();
+    // Built as JS object literals (`config-sync.ts:700-707`), so V8 own-key
+    // order applies: integer-like stream keys ("9", "10") enumerate first in
+    // ascending order, then the rest in insertion (= reconciler) order.
+    let mut cameras: IndexMap<String, Value> = IndexMap::new();
+    let mut pending: IndexMap<String, Value> = IndexMap::new();
     for cam in &state.cameras {
         let desired = cam.desired_deg.degrees() as f64;
         if let Some(in_force) = cam.in_force_deg {
@@ -1020,6 +1044,8 @@ pub fn effective_camera_mount(
             pending.insert(cam.stream_key.clone(), rot(desired));
         }
     }
+    let cameras: Map<String, Value> = js_object_key_order(cameras).into_iter().collect();
+    let pending: Map<String, Value> = js_object_key_order(pending).into_iter().collect();
     let mut out = Map::new();
     out.insert("cameras".into(), Value::Object(cameras));
     if !pending.is_empty() {

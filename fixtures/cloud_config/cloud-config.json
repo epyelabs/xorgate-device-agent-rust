@@ -372,6 +372,17 @@
       ]
     },
     {
+      "name": "[extra] raw keeps JSON.parse key order (integer-like keys first at every level)",
+      "source": "src/agent/cloud-config.ts:190",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"9\":{\"rotationDeg\":180}}},\"x\":{\"b\":1,\"2\":[{\"z\":0,\"1\":1}]}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"cameraMount\":{\"cameras\":{\"9\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}},\"x\":{\"2\":[{\"1\":1,\"z\":0}],\"b\":1}},\"config\":{\"cameraMount\":{\"cameras\":{\"9\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}}}}"
+        }
+      ]
+    },
+    {
       "name": "[extra] rev is floored; v compares numerically",
       "source": "src/agent/cloud-config.ts:195,214",
       "steps": [
@@ -1303,6 +1314,102 @@
             "changed": true,
             "fileAfter": "{\"mode\":\"real\",\"simulation\":{\"scenarioId\":\"a-1\"},\"gnssAntBias\":true,\"imuMount\":{\"enabled\":false,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":0},\"recording\":{\"telemetry\":{\"enabled\":true}},\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"},\"timeSync\":{\"offlineSources\":false},\"cellular\":{\"apn\":\"\"},\"cameraMount\":{\"cameras\":{}}}",
             "loadedJson": "{\"mode\":\"real\",\"gnssAntBias\":true,\"imuMount\":{\"enabled\":false,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":0},\"recording\":{\"telemetry\":{\"enabled\":true}},\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"},\"timeSync\":{\"offlineSources\":false},\"cellular\":{\"apn\":\"\"},\"cameraMount\":{\"cameras\":{}},\"simulation\":{\"scenarioId\":\"a-1\"}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] recording.video.cameras same values, different key order → changed (rewritten in cloud order)",
+      "source": "src/agent/cloud-config.ts:333",
+      "steps": [
+        {
+          "op": "write",
+          "text": "{\"recording\":{\"video\":{\"cameras\":{\"cam1\":false,\"cam0\":true}}}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "video": {
+                "cameras": {
+                  "cam0": true,
+                  "cam1": false
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}",
+            "loadedJson": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "video": {
+                "cameras": {
+                  "cam0": true,
+                  "cam1": false
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}",
+            "loadedJson": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] cameraMount.cameras same values, different key order → changed",
+      "source": "src/agent/cloud-config.ts:368",
+      "steps": [
+        {
+          "op": "write",
+          "text": "{\"cameraMount\":{\"cameras\":{\"cam1\":{\"rotationDeg\":0},\"cam0\":{\"rotationDeg\":180}}},\"mode\":\"real\"}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                },
+                "cam1": {
+                  "rotationDeg": 0
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}",
+            "loadedJson": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                },
+                "cam1": {
+                  "rotationDeg": 0
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}",
+            "loadedJson": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}"
           }
         }
       ]

@@ -82,6 +82,15 @@
       "expectedJson": "{\"lastAppliedRev\":0,\"lastReportTs\":0}"
     },
     {
+      "name": "[extra] loadConfigSyncState integer-like keys in the namespaces baseline (JSON.parse order)",
+      "source": "src/agent/config-sync.ts:201-229",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "{\"lastAppliedRev\":1,\"namespaces\":{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"9\":{\"rotationDeg\":180}}}}}"
+      },
+      "expectedJson": "{\"lastAppliedRev\":1,\"lastReportTs\":0,\"namespaces\":{\"cameraMount\":{\"cameras\":{\"9\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}}}}"
+    },
+    {
       "name": "always applies when the backend sends no rev (pre-Phase-2 compat) [undefined,0]",
       "source": "test/config-sync.test.ts",
       "op": "shouldApplyRev",
@@ -3232,6 +3241,77 @@
         }
       },
       "expectedJson": "{\"cameraMount\":{\"state\":\"adjusted\",\"at\":99,\"detail\":\"the device clamped or normalized the delivered value\"}}"
+    },
+    {
+      "name": "[extra] integer-like stream keys enumerate first (V8 own-key order) in cameras + pending",
+      "source": "src/agent/config-sync.ts:700-707",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cameraMount": {
+            "cameras": {
+              "9": {
+                "rotationDeg": 180
+              },
+              "10": {
+                "rotationDeg": 0
+              },
+              "-a": {
+                "rotationDeg": 180
+              },
+              "cam0": {
+                "rotationDeg": 0
+              }
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "-a",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            },
+            {
+              "streamKey": "10",
+              "desiredDeg": 0,
+              "inForceDeg": 0,
+              "bootDeg": 0,
+              "verdict": "applied"
+            },
+            {
+              "streamKey": "9",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            },
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 0,
+              "inForceDeg": 0,
+              "bootDeg": 0,
+              "verdict": "applied"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"9\":{\"rotationDeg\":0},\"10\":{\"rotationDeg\":0},\"-a\":{\"rotationDeg\":0},\"cam0\":{\"rotationDeg\":0}},\"pending\":{\"9\":{\"rotationDeg\":180},\"-a\":{\"rotationDeg\":180}},\"rebootRequired\":true}}"
     }
   ]
 }

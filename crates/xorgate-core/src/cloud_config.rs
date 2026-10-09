@@ -132,7 +132,8 @@ pub struct CloudConfigMessage {
 /// JSON, not a plain object, or not `v: 1` (a numeric compare — `1.0` passes,
 /// `"1"` does not).
 pub fn parse_cloud_message(payload: &str) -> Option<CloudConfigMessage> {
-    let obj: Value = serde_json::from_str(payload).ok()?;
+    // `JSON.parse` key order (integer-like keys first at every level).
+    let obj: Value = crate::config_report::js_parsed_key_order(serde_json::from_str(payload).ok()?);
     let Value::Object(raw) = obj else {
         return None;
     };
@@ -260,15 +261,24 @@ enum Change {
     Clear,
 }
 
-fn namespace_change<T: PartialEq + Serialize>(
+fn namespace_change<T: Serialize>(
     cloud: &Option<Option<T>>,
     current: &Option<T>,
 ) -> Option<Change> {
     let target = cloud.as_ref()?;
-    // `JSON.stringify(target) !== JSON.stringify(current)` — both sides are
-    // parser-normalized (fixed key order), so structural equality is the
-    // same test.
-    if target == current {
+    // `JSON.stringify(target) !== JSON.stringify(current)`
+    // (`cloud-config.ts:333,341,349,358,368,378`) — a KEY-ORDER-SENSITIVE
+    // test: the operator-keyed maps (`recording.video.cameras`,
+    // `cameraMount.cameras`) keep their file / delivery order, so the same
+    // values in a different order ARE a change (the TS rewrites the file in
+    // cloud order). Structural `==` would be wrong here: the derived
+    // `PartialEq` on `IndexMap` (and on `serde_json::Map` with
+    // `preserve_order`) ignores order. The typed settings serialise exactly
+    // like `JSON.stringify` (WP1: parser key order, JS number form), and
+    // `None` → `null` on both sides stands in for `undefined === undefined`.
+    if serde_json::to_string(target).expect("namespace serialises")
+        == serde_json::to_string(current).expect("namespace serialises")
+    {
         return None;
     }
     Some(if target.is_some() {
