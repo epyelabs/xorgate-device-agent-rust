@@ -180,6 +180,37 @@ fn namespace_parsers() {
     assert_eq!(f.cases.len(), 51);
 }
 
+/// review-wp6 row 5 (PARITY): a `__proto__` key in either camera map is
+/// dropped by the TS parsers' plain-object assignment (`settings.ts:276,481`);
+/// `loadSettings` cases carry the exact bytes `saveSettings` re-writes.
+#[test]
+fn proto_keys_in_camera_maps() {
+    #[derive(Deserialize)]
+    struct Case {
+        name: String,
+        op: String,
+        input: String,
+        #[serde(rename = "expectedJson")]
+        expected_json: Option<String>,
+    }
+    let f = common::fixture::<Case>("settings/proto-keys.json");
+    for c in &f.cases {
+        let got = match c.op.as_str() {
+            "loadSettings" => Some(json(&load_settings_from(SettingsRead::Text(&c.input)))),
+            op => {
+                let input: Value = serde_json::from_str(&c.input).unwrap();
+                match op {
+                    "parseRecordingSettings" => opt_json(&parse_recording_settings(&input)),
+                    "parseCameraMountSettings" => opt_json(&parse_camera_mount_settings(&input)),
+                    other => panic!("unknown op {other}"),
+                }
+            }
+        };
+        assert_eq!(got, c.expected_json, "{}", c.name);
+    }
+    assert_eq!(f.cases.len(), 10);
+}
+
 #[test]
 fn settings_migrate_test_ts() {
     #[derive(Deserialize)]
