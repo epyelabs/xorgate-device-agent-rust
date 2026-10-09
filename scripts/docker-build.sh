@@ -17,6 +17,13 @@
 # volumes are much faster than virtiofs for cargo's thousands of small files.
 # Only the final binary is copied back into the repo tree.
 #
+# Caveat: in a `git worktree` checkout the repo's `.git` is a FILE pointing at the
+# main checkout's path, which does not exist inside the container, so
+# crates/xorgate-agent/build.rs cannot read the sha and bakes `unknown` — the
+# `--version` fallback then prints `(unknown, dev-local)`. Harmless: the
+# build-info.json pack.sh stamps (from the host's git) is what the installed
+# binary reports. A plain clone and CI (a normal checkout) bake the real sha.
+#
 # Caches (named Docker volumes, survive between runs; `--clean` removes them):
 #   xorgate-rs-cargo-registry  /usr/local/cargo/registry
 #   xorgate-rs-cargo-git       /usr/local/cargo/git
