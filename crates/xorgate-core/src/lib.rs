@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent_config;
 pub mod boot_config;
 pub mod boot_policy;
 pub mod build_info;

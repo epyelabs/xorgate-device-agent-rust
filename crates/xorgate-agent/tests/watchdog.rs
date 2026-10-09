@@ -69,7 +69,9 @@ fn spawn_worker(scratch: &Scratch, endpoint: &str, notify: &Path) -> Child {
         .env("IOT_DATA_ENDPOINT", endpoint)
         .env("CERT_PATH", CERT)
         .env("KEY_PATH", KEY)
-        // No CA_PATH → the bundled Amazon root (the endpoint never presents a cert anyway).
+        // The TS reads CA_PATH unconditionally (config.ts:236-240), so the Rust agent
+        // does too (Phase 2 WP1). Any PEM cert will do: the endpoint never presents one.
+        .env("CA_PATH", CERT)
         .env("HARDWARE_MANIFEST", scratch.path("no-hardware.json"))
         .env("XORGATE_LOG", "info,rumqttc=warn")
         .stdin(Stdio::null())

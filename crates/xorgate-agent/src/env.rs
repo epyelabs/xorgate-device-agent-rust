@@ -1,111 +1,162 @@
-//! Agent configuration from the environment — the same keys as
-//! `/etc/xorgate/agent.env` read by `src/agent/config.ts:loadConfig()`.
+//! The worker's configuration, read from the process: `src/agent/config.ts`
+//! `loadConfig` (the pure precedence rules are `xorgate_core::agent_config`,
+//! fixture-pinned) + the env knobs other TS modules read at load time
+//! (common-brief rule 6):
 //!
-//! Phase 0 reads: `DEVICE_ID`, `IOT_DATA_ENDPOINT`, `CERT_PATH`, `KEY_PATH`,
-//! `CA_PATH`, `MODE`, `RATE_HZ`, `MQTT_KEEPALIVE_SEC`, `OFFLINE`,
-//! `XORGATE_HOME` (default `~/.xorgate`), `HARDWARE_MANIFEST` (default
-//! `/etc/xorgate/hardware.json`). The KVS_* / DEVICE_DIST_* keys are present
-//! in agent.env but belong to later phases and are ignored here.
+//! | knob | TS | default |
+//! |---|---|---|
+//! | `XORGATE_HOME` | `runtime.ts:21` (`||`) | `os.homedir()/.xorgate` |
+//! | `GPS_NMEA_PORT` | `hardware/gps.ts:15` (`??`) | `/dev/ttyUSB1` |
+//! | `LTE_TELEMETRY_FILE` | `hardware/modem.ts:31` (`??`) | `/run/sim7600-lte/telemetry.json` |
+//! | `XORGATE_PYTHON_DIR` | `lib/paths.ts:15` (`??`) | `<install root>/python` |
+//! | `XORGATE_UPLOAD_BUCKET` | `worker.ts:392` (`||`) | — |
+//! | `XORGATE_MANAGED_BY` | `worker.ts:340` (`!`) | — (self-managed) |
+//! | `XORGATE_RS_TAPE` | Rust only (record/replay) | — |
+//!
+//! plus everything `loadConfig` reads (`DEVICE_ID`, `IOT_DATA_ENDPOINT`,
+//! `CERT_PATH`, `KEY_PATH`, `CA_PATH`, `MODE`, `RATE_HZ`,
+//! `MQTT_KEEPALIVE_SEC`, `OFFLINE`, `KVS_*`, `HARDWARE_MANIFEST`, …) and the
+//! same `--flag value` overrides.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
+use xorgate_core::agent_config::{self, AgentConfig, ConfigInputs};
+use xorgate_core::telemetry::RunMode;
 
+use crate::ctx::Paths;
+
+/// The resolved configuration of one worker run.
 #[derive(Debug, Clone)]
 pub struct AgentEnv {
-    pub device_id: String,
-    pub endpoint: String,
-    pub mode: String,
-    pub rate_hz: f64,
-    pub interval_ms: u64,
-    pub mqtt_keepalive_sec: u64,
-    pub offline: bool,
-    pub cert_path: PathBuf,
-    pub key_path: PathBuf,
-    pub ca_path: PathBuf,
-    pub hardware_path: PathBuf,
+    /// `loadConfig()` minus `creds`.
+    pub config: AgentConfig,
+    /// `runtimeHome()`.
     pub home: PathBuf,
+    /// `!process.env.XORGATE_MANAGED_BY` (`worker.ts:340`): write/remove the pidfile.
+    pub self_managed: bool,
+    /// `process.env.XORGATE_UPLOAD_BUCKET || …` (`worker.ts:392`): the override, when non-empty.
+    pub upload_bucket_override: Option<String>,
+    /// The worker's own argv (after the program name), recorded in the pidfile.
+    pub argv: Vec<String>,
 }
 
-fn var(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.is_empty())
+/// The cert material read at startup (`CredBundle`, `config.ts:21-25`).
+pub struct Creds {
+    pub cert: Vec<u8>,
+    pub key: Vec<u8>,
+    pub ca: Vec<u8>,
 }
 
-fn truthy(v: Option<String>) -> bool {
-    matches!(v.as_deref(), Some("1") | Some("true"))
+fn env_var(k: &str) -> Option<String> {
+    // `process.env[k]`: unset is undefined, set-but-empty is "".
+    std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
 }
 
-/// `XORGATE_HOME` or `~/.xorgate` (`src/daemon/runtime.ts:runtimeHome`).
+/// `os.homedir()` (CF3): `$HOME` when set and non-empty (libuv
+/// `uv_os_homedir`), else the passwd entry of the effective uid, else `/`.
+pub fn os_homedir() -> String {
+    if let Some(h) = env_var("HOME").filter(|h| !h.is_empty()) {
+        return h;
+    }
+    nix::unistd::User::from_uid(nix::unistd::geteuid())
+        .ok()
+        .flatten()
+        .map(|u| u.dir.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_string())
+}
+
+/// `runtimeHome()` (`runtime.ts:20-22`).
 pub fn runtime_home() -> PathBuf {
-    if let Some(h) = var("XORGATE_HOME") {
-        return PathBuf::from(h);
-    }
-    let home = var("HOME").unwrap_or_else(|| "/".to_string());
-    PathBuf::from(home).join(".xorgate")
+    PathBuf::from(agent_config::runtime_home(
+        env_var("XORGATE_HOME").as_deref(),
+        &os_homedir(),
+    ))
 }
 
-pub fn load(offline_flag: bool) -> Result<AgentEnv> {
-    let offline = offline_flag || truthy(var("OFFLINE"));
-    // Offline mode needs no real identity / endpoint: same placeholders as the TS.
-    let device_id = var("DEVICE_ID").or_else(|| offline.then(|| "sim-local".to_string()));
-    let endpoint = var("IOT_DATA_ENDPOINT").or_else(|| offline.then(|| "offline".to_string()));
-    let device_id =
-        device_id.ok_or_else(|| anyhow!("DEVICE_ID is required (or pass --offline)"))?;
-    let endpoint =
-        endpoint.ok_or_else(|| anyhow!("IOT_DATA_ENDPOINT is required (or pass --offline)"))?;
+/// The install root (`/opt/xorgate-rs` for `/opt/xorgate-rs/bin/xorgate-rs`),
+/// the Rust stand-in for the TS `PACKAGE_ROOT`.
+pub fn install_root() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            let bin = exe.parent()?.to_path_buf();
+            Some(bin.parent().map(Path::to_path_buf).unwrap_or(bin))
+        })
+        .unwrap_or_else(|| PathBuf::from("/opt/xorgate-rs"))
+}
 
-    let rate_hz: f64 = var("RATE_HZ")
-        .unwrap_or_else(|| "1".into())
-        .parse()
-        .context("RATE_HZ must be a number")?;
-    if !rate_hz.is_finite() || rate_hz <= 0.0 {
-        return Err(anyhow!("RATE_HZ must be a positive number, got {rate_hz}"));
-    }
-    let mqtt_keepalive_sec: u64 = var("MQTT_KEEPALIVE_SEC")
-        .unwrap_or_else(|| "60".into())
-        .parse()
-        .context("MQTT_KEEPALIVE_SEC must be a positive integer")?;
-    if mqtt_keepalive_sec == 0 {
-        return Err(anyhow!(
-            "MQTT_KEEPALIVE_SEC must be a positive number, got 0"
-        ));
-    }
-    // The TS resolves `./creds/*` relative to the CWD; same here via PathBuf.
-    let cert_path = PathBuf::from(var("CERT_PATH").unwrap_or_else(|| "./creds/cert.crt".into()));
-    let key_path = PathBuf::from(var("KEY_PATH").unwrap_or_else(|| "./creds/private.key".into()));
-    let ca_path = PathBuf::from(var("CA_PATH").unwrap_or_else(|| "./creds/ca.pem".into()));
-    let hardware_path = PathBuf::from(
-        var("HARDWARE_MANIFEST").unwrap_or_else(|| "/etc/xorgate/hardware.json".into()),
-    );
-
+/// `loadConfig(argv)` (`config.ts:197-308`) without the creds read.
+/// `settings_mode` is `loadSettings().mode` from the home's settings.json.
+pub fn load(argv: &[String]) -> Result<AgentEnv> {
+    let home = runtime_home();
+    let settings_mode: Option<RunMode> =
+        xorgate_hal::settings_io::load_settings(&xorgate_hal::settings_io::settings_path(&home))
+            .mode;
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "/".to_string());
+    let env = |k: &str| env_var(k);
+    let config = agent_config::load_config(&ConfigInputs {
+        argv,
+        env: &env,
+        settings_mode,
+        cwd: &cwd,
+    })
+    .map_err(|e| anyhow!(e))?;
     Ok(AgentEnv {
-        device_id,
-        endpoint,
-        // Phase 0 always runs the real system collector; `mode` is recorded
-        // for state.json/pidfile parity with the TS (`MODE` env, default "real"
-        // here rather than the TS's "sim": there is no simulator to fall back to).
-        mode: var("MODE").unwrap_or_else(|| "real".into()),
-        rate_hz,
-        interval_ms: (1000.0 / rate_hz).round().max(1.0) as u64,
-        mqtt_keepalive_sec,
-        offline,
-        cert_path,
-        key_path,
-        ca_path,
-        hardware_path,
-        home: runtime_home(),
+        config,
+        home,
+        self_managed: env_var("XORGATE_MANAGED_BY").is_none_or(|v| v.is_empty()),
+        upload_bucket_override: env_var("XORGATE_UPLOAD_BUCKET").filter(|b| !b.is_empty()),
+        argv: argv.to_vec(),
     })
 }
 
-/// `rails` from the hardware block (`/etc/xorgate/hardware.json`, cm4-support):
-/// `false` pre-latches the PMIC reads off. Missing/unreadable/absent key ⇒ `true`
-/// (legacy CM5 behaviour: probe and latch).
-pub fn hardware_rails(path: &std::path::Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return true;
+/// The creds read of `loadConfig` (`config.ts:233-247`): online only; the
+/// first unreadable file fails the start with the TS message.
+pub fn read_creds(cfg: &AgentConfig) -> Result<Creds> {
+    let read = |p: &str| {
+        std::fs::read(p).map_err(|e| {
+            anyhow!(agent_config::creds_error(
+                &xorgate_hal::io::node_fs_message(&e, "open", Path::new(p))
+            ))
+        })
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return true;
-    };
-    v.get("rails").and_then(|r| r.as_bool()).unwrap_or(true)
+    Ok(Creds {
+        cert: read(&cfg.cert_path)?,
+        key: read(&cfg.key_path)?,
+        ca: read(&cfg.ca_path)?,
+    })
+}
+
+/// Every path the agent touches, resolved once.
+pub fn paths(env: &AgentEnv) -> Paths {
+    let h = &env.home;
+    let cfg = &env.config;
+    Paths {
+        home: h.clone(),
+        state: h.join("state.json"),
+        pid: crate::pidfile::pid_path(h),
+        log: h.join("agent.log"),
+        settings: xorgate_hal::settings_io::settings_path(h),
+        config_sync: h.join("config-sync.json"),
+        commands: h.join("commands.json"),
+        gnss_sky: h.join("gnss-sky.json"),
+        refresh_flag: h.join("refresh-modem.flag"),
+        sms_lock: h.join("sms-reader.lock"),
+        kvs_manifest: PathBuf::from(&cfg.media.manifest_path),
+        hardware: PathBuf::from(&cfg.hardware_path),
+        pipelines: PathBuf::from(&cfg.media.pipeline_dir),
+        lte_telemetry: xorgate_hal::modem_file::lte_telemetry_file(env_var("LTE_TELEMETRY_FILE")),
+        gps_nmea_port: PathBuf::from(
+            env_var("GPS_NMEA_PORT").unwrap_or_else(|| "/dev/ttyUSB1".to_string()),
+        ),
+        python_dir: env_var("XORGATE_PYTHON_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| install_root().join("python")),
+        tape: env_var("XORGATE_RS_TAPE")
+            .filter(|t| !t.is_empty())
+            .map(PathBuf::from),
+    }
 }
