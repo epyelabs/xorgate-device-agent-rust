@@ -103,6 +103,14 @@ paths = [
 # worker.ts:536-554), re-deferred to Phase 4 by CF20; its report hint
 # `clockStepperArmed` is already a T6 path above. FLAG: reviewer to confirm.
 event_prefixes = ["hardware:", "camera mount", "camera-mount", "led", "LED", "recording", "media", "[media", "upload", "[clock]"]
+# Report details produced ONLY by those hints: latchDetail (config-sync.ts:1007-1024)
+# returns "in force, but …" from bootDefer/powerShed (recording) and
+# `clockStepperArmed === false` (timeSync: "in force, but the clock stepper stood
+# down for this boot (NTP is synchronized)"); the hints are None until Phase 3/4
+# (CF20/CF30), so Rust omits the detail. Tolerated only when one side is absent
+# and the other starts with the latch prefix — every other detail is compared.
+latch_detail_paths = ["status.*.detail"]
+latch_detail_prefix = "in force, but "
 # sudo argv owned by Phase 3/4 (camera-mount helper, set-clock helper).
 sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
 
@@ -356,7 +364,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "disconnect-codec"
-  what = "rumqttc 0.25.1 rejects the spec-legal reason-code-only DISCONNECT (remaining length 1) with `bytes remaining on stream`: a broker DISCONNECT of that form shows as an `error` (<transport error>) + `connection closed` on the Rust side where mqtt.js logs the disconnect + close (WP1 follow-up amb. 6). Mosquitto in the rig does not send it; whether AWS IoT Core does is unverified (bench capture). A mismatch of this shape on a bench tape is reported UNTOLERATED and is judged against this row by hand"
+  what = "rumqttc 0.25.1 and a broker DISCONNECT (WP1 follow-up amb. 6 as corrected by review-wp1-followup MUST-FIX #1): a reason-code-only DISCONNECT is SILENTLY SWALLOWED — the close that follows shows as close-only when the broker sends TLS close_notify and as an `error` (<transport error>) + close when it does not; a zero-length DISCONNECT `[E0 00]` yields `Payload is required`. mqtt.js logs the disconnect + close. Never a reconnect loop, never data loss. Not reachable with mosquitto in the rig; whether AWS IoT Core sends these forms is unverified (bench capture). A mismatch of this shape on a bench tape is reported UNTOLERATED and judged against this row by hand. (A TLS peer-close WITHOUT close_notify producing an extra `mqtt error` is NOT tolerated: phase-2/integration removes it)"
   matcher = "doc_only"
 
   [[rule.row]]

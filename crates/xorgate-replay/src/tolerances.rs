@@ -53,6 +53,12 @@ pub struct Rule {
     pub source: Option<String>,
     #[serde(default, rename = "row")]
     pub rows: Vec<Row>,
+    /// T6: detail paths whose `latch_detail_prefix` text exists only through a
+    /// Phase 3/4 hint.
+    #[serde(default)]
+    pub latch_detail_paths: Vec<String>,
+    #[serde(default)]
+    pub latch_detail_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -527,6 +527,21 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             out.push(cx.mismatch(path, a, b, tol));
         }
         _ => {
+            // T6: a hint-only latch detail present on one side.
+            let present = a.or(b).and_then(Value::as_str);
+            if let (true, Some(text)) = (a.is_none() || b.is_none(), present) {
+                if let Some(r) = cx.table.of_kind("phase_owned", &cx.stream).find(|r| {
+                    r.latch_detail_paths
+                        .iter()
+                        .any(|p| crate::tolerances::path_matches(p, path))
+                        && r.latch_detail_prefix
+                            .as_deref()
+                            .is_some_and(|pre| text.starts_with(pre))
+                }) {
+                    out.push(cx.mismatch(path, a, b, r.id.clone()));
+                    return;
+                }
+            }
             // Presence (or array length / type) mismatch.
             let tol = cx
                 .near_transition()
@@ -1543,6 +1558,39 @@ mod tests {
             vec!["T8/offline-queue-bound".to_string()]
         );
         assert_eq!(long.untolerated(), 0, "{:?}", long.mismatches);
+    }
+
+    #[test]
+    fn latch_detail_only_when_hint_text_is_one_sided() {
+        let t = table();
+        let rep_doc = |detail: Option<&str>| {
+            let mut ts = serde_json::json!({"state": "applied"});
+            if let Some(d) = detail {
+                ts["detail"] = Value::from(d);
+            }
+            serde_json::json!({"v":1,"origin":"boot","status":{"timeSync": ts}})
+        };
+        let run = |da: Option<&str>, db: Option<&str>| {
+            let a = cap("js", vec![msg(10_000, "config/reported", rep_doc(da))]);
+            let b = cap("rust", vec![msg(10_000, "config/reported", rep_doc(db))]);
+            let rep = diff(&a, &b, &PlayInfo::default(), &[], &t);
+            rep.mismatches
+                .iter()
+                .filter(|m| m.path == "status.timeSync.detail")
+                .map(|m| m.tol.clone())
+                .collect::<Vec<_>>()
+        };
+        let latch =
+            "in force, but the clock stepper stood down for this boot (NTP is synchronized)";
+        assert_eq!(run(Some(latch), None), vec!["T6".to_string()]);
+        // Any other detail is compared.
+        assert_eq!(
+            run(
+                Some("the device is holding a different value (changed locally?)"),
+                None
+            ),
+            vec![UNTOLERATED.to_string()]
+        );
     }
 
     #[test]
