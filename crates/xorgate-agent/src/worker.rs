@@ -482,3 +482,42 @@ async fn run(args: &[String]) -> Result<i32> {
     sd_notify(&[sd_notify::NotifyState::Stopping]);
     Ok(code)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `loadHardwareBlock` (`hardware-config.ts:129-151`) + the boot line
+    /// (`worker.ts:115-121`) over the CM4 block of `fixtures/hardware_block/parse.json`.
+    #[test]
+    fn hardware_block_load_and_line() {
+        let d = std::env::temp_dir().join(format!("xg-hw-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("hardware.json");
+        assert!(load_hardware_block(&p).is_none()); // absent: legacy, silent
+        std::fs::write(&p, "{not json").unwrap();
+        assert!(load_hardware_block(&p).is_none());
+        std::fs::write(&p, r#"{"v":1}"#).unwrap();
+        assert!(load_hardware_block(&p).is_none());
+        std::fs::write(
+            &p,
+            r#"{"v":2,"platform":"rpi-cm4","encoder":"hw-h264","rails":false,"statusLed":null,"imu":"bno085","video":[{"key":"cam0","connector":"csi0","sensor":"imx290","codec":"h264","label":"Front"}]}"#,
+        )
+        .unwrap();
+        let b = load_hardware_block(&p).expect("valid block");
+        assert_eq!(
+            hardware_block_line(&b),
+            "[agent] hardware block: rpi-cm4 encoder=hw-h264 cameras=cam0@csi0 rails=false led=no imu=bno085"
+        );
+        let none = DeviceHardwareBlock {
+            video: vec![],
+            imu: None,
+            ..b
+        };
+        assert_eq!(
+            hardware_block_line(&none),
+            "[agent] hardware block: rpi-cm4 encoder=hw-h264 cameras=none rails=false led=no imu=none"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
