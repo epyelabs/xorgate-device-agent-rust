@@ -65,6 +65,9 @@ INPUTS_DROPIN=$DROPIN_DIR/95-inputs.conf
 EXCLUSIVE_DROPIN=$RUN_DROPIN_DIR/99-exclusive.conf
 TAPE_DROPIN=$RUN_DROPIN_DIR/98-tape.conf
 C15_BASELINE=$RS_HOME/evidence/c15-baseline.sha256
+HW_SHARED=$RS_ETC/hardware.json
+HW_EXCLUSIVE=$RS_ETC/hardware-exclusive.json
+EXCLUSIVE_ENV=/run/xorgate-agent-rs-exclusive.env
 DRY="${DRY:-0}"
 CHANGED=()
 act() { if [ "$DRY" = 1 ]; then echo "  [dry-run] would: $*"; else "$@"; fi; }
@@ -90,9 +93,41 @@ remove_if_present() {
   if [ -e "$1" ]; then act rm -f "$1"; note "$1 removed"; return 0; fi
   echo "  = $1 absent"; return 1
 }
+# Orchestrator decision (WP2 amb. 10): in the SHARED profile the Rust agent's
+# IMU detection must not probe I2C bus 1 (`i2cdetect -y 1`) while the JS helper
+# holds its SHTP session with the BNO085. The python-dir trick only blocks the
+# helper spawn, so the Rust agent's DEV hardware copy says `"imu": null`
+# ($HW_SHARED, the HARDWARE_MANIFEST of its env file); the exclusive window
+# points it at $HW_EXCLUSIVE (the real block, a verbatim copy of the prod
+# /etc/xorgate/hardware.json, which is only ever READ). Re-applied on every
+# `profile.sh shared` because a cloud `hardware` block saved by the agent
+# (worker.ts:781-900 order, WP3) would bring the IMU back.
+hardware_copies() {
+  local src=/etc/xorgate/hardware.json tmp
+  if [ ! -f "$src" ]; then echo "  no $src — hardware copies skipped (agent: no hardware block)"; return 0; fi
+  [ -d "$RS_ETC" ] || { act install -d -o pi -g pi -m 0700 "$RS_ETC"; note "$RS_ETC created"; }
+  if [ -f "$HW_EXCLUSIVE" ] && cmp -s "$src" "$HW_EXCLUSIVE"; then echo "  = $HW_EXCLUSIVE unchanged"
+  else act install -o pi -g pi -m 0600 "$src" "$HW_EXCLUSIVE"; note "$HW_EXCLUSIVE <- $src (real IMU block, exclusive window only)"; fi
+  tmp=$(mktemp)
+  python3 - "$src" > "$tmp" <<'PY'
+import collections, json, sys
+d = json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict)
+d["imu"] = None
+print(json.dumps(d, indent=2))
+PY
+  if [ -f "$HW_SHARED" ] && cmp -s "$tmp" "$HW_SHARED"; then echo "  = $HW_SHARED unchanged (imu: null)"
+  else
+    if [ -f "$HW_SHARED" ]; then echo "  $HW_SHARED differs:"; diff "$HW_SHARED" "$tmp" | sed 's/^/    /' || true; fi
+    act install -o pi -g pi -m 0600 "$tmp" "$HW_SHARED"; note "$HW_SHARED <- $src with imu: null (shared profile)"
+  fi
+  rm -f "$tmp"
+}
 profile_shared() {
   # O6 shared: the JS agent owns the GNSS tty and the BNO085, so the Rust
-  # agent's GPS port does not exist and its Python helper cannot spawn.
+  # agent's GPS port does not exist, its Python helper cannot spawn, and its
+  # hardware copy declares no IMU (no i2cdetect probe of bus 1).
+  hardware_copies
+  remove_if_present "$EXCLUSIVE_ENV" || true
   write_if_changed "$INPUTS_DROPIN" 0644 <<'CONF' || true
 # Phase 2 SHARED input profile (scripts/bench/profile.sh, plan O6). Persistent.
 # The JS prod agent owns /dev/ttyUSB1 (NMEA) and the BNO085 (I2C, SHTP): two
@@ -124,7 +159,15 @@ profile_exclusive() {
 # python dir), exactly as on a converted device.
 [Service]
 UnsetEnvironment=GPS_NMEA_PORT XORGATE_PYTHON_DIR
+# EnvironmentFile= wins over Environment=, and a later file over an earlier
+# one: this one (last drop-in) points HARDWARE_MANIFEST at the real IMU block.
+EnvironmentFile=/run/xorgate-agent-rs-exclusive.env
 CONF
+  [ -f "$HW_EXCLUSIVE" ] || { if [ "$DRY" = 1 ]; then echo "  [dry-run] NOTE: $HW_EXCLUSIVE missing — run dev-manifests.sh"; else echo "refusing: $HW_EXCLUSIVE missing — run scripts/bench/dev-manifests.sh"; exit 1; fi; }
+  write_if_changed "$EXCLUSIVE_ENV" 0644 <<ENV || true
+# Phase 2 exclusive window (scripts/bench/profile.sh exclusive). RUNTIME file.
+HARDWARE_MANIFEST=$HW_EXCLUSIVE
+ENV
 }
 reload_restart_rs() {
   act systemctl daemon-reload

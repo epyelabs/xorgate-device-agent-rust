@@ -45,6 +45,10 @@ status)
   units_report
   ls -l "$DROPIN_DIR" "$RUN_DROPIN_DIR" 2>/dev/null | sed 's/^/  /' || true
   echo "  latest window: $(latest_window || echo none)"
+  for hw in "$HW_SHARED" "$HW_EXCLUSIVE"; do
+    if [ -f "$hw" ]; then echo "  $(basename "$hw"): imu=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("imu")))' "$hw" 2>/dev/null || echo '?')"; fi
+  done
+  if [ -f "$EXCLUSIVE_ENV" ]; then echo "  $EXCLUSIVE_ENV present (exclusive hardware)"; fi
   c15_check
   ;;
 begin)

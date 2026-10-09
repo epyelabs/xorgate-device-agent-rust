@@ -6,8 +6,12 @@
 #
 # On the bench, as root:
 #   - /var/lib/xorgate-rs/etc/ (pi, 0700) gets kvs.json from the parked DEV
-#     bundle /etc/xorgate/dev-backup-20260823/, hardware.json + pipelines/
-#     copied from /etc/xorgate (read-only use of the prod copies), all pi 0600;
+#     bundle /etc/xorgate/dev-backup-20260823/, pipelines/ copied from
+#     /etc/xorgate, and TWO hardware copies of /etc/xorgate/hardware.json:
+#     hardware.json with "imu": null (SHARED profile: no i2cdetect probe while
+#     the JS helper owns the BNO085) and hardware-exclusive.json verbatim (the
+#     exclusive window's runtime drop-in points HARDWARE_MANIFEST there); all
+#     pi 0600, read-only use of the prod copies;
 #   - /etc/xorgate/agent-rs-dev.env (the Rust agent's own env file, created by
 #     install.sh) gets KVS_MANIFEST / HARDWARE_MANIFEST / KVS_PIPELINE_DIR
 #     pointing there;
@@ -44,7 +48,9 @@ copy_file() { # src dst
   act install -o pi -g pi -m 0600 "$1" "$2"; note "$2 <- $1"
 }
 copy_file "$DEV_BACKUP/kvs.json" "$RS_ETC/kvs.json"
-if [ -f /etc/xorgate/hardware.json ]; then copy_file /etc/xorgate/hardware.json "$RS_ETC/hardware.json"; fi
+# hardware.json: the shared copy says imu: null, hardware-exclusive.json is the
+# real block (orchestrator decision on WP2 amb. 10; see _lib.sh hardware_copies).
+hardware_copies
 if [ -d /etc/xorgate/pipelines ]; then
   [ -d "$RS_ETC/pipelines" ] || { act install -d -o pi -g pi -m 0700 "$RS_ETC/pipelines"; note "$RS_ETC/pipelines created"; }
   for f in /etc/xorgate/pipelines/*; do
