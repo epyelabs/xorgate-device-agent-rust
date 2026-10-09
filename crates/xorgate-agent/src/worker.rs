@@ -374,11 +374,16 @@ async fn run(args: &[String]) -> Result<i32> {
     }
     state.flush(now0, true);
 
-    // Phase 3/4 boot steps (O5): reconcileHardwareNow (`:438`), reconcileCameraMountNow
-    // (`:443`), the RecordingManager — whose construction calls buildUploadOptions()
-    // (`:439`, CF33 → WP3) — recording.start() (`:540`), the clock stepper (`:548`),
-    // the LED manager (`:609`).
+    // Phase 3/4 boot steps (O5), each a PhaseHooks no-op at its TS place:
+    // `await reconcileHardwareNow()` (`:427`), `await reconcileCameraMountNow()`
+    // (`:432`), the RecordingManager — whose construction calls
+    // buildUploadOptions() (`:439`, CF33 → WP3) — and `await recording.start()`
+    // (`:529`). The clock stepper (`:536-570`) and the LED manager (`:609`) are
+    // Phase 4 constructors with no Phase 2 call site.
+    ctx.hooks.reconcile_hardware_boot().await;
+    ctx.hooks.reconcile_camera_mount_boot().await;
     config_plane::boot_upload_options(&ctx);
+    ctx.hooks.recording_start().await;
 
     // MQTT (`worker.ts:664`), scope (`:684`), config plane (`:700-746`), commands.
     let link = connect(&env, creds)?;
@@ -425,6 +430,8 @@ async fn run(args: &[String]) -> Result<i32> {
     let mut heartbeat = every(Duration::from_secs(1));
     let mut published_log = every(Duration::from_secs(10));
     let mut tape_clock = every(Duration::from_secs(10));
+    // `cameraMountPoll` (`worker.ts:648-651`): every 60 s, first at +60 s.
+    let mut camera_mount_poll = every(Duration::from_secs(60));
     let tape_on = ctx.tape.enabled();
     let mono0 = Instant::now();
     sd_notify(&[sd_notify::NotifyState::Ready]);
@@ -451,6 +458,11 @@ async fn run(args: &[String]) -> Result<i32> {
                 ctx.hooks.led_tick();
                 if state.connection() != ConnectionState::Connected {
                     state.flush(ctx.now_ms(), true);
+                }
+            }
+            _ = camera_mount_poll.tick() => {
+                if !ctx.shutting_down() {
+                    ctx.hooks.reconcile_camera_mount();
                 }
             }
             // `published N messages` (`worker.ts:1286-1289`).

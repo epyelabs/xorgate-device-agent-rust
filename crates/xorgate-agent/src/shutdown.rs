@@ -7,8 +7,9 @@
 //! - When the link is down the TS publish of `online:false` sits in mqtt.js's
 //!   offline queue and the 2 s timer exits the process; the Rust agent skips
 //!   the publish (nothing could carry it) and exits at once with the same code.
-//! - `store.setRecording(recording.status())` is Phase 3 (state.json
-//!   `recording` stays absent, T6).
+//! - `store.setRecording(recording.status())` (`:1307`) is the
+//!   `final_recording_status` hook: `None` in Phase 2, so state.json
+//!   `recording` stays absent (T6).
 
 use std::future::Future;
 use std::time::Duration;
@@ -64,6 +65,9 @@ impl Shutdown<'_> {
         ctx.hooks.led_stop();
         self.config.stop();
         ctx.hooks.recording_stop();
+        if let Some(status) = ctx.hooks.final_recording_status() {
+            ctx.state.set_recording(status);
+        }
         self.source.stop();
         if ctx.env.self_managed {
             if let Err(e) = crate::pidfile::remove_pidfile(&ctx.paths.pid) {

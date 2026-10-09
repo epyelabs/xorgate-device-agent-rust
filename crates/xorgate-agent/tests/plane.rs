@@ -323,6 +323,7 @@ async fn shutdown_order() {
             "hooks.led_stop",
             "config.stop",
             "hooks.recording_stop",
+            "hooks.final_recording_status",
             "source.stop",
             "publish status online:false",
             "end (pidfile present: false)",
@@ -525,4 +526,5 @@ fn noop_hooks_are_inert() {
     );
     assert!(h.camera_mount_state().is_none());
     assert_eq!(h.report_hints(), Default::default());
+    assert!(h.final_recording_status().is_none());
 }

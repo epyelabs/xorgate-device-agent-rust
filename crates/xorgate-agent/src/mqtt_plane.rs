@@ -495,6 +495,7 @@ impl PublishTick {
         let ts = self.ctx.now_ms();
         let media = self.ctx.hooks.overlay_media(reading.media);
         let recording = self.ctx.hooks.recording_status();
+        self.ctx.hooks.note_recording_status(&recording);
         let payload = TelemetryPayload {
             v: 1,
             device_id: self.ctx.env.config.device_id.clone(),

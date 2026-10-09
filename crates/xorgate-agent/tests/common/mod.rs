@@ -318,6 +318,10 @@ impl PhaseHooks for FakeHooks {
     fn recording_stop(&self) {
         push(&self.0, "hooks.recording_stop");
     }
+    fn final_recording_status(&self) -> Option<xorgate_core::telemetry::RecordingStatus> {
+        push(&self.0, "hooks.final_recording_status");
+        None
+    }
 }
 
 #[derive(Default)]
