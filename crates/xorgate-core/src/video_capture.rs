@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cameras::js_ws;
+use crate::cameras::{js_trim, js_ws};
 use crate::hardware_block::EncoderToken;
 use crate::pipeline_builder::{build_bridged_kvs_pipeline, build_record_encode_args};
 use crate::video_presets::VideoPreset;
@@ -121,7 +121,7 @@ pub fn resolve_camera_name(
     gst: Option<&str>,
 ) -> Option<String> {
     if let Some(v) = camera_file {
-        let v = v.trim();
+        let v = js_trim(v);
         if !v.is_empty() {
             return Some(v.to_string());
         }
@@ -194,7 +194,7 @@ pub fn capture_source_head(
         }
     }
     if let Some(o) = env_override {
-        let o = o.trim_matches(js_ws);
+        let o = js_trim(o);
         if !o.is_empty() {
             // `override.split(/\s+/)` on a trimmed non-empty string: no empty tokens.
             return o
