@@ -29,6 +29,7 @@ pub mod cameras;
 pub mod clock;
 pub mod clock_step;
 pub mod cloud_config;
+pub mod command_flow;
 pub mod commands;
 pub mod config_namespaces;
 pub mod config_report;

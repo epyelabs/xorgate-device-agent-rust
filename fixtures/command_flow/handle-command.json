@@ -1,0 +1,691 @@
+{
+  "jsSourceFile": "src/worker.ts",
+  "jsLines": "902-1126",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "phase-2/evidence/wp4-tools/dump-command-flow.mts (npx tsx in a git-archive 89b5c64 scratch copy): the REAL worker.ts:902-1126 text, types stripped by esbuild, evaluated over recording stubs; commands.ts/sms-modem.ts helpers are the real modules",
+  "deviceId": "dev-1",
+  "cases": [
+    {
+      "name": "malformed payloads are dropped with a local trail, no ack",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000000000,
+          "payload": "not json",
+          "trace": [
+            "log.error [agent] ignoring malformed command message",
+            "event warn ignoring malformed command message"
+          ]
+        },
+        {
+          "at": 1750000000000,
+          "payload": "{\"v\":2,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.error [agent] ignoring malformed command message",
+            "event warn ignoring malformed command message"
+          ]
+        },
+        {
+          "at": 1750000000000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"self_destruct\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.error [agent] ignoring malformed command message",
+            "event warn ignoring malformed command message"
+          ]
+        },
+        {
+          "at": 1750000000000,
+          "payload": "{\"v\":1,\"requestId\":\"\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.error [agent] ignoring malformed command message",
+            "event warn ignoring malformed command message"
+          ]
+        },
+        {
+          "at": 1750000000000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":\"now\",\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.error [agent] ignoring malformed command message",
+            "event warn ignoring malformed command message"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": null
+    },
+    {
+      "name": "expired: rejected expired, NOT claimed (age rounded)",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000060001,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.warn [agent] rejecting expired reboot command (issued 60s ago)",
+            "event warn rejected expired reboot command (60s old)",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"expired\"}"
+          ]
+        },
+        {
+          "at": 1750000200499,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750010000000}",
+          "trace": [
+            "log.warn [agent] rejecting expired power_off command (issued 200s ago)",
+            "event warn rejected expired power_off command (200s old)",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"power_off\",\"expiresAt\":1750000120000,\"status\":\"rejected\",\"reason\":\"expired\"}"
+          ]
+        },
+        {
+          "at": 1750000200500,
+          "payload": "{\"v\":1,\"requestId\":\"req-3\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750010000000}",
+          "trace": [
+            "log.warn [agent] rejecting expired refresh command (issued 201s ago)",
+            "event warn rejected expired refresh command (201s old)",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-3\",\"command\":\"refresh\",\"expiresAt\":1750000120000,\"status\":\"rejected\",\"reason\":\"expired\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": null
+    },
+    {
+      "name": "expiry boundary: now == expiresAt is still valid",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000060000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000060000}]}",
+            "log.info [agent] reboot command accepted (req-1)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl reboot"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000060000}]}"
+    },
+    {
+      "name": "reboot ok: claim, accepted event, ack, sudo",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] reboot command accepted (req-1)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl reboot"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "reboot refused by sudo: failed ack with trimmed stderr",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "sudo: a password is required\n",
+            "exitCode": 1,
+            "failed": true,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] reboot command accepted (req-1)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl reboot",
+            "log.error [agent] reboot failed: sudo: a password is required",
+            "event warn reboot failed: sudo: a password is required",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"sudo: a password is required\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "sudo missing (execa ENOENT shape) and notFound",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"a\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "",
+            "exitCode": null,
+            "failed": true,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"a\",\"at\":1750000001000}]}",
+            "log.info [agent] reboot command accepted (a)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"a\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl reboot",
+            "log.error [agent] reboot failed: exit null",
+            "event warn reboot failed: exit null",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"a\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"exit null\"}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"b\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "spawn sudo ENOENT",
+            "exitCode": null,
+            "failed": true,
+            "notFound": true
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"a\",\"at\":1750000001000},{\"requestId\":\"b\",\"at\":1750000002000}]}",
+            "log.info [agent] power_off command accepted (b)",
+            "event info power_off command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"b\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl poweroff",
+            "log.error [agent] power_off failed: sudo not found",
+            "event warn power_off failed: sudo not found",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"b\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"sudo not found\"}"
+          ]
+        },
+        {
+          "at": 1750000003000,
+          "payload": "{\"v\":1,\"requestId\":\"c\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "out\n",
+            "stderr": "  \n",
+            "exitCode": 4,
+            "failed": true,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"a\",\"at\":1750000001000},{\"requestId\":\"b\",\"at\":1750000002000},{\"requestId\":\"c\",\"at\":1750000003000}]}",
+            "log.info [agent] reboot command accepted (c)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"c\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl reboot",
+            "log.error [agent] reboot failed: exit 4",
+            "event warn reboot failed: exit 4",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"c\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"exit 4\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"a\",\"at\":1750000001000},{\"requestId\":\"b\",\"at\":1750000002000},{\"requestId\":\"c\",\"at\":1750000003000}]}"
+    },
+    {
+      "name": "PUBACK never arrives: the ack resolves at 3 s and execution proceeds",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "sudo: a password is required\n",
+            "exitCode": 1,
+            "failed": true,
+            "notFound": false
+          },
+          "puback": false,
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] reboot command accepted (req-1)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "ack.timeout 3000",
+            "exec sudo -n systemctl reboot",
+            "log.error [agent] reboot failed: sudo: a password is required",
+            "event warn reboot failed: sudo: a password is required",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"sudo: a password is required\"}",
+            "ack.timeout 3000"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "power_off ok",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] power_off command accepted (req-1)",
+            "event info power_off command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl poweroff"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "update ok: updater started trail",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] update command accepted (req-1)",
+            "event info update command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"update\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl start --no-block xorgate-updater.service",
+            "log.info [agent] updater started; this process will be replaced when it finishes",
+            "event info agent self-update started"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "update refused (the rs unit has no grant before Phase 4, O3)",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "Sorry, user pi is not allowed to execute '/usr/bin/systemctl start --no-block xorgate-updater-rs.service' as root on xorgate.\n",
+            "exitCode": 1,
+            "failed": true,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] update command accepted (req-1)",
+            "event info update command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"update\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl start --no-block xorgate-updater.service",
+            "log.error [agent] update failed: Sorry, user pi is not allowed to execute '/usr/bin/systemctl start --no-block xorgate-updater-rs.service' as root on xorgate.",
+            "event warn update failed: Sorry, user pi is not allowed to execute '/usr/bin/systemctl start --no-block xorgate-updater-rs.service' as root on xorgate.",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"update\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"Sorry, user pi is not allowed to execute '/usr/bin/systemctl start --no-block xorgate-updater-rs.service' as root on xorgate.\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "duplicate: rejected duplicate, ledger untouched",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "sudo: a password is required\n",
+            "exitCode": 1,
+            "failed": true,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] power_off command accepted (req-1)",
+            "event info power_off command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl poweroff",
+            "log.error [agent] power_off failed: sudo: a password is required",
+            "event warn power_off failed: sudo: a password is required",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"sudo: a password is required\"}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.warn [agent] ignoring duplicate power_off command req-1",
+            "event warn ignored duplicate power_off command",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"duplicate\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "duplicate across a restart (ledger already on disk)",
+      "mode": "real",
+      "ledgerText": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1749999995000}]}",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.warn [agent] ignoring duplicate reboot command req-1",
+            "event warn ignored duplicate reboot command",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"duplicate\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1749999995000}]}"
+    },
+    {
+      "name": "ledger write failure: refused, failed ack, nothing executed",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "ledgerError": "EACCES: permission denied, open '/var/lib/xorgate-rs/.commands.json.tmp.4242.0'",
+          "trace": [
+            "log.error [agent] refusing reboot: ledger write failed: EACCES: permission denied, open '/var/lib/xorgate-rs/.commands.json.tmp.4242.0'",
+            "event warn refused reboot: ledger write failed: EACCES: permission denied, open '/var/lib/xorgate-rs/.commands.json.tmp.4242.0'",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"ledger write failed: EACCES: permission denied, open '/var/lib/xorgate-rs/.commands.json.tmp.4242.0'\"}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "ledgerError": "ENOSPC: no space left on device, write",
+          "trace": [
+            "log.error [agent] refusing refresh: ledger write failed: ENOSPC: no space left on device, write",
+            "event warn refused refresh: ledger write failed: ENOSPC: no space left on device, write",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"refresh\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"ledger write failed: ENOSPC: no space left on device, write\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": null
+    },
+    {
+      "name": "refresh: accepted, flag, report now and at +45 s; rate-limited inside 30 s (claimed, lastRefreshAt untouched)",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] refresh command accepted (req-1)",
+            "event info refresh command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"refresh\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "flag refresh-modem.flag 1750000001000",
+            "report boot",
+            "timer 45000"
+          ]
+        },
+        {
+          "at": 1750000011000,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000011000}]}",
+            "log.info [agent] refresh command accepted (req-2)",
+            "event info refresh command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"refresh\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"rate-limited\"}"
+          ]
+        },
+        {
+          "at": 1750000030999,
+          "payload": "{\"v\":1,\"requestId\":\"req-3\",\"command\":\"refresh\",\"ts\":1750000030000,\"expiresAt\":1750000090000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000011000},{\"requestId\":\"req-3\",\"at\":1750000030999}]}",
+            "log.info [agent] refresh command accepted (req-3)",
+            "event info refresh command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000030000,\"requestId\":\"req-3\",\"command\":\"refresh\",\"expiresAt\":1750000090000,\"status\":\"rejected\",\"reason\":\"rate-limited\"}"
+          ]
+        },
+        {
+          "at": 1750000031000,
+          "payload": "{\"v\":1,\"requestId\":\"req-4\",\"command\":\"refresh\",\"ts\":1750000030000,\"expiresAt\":1750000090000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000011000},{\"requestId\":\"req-3\",\"at\":1750000030999},{\"requestId\":\"req-4\",\"at\":1750000031000}]}",
+            "log.info [agent] refresh command accepted (req-4)",
+            "event info refresh command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000030000,\"requestId\":\"req-4\",\"command\":\"refresh\",\"expiresAt\":1750000090000,\"status\":\"accepted\"}",
+            "flag refresh-modem.flag 1750000031000",
+            "report boot",
+            "timer 45000"
+          ]
+        },
+        {
+          "at": 1750000050000,
+          "payload": "{\"v\":1,\"requestId\":\"req-5\",\"command\":\"refresh\",\"ts\":1750000030000,\"expiresAt\":1750000090000}",
+          "trace": [
+            "timer.fire 45000",
+            "report boot",
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000011000},{\"requestId\":\"req-3\",\"at\":1750000030999},{\"requestId\":\"req-4\",\"at\":1750000031000},{\"requestId\":\"req-5\",\"at\":1750000050000}]}",
+            "log.info [agent] refresh command accepted (req-5)",
+            "event info refresh command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000030000,\"requestId\":\"req-5\",\"command\":\"refresh\",\"expiresAt\":1750000090000,\"status\":\"rejected\",\"reason\":\"rate-limited\"}"
+          ]
+        }
+      ],
+      "after": [
+        "timer.fire 45000",
+        "report boot"
+      ],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000011000},{\"requestId\":\"req-3\",\"at\":1750000030999},{\"requestId\":\"req-4\",\"at\":1750000031000},{\"requestId\":\"req-5\",\"at\":1750000050000}]}"
+    },
+    {
+      "name": "read_sms real mode (O4 sweep)",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":25}}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] read_sms command accepted (req-1)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":25},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-1: status=error total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0 error=sms reader not available in this build",
+            "event warn read_sms req-1: status=error total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0 error=sms reader not available in this build",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"status\":\"error\",\"error\":\"sms reader not available in this build\",\"durationMs\":0,\"storage\":{},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[]}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "read_sms sim mode (fixture inbox), limit default and clamp",
+      "mode": "sim",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] read_sms command accepted (req-1)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-1: status=ok total=4 sent=4 unread=1 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-1: status=ok total=4 sent=4 unread=1 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:41+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-06-14T13:06:41+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2025-06-06T15:06:41+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"2025-05-06T15:06:41+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":2}}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000}]}",
+            "log.info [agent] read_sms command accepted (req-2)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":2},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-2: status=ok total=4 sent=2 unread=1 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-2: status=ok total=4 sent=2 unread=1 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-2\",\"ts\":1750000002000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:42+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-06-14T13:06:42+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+          ]
+        },
+        {
+          "at": 1750000003000,
+          "payload": "{\"v\":1,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":0}}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000}]}",
+            "log.info [agent] read_sms command accepted (req-3)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":1},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-3\",\"ts\":1750000003000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:43+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000}]}"
+    },
+    {
+      "name": "sim mode: reboot still goes through sudo",
+      "mode": "sim",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "exec": {
+            "stdout": "",
+            "stderr": "sudo: a password is required\n",
+            "exitCode": 1,
+            "failed": true,
+            "notFound": false
+          },
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] reboot command accepted (req-1)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "exec sudo -n systemctl reboot",
+            "log.error [agent] reboot failed: sudo: a password is required",
+            "event warn reboot failed: sudo: a password is required",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"sudo: a password is required\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "replay mode: update refused before accepted (claimed); reboot/power_off exit codes; refresh and read_sms in-process",
+      "mode": "replay",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.warn [agent] update command rejected (req-1): managed by host image",
+            "event warn update command rejected: managed by host image",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"update\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"managed by host image\"}"
+          ]
+        },
+        {
+          "at": 1750000001500,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.warn [agent] ignoring duplicate update command req-1",
+            "event warn ignored duplicate update command",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"update\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"duplicate\"}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000}]}",
+            "log.info [agent] refresh command accepted (req-2)",
+            "event info refresh command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"refresh\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "flag refresh-modem.flag 1750000002000",
+            "report boot",
+            "timer 45000"
+          ]
+        },
+        {
+          "at": 1750000003000,
+          "payload": "{\"v\":1,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":1}}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000}]}",
+            "log.info [agent] read_sms command accepted (req-3)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":1},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-3\",\"ts\":1750000003000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:43+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+          ]
+        },
+        {
+          "at": 1750000004000,
+          "payload": "{\"v\":1,\"requestId\":\"req-4\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000},{\"requestId\":\"req-4\",\"at\":1750000004000}]}",
+            "log.info [agent] power_off command accepted (req-4)",
+            "event info power_off command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-4\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "log.info [agent] power_off: exiting with code 3 (replay container)",
+            "event info power_off: container exit 3",
+            "shutdown power_off command 3"
+          ]
+        },
+        {
+          "at": 1750000005000,
+          "payload": "{\"v\":1,\"requestId\":\"req-5\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000},{\"requestId\":\"req-4\",\"at\":1750000004000},{\"requestId\":\"req-5\",\"at\":1750000005000}]}",
+            "log.info [agent] reboot command accepted (req-5)",
+            "event info reboot command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-5\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}",
+            "log.info [agent] reboot: exiting with code 0 (replay container)",
+            "event info reboot: container exit 0",
+            "shutdown reboot command 0"
+          ]
+        }
+      ],
+      "after": [
+        "timer.fire 45000",
+        "report boot"
+      ],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000},{\"requestId\":\"req-4\",\"at\":1750000004000},{\"requestId\":\"req-5\",\"at\":1750000005000}]}"
+    }
+  ]
+}
