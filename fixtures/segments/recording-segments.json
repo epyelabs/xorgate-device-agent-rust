@@ -1,0 +1,809 @@
+{
+  "jsSourceFile": "test/recording-segments.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there)",
+  "cases": [
+    {
+      "name": "opens lazily, writes a header first, and rotates by age into a gz",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {
+          "maxAgeMs": 1000
+        },
+        "monoInjected": false
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1000,
+              "mono": 1,
+              "seq": 0,
+              "metrics": {
+                "imu": {
+                  "a": 1
+                }
+              }
+            },
+            "now": 1000,
+            "mono": 1000,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1100,
+              "mono": 2,
+              "seq": 1,
+              "metrics": {
+                "imu": {
+                  "a": 2
+                }
+              }
+            },
+            "now": 1100,
+            "mono": 1100,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 2500,
+              "mono": 3,
+              "seq": 2,
+              "metrics": {
+                "imu": {
+                  "a": 3
+                }
+              }
+            },
+            "now": 2500,
+            "mono": 2500,
+            "activePath": "/recordings/telemetry/session-a/seg-2500-00001.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1000,\"mono\":1,\"seq\":0,\"metrics\":{\"imu\":{\"a\":1}}}\n{\"ts\":1100,\"mono\":2,\"seq\":1,\"metrics\":{\"imu\":{\"a\":2}}}\n",
+          "/recordings/telemetry/session-a/seg-2500-00001.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":2500,\"mono\":3,\"seq\":2,\"metrics\":{\"imu\":{\"a\":3}}}\n"
+        }
+      }
+    },
+    {
+      "name": "applies default rotation limits when options are passed as undefined (manager path)",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {
+          "maxBytes": null,
+          "maxAgeMs": null
+        },
+        "monoInjected": false
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1000,
+              "mono": 1,
+              "seq": 0,
+              "metrics": {
+                "imu": {
+                  "a": 1
+                }
+              }
+            },
+            "now": 1000,
+            "mono": 1000,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 62000,
+              "mono": 2,
+              "seq": 1,
+              "metrics": {
+                "imu": {
+                  "a": 2
+                }
+              }
+            },
+            "now": 62000,
+            "mono": 62000,
+            "activePath": "/recordings/telemetry/session-a/seg-62000-00001.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1000,\"mono\":1,\"seq\":0,\"metrics\":{\"imu\":{\"a\":1}}}\n",
+          "/recordings/telemetry/session-a/seg-62000-00001.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":62000,\"mono\":2,\"seq\":1,\"metrics\":{\"imu\":{\"a\":2}}}\n"
+        }
+      }
+    },
+    {
+      "name": "keeps rolling after the wall clock jumps backwards (Phase 8)",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {
+          "maxAgeMs": 60000
+        },
+        "monoInjected": false
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 3471724852000,
+              "mono": 1,
+              "seq": 0,
+              "metrics": {
+                "imu": {
+                  "a": 1
+                }
+              }
+            },
+            "now": 3471724852000,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-3471724852000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1785367494000,
+              "mono": 2,
+              "seq": 1,
+              "metrics": {
+                "imu": {
+                  "a": 2
+                }
+              }
+            },
+            "now": 1785367494000,
+            "mono": 60000,
+            "activePath": "/recordings/telemetry/session-a/seg-1785367494000-00001.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-3471724852000-00000.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1785367554000,
+              "mono": 3,
+              "seq": 2,
+              "metrics": {
+                "imu": {
+                  "a": 3
+                }
+              }
+            },
+            "now": 1785367554000,
+            "mono": 120000,
+            "activePath": "/recordings/telemetry/session-a/seg-1785367554000-00002.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-3471724852000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1785367494000-00001.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-3471724852000-00000.jsonl.gz",
+          "/recordings/telemetry/session-a/seg-1785367494000-00001.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-1785367494000-00001.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1785367494000,\"mono\":2,\"seq\":1,\"metrics\":{\"imu\":{\"a\":2}}}\n",
+          "/recordings/telemetry/session-a/seg-1785367554000-00002.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1785367554000,\"mono\":3,\"seq\":2,\"metrics\":{\"imu\":{\"a\":3}}}\n",
+          "/recordings/telemetry/session-a/seg-3471724852000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":3471724852000,\"mono\":1,\"seq\":0,\"metrics\":{\"imu\":{\"a\":1}}}\n"
+        }
+      }
+    },
+    {
+      "name": "rotates by size",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {
+          "maxBytes": 200,
+          "maxAgeMs": 60000
+        },
+        "monoInjected": true
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1000,
+              "mono": 0,
+              "seq": 0,
+              "metrics": {
+                "imu": {
+                  "a": 0
+                }
+              }
+            },
+            "now": 1000,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1001,
+              "mono": 1,
+              "seq": 1,
+              "metrics": {
+                "imu": {
+                  "a": 1
+                }
+              }
+            },
+            "now": 1001,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1002,
+              "mono": 2,
+              "seq": 2,
+              "metrics": {
+                "imu": {
+                  "a": 2
+                }
+              }
+            },
+            "now": 1002,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1002-00001.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1003,
+              "mono": 3,
+              "seq": 3,
+              "metrics": {
+                "imu": {
+                  "a": 3
+                }
+              }
+            },
+            "now": 1003,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1002-00001.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1004,
+              "mono": 4,
+              "seq": 4,
+              "metrics": {
+                "imu": {
+                  "a": 4
+                }
+              }
+            },
+            "now": 1004,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1004-00002.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1005,
+              "mono": 5,
+              "seq": 5,
+              "metrics": {
+                "imu": {
+                  "a": 5
+                }
+              }
+            },
+            "now": 1005,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1004-00002.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1006,
+              "mono": 6,
+              "seq": 6,
+              "metrics": {
+                "imu": {
+                  "a": 6
+                }
+              }
+            },
+            "now": 1006,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1006-00003.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1004-00002.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1007,
+              "mono": 7,
+              "seq": 7,
+              "metrics": {
+                "imu": {
+                  "a": 7
+                }
+              }
+            },
+            "now": 1007,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1006-00003.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1004-00002.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1008,
+              "mono": 8,
+              "seq": 8,
+              "metrics": {
+                "imu": {
+                  "a": 8
+                }
+              }
+            },
+            "now": 1008,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1008-00004.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1004-00002.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1006-00003.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1009,
+              "mono": 9,
+              "seq": 9,
+              "metrics": {
+                "imu": {
+                  "a": 9
+                }
+              }
+            },
+            "now": 1009,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1008-00004.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1004-00002.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-1006-00003.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz",
+          "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz",
+          "/recordings/telemetry/session-a/seg-1004-00002.jsonl.gz",
+          "/recordings/telemetry/session-a/seg-1006-00003.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1000,\"mono\":0,\"seq\":0,\"metrics\":{\"imu\":{\"a\":0}}}\n{\"ts\":1001,\"mono\":1,\"seq\":1,\"metrics\":{\"imu\":{\"a\":1}}}\n",
+          "/recordings/telemetry/session-a/seg-1002-00001.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1002,\"mono\":2,\"seq\":2,\"metrics\":{\"imu\":{\"a\":2}}}\n{\"ts\":1003,\"mono\":3,\"seq\":3,\"metrics\":{\"imu\":{\"a\":3}}}\n",
+          "/recordings/telemetry/session-a/seg-1004-00002.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1004,\"mono\":4,\"seq\":4,\"metrics\":{\"imu\":{\"a\":4}}}\n{\"ts\":1005,\"mono\":5,\"seq\":5,\"metrics\":{\"imu\":{\"a\":5}}}\n",
+          "/recordings/telemetry/session-a/seg-1006-00003.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1006,\"mono\":6,\"seq\":6,\"metrics\":{\"imu\":{\"a\":6}}}\n{\"ts\":1007,\"mono\":7,\"seq\":7,\"metrics\":{\"imu\":{\"a\":7}}}\n",
+          "/recordings/telemetry/session-a/seg-1008-00004.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1008,\"mono\":8,\"seq\":8,\"metrics\":{\"imu\":{\"a\":8}}}\n{\"ts\":1009,\"mono\":9,\"seq\":9,\"metrics\":{\"imu\":{\"a\":9}}}\n"
+        }
+      }
+    },
+    {
+      "name": "finalize() closes the active segment and discards sample-less ones",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {},
+        "monoInjected": true
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1,
+              "mono": 1,
+              "seq": 0,
+              "metrics": {
+                "gps": {
+                  "lat": 1
+                }
+              }
+            },
+            "now": 1000,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "finalize",
+            "activePath": null,
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          },
+          {
+            "op": "finalize",
+            "activePath": null,
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1,\"mono\":1,\"seq\":0,\"metrics\":{\"gps\":{\"lat\":1}}}\n"
+        }
+      }
+    },
+    {
+      "name": "re-emits a header line when the time source changes mid-segment",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {},
+        "monoInjected": true
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1,
+              "mono": 1,
+              "seq": 0,
+              "metrics": {
+                "imu": {
+                  "a": 1
+                }
+              }
+            },
+            "now": 1000,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "noteTimeSource",
+            "ts": "ntp",
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "noteTimeSource",
+            "ts": "unsynced",
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 2,
+              "mono": 2,
+              "seq": 1,
+              "metrics": {
+                "imu": {
+                  "a": 2
+                }
+              }
+            },
+            "now": 1001,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "finalize",
+            "activePath": null,
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1,\"mono\":1,\"seq\":0,\"metrics\":{\"imu\":{\"a\":1}}}\n{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"unsynced\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":2,\"mono\":2,\"seq\":1,\"metrics\":{\"imu\":{\"a\":2}}}\n"
+        }
+      }
+    },
+    {
+      "name": "extra: maybeRotate closes an idle segment on monotonic age; noteTimeSource before open is remembered",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {
+          "maxAgeMs": 500
+        },
+        "monoInjected": true
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "noteTimeSource",
+            "ts": "unsynced",
+            "activePath": null,
+            "closed": []
+          },
+          {
+            "op": "maybeRotate",
+            "mono": 10000,
+            "activePath": null,
+            "closed": []
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 5,
+              "mono": 1,
+              "seq": 0,
+              "metrics": {
+                "imu": {
+                  "a": 1
+                }
+              }
+            },
+            "now": 5000,
+            "mono": 10000,
+            "activePath": "/recordings/telemetry/session-a/seg-5000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "noteTimeSource",
+            "ts": "ntp",
+            "activePath": "/recordings/telemetry/session-a/seg-5000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "maybeRotate",
+            "mono": 10499,
+            "activePath": "/recordings/telemetry/session-a/seg-5000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "maybeRotate",
+            "mono": 10500,
+            "activePath": null,
+            "closed": [
+              "/recordings/telemetry/session-a/seg-5000-00000.jsonl.gz"
+            ]
+          },
+          {
+            "op": "maybeRotate",
+            "mono": 20000,
+            "activePath": null,
+            "closed": [
+              "/recordings/telemetry/session-a/seg-5000-00000.jsonl.gz"
+            ]
+          },
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 6,
+              "mono": 2,
+              "seq": 1,
+              "metrics": {
+                "imu": {
+                  "a": "ü€"
+                }
+              }
+            },
+            "now": 6000,
+            "mono": 20000,
+            "activePath": "/recordings/telemetry/session-a/seg-6000-00001.jsonl",
+            "closed": [
+              "/recordings/telemetry/session-a/seg-5000-00000.jsonl.gz"
+            ]
+          },
+          {
+            "op": "finalize",
+            "activePath": null,
+            "closed": [
+              "/recordings/telemetry/session-a/seg-5000-00000.jsonl.gz",
+              "/recordings/telemetry/session-a/seg-6000-00001.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-5000-00000.jsonl.gz",
+          "/recordings/telemetry/session-a/seg-6000-00001.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-5000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":5,\"mono\":1,\"seq\":0,\"metrics\":{\"imu\":{\"a\":1}}}\n",
+          "/recordings/telemetry/session-a/seg-6000-00001.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":6,\"mono\":2,\"seq\":1,\"metrics\":{\"imu\":{\"a\":\"ü€\"}}}\n"
+        }
+      }
+    },
+    {
+      "name": "gzips leftover plain segments, truncating a torn last line",
+      "op": "finalizeOrphanSegments",
+      "input": {
+        "telemetryRoot": "/recordings/telemetry",
+        "files": {
+          "/recordings/telemetry/old-session/seg-500-00000.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1,\"mono\":1,\"seq\":0,\"metrics\":{}}\n{\"ts\":2,\"mo"
+        }
+      },
+      "expected": {
+        "finalized": 1,
+        "files": {
+          "/recordings/telemetry/old-session/seg-500-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1,\"mono\":1,\"seq\":0,\"metrics\":{}}\n"
+        }
+      }
+    },
+    {
+      "name": "deletes segments with no complete sample and stray gzip temps",
+      "op": "finalizeOrphanSegments",
+      "input": {
+        "telemetryRoot": "/recordings/telemetry",
+        "files": {
+          "/recordings/telemetry/old-session/seg-1-00000.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n",
+          "/recordings/telemetry/old-session/seg-2-00001.jsonl": "{\"ts\":1,\"mo",
+          "/recordings/telemetry/old-session/seg-3-00002.jsonl.gz.tmp.123": "junk"
+        }
+      },
+      "expected": {
+        "finalized": 0,
+        "files": {}
+      }
+    },
+    {
+      "name": "is a no-op when the tree does not exist",
+      "op": "finalizeOrphanSegments",
+      "input": {
+        "telemetryRoot": "/recordings/telemetry",
+        "files": {}
+      },
+      "expected": {
+        "finalized": 0,
+        "files": {}
+      }
+    },
+    {
+      "name": "extra: already-closed gz and a session.json are left alone; blank lines do not count",
+      "op": "finalizeOrphanSegments",
+      "input": {
+        "telemetryRoot": "/recordings/telemetry",
+        "files": {
+          "/recordings/telemetry/s/seg-1-00000.jsonl.gz": "not really gz",
+          "/recordings/telemetry/s/seg-2-00001.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n\n\n{\"ts\":1,\"mono\":1,\"seq\":0,\"metrics\":{}}\n\n",
+          "/recordings/telemetry/s/seg-3-00002.jsonl": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n\n\n"
+        }
+      },
+      "expected": {
+        "finalized": 1,
+        "files": {
+          "/recordings/telemetry/s/seg-1-00000.jsonl.gz": "$raw:not really gz",
+          "/recordings/telemetry/s/seg-2-00001.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n\n\n{\"ts\":1,\"mono\":1,\"seq\":0,\"metrics\":{}}\n\n"
+        }
+      }
+    }
+  ]
+}

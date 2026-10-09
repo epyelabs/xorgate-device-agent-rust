@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
 use crate::clock::{MonoMs, WallMs};
-use crate::telemetry::js_num;
+use crate::sidecar::js_num_exact as js_num;
 use crate::types::TimeSource;
 use crate::video_capture::posix_join;
 
@@ -66,7 +66,12 @@ pub struct SegmentHeader {
 
 /// `SampleLine` (`segments.ts:58-63`): `{ts, mono, seq, metrics}`. `metrics`
 /// keeps insertion order (`serde_json` `preserve_order`), so the line prints
-/// exactly as `JSON.stringify` did.
+/// exactly as `JSON.stringify` did — PROVIDED its numbers were built the JS
+/// way (e.g. `serde_json::to_value` of `telemetry::MetricGroup`, whose
+/// `JsNumber` turns integral floats into integers; a raw `Value::from(1.0)`
+/// would print `1.0`). `mono` is `Number(process.hrtime.bigint())` — NANO-
+/// seconds (`telemetry-recorder.ts:116`), past 2^53 after ~104 days of
+/// uptime, hence the exact-integer printer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SampleLine {
     #[serde(with = "js_num")]
@@ -159,15 +164,15 @@ impl SegmentWriterCore {
     }
 
     /// `writeLine(line, now)` (`segments.ts:116-121`). Segments open lazily
-    /// on the first sample, so idle sessions leave no files. `header` is what
-    /// `opts.header()` would return right now (the recorder builds it at open
-    /// so `timeSource` is current); `now` names the file, `mono` ages it.
+    /// on the first sample, so idle sessions leave no files. `header` is
+    /// `opts.header()`, called only when a segment opens (so `timeSource` is
+    /// current); `now` names the file, `mono` (`opts.monoMs()`) ages it.
     pub fn write_line(
         &mut self,
         line: &SampleLine,
         now: WallMs,
         mono: MonoMs,
-        header: &SegmentHeader,
+        header: &dyn Fn() -> SegmentHeader,
     ) -> Vec<SegmentOp> {
         let mut ops = Vec::new();
         if self.path.is_some() && self.should_rotate(mono) {
@@ -186,13 +191,18 @@ impl SegmentWriterCore {
     /// change mid-segment by re-emitting a header line (plan D6; readers treat
     /// the latest header as current). No-op when nothing is open or the value
     /// is unchanged — but the value is remembered either way.
-    pub fn note_time_source(&mut self, ts: TimeSource, header: &SegmentHeader) -> Vec<SegmentOp> {
+    pub fn note_time_source(
+        &mut self,
+        ts: TimeSource,
+        header: &dyn Fn() -> SegmentHeader,
+    ) -> Vec<SegmentOp> {
         if self.path.is_none() || self.last_time_source == Some(ts) {
             self.last_time_source = Some(ts);
             return Vec::new();
         }
         self.last_time_source = Some(ts);
-        let mut h = header.clone();
+        // `{ ...this.opts.header(), timeSource: ts }`: same keys, same order.
+        let mut h = header();
         h.time_source = ts;
         self.append(serde_json::to_string(&h).expect("SegmentHeader serialises"))
     }
@@ -228,7 +238,8 @@ impl SegmentWriterCore {
     }
 
     /// `open(now)` (`segments.ts:156-167`).
-    fn open(&mut self, now: WallMs, mono: MonoMs, header: &SegmentHeader) -> SegmentOp {
+    fn open(&mut self, now: WallMs, mono: MonoMs, header: &dyn Fn() -> SegmentHeader) -> SegmentOp {
+        let header = header();
         let path = posix_join(&self.dir, &segment_file_name(now, self.seg_seq));
         self.seg_seq += 1;
         self.path = Some(path.clone());
@@ -236,7 +247,7 @@ impl SegmentWriterCore {
         self.sample_lines = 0;
         self.opened_at_mono = mono;
         self.last_time_source = Some(header.time_source);
-        let line = serde_json::to_string(header).expect("SegmentHeader serialises");
+        let line = serde_json::to_string(&header).expect("SegmentHeader serialises");
         self.bytes += line.len() as u64 + 1;
         SegmentOp::Open { path, line }
     }
@@ -320,6 +331,12 @@ pub fn finalize_plan(raw: &[u8]) -> OrphanPlan {
     }
 }
 
+/// The `console.error` of a failed orphan finalize (`segments.ts:265`); the
+/// file is left in place and not counted.
+pub fn orphan_finalize_failed_error(path: &str, message: &str) -> String {
+    format!("[recording] orphan finalize failed for {path}: {message}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,7 +392,7 @@ mod tests {
     #[test]
     fn writer_core_lifecycle() {
         let mut w = SegmentWriterCore::new("/r/telemetry/session-a", None, Some(1000));
-        let h = header();
+        let h = header;
         let sample = |seq: f64| SampleLine {
             ts: 1000.0 + seq,
             mono: seq,
@@ -418,7 +435,7 @@ mod tests {
     #[test]
     fn size_rotation_emits_close_open_append() {
         let mut w = SegmentWriterCore::new("/d", Some(10), None);
-        let h = header();
+        let h = header;
         // First write: header + sample → bytes ≥ 10 → the NEXT write rotates.
         w.write_line(
             &SampleLine {

@@ -29,13 +29,13 @@ use crate::round::js_math_round;
 use crate::types::TimeSource;
 use crate::video_capture::posix_join;
 
-/// `#[serde(with = "js_num")]` for this module: WP1's
+/// `#[serde(with = "js_num_exact")]` for this module: WP1's
 /// [`crate::telemetry::JsNumber`] prints integral doubles in [2^53, 1e21)
 /// through ryu's exponent form (`1e+20`), where JS `JSON.stringify` prints
 /// the shortest round-trip digits zero-padded (`100000000000000000000`;
 /// `2**60` → `1152921504606847000`). Local workaround (WP1 bug reported in
 /// the WP6 evidence file, `telemetry.rs:52`); everything else delegates.
-mod js_num {
+pub(crate) mod js_num_exact {
     use crate::telemetry::JsNumber;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -75,18 +75,18 @@ pub struct VideoSessionManifest {
     pub boot_id: String,
     pub time_source: TimeSource,
     pub preset: String,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub width: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub height: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub fps: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub bitrate_kbps: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub segment_seconds: f64,
     /// Wall-clock epoch ms at capture-daemon spawn.
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub anchor_ts: f64,
     /// `process.hrtime.bigint()` ns at capture-daemon spawn (stringified bigint).
     pub anchor_mono: String,
@@ -128,25 +128,25 @@ pub struct VideoSidecar {
     pub device_id: String,
     pub stream_key: String,
     pub session_id: String,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub seq: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub start_ts: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub start_mono: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub duration_ms: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub size_bytes: f64,
     pub time_source: TimeSource,
     pub codec: SidecarCodec,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub width: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub height: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub fps: f64,
-    #[serde(with = "js_num")]
+    #[serde(with = "js_num_exact")]
     pub bitrate_kbps: f64,
     pub anchor: SidecarAnchor,
     /// False when the fragment was cut off by a crash (may lack its moov atom).
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn js_number_printing_above_2_pow_53() {
         #[derive(Serialize)]
-        struct N(#[serde(with = "super::js_num")] f64);
+        struct N(#[serde(with = "super::js_num_exact")] f64);
         let p = |v: f64| serde_json::to_string(&N(v)).unwrap();
         assert_eq!(p(1e20), "100000000000000000000");
         assert_eq!(p(2f64.powi(60)), "1152921504606847000");
