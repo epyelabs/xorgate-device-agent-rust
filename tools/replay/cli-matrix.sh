@@ -31,7 +31,7 @@ known_row() { # T8/<row>
   [ "${1%%/*}" = T8 ] && grep -q "^  id = \"$row\"" "$TOL"
 }
 JS_CLI="node /rig/cache/js-89b5c64/dist/cli.js"
-RS_CLI="/rig/cache/bin/xorgate-rs"
+RS_CLI="${RS_CLI:-/rig/cache/bin/xorgate-rs}"   # override: a branch build (e.g. WP6 before merge)
 cli_for() { case "$1" in js) echo "$JS_CLI" ;; rust) echo "$RS_CLI" ;; esac; }
 
 # who | expect | argv…   (expect: "-" = must match)
@@ -99,9 +99,12 @@ if [ "$FRESH" -eq 1 ]; then
   # WP6's per-case layout <n>/{case,out,err,code,settings} → this script's flat one.
   for side in a b; do
     kind=$A; [ $side = b ] && kind=$B
-    RUNNER=$(cli_for "$kind") "$HERE/cli/e2e-set-run.sh" "$OUT/$side.cases" >/dev/null 2>&1
+    # Homes on the container's own fs: the bind-mounted Mac dir (virtiofs)
+    # emulates ownership and once lost a just-renamed settings.json to `cp`.
+    RUNNER=$(cli_for "$kind") "$HERE/cli/e2e-set-run.sh" "/tmp/cli-fresh/$side" >/dev/null 2>&1
+    rm -rf "$OUT/$side.cases"; cp -R "/tmp/cli-fresh/$side" "$OUT/$side.cases"
     mkdir -p "$OUT/$side"
-    for d in "$OUT/$side.cases"/*/; do
+    for d in "/tmp/cli-fresh/$side"/*/; do
       k=$(basename "$d")
       for f in out err code settings; do cp "$d/$f" "$OUT/$side/$k.$f"; done
       # case line is expect|who|argv-after-set

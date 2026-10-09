@@ -22,13 +22,20 @@ grep -v '^[[:space:]]*#' "$E/cases.txt" | grep -v '^[[:space:]]*$' | while IFS= 
   line=${raw%%#expect:*}; expect=-; case "$raw" in *'#expect:'*) expect=${raw##*#expect:} ;; esac
   who=user; decoy=
   case "$line" in @root\ *) who=root; line=${line#@root } ;; @running\ *) who=running; line=${line#@running } ;; esac
+  line=$(printf '%s' "$line" | sed 's/[[:space:]]*$//')
   printf '%s|%s|%s\n' "$expect" "$who" "$line" > "$d/case"
   [ "$(id -u)" = 0 ] && chown -R "$RUN_AS" "$d" 2>/dev/null
   if [ "$who" = root ] && [ "$(id -u)" != 0 ]; then echo skipped > "$d/code"; : > "$d/out"; : > "$d/err"; cp "$d/home/settings.json" "$d/settings"; continue; fi
   if [ "$who" = running ]; then
     # A live process whose command line names a worker (looksLikeWorker,
     # process.ts:131-136) + a pidfile describing it: inspect() → running.
-    as_user bash -c 'exec -a "node /opt/fake-agent/dist/worker.js" sleep 600' >/dev/null 2>&1 &
+    # (No shell function here: `$!` must be the pid that ends up exec'ing sleep.)
+    fake='exec -a "node /opt/fake-agent/dist/worker.js" sleep 600'
+    if [ "$(id -u)" = 0 ]; then
+      setpriv --reuid="$(id -u "$RUN_AS")" --regid="$(id -g "$RUN_AS")" --init-groups bash -c "$fake" >/dev/null 2>&1 &
+    else
+      bash -c "$fake" >/dev/null 2>&1 &
+    fi
     decoy=$!
     printf '{"pid":%s,"startedAt":%s000,"deviceId":"00000000-0000-4000-8000-0000000000c1","mode":"real","rateHz":1,"offline":false,"worker":"/opt/fake-agent/dist/worker.js","argv":[],"nodeVersion":"v20.20.2"}\n' \
       "$decoy" "$(date +%s)" > "$d/home/agent.pid"
