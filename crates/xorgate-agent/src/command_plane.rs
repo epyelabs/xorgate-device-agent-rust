@@ -35,8 +35,7 @@ use xorgate_core::command_flow::{
     RefreshWindow, SmsSource, AGENT_PREFIX,
 };
 use xorgate_core::commands::{
-    is_expired, parse_command, AckStatus, CommandAck, DeviceCommand, Ledger,
-    ACK_FLUSH_TIMEOUT_MS,
+    is_expired, parse_command, AckStatus, CommandAck, DeviceCommand, Ledger, ACK_FLUSH_TIMEOUT_MS,
 };
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::sms::{build_sms_payload, SmsPayloadRequest};
@@ -256,7 +255,10 @@ impl Effects {
     fn write_refresh_flag(&self, content: &str) {
         let path = &self.ctx.paths.refresh_flag;
         if let Err(e) = std::fs::write(path, content) {
-            warn!("{}", refresh_flag_failed_log(&node_fs_message(&e, "open", path)));
+            warn!(
+                "{}",
+                refresh_flag_failed_log(&node_fs_message(&e, "open", path))
+            );
         }
     }
 

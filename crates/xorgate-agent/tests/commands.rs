@@ -21,7 +21,9 @@ use common::*;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use xorgate_agent::command_plane::start_with;
-use xorgate_agent::ctx::{AgentClock, AgentCtx, CommandPlane, CommandPlaneDeps, NoopHooks, ReportRequester};
+use xorgate_agent::ctx::{
+    AgentClock, AgentCtx, CommandPlane, CommandPlaneDeps, NoopHooks, ReportRequester,
+};
 use xorgate_agent::env::AgentEnv;
 use xorgate_agent::mqtt_plane::{MqttHandle, QoS};
 use xorgate_cloud::mqtt::ConnectionState as LinkState;
@@ -146,7 +148,13 @@ fn publishes(link: &FakeLink) -> Vec<(String, String)> {
         .iter()
         .map(|(t, p, q)| {
             assert_eq!(*q, QoS::AtLeastOnce);
-            let kind = t.rsplit_once("/devices/").unwrap().1.split_once('/').unwrap().1;
+            let kind = t
+                .rsplit_once("/devices/")
+                .unwrap()
+                .1
+                .split_once('/')
+                .unwrap()
+                .1;
             (kind.to_string(), String::from_utf8(p.clone()).unwrap())
         })
         .collect()
@@ -207,10 +215,17 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
                 .filter_map(|l| {
                     l.strip_prefix("ack ")
                         .map(|p| ("command/response".to_string(), p.to_string()))
-                        .or_else(|| l.strip_prefix("sms ").map(|p| ("sms".to_string(), p.to_string())))
+                        .or_else(|| {
+                            l.strip_prefix("sms ")
+                                .map(|p| ("sms".to_string(), p.to_string()))
+                        })
                 })
                 .collect();
-            assert_eq!(publishes(&r.link)[pub0..], want_pubs[..], "{what}: publishes");
+            assert_eq!(
+                publishes(&r.link)[pub0..],
+                want_pubs[..],
+                "{what}: publishes"
+            );
             // Publish/exec interleaving.
             let want_order: Vec<String> = s
                 .trace
@@ -225,7 +240,11 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
                     }
                 })
                 .collect();
-            assert_eq!(r.timeline.lock().unwrap()[tl0..], want_order[..], "{what}: order");
+            assert_eq!(
+                r.timeline.lock().unwrap()[tl0..],
+                want_order[..],
+                "{what}: order"
+            );
             // state.json events (level + msg), in order.
             let want_ev: Vec<String> = s
                 .trace
@@ -237,12 +256,24 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
             let want_reports = s.trace.iter().filter(|l| *l == "report boot").count();
             assert_eq!(drain(&mut r.reports), want_reports, "{what}: reports");
             // refresh flag
-            if let Some(flag) = s.trace.iter().find_map(|l| l.strip_prefix("flag refresh-modem.flag ")) {
-                assert_eq!(std::fs::read_to_string(&r.ctx.paths.refresh_flag).unwrap(), flag, "{what}: flag");
+            if let Some(flag) = s
+                .trace
+                .iter()
+                .find_map(|l| l.strip_prefix("flag refresh-modem.flag "))
+            {
+                assert_eq!(
+                    std::fs::read_to_string(&r.ctx.paths.refresh_flag).unwrap(),
+                    flag,
+                    "{what}: flag"
+                );
             }
             // commands.json after the claim
             if let Some(l) = s.trace.iter().find_map(|l| l.strip_prefix("ledger ")) {
-                assert_eq!(std::fs::read_to_string(&r.ctx.paths.commands).unwrap(), l, "{what}: ledger");
+                assert_eq!(
+                    std::fs::read_to_string(&r.ctx.paths.commands).unwrap(),
+                    l,
+                    "{what}: ledger"
+                );
             }
             checked += 1;
         }
@@ -255,7 +286,10 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
         assert_eq!(file, c.ledger_final, "{}: ledgerFinal", c.name);
         r.ctx.cancel.cancel();
     }
-    assert_eq!(checked, 31, "steps replayed (replay-mode + ledger-error cases excluded)");
+    assert_eq!(
+        checked, 31,
+        "steps replayed (replay-mode + ledger-error cases excluded)"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -266,15 +300,23 @@ async fn ack_without_puback_resolves_at_3s_then_executes() {
         br#"{"v":1,"requestId":"q","command":"reboot","ts":1750000000000,"expiresAt":1750000060000}"#.to_vec(),
     );
     settle().await;
-    assert_eq!(*r.timeline.lock().unwrap(), vec!["publish_acked dev-1/command/response"]);
+    assert_eq!(
+        *r.timeline.lock().unwrap(),
+        vec!["publish_acked dev-1/command/response"]
+    );
     tokio::time::advance(Duration::from_millis(2999)).await;
     settle().await;
     assert!(r.runner.calls().is_empty(), "still waiting for the PUBACK");
     tokio::time::advance(Duration::from_millis(1)).await;
     settle().await;
-    assert_eq!(r.runner.calls(), vec![vec!["sudo", "-n", "systemctl", "reboot"]]);
+    assert_eq!(
+        r.runner.calls(),
+        vec![vec!["sudo", "-n", "systemctl", "reboot"]]
+    );
     // claimed before anything was published (reboot does not return)
-    assert!(std::fs::read_to_string(&r.ctx.paths.commands).unwrap().contains(r#""requestId":"q""#));
+    assert!(std::fs::read_to_string(&r.ctx.paths.commands)
+        .unwrap()
+        .contains(r#""requestId":"q""#));
     r.ctx.cancel.cancel();
 }
 
@@ -294,7 +336,8 @@ async fn ledger_write_failure_refuses_without_executing() {
     assert_eq!(ack["status"], "failed");
     let reason = ack["reason"].as_str().unwrap();
     assert!(
-        reason.starts_with("ledger write failed: EISDIR: illegal operation on a directory, rename '"),
+        reason
+            .starts_with("ledger write failed: EISDIR: illegal operation on a directory, rename '"),
         "{reason}"
     );
     assert_eq!(
@@ -321,7 +364,10 @@ async fn acks_are_enqueued_in_arrival_order_while_a_puback_is_pending() {
         .iter()
         .map(|(_, p)| {
             let v: serde_json::Value = serde_json::from_str(p).unwrap();
-            (v["requestId"].as_str().unwrap().into(), v["status"].as_str().unwrap().into())
+            (
+                v["requestId"].as_str().unwrap().into(),
+                v["status"].as_str().unwrap().into(),
+            )
         })
         .collect();
     assert_eq!(
@@ -335,6 +381,9 @@ async fn acks_are_enqueued_in_arrival_order_while_a_puback_is_pending() {
     assert!(r.runner.calls().is_empty(), "power_off waits for its ack");
     tokio::time::advance(Duration::from_millis(3000)).await;
     settle().await;
-    assert_eq!(r.runner.calls(), vec![vec!["sudo", "-n", "systemctl", "poweroff"]]);
+    assert_eq!(
+        r.runner.calls(),
+        vec![vec!["sudo", "-n", "systemctl", "poweroff"]]
+    );
     r.ctx.cancel.cancel();
 }

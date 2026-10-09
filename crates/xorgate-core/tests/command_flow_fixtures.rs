@@ -13,9 +13,7 @@ mod common;
 use serde::Deserialize;
 use serde_json::Value;
 use xorgate_core::command_flow::*;
-use xorgate_core::commands::{
-    load_ledger, parse_command, CommandAck, DeviceCommand, RunResult,
-};
+use xorgate_core::commands::{load_ledger, parse_command, CommandAck, DeviceCommand, RunResult};
 use xorgate_core::sms::{build_sms_payload, SmsPayloadRequest};
 use xorgate_core::telemetry::{ActivityLevel, RunMode};
 

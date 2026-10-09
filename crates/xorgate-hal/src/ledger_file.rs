@@ -82,8 +82,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn write_and_sync(mut f: &File, bytes: &[u8], prior: Option<&std::fs::Metadata>) -> Result<(), String> {
-    f.write_all(bytes).map_err(|e| no_path_message(&e, "write"))?;
+fn write_and_sync(
+    mut f: &File,
+    bytes: &[u8],
+    prior: Option<&std::fs::Metadata>,
+) -> Result<(), String> {
+    f.write_all(bytes)
+        .map_err(|e| no_path_message(&e, "write"))?;
     if let Some(m) = prior {
         preserve_ownership(f, m);
     }
@@ -173,7 +178,10 @@ mod tests {
         let p = d.join("commands.json");
         std::fs::create_dir_all(p.join("x")).unwrap();
         let e = save(&p, &Ledger::empty()).unwrap_err();
-        assert!(e.starts_with("EISDIR: illegal operation on a directory, rename '"), "{e}");
+        assert!(
+            e.starts_with("EISDIR: illegal operation on a directory, rename '"),
+            "{e}"
+        );
         assert!(e.ends_with(&format!(" -> '{}'", p.display())), "{e}");
         let leftovers: Vec<_> = std::fs::read_dir(&d)
             .unwrap()

@@ -548,7 +548,9 @@ mod tests {
 
     #[test]
     fn rate_limited_refresh_is_claimed_and_leaves_the_mark() {
-        let c = cmd(r#"{"v":1,"requestId":"r","command":"refresh","ts":1750000000000,"expiresAt":1750000060000}"#);
+        let c = cmd(
+            r#"{"v":1,"requestId":"r","command":"refresh","ts":1750000000000,"expiresAt":1750000060000}"#,
+        );
         let d = decide_command(
             Some(&c),
             T0 + 1,

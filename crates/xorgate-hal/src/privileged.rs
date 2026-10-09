@@ -50,7 +50,13 @@ impl PrivilegedArgv {
         let argv = call
             .argv()
             .into_iter()
-            .map(|w| if w == JS_UPDATER_UNIT { RS_UPDATER_UNIT } else { w })
+            .map(|w| {
+                if w == JS_UPDATER_UNIT {
+                    RS_UPDATER_UNIT
+                } else {
+                    w
+                }
+            })
             .collect();
         Self { argv }
     }
@@ -72,7 +78,10 @@ impl PrivilegedArgv {
 /// `executeCommand(command, runner)` (`commands.ts:229-257`) for the Rust
 /// agent: `refresh`/`read_sms` never reach the runner (the in-process
 /// `RunResult`); the rest run [`PrivilegedArgv::for_rust_agent`] (O3).
-pub async fn execute_command(command: DeviceCommandName, runner: &dyn PrivilegedRunner) -> RunResult {
+pub async fn execute_command(
+    command: DeviceCommandName,
+    runner: &dyn PrivilegedRunner,
+) -> RunResult {
     match plan(command) {
         CommandPlan::InProcess(c) => in_process_run_result(c),
         CommandPlan::Privileged(call) => runner.run(&PrivilegedArgv::for_rust_agent(&call)).await,
@@ -160,7 +169,10 @@ impl RecordingRunner {
 
     /// Queue the next answer (FIFO); when the queue is empty, calls succeed.
     pub fn answer(&self, r: RunResult) {
-        self.answers.lock().unwrap_or_else(|p| p.into_inner()).push(r);
+        self.answers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(r);
     }
 
     pub fn calls(&self) -> Vec<Vec<&'static str>> {
@@ -215,11 +227,25 @@ mod tests {
     fn o3_swaps_only_the_updater_unit() {
         assert_eq!(
             PrivilegedArgv::for_rust_agent(&call(DeviceCommandName::Update)).argv(),
-            ["sudo", "-n", "systemctl", "start", "--no-block", "xorgate-updater-rs.service"]
+            [
+                "sudo",
+                "-n",
+                "systemctl",
+                "start",
+                "--no-block",
+                "xorgate-updater-rs.service"
+            ]
         );
         assert_eq!(
             PrivilegedArgv::ts_exact(&call(DeviceCommandName::Update)).argv(),
-            ["sudo", "-n", "systemctl", "start", "--no-block", "xorgate-updater.service"]
+            [
+                "sudo",
+                "-n",
+                "systemctl",
+                "start",
+                "--no-block",
+                "xorgate-updater.service"
+            ]
         );
         assert_eq!(
             PrivilegedArgv::for_rust_agent(&call(DeviceCommandName::Reboot)).argv(),
@@ -251,12 +277,19 @@ mod tests {
 
     #[tokio::test]
     async fn nonzero_exit_keeps_stderr_verbatim() {
-        let r = run_argv("sh", &["-c", "echo 'sudo: a password is required' >&2; exit 1"]).await;
+        let r = run_argv(
+            "sh",
+            &["-c", "echo 'sudo: a password is required' >&2; exit 1"],
+        )
+        .await;
         assert_eq!(r.stderr, "sudo: a password is required\n");
         assert_eq!(r.exit_code, Some(1));
         assert!(r.failed && !r.not_found);
         let r = run_argv("sh", &["-c", "exit 3"]).await;
-        assert_eq!((r.exit_code, r.stderr.as_str(), r.failed), (Some(3), "", true));
+        assert_eq!(
+            (r.exit_code, r.stderr.as_str(), r.failed),
+            (Some(3), "", true)
+        );
         let r = run_argv("sh", &["-c", "exit 0"]).await;
         assert!(!r.failed);
     }
