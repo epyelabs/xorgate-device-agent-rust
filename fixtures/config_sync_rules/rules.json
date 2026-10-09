@@ -757,6 +757,78 @@
         "file": "{\"lastAppliedRev\":42,\"lastReportTs\":1700,\"namespaces\":{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.1,\"pitchDeg\":0,\"yawDeg\":90}},\"settingsHash\":\"6837c2a6bcc27109322633a50a422e4a5de78ad5aa12e1c025090e12236404b8\"}",
         "hash": "6837c2a6bcc27109322633a50a422e4a5de78ad5aa12e1c025090e12236404b8"
       }
+    },
+    {
+      "name": "boot: mediaEnabled false, two cameras",
+      "op": "bootUpgrade",
+      "input": {
+        "settings": "{\"mode\":\"real\",\"gnssAntBias\":true,\"mediaEnabled\":false,\"timeSync\":{\"offlineSources\":true}}",
+        "channels": [
+          "cam0",
+          "cam1"
+        ]
+      },
+      "expected": {
+        "migration": {
+          "result": "cameras-disabled",
+          "cameras": [
+            "cam0",
+            "cam1"
+          ]
+        },
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":true}},\"settingsHash\":\"5d41c5cfef0becc61412a220fec862269c7e5df0d98acc9a92553cdd1d35d613\"}",
+        "settingsFile": "{\"mode\":\"real\",\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":true},\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"cam1\":false}}}}"
+      }
+    },
+    {
+      "name": "boot: mediaEnabled false, no manifest",
+      "op": "bootUpgrade",
+      "input": {
+        "settings": "{\"mediaEnabled\":false}",
+        "channels": null
+      },
+      "expected": {
+        "migration": {
+          "result": "cameras-disabled",
+          "cameras": []
+        },
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{},\"settingsHash\":\"fdd5109ab5e929d1913f652f05b05da01212f220496438617c6d1a8b0cf11866\"}",
+        "settingsFile": "{}"
+      }
+    },
+    {
+      "name": "boot: mediaEnabled true",
+      "op": "bootUpgrade",
+      "input": {
+        "settings": "{\"mode\":\"real\",\"mediaEnabled\":true}",
+        "channels": [
+          "cam0"
+        ]
+      },
+      "expected": {
+        "migration": {
+          "result": "dropped"
+        },
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{},\"settingsHash\":\"9300fe44558f556f8d1182fe29241bae2776b4fa8d35498b787a08f95b1e59e5\"}",
+        "settingsFile": "{\"mode\":\"real\"}"
+      }
+    },
+    {
+      "name": "boot: no legacy key",
+      "op": "bootUpgrade",
+      "input": {
+        "settings": "{\"mode\":\"real\",\"gnssAntBias\":false}",
+        "channels": [
+          "cam0"
+        ]
+      },
+      "expected": {
+        "migration": {
+          "result": "none"
+        },
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":false},\"settingsHash\":\"d6a25d22cb24fe38677e31b0f036341077cc33bc2779ec835e8be01f7d486e52\"}",
+        "settingsFile": "{\"mode\":\"real\",\"gnssAntBias\":false}"
+      }
     }
   ]
 }

@@ -410,7 +410,8 @@ impl ConfigSync {
 
     /// `stop()` (`:1461-1475`): no timer fires and no request is queued after this.
     pub fn stop(&self) {
-        let mut core = self.lock();
+        let mut guard = self.lock();
+        let core = &mut *guard;
         core.stopped = true;
         for slot in [
             &mut core.timer,

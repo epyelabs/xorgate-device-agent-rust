@@ -65,6 +65,7 @@ pub fn ensure_config_sync_baseline(state_path: &Path, settings_file: &Path) -> C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xorgate_core::config_report::SyncPatch;
 
     fn home(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("xg-csf-{tag}-{}", std::process::id()));
@@ -80,11 +81,8 @@ mod tests {
         let h = home("rt");
         let p = config_sync_path(&h);
         assert_eq!(load_config_sync_state(&p), ConfigSyncState::default());
-        let s = ConfigSyncState {
-            last_applied_rev: 42,
-            last_report_ts: 1700,
-            ..Default::default()
-        };
+        let mut s = ConfigSyncState::default();
+        s.merge([SyncPatch::LastAppliedRev(42), SyncPatch::LastReportTs(1700)]);
         assert!(save_config_sync_state(&s, &p));
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
@@ -109,11 +107,10 @@ mod tests {
     /// config-sync.test.ts:67 "reports a failed persist instead of throwing".
     #[test]
     fn failed_persist_is_false() {
+        let mut s = ConfigSyncState::default();
+        s.merge([SyncPatch::LastAppliedRev(1)]);
         assert!(!save_config_sync_state(
-            &ConfigSyncState {
-                last_applied_rev: 1,
-                ..Default::default()
-            },
+            &s,
             Path::new("/nope/does/not/exist.json")
         ));
     }
