@@ -7,7 +7,10 @@
 //!
 //! Per agent (`<out>/<label>/`):
 //! - `GPS_NMEA_PORT` → a pty in raw mode (no echo, no CR/NL translation; the
-//!   player keeps the slave open so a reopen never sees a hangup);
+//!   player keeps the slave open so a reopen never sees a hangup); NMEA is
+//!   written only once both agents tick and while BOTH hold their port open
+//!   (the TS opens it on its first tick, at its own phase), so both see the
+//!   same sentences at a moment neither is busy booting;
 //! - `LTE_TELEMETRY_FILE` → a file the player rewrites atomically (or removes);
 //! - `XORGATE_PYTHON_DIR` → the fake `bno085_read.py`, which relays the lines the
 //!   player sends on the agent's unix socket and exits on `__EXIT__ <code>`;
@@ -130,40 +133,77 @@ pub struct PlayArgs {
     /// default the tool is ABSENT (phase file).
     #[arg(long)]
     pub with_rpicam: bool,
+    /// Start agent B this many ms after A (calibration: forces the two tick
+    /// phases apart so the hold gate is exercised like JS vs Rust).
+    #[arg(long, default_value_t = 0)]
+    pub stagger_ms: u64,
 }
 
 pub const DEVICE_A: &str = "00000000-0000-4000-8000-00000000000a";
 pub const DEVICE_B: &str = "00000000-0000-4000-8000-00000000000b";
 const INTERVAL_MS: i64 = 1000;
 const FLIP_GAP_MS: i64 = 800;
-/// A hold whose partner tick was not observed ends this long after the
-/// partner's PREDICTED tick (connected) …
-const HOLD_GRACE_MS: i64 = 500;
-/// … or this long while the broker path is cut (nothing is observable then;
-/// the prediction alone keeps the pairs consistent).
-const HOLD_GRACE_CUT_MS: i64 = 100;
+/// A hold whose pair was not observed in full ends after this long.
+const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
 const PREFILL_MS: u64 = 1000;
 
 // ------------------------------------------------------------------ gate
 
+/// What the player knows about one agent's 1 Hz tick.
+///
+/// The TS stamps a payload AFTER `await source.read()` (`worker.ts:1192-1194`),
+/// so `ts = tick + read latency`, and the latency varies (two `vcgencmd` runs,
+/// file reads, a loaded VM). The tick itself is estimated from the LOWER
+/// envelope of `ts − k·interval` over the last few ticks (latency ≥ 0); `k` is
+/// the tick index, advanced by the rounded gap between consecutive payloads
+/// (queued payloads flushed after a reconnect arrive in order).
+#[derive(Debug, Clone, Default)]
+struct TickTrack {
+    k: i64,
+    last_ts: Option<i64>,
+    bases: std::collections::VecDeque<i64>,
+}
+
+impl TickTrack {
+    const WINDOW: usize = 8;
+
+    /// Record a payload `ts`; returns its tick index.
+    fn note(&mut self, ts: i64) -> i64 {
+        if let Some(prev) = self.last_ts {
+            let steps = ((ts - prev) as f64 / INTERVAL_MS as f64).round() as i64;
+            self.k += steps.max(1);
+        }
+        self.last_ts = Some(ts);
+        self.bases.push_back(ts - self.k * INTERVAL_MS);
+        if self.bases.len() > Self::WINDOW {
+            self.bases.pop_front();
+        }
+        self.k
+    }
+
+    /// Estimated tick time of tick index `k`.
+    fn tick_at(&self, k: i64) -> Option<i64> {
+        self.bases.iter().min().map(|b| b + k * INTERVAL_MS)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Hold {
     start: i64,
-    /// Predicted tick of the lagging agent.
-    lag_due: i64,
-    lead: usize,
-    lead_tick: Option<i64>,
-    lag_tick: Option<i64>,
+    /// Tick indices of the pair.
+    k: [i64; 2],
+    ts: [Option<i64>; 2],
 }
 
 /// The hold gate (module doc). Indices 0 = A, 1 = B.
 #[derive(Debug)]
 pub struct Gate {
-    last: [Option<i64>; 2],
+    track: [TickTrack; 2],
     hold: Option<Hold>,
     open_after: i64,
-    skip_until: [i64; 2],
+    /// A tick index that was given up at a phase flip, per agent.
+    skip_k: [Option<i64>; 2],
     guard_before: i64,
     guard_after: i64,
     pub pairs: Vec<Value>,
@@ -172,63 +212,49 @@ pub struct Gate {
 impl Gate {
     pub fn new(guard_ms: i64) -> Self {
         Self {
-            last: [None, None],
+            track: [TickTrack::default(), TickTrack::default()],
             hold: None,
             open_after: 0,
-            skip_until: [i64::MIN, i64::MIN],
+            skip_k: [None, None],
             guard_before: guard_ms,
             guard_after: 20,
             pairs: Vec::new(),
         }
     }
 
+    /// Have both agents published telemetry at least once (booted,
+    /// connected, ticking)?
+    pub fn both_ticking(&self) -> bool {
+        self.track.iter().all(|t| t.last_ts.is_some())
+    }
+
     /// A telemetry publish of agent `idx` with payload `ts` arrived at `now`.
     pub fn on_tick(&mut self, idx: usize, ts: i64, now: i64) {
-        self.last[idx] = Some(ts);
+        let k = self.track[idx].note(ts);
         let Some(h) = self.hold.as_mut() else { return };
-        if ts < h.start {
-            return;
+        if k == h.k[idx] {
+            h.ts[idx].get_or_insert(ts);
         }
-        if idx == h.lead {
-            h.lead_tick.get_or_insert(ts);
-        } else {
-            h.lag_tick.get_or_insert(ts);
-        }
-        if let (Some(l), Some(g)) = (h.lead_tick, h.lag_tick) {
-            let (a, b) = if h.lead == 0 { (l, g) } else { (g, l) };
+        if let [Some(a), Some(b)] = h.ts {
             self.pairs.push(json!({"a": a, "b": b}));
             self.hold = None;
             self.open_after = now + self.guard_after;
         }
     }
 
-    fn next_due(&self, last: i64, now: i64) -> i64 {
-        // Smallest last + k·interval (k ≥ 1) not older than the guard: a tick
-        // that is due but not yet observed still counts as upcoming.
-        let k = ((now - self.guard_before - last) as f64 / INTERVAL_MS as f64).ceil() as i64;
-        last + k.max(1) * INTERVAL_MS
-    }
-
-    /// May an input change now?
+    /// May an input change now? Never while the broker path is cut (`cut`):
+    /// nothing is observable then and the telemetry generated in a cut is not
+    /// value-compared (T8 `cadence`).
     pub fn is_open(&mut self, now: i64, cut: bool) -> bool {
-        let (Some(a), Some(b)) = (self.last[0], self.last[1]) else {
+        let (Some(a), Some(b)) = (self.track[0].last_ts, self.track[1].last_ts) else {
             return true;
         };
-        // An agent that stopped publishing while connected (crash, wedge)
-        // cannot be paired: no gating until both tick again. During a cut the
-        // agents keep ticking unobserved (JS queues QoS 0 offline, Rust skips),
-        // so the predictions keep gating.
-        if !cut && (now - a > STALE_MS || now - b > STALE_MS) {
+        if cut || now - a > STALE_MS || now - b > STALE_MS {
             self.hold = None;
             return true;
         }
         if let Some(h) = &self.hold {
-            let grace = if cut {
-                HOLD_GRACE_CUT_MS
-            } else {
-                HOLD_GRACE_MS
-            };
-            if now > h.lag_due + grace {
+            if now > h.start + HOLD_TIMEOUT_MS {
                 self.hold = None;
                 self.open_after = now + self.guard_after;
             } else {
@@ -238,30 +264,35 @@ impl Gate {
         if now < self.open_after {
             return false;
         }
-        let mut n = [self.next_due(a, now), self.next_due(b, now)];
-        for (due, skip) in n.iter_mut().zip(self.skip_until) {
-            if *due <= skip {
-                *due += INTERVAL_MS;
+        // The next unobserved tick of each agent (skipping a given-up one).
+        let mut k = [self.track[0].k + 1, self.track[1].k + 1];
+        for (ki, skip) in k.iter_mut().zip(self.skip_k) {
+            if skip == Some(*ki) {
+                *ki += 1;
             }
         }
+        let (Some(n0), Some(n1)) = (self.track[0].tick_at(k[0]), self.track[1].tick_at(k[1]))
+        else {
+            return true;
+        };
+        let n = [n0, n1];
         let lead = if n[0] <= n[1] { 0 } else { 1 };
-        let gap = n[1 - lead] - n[lead];
+        let lag = 1 - lead;
         if now < n[lead] - self.guard_before {
             return true;
         }
-        if gap > FLIP_GAP_MS {
+        if n[lag] - n[lead] > FLIP_GAP_MS {
             // Flip: this lead tick has no partner that will see the same inputs.
-            self.pairs
-                .push(json!({"skip": if lead == 0 { "a" } else { "b" }, "ts": n[lead]}));
-            self.skip_until[lead] = n[lead] + self.guard_before;
+            self.pairs.push(
+                json!({"skip": if lead == 0 { "a" } else { "b" }, "k": k[lead], "tick": n[lead]}),
+            );
+            self.skip_k[lead] = Some(k[lead]);
             return true;
         }
         self.hold = Some(Hold {
             start: n[lead] - self.guard_before,
-            lag_due: n[1 - lead],
-            lead,
-            lead_tick: None,
-            lag_tick: None,
+            k,
+            ts: [None, None],
         });
         false
     }
@@ -287,6 +318,9 @@ struct Agent {
     env: Vec<(String, String)>,
     child: Option<Child>,
     pty_drops: u64,
+    /// NMEA lines not written because the agent did not hold the port open.
+    pty_unopened: u64,
+    pty_open_cache: Option<(std::time::Instant, bool)>,
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -437,6 +471,8 @@ impl Agent {
             env,
             child: None,
             pty_drops: 0,
+            pty_unopened: 0,
+            pty_open_cache: None,
         })
     }
 
@@ -483,6 +519,31 @@ impl Agent {
         Ok(())
     }
 
+    /// Does the agent process hold the pty slave open right now? NMEA is only
+    /// written while it does: a line written before the agent opened the port
+    /// would sit in the pty queue and reach that agent LATER than its partner
+    /// (shifting e.g. the TTFF clock, which starts at the first quality-0 GGA).
+    /// Cached for 200 ms.
+    fn pty_is_open(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if let Some((at, open)) = self.pty_open_cache {
+            if now.duration_since(at) < Duration::from_millis(200) {
+                return open;
+            }
+        }
+        let open = self
+            .child
+            .as_ref()
+            .and_then(|c| c.id())
+            .and_then(|pid| fs::read_dir(format!("/proc/{pid}/fd")).ok())
+            .is_some_and(|dir| {
+                dir.flatten()
+                    .any(|e| fs::read_link(e.path()).is_ok_and(|t| t == self.pty_path))
+            });
+        self.pty_open_cache = Some((now, open));
+        open
+    }
+
     fn nmea(&mut self, line: &str) {
         let mut buf = line.as_bytes().to_vec();
         buf.push(b'\n');
@@ -524,6 +585,10 @@ impl Agent {
                 Ok(())
             }
         }
+    }
+
+    async fn imu_connected(&self) -> bool {
+        self.imu.lock().await.is_some()
     }
 
     async fn imu_line(&self, line: &str) {
@@ -907,15 +972,23 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // Start both agents together.
     let t0 = tokio::time::Instant::now();
     let play_start_wall = wall_now_ms();
-    for a in agents.iter_mut() {
+    for (i, a) in agents.iter_mut().enumerate() {
+        if i == 1 && args.stagger_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(args.stagger_ms)).await;
+        }
         a.start(&args)?;
     }
-    plog(format!("agents started; prefilled {idx} records"));
+    plog(format!(
+        "agents started (B staggered {} ms); prefilled {idx} records",
+        args.stagger_ms
+    ));
 
     let mut closed_spans: Vec<(i64, i64)> = Vec::new();
     let mut closed_since: Option<i64> = None;
     let mut retained: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut last_nmea: Option<(u64, i64)> = None;
+    let mut asym_since: Option<i64> = None;
+    let mut imu_asym_since: Option<i64> = None;
     let mut last_quality: Option<String> = None;
     let mut last_imu: Option<u64> = None;
     let mut wall_steps: Vec<(i64, i64)> = Vec::new();
@@ -973,8 +1046,30 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                     }
                 }
                 last_nmea = Some((r.t, now));
-                for a in agents.iter_mut() {
-                    a.nmea(&line);
+                // Symmetric delivery: a line goes to BOTH agents only while
+                // both hold their port open (the TS opens it lazily on its
+                // first tick and reopens after 30 s of silence — at its own
+                // phase). If one agent has not opened it for 5 s while the
+                // other has, feed the other alone so a never-opened port
+                // shows up in the diff instead of hiding both gps groups.
+                let ticking = caps.gate.lock().map(|g| g.both_ticking()).unwrap_or(true);
+                let open: Vec<bool> = agents
+                    .iter_mut()
+                    .map(|a| ticking && a.pty_is_open())
+                    .collect();
+                let all = open.iter().all(|o| *o);
+                if all || !open.iter().any(|o| *o) {
+                    asym_since = None;
+                } else if asym_since.is_none() {
+                    asym_since = Some(now);
+                }
+                let feed_alone = asym_since.is_some_and(|t| now - t > 5_000);
+                for (a, is_open) in agents.iter_mut().zip(&open) {
+                    if all || (feed_alone && *is_open) {
+                        a.nmea(&line);
+                    } else {
+                        a.pty_unopened += 1;
+                    }
                 }
             }
             TapeEvent::Imu { line } => {
@@ -982,8 +1077,25 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                     transitions.push(now);
                 }
                 last_imu = Some(r.t);
+                // Same symmetric rule as NMEA: a line goes to both helpers or
+                // to neither (each agent spawns its helper at its own pace);
+                // after 5 s of asymmetry the connected one is fed alone.
+                let ticking = caps.gate.lock().map(|g| g.both_ticking()).unwrap_or(true);
+                let mut conn = Vec::new();
                 for a in &agents {
-                    a.imu_line(line).await;
+                    conn.push(ticking && a.imu_connected().await);
+                }
+                let all = conn.iter().all(|c| *c);
+                if all || !conn.iter().any(|c| *c) {
+                    imu_asym_since = None;
+                } else if imu_asym_since.is_none() {
+                    imu_asym_since = Some(now);
+                }
+                let alone = imu_asym_since.is_some_and(|t| now - t > 5_000);
+                for (a, c) in agents.iter().zip(&conn) {
+                    if all || (alone && *c) {
+                        a.imu_line(line).await;
+                    }
                 }
             }
             TapeEvent::ImuSpawn { .. } => {
@@ -1123,6 +1235,12 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         if let Ok(b) = fs::read(a.work.join("sudo.log")) {
             fs::write(a.dir.join("sudo.log"), b)?;
         }
+        if a.pty_unopened > 0 {
+            plog(format!(
+                "agent {}: {} NMEA lines not written (port not open by both agents)",
+                a.label, a.pty_unopened
+            ));
+        }
         if a.pty_drops > 0 {
             plog(format!(
                 "agent {}: {} pty writes dropped (reader not reading)",
@@ -1197,8 +1315,8 @@ mod tests {
     fn gate_holds_between_paired_ticks() {
         let mut g = Gate::new(60);
         assert!(g.is_open(0, false));
-        g.on_tick(0, 1_000, 1_005); // A phase 0
-        g.on_tick(1, 1_300, 1_305); // B phase 300
+        g.on_tick(0, 1_000, 1_005); // A tick 0 at 1000
+        g.on_tick(1, 1_300, 1_305); // B tick 0 at 1300
         assert!(g.is_open(1_400, false));
         assert!(g.is_open(1_939, false));
         assert!(!g.is_open(1_941, false)); // A due at 2000
@@ -1211,36 +1329,33 @@ mod tests {
     }
 
     #[test]
-    fn gate_lead_is_whoever_ticks_first_and_times_out() {
+    fn gate_uses_the_lower_envelope_of_ts_minus_latency() {
         let mut g = Gate::new(60);
-        g.on_tick(0, 1_700, 1_700);
-        g.on_tick(1, 1_200, 1_200);
-        assert!(!g.is_open(2_150, false)); // B due at 2200
-        assert!(!g.is_open(2_500, false));
-        // B's tick at 2200 and A's at 2700 → pair.
-        g.on_tick(1, 2_200, 2_205);
-        g.on_tick(0, 2_700, 2_702);
-        assert_eq!(g.pairs, vec![json!({"a": 2_700, "b": 2_200})]);
-        // Nothing observed: the hold expires; a silent agent is not gated.
-        assert!(!g.is_open(3_150, false));
-        assert!(!g.is_open(3_150 + 1_400, false));
-        assert!(g.is_open(4_750, false));
+        // A ticks at …000 with read latency 5..250 ms; B at …500.
+        for (i, lat) in [5, 250, 10, 120].iter().enumerate() {
+            g.on_tick(0, 1_000 + i as i64 * 1_000 + lat, 0);
+            g.on_tick(1, 1_500 + i as i64 * 1_000 + 3, 0);
+        }
+        // Next A tick is at 5000 (not 5000 + latency): hold from 4940.
+        assert!(g.is_open(4_930, false));
+        assert!(!g.is_open(4_945, false));
+        g.on_tick(1, 5_503, 5_504); // B first (A slow to read) — still waiting
+        assert!(!g.is_open(5_510, false));
+        g.on_tick(0, 5_260, 5_520);
+        assert!(g.is_open(5_545, false));
+        assert_eq!(g.pairs.last(), Some(&json!({"a": 5_260, "b": 5_503})));
     }
 
     #[test]
-    fn gate_keeps_predicting_through_a_cut() {
+    fn gate_is_open_during_a_cut_and_for_silent_agents() {
         let mut g = Gate::new(60);
         g.on_tick(0, 1_000, 1_000);
         g.on_tick(1, 1_300, 1_300);
-        // 10 s later nothing is observable (cut), but A still ticks at …000
-        // and B at …300: hold [A − 60, B + 100].
-        assert!(g.is_open(10_900, true));
-        assert!(!g.is_open(10_950, true));
-        assert!(!g.is_open(11_350, true));
-        assert!(!g.is_open(11_401, true));
-        assert!(g.is_open(11_421, true));
-        // Connected again but still silent → not gated.
-        assert!(g.is_open(11_900, false));
+        assert!(g.is_open(1_950, true));
+        assert!(!g.is_open(1_950, false));
+        // No partner observed: still holding until an agent is silent > 2.5 s.
+        assert!(!g.is_open(3_400, false));
+        assert!(g.is_open(3_600, false));
     }
 
     #[test]
@@ -1248,12 +1363,16 @@ mod tests {
         let mut g = Gate::new(60);
         g.on_tick(0, 1_000, 1_000);
         g.on_tick(1, 1_850, 1_850);
-        // At 1940: A due 2000, B due 2850 → gap 850 → skip A's 2000 tick.
+        // At 1945: A due 2000, B due 2850 → gap 850 → give up A's tick 1.
         assert!(g.is_open(1_945, false));
-        assert_eq!(g.pairs, vec![json!({"skip": "a", "ts": 2_000})]);
+        assert_eq!(g.pairs, vec![json!({"skip": "a", "k": 1, "tick": 2_000})]);
+        g.on_tick(0, 2_010, 2_011);
         // Now B (2850) leads A (3000).
         assert!(g.is_open(2_700, false));
         assert!(!g.is_open(2_800, false));
+        g.on_tick(1, 2_860, 2_861);
+        g.on_tick(0, 3_004, 3_005);
+        assert_eq!(g.pairs.last(), Some(&json!({"a": 3_004, "b": 2_860})));
     }
 
     #[test]

@@ -735,6 +735,35 @@ impl FileTape {
     }
 }
 
+/// The factory the agent calls once at boot (WP1 wiring): `XORGATE_RS_TAPE`
+/// set and non-empty → a [`FileTape`] at that path (parent dirs created);
+/// unset → `None` (the `NullTape` path). An open error logs ONE warning and
+/// yields `None`: a tape must never stop the agent.
+///
+/// `meta` should carry: the deviceId, the `xorgate-rs -v` build string,
+/// `start_wall`, the parsed `hardware.json`, the manifest's channels,
+/// `TapeMeta::redacted_env(&|k| std::env::var(k).ok())`, and in `home` the
+/// texts of `settings.json`, `config-sync.json`, `commands.json` at start
+/// (`null` when absent) so the rig starts both agents from the same state.
+pub fn open_from_env(meta: &TapeMeta) -> Option<FileTape> {
+    open_from(std::env::var(TAPE_ENV).ok().as_deref(), meta)
+}
+
+/// [`open_from_env`] with the env value passed in (testable).
+pub fn open_from(value: Option<&str>, meta: &TapeMeta) -> Option<FileTape> {
+    let path = value.map(str::trim).filter(|v| !v.is_empty())?;
+    match FileTape::create(Path::new(path), meta) {
+        Ok(t) => {
+            tracing::info!("[agent] recording a replay tape to {path}");
+            Some(t)
+        }
+        Err(e) => {
+            tracing::warn!("[agent] cannot open replay tape {path}: {e}; running without a tape");
+            None
+        }
+    }
+}
+
 impl std::ops::Deref for FileTape {
     type Target = TapeWriter<GzEncoder<BufWriter<File>>>;
     fn deref(&self) -> &Self::Target {
@@ -1197,6 +1226,21 @@ mod tests {
             TapeReader::from_reader(std::io::Cursor::new(Vec::new())),
             Err(TapeError::Empty)
         ));
+    }
+
+    #[test]
+    fn open_from_env_value() {
+        let meta = TapeMeta::new("d", "b", 0);
+        assert!(open_from(None, &meta).is_none());
+        assert!(open_from(Some("  "), &meta).is_none());
+        assert!(open_from(Some("/proc/definitely/not/writable.gz"), &meta).is_none());
+        let dir = std::env::temp_dir().join(format!("xorgate-tape-env-{}", std::process::id()));
+        let p = dir.join("sub/t.ndjson.gz");
+        let t = open_from(Some(p.to_str().unwrap()), &meta).unwrap();
+        t.nmea("x");
+        drop(t);
+        assert_eq!(Tape::read(&p).unwrap().records.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

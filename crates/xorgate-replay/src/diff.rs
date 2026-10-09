@@ -370,23 +370,10 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
         }
         (Some(x), Some(y)) => {
-            // T2 deltas.
-            if let (Some(id), Some(p), Some(q)) =
-                (cx.table.is_delta(&cx.stream, path), x.as_f64(), y.as_f64())
-            {
-                let (ba, bb) = cx.deltas.get(path).copied().unwrap_or((p, q));
-                if p - ba == q - bb {
-                    return;
-                }
-                out.push(cx.mismatch(
-                    path,
-                    a,
-                    b,
-                    cx.near_closed().unwrap_or_else(|| {
-                        let _ = id;
-                        UNTOLERATED.into()
-                    }),
-                ));
+            // T2: `seq` is compared as per-agent increments (seq_increments);
+            // the offset between two agents' counters is not a property.
+            if cx.table.is_delta(&cx.stream, path).is_some() && x.is_number() && y.is_number() {
+                let _ = cx.deltas;
                 return;
             }
             // T3 numeric.
@@ -409,7 +396,10 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                     return;
                 }
             }
-            let tol = cx.near_wall_step().unwrap_or_else(|| UNTOLERATED.into());
+            let tol = cx
+                .near_closed()
+                .or_else(|| cx.near_wall_step())
+                .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
         }
         _ => {
@@ -637,6 +627,10 @@ pub fn diff(
         }
     }
 
+    // ---- T2: seq increments per agent
+    seq_increments(&ta, "A", play, table, &mut rep);
+    seq_increments(&tb, "B", play, table, &mut rep);
+
     // ---- reports: quiet periods
     diff_reports(a, b, play, table, &mut rep);
 
@@ -747,6 +741,40 @@ pub fn diff(
     diff_sudo(a, b, table, &mut rep);
 
     rep
+}
+
+/// T2 "seq compared as deltas": within each agent, consecutive telemetry
+/// (by `ts`) must advance `seq` by exactly 1; a jump is tolerated only around
+/// a closed span (T8 `cadence`: Rust skips publishing while disconnected).
+fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep: &mut Report) {
+    let mut v: Vec<(i64, i64)> = msgs
+        .iter()
+        .filter_map(|m| Some((ts_of(&m.payload)?, m.payload.get("seq")?.as_i64()?)))
+        .collect();
+    v.sort();
+    let empty = BTreeMap::new();
+    for w in v.windows(2) {
+        let ((_, s0), (t1, s1)) = (w[0], w[1]);
+        if s1 - s0 == 1 {
+            continue;
+        }
+        let cx = Cx {
+            table,
+            play,
+            stream: "telemetry".into(),
+            at: format!("{side} ts {t1}"),
+            when: Some(t1),
+            deltas: &empty,
+            first_wall: play.start_wall,
+        };
+        let tol = cx.near_closed().unwrap_or_else(|| UNTOLERATED.into());
+        rep.push(cx.mismatch(
+            "seq (increment)",
+            Some(&Value::from(s0)),
+            Some(&Value::from(s1)),
+            tol,
+        ));
+    }
 }
 
 fn quiet_periods(a: &[&Msg], b: &[&Msg], quiet_ms: i64) -> Vec<(i64, i64)> {
@@ -1161,6 +1189,8 @@ mod tests {
         );
         // seq deltas match (5→6→15→25 vs 105→106→115→125).
         assert!(!tols.iter().any(|(p, _)| *p == "seq"), "{tols:?}");
+        // …but each agent's own counter jumps 6→15→25: T2 increments fail.
+        assert!(tols.contains(&("seq (increment)", UNTOLERATED)), "{tols:?}");
         assert_eq!(rep.stats["telemetry"].compared, 4);
         let md = render(&rep, &a, &b, &play, &t, Path::new("/run"));
         assert!(md.contains("FAIL"));

@@ -273,7 +273,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "cadence"
-  what = "`published N messages` cadence + telemetry/status while disconnected (JS mqtt.js queues QoS 0 offline and flushes on reconnect; Rust skips and counts nothing — Phase 0 deviation #8, WP1 brief): unpaired or seq-shifted messages within 5 s of a closed span"
+  what = "`published N messages` cadence + telemetry/status while disconnected (JS mqtt.js queues QoS 0 offline and flushes on reconnect; Rust skips and counts nothing — Phase 0 deviation #8, WP1 brief): messages stamped within 5 s of a closed span are not compared (unpaired, or values sampled while the rig could not pair ticks)"
   streams = ["telemetry", "status"]
   around_closed_ms = 5000
 

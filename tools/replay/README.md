@@ -130,15 +130,28 @@ the same — common brief rule 6):
   agents while the capture client keeps recording and the rig needs no docker
   socket.
 - **Hold gate (pairing).** Each agent ticks at 1 Hz on its own phase (and
-  Node's `setInterval` drifts ~1 ms/tick). An input changing between the two
-  agents' ticks would make every stream-fed field differ by one sample, so the
-  player never changes an input between the two ticks of a pair: it predicts
-  the next tick of each agent from its last telemetry `ts` and holds releases
-  from `lead tick − 60 ms` until the partner's tick is observed (timeout
-  1.5 s; no gating while an agent is silent > 2.5 s). Inputs are delayed by
-  less than one pair gap and never reordered. Pairs go to `pairs.ndjson`; the
-  diff compares exactly those ticks. When the drifting gap exceeds 800 ms the
-  roles flip and the one lead tick in between is recorded as a `skip`.
+  Node's `setInterval` drifts ~1 ms/tick); the TS also stamps `ts` AFTER
+  `await source.read()` (`worker.ts:1192-1194`), so `ts = tick + read
+  latency`. An input changing between the two agents' reads would make every
+  stream-fed field differ by one sample, so the player never changes an input
+  between the two ticks of a pair: it estimates each agent's next tick from
+  the lower envelope of `ts − k·1000` over its last 8 payloads and holds
+  releases from `lead tick − 60 ms` until BOTH payloads of the pair are
+  observed (timeout 2 s). Inputs are delayed by less than one pair gap and
+  never reordered. Pairs go to `pairs.ndjson`; the diff compares exactly those
+  ticks. When the gap exceeds 800 ms the roles flip and the one lead tick in
+  between is logged as `skip`. No gating while the broker path is cut or an
+  agent has been silent > 2.5 s (telemetry stamped in a cut is not
+  value-compared: T8 `cadence`). `--stagger-ms N` starts B N ms after A, which
+  forces distinct phases in a JS-vs-JS calibration.
+- **NMEA only while both ports are open.** A line is written to the ptys only
+  while BOTH agents' processes hold their slave open (`/proc/<pid>/fd`, cached
+  200 ms). The TS opens the port lazily on its first tick (and reopens after
+  30 s of silence) at its own phase; a line seen by one agent only, or queued
+  before an open and read late, would shift that agent's TTFF clock (which
+  starts at the first quality-0 GGA). If one agent has not opened its port
+  5 s after the other did, the other is fed alone so a never-opened port shows
+  in the diff.
 - **Prefill.** `lte_file`/`exec`/`i2cdetect`/`dt` events in the tape's first
   second are applied before the agents start (those files existed before the
   recording agent did).
@@ -171,6 +184,11 @@ phase file, T7 is imported verbatim from `phase-1/evidence/accepted-divergences.
 a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
 
 ## Limits of the rig (know these when reading a diff)
+
+- ONE run at a time per Docker host (fixed compose project, fixed rig
+  deviceIds), on a QUIET Docker VM: `cpu_usage`/`ram_usage` are the VM's live
+  values (T3), and concurrent cargo builds in the same VM swing them by far
+  more than T3 allows and perturb the agents' tick latency.
 
 - `/proc/device-tree/chosen/power/max_current` is a fixed path in both agents
   and cannot be redirected in a container: `psu_max_current` is absent on both
