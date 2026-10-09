@@ -31,5 +31,13 @@ nix = { workspace = true }
 gstreamer = { workspace = true }
 
 [dev-dependencies]
-# `start_paused` tests of the spine (tokio::time::pause).
-tokio = { workspace = true, features = ["test-util"] }
+# `start_paused` tests of the spine (tokio::time::pause); `net` for the stub broker.
+tokio = { workspace = true, features = ["test-util", "net"] }
+# WP1 follow-up: `tests/commands.rs` drives the REAL MQTT client against the
+# stub broker of `xorgate-cloud/tests/support/stub_broker.rs` (#[path] include).
+# All already workspace deps of xorgate-cloud; no new crate in the lockfile.
+rumqttc = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio-rustls = { workspace = true }
+bytes = { workspace = true }
