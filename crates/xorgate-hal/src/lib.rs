@@ -9,3 +9,4 @@
 pub mod atomic_write;
 pub mod exec;
 pub mod system;
+pub mod tape;

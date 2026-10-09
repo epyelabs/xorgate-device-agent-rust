@@ -5,6 +5,7 @@ members = [
   "crates/xorgate-hal",
   "crates/xorgate-cloud",
   "crates/xorgate-agent",
+  "crates/xorgate-replay",
 ]
 
 [workspace.package]
@@ -41,6 +42,10 @@ sd-notify = "0.5"
 nix = { version = "0.31", features = ["fs", "signal", "process"] }
 libc = "0.2"
 gstreamer = { version = "0.25", features = ["v1_22"] }
+# WP7 (phase-2/wp7-replay): gzip tapes (pure-Rust miniz_oxide backend) and the
+# rig tolerance table.
+flate2 = "1"
+toml = "0.9"
 
 # Release profile per plan README §7: fat LTO, one codegen unit, stripped
 # symbols but line tables kept for backtraces. `panic = "abort"` is deliberately
