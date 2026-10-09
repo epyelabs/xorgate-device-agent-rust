@@ -1,0 +1,548 @@
+{
+  "jsSourceFile": "test/boot-config.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): the 9 pure it()s of 'boot config parsing' + 'rotation in force' through the real TS functions, with the existsSync / readFileSync seams of resolveBootConfigPath and dtRotationForCamera expressed as data; [extra] cases pin JS Number() edge cases",
+  "cases": [
+    {
+      "name": "reads dtoverlay lines and skips commented-out ones",
+      "op": "parseOverlayLines",
+      "input": {
+        "text": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+      },
+      "expected": [
+        {
+          "index": 2,
+          "name": "vc4-kms-v3d",
+          "params": [],
+          "text": "dtoverlay=vc4-kms-v3d"
+        },
+        {
+          "index": 6,
+          "name": "dwc2",
+          "params": [
+            "dr_mode=host"
+          ],
+          "text": "dtoverlay=dwc2,dr_mode=host"
+        },
+        {
+          "index": 8,
+          "name": "imx290",
+          "params": [
+            "cam0",
+            "4lane"
+          ],
+          "text": "dtoverlay=imx290,cam0,4lane"
+        },
+        {
+          "index": 9,
+          "name": "imx290",
+          "params": [
+            "cam1"
+          ],
+          "text": "dtoverlay=imx290,cam1"
+        }
+      ]
+    },
+    {
+      "name": "finds the lines for one camera, across sections [cam0]",
+      "op": "overlayLinesForCamera",
+      "input": {
+        "text": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+        "camToken": "cam0"
+      },
+      "expected": [
+        {
+          "index": 8,
+          "name": "imx290",
+          "params": [
+            "cam0",
+            "4lane"
+          ],
+          "text": "dtoverlay=imx290,cam0,4lane"
+        }
+      ]
+    },
+    {
+      "name": "finds the lines for one camera, across sections [cam2]",
+      "op": "overlayLinesForCamera",
+      "input": {
+        "text": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+        "camToken": "cam2"
+      },
+      "expected": []
+    },
+    {
+      "name": "treats a missing rotation token as the overlay's own default of 0",
+      "op": "rotationOfLine",
+      "input": {
+        "line": {
+          "index": 9,
+          "name": "imx290",
+          "params": [
+            "cam1"
+          ],
+          "text": "dtoverlay=imx290,cam1"
+        }
+      },
+      "expected": 0
+    },
+    {
+      "name": "reports an unparseable rotation as unknown rather than guessing",
+      "op": "rotationOfLine",
+      "input": {
+        "line": {
+          "index": 0,
+          "name": "imx290",
+          "params": [
+            "cam0",
+            "rotation=90"
+          ],
+          "text": "dtoverlay=imx290,cam0,rotation=90"
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] rotationOfLine rotation=180",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0,rotation=180\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": 180,
+        "lines": 1
+      }
+    },
+    {
+      "name": "[extra] rotationOfLine rotation= (empty → Number('') = 0)",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0,rotation=\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": 0,
+        "lines": 1
+      }
+    },
+    {
+      "name": "[extra] rotationOfLine rotation=0x0",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0,rotation=0x0\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": 0,
+        "lines": 1
+      }
+    },
+    {
+      "name": "[extra] rotationOfLine rotation=1.8e2",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0,rotation=1.8e2\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": 180,
+        "lines": 1
+      }
+    },
+    {
+      "name": "[extra] rotationOfLine rotation=abc",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0,rotation=abc\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": null,
+        "lines": 1
+      }
+    },
+    {
+      "name": "[extra] rotationOfLine rotation=Infinity",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0,rotation=Infinity\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": null,
+        "lines": 1
+      }
+    },
+    {
+      "name": "[extra] rotationOfLine spaces around tokens",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "  dtoverlay = imx290 , cam0 , rotation=180 \n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": null,
+        "rotation": null,
+        "lines": 0
+      }
+    },
+    {
+      "name": "[extra] rotationOfLine CRLF line ending",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0,rotation=180\r\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": 180,
+        "lines": 1
+      }
+    },
+    {
+      "name": "summarises what the boot config says about a camera [cam0]",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": 0,
+        "lines": 1
+      }
+    },
+    {
+      "name": "summarises what the boot config says about a camera [cam9]",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+        "camToken": "cam9"
+      },
+      "expected": {
+        "sensor": null,
+        "rotation": null,
+        "lines": 0
+      }
+    },
+    {
+      "name": "summarises what the boot config says about a camera [duplicates disagree]",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "dtoverlay=imx290,cam0\ndtoverlay=imx290,cam0,rotation=180\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": null,
+        "lines": 2
+      }
+    },
+    {
+      "name": "[extra] duplicates that agree",
+      "op": "bootConfigCamera",
+      "input": {
+        "text": "[cm4]\ndtoverlay=imx290,cam0,rotation=180\n[cm5]\ndtoverlay=imx290,cam0,4lane,rotation=180\n",
+        "camToken": "cam0"
+      },
+      "expected": {
+        "sensor": "imx290",
+        "rotation": 180,
+        "lines": 2
+      }
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [overlayCamToken \"csi0\"]",
+      "op": "overlayCamToken",
+      "input": {
+        "connector": "csi0"
+      },
+      "expected": "cam0"
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [overlayCamToken \"csi1\"]",
+      "op": "overlayCamToken",
+      "input": {
+        "connector": "csi1"
+      },
+      "expected": "cam1"
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [overlayCamToken \"usb0\"]",
+      "op": "overlayCamToken",
+      "input": {
+        "connector": "usb0"
+      },
+      "expected": null
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [overlayCamToken \" csi2 \"]",
+      "op": "overlayCamToken",
+      "input": {
+        "connector": " csi2 "
+      },
+      "expected": "cam2"
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [overlayCamToken \"csi\"]",
+      "op": "overlayCamToken",
+      "input": {
+        "connector": "csi"
+      },
+      "expected": null
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [overlayCamToken \"CSI0\"]",
+      "op": "overlayCamToken",
+      "input": {
+        "connector": "CSI0"
+      },
+      "expected": null
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [overlayCamToken \"csi0x\"]",
+      "op": "overlayCamToken",
+      "input": {
+        "connector": "csi0x"
+      },
+      "expected": null
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [resolveCamToken cam1 hardware]",
+      "op": "resolveCamToken",
+      "input": {
+        "streamKey": "cam1",
+        "hardware": {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        }
+      },
+      "expected": "cam1"
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [resolveCamToken cam7 hardware]",
+      "op": "resolveCamToken",
+      "input": {
+        "streamKey": "cam7",
+        "hardware": {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [resolveCamToken cam1 null]",
+      "op": "resolveCamToken",
+      "input": {
+        "streamKey": "cam1",
+        "hardware": null
+      },
+      "expected": "cam1"
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [resolveCamToken front null]",
+      "op": "resolveCamToken",
+      "input": {
+        "streamKey": "front",
+        "hardware": null
+      },
+      "expected": null
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [resolveCamToken cam null]",
+      "op": "resolveCamToken",
+      "input": {
+        "streamKey": "cam",
+        "hardware": null
+      },
+      "expected": null
+    },
+    {
+      "name": "maps connectors and stream keys to the overlay's camN token [resolveCamToken cam01 null]",
+      "op": "resolveCamToken",
+      "input": {
+        "streamKey": "cam01",
+        "hardware": null
+      },
+      "expected": "cam01"
+    },
+    {
+      "name": "resolves the boot config path, Bookworm first [legacy only]",
+      "op": "resolveBootConfigPath",
+      "input": {
+        "candidates": [
+          "<tmp>/firmware/config.txt",
+          "<tmp>/boot/config.txt"
+        ],
+        "existing": [
+          "<tmp>/boot/config.txt"
+        ]
+      },
+      "expected": "<tmp>/boot/config.txt"
+    },
+    {
+      "name": "resolves the boot config path, Bookworm first [both]",
+      "op": "resolveBootConfigPath",
+      "input": {
+        "candidates": [
+          "<tmp>/firmware/config.txt",
+          "<tmp>/boot/config.txt"
+        ],
+        "existing": [
+          "<tmp>/firmware/config.txt",
+          "<tmp>/boot/config.txt"
+        ]
+      },
+      "expected": "<tmp>/firmware/config.txt"
+    },
+    {
+      "name": "resolves the boot config path, Bookworm first [none]",
+      "op": "resolveBootConfigPath",
+      "input": {
+        "candidates": [
+          "<tmp>/nope"
+        ],
+        "existing": []
+      },
+      "expected": null
+    },
+    {
+      "name": "reads the big-endian u32 at the enumerated camera's own node",
+      "op": "dtRotationForCamera",
+      "input": {
+        "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+        "files": {
+          "soc/i2c0mux/i2c@0/imx290@1a/rotation": [
+            0,
+            0,
+            0,
+            180
+          ]
+        }
+      },
+      "expected": 180
+    },
+    {
+      "name": "returns null (never 0) when the node or property is absent [other node]",
+      "op": "dtRotationForCamera",
+      "input": {
+        "cameraName": "/base/soc/i2c0mux/i2c@7/imx290@1a",
+        "files": {
+          "soc/i2c0mux/i2c@0/imx290@1a/rotation": [
+            0,
+            0,
+            0,
+            180
+          ]
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null (never 0) when the node or property is absent [empty]",
+      "op": "dtRotationForCamera",
+      "input": {
+        "cameraName": "",
+        "files": {
+          "soc/i2c0mux/i2c@0/imx290@1a/rotation": [
+            0,
+            0,
+            0,
+            180
+          ]
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null (never 0) when the node or property is absent [traversal]",
+      "op": "dtRotationForCamera",
+      "input": {
+        "cameraName": "/base/../../etc/passwd",
+        "files": {
+          "soc/i2c0mux/i2c@0/imx290@1a/rotation": [
+            0,
+            0,
+            0,
+            180
+          ]
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] property of the wrong length is null",
+      "op": "dtRotationForCamera",
+      "input": {
+        "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+        "files": {
+          "soc/i2c0mux/i2c@0/imx290@1a/rotation": [
+            0,
+            180
+          ]
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] rotation 0 reads as 0, not null",
+      "op": "dtRotationForCamera",
+      "input": {
+        "cameraName": "  /base/soc/i2c0mux/i2c@0/imx290@1a  ",
+        "files": {
+          "soc/i2c0mux/i2c@0/imx290@1a/rotation": [
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expected": 0
+    }
+  ]
+}

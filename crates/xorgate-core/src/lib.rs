@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod boot_config;
 pub mod build_info;
 pub mod clock;
 pub mod config_namespaces;
