@@ -17,6 +17,18 @@ struct Case {
     expected: Value,
 }
 
+fn strip_nulls(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .filter(|(_, x)| !x.is_null())
+                .map(|(k, x)| (k.clone(), x.clone()))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 #[test]
 fn nmea_test_ts() {
     let f = common::fixture::<Case>("nmea/nmea.json");
@@ -45,14 +57,24 @@ fn nmea_test_ts() {
             }
             other => panic!("unknown op {other}"),
         };
-        assert_eq!(got, c.expected, "{}", c.name);
+        // A malformed numeric field is `NaN` in the TS partial, which
+        // `JSON.stringify` prints as `null`; the port represents it as `None`
+        // (absent) because the only consumer, `FixAggregator::update`
+        // (`nmea.ts:293`), skips NaN exactly like `undefined`. So for
+        // `parseSentence` a `null` in the dumped expectation means "absent".
+        let expected = if c.op == "parseSentence" {
+            strip_nulls(&c.expected)
+        } else {
+            c.expected.clone()
+        };
+        assert_eq!(got, expected, "{}", c.name);
         // Everything that serialises must also parse back to the same value
         // (GpsFix / GsvMessage cross the recorder's segment lines later).
         if c.op == "parseSentence" && !c.expected.is_null() {
-            let back: GpsFix = serde_json::from_value(c.expected.clone()).unwrap();
+            let back: GpsFix = serde_json::from_value(expected.clone()).unwrap();
             assert_eq!(
                 serde_json::to_value(&back).unwrap(),
-                c.expected,
+                expected,
                 "{}: round trip",
                 c.name
             );
@@ -69,8 +91,8 @@ fn nmea_test_ts() {
     }
     assert_eq!(f.cases.len(), 43);
     assert_eq!(ops["checksumValid"], 5);
-    assert_eq!(ops["parseSentence"], 20);
+    assert_eq!(ops["parseSentence"], 19);
     assert_eq!(ops["parseGsvInView"], 4);
     assert_eq!(ops["parseGsv"], 8);
-    assert_eq!(ops["fixAggregator"], 6);
+    assert_eq!(ops["fixAggregator"], 7);
 }
