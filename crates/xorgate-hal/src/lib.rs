@@ -7,10 +7,13 @@
 //! tool yields `None` and the caller omits the field (agent-anatomy §10.3).
 
 pub mod atomic_write;
+pub mod child;
 pub mod exec;
+pub mod imu_detect;
 pub mod io;
 pub mod kvs_manifest_io;
 pub mod modem_file;
+pub mod nmea_tty;
 pub mod read_lossy;
 pub mod settings_io;
 pub mod system;
