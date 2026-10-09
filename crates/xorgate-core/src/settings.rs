@@ -759,6 +759,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn serde_json_is_stricter_than_json_parse() {
+        // ACCEPTED (review-wp1 #7, evidence/accepted-divergences.md): JSON.parse
+        // reads `1e400` as Infinity (the leaf is then dropped by `isFinite`);
+        // serde_json rejects the whole text → `invalid` (both refuse to write).
+        assert_eq!(
+            parse_settings_text(r#"{"recording":{"retention":{"maxBytes":1e400}}}"#),
+            Err(SettingsReadFailure::Invalid)
+        );
+    }
+
+    #[test]
     fn regex_ports() {
         assert!(apn_re_test(""));
         assert!(apn_re_test("sp.mb.com"));

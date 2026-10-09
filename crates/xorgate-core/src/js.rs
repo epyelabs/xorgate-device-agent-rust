@@ -775,6 +775,20 @@ mod tests {
     }
 
     #[test]
+    fn date_parse_accepted_divergences() {
+        // ACCEPTED (evidence/accepted-divergences.md): an offset-less
+        // date-time is LOCAL time in V8 but UTC here (core has no zone; every
+        // producer writes `Z`); V8's legacy forms are NaN here (node 24:
+        // Date.parse("2026-1-9") = 1767934800000 in America/Toronto).
+        assert_eq!(
+            date_parse("2026-08-06T12:00:00"),
+            date_parse("2026-08-06T12:00:00Z")
+        );
+        assert!(date_parse("2026-1-9").is_nan());
+        assert!(date_parse("Oct 9 2026").is_nan());
+    }
+
+    #[test]
     fn date_parse_ms_adapter() {
         // (formerly config_report::js_date_parse_iso's unit test; WP4)
         assert_eq!(

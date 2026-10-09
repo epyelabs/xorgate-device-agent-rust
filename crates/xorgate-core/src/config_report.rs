@@ -1393,6 +1393,15 @@ mod tests {
     }
 
     #[test]
+    fn reported_string_cut_inside_a_surrogate_pair_is_fffd() {
+        // ACCEPTED DIVERGENCE (review-wp4 #5, evidence/accepted-divergences.md):
+        // node 24 `JSON.stringify(("a".repeat(63) + "👍").trim().slice(0, 64))`
+        // ends `…aaa\ud83d"` (a lone surrogate escape); Rust keeps valid UTF-8.
+        let got = reported_string(&Value::from(format!("{}👍", "a".repeat(63))));
+        assert_eq!(got, Some(format!("{}\u{fffd}", "a".repeat(63))));
+    }
+
+    #[test]
     fn reported_string_rules() {
         assert_eq!(
             reported_string(&Value::from("  Public\u{1} Mobile  ")),

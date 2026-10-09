@@ -46,7 +46,7 @@ fn iface_rank(name: &str) -> u8 {
 /// back to byte order. Accepted divergences (review-wp1 #8; Linux interface
 /// names are lowercase + digits): ICU sorts punctuation before digits
 /// (`a_1` < `a01`; here `'0' < '_'`), and on a case-only tie ICU puts the
-/// lowercase name first (here `Eth0` < `eth0`).
+/// lowercase name first (here `Xa` < `xa`).
 pub fn sort_interfaces(names: &[String]) -> Vec<String> {
     let mut v = names.to_vec();
     v.sort_by(|a, b| {
@@ -102,6 +102,15 @@ pub fn ssh_server_ip(ssh_connection: Option<&str>) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sort_interfaces_icu_divergences() {
+        // ACCEPTED (review-wp1 #8): node 24 localeCompare sorts
+        // ["a_1","a01"] and ["xa","Xa"] (same rank); Linux names never hit either.
+        let s = |v: &[&str]| sort_interfaces(&v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        assert_eq!(s(&["a_1", "a01"]), ["a01", "a_1"]);
+        assert_eq!(s(&["xa", "Xa"]), ["Xa", "xa"]);
+    }
 
     #[test]
     fn virtual_prefixes() {
