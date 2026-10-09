@@ -1,0 +1,21 @@
+{
+  "jsSourceFile": "src/agent/collectors/system.ts (compute) — field order/units/rounding; values captured from the live JS agent's state.json `latest.metrics.system` on the bench CM5, 2026-10-08",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "cases": [
+    {
+      "name": "bench capture: all seven fields, CM5 with rails",
+      "reading": { "cpuOverall": 5.8, "ramUsedPct": 11.2, "cpuTempC": 52.9, "diskUsedPct": 19.2, "throttled": 0, "rail5v": 4.939, "psuMaxCurrentMa": 3000 },
+      "expectedJson": "{\"cpu_usage\":{\"value\":5.8,\"unit\":\"%\"},\"ram_usage\":{\"value\":11.2,\"unit\":\"%\"},\"cpu_temp\":{\"value\":52.9,\"unit\":\"°C\"},\"disk_usage\":{\"value\":19.2,\"unit\":\"%\"},\"throttled\":{\"value\":0},\"rail_5v\":{\"value\":4.939,\"unit\":\"V\"},\"psu_max_current\":{\"value\":3000,\"unit\":\"mA\"}}"
+    },
+    {
+      "name": "off-Pi host (vitest createSystemCollector: cpu_usage + ram_usage always present)",
+      "reading": { "cpuOverall": 12.3456, "ramUsedPct": 45.678 },
+      "expectedJson": "{\"cpu_usage\":{\"value\":12.3,\"unit\":\"%\"},\"ram_usage\":{\"value\":45.7,\"unit\":\"%\"}}"
+    },
+    {
+      "name": "Pi 4 (vcgencmd present, pmic latched off, no max_current node)",
+      "reading": { "cpuOverall": 0, "ramUsedPct": 20.05, "cpuTempC": 41.049, "diskUsedPct": 33.35, "throttled": 1 },
+      "expectedJson": "{\"cpu_usage\":{\"value\":0,\"unit\":\"%\"},\"ram_usage\":{\"value\":20.1,\"unit\":\"%\"},\"cpu_temp\":{\"value\":41,\"unit\":\"°C\"},\"disk_usage\":{\"value\":33.4,\"unit\":\"%\"},\"throttled\":{\"value\":1}}"
+    }
+  ]
+}

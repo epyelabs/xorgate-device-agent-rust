@@ -1,0 +1,76 @@
+{
+  "jsSourceFile": "test/system.test.ts",
+  "jsFunction": "computeCpuLoad (src/hardware/system.ts)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "note": "CpuSample cores carry only `times`; model/speed are irrelevant to the computation. Absent keys are 0.",
+  "cases": [
+    {
+      "name": "computes busy% from two snapshots (half-busy single core)",
+      "prev": [
+        {
+          "idle": 100
+        }
+      ],
+      "curr": [
+        {
+          "user": 50,
+          "idle": 150
+        }
+      ],
+      "expected": {
+        "overall": 50,
+        "perCore": [
+          50
+        ]
+      }
+    },
+    {
+      "name": "reports 0 when no ticks elapsed",
+      "prev": [
+        {
+          "user": 10,
+          "idle": 90
+        }
+      ],
+      "curr": [
+        {
+          "user": 10,
+          "idle": 90
+        }
+      ],
+      "expected": {
+        "overall": 0,
+        "perCore": [
+          0
+        ]
+      }
+    },
+    {
+      "name": "averages across cores",
+      "prev": [
+        {
+          "idle": 100
+        },
+        {
+          "idle": 100
+        }
+      ],
+      "curr": [
+        {
+          "user": 100,
+          "idle": 100
+        },
+        {
+          "idle": 200
+        }
+      ],
+      "expected": {
+        "overall": 50,
+        "perCore": [
+          100,
+          0
+        ]
+      }
+    }
+  ]
+}
