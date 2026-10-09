@@ -94,6 +94,9 @@ CONF
   reload_restart_rs
   units_report
   echo "== window OPEN at $TS — tape $RS_HOME/tapes/$TS.ndjson.gz. On ANY abort: scripts/bench/exclusive.sh end"
+  echo "   CLI steps (C6) must carry the tape path so their \`cli\` events reach the side file"
+  echo "   $RS_HOME/tapes/$TS.ndjson.gz.cli.ndjson (WP6 A6), e.g.:"
+  echo "   sudo -u pi env XORGATE_HOME=$RS_HOME XORGATE_RS_TAPE=$RS_HOME/tapes/$TS.ndjson.gz xorgate-rs set timeSync.stepThresholdSecs 15"
   ;;
 tape-off)
   remove_if_present "$TAPE_DROPIN" || true

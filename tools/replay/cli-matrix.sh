@@ -10,13 +10,26 @@
 # runs the list top to bottom in ONE home (settings accumulate like on a
 # device). Steps run as the unprivileged `node` user unless marked `root`
 # (root against a node-owned home = the "you don't need sudo" note). Rows
-# tagged `expect:` differ BY DESIGN (O9 logs, D20/T8 build identity, Phase 4
-# wifi) and are reported separately. Exit 1 on any other difference.
+# tagged `expect:<rule>/<row>` differ BY DESIGN and cite a row of
+# tolerances.toml (T8 logs-journal / cli-banner / set-wifi / set-mode-running;
+# the script refuses an id the table lacks); for those only the settings.json
+# bytes must still match. Exit 1 on any other difference.
+#
+#   --fresh   instead of the cumulative list below, run tools/replay/cli/cases.txt
+#             through cli/e2e-set-run.sh (WP6's per-case runner: every case from
+#             cli/seed.json in a fresh home; @root / @running tags) for both sides.
 set -uo pipefail
-A=js; B=rust; OUT="/rig/out/cli-matrix-$(date -u +%Y%m%dT%H%M%SZ)"
+A=js; B=rust; OUT="/rig/out/cli-matrix-$(date -u +%Y%m%dT%H%M%SZ)"; FRESH=0
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+TOL="$HERE/tolerances.toml"
 while [ $# -gt 0 ]; do
-  case "$1" in --a) A=$2; shift 2 ;; --b) B=$2; shift 2 ;; --out) OUT=$2; shift 2 ;; *) echo "unknown $1" >&2; exit 2 ;; esac
+  case "$1" in --a) A=$2; shift 2 ;; --b) B=$2; shift 2 ;; --out) OUT=$2; shift 2 ;; --fresh) FRESH=1; shift ;; *) echo "unknown $1" >&2; exit 2 ;; esac
 done
+# An `expect:` id must be a row of the tolerance table (never a silent widening).
+known_row() { # T8/<row>
+  local row=${1#*/}
+  [ "${1%%/*}" = T8 ] && grep -q "^  id = \"$row\"" "$TOL"
+}
 JS_CLI="node /rig/cache/js-89b5c64/dist/cli.js"
 RS_CLI="/rig/cache/bin/xorgate-rs"
 cli_for() { case "$1" in js) echo "$JS_CLI" ;; rust) echo "$RS_CLI" ;; esac; }
@@ -54,9 +67,9 @@ node|-|set apn synth.apn --no-wait
 node|-|set apn "" --no-wait
 root|-|set timeSync.stepThresholdSecs 12
 node|-|status
-node|expect:O9 logs falls back to journalctl without agent.log|logs -n 5
-node|expect:T8/D20 build identity|-v
-node|expect:T8 set wifi is Phase 4 (CF22)|set wifi on
+node|expect:T8/logs-journal|logs -n 5
+node|expect:T8/cli-banner|-v
+node|expect:T8/set-wifi|set wifi on
 LIST
 )
 
@@ -82,8 +95,23 @@ run_side() { # label kind
 }
 
 strip() { sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' "$1"; }
-run_side a "$A"
-run_side b "$B"
+if [ "$FRESH" -eq 1 ]; then
+  # WP6's per-case layout <n>/{case,out,err,code,settings} → this script's flat one.
+  for side in a b; do
+    kind=$A; [ $side = b ] && kind=$B
+    RUNNER=$(cli_for "$kind") "$HERE/cli/e2e-set-run.sh" "$OUT/$side.cases" >/dev/null 2>&1
+    mkdir -p "$OUT/$side"
+    for d in "$OUT/$side.cases"/*/; do
+      k=$(basename "$d")
+      for f in out err code settings; do cp "$d/$f" "$OUT/$side/$k.$f"; done
+      # case line is expect|who|argv-after-set
+      IFS='|' read -r e w argv < "$d/case"; printf '%s|%s|set %s\n' "$e" "$w" "$argv" > "$OUT/$side/$k.case"
+    done
+  done
+else
+  run_side a "$A"
+  run_side b "$B"
+fi
 n=$(find "$OUT/a" -name "*.case" | wc -l); fail=0; expected=0
 {
   echo "# CLI matrix — A ($A) vs B ($B)"; echo
@@ -99,7 +127,11 @@ for i in $(seq 1 "$n"); do
   cmp -s "$OUT/a/$i.settings" "$OUT/b/$i.settings" || st=DIFF
   verdict=ok
   if [ "$ca" != "$cb" ] || [ $so = DIFF ] || [ $se = DIFF ] || [ $st = DIFF ]; then
-    if [ "$expect" = "-" ]; then verdict=FAIL; fail=$((fail + 1)); else verdict="by design (${expect#expect:})"; expected=$((expected + 1)); fi
+    id=${expect#expect:}
+    if [ "$expect" = "-" ]; then verdict=FAIL; fail=$((fail + 1))
+    elif ! known_row "$id"; then verdict="FAIL (expect id $id not in tolerances.toml)"; fail=$((fail + 1))
+    elif [ $st = DIFF ]; then verdict="FAIL ($id allows output/exit, not settings.json)"; fail=$((fail + 1))
+    else verdict="by design ($id)"; expected=$((expected + 1)); fi
   fi
   echo "| $i | $who | \`$argv\` | $ca/$cb | $so | $se | $st | $verdict |" >> "$OUT/cli-matrix.md"
 done

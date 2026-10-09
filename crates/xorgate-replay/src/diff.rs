@@ -61,6 +61,30 @@ pub struct PlayInfo {
     pub wall_steps: Vec<(i64, i64)>,
     #[serde(default)]
     pub calibration: bool,
+    /// Host reference samples `(wall ms, series → value)` from the player's
+    /// `host.ndjson` (T3 host attribution); loaded by `load_run`.
+    #[serde(skip)]
+    pub host: Vec<(i64, BTreeMap<String, f64>)>,
+}
+
+impl PlayInfo {
+    /// Range (max − min) of the host series `name` over `[from − pad, to + pad]`
+    /// wall ms; `None` without at least two samples in the window.
+    pub fn host_swing(&self, name: &str, from: i64, to: i64, pad: i64) -> Option<f64> {
+        let (lo, hi) = (from.min(to) - pad, from.max(to) + pad);
+        let vals: Vec<f64> = self
+            .host
+            .iter()
+            .filter(|(w, _)| *w >= lo && *w <= hi)
+            .filter_map(|(_, m)| m.get(name).copied())
+            .collect();
+        if vals.len() < 2 {
+            return None;
+        }
+        let max = vals.iter().cloned().fold(f64::MIN, f64::max);
+        let min = vals.iter().cloned().fold(f64::MAX, f64::min);
+        Some(max - min)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -261,6 +285,9 @@ struct Cx<'a> {
     at: String,
     /// Wall ms the documents describe (telemetry `ts`), for T4 / O2 windows.
     when: Option<i64>,
+    /// The B document's `ts` when it differs from A's (paired telemetry): the
+    /// T3 host window is `[when, when_b]`.
+    when_b: Option<i64>,
     /// T2 bases: path → (base A, base B).
     deltas: &'a BTreeMap<String, (f64, f64)>,
     first_wall: i64,
@@ -296,6 +323,17 @@ impl Cx<'_> {
             .iter()
             .any(|(a, b)| w >= a - pad && w <= b + pad)
             .then(|| format!("{rid}/cadence"))
+    }
+
+    /// T3 host attribution: the excess `over` the agent tolerance is covered
+    /// only if the host's own reference reading (sampled by the player every
+    /// 50 ms) swung by at least as much between the two agents' `ts` (±250 ms
+    /// for the read-to-stamp latency).
+    fn host_attributed(&self, path: &str, over: f64) -> Option<String> {
+        let (id, series) = self.table.host_reference(&self.stream, path)?;
+        let (a, b) = (self.when?, self.when_b?);
+        let swing = self.play.host_swing(&series, a, b, 250)?;
+        (swing + 1e-9 >= over).then(|| format!("{id}/host"))
     }
 
     fn near_wall_step(&self) -> Option<String> {
@@ -382,6 +420,8 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             {
                 let t = if (p - q).abs() <= tol + 1e-9 {
                     id
+                } else if let Some(h) = cx.host_attributed(path, (p - q).abs() - tol) {
+                    h
                 } else {
                     UNTOLERATED.into()
                 };
@@ -579,6 +619,7 @@ pub fn diff(
                 ts_of(&y.payload).unwrap_or(0)
             ),
             when: w,
+            when_b: ts_of(&y.payload),
             deltas: &bases,
             first_wall,
         };
@@ -601,6 +642,7 @@ pub fn diff(
                 stream: "telemetry".into(),
                 at: format!("unpaired {side} ts {}", w.unwrap_or(m.w)),
                 when: w.or(Some(m.w)),
+                when_b: None,
                 deltas: &empty,
                 first_wall,
             };
@@ -652,6 +694,7 @@ pub fn diff(
                 stream: stream.into(),
                 at: format!("#{i}"),
                 when: x.or(y).map(|m| m.w),
+                when_b: None,
                 deltas: &empty,
                 first_wall,
             };
@@ -695,6 +738,7 @@ pub fn diff(
             stream: stream.clone(),
             at: "end".into(),
             when: None,
+            when_b: None,
             deltas: &empty,
             first_wall,
         };
@@ -764,6 +808,7 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
             stream: "telemetry".into(),
             at: format!("{side} ts {t1}"),
             when: Some(t1),
+            when_b: None,
             deltas: &empty,
             first_wall: play.start_wall,
         };
@@ -817,6 +862,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
             stream: "report".into(),
             at: at.clone(),
             when: Some(s),
+            when_b: None,
             deltas: &empty,
             first_wall: play.start_wall,
         };
@@ -854,6 +900,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                         if i + 1 == pa.len() { " (last)" } else { "" }
                     ),
                     when: Some(x.w),
+                    when_b: None,
                     deltas: &empty,
                     first_wall: play.start_wall,
                 };
@@ -1165,10 +1212,25 @@ pub fn render(
 pub type Run = (Capture, Capture, PlayInfo, Vec<(i64, i64)>);
 
 pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Run> {
-    let play: PlayInfo = std::fs::read(run.join("play.json"))
+    let mut play: PlayInfo = std::fs::read(run.join("play.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
+    play.host = std::fs::read_to_string(run.join("host.ndjson"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| {
+            let w = v["w"].as_i64()?;
+            let m: BTreeMap<String, f64> = v
+                .as_object()?
+                .iter()
+                .filter(|(k, _)| k.as_str() != "w")
+                .filter_map(|(k, x)| Some((k.clone(), x.as_f64()?)))
+                .collect();
+            Some((w, m))
+        })
+        .collect();
     let pairs = std::fs::read_to_string(run.join("pairs.ndjson"))
         .unwrap_or_default()
         .lines()
@@ -1220,6 +1282,59 @@ mod tests {
             m["metrics"]["gps"] = serde_json::json!({"lat":{"value":l,"unit":"°"}});
         }
         m
+    }
+
+    #[test]
+    fn ram_beyond_t3_is_host_only_where_the_host_moved() {
+        let t = table();
+        let ram = |ts: i64, seq: i64, v: f64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"system":{"ram_usage":{"value":v,"unit":"%"}}}})
+        };
+        let host = |w: i64, v: f64| (w, BTreeMap::from([("ram".to_string(), v)]));
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            host: vec![
+                host(10_000, 20.0),
+                host(10_100, 23.0),
+                host(10_200, 25.5),
+                host(20_000, 20.0),
+                host(20_100, 20.1),
+                host(20_200, 20.0),
+            ],
+            ..Default::default()
+        };
+        let a = cap(
+            "js",
+            vec![
+                msg(10_000, "telemetry", ram(10_000, 1, 20.0)),
+                msg(20_000, "telemetry", ram(20_000, 2, 20.0)),
+            ],
+        );
+        let b = cap(
+            "rust",
+            vec![
+                msg(10_200, "telemetry", ram(10_200, 1, 25.0)),
+                msg(20_200, "telemetry", ram(20_200, 2, 25.0)),
+            ],
+        );
+        let rep = diff(&a, &b, &play, &[], &t);
+        let got: Vec<(&str, &str)> = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.path == "metrics.system.ram_usage.value")
+            .map(|m| (m.at.as_str(), m.tol.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("ts A 10000 / B 10200", "T3/host"),
+                ("ts A 20000 / B 20200", UNTOLERATED),
+            ],
+            "{:?}",
+            rep.mismatches
+        );
     }
 
     #[test]

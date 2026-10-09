@@ -974,9 +974,81 @@ pub struct Tape {
     pub truncated: bool,
 }
 
+/// The CLI's side file next to a tape: `<tape>.cli.ndjson`. `xorgate-rs set`
+/// appends `{"w":<wall ms>,"k":"cli","argv":[…]}` there (WP6 `cli/set.rs`
+/// `tape_cli`, evidence wp6.md A6): the gz tape has exactly one writer, the
+/// agent process, so the CLI never touches it.
+pub fn cli_side_path(tape: &Path) -> std::path::PathBuf {
+    let mut p = tape.as_os_str().to_owned();
+    p.push(".cli.ndjson");
+    std::path::PathBuf::from(p)
+}
+
 impl Tape {
+    /// Read a tape and merge its CLI side file ([`cli_side_path`]) when present.
     pub fn read(path: &Path) -> Result<Self, TapeError> {
-        TapeReader::open(path)?.read_all()
+        let mut tape = TapeReader::open(path)?.read_all()?;
+        match std::fs::read(cli_side_path(path)) {
+            Ok(bytes) => {
+                tape.merge_cli_side(&String::from_utf8_lossy(&bytes))?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(tape)
+    }
+
+    /// Merge side-file `cli` lines (wall time only) into the record stream.
+    /// Each line's `t` is placed on the tape's mono axis from the nearest
+    /// record at or before its wall time (`t + (w − record.w)`, which follows
+    /// any wall step the tape saw), or from `startWall` when it precedes every
+    /// record; it is then inserted after every record with a smaller-or-equal
+    /// `t` (stable: tape order wins ties). A cut last line (no newline, does
+    /// not parse) is ignored, like the gz reader. Returns the number merged.
+    pub fn merge_cli_side(&mut self, text: &str) -> Result<usize, TapeError> {
+        #[derive(Deserialize)]
+        struct Side {
+            w: i64,
+            k: String,
+            argv: Vec<String>,
+        }
+        let lines: Vec<&str> = text.split('\n').collect();
+        let mut add = Vec::new();
+        for (i, raw) in lines.iter().enumerate() {
+            let line = raw.trim_end_matches('\r');
+            if line.trim().is_empty() {
+                continue;
+            }
+            let side: Side = match serde_json::from_str(line) {
+                Ok(s) => s,
+                Err(_) if i + 1 == lines.len() => break, // cut write
+                Err(e) => {
+                    return Err(TapeError::Parse {
+                        line: i + 1,
+                        msg: format!("cli side file: {e}"),
+                    })
+                }
+            };
+            if side.k != "cli" {
+                continue;
+            }
+            let anchor = self.records.iter().rev().find(|r| r.w <= side.w);
+            let t = match anchor {
+                Some(r) => r.t.saturating_add((side.w - r.w).max(0) as u64),
+                None => (side.w - self.meta.start_wall).max(0) as u64,
+            };
+            add.push(TapeRecord {
+                t,
+                w: side.w,
+                ev: TapeEvent::Cli { argv: side.argv },
+            });
+        }
+        let n = add.len();
+        for rec in add {
+            let at = self.records.partition_point(|r| r.t <= rec.t);
+            self.records.insert(at, rec);
+        }
+        Ok(n)
     }
 
     /// Serialise as NDJSON (meta first), gzip when `gz`.
@@ -1021,6 +1093,63 @@ impl Tape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_side_file_merges_by_wall_time() {
+        let dir = std::env::temp_dir().join(format!("tape-cli-side-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.ndjson");
+        let mut meta = TapeMeta::new("dev", "b", 1_000);
+        meta.v = 1;
+        let rec = |t: u64, w: i64, line: &str| TapeRecord {
+            t,
+            w,
+            ev: TapeEvent::Nmea { line: line.into() },
+        };
+        let tape = Tape {
+            meta,
+            records: vec![
+                rec(0, 1_000, "a"),
+                rec(5_000, 6_000, "b"),
+                rec(9_000, 10_000, "c"),
+            ],
+            truncated: false,
+        };
+        tape.write(&path, false).unwrap();
+        std::fs::write(
+            cli_side_path(&path),
+            concat!(
+                "{\"w\":7500,\"k\":\"cli\",\"argv\":[\"set\",\"timeSync.stepThresholdSecs\",\"15\"]}\n",
+                "{\"w\":500,\"k\":\"cli\",\"argv\":[\"set\",\"media\",\"off\"]}\n",
+                "{\"w\":9999,\"k\":\"cli\",\"ar"
+            ),
+        )
+        .unwrap();
+        assert!(cli_side_path(&path).ends_with("t.ndjson.cli.ndjson"));
+        let got = Tape::read(&path).unwrap();
+        let kinds: Vec<(u64, &str)> = got.records.iter().map(|r| (r.t, r.ev.kind())).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (0, "nmea"),
+                (0, "cli"),
+                (5_000, "nmea"),
+                (6_500, "cli"),
+                (9_000, "nmea")
+            ]
+        );
+        assert_eq!(
+            got.records[3].ev,
+            TapeEvent::Cli {
+                argv: vec![
+                    "set".into(),
+                    "timeSync.stepThresholdSecs".into(),
+                    "15".into()
+                ]
+            }
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 

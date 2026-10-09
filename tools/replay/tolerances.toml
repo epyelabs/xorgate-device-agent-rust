@@ -47,6 +47,15 @@ kind = "numeric"
 streams = ["telemetry"]
 # throttled / rail_5v / psu_max_current are tape-fed and therefore EXACT (no row).
 tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage.value" = 1.0, "metrics.system.disk_usage.value" = 0.1, "metrics.system.cpu_temp.value" = 0.5 }
+# Rig artifact, not a widening (FLAG: reviewer to confirm): both agents read the
+# rig's live /proc/meminfo, and a concurrent load on the shared Docker VM (other
+# worktrees' cargo builds) moves ram_usage by several points between the two
+# agents' tick instants (observed 18→52 % within 1 s, JS-vs-JS). The player
+# samples the same formula every 50 ms (`host.ndjson`); a ram difference beyond
+# ±1 is cited as `T3/host` ONLY if the host's own series swung by at least the
+# excess between the two `ts` (±250 ms), else it stays UNTOLERATED. On the bench
+# tape replay in a quiet VM this never fires.
+host_reference = { "metrics.system.ram_usage.value" = "ram" }
 
 [[rule]]
 id = "T4"
@@ -86,7 +95,10 @@ paths = [
   "effective.cameraMount", "effective.cameraMount.**",
 ]
 # state.json `recentEvents` msg prefixes owned by Phase 3/4.
-event_prefixes = ["hardware:", "camera mount", "camera-mount", "led", "LED", "recording", "media", "[media", "upload"]
+# `[clock]` = the offline clock stepper (clock-step.ts:232 etc., wired at
+# worker.ts:536-554), re-deferred to Phase 4 by CF20; its report hint
+# `clockStepperArmed` is already a T6 path above. FLAG: reviewer to confirm.
+event_prefixes = ["hardware:", "camera mount", "camera-mount", "led", "LED", "recording", "media", "[media", "upload", "[clock]"]
 # sudo argv owned by Phase 3/4 (camera-mount helper, set-clock helper).
 sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
 
@@ -268,7 +280,22 @@ kind = "decisions"
 
   [[rule.row]]
   id = "set-wifi"
-  what = "`set wifi` is Phase 4 (CF22)"
+  what = "`set wifi` is Phase 4 (CF22; WP6 T8): Rust prints `xorgate-rs: 'set wifi' arrives in a later build` and exits 1 before the sudo note (cli_set.rs:44) where the TS runs set.ts:679-717. C11: stdout/stderr/exit differ; settings.json must still be identical (untouched)"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-banner"
+  what = "build identity in `-v` and the usage banner (D20 / README §6; WP6 A5): `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,65); the usage lists only this binary's verbs. C11: stdout differs, exit code must match"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "logs-journal"
+  what = "O9: with no $XORGATE_HOME/agent.log the Rust `logs` execs `journalctl -u xorgate-agent-rs -n N` (logs.rs:59-72) where the TS prints the empty-log text (logs.ts). C11: stdout/stderr/exit differ when the home has no agent.log; with an agent.log both must match"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "set-mode-running"
+  what = "WP6 A3: `set mode <m>` while an agent is running — the TS restarts its self-managed daemon (set.ts:515-530: stop + start with the pidfile argv), Rust (systemd only, README §3.3) prints `could not restart automatically: …` + the `sudo systemctl restart xorgate-agent-rs` hint and exits 1 (cli_set.rs:54-63), the shape of the TS failure branch :527-529. C11: stdout/stderr/exit differ; settings.json must be identical"
   streams = ["cli"]
 
   [[rule.row]]

@@ -33,9 +33,19 @@ mkdir -p "$DEST"
 while read -r f; do
   [ -n "$f" ] || continue
   size=$(bench_ssh "stat -c %s '$f'")
-  if [ "$DRY" = 1 ]; then echo "[dry-run] would copy $f ($size bytes) -> $DEST/"; continue; fi
+  if [ "$DRY" = 1 ]; then
+    echo "[dry-run] would copy $f ($size bytes) -> $DEST/"
+    bench_ssh "test -f '$f.cli.ndjson'" && echo "[dry-run] would copy $f.cli.ndjson -> $DEST/"
+    continue
+  fi
   bench_scp_from "$f" "$DEST/"
   local_f="$DEST/$(basename "$f")"
   if gzip -t "$local_f" 2>/dev/null; then state=complete; else state="TRUNCATED (readable up to the last flush)"; fi
   echo "$local_f  $size bytes  $state"
+  # `xorgate-rs set` writes its `cli` events to a plain side file next to the
+  # tape (WP6 A6); `xorgate-replay` merges it by wall time on read.
+  if bench_ssh "test -f '$f.cli.ndjson'"; then
+    bench_scp_from "$f.cli.ndjson" "$DEST/"
+    echo "$local_f.cli.ndjson  $(wc -l < "$local_f.cli.ndjson" | tr -d ' ') cli events"
+  fi
 done <<<"$PICK"

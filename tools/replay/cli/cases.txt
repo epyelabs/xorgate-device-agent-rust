@@ -1,0 +1,46 @@
+# C11 per-case `set` matrix (WP6 e2e-set-run.sh format, extended by WP7).
+# One invocation per line: the words after `set`. Every case starts from
+# seed.json in a FRESH home. Optional leading tags:
+#   @root     run as root against a home owned by the unprivileged user (the
+#             "you don't need sudo" note, set.ts:382-389); skipped unless the
+#             runner is root
+#   @running  a decoy "running agent" (live pid + pidfile whose command names
+#             a worker) exists for the step (set mode restart path, set.ts:515-530)
+# A trailing `#expect:<rule>/<row>` marks a by-design difference; the id must
+# be a row of tools/replay/tolerances.toml (checked by cli-matrix.sh).
+mode real
+mode sim --no-restart
+mode bogus
+@running mode real    #expect:T8/set-mode-running
+gps-antenna passive
+gps-antenna sideways
+gps-fix-reset-policy veto-deadzone
+deadzone-profile aggressive
+deadzone-profile nope
+media off
+recording.telemetry.enabled on
+recording.telemetry.rateHz 999
+recording.telemetry.rateHz 0.5
+recording.telemetry.rateHz abc
+recording.video.enabled off
+recording.video.segmentSeconds 5
+recording.video.cameras.cam0 off
+recording.upload.mode auto
+recording.retention.maxBytes 1000000
+recording.powerShedding.cpuTempRestoreC 73
+recording.nope.field 1
+timeSync.stepThresholdSecs 15
+timeSync.stepThresholdSecs -3
+timeSync.offlineSources false
+timeSync.maxStepsPerBoot 2
+timeSync.ntpServers pool.ntp.org
+timeSync.bogus 1
+cameraMount.cam0.rotationDeg 180
+cameraMount.cam0.rotationDeg 90
+cameraMount.cam1.rotationDeg 270
+apn internet.example --no-wait
+apn "" --no-wait
+@root timeSync.stepThresholdSecs 12
+@root recording.telemetry.enabled off
+wifi on    #expect:T8/set-wifi
+nokey value

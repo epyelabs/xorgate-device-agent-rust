@@ -850,6 +850,41 @@ async fn snapshot_loop(homes: Vec<(PathBuf, PathBuf)>, stop: CancellationToken) 
     }
 }
 
+/// `ram_usage` as the agents compute it (TS `hardware/system.ts:85-98`:
+/// (MemTotal − MemAvailable) / MemTotal × 100), unrounded.
+fn host_ram_pct() -> Option<f64> {
+    let text = fs::read_to_string("/proc/meminfo").ok()?;
+    let kb = |key: &str| -> Option<f64> {
+        text.lines()
+            .find(|l| l.starts_with(key))?
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
+    };
+    let (total, avail) = (kb("MemTotal:")?, kb("MemAvailable:")?);
+    (total > 0.0).then(|| (total - avail) / total * 100.0)
+}
+
+/// Host reference series for T3 (`host.ndjson`, every 50 ms): both agents read
+/// the rig's live /proc, so a concurrent load on the Docker VM moves their
+/// values apart between their two tick instants. The diff attributes such a
+/// difference to the host only where this series shows the host moved.
+async fn host_loop(out: PathBuf, stop: CancellationToken) {
+    let Ok(mut f) = File::create(out.join("host.ndjson")) else {
+        return;
+    };
+    loop {
+        if let Some(ram) = host_ram_pct() {
+            let _ = writeln!(f, "{}", json!({"w": wall_now_ms(), "ram": ram}));
+        }
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+    }
+}
+
 fn gga_quality(line: &str) -> Option<String> {
     let body = line.trim().strip_prefix('$')?;
     let f: Vec<&str> = body.split(['*', ',']).collect();
@@ -986,6 +1021,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             .collect(),
         snap_stop.clone(),
     ));
+    tokio::spawn(host_loop(args.out.clone(), snap_stop.clone()));
 
     // Start both agents together.
     let t0 = tokio::time::Instant::now();
@@ -1287,6 +1323,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         transitions,
         wall_steps,
         calibration,
+        host: Vec::new(),
     };
     fs::write(
         args.out.join("play.json"),

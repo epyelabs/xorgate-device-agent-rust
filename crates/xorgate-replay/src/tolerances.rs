@@ -29,6 +29,12 @@ pub struct Rule {
     pub paths: Vec<String>,
     #[serde(default)]
     pub tolerance: BTreeMap<String, f64>,
+    /// T3 paths whose live host value the player samples itself (`host.ndjson`):
+    /// a difference beyond `tolerance` is attributed to the HOST (`<id>/host`)
+    /// only when the host's own reading moved at least that much between the
+    /// two agents' sample instants. The agents' tolerance is not widened.
+    #[serde(default)]
+    pub host_reference: BTreeMap<String, String>,
     #[serde(default)]
     pub startup_ms: Option<u64>,
     #[serde(default)]
@@ -156,6 +162,15 @@ impl Table {
     pub fn numeric(&self, stream: &str, path: &str) -> Option<(String, f64)> {
         self.of_kind("numeric", stream)
             .find_map(|r| r.tolerance.get(path).map(|t| (r.id.clone(), *t)))
+    }
+
+    /// `(rule id, host series name)` when `path` has a host reference (T3).
+    pub fn host_reference(&self, stream: &str, path: &str) -> Option<(String, String)> {
+        self.of_kind("numeric", stream).find_map(|r| {
+            r.host_reference
+                .get(path)
+                .map(|h| (r.id.clone(), h.clone()))
+        })
     }
 
     /// Paths compared as deltas (T2).
