@@ -1,0 +1,130 @@
+{
+  "jsSourceFile": "test/settings-migrate.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
+  "cases": [
+    {
+      "name": "does nothing when the legacy key was never there",
+      "streamKeys": [
+        "cam0"
+      ],
+      "input": "{\"mode\":\"real\",\"gnssAntBias\":true}",
+      "expected": {
+        "result": "none"
+      },
+      "fileAfter": "{\"mode\":\"real\",\"gnssAntBias\":true}"
+    },
+    {
+      "name": "does nothing on a missing or corrupt file [missing]",
+      "streamKeys": [
+        "cam0"
+      ],
+      "input": null,
+      "expected": {
+        "result": "none"
+      },
+      "fileAfter": null
+    },
+    {
+      "name": "does nothing on a missing or corrupt file [corrupt]",
+      "streamKeys": [
+        "cam0"
+      ],
+      "input": "{not json",
+      "expected": {
+        "result": "none"
+      },
+      "fileAfter": "{not json"
+    },
+    {
+      "name": "drops an explicit `true` without touching anything else",
+      "streamKeys": [
+        "cam0",
+        "cam1"
+      ],
+      "input": "{\"mode\":\"real\",\"mediaEnabled\":true,\"gnssAntBias\":true}",
+      "expected": {
+        "result": "dropped"
+      },
+      "fileAfter": "{\"mode\":\"real\",\"gnssAntBias\":true}"
+    },
+    {
+      "name": "converts an explicit `false` into every camera disabled",
+      "streamKeys": [
+        "cam0",
+        "cam1"
+      ],
+      "input": "{\"mode\":\"real\",\"mediaEnabled\":false}",
+      "expected": {
+        "result": "cameras-disabled",
+        "cameras": [
+          "cam0",
+          "cam1"
+        ]
+      },
+      "fileAfter": "{\"mode\":\"real\",\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"cam1\":false}}}}"
+    },
+    {
+      "name": "forces cameras off even where one was explicitly on",
+      "streamKeys": [
+        "cam0",
+        "cam1"
+      ],
+      "input": "{\"mediaEnabled\":false,\"recording\":{\"video\":{\"enabled\":true,\"cameras\":{\"cam0\":true}}}}",
+      "expected": {
+        "result": "cameras-disabled",
+        "cameras": [
+          "cam0",
+          "cam1"
+        ]
+      },
+      "fileAfter": "{\"recording\":{\"video\":{\"enabled\":true,\"cameras\":{\"cam0\":false,\"cam1\":false}}}}"
+    },
+    {
+      "name": "just drops the key when the manifest lists no channels",
+      "streamKeys": [],
+      "input": "{\"mode\":\"sim\",\"mediaEnabled\":false}",
+      "expected": {
+        "result": "cameras-disabled",
+        "cameras": []
+      },
+      "fileAfter": "{\"mode\":\"sim\"}"
+    },
+    {
+      "name": "is idempotent — a second run is a no-op",
+      "streamKeys": [
+        "cam0"
+      ],
+      "input": "{\"mediaEnabled\":false}",
+      "expected": {
+        "result": "none"
+      },
+      "fileAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false}}}}"
+    },
+    {
+      "name": "extra: existing explicit false for an unlisted camera is kept",
+      "streamKeys": [
+        "cam0"
+      ],
+      "input": "{\"mediaEnabled\":false,\"recording\":{\"video\":{\"cameras\":{\"cam9\":false}}}}",
+      "expected": {
+        "result": "cameras-disabled",
+        "cameras": [
+          "cam0"
+        ]
+      },
+      "fileAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam9\":false,\"cam0\":false}}}}"
+    },
+    {
+      "name": "extra: array file is none",
+      "streamKeys": [
+        "cam0"
+      ],
+      "input": "[]",
+      "expected": {
+        "result": "none"
+      },
+      "fileAfter": "[]"
+    }
+  ]
+}

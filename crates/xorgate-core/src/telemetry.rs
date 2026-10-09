@@ -11,7 +11,15 @@
 //!   explicitly (`sessionId`, `lastUploadAt`);
 //! - numbers print like JS: an integral f64 prints without a fractional part
 //!   (`0`, `3000`), everything else as the shortest round-trip repr (`5.8`).
-//!   See [`JsNumber`].
+//!   See [`JsNumber`] and the [`js_num`] / [`js_num_opt`] serde helpers for
+//!   plain `f64` fields.
+//!
+//! Phase 1 (WP1) completed the type set of `src/agent/telemetry.ts`: the typed
+//! metric groups ([`TelemetryMetrics`]), [`TelemetryReading`], [`RunMode`],
+//! [`ConnectionState`], [`ActivityEvent`] and [`StateSnapshot`]. The dynamic
+//! [`Metrics`] map stays the wire representation (`Partial<TelemetryMetrics>`
+//! — only declared groups are present, and the gps collector emits three
+//! fields the TS interface does not declare).
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -55,6 +63,37 @@ impl<'de> Deserialize<'de> for JsNumber {
     }
 }
 
+/// `#[serde(with = "js_num")]` on an `f64` field: prints like a JS number.
+pub mod js_num {
+    use super::JsNumber;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+        JsNumber(*v).serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        f64::deserialize(d)
+    }
+}
+
+/// `#[serde(with = "js_num_opt")]` on an `Option<f64>` field: `None` prints
+/// as `null` (combine with `skip_serializing_if = "Option::is_none"` where
+/// the TS omits the key instead), `Some(v)` like a JS number.
+pub mod js_num_opt {
+    use super::JsNumber;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(v) => JsNumber(*v).serialize(s),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+        Option::<f64>::deserialize(d)
+    }
+}
+
 /// `{ value: number, unit?: string }` — the only leaf shape the cloud accepts
 /// (a boolean/string leaf drops the whole payload; agent-anatomy §10.11).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,6 +123,145 @@ pub type MetricGroup = IndexMap<String, MetricLeaf>;
 /// `metrics`: ordered group → fields. Groups with nothing are omitted by the
 /// collector registry (`collectors/index.ts:read()`), never published empty.
 pub type Metrics = IndexMap<String, MetricGroup>;
+
+/// `TelemetryMetrics.imu` (`telemetry.ts:23-34`): the ten BNO085 fields,
+/// always published together (invariant 11). Key order = `collectors/imu.ts:94-105`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImuGroup {
+    pub quat_r: MetricLeaf,
+    pub quat_i: MetricLeaf,
+    pub quat_j: MetricLeaf,
+    pub quat_k: MetricLeaf,
+    pub euler_roll: MetricLeaf,
+    pub euler_pitch: MetricLeaf,
+    pub euler_yaw: MetricLeaf,
+    pub accel_x: MetricLeaf,
+    pub accel_y: MetricLeaf,
+    pub accel_z: MetricLeaf,
+}
+
+/// `TelemetryMetrics.gps` (`telemetry.ts:35-57`) in WIRE order — the order
+/// `collectors/gps.ts:261-298 mapLatest` inserts keys, which differs from the
+/// TS interface's declaration order. `sats_heard`, `snr_max` and `sky_state`
+/// are emitted by the collector (`gps.ts:273-278`) but NOT declared in the TS
+/// interface (it types `mapLatest` as `Record<string, unknown>`); they are
+/// part of the wire contract and so of this struct.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GpsGroup {
+    /// GGA fix quality: 0 = none, 1 = GPS, 2 = DGPS. Always present while NMEA flows.
+    pub fix_quality: MetricLeaf,
+    /// Satellites used in the fix (GGA).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub satellites: Option<MetricLeaf>,
+    /// Satellites in view across constellations (GSV).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub satellites_in_view: Option<MetricLeaf>,
+    /// RF evidence: satellites with a reported C/N0 (sky_state Phase 7; undeclared in the TS interface).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sats_heard: Option<MetricLeaf>,
+    /// Max C/N0 in dBHz (undeclared in the TS interface).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snr_max: Option<MetricLeaf>,
+    /// `SKY_STATE_CODES` 0 clear · 1 obstructed · 2 no-rf; omitted while unknown (undeclared in the TS interface).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sky_state: Option<MetricLeaf>,
+    /// Horizontal dilution of precision (GSA).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdop: Option<MetricLeaf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<MetricLeaf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lon: Option<MetricLeaf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<MetricLeaf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<MetricLeaf>,
+    /// Course over ground in degrees true (RMC); present only while moving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub course: Option<MetricLeaf>,
+    /// Time-to-first-fix in seconds, present once a fix follows an observed acquiring period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttff_s: Option<MetricLeaf>,
+}
+
+/// `TelemetryMetrics.lte` (`telemetry.ts:58-72`) in wire order (`collectors/lte.ts:44-57`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LteGroup {
+    pub quality: MetricLeaf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rssi: Option<MetricLeaf>,
+    /// Modem PMU temperature (°C) from the daemon's AT+CPMUTEMP poll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modem_temp: Option<MetricLeaf>,
+    /// 0 ok · 1 acquiring · 2 degraded · 3 unhealthy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gnss_health: Option<MetricLeaf>,
+    /// CRESETs fired in the daemon's rolling 24 h budget window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_24h: Option<MetricLeaf>,
+}
+
+/// `TelemetryMetrics.system` (`telemetry.ts:73-84`) in wire order
+/// (`collectors/system.ts compute()`, see `system::system_group`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SystemGroup {
+    pub cpu_usage: MetricLeaf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_usage: Option<MetricLeaf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_temp: Option<MetricLeaf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_usage: Option<MetricLeaf>,
+    /// Throttle bits 0–3, CURRENT state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throttled: Option<MetricLeaf>,
+    /// EXT5V input rail voltage (V), Pi 5 family only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rail_5v: Option<MetricLeaf>,
+    /// PSU max current negotiated at boot (mA).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psu_max_current: Option<MetricLeaf>,
+}
+
+/// `Partial<TelemetryMetrics>` (`telemetry.ts:16-85`), typed. Group order =
+/// the collector registry order (`collectors/index.ts:124-127`: imu, gps,
+/// lte, system). Absent groups are omitted (a collector that returns `{}`
+/// contributes no key).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TelemetryMetrics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imu: Option<ImuGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gps: Option<GpsGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lte: Option<LteGroup>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<SystemGroup>,
+}
+
+impl TelemetryMetrics {
+    /// Lower to the dynamic wire map (what the payload carries).
+    pub fn into_metrics(self) -> Metrics {
+        // Serialising through serde_json keeps the struct field order and
+        // the optional-field omission rules in one place.
+        let v = serde_json::to_value(&self).expect("TelemetryMetrics serialises");
+        serde_json::from_value(v).expect("TelemetryMetrics is a Metrics map")
+    }
+
+    /// Lift a wire map back to the typed form (fails on an unknown group or a
+    /// malformed leaf).
+    pub fn from_metrics(m: &Metrics) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(serde_json::to_value(m)?)
+    }
+}
+
+/// `TelemetryReading` (`telemetry.ts:133`): one reading per tick from the
+/// simulator or the collector registry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TelemetryReading {
+    pub metrics: Metrics,
+    pub media: TelemetryMedia,
+}
 
 /// `{ value: boolean }` — used only inside `media` (schema allows booleans there).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +409,111 @@ impl StatusPayload {
             online,
         }
     }
+}
+
+/// `RunMode` (`telemetry.ts:201`): "sim" | "real" | "replay". Reported-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunMode {
+    Sim,
+    Real,
+    Replay,
+}
+
+impl RunMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunMode::Sim => "sim",
+            RunMode::Real => "real",
+            RunMode::Replay => "replay",
+        }
+    }
+    /// `mode === "sim" || mode === "real" || mode === "replay"` (`settings.ts:619`).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "sim" => Some(RunMode::Sim),
+            "real" => Some(RunMode::Real),
+            "replay" => Some(RunMode::Replay),
+            _ => None,
+        }
+    }
+}
+
+/// `ConnectionState` (`telemetry.ts:203`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionState {
+    Connecting,
+    Connected,
+    Reconnecting,
+    Closed,
+    Error,
+}
+
+impl ConnectionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConnectionState::Connecting => "connecting",
+            ConnectionState::Connected => "connected",
+            ConnectionState::Reconnecting => "reconnecting",
+            ConnectionState::Closed => "closed",
+            ConnectionState::Error => "error",
+        }
+    }
+}
+
+/// `ActivityEvent.level` (`telemetry.ts:212`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActivityLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+/// `ActivityEvent` (`telemetry.ts:210`): one line of the state.json ring buffer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityEvent {
+    pub ts: i64,
+    pub level: ActivityLevel,
+    pub msg: String,
+}
+
+/// `StateSnapshot` (`telemetry.ts:222`): the atomic snapshot the worker
+/// writes to `state.json` every tick (throttled). Key order = the TS
+/// interface = the worker's initial literal (`worker.ts:356-377`);
+/// `recording` is appended by `StateStore.setRecording` and so lands last.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateSnapshot {
+    pub v: u8,
+    /// Package version that wrote this snapshot (forward-compat hint).
+    pub written_by: String,
+    pub device_id: String,
+    pub mode: RunMode,
+    /// Effective media-runtime enabled state for this run (config.media.enabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_enabled: Option<bool>,
+    pub rate_hz: JsNumber,
+    pub endpoint: String,
+    pub offline: bool,
+    pub pid: u32,
+    pub started_at: i64,
+    /// Epoch ms of this snapshot — the freshness anchor the readers check.
+    pub last_write_at: i64,
+    pub connection: ConnectionState,
+    /// Epoch ms the current connection state began (for "connected since").
+    pub connection_since: i64,
+    pub seq: u64,
+    pub published: u64,
+    pub publish_errors: u64,
+    pub last_publish_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub latest: Option<TelemetryPayload>,
+    pub recent_events: Vec<ActivityEvent>,
+    /// On-device recording status; absent on agents predating the recording feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<RecordingStatus>,
 }
 
 #[cfg(test)]

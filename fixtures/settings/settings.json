@@ -1,0 +1,139 @@
+{
+  "jsSourceFile": "test/settings.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
+  "cases": [
+    {
+      "name": "round-trips the run mode [real]",
+      "input": "{\"mode\":\"real\"}",
+      "expectedJson": "{\"mode\":\"real\"}",
+      "readResult": "ok"
+    },
+    {
+      "name": "round-trips the run mode [sim]",
+      "input": "{\"mode\":\"sim\"}",
+      "expectedJson": "{\"mode\":\"sim\"}",
+      "readResult": "ok"
+    },
+    {
+      "name": "drops the retired mediaEnabled key",
+      "input": "{\"mode\":\"real\",\"mediaEnabled\":false}",
+      "expectedJson": "{\"mode\":\"real\"}",
+      "readResult": "ok"
+    },
+    {
+      "name": "round-trips the GNSS antenna bias alongside other keys [true]",
+      "input": "{\"mode\":\"real\",\"gnssAntBias\":true}",
+      "expectedJson": "{\"mode\":\"real\",\"gnssAntBias\":true}",
+      "readResult": "ok"
+    },
+    {
+      "name": "round-trips the GNSS antenna bias alongside other keys [false]",
+      "input": "{\"mode\":\"real\",\"gnssAntBias\":false}",
+      "expectedJson": "{\"mode\":\"real\",\"gnssAntBias\":false}",
+      "readResult": "ok"
+    },
+    {
+      "name": "ignores a non-boolean gnssAntBias",
+      "input": "{\"mode\":\"real\",\"gnssAntBias\":1}",
+      "expectedJson": "{\"mode\":\"real\"}",
+      "readResult": "ok"
+    },
+    {
+      "name": "round-trips the lteRecovery policy namespace (loadSettings must not drop it)",
+      "input": "{\"mode\":\"real\",\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\",\"deadZoneProfile\":\"aggressive\"}}",
+      "expectedJson": "{\"mode\":\"real\",\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\",\"deadZoneProfile\":\"aggressive\"}}",
+      "readResult": "ok"
+    },
+    {
+      "name": "drops mistyped/unknown lteRecovery values but keeps the valid ones [all bad]",
+      "input": "{\"lteRecovery\":{\"gpsFixResetPolicy\":\"sometimes\",\"deadZoneProfile\":3}}",
+      "expectedJson": "{}",
+      "readResult": "ok"
+    },
+    {
+      "name": "drops mistyped/unknown lteRecovery values but keeps the valid ones [one good]",
+      "input": "{\"lteRecovery\":{\"deadZoneProfile\":\"conservative\",\"gpsFixResetPolicy\":1}}",
+      "expectedJson": "{\"lteRecovery\":{\"deadZoneProfile\":\"conservative\"}}",
+      "readResult": "ok"
+    },
+    {
+      "name": "round-trips the timeSync namespace (loadSettings must not drop it)",
+      "input": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false,\"stepThresholdSecs\":30,\"maxStepsPerBoot\":2}}",
+      "expectedJson": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false,\"stepThresholdSecs\":30,\"maxStepsPerBoot\":2}}",
+      "readResult": "ok"
+    },
+    {
+      "name": "clamps timeSync numbers and drops mistyped keys [clamp]",
+      "input": "{\"timeSync\":{\"offlineSources\":\"yes\",\"stepThresholdSecs\":0.4,\"maxStepsPerBoot\":999}}",
+      "expectedJson": "{\"timeSync\":{\"stepThresholdSecs\":2,\"maxStepsPerBoot\":20}}",
+      "readResult": "ok"
+    },
+    {
+      "name": "clamps timeSync numbers and drops mistyped keys [mistyped only]",
+      "input": "{\"timeSync\":{\"offlineSources\":1}}",
+      "expectedJson": "{}",
+      "readResult": "ok"
+    },
+    {
+      "name": "returns {} when the file is missing",
+      "input": null,
+      "expectedJson": "{}",
+      "readResult": "absent"
+    },
+    {
+      "name": "returns {} on corrupt or invalid content [not json]",
+      "input": "not json",
+      "expectedJson": "{}",
+      "readResult": "invalid"
+    },
+    {
+      "name": "returns {} on corrupt or invalid content [bogus mode]",
+      "input": "{\"mode\":\"bogus\"}",
+      "expectedJson": "{}",
+      "readResult": "ok"
+    },
+    {
+      "name": "readSettingsFile: a JSON array is invalid",
+      "input": "[1,2]",
+      "expectedJson": "{}",
+      "readResult": "invalid"
+    },
+    {
+      "name": "readSettingsFile: JSON null is invalid",
+      "input": "null",
+      "expectedJson": "{}",
+      "readResult": "invalid"
+    },
+    {
+      "name": "readSettingsFile: a JSON string is invalid",
+      "input": "\"x\"",
+      "expectedJson": "{}",
+      "readResult": "invalid"
+    },
+    {
+      "name": "readSettingsFile: a JSON number is invalid",
+      "input": "42",
+      "expectedJson": "{}",
+      "readResult": "invalid"
+    },
+    {
+      "name": "readSettingsFile: an empty object is ok",
+      "input": "{}",
+      "expectedJson": "{}",
+      "readResult": "ok"
+    },
+    {
+      "name": "full document: every namespace survives in parser key order",
+      "input": "{\"simulation\":{\"gapSeconds\":12,\"loop\":false,\"scenarioId\":\"demo-01\"},\"cameraMount\":{\"cameras\":{\"cam1\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}},\"cellular\":{\"apn\":\"sp.mb.com\"},\"timeSync\":{\"maxStepsPerBoot\":3,\"stepThresholdSecs\":15,\"offlineSources\":true},\"lteRecovery\":{\"deadZoneProfile\":\"balanced\",\"gpsFixResetPolicy\":\"defer\"},\"recording\":{\"retention\":{\"minFreeBytes\":1024,\"maxBytes\":2048},\"powerShedding\":{\"cpuTempRestoreC\":65,\"cpuTempC\":81.5,\"railRestoreVolts\":5,\"railLowVolts\":4.8,\"maxShedsPerHour\":2,\"restoreSecs\":100,\"cpuTempSecs\":10,\"escalateDutyPct\":60,\"escalateDwellSecs\":30,\"railLowSecs\":5,\"uvWindowSecs\":20,\"uvSamples\":2,\"enabled\":true},\"upload\":{\"mode\":\"off\"},\"video\":{\"cameras\":{\"cam1\":false,\"cam0\":true},\"spawnStaggerSecs\":2,\"gpsGateNoProgressSecs\":90,\"gpsGateMaxSecs\":300,\"gpsGate\":\"always\",\"bootDeferMinBudgetMa\":3000,\"bootDeferMaxSecs\":60,\"bootDefer\":\"off\",\"segmentSeconds\":30,\"preset\":\"720p30-2mbps\",\"enabled\":true},\"telemetry\":{\"rateHz\":5,\"enabled\":true}},\"imuMount\":{\"yawDeg\":90,\"pitchDeg\":0,\"rollDeg\":-10.5,\"enabled\":true},\"gnssAntBias\":true,\"mode\":\"replay\",\"unknownKey\":1}",
+      "expectedJson": "{\"mode\":\"replay\",\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":-10.5,\"pitchDeg\":0,\"yawDeg\":90},\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":5},\"video\":{\"enabled\":true,\"preset\":\"720p30-2mbps\",\"segmentSeconds\":30,\"bootDefer\":\"off\",\"bootDeferMaxSecs\":60,\"bootDeferMinBudgetMa\":3000,\"gpsGate\":\"always\",\"gpsGateMaxSecs\":300,\"gpsGateNoProgressSecs\":90,\"spawnStaggerSecs\":2,\"cameras\":{\"cam1\":false,\"cam0\":true}},\"upload\":{\"mode\":\"off\"},\"powerShedding\":{\"enabled\":true,\"uvSamples\":2,\"uvWindowSecs\":20,\"railLowSecs\":5,\"escalateDwellSecs\":30,\"escalateDutyPct\":60,\"cpuTempSecs\":10,\"restoreSecs\":100,\"maxShedsPerHour\":2,\"railLowVolts\":4.8,\"railRestoreVolts\":5,\"cpuTempC\":81.5,\"cpuTempRestoreC\":65},\"retention\":{\"maxBytes\":2048,\"minFreeBytes\":1024}},\"lteRecovery\":{\"gpsFixResetPolicy\":\"defer\",\"deadZoneProfile\":\"balanced\"},\"timeSync\":{\"offlineSources\":true,\"stepThresholdSecs\":15,\"maxStepsPerBoot\":3},\"cellular\":{\"apn\":\"sp.mb.com\"},\"cameraMount\":{\"cameras\":{\"cam1\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}},\"simulation\":{\"scenarioId\":\"demo-01\",\"loop\":false,\"gapSeconds\":12}}",
+      "readResult": "ok"
+    },
+    {
+      "name": "integer-like camera keys sort first (JS object key order)",
+      "input": "{\"recording\":{\"video\":{\"cameras\":{\"2\":true,\"10\":false,\"cam0\":true,\"cam1\":false}}},\"cameraMount\":{\"cameras\":{\"7\":{\"rotationDeg\":180},\"b\":{\"rotationDeg\":0},\"a\":{\"rotationDeg\":180}}}}",
+      "expectedJson": "{\"recording\":{\"video\":{\"cameras\":{\"2\":true,\"10\":false,\"cam0\":true,\"cam1\":false}}},\"cameraMount\":{\"cameras\":{\"7\":{\"rotationDeg\":180},\"b\":{\"rotationDeg\":0},\"a\":{\"rotationDeg\":180}}}}",
+      "readResult": "ok"
+    }
+  ]
+}
