@@ -14,16 +14,17 @@
 //!
 //! Out of core (Phase 3): `writeSessionManifest`/`readSessionManifest` file
 //! I/O (`video-segments.ts:114-128`; the validation rule is
-//! [`parse_session_manifest`]), the default `Date.now()/monotonicMs()` pair
+//! [`is_valid_session_manifest`], the result [`read_session_manifest`]), the default `Date.now()/monotonicMs()` pair
 //! (`:197,:263` — an explicit [`ClockPair`] here), the `readdirSync`/
 //! `statSync`/`unlinkSync`/`atomicWriteJson` of `sweepSessionDir`
 //! (`:248-327` — the DECISION is [`plan_sweep`] over a supplied listing) and
 //! the directory walk of `recoverOrphanVideoSessions` (`:341-375` — its
 //! per-session rule is [`plan_recover_orphan_sessions`]).
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::{Map, Value};
 
+use crate::cameras::js_trim;
 use crate::clock::Clock;
 use crate::round::js_math_round;
 use crate::types::TimeSource;
@@ -187,11 +188,11 @@ pub fn is_valid_session_manifest(raw: &Value) -> bool {
         && field("anchorTs").is_some_and(Value::is_number)
 }
 
-/// `readSessionManifest`'s result as a typed manifest: the TS rule
-/// ([`is_valid_session_manifest`]) and then — where the TS returns the raw
-/// object AS IS and lets `buildSidecar` copy `undefined`s through — every
-/// declared field present and well-typed (WP6 evidence, ambiguity "strict
-/// manifest"). `v: 1.0` is accepted like JS's `1.0 === 1`.
+/// A manifest as a typed [`VideoSessionManifest`]: the TS rule
+/// ([`is_valid_session_manifest`]) AND every declared field present and
+/// well-typed. Stricter than `readSessionManifest` — decisions that must
+/// match the TS (orphan recovery) go through [`read_session_manifest`].
+/// `v: 1.0` is accepted like JS's `1.0 === 1`.
 pub fn parse_session_manifest(raw: &Value) -> Option<VideoSessionManifest> {
     if !is_valid_session_manifest(raw) {
         return None;
@@ -201,12 +202,146 @@ pub fn parse_session_manifest(raw: &Value) -> Option<VideoSessionManifest> {
     serde_json::from_value(obj).ok()
 }
 
-/// `readSessionManifest` over the file TEXT (`JSON.parse` + the rule above);
-/// unparseable text is `None` like the TS `catch`.
+/// [`parse_session_manifest`] over the file TEXT; unparseable text is `None`.
 pub fn parse_session_manifest_text(text: &str) -> Option<VideoSessionManifest> {
     serde_json::from_str::<Value>(text)
         .ok()
         .and_then(|v| parse_session_manifest(&v))
+}
+
+/// What `readSessionManifest` (`video-segments.ts:118-128`) hands to
+/// `sweepSessionDir`: the parsed object, gated ONLY by the TS rule
+/// ([`is_valid_session_manifest`]). The TS returns that object as is, so a
+/// manifest with a missing, mistyped or extra field (or an unknown
+/// `timeSource`) is still swept and its oddities ride into the sidecars;
+/// `Raw` carries such an object so the port does the same (WP6 review S1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionManifest {
+    /// Every declared field present and well-typed ([`parse_session_manifest`]).
+    Typed(VideoSessionManifest),
+    /// Passes the TS rule but not the typed parser: the object as parsed.
+    Raw(Map<String, Value>),
+}
+
+impl From<VideoSessionManifest> for SessionManifest {
+    fn from(m: VideoSessionManifest) -> Self {
+        SessionManifest::Typed(m)
+    }
+}
+
+/// `readSessionManifest` over a parsed value: `None` iff the TS returns
+/// `null`; `Typed` whenever the typed parser accepts it (then
+/// `buildSidecar` over the raw object and over the typed one agree byte for
+/// byte), else `Raw`.
+pub fn read_session_manifest(raw: &Value) -> Option<SessionManifest> {
+    if !is_valid_session_manifest(raw) {
+        return None;
+    }
+    if let Some(m) = parse_session_manifest(raw) {
+        return Some(SessionManifest::Typed(m));
+    }
+    match raw {
+        Value::Object(o) => Some(SessionManifest::Raw(o.clone())),
+        _ => None, // unreachable: the rule needs object fields
+    }
+}
+
+/// `readSessionManifest` over the file TEXT (`JSON.parse` + the TS rule);
+/// unparseable text is `None` like the TS `catch`.
+pub fn read_session_manifest_text(text: &str) -> Option<SessionManifest> {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| read_session_manifest(&v))
+}
+
+/// ECMAScript `StringToNumber` (the `Number("…")` coercion): JS-trimmed;
+/// empty → 0; `Infinity` with an optional sign; unsigned `0x`/`0o`/`0b`
+/// integers; else a decimal literal (`1`, `1.`, `.5`, `1e3`, optional sign)
+/// — anything else (`inf`, `1_0`, `-0x10`) is NaN.
+fn js_string_to_number(s: &str) -> f64 {
+    let t = js_trim(s);
+    if t.is_empty() {
+        return 0.0;
+    }
+    match t {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        _ => {}
+    }
+    let radix = match t.get(..2) {
+        Some("0x" | "0X") => Some(16),
+        Some("0o" | "0O") => Some(8),
+        Some("0b" | "0B") => Some(2),
+        _ => None,
+    };
+    if let Some(radix) = radix {
+        let digits = &t[2..];
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return f64::NAN;
+        }
+        return digits.chars().fold(0.0, |acc, c| {
+            acc * f64::from(radix) + f64::from(c.to_digit(radix).expect("checked"))
+        });
+    }
+    let b = t.as_bytes();
+    let mut i = usize::from(matches!(b[0], b'+' | b'-'));
+    let int_start = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    let mut mantissa_digits = i - int_start;
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        let frac_start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        mantissa_digits += i - frac_start;
+    }
+    if mantissa_digits == 0 {
+        return f64::NAN;
+    }
+    if i < b.len() && matches!(b[i], b'e' | b'E') {
+        i += 1;
+        if i < b.len() && matches!(b[i], b'+' | b'-') {
+            i += 1;
+        }
+        let exp_start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == exp_start {
+            return f64::NAN;
+        }
+    }
+    if i != b.len() {
+        return f64::NAN;
+    }
+    t.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// ECMAScript `ToNumber` of a JSON value (`None` = `undefined`), as the
+/// arithmetic in `buildSidecar` applies it to `manifest.segmentSeconds`:
+/// undefined → NaN, null → 0, booleans → 0/1, strings → StringToNumber,
+/// arrays → StringToNumber of `String(array)` (`[]` → 0, `[x]` → via `x`,
+/// two or more elements always carry a comma → NaN), objects → NaN.
+fn js_to_number(v: Option<&Value>) -> f64 {
+    match v {
+        None => f64::NAN,
+        Some(Value::Null) => 0.0,
+        Some(Value::Bool(b)) => f64::from(u8::from(*b)),
+        Some(Value::Number(n)) => n.as_f64().unwrap_or(f64::NAN),
+        Some(Value::String(s)) => js_string_to_number(s),
+        Some(Value::Array(a)) => match a.as_slice() {
+            [] => 0.0,
+            // `String([x])` = `String(x)`, except null → "" and `true` → "true".
+            [Value::Null] => 0.0,
+            [Value::Bool(_)] | [Value::Object(_)] => f64::NAN,
+            [x] => js_to_number(Some(x)),
+            _ => f64::NAN,
+        },
+        Some(Value::Object(_)) => f64::NAN,
+    }
 }
 
 /// The three `statSync` fields `buildSidecar` reads (`video-segments.ts:137`).
@@ -268,34 +403,13 @@ pub fn build_sidecar(
     stat: FragmentStat,
     opts: &SidecarOpts,
 ) -> VideoSidecar {
-    // ext4 gives real birthtimes; a zero/bogus one (some tmpfs, copied trees)
-    // falls back to anchor arithmetic — that's exactly what `anchor` records.
-    let nominal_start = manifest.anchor_ts + seq * manifest.segment_seconds * 1000.0;
-    let have_birth = stat.birthtime_ms > SANE_EPOCH_MS;
-    let have_boundary = opts.boundary_end_ms.is_some_and(|b| b > SANE_EPOCH_MS);
-    let (start_ts, duration_ms, anchor) = if have_boundary {
-        let duration = manifest.segment_seconds * 1000.0;
-        let boundary = opts.boundary_end_ms.expect("checked");
-        (
-            js_math_round(boundary - duration),
-            duration,
-            SidecarAnchor::Boundary,
-        )
-    } else if have_birth {
-        let start = js_math_round(stat.birthtime_ms);
-        let end = if stat.mtime_ms > start {
-            stat.mtime_ms
-        } else {
-            start
-        };
-        (start, js_math_round(end - start), SidecarAnchor::Fstat)
-    } else {
-        (
-            nominal_start,
-            manifest.segment_seconds * 1000.0,
-            SidecarAnchor::Computed,
-        )
-    };
+    let (start_ts, duration_ms, anchor) = sidecar_times(
+        manifest.anchor_ts,
+        manifest.segment_seconds,
+        seq,
+        stat,
+        opts,
+    );
     let pair = opts.clock_pair;
     VideoSidecar {
         v: 1,
@@ -316,6 +430,164 @@ pub fn build_sidecar(
         anchor,
         finalized: opts.finalized,
     }
+}
+
+/// The `startTs`/`durationMs`/`anchor` derivation of `buildSidecar`
+/// (`video-segments.ts:170-191`), shared by the typed and the raw build.
+/// `segment_seconds` is the JS `ToNumber` of the manifest field.
+fn sidecar_times(
+    anchor_ts: f64,
+    segment_seconds: f64,
+    seq: f64,
+    stat: FragmentStat,
+    opts: &SidecarOpts,
+) -> (f64, f64, SidecarAnchor) {
+    // ext4 gives real birthtimes; a zero/bogus one (some tmpfs, copied trees)
+    // falls back to anchor arithmetic — that's exactly what `anchor` records.
+    let nominal_start = anchor_ts + seq * segment_seconds * 1000.0;
+    let have_birth = stat.birthtime_ms > SANE_EPOCH_MS;
+    let have_boundary = opts.boundary_end_ms.is_some_and(|b| b > SANE_EPOCH_MS);
+    if have_boundary {
+        let duration = segment_seconds * 1000.0;
+        let boundary = opts.boundary_end_ms.expect("checked");
+        (
+            js_math_round(boundary - duration),
+            duration,
+            SidecarAnchor::Boundary,
+        )
+    } else if have_birth {
+        let start = js_math_round(stat.birthtime_ms);
+        let end = if stat.mtime_ms > start {
+            stat.mtime_ms
+        } else {
+            start
+        };
+        (start, js_math_round(end - start), SidecarAnchor::Fstat)
+    } else {
+        (
+            nominal_start,
+            segment_seconds * 1000.0,
+            SidecarAnchor::Computed,
+        )
+    }
+}
+
+/// A sidecar as `buildSidecar` returns it for either kind of
+/// [`SessionManifest`]. `Raw` is the object `JSON.stringify` would see, in
+/// interface key order: copy-through keys the manifest lacks are absent
+/// (`undefined` is dropped), non-finite numbers are already `null`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SidecarBody {
+    Typed(VideoSidecar),
+    Raw(Map<String, Value>),
+}
+
+impl SidecarBody {
+    /// The bytes `atomicWriteJson` writes (compact `JSON.stringify`; JSON
+    /// numbers printed like JS).
+    pub fn to_json(&self) -> String {
+        match self {
+            SidecarBody::Typed(sc) => serde_json::to_string(sc),
+            SidecarBody::Raw(m) => serde_json::to_string(&JsJson(&Value::Object(m.clone()))),
+        }
+        .expect("a sidecar always serializes")
+    }
+
+    /// The typed sidecar, when the manifest was well-typed.
+    pub fn typed(&self) -> Option<&VideoSidecar> {
+        match self {
+            SidecarBody::Typed(sc) => Some(sc),
+            SidecarBody::Raw(_) => None,
+        }
+    }
+}
+
+/// Serializes a JSON value with every number printed like a JS number
+/// ([`js_num_exact`]) — the raw manifest's copy-through values included.
+struct JsJson<'a>(&'a Value);
+
+impl Serialize for JsJson<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        match self.0 {
+            Value::Number(n) => js_num_exact::serialize(&n.as_f64().unwrap_or(f64::NAN), s),
+            Value::Array(a) => {
+                let mut seq = s.serialize_seq(Some(a.len()))?;
+                for v in a {
+                    seq.serialize_element(&JsJson(v))?;
+                }
+                seq.end()
+            }
+            Value::Object(o) => {
+                let mut map = s.serialize_map(Some(o.len()))?;
+                for (k, v) in o {
+                    map.serialize_entry(k, &JsJson(v))?;
+                }
+                map.end()
+            }
+            other => other.serialize(s),
+        }
+    }
+}
+
+/// `buildSidecar` over either kind of manifest. A `Raw` manifest is read the
+/// way the TS reads it: `anchorTs` is a number (the gate), `segmentSeconds`
+/// goes through JS `ToNumber` in the arithmetic, and `deviceId`,
+/// `streamKey`, `sessionId`, `timeSource` (`opts.timeSource ?? …`), `width`,
+/// `height`, `fps`, `bitrateKbps` are copied as they are (absent → key
+/// omitted, any JSON value → that value).
+pub fn build_sidecar_body(
+    manifest: &SessionManifest,
+    seq: f64,
+    stat: FragmentStat,
+    opts: &SidecarOpts,
+) -> SidecarBody {
+    let m = match manifest {
+        SessionManifest::Typed(m) => return SidecarBody::Typed(build_sidecar(m, seq, stat, opts)),
+        SessionManifest::Raw(m) => m,
+    };
+    let anchor_ts = m
+        .get("anchorTs")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::NAN);
+    let (start_ts, duration_ms, anchor) = sidecar_times(
+        anchor_ts,
+        js_to_number(m.get("segmentSeconds")),
+        seq,
+        stat,
+        opts,
+    );
+    let pair = opts.clock_pair;
+    let start_mono = js_math_round(pair.mono_ms - (pair.wall_ms - start_ts));
+    let mut out = Map::new();
+    let copy = |out: &mut Map<String, Value>, k: &str| {
+        if let Some(v) = m.get(k) {
+            out.insert(k.to_string(), v.clone());
+        }
+    };
+    out.insert("v".into(), Value::from(1u8));
+    copy(&mut out, "deviceId");
+    copy(&mut out, "streamKey");
+    copy(&mut out, "sessionId");
+    out.insert("seq".into(), Value::from(seq));
+    out.insert("startTs".into(), Value::from(start_ts));
+    out.insert("startMono".into(), Value::from(start_mono));
+    out.insert("durationMs".into(), Value::from(duration_ms));
+    out.insert("sizeBytes".into(), Value::from(stat.size_bytes));
+    match opts.time_source {
+        Some(ts) => {
+            out.insert("timeSource".into(), serde_json::to_value(ts).expect("enum"));
+        }
+        None => copy(&mut out, "timeSource"),
+    }
+    out.insert("codec".into(), Value::from("h264"));
+    copy(&mut out, "width");
+    copy(&mut out, "height");
+    copy(&mut out, "fps");
+    copy(&mut out, "bitrateKbps");
+    out.insert("anchor".into(), serde_json::to_value(anchor).expect("enum"));
+    out.insert("finalized".into(), Value::from(opts.finalized));
+    SidecarBody::Raw(out)
 }
 
 /// `SweepResult` (`video-segments.ts:219-224`).
@@ -356,7 +628,7 @@ pub struct SweepOpts {
 pub struct SidecarWrite {
     pub mp4_path: String,
     pub sidecar_path: String,
-    pub sidecar: VideoSidecar,
+    pub sidecar: SidecarBody,
 }
 
 /// What one `sweepSessionDir` pass does, as data.
@@ -393,7 +665,7 @@ impl SweepPlan {
 /// An unreadable dir is the empty listing (`:247-251` → empty plan).
 pub fn plan_sweep(
     dir: &str,
-    manifest: &VideoSessionManifest,
+    manifest: &SessionManifest,
     entries: &[DirEntry],
     opts: &SweepOpts,
 ) -> SweepPlan {
@@ -445,7 +717,7 @@ pub fn plan_sweep(
             }
             continue;
         }
-        let sidecar = build_sidecar(
+        let sidecar = build_sidecar_body(
             manifest,
             *seq,
             st,
@@ -470,14 +742,15 @@ pub fn plan_sweep(
 /// One session directory as `recoverOrphanVideoSessions` walks it
 /// (`video-segments.ts:352-372`): `<videoRoot>/<streamKey>/<sessionId>/`.
 /// The caller lists only DIRECTORIES (the TS skips non-dirs, `:356,:365`)
-/// and reads `session.json` through [`parse_session_manifest_text`].
+/// and reads `session.json` through [`read_session_manifest_text`] — the
+/// exact TS rule, NOT the typed parser (WP6 review S1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionListing {
     pub stream_key: String,
     pub session_id: String,
-    /// `None` = no readable manifest: left untouched (can't attribute
-    /// metadata; the disk manager ages it out).
-    pub manifest: Option<VideoSessionManifest>,
+    /// `None` = no manifest passing the TS rule: left untouched (can't
+    /// attribute metadata; the disk manager ages it out).
+    pub manifest: Option<SessionManifest>,
     pub entries: Vec<DirEntry>,
 }
 
@@ -495,7 +768,8 @@ pub struct RecoverPlan {
 /// `active_session_ids` belongs to a previous run — sidecar-backfill all of
 /// its fragments (`includeNewest: true`, so the newest is tagged
 /// `finalized:false` and 0-byte fragments are reaped). Sessions without a
-/// manifest are skipped. Each swept session reads its OWN clock pair, as
+/// manifest that passes the TS rule are skipped; one that passes it with
+/// odd fields is swept like the TS does ([`SessionManifest::Raw`]). Each swept session reads its OWN clock pair, as
 /// each TS `sweepSessionDir` call defaults one (`:263`).
 pub fn plan_recover_orphan_sessions(
     video_root: &str,
@@ -613,6 +887,74 @@ mod tests {
     }
 
     #[test]
+    fn raw_manifest_follows_the_ts_rule_not_the_typed_parser() {
+        let text = serde_json::to_string(&manifest()).unwrap();
+        assert_eq!(
+            read_session_manifest_text(&text),
+            Some(SessionManifest::Typed(manifest()))
+        );
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["fps"] = Value::Null;
+        v.as_object_mut().unwrap().remove("deviceId");
+        assert_eq!(parse_session_manifest(&v), None);
+        let Some(raw @ SessionManifest::Raw(_)) = read_session_manifest(&v) else {
+            panic!("TS-valid manifest must be read raw");
+        };
+        let body = build_sidecar_body(
+            &raw,
+            1.0,
+            FragmentStat {
+                size_bytes: 5.0,
+                birthtime_ms: 0.0,
+                mtime_ms: 0.0,
+            },
+            &SidecarOpts {
+                finalized: false,
+                boundary_end_ms: None,
+                time_source: None,
+                clock_pair: ClockPair {
+                    wall_ms: T0 + 120_000.0,
+                    mono_ms: 620_000.0,
+                },
+            },
+        );
+        assert_eq!(body.typed(), None);
+        assert_eq!(
+            body.to_json(),
+            r#"{"v":1,"streamKey":"cam0","sessionId":"sess-1","seq":1,"startTs":1750000060000,"startMono":560000,"durationMs":60000,"sizeBytes":5,"timeSource":"ntp","codec":"h264","width":1920,"height":1080,"fps":null,"bitrateKbps":2000,"anchor":"computed","finalized":false}"#
+        );
+        v["anchorTs"] = Value::from("1");
+        assert_eq!(read_session_manifest(&v), None);
+    }
+
+    #[test]
+    fn js_to_number_coercions() {
+        let n = |v: Value| js_to_number(Some(&v));
+        assert!(js_to_number(None).is_nan());
+        assert_eq!(n(Value::Null), 0.0);
+        assert_eq!(n(Value::from(true)), 1.0);
+        assert_eq!(n(Value::from(" 0x3C\n")), 60.0);
+        assert_eq!(n(Value::from("0b11")), 3.0);
+        assert_eq!(n(Value::from("0o17")), 15.0);
+        assert!(n(Value::from("-0x10")).is_nan());
+        assert_eq!(n(Value::from("+.5e1")), 5.0);
+        assert_eq!(n(Value::from("5.")), 5.0);
+        assert_eq!(n(Value::from("-Infinity")), f64::NEG_INFINITY);
+        assert!(n(Value::from("inf")).is_nan());
+        assert!(n(Value::from("1_0")).is_nan());
+        assert!(n(Value::from(".")).is_nan());
+        assert!(n(Value::from("1e")).is_nan());
+        assert_eq!(n(Value::from("")), 0.0);
+        assert_eq!(n(serde_json::json!([])), 0.0);
+        assert_eq!(n(serde_json::json!([[]])), 0.0);
+        assert_eq!(n(serde_json::json!([null])), 0.0);
+        assert_eq!(n(serde_json::json!(["60"])), 60.0);
+        assert!(n(serde_json::json!([true])).is_nan());
+        assert!(n(serde_json::json!([1, 2])).is_nan());
+        assert!(n(serde_json::json!({})).is_nan());
+    }
+
+    #[test]
     fn sidecar_byte_shape() {
         let sc = build_sidecar(
             &manifest(),
@@ -666,7 +1008,7 @@ mod tests {
         ];
         let live = plan_sweep(
             "/v/cam0/sess-1",
-            &manifest(),
+            &manifest().into(),
             &entries,
             &SweepOpts {
                 include_newest: false,
@@ -683,9 +1025,10 @@ mod tests {
             live.active_path.as_deref(),
             Some("/v/cam0/sess-1/00002.mp4")
         );
-        assert_eq!(live.writes[0].sidecar.anchor, SidecarAnchor::Boundary);
-        assert_eq!(live.writes[0].sidecar.start_ts, T0);
-        assert!(live.writes[0].sidecar.finalized && live.writes[1].sidecar.finalized);
+        let sc = |p: &SweepPlan, k: usize| p.writes[k].sidecar.typed().unwrap().clone();
+        assert_eq!(sc(&live, 0).anchor, SidecarAnchor::Boundary);
+        assert_eq!(sc(&live, 0).start_ts, T0);
+        assert!(sc(&live, 0).finalized && sc(&live, 1).finalized);
         assert_eq!(live.writes[0].sidecar_path, "/v/cam0/sess-1/00000.json");
         assert!(live.reap.is_empty());
 
@@ -701,7 +1044,7 @@ mod tests {
         });
         let closing = plan_sweep(
             "/v/cam0/sess-1",
-            &manifest(),
+            &manifest().into(),
             &again,
             &SweepOpts {
                 include_newest: true,
@@ -729,13 +1072,13 @@ mod tests {
                 SessionListing {
                     stream_key: "cam0".into(),
                     session_id: "sess-1".into(),
-                    manifest: Some(manifest()),
+                    manifest: Some(manifest().into()),
                     entries: dead,
                 },
                 SessionListing {
                     stream_key: "cam1".into(),
                     session_id: "active".into(),
-                    manifest: Some(manifest()),
+                    manifest: Some(manifest().into()),
                     entries: vec![entry(0, 1.0)],
                 },
                 SessionListing {
@@ -752,9 +1095,9 @@ mod tests {
         assert_eq!(rec.sweeps.len(), 1);
         let plan = &rec.sweeps[0].1;
         assert_eq!(rec.sweeps[0].0, "/v/cam0/sess-1");
-        assert_eq!(plan.writes[0].sidecar.anchor, SidecarAnchor::Fstat);
-        assert!(plan.writes[0].sidecar.finalized);
-        assert!(!plan.writes[1].sidecar.finalized);
-        assert_eq!(plan.writes[1].sidecar.seq, 2.0);
+        assert_eq!(sc(plan, 0).anchor, SidecarAnchor::Fstat);
+        assert!(sc(plan, 0).finalized);
+        assert!(!sc(plan, 1).finalized);
+        assert_eq!(sc(plan, 1).seq, 2.0);
     }
 }

@@ -6,6 +6,11 @@
 //! `plan_recover_orphan_sessions`. Where the vitest passed no clock pair,
 //! the dumper froze `Date.now`/`monotonicMs` and the fixture records the
 //! pair (`clockPairInjected: true`).
+//!
+//! WP6 review S1: "extra: untyped manifest …" cases run `buildSidecar` over
+//! manifests that pass the TS rule but not the typed parser (copy-through +
+//! JS `ToNumber` on `segmentSeconds`), and "extra: a TS-valid manifest with
+//! odd or missing fields is still recovered" pins the recovery gate.
 
 mod common;
 
@@ -100,19 +105,28 @@ fn recording_video_segments_test_ts() {
                 );
             }
             "buildSidecar" => {
-                let sc = build_sidecar(
-                    &manifest(&i["manifest"]),
+                let m = read_session_manifest(&i["manifest"]).expect("TS-valid manifest");
+                let body = build_sidecar_body(
+                    &m,
                     i["seq"].as_f64().unwrap(),
                     de(&i["stat"]),
                     &sidecar_opts(&i["opts"]),
                 );
-                let json = serde_json::to_string(&sc).unwrap();
+                let json = body.to_json();
                 assert_eq!(json, e["json"].as_str().unwrap(), "{}", c.name);
                 if i["clockPairInjected"] == true {
                     assert_eq!(sidecar_opts(&i["opts"]).clock_pair, frozen);
                 }
-                let back: VideoSidecar = serde_json::from_str(&json).unwrap();
-                assert_eq!(back, sc, "{}: round trip", c.name);
+                match &body {
+                    SidecarBody::Typed(sc) => {
+                        let back: VideoSidecar = serde_json::from_str(&json).unwrap();
+                        assert_eq!(&back, sc, "{}: round trip", c.name);
+                    }
+                    SidecarBody::Raw(_) => {
+                        assert!(c.name.starts_with("extra: untyped manifest"), "{}", c.name);
+                        assert_eq!(parse_session_manifest(&i["manifest"]), None);
+                    }
+                }
             }
             "buildSidecarSeries" => {
                 let m = manifest(&i["manifest"]);
@@ -185,7 +199,7 @@ fn recording_video_segments_test_ts() {
                     if step["clockPairInjected"] == true {
                         assert_eq!(opts.clock_pair, frozen);
                     }
-                    let plan = plan_sweep(dir, &m, &entries, &opts);
+                    let plan = plan_sweep(dir, &m.clone().into(), &entries, &opts);
                     let want = &step["expected"];
                     let res = plan.result();
                     assert_eq!(
@@ -205,10 +219,7 @@ fn recording_video_segments_test_ts() {
                         .iter()
                         .map(|w| {
                             assert_eq!(w.sidecar_path, sidecar_path_for(&w.mp4_path));
-                            (
-                                basename(&w.sidecar_path).to_string(),
-                                serde_json::to_string(&w.sidecar).unwrap(),
-                            )
+                            (basename(&w.sidecar_path).to_string(), w.sidecar.to_json())
                         })
                         .collect();
                     let want_written: BTreeMap<String, String> = de(&want["written"]);
@@ -240,7 +251,14 @@ fn recording_video_segments_test_ts() {
                     .and_then(|t| serde_json::from_str::<Value>(t).ok())
                     .is_some_and(|v| is_valid_session_manifest(&v));
                 assert_eq!(valid, !e.is_null(), "{}", c.name);
-                // The typed port is stricter only for incomplete manifests.
+                // `read_session_manifest_text` IS the TS rule (WP6 review S1).
+                assert_eq!(
+                    text.and_then(read_session_manifest_text).is_some(),
+                    !e.is_null(),
+                    "{}",
+                    c.name
+                );
+                // The typed parser is stricter only for incomplete manifests.
                 let typed = text.and_then(parse_session_manifest_text);
                 if e.is_null() {
                     assert_eq!(typed, None, "{}", c.name);
@@ -263,7 +281,7 @@ fn recording_video_segments_test_ts() {
                         session_id: s["sessionId"].as_str().unwrap().into(),
                         manifest: s["manifestText"]
                             .as_str()
-                            .and_then(parse_session_manifest_text),
+                            .and_then(read_session_manifest_text),
                         entries: de(&s["entries"]),
                     })
                     .collect();
@@ -281,12 +299,7 @@ fn recording_video_segments_test_ts() {
                     .sweeps
                     .iter()
                     .flat_map(|(_, p)| p.writes.iter())
-                    .map(|w| {
-                        (
-                            w.sidecar_path.clone(),
-                            serde_json::to_string(&w.sidecar).unwrap(),
-                        )
-                    })
+                    .map(|w| (w.sidecar_path.clone(), w.sidecar.to_json()))
                     .collect();
                 let want: BTreeMap<String, String> = de(&e["written"]);
                 assert_eq!(written, want, "{}", c.name);
