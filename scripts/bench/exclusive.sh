@@ -49,6 +49,7 @@ status)
     if [ -f "$hw" ]; then echo "  $(basename "$hw"): imu=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("imu")))' "$hw" 2>/dev/null || echo '?')"; fi
   done
   if [ -f "$EXCLUSIVE_ENV" ]; then echo "  $EXCLUSIVE_ENV present (exclusive hardware)"; fi
+  if inputs_safe; then echo "  inputs: SAFE (shared profile in force, or a window with the JS agent stopped)"; else echo "  inputs: NOT SAFE for a WP2+ build (see above)"; fi
   c15_check
   ;;
 begin)

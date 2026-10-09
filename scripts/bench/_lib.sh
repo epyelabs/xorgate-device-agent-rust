@@ -122,7 +122,37 @@ PY
   fi
   rm -f "$tmp"
 }
+# The env file is an EnvironmentFile=, which beats every Environment= of the
+# drop-ins: it must never carry the input knobs the profiles own.
+env_file_guard() {
+  local bad
+  bad=$(grep -E '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH)=' "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
+  if [ -n "$bad" ]; then
+    echo "REFUSING: $RS_ENV sets $(echo "$bad" | tr '\n' ' ')— an EnvironmentFile overrides the profile drop-ins; remove those keys by hand"
+    exit 1
+  fi
+}
+# 0 when the SHARED profile is fully in force (or an exclusive window is open
+# with the JS agent stopped); prints every missing piece otherwise.
+inputs_safe() {
+  local ok=0 js
+  if [ -f "$EXCLUSIVE_DROPIN" ]; then
+    js=$(systemctl is-active $JS_UNIT || true)
+    if [ "$js" = active ] || [ "$js" = activating ]; then echo "  UNSAFE: exclusive drop-in present while $JS_UNIT is $js"; return 1; fi
+    return 0
+  fi
+  grep -qx 'Environment=PATH=/usr/local/bin:/usr/bin:/bin' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: PATH without /usr/sbin in $INPUTS_DROPIN"; ok=1; }
+  grep -qx 'Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: GPS_NMEA_PORT=/run/xorgate-rs-no-gps in $INPUTS_DROPIN"; ok=1; }
+  grep -qx 'Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python in $INPUTS_DROPIN"; ok=1; }
+  grep -qx "HARDWARE_MANIFEST=$HW_SHARED" "$RS_ENV" 2>/dev/null || { echo "  missing: HARDWARE_MANIFEST=$HW_SHARED in $RS_ENV (dev-manifests.sh)"; ok=1; }
+  if grep -qE '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH)=' "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH"; ok=1; fi
+  if [ -f "/etc/xorgate/hardware.json" ]; then
+    [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("imu"))' "$HW_SHARED" 2>/dev/null)" = None ] || { echo "  missing: imu: null in $HW_SHARED (dev-manifests.sh / profile.sh shared)"; ok=1; }
+  fi
+  return $ok
+}
 profile_shared() {
+  env_file_guard
   # O6 shared: the JS agent owns the GNSS tty and the BNO085, so the Rust
   # agent's GPS port does not exist, its Python helper cannot spawn, and its
   # hardware copy declares no IMU (no i2cdetect probe of bus 1).
@@ -132,15 +162,22 @@ profile_shared() {
 # Phase 2 SHARED input profile (scripts/bench/profile.sh, plan O6). Persistent.
 # The JS prod agent owns /dev/ttyUSB1 (NMEA) and the BNO085 (I2C, SHTP): two
 # readers would split NMEA bytes and two SHTP clients break the sensor, so the
-# Rust agent gets an absent GPS port (gps group omitted) and a python dir with
-# no helper (spawn fails → IMU parked) while both agents run.
+# Rust agent gets an absent GPS port (gps group omitted), a python dir with no
+# helper (spawn fails → IMU parked), no i2cdetect on PATH, and (env file) a
+# hardware.json copy with imu: null, while both agents run.
 [Service]
+# PATH without /usr/sbin hides i2cdetect, so IMU detection never probes I2C bus
+# 1 even if a cloud hardware block brings `imu` back into hardware.json (WP3
+# saves it, message.rs:137). Every tool Phase 2 needs (vcgencmd, python3, sudo,
+# systemctl, journalctl, timedatectl) is in /usr/bin.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps
 Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python
 CONF
   remove_if_present "$EXCLUSIVE_DROPIN" || true
 }
 profile_exclusive() {
+  env_file_guard
   # Refuse while the JS agent runs: it must be stopped (exclusive.sh begin).
   local js
   js=$(systemctl is-active $JS_UNIT || true)
@@ -154,11 +191,16 @@ profile_exclusive() {
   write_if_changed "$EXCLUSIVE_DROPIN" 0644 <<'CONF' || true
 # Phase 2 EXCLUSIVE input profile (scripts/bench/profile.sh exclusive, plan O6).
 # RUNTIME drop-in under /run: it vanishes on reboot, so a reboot during the
-# window falls back to the shared profile by construction. Unsetting the two
-# overrides gives the agent its own defaults (/dev/ttyUSB1 and the packaged
-# python dir), exactly as on a converted device.
+# window falls back to the shared profile by construction. It sets the values
+# a converted device has (/dev/ttyUSB1, the packaged python dir, full PATH,
+# the real hardware block).
 [Service]
-UnsetEnvironment=GPS_NMEA_PORT XORGATE_PYTHON_DIR
+# Explicit values (not UnsetEnvironment=): the full PATH (i2cdetect in
+# /usr/sbin), the SIM7600 GNSS port (hardware/gps.ts:15 default), the packaged
+# python dir (/opt/xorgate-rs/python, scripts/pack.sh).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=GPS_NMEA_PORT=/dev/ttyUSB1
+Environment=XORGATE_PYTHON_DIR=/opt/xorgate-rs/python
 # EnvironmentFile= wins over Environment=, and a later file over an earlier
 # one: this one (last drop-in) points HARDWARE_MANIFEST at the real IMU block.
 EnvironmentFile=/run/xorgate-agent-rs-exclusive.env
