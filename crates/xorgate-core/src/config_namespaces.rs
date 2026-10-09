@@ -14,6 +14,9 @@ pub enum ApplyClass {
     AgentPoll,
     /// The sim7600-lte daemon applies it on its ~30 s poll of settings.json.
     ModemPoll,
+    /// No namespace uses it today (Q4); kept so a future restart-applied key
+    /// has somewhere to declare itself.
+    AgentRestart,
 }
 
 impl ApplyClass {
@@ -21,6 +24,7 @@ impl ApplyClass {
         match self {
             ApplyClass::AgentPoll => "agent-poll",
             ApplyClass::ModemPoll => "modem-poll",
+            ApplyClass::AgentRestart => "agent-restart",
         }
     }
 }
@@ -77,5 +81,15 @@ mod tests {
             serde_json::to_string(&ApplyClass::AgentPoll).unwrap(),
             r#""agent-poll""#
         );
+        // The full TS union (config-sync.ts:84), wire string == as_str().
+        for c in [
+            ApplyClass::ModemPoll,
+            ApplyClass::AgentPoll,
+            ApplyClass::AgentRestart,
+        ] {
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(json, format!("\"{}\"", c.as_str()));
+            assert_eq!(serde_json::from_str::<ApplyClass>(&json).unwrap(), c);
+        }
     }
 }
