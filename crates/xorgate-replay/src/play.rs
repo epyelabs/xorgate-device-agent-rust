@@ -465,9 +465,6 @@ impl Agent {
                 )
             }),
         )
-        .collect::<Vec<(String, String)>>()
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
         .collect();
         fs::write(
             dir.join("meta.json"),
