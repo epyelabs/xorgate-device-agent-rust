@@ -78,6 +78,15 @@ pub struct Row {
     pub event_exact: Vec<String>,
     #[serde(default)]
     pub own_prefixes: Vec<String>,
+    /// Error texts that must match exactly (not folded into the class).
+    #[serde(default)]
+    pub exact_texts: Vec<String>,
+    /// Counter paths allowed to differ by 1 + the number of closed spans.
+    #[serde(default)]
+    pub count_paths: Vec<String>,
+    /// Only spans at least this long qualify.
+    #[serde(default)]
+    pub min_span_ms: Option<u64>,
 }
 
 const KINDS: &[&str] = &[

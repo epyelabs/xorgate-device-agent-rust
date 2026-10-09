@@ -249,7 +249,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "O2"
-  what = "mono-vs-wall intervals: only differ when a tape `clock` event shows a wall step"
+  what = "O2 mono-vs-wall intervals — the five the TS measures on Date.now(): the gps reopen watchdog (30 s), NMEA freshness (10 s), TTFF, the gnss-sky.json 15 s cadence, the refresh 30 s window — PLUS WP2's lte/system `sample()` 1 s cache gates (collectors/lte.ts, system.ts:94-114), all on mono in Rust. Values are identical unless the wall clock steps: tolerated only within a window around a tape `clock` event that shows a wall step"
   matcher = "wall_step_window"
 
   [[rule.row]]
@@ -313,35 +313,51 @@ kind = "decisions"
   streams = ["cli"]
 
   [[rule.row]]
-  id = "cadence"
-  what = "publishing while disconnected (wp1.md amb. #8, Phase 0 deviation #8; review-wp1 MUST-FIX #1 item 3): JS mqtt.js keeps its offline behaviour, Rust skips and counts nothing — telemetry/status stamped within 5 s of a closed span are not compared (unpaired, or values sampled while the rig could not pair ticks); `publish error: …` event wording around a closed span is compared by presence only"
-  streams = ["telemetry", "status", "events"]
+  id = "rig-cut-ungated"
+  what = "RIG limitation (FLAG, reviewer to confirm): while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the VALUES of telemetry/status stamped inside a closed span (extended until BOTH agents publish again) ±5 s may differ by one input sample; they are not value-compared. Message presence and counts still are (see reconnect-cadence / offline-queue-bound). Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
+  streams = ["telemetry", "status"]
   around_closed_ms = 5000
-  event_prefixes = ["publish error:"]
-  # The span used is [cut, the moment BOTH agents publish again] (the later
-  # reconnect, see `reconnect-cadence`), padded by around_closed_ms; a seq jump
-  # whose interval straddles it is the ticks Rust counted while disconnected.
 
   [[rule.row]]
-  id = "counters"
-  what = "state.json publish counters and the last payload follow the cadence above (`published`, `publishErrors`, `lastError`, `seq`, `latest`)"
+  id = "offline-queue-bound"
+  what = "offline queue bound (WP1 follow-up amb. 1): Rust caps the QoS 1 store and the QoS 0 queue at 1000 each, oldest dropped (xorgate-cloud mqtt.rs OFFLINE_QUEUE_LIMIT); mqtt.js is unbounded (client.js:1081-1096). Past ~16.7 min of outage at 1 Hz the TS flushes more stale telemetry and counts more `published`; a Rust seq jump across such a span is the dropped ticks. Shorter outages: parity (every tick flushed)"
+  streams = ["telemetry", "state"]
+  around_closed_ms = 5000
+  min_span_ms = 1000000
+
+  [[rule.row]]
+  id = "end-snapshot"
+  what = "RIG: state.json `latest` at the end — both agents get SIGTERM together, but their last ticks before it are up to one tick apart (different phases), so the final payload's values may be one sample apart; `seq` there is T2, `ts` T1. Every published payload is compared in the telemetry stream"
   streams = ["state"]
-  paths = ["published", "publishErrors", "lastError", "seq", "latest", "latest.**"]
+  paths = ["latest", "latest.**"]
 
   [[rule.row]]
   id = "mqtt-error-text"
-  what = "MQTT/TLS transport error TEXT (wp1.md amb. #6; review-wp1 MUST-FIX #1 item 1): state.json `error` events and `lastError` carry the client library's message (mqtt.js/Node `read ECONNRESET`, `Client network socket disconnected …` vs rumqttc/rustls); WP1 maps AwaitPingResp → `Keepalive timeout` (review-wp1 #3), the rest differ. Error-level events that are not one of the agent's own wordings are compared as one class `<transport error>`: present on both sides or on neither"
-  streams = ["events"]
+  what = "MQTT/TLS transport error TEXT (wp1.md amb. #6; review-wp1 MUST-FIX #1 item 1; WP1 follow-up amb. 5): the state.json `error` events and `lastError` carry rumqttc/rustls text where mqtt.js/Node has its own (`read ECONNRESET`, `Client network socket disconnected …`), EXCEPT `Keepalive timeout` and `connack timeout`, which WP1 maps to the mqtt.js words and which must match exactly. Other error-level events that are not one of the agent's own wordings compare as one class `<transport error>` (present on both sides or neither); `lastError` likewise"
+  streams = ["events", "state"]
   matcher = "transport_error_event"
   own_prefixes = ["publish error:", "config subscribe failed", "command subscribe failed", "unhandledRejection", "ledger write failed", "read error:", "upload failed"]
+  exact_texts = ["Keepalive timeout", "connack timeout"]
 
   [[rule.row]]
   id = "reconnect-cadence"
-  what = "reconnect cadence (review-wp1 MUST-FIX #1 item 2): Rust backs off 1→60 s with jitter (xorgate-cloud mqtt.rs:545-572, sanctioned in Phase 0) where mqtt.js retries every 2 s (mqtt.ts:63 reconnectPeriod 2000), so the COUNTS (and times) of `reconnecting…`, `connection closed`, `connected to …` and transport-error events differ during an outage; tolerated only when the run had a closed span"
-  streams = ["events"]
+  what = "reconnect cadence (review-wp1 MUST-FIX #1 item 2; WP1 follow-up amb. 3, 5): Rust backs off 1→60 s with jitter (xorgate-cloud mqtt.rs) where mqtt.js retries every 2 s (mqtt.ts:63 reconnectPeriod 2000), and detects a dead link at the 2nd unanswered ping (~2× keepalive) vs mqtt.js ~1.5×. So in a run with a closed span: the COUNTS of `reconnecting…`, `connection closed`, `connected to …` and transport-error events differ; a telemetry/status message inside the span (extended to both reconnects) ±5 s may be unpaired (a QoS 0 tick racing the drop is lost by Rust, written to the dying socket by mqtt.js); `published`/`publishErrors` may differ by 1 per closed span + 1 (the SIGTERM race at the end)"
+  streams = ["events", "telemetry", "status", "state"]
   matcher = "reconnect_cadence"
+  around_closed_ms = 5000
   event_exact = ["warn: reconnecting…", "warn: connection closed"]
   event_prefixes = ["info: connected to ", "error: <transport error>"]
+  count_paths = ["published", "publishErrors"]
+
+  [[rule.row]]
+  id = "subscribe-fail-order"
+  what = "a subscribe still awaiting its SUBACK at a drop fails once with `Connection closed` (mqtt.js _flushVolatile, client.js:794-803); Rust reports it just BEFORE the error/close events, the TS between `error` and `close` (WP1 follow-up amb. 4). The events stream is compared as a multiset, so the order never shows; counts must match"
+  matcher = "doc_only"
+
+  [[rule.row]]
+  id = "disconnect-codec"
+  what = "rumqttc 0.25.1 rejects the spec-legal reason-code-only DISCONNECT (remaining length 1) with `bytes remaining on stream`: a broker DISCONNECT of that form shows as an `error` (<transport error>) + `connection closed` on the Rust side where mqtt.js logs the disconnect + close (WP1 follow-up amb. 6). Mosquitto in the rig does not send it; whether AWS IoT Core does is unverified (bench capture). A mismatch of this shape on a bench tape is reported UNTOLERATED and is judged against this row by hand"
+  matcher = "doc_only"
 
   [[rule.row]]
   id = "tick-drift"

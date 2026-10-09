@@ -300,7 +300,11 @@ impl Gate {
                 hk[x] = kx;
                 let mut ts = [None, None];
                 ts[x] = self.track[x].last_ts;
-                self.hold = Some(Hold { start: now, k: hk, ts });
+                self.hold = Some(Hold {
+                    start: now,
+                    k: hk,
+                    ts,
+                });
                 return false;
             }
         }
@@ -1483,13 +1487,24 @@ mod tests {
 
     #[test]
     fn gate_flips_when_the_gap_exceeds_800() {
+        // Without an observed partner the lead tick is given up (`skip`).
+        let mut s = Gate::new(60);
+        s.on_tick(0, 1_000, 1_000);
+        s.on_tick(1, 150, 150);
+        s.paired_k = [Some(0), Some(0)];
+        // A due 2000, B due 1150 → B leads; next: A 2000 vs B 1150 gap 850.
+        assert!(s.is_open(1_100, false));
+        assert_eq!(s.pairs, vec![json!({"skip": "b", "k": 1, "tick": 1_150})]);
+
         let mut g = Gate::new(60);
         g.on_tick(0, 1_000, 1_000);
         g.on_tick(1, 1_850, 1_850);
-        // At 1945: A due 2000, B due 2850 → gap 850 → give up A's tick 1.
-        assert!(g.is_open(1_945, false));
-        assert_eq!(g.pairs, vec![json!({"skip": "a", "k": 1, "tick": 2_000})]);
+        // At 1945: A due 2000, B due 2850 → gap 850; but B's tick at 1850 is
+        // observed and unpaired and A's 2000 is its natural partner (150 ms):
+        // the mid-pair hold pairs them instead of giving up A's tick.
+        assert!(!g.is_open(1_945, false));
         g.on_tick(0, 2_010, 2_011);
+        assert_eq!(g.pairs, vec![json!({"a": 2_010, "b": 1_850})]);
         // Now B (2850) leads A (3000).
         assert!(g.is_open(2_700, false));
         assert!(!g.is_open(2_800, false));

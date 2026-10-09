@@ -87,13 +87,6 @@ impl PlayInfo {
         (t1 > t0).then(|| (b1 - b0) / (t1 - t0) * 100.0)
     }
 
-    /// Does `[t0, t1]` overlap a closed span padded by `pad` ms?
-    pub fn straddles_closed(&self, t0: i64, t1: i64, pad: i64) -> bool {
-        self.closed_spans
-            .iter()
-            .any(|(a, b)| t0 <= b + pad && t1 >= a - pad)
-    }
-
     /// Closed spans extended to the moment BOTH agents publish telemetry again
     /// (T8 `reconnect-cadence`: Rust backs off 1→60 s with jitter, mqtt.js
     /// retries every 2 s, so one side resumes later than the span's end).
@@ -352,9 +345,17 @@ impl Cx<'_> {
         None
     }
 
+    /// VALUES stamped around a closed span (rig: the hold gate cannot pair
+    /// ticks while publishes are queued) — T8 `rig-cut-ungated`.
     fn near_closed(&self) -> Option<String> {
+        self.near_closed_as("rig-cut-ungated")
+    }
+
+    /// `when` inside a closed span (extended to both agents' reconnect) padded
+    /// by the row's `around_closed_ms`, for the T8 row `row_id`.
+    fn near_closed_as(&self, row_id: &str) -> Option<String> {
         let w = self.when?;
-        let (rid, row) = self.table.decision_row("cadence")?;
+        let (rid, row) = self.table.decision_row(row_id)?;
         if !crate::tolerances::stream_matches(&row.streams, &self.stream) {
             return None;
         }
@@ -363,7 +364,7 @@ impl Cx<'_> {
             .closed_spans
             .iter()
             .any(|(a, b)| w >= a - pad && w <= b + pad)
-            .then(|| format!("{rid}/cadence"))
+            .then(|| format!("{rid}/{row_id}"))
     }
 
     /// T3 host attribution: the excess `over` the agent tolerance is covered
@@ -475,6 +476,41 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 };
                 out.push(cx.mismatch(path, a, b, t));
                 return;
+            }
+            // T8 reconnect-cadence: `published` / `publishErrors` may differ by
+            // one per closed span (QoS 0 racing a drop) + one (the SIGTERM race).
+            if let (Some(p), Some(q), Some((rid, row))) = (
+                x.as_f64(),
+                y.as_f64(),
+                cx.table.decision_row("reconnect-cadence"),
+            ) {
+                if crate::tolerances::stream_matches(&row.streams, &cx.stream)
+                    && row.count_paths.iter().any(|c| c == path)
+                {
+                    let slack = 1.0 + cx.play.closed_spans.len() as f64;
+                    let t = if (p - q).abs() <= slack {
+                        format!("{rid}/reconnect-cadence")
+                    } else {
+                        UNTOLERATED.into()
+                    };
+                    out.push(cx.mismatch(path, a, b, t));
+                    return;
+                }
+            }
+            // T8 mqtt-error-text: state.json `lastError` from the client library.
+            if let (Some(p), Some(q), Some((rid, row))) = (
+                x.as_str(),
+                y.as_str(),
+                cx.table.decision_row("mqtt-error-text"),
+            ) {
+                let foreign = |m: &str| {
+                    !row.exact_texts.iter().any(|e| e == m)
+                        && !row.own_prefixes.iter().any(|o| m.starts_with(o.as_str()))
+                };
+                if cx.stream == "state" && path == "lastError" && foreign(p) && foreign(q) {
+                    out.push(cx.mismatch(path, a, b, format!("{rid}/mqtt-error-text")));
+                    return;
+                }
             }
             // T7 FFFD vs lone surrogate (D1/D2).
             if let (Some(p), Some(q)) = (x.as_str(), y.as_str()) {
@@ -710,8 +746,9 @@ pub fn diff(
                 deltas: &empty,
                 first_wall,
             };
+            // A QoS 0 tick racing the drop (±1 per span; WP1 follow-up amb. 3).
             let tol = cx
-                .near_closed()
+                .near_closed_as("reconnect-cadence")
                 .or_else(|| {
                     // The first/last tick of a run may have no partner.
                     let w = w.unwrap_or(m.w);
@@ -777,7 +814,7 @@ pub fn diff(
                     // A status message around a cut connection (online/LWT
                     // timing) is cadence; anything else is a real difference.
                     let tol = if stream == "status" {
-                        cx.near_closed()
+                        cx.near_closed_as("reconnect-cadence")
                     } else {
                         None
                     }
@@ -870,10 +907,12 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
         .collect();
     v.sort();
     let empty = BTreeMap::new();
-    let pad = table
-        .decision_row("cadence")
+    let bound = table.decision_row("offline-queue-bound");
+    let pad = bound
+        .as_ref()
         .and_then(|(_, r)| r.around_closed_ms)
         .unwrap_or(5000) as i64;
+    let min_span = bound.as_ref().and_then(|(_, r)| r.min_span_ms).unwrap_or(0) as i64;
     for w in v.windows(2) {
         let ((t0, s0), (t1, s1)) = (w[0], w[1]);
         if s1 - s0 == 1 {
@@ -889,14 +928,16 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
             deltas: &empty,
             first_wall: play.start_wall,
         };
-        // A jump whose interval straddles a closed span: Rust counts the
-        // ticks it skips while disconnected (T8 cadence).
-        let tol = cx
-            .near_closed()
-            .or_else(|| {
-                let (rid, _) = table.decision_row("cadence")?;
-                play.straddles_closed(t0, t1, pad)
-                    .then(|| format!("{rid}/cadence"))
+        // A jump across an outage longer than the offline queue holds (1000
+        // payloads ≈ 16.7 min at 1 Hz): Rust dropped the oldest queued ticks
+        // (WP1 follow-up amb. 1). Shorter outages must flush every tick.
+        let tol = bound
+            .as_ref()
+            .and_then(|(rid, _)| {
+                play.closed_spans
+                    .iter()
+                    .any(|(a, b)| b - a >= min_span && t0 <= b + pad && t1 >= a - pad)
+                    .then(|| format!("{rid}/offline-queue-bound"))
             })
             .unwrap_or_else(|| UNTOLERATED.into());
         rep.push(cx.mismatch(
@@ -1044,7 +1085,9 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
     }
     if level == "error" {
         if let Some((rid, row)) = table.decision_row("mqtt-error-text") {
-            if !row.own_prefixes.iter().any(|p| msg.starts_with(p.as_str())) {
+            if !row.own_prefixes.iter().any(|p| msg.starts_with(p.as_str()))
+                && !row.exact_texts.contains(&msg)
+            {
                 msg = "<transport error>".into();
                 hit = Some(format!("{rid}/mqtt-error-text"));
             }
@@ -1088,7 +1131,6 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
     let keys: BTreeSet<&String> = ca.keys().chain(cb.keys()).collect();
     let t6 = table.of_kind("phase_owned", "events").next();
     let cadence = table.decision_row("reconnect-cadence");
-    let offline = table.decision_row("cadence");
     let had_cut = !play.closed_spans.is_empty();
     rep.stats.entry("events".into()).or_default().compared = keys.len();
     for k in keys {
@@ -1133,14 +1175,6 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
         }) {
             let _ = row;
             format!("{rid}/reconnect-cadence")
-        } else if let Some((rid, _)) = offline.as_ref().filter(|(_, row)| {
-            had_cut
-                && row
-                    .event_prefixes
-                    .iter()
-                    .any(|p| msg.starts_with(p.as_str()))
-        }) {
-            format!("{rid}/cadence")
         } else if k.contains("<transport error>") && x > 0 && y > 0 {
             norm.unwrap_or_else(|| UNTOLERATED.into())
         } else {
@@ -1445,49 +1479,70 @@ mod tests {
     }
 
     #[test]
-    fn outage_seq_jump_reconnect_tail_and_gate_skip_are_tolerated() {
+    fn outage_seq_jump_reconnect_tail_and_gate_skip() {
         let t = table();
         let tel = |ts: i64, seq: i64| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
-        let mut play = PlayInfo {
-            start_wall: 0,
-            end_wall: 200_000,
-            closed_spans: vec![(50_000, 70_000)],
-            ..Default::default()
+        // A (JS) resumes 1 s after the cut; B (Rust, backoff) 8 s after and,
+        // past the 1000-payload offline queue, dropped the oldest ticks.
+        let run = |span_end: i64| {
+            let mut play = PlayInfo {
+                start_wall: 0,
+                end_wall: span_end + 100_000,
+                closed_spans: vec![(50_000, span_end)],
+                ..Default::default()
+            };
+            play.skips = vec![("b".into(), 30_000)];
+            let a = cap(
+                "js",
+                vec![
+                    msg(29_000, "telemetry", tel(29_000, 29)),
+                    msg(31_000, "telemetry", tel(31_000, 30)),
+                    msg(49_000, "telemetry", tel(49_000, 31)),
+                    msg(span_end + 1_000, "telemetry", tel(span_end + 1_000, 32)),
+                    msg(span_end + 6_000, "telemetry", tel(span_end + 6_000, 33)),
+                    msg(span_end + 8_000, "telemetry", tel(span_end + 8_000, 34)),
+                ],
+            );
+            let b = cap(
+                "rust",
+                vec![
+                    msg(29_000, "telemetry", tel(29_000, 1)),
+                    msg(30_010, "telemetry", tel(30_010, 2)),
+                    msg(31_000, "telemetry", tel(31_000, 3)),
+                    msg(49_000, "telemetry", tel(49_000, 4)),
+                    msg(span_end + 8_000, "telemetry", tel(span_end + 8_000, 33)),
+                ],
+            );
+            diff(&a, &b, &play, &[], &t)
         };
-        play.skips = vec![("b".into(), 30_000)];
-        // A (JS) resumes at 71 s; B (Rust, backoff) only at 78 s and its seq
-        // counted the ticks it skipped; B also has a gate-skipped tick at 30 s.
-        let a = cap(
-            "js",
-            vec![
-                msg(29_000, "telemetry", tel(29_000, 29)),
-                msg(31_000, "telemetry", tel(31_000, 30)),
-                msg(49_000, "telemetry", tel(49_000, 31)),
-                msg(71_000, "telemetry", tel(71_000, 32)),
-                msg(76_000, "telemetry", tel(76_000, 33)),
-                msg(78_000, "telemetry", tel(78_000, 34)),
-            ],
+        let tol_of = |rep: &Report, p: &str| -> Vec<String> {
+            rep.mismatches
+                .iter()
+                .filter(|m| m.path == p)
+                .map(|m| m.tol.clone())
+                .collect()
+        };
+        // A 20 s outage must flush every tick now (WP1 follow-up parity): the
+        // seq jump is a FAIL; the reconnect tail and the gate skip are not.
+        let short = run(70_000);
+        assert_eq!(
+            tol_of(&short, "seq (increment)"),
+            vec![UNTOLERATED.to_string()]
         );
-        let b = cap(
-            "rust",
-            vec![
-                msg(29_000, "telemetry", tel(29_000, 1)),
-                msg(30_010, "telemetry", tel(30_010, 2)),
-                msg(31_000, "telemetry", tel(31_000, 3)),
-                msg(49_000, "telemetry", tel(49_000, 4)),
-                msg(78_000, "telemetry", tel(78_000, 33)),
-            ],
+        let msgs = tol_of(&short, "(message)");
+        assert!(msgs.contains(&"T8/tick-drift".to_string()), "{msgs:?}");
+        assert!(
+            msgs.contains(&"T8/reconnect-cadence".to_string()),
+            "{msgs:?}"
         );
-        let rep = diff(&a, &b, &play, &[], &t);
-        let un: Vec<_> = rep
-            .mismatches
-            .iter()
-            .filter(|m| m.tol == UNTOLERATED)
-            .collect();
-        assert!(un.is_empty(), "{un:?}");
-        let tols: Vec<&str> = rep.mismatches.iter().map(|m| m.tol.as_str()).collect();
-        assert!(tols.contains(&"T8/tick-drift"), "{tols:?}");
-        assert!(tols.contains(&"T8/cadence"), "{tols:?}");
+        assert!(!msgs.contains(&UNTOLERATED.to_string()), "{msgs:?}");
+        // Past the queue bound (span ≥ 1000 s) the jump is the bound.
+        let long = run(1_100_000);
+        assert_eq!(
+            tol_of(&long, "seq (increment)"),
+            vec!["T8/offline-queue-bound".to_string()]
+        );
+        assert_eq!(long.untolerated(), 0, "{:?}", long.mismatches);
     }
 
     #[test]
