@@ -455,6 +455,19 @@ impl Agent {
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
+        .chain(
+            // The Rust agent re-records what it was fed: a round-trip check of
+            // the tape hooks (`xorgate-replay inspect <run>/b/agent-tape.ndjson.gz`).
+            (kind == AgentKind::Rust).then(|| {
+                (
+                    "XORGATE_RS_TAPE".to_string(),
+                    dir.join("agent-tape.ndjson.gz").display().to_string(),
+                )
+            }),
+        )
+        .collect::<Vec<(String, String)>>()
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
         .collect();
         fs::write(
             dir.join("meta.json"),
