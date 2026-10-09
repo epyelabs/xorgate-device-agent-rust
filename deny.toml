@@ -8,11 +8,29 @@ targets = [{ triple = "aarch64-unknown-linux-gnu" }]
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# Every entry below is pulled in ONLY by rumqttc 0.25.1 (latest release AND git
+# main as of 2026-10-09), whose `use-rustls` feature hard-depends on
+# rustls-webpki ^0.102 and rustls-pemfile ^2 (no feature combination avoids
+# them; `use-native-tls` would swap to OpenSSL; `[patch]` cannot cross 0.102 ->
+# 0.103). The agent never executes that code: xorgate-cloud builds its own
+# rustls 0.23 `ClientConfig` (webpki 0.103.x + aws-lc-rs, PEM via
+# rustls-pki-types) and hands it to rumqttc as `TlsConfiguration::Rustls`, so
+# rumqttc's pemfile/webpki-0.102 path (`TlsConfiguration::Simple`) is dead code
+# in this binary. Revisit when rumqttc releases on webpki 0.103 / pki-types PEM.
+ignore = [
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained: only via rumqttc 0.25.1 (TlsConfiguration::Simple, unused here); revisit when rumqttc releases" },
+  { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102 CRL distribution-point matching: only via rumqttc 0.25.1 (error type only, verification runs on webpki 0.103 via rustls 0.23); revisit when rumqttc releases" },
+  { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102 URI name constraints: only via rumqttc 0.25.1 (error type only, verification runs on webpki 0.103 via rustls 0.23); revisit when rumqttc releases" },
+  { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 wildcard name constraints: only via rumqttc 0.25.1 (error type only, verification runs on webpki 0.103 via rustls 0.23); revisit when rumqttc releases" },
+  { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102 CRL parsing panic: only via rumqttc 0.25.1 (error type only, verification runs on webpki 0.103 via rustls 0.23); revisit when rumqttc releases" },
+]
 
 [licenses]
 version = 2
 confidence-threshold = 0.8
+# The workspace crates are `publish = false` and proprietary (no SPDX id), so
+# the license check skips them; third-party crates are still held to `allow`.
+private = { ignore = true }
 allow = [
   "MIT",
   "Apache-2.0",

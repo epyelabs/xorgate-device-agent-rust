@@ -16,9 +16,12 @@ publish = false
 repository = "https://github.com/epyelabs/xorgate-device-agent-rust"
 
 [workspace.dependencies]
-xorgate-core = { path = "crates/xorgate-core" }
-xorgate-hal = { path = "crates/xorgate-hal" }
-xorgate-cloud = { path = "crates/xorgate-cloud" }
+# `version` alongside `path`: cargo-deny `[bans] wildcards = "deny"` treats a
+# bare path dependency as a wildcard requirement. Keep in step with
+# [workspace.package].version.
+xorgate-core = { path = "crates/xorgate-core", version = "0.0.1" }
+xorgate-hal = { path = "crates/xorgate-hal", version = "0.0.1" }
+xorgate-cloud = { path = "crates/xorgate-cloud", version = "0.0.1" }
 
 anyhow = "1"
 thiserror = "2"
