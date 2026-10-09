@@ -68,7 +68,7 @@ Then `{"t":<mono ms since start>,"w":<wall ms>,"k":<kind>,…}`:
 | `dt` | `max_current` hex / `absent:true` | once |
 | `mqtt_in` | `topic`, `payload` / `payloadB64`, `retain`, `qos` | every inbound publish incl. retained redeliveries |
 | `conn` | `state` `connected`/`closed` | MQTT plane |
-| `cli` | `argv` | `xorgate-rs set …` while taping |
+| `cli` | `argv` | `xorgate-rs set …` while taping — in the SIDE FILE `<tape>.cli.ndjson` (see below) |
 | `clock` | `wall`, `mono` | every 10 s |
 | `proc` | `path`, `text` | optional, Rust-only replay |
 
@@ -80,6 +80,15 @@ to the last flush (`inspect` says `TRUNCATED`). `meta.home` (optional) carries
 both agents from the bench's state. **Tapes are never committed** (bench
 location + SIM identity; O8) except `fixtures/replay/smoke.ndjson.gz`, which is
 synthetic.
+
+**CLI side file.** `xorgate-rs set …` with `XORGATE_RS_TAPE` in its env
+appends `{"w":<wall ms>,"k":"cli","argv":["set",…]}` to `<tape>.cli.ndjson`
+(WP6 `cli/set.rs`, wp6.md A6): the gz tape has one writer, the agent process.
+`Tape::read` merges the side file when it exists: each line gets the tape's
+mono `t` of the nearest earlier record plus the wall delta and is inserted in
+`t` order (tape order wins ties; a cut last line is ignored). `tape-pull.sh`
+copies the side file along; during the window the CLI must be run with the
+same `XORGATE_RS_TAPE` (`exclusive.sh begin` prints the command line).
 
 `xorgate-replay inspect <tape> [--dump [--kind nmea]…]` prints the header,
 per-kind counts, closed spans, NMEA gaps, wall steps and truncation.
@@ -177,6 +186,13 @@ change, 1 s poll), `final/`, `sudo.log`, `cli.log`, `stdout.log`, `stderr.log`.
 | events | the multiset of `level: msg` of every state.json event seen in the 1 s snapshots |
 | sudo | the argv sequence (`sudo.log`) |
 
+`host.ndjson` (written by the player every 50 ms) is the rig's own
+`ram_usage` reading (same formula as `hardware/system.ts:85-98`): a
+`ram_usage` difference beyond T3's ±1 is cited as `T3/host` only when this
+series moved by at least the excess between the two agents' `ts` (±250 ms);
+otherwise it stays UNTOLERATED. It explains host noise; it never widens what
+an agent may report.
+
 Every mismatch is listed with both values and the id of the row that covers it
 (`T1` … `T9`, `T7/D1`, `T8/O3`, …) or `UNTOLERATED`; exit 1 on any UNTOLERATED.
 Rows are explained in `tolerances.toml`. Editing rule: T1–T9 come from the
@@ -197,6 +213,26 @@ a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
   `cpu_usage`, `ram_usage`, `disk_usage` are the rig host's live values (T3).
 - `rpicam-hello` is absent (camera reconcile = "cannot enumerate"); camera
   mount, LED, recording and media are Phase 3/4 and tolerated as T6.
+
+## CLI matrix (C11)
+
+`cli-matrix.sh` runs both CLIs (`node dist/cli.js` @ 89b5c64, `xorgate-rs`; or
+`RS_CLI=<path>` for a branch build) inside the rig container and diffs stdout,
+stderr (ANSI stripped), exit code and settings.json bytes:
+
+```sh
+cd tools/replay
+docker compose run --rm -T --no-deps --entrypoint bash rig /rig/tools/cli-matrix.sh            # cumulative list (one home, 34 steps)
+docker compose run --rm -T --no-deps --entrypoint bash rig /rig/tools/cli-matrix.sh --fresh    # cli/cases.txt, a fresh home per case (36)
+```
+
+`--fresh` drives `cli/e2e-set-run.sh` (WP6's per-case runner, also usable
+outside the rig with `RUNNER=…`) over `cli/cases.txt`, every case seeded from
+`cli/seed.json`; tags `@root` (sudo note) and `@running` (a decoy live worker +
+pidfile, the `set mode` restart path). A by-design difference is tagged
+`expect:T8/<row>` and must name a row of `tolerances.toml` (`set-wifi`,
+`cli-banner`, `logs-journal`, `set-mode-running`); settings.json must match
+even then.
 
 ## CI
 
