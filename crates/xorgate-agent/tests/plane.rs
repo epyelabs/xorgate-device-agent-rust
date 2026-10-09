@@ -8,7 +8,8 @@
 //!   through connect / tick / close, with the event wording dumped by tsx from
 //!   the real `TelemetryScope` + `noteScopeChange` (`fixtures/agent_plane/scope-plane.json`);
 //! - the shutdown ORDER (`worker.ts:1291-1325`);
-//! - `publish_acked` (PUBACK, timeout, waits for the link like mqtt.js's offline queue);
+//! - `publish_acked` (PUBACK, timeout) and the tick's publish callback (the
+//!   offline queue itself is the client's: `xorgate-cloud/tests/mqtt_offline.rs`);
 //! - `read error: …` and the error/close path.
 
 mod common;
@@ -386,26 +387,12 @@ async fn publish_acked_resolves_on_puback_or_timeout() {
     );
     assert_eq!(start.elapsed(), t);
 
-    // Disconnected for the whole budget → times out, nothing published.
+    // The handle no longer gates on the link (that hid a `watch::Ref` across
+    // an await — WP4): while disconnected the CLIENT stores and resends
+    // (mqtt.js outgoingStore), so the call reaches the transport at once.
+    *r.link.ack.lock().unwrap() = Some(AckOutcome::Acked);
     r.link.set(LinkState::Reconnecting);
     let before = r.link.topics().len();
-    let start = tokio::time::Instant::now();
-    assert_eq!(
-        r.mqtt
-            .publish_acked("x/command/response", b"{}".to_vec(), t)
-            .await,
-        AckOutcome::TimedOut
-    );
-    assert_eq!(start.elapsed(), t);
-    assert_eq!(r.link.topics().len(), before);
-
-    // The link comes back within the budget → published then (offline-queue semantics).
-    *r.link.ack.lock().unwrap() = Some(AckOutcome::Acked);
-    let link = r.link.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-        link.set(LinkState::Connected);
-    });
     assert_eq!(
         r.mqtt
             .publish_acked("x/command/response", b"{}".to_vec(), t)
@@ -415,20 +402,42 @@ async fn publish_acked_resolves_on_puback_or_timeout() {
     assert_eq!(r.link.topics().len(), before + 1);
 }
 
-/// Fire-and-forget publishes are not queued while disconnected (deviation #8).
+/// mqtt.js offline queue (`queueQoSZero`, review-wp1 I-b): a tick while
+/// disconnected still hands its payload to the client, and `published` counts
+/// it only when the client calls back — after the reconnect flush
+/// (`worker.ts:1235-1245`). Phase 0 deviation #8 is gone.
 #[tokio::test(start_paused = true)]
-async fn publish_while_disconnected_is_skipped_and_not_counted() {
-    let mut r = rig("skip", "dev-k");
+async fn publish_while_disconnected_is_queued_and_counted_on_flush() {
+    let mut r = rig("queue", "dev-k");
     r.connect();
     r.close();
     r.take_timeline();
+    *r.link.held.lock().unwrap() = Some(vec![]);
     settle(3500).await; // ticks at 1000, 2000, 3000
-    assert!(r.take_timeline().is_empty());
+    assert_eq!(r.take_timeline(), ["publish dev-k/telemetry"; 3]);
     let snap = r.ctx.state.snapshot();
     assert_eq!(snap.published, 0);
     assert_eq!(snap.publish_errors, 0);
-    // …but the payload was still built (`setLatest`) and seq advanced.
     assert_eq!(snap.latest.as_ref().map(|l| l.seq), Some(2));
+
+    // The reconnect flush: the client writes the queue and calls back.
+    r.connect();
+    let held = r.link.held.lock().unwrap().take().unwrap();
+    for (i, tx) in held.into_iter().enumerate() {
+        let _ = tx.send(if i == 2 {
+            Some(Err("boom".into()))
+        } else {
+            Some(Ok(()))
+        });
+    }
+    settle(1).await;
+    let snap = r.ctx.state.snapshot();
+    assert_eq!(snap.published, 2);
+    assert_eq!(snap.publish_errors, 1);
+    assert_eq!(
+        snap.recent_events.last().unwrap().msg,
+        "publish error: boom"
+    );
 }
 
 /// `client.on("error")` then `close` (`worker.ts:1264-1284`), and the
