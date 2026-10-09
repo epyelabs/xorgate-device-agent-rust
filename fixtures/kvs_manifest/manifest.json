@@ -1,0 +1,352 @@
+{
+  "jsSourceFile": "src/media/manifest.ts (loadManifest, persistUploadBucket) + test/manifest.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-wp5.ts in a git-archive scratch copy of the JS repo @ 89b5c64 (phase-2 WP5; script handed to WP7 via phase-2/evidence/wp5.md)",
+  "cases": [
+    {
+      "name": "manifest.test.ts: parses a valid manifest",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}"
+    },
+    {
+      "name": "manifest.test.ts: returns null when the file is missing",
+      "op": "loadManifest",
+      "inputText": null,
+      "expectedJson": "null"
+    },
+    {
+      "name": "manifest.test.ts: returns null on unparseable content",
+      "op": "loadManifest",
+      "inputText": "not json",
+      "expectedJson": "null"
+    },
+    {
+      "name": "manifest.test.ts: returns null when a required field is missing or empty [region empty]",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "manifest.test.ts: returns null when a required field is missing or empty [credentialEndpoint undefined]",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "manifest.test.ts: accepts an empty channel list",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[]}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[]}"
+    },
+    {
+      "name": "manifest.test.ts: drops malformed channel entries",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\"},\"garbage\"]}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"}]}"
+    },
+    {
+      "name": "extra: uploadBucket carried",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"core-bucket\"}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"core-bucket\"}"
+    },
+    {
+      "name": "extra: empty uploadBucket omitted",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"\"}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}"
+    },
+    {
+      "name": "extra: non-string uploadBucket omitted",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":5}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}"
+    },
+    {
+      "name": "extra: channels missing",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"d\",\"region\":\"r\",\"credentialEndpoint\":\"c\",\"roleAlias\":\"a\"}",
+      "expectedJson": "{\"deviceId\":\"d\",\"region\":\"r\",\"credentialEndpoint\":\"c\",\"roleAlias\":\"a\",\"channels\":[]}"
+    },
+    {
+      "name": "extra: channels is an object",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":{\"streamKey\":\"cam0\",\"channelName\":\"x\"}}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[]}"
+    },
+    {
+      "name": "extra: channel extra fields stripped, null/number/array entries dropped",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[null,3,[],{\"streamKey\":\"cam0\",\"channelName\":\"n\",\"extra\":1},{\"streamKey\":\"\",\"channelName\":\"n\"},{\"streamKey\":1,\"channelName\":\"n\"}]}",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"n\"}]}"
+    },
+    {
+      "name": "extra: root array",
+      "op": "loadManifest",
+      "inputText": "[]",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: root null",
+      "op": "loadManifest",
+      "inputText": "null",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: root string",
+      "op": "loadManifest",
+      "inputText": "\"x\"",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: root number",
+      "op": "loadManifest",
+      "inputText": "42",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: deviceId number",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":7,\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: roleAlias missing",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: UTF-8 BOM prefix",
+      "op": "loadManifest",
+      "inputText": "﻿{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: surrounding whitespace + newline",
+      "op": "loadManifest",
+      "inputText": "\n  {\n  \"deviceId\": \"dev-1\",\n  \"region\": \"us-east-1\",\n  \"credentialEndpoint\": \"abc.credentials.iot.us-east-1.amazonaws.com\",\n  \"roleAlias\": \"XorgateDeviceCreds\",\n  \"channels\": [\n    {\n      \"streamKey\": \"cam0\",\n      \"channelName\": \"dev-1-cam0\"\n    },\n    {\n      \"streamKey\": \"cam1\",\n      \"channelName\": \"dev-1-cam1\"\n    }\n  ]\n}\n\n",
+      "expectedJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}"
+    },
+    {
+      "name": "extra: duplicate keys (last wins)",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"a\",\"region\":\"r\",\"credentialEndpoint\":\"c\",\"roleAlias\":\"x\",\"region\":\"r2\",\"channels\":[]}",
+      "expectedJson": "{\"deviceId\":\"a\",\"region\":\"r2\",\"credentialEndpoint\":\"c\",\"roleAlias\":\"x\",\"channels\":[]}"
+    },
+    {
+      "name": "extra: invalid UTF-8 inside the bucket string (lossy decode)",
+      "op": "loadManifest",
+      "inputB64": "eyJkZXZpY2VJZCI6ImQiLCJyZWdpb24iOiJyIiwiY3JlZGVudGlhbEVuZHBvaW50IjoiYyIsInJvbGVBbGlhcyI6ImEiLCJ1cGxvYWRCdWNrZXQiOiJi//4ifQ==",
+      "expectedJson": "{\"deviceId\":\"d\",\"region\":\"r\",\"credentialEndpoint\":\"c\",\"roleAlias\":\"a\",\"channels\":[],\"uploadBucket\":\"b��\"}"
+    },
+    {
+      "name": "extra: unicode + escapes in values",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"d\\u00e9v\",\"region\":\"r\",\"credentialEndpoint\":\"c\",\"roleAlias\":\"a\\n\",\"channels\":[{\"streamKey\":\"cäm\",\"channelName\":\"\\ud83d\\ude00\"}]}",
+      "expectedJson": "{\"deviceId\":\"dév\",\"region\":\"r\",\"credentialEndpoint\":\"c\",\"roleAlias\":\"a\\n\",\"channels\":[{\"streamKey\":\"cäm\",\"channelName\":\"😀\"}]}"
+    },
+    {
+      "name": "extra: empty file",
+      "op": "loadManifest",
+      "inputText": "",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: trailing comma",
+      "op": "loadManifest",
+      "inputText": "{\"deviceId\":\"d\",}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "manifest.test.ts: backfills a manifest without an uploadBucket",
+      "op": "persistUploadBucket",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}]}",
+      "bucket": "core-bucket",
+      "expected": "applied",
+      "afterB64": "eyJkZXZpY2VJZCI6ImRldi0xIiwicmVnaW9uIjoidXMtZWFzdC0xIiwiY3JlZGVudGlhbEVuZHBvaW50IjoiYWJjLmNyZWRlbnRpYWxzLmlvdC51cy1lYXN0LTEuYW1hem9uYXdzLmNvbSIsInJvbGVBbGlhcyI6IlhvcmdhdGVEZXZpY2VDcmVkcyIsImNoYW5uZWxzIjpbeyJzdHJlYW1LZXkiOiJjYW0wIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0wIn0seyJzdHJlYW1LZXkiOiJjYW0xIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0xIn1dLCJ1cGxvYWRCdWNrZXQiOiJjb3JlLWJ1Y2tldCJ9",
+      "afterLoadJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"core-bucket\"}"
+    },
+    {
+      "name": "manifest.test.ts: no-ops when the bucket already matches (retained redelivery)",
+      "op": "persistUploadBucket",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"core-bucket\"}",
+      "bucket": "core-bucket",
+      "expected": "unchanged",
+      "afterB64": "eyJkZXZpY2VJZCI6ImRldi0xIiwicmVnaW9uIjoidXMtZWFzdC0xIiwiY3JlZGVudGlhbEVuZHBvaW50IjoiYWJjLmNyZWRlbnRpYWxzLmlvdC51cy1lYXN0LTEuYW1hem9uYXdzLmNvbSIsInJvbGVBbGlhcyI6IlhvcmdhdGVEZXZpY2VDcmVkcyIsImNoYW5uZWxzIjpbeyJzdHJlYW1LZXkiOiJjYW0wIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0wIn0seyJzdHJlYW1LZXkiOiJjYW0xIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0xIn1dLCJ1cGxvYWRCdWNrZXQiOiJjb3JlLWJ1Y2tldCJ9",
+      "afterLoadJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"core-bucket\"}"
+    },
+    {
+      "name": "manifest.test.ts: overwrites a different existing bucket (cloud is authoritative)",
+      "op": "persistUploadBucket",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"old-bucket\"}",
+      "bucket": "new-bucket",
+      "expected": "applied",
+      "afterB64": "eyJkZXZpY2VJZCI6ImRldi0xIiwicmVnaW9uIjoidXMtZWFzdC0xIiwiY3JlZGVudGlhbEVuZHBvaW50IjoiYWJjLmNyZWRlbnRpYWxzLmlvdC51cy1lYXN0LTEuYW1hem9uYXdzLmNvbSIsInJvbGVBbGlhcyI6IlhvcmdhdGVEZXZpY2VDcmVkcyIsImNoYW5uZWxzIjpbeyJzdHJlYW1LZXkiOiJjYW0wIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0wIn0seyJzdHJlYW1LZXkiOiJjYW0xIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0xIn1dLCJ1cGxvYWRCdWNrZXQiOiJuZXctYnVja2V0In0=",
+      "afterLoadJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"new-bucket\"}"
+    },
+    {
+      "name": "manifest.test.ts: preserves every other field verbatim, including unknown ones",
+      "op": "persistUploadBucket",
+      "inputText": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"futureKey\":{\"nested\":true}}",
+      "bucket": "core-bucket",
+      "expected": "applied",
+      "afterB64": "eyJkZXZpY2VJZCI6ImRldi0xIiwicmVnaW9uIjoidXMtZWFzdC0xIiwiY3JlZGVudGlhbEVuZHBvaW50IjoiYWJjLmNyZWRlbnRpYWxzLmlvdC51cy1lYXN0LTEuYW1hem9uYXdzLmNvbSIsInJvbGVBbGlhcyI6IlhvcmdhdGVEZXZpY2VDcmVkcyIsImNoYW5uZWxzIjpbeyJzdHJlYW1LZXkiOiJjYW0wIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0wIn0seyJzdHJlYW1LZXkiOiJjYW0xIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0xIn1dLCJmdXR1cmVLZXkiOnsibmVzdGVkIjp0cnVlfSwidXBsb2FkQnVja2V0IjoiY29yZS1idWNrZXQifQ==",
+      "afterLoadJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"core-bucket\"}"
+    },
+    {
+      "name": "manifest.test.ts: returns no-manifest when kvs.json is absent or unparseable [absent]",
+      "op": "persistUploadBucket",
+      "inputText": null,
+      "bucket": "b",
+      "expected": "no-manifest",
+      "afterB64": null,
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "manifest.test.ts: returns no-manifest when kvs.json is absent or unparseable [not json]",
+      "op": "persistUploadBucket",
+      "inputText": "not json",
+      "bucket": "b",
+      "expected": "no-manifest",
+      "afterB64": "bm90IGpzb24=",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: root array → no-manifest",
+      "op": "persistUploadBucket",
+      "inputText": "[1]",
+      "bucket": "b",
+      "expected": "no-manifest",
+      "afterB64": "WzFd",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: root null → no-manifest",
+      "op": "persistUploadBucket",
+      "inputText": "null",
+      "bucket": "b",
+      "expected": "no-manifest",
+      "afterB64": "bnVsbA==",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: root string → no-manifest",
+      "op": "persistUploadBucket",
+      "inputText": "\"s\"",
+      "bucket": "b",
+      "expected": "no-manifest",
+      "afterB64": "InMi",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: incomplete manifest still backfilled (no validation)",
+      "op": "persistUploadBucket",
+      "inputText": "{}",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyJ1cGxvYWRCdWNrZXQiOiJiIn0=",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: pretty-printed file is rewritten compact",
+      "op": "persistUploadBucket",
+      "inputText": "{\n  \"deviceId\": \"dev-1\",\n  \"region\": \"us-east-1\",\n  \"credentialEndpoint\": \"abc.credentials.iot.us-east-1.amazonaws.com\",\n  \"roleAlias\": \"XorgateDeviceCreds\",\n  \"channels\": [\n    {\n      \"streamKey\": \"cam0\",\n      \"channelName\": \"dev-1-cam0\"\n    },\n    {\n      \"streamKey\": \"cam1\",\n      \"channelName\": \"dev-1-cam1\"\n    }\n  ]\n}\n",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyJkZXZpY2VJZCI6ImRldi0xIiwicmVnaW9uIjoidXMtZWFzdC0xIiwiY3JlZGVudGlhbEVuZHBvaW50IjoiYWJjLmNyZWRlbnRpYWxzLmlvdC51cy1lYXN0LTEuYW1hem9uYXdzLmNvbSIsInJvbGVBbGlhcyI6IlhvcmdhdGVEZXZpY2VDcmVkcyIsImNoYW5uZWxzIjpbeyJzdHJlYW1LZXkiOiJjYW0wIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0wIn0seyJzdHJlYW1LZXkiOiJjYW0xIiwiY2hhbm5lbE5hbWUiOiJkZXYtMS1jYW0xIn1dLCJ1cGxvYWRCdWNrZXQiOiJiIn0=",
+      "afterLoadJson": "{\"deviceId\":\"dev-1\",\"region\":\"us-east-1\",\"credentialEndpoint\":\"abc.credentials.iot.us-east-1.amazonaws.com\",\"roleAlias\":\"XorgateDeviceCreds\",\"channels\":[{\"streamKey\":\"cam0\",\"channelName\":\"dev-1-cam0\"},{\"streamKey\":\"cam1\",\"channelName\":\"dev-1-cam1\"}],\"uploadBucket\":\"b\"}"
+    },
+    {
+      "name": "extra: uploadBucket in the middle keeps its position",
+      "op": "persistUploadBucket",
+      "inputText": "{\"deviceId\":\"d\",\"uploadBucket\":\"old\",\"region\":\"r\"}",
+      "bucket": "new",
+      "expected": "applied",
+      "afterB64": "eyJkZXZpY2VJZCI6ImQiLCJ1cGxvYWRCdWNrZXQiOiJuZXciLCJyZWdpb24iOiJyIn0=",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: non-string uploadBucket overwritten",
+      "op": "persistUploadBucket",
+      "inputText": "{\"uploadBucket\":5}",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyJ1cGxvYWRCdWNrZXQiOiJiIn0=",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: empty bucket string against absent key",
+      "op": "persistUploadBucket",
+      "inputText": "{\"a\":1}",
+      "bucket": "",
+      "expected": "applied",
+      "afterB64": "eyJhIjoxLCJ1cGxvYWRCdWNrZXQiOiIifQ==",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: number formatting of preserved fields",
+      "op": "persistUploadBucket",
+      "inputText": "{\"i\":1,\"f\":1.0,\"g\":2.50,\"big\":1e21,\"bigger\":1.5e300,\"small\":1.5e-7,\"tiny\":0.000001,\"neg\":-0,\"negf\":-0.0,\"u64\":12345678901234567890,\"i53\":9007199254740993,\"e\":1E2,\"ef\":123456789012345680000,\"third\":0.30000000000000004}",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyJpIjoxLCJmIjoxLCJnIjoyLjUsImJpZyI6MWUrMjEsImJpZ2dlciI6MS41ZSszMDAsInNtYWxsIjoxLjVlLTcsInRpbnkiOjAuMDAwMDAxLCJuZWciOjAsIm5lZ2YiOjAsInU2NCI6MTIzNDU2Nzg5MDEyMzQ1NjcwMDAsImk1MyI6OTAwNzE5OTI1NDc0MDk5MiwiZSI6MTAwLCJlZiI6MTIzNDU2Nzg5MDEyMzQ1NjgwMDAwLCJ0aGlyZCI6MC4zMDAwMDAwMDAwMDAwMDAwNCwidXBsb2FkQnVja2V0IjoiYiJ9",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: string escaping of preserved fields",
+      "op": "persistUploadBucket",
+      "inputText": "{\"s\":\"\\u0001\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\\u007f\\u00e9\\u2028\\ud83d\\ude00\"}",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyJzIjoiXHUwMDAxXHUwMDFmXGJcZlxuXHJcdFwiXFwvf8Op4oCo8J+YgCIsInVwbG9hZEJ1Y2tldCI6ImIifQ==",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: duplicate keys collapse (first position, last value)",
+      "op": "persistUploadBucket",
+      "inputText": "{\"a\":1,\"b\":2,\"a\":3}",
+      "bucket": "x",
+      "expected": "applied",
+      "afterB64": "eyJhIjozLCJiIjoyLCJ1cGxvYWRCdWNrZXQiOiJ4In0=",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: nested arrays/objects/booleans/null preserved",
+      "op": "persistUploadBucket",
+      "inputText": "{\"o\":{\"z\":1,\"a\":[true,false,null,{\"k\":[]}]},\"e\":{}}",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyJvIjp7InoiOjEsImEiOlt0cnVlLGZhbHNlLG51bGwseyJrIjpbXX1dfSwiZSI6e30sInVwbG9hZEJ1Y2tldCI6ImIifQ==",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: invalid UTF-8 elsewhere is rewritten as U+FFFD",
+      "op": "persistUploadBucket",
+      "inputB64": "eyJ4IjoiwyJ9",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyJ4Ijoi77+9IiwidXBsb2FkQnVja2V0IjoiYiJ9",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: integer-like keys move first (JS property order)",
+      "op": "persistUploadBucket",
+      "inputText": "{\"b\":1,\"10\":2,\"2\":3,\"01\":4,\"4294967295\":5,\"4294967294\":6,\"-1\":7}",
+      "bucket": "b",
+      "expected": "applied",
+      "afterB64": "eyIyIjozLCIxMCI6MiwiNDI5NDk2NzI5NCI6NiwiYiI6MSwiMDEiOjQsIjQyOTQ5NjcyOTUiOjUsIi0xIjo3LCJ1cGxvYWRCdWNrZXQiOiJiIn0=",
+      "afterLoadJson": "null"
+    },
+    {
+      "name": "extra: BOM → no-manifest",
+      "op": "persistUploadBucket",
+      "inputText": "﻿{}",
+      "bucket": "b",
+      "expected": "no-manifest",
+      "afterB64": "77u/e30=",
+      "afterLoadJson": "null"
+    }
+  ]
+}

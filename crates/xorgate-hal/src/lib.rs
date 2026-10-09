@@ -8,4 +8,5 @@
 
 pub mod atomic_write;
 pub mod exec;
+pub mod kvs_manifest_io;
 pub mod system;
