@@ -123,7 +123,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             started_at: now0,
             device_id: cfg.device_id.clone(),
             mode: cfg.mode.clone(),
-            rate_hz: cfg.rate_hz,
+            rate_hz: JsNumber(cfg.rate_hz),
             offline: cfg.offline,
             worker: worker_path,
             argv: std::env::args().skip(1).collect(),
