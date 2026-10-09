@@ -57,7 +57,7 @@ impl ReportOrigin {
             ReportOrigin::Boot => "boot",
         }
     }
-    /// `ORIGIN_RANK` (`config-sync.ts:1199`): `cloud` outranks `boot`, `local`
+    /// `ORIGIN_RANK` (`config-sync.ts:1201`): `cloud` outranks `boot`, `local`
     /// outranks both, when several requests coalesce in one debounce window.
     pub fn rank(self) -> u8 {
         match self {
