@@ -7,13 +7,14 @@
 //! `loadManifest` NEVER fails: a missing/corrupt/incomplete file is "no media
 //! config" (`None`), so callers self-gate instead of crashing.
 //!
-//! JS-compat helpers kept PRIVATE here (phase-2 timing note: the Phase 1
-//! integration is moving `js_fmt` into `xorgate_core::js`): `js_number_to_string`
-//! (`Number.prototype.toString()`) and `js_json_stringify` (`JSON.stringify`
-//! of a parsed document). Fold them into `xorgate_core::js` at integration.
+//! The `persistUploadBucket` rewrite is `JSON.stringify` of the re-parsed
+//! document: V8 key order ([`crate::js::parsed_key_order`]) and V8 number
+//! text ([`crate::js::to_json_string`]).
 
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
+
+use crate::js;
 
 /// `KvsChannel` (`manifest.ts:19-22`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -157,128 +158,16 @@ pub fn persist_upload_bucket_decision(text: Option<&str>, bucket: &str) -> Persi
         "uploadBucket".to_string(),
         Value::String(bucket.to_string()),
     );
+    // `JSON.stringify(o)`: V8 own-key order (integer-like keys first, at
+    // every level) and V8 number text.
     PersistDecision::Apply {
-        text: js_json_stringify(&Value::Object(o)),
+        text: js::to_json_string(&js::parsed_key_order(Value::Object(o))),
     }
-}
-
-/// `JSON.stringify(value)` (no indent) for a document that came out of
-/// `JSON.parse`: every number is an IEEE double printed by
-/// `Number.prototype.toString` (`1.0` → `1`, `1e21` → `1e+21`,
-/// `12345678901234567890` → `12345678901234567000`); strings use the JSON
-/// escapes both sides share (`"`, `\`, `\b\f\n\r\t`, other C0 as `\u00xx`);
-/// object keys in JS property order (integer-like keys first).
-fn js_json_stringify(v: &Value) -> String {
-    let mut out = String::new();
-    write_value(&mut out, v);
-    out
-}
-
-fn write_value(out: &mut String, v: &Value) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => match n.as_f64() {
-            Some(x) if x.is_finite() => out.push_str(&js_number_to_string(x)),
-            _ => out.push_str("null"),
-        },
-        Value::String(s) => out.push_str(&serde_json::to_string(s).unwrap_or_default()),
-        Value::Array(a) => {
-            out.push('[');
-            for (i, x) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_value(out, x);
-            }
-            out.push(']');
-        }
-        Value::Object(o) => write_object(out, o),
-    }
-}
-
-/// An array-index property key (ES2023 §6.1.7): the canonical decimal form of
-/// an integer in `0..=2^32-2`. V8 enumerates these first, ascending.
-fn array_index(k: &str) -> Option<u32> {
-    let n: u32 = k.parse().ok()?;
-    (n != u32::MAX && n.to_string() == k).then_some(n)
-}
-
-fn write_object(out: &mut String, o: &Map<String, Value>) {
-    // OrdinaryOwnPropertyKeys order: integer indices ascending, then string
-    // keys in insertion (= parse) order.
-    let mut entries: Vec<(&String, &Value)> = o.iter().collect();
-    entries.sort_by_key(|(k, _)| match array_index(k) {
-        Some(n) => (0u8, n),
-        None => (1u8, 0),
-    });
-    out.push('{');
-    for (i, (k, x)) in entries.into_iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&serde_json::to_string(k).unwrap_or_default());
-        out.push(':');
-        write_value(out, x);
-    }
-    out.push('}');
-}
-
-/// `Number.prototype.toString()` for a finite double (ES2023 §6.1.6.1.20):
-/// Rust's `{:e}` yields the same shortest round-trip digit string V8 uses;
-/// only the layout rules differ.
-fn js_number_to_string(x: f64) -> String {
-    if x == 0.0 {
-        return "0".to_string();
-    }
-    let sign = if x < 0.0 { "-" } else { "" };
-    let sci = format!("{:e}", x.abs());
-    let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let e: i64 = exp.parse().unwrap_or(0);
-    let k = digits.len() as i64;
-    let n = e + 1;
-    let body = if k <= n && n <= 21 {
-        format!("{digits}{}", "0".repeat((n - k) as usize))
-    } else if 0 < n && n <= 21 {
-        format!("{}.{}", &digits[..n as usize], &digits[n as usize..])
-    } else if -6 < n && n <= 0 {
-        format!("0.{}{digits}", "0".repeat((-n) as usize))
-    } else {
-        let es = if n >= 1 { "+" } else { "-" };
-        let ea = (n - 1).abs();
-        if k == 1 {
-            format!("{digits}e{es}{ea}")
-        } else {
-            format!("{}.{}e{es}{ea}", &digits[..1], &digits[1..])
-        }
-    };
-    format!("{sign}{body}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn number_to_string_layouts() {
-        for (x, s) in [
-            (1.0, "1"),
-            (2.5, "2.5"),
-            (1e21, "1e+21"),
-            (1.5e300, "1.5e+300"),
-            (1.5e-7, "1.5e-7"),
-            (0.000001, "0.000001"),
-            (1e-7, "1e-7"),
-            (-0.0, "0"),
-            (123456789012345680000.0, "123456789012345680000"),
-            (0.30000000000000004, "0.30000000000000004"),
-            (-12.75, "-12.75"),
-            (100.0, "100"),
-        ] {
-            assert_eq!(js_number_to_string(x), s, "{x}");
-        }
-    }
 
     #[test]
     fn upload_bucket_decision_matches_build_upload_options() {
