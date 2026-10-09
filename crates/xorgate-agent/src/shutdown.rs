@@ -24,7 +24,7 @@ pub const EXIT_BUDGET: Duration = Duration::from_millis(2000);
 
 /// The SIGHUP handler (`worker.ts:1339-1343`), wording verbatim.
 pub fn on_sighup(ctx: &AgentCtx) {
-    let now = crate::now_ms();
+    let now = ctx.now_ms();
     warn!("[agent] SIGHUP ignored (tty hangup — likely modem USB drop/re-enumeration)");
     ctx.state.note(
         ActivityLevel::Warn,
@@ -40,6 +40,10 @@ pub struct Shutdown<'a> {
     pub plane: &'a mut MqttPlane,
     pub config: &'a dyn ConfigPlane,
     pub source: &'a dyn TelemetrySource,
+    /// Whether ending the client closes a stream (mqtt.js emits `close`): true
+    /// for the real client, false for the `--offline` stub, whose `end()` just
+    /// calls back (`mqtt.ts:97-100`).
+    pub link_closes: bool,
 }
 
 impl Shutdown<'_> {
@@ -55,7 +59,7 @@ impl Shutdown<'_> {
         // `if (shuttingDown) return; shuttingDown = true;` — the token also
         // stops the publish loop, the heartbeat and every subsystem timer.
         ctx.cancel.cancel();
-        let now = crate::now_ms();
+        let now = ctx.now_ms();
         info!("[agent] shutting down ({sig})…");
         ctx.hooks.led_stop();
         self.config.stop();
@@ -83,7 +87,7 @@ impl Shutdown<'_> {
             }
         }
         let clean = end(EXIT_BUDGET).await;
-        if was_connected {
+        if was_connected && self.link_closes {
             // mqtt.js emits `close` when end() closes the stream.
             self.plane.on_close();
             if clean {

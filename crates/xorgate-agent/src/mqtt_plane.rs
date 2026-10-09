@@ -295,7 +295,7 @@ impl MqttPlane {
 
     /// `client.on("connect")` (`worker.ts:1145-1188`), in the TS order.
     fn on_connect(&mut self) {
-        let now = crate::now_ms();
+        let now = self.ctx.now_ms();
         let cfg = &self.ctx.env.config;
         info!(
             "[agent] connected as {} → {} (mode={}, {} Hz{})",
@@ -346,7 +346,7 @@ impl MqttPlane {
 
     /// The subscribe callback's error branch (`worker.ts:1171-1177`).
     fn on_subscribe_failed(&self, label: &str, msg: &str) {
-        let t = crate::now_ms();
+        let t = self.ctx.now_ms();
         error!("[agent] {label} subscribe failed {msg}");
         self.ctx.state.note(
             ActivityLevel::Warn,
@@ -357,7 +357,7 @@ impl MqttPlane {
 
     /// `client.on("reconnect")` (`worker.ts:1256-1262`).
     fn on_reconnect(&self, attempt: u32, delay: Duration) {
-        let now = crate::now_ms();
+        let now = self.ctx.now_ms();
         info!(
             "[agent] reconnecting… (attempt {attempt}, after {:.1} s)",
             delay.as_secs_f64()
@@ -372,7 +372,7 @@ impl MqttPlane {
 
     /// `client.on("error")` (`worker.ts:1264-1269`).
     fn on_error(&self, msg: &str) {
-        let now = crate::now_ms();
+        let now = self.ctx.now_ms();
         error!("[agent] mqtt error {msg}");
         self.ctx.state.set_error(msg, now);
         self.ctx.state.flush(now, true);
@@ -382,7 +382,7 @@ impl MqttPlane {
     /// shutdown path after the final DISCONNECT (mqtt.js emits `close` when
     /// `end()` closes the stream), where `noteClose` is skipped.
     pub fn on_close(&mut self) {
-        let now = crate::now_ms();
+        let now = self.ctx.now_ms();
         info!("[agent] connection closed");
         self.connected = false;
         self.ctx.tape.conn(false);
@@ -439,7 +439,7 @@ impl PublishTick {
             Ok(r) => r,
             Err(msg) => {
                 // A collector/read failure must not crash the daemon.
-                let t = crate::now_ms();
+                let t = self.ctx.now_ms();
                 self.ctx.state.set_error(&format!("read error: {msg}"), t);
                 self.ctx.state.flush(t, true);
                 return;
@@ -448,7 +448,7 @@ impl PublishTick {
         if self.ctx.shutting_down() {
             return; // shutdown happened during the await
         }
-        let ts = crate::now_ms();
+        let ts = self.ctx.now_ms();
         let media = self.ctx.hooks.overlay_media(reading.media);
         let recording = self.ctx.hooks.recording_status();
         let payload = TelemetryPayload {
@@ -472,7 +472,7 @@ impl PublishTick {
                 if self.ctx.shutting_down() {
                     return;
                 }
-                let t = crate::now_ms();
+                let t = self.ctx.now_ms();
                 self.ctx.state.record_publish(t);
                 self.scope.note_publish();
                 self.ctx.state.flush(t, false);
@@ -482,7 +482,7 @@ impl PublishTick {
                 if self.ctx.shutting_down() {
                     return;
                 }
-                let t = crate::now_ms();
+                let t = self.ctx.now_ms();
                 self.ctx.state.record_publish_error(&msg, t);
                 self.ctx.state.flush(t, false);
             }

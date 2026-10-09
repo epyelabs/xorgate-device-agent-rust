@@ -32,8 +32,8 @@ use xorgate_hal::io::{null_tape, open_file_tape, TapeStart};
 use xorgate_hal::read_lossy::{read_text, FileText};
 
 use crate::ctx::{
-    AgentCtx, BoxFut, CommandPlaneDeps, ConfigPlaneDeps, GroupSample, NoopHooks, ReportRequester,
-    TelemetrySource,
+    AgentClock, AgentCtx, BoxFut, CommandPlaneDeps, ConfigPlaneDeps, GroupSample, NoopHooks,
+    ReportRequester, TelemetrySource,
 };
 use crate::env::{AgentEnv, Creds};
 use crate::mqtt_plane::{MqttHandle, MqttPlane, OfflineTransport, RealTransport};
@@ -318,6 +318,7 @@ async fn run(args: &[String]) -> Result<i32> {
         state: state.clone(),
         hooks: Arc::new(NoopHooks),
         hardware: Arc::new(hardware_tx),
+        clock: Arc::new(AgentClock::system()),
         cancel: CancellationToken::new(),
         tracker: TaskTracker::new(),
     };
@@ -436,7 +437,7 @@ async fn run(args: &[String]) -> Result<i32> {
             ev = events.recv() => match ev {
                 Some(ev) => plane.on_event(ev),
                 None => {
-                    let t = crate::now_ms();
+                    let t = ctx.now_ms();
                     error!("[agent] mqtt event loop ended unexpectedly");
                     state.set_error("mqtt event loop ended", t);
                     state.flush(t, true);
@@ -449,13 +450,13 @@ async fn run(args: &[String]) -> Result<i32> {
                 sd_notify(&[sd_notify::NotifyState::Watchdog]);
                 ctx.hooks.led_tick();
                 if state.connection() != ConnectionState::Connected {
-                    state.flush(crate::now_ms(), true);
+                    state.flush(ctx.now_ms(), true);
                 }
             }
             // `published N messages` (`worker.ts:1286-1289`).
             _ = published_log.tick() => info!("[agent] published {} messages", state.published()),
             _ = tape_clock.tick(), if tape_on => {
-                ctx.tape.clock(crate::now_ms(), mono0.elapsed().as_millis() as u64);
+                ctx.tape.clock(ctx.now_ms(), mono0.elapsed().as_millis() as u64);
             }
         }
     };
@@ -466,6 +467,7 @@ async fn run(args: &[String]) -> Result<i32> {
         plane: &mut plane,
         config: config.as_ref(),
         source: source.as_ref(),
+        link_closes: mqtt_end.is_some(),
     }
     .run(sig, 0, |budget| async move {
         match mqtt_end {

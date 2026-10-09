@@ -1,0 +1,1776 @@
+{
+  "jsSourceFile": "src/agent/config.ts (loadConfig :197-308, parseArgs :173-191) + src/daemon/runtime.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-load-config.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP1; script handed to WP7 via evidence/wp1.md)",
+  "cases": [
+    {
+      "name": "offline defaults (no env at all)",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {},
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "OFFLINE=1 env",
+      "input": {
+        "argv": [],
+        "env": {
+          "OFFLINE": "1"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "OFFLINE=true env + MODE=real",
+      "input": {
+        "argv": [],
+        "env": {
+          "OFFLINE": "true",
+          "MODE": "real"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "real",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "OFFLINE=yes is not truthy → DEVICE_ID required",
+      "input": {
+        "argv": [],
+        "env": {
+          "OFFLINE": "yes"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "DEVICE_ID (or --device-id) is required (or pass --offline)"
+      }
+    },
+    {
+      "name": "online minimal (bench shape)",
+      "input": {
+        "argv": [],
+        "env": {
+          "DEVICE_ID": "dev-1",
+          "IOT_DATA_ENDPOINT": "abc-ats.iot.us-east-1.amazonaws.com",
+          "CERT_PATH": "/tmp/xg-wp1-creds/cert.crt",
+          "KEY_PATH": "/tmp/xg-wp1-creds/private.key",
+          "CA_PATH": "/tmp/xg-wp1-creds/ca.pem",
+          "MODE": "real"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "dev-1",
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "mode": "real",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": false,
+          "telemetryTopic": "xorgate/devices/dev-1/telemetry",
+          "statusTopic": "xorgate/devices/dev-1/status",
+          "configTopic": "xorgate/devices/dev-1/config",
+          "configReportedTopic": "xorgate/devices/dev-1/config/reported",
+          "commandTopic": "xorgate/devices/dev-1/command",
+          "commandResponseTopic": "xorgate/devices/dev-1/command/response",
+          "smsTopic": "xorgate/devices/dev-1/sms",
+          "certPath": "/tmp/xg-wp1-creds/cert.crt",
+          "keyPath": "/tmp/xg-wp1-creds/private.key",
+          "caPath": "/tmp/xg-wp1-creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": true,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/tmp/xg-wp1-creds/cert.crt",
+            "keyPath": "/tmp/xg-wp1-creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "online, missing DEVICE_ID",
+      "input": {
+        "argv": [],
+        "env": {
+          "DEVICE_ID": "",
+          "IOT_DATA_ENDPOINT": "abc-ats.iot.us-east-1.amazonaws.com",
+          "CERT_PATH": "/tmp/xg-wp1-creds/cert.crt",
+          "KEY_PATH": "/tmp/xg-wp1-creds/private.key",
+          "CA_PATH": "/tmp/xg-wp1-creds/ca.pem"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "DEVICE_ID (or --device-id) is required (or pass --offline)"
+      }
+    },
+    {
+      "name": "online, unset DEVICE_ID",
+      "input": {
+        "argv": [],
+        "env": {
+          "IOT_DATA_ENDPOINT": "e",
+          "CERT_PATH": "/tmp/xg-wp1-creds/cert.crt",
+          "KEY_PATH": "/tmp/xg-wp1-creds/private.key",
+          "CA_PATH": "/tmp/xg-wp1-creds/ca.pem"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "DEVICE_ID (or --device-id) is required (or pass --offline)"
+      }
+    },
+    {
+      "name": "online, empty endpoint",
+      "input": {
+        "argv": [],
+        "env": {
+          "DEVICE_ID": "dev-1",
+          "IOT_DATA_ENDPOINT": "",
+          "CERT_PATH": "/tmp/xg-wp1-creds/cert.crt",
+          "KEY_PATH": "/tmp/xg-wp1-creds/private.key",
+          "CA_PATH": "/tmp/xg-wp1-creds/ca.pem"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "IOT_DATA_ENDPOINT (or --endpoint) is required (or pass --offline)"
+      }
+    },
+    {
+      "name": "mode precedence: settings.json beats MODE",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MODE": "real"
+        },
+        "settingsJson": "{\"mode\":\"sim\"}",
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "mode precedence: --mode beats settings.json",
+      "input": {
+        "argv": [
+          "--offline",
+          "--mode",
+          "real"
+        ],
+        "env": {
+          "MODE": "sim"
+        },
+        "settingsJson": "{\"mode\":\"sim\"}",
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "real",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "mode precedence: MODE when settings has none",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MODE": "replay"
+        },
+        "settingsJson": "{\"gnssAntBias\":true}",
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "replay",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "mode precedence: invalid settings mode ignored",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MODE": "real"
+        },
+        "settingsJson": "{\"mode\":\"bogus\"}",
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "real",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "mode precedence: corrupt settings.json",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MODE": "real"
+        },
+        "settingsJson": "{not json",
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "real",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid MODE env",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MODE": "fast"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "MODE must be \"sim\", \"real\" or \"replay\", got \"fast\""
+      }
+    },
+    {
+      "name": "empty MODE env",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MODE": ""
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "MODE must be \"sim\", \"real\" or \"replay\", got \"\""
+      }
+    },
+    {
+      "name": "--mode with no value is boolean → falls through to env",
+      "input": {
+        "argv": [
+          "--offline",
+          "--mode"
+        ],
+        "env": {
+          "MODE": "real"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "real",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "RATE_HZ 2 → interval 500",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "2"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 2,
+          "intervalMs": 500,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "RATE_HZ 3 → interval 333",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "3"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 3,
+          "intervalMs": 333,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "RATE_HZ 0.4 → interval 2500",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "0.4"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 0.4,
+          "intervalMs": 2500,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "RATE_HZ 1e3 → interval 1",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "1e3"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1000,
+          "intervalMs": 1,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "RATE_HZ ' 2 ' (Number trims)",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": " 2 "
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 2,
+          "intervalMs": 500,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "RATE_HZ 0x2 (hex)",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "0x2"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 2,
+          "intervalMs": 500,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "RATE_HZ empty → 0 → error",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": ""
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "RATE_HZ must be a positive number, got 0"
+      }
+    },
+    {
+      "name": "RATE_HZ abc → NaN → error",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "abc"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "RATE_HZ must be a positive number, got NaN"
+      }
+    },
+    {
+      "name": "RATE_HZ -1 → error",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "-1"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "RATE_HZ must be a positive number, got -1"
+      }
+    },
+    {
+      "name": "RATE_HZ Infinity → error",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "RATE_HZ": "Infinity"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "RATE_HZ must be a positive number, got Infinity"
+      }
+    },
+    {
+      "name": "--rate flag beats RATE_HZ",
+      "input": {
+        "argv": [
+          "--offline",
+          "--rate",
+          "4"
+        ],
+        "env": {
+          "RATE_HZ": "2"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 4,
+          "intervalMs": 250,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "MQTT_KEEPALIVE_SEC 60.0 (CF3)",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MQTT_KEEPALIVE_SEC": "60.0"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "MQTT_KEEPALIVE_SEC 30",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MQTT_KEEPALIVE_SEC": "30"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 30,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "MQTT_KEEPALIVE_SEC 0.5 is accepted by the TS",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MQTT_KEEPALIVE_SEC": "0.5"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 0.5,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "MQTT_KEEPALIVE_SEC 0 → error",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MQTT_KEEPALIVE_SEC": "0"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "MQTT_KEEPALIVE_SEC must be a positive number, got 0"
+      }
+    },
+    {
+      "name": "MQTT_KEEPALIVE_SEC x → error",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "MQTT_KEEPALIVE_SEC": "x"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "MQTT_KEEPALIVE_SEC must be a positive number, got NaN"
+      }
+    },
+    {
+      "name": "relative paths resolve against the cwd",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "CERT_PATH": "a/../b/cert.crt",
+          "KVS_MANIFEST": "./etc/kvs.json",
+          "HARDWARE_MANIFEST": "hw.json",
+          "KVS_PIPELINE_DIR": "/etc/xorgate//pipelines/"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/b/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/usr/hw.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/etc/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/b/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "KVS_RUNTIME_BIN moves the default CA bundle",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "KVS_RUNTIME_BIN": "/opt/x/media/bin/kvs"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/x/media/bin/kvs",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/x/media/bin/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "KVS_CACERT_PATH + KVS_GST_PIPELINE set",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "KVS_CACERT_PATH": "/etc/ssl/kvs.pem",
+          "KVS_GST_PIPELINE": "p.gst"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "pipelinePath": "/usr/p.gst",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/etc/ssl/kvs.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "KVS_GST_PIPELINE empty is unset",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "KVS_GST_PIPELINE": ""
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "replay knobs",
+      "input": {
+        "argv": [
+          "--offline"
+        ],
+        "env": {
+          "XORGATE_REPLAY_ASSETS": "/assets/v2",
+          "XORGATE_REPLAY_SCENARIO": "demo-01"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v2",
+            "defaultScenarioId": "demo-01"
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "flag overrides for identity + media",
+      "input": {
+        "argv": [
+          "--offline",
+          "--device-id",
+          "flag-dev",
+          "--endpoint",
+          "flag-ep",
+          "--media-manifest",
+          "/m/kvs.json",
+          "--hardware",
+          "/h.json",
+          "--media-source",
+          "devicesrc"
+        ],
+        "env": {
+          "DEVICE_ID": "env-dev"
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "flag-dev",
+          "endpoint": "flag-ep",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/flag-dev/telemetry",
+          "statusTopic": "xorgate/devices/flag-dev/status",
+          "configTopic": "xorgate/devices/flag-dev/config",
+          "configReportedTopic": "xorgate/devices/flag-dev/config/reported",
+          "commandTopic": "xorgate/devices/flag-dev/command",
+          "commandResponseTopic": "xorgate/devices/flag-dev/command/response",
+          "smsTopic": "xorgate/devices/flag-dev/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/h.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/m/kvs.json",
+            "source": "devicesrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "a flag value that starts with -- is consumed",
+      "input": {
+        "argv": [
+          "--offline",
+          "--device-id",
+          "--endpoint",
+          "x"
+        ],
+        "env": {},
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "--endpoint",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/--endpoint/telemetry",
+          "statusTopic": "xorgate/devices/--endpoint/status",
+          "configTopic": "xorgate/devices/--endpoint/config",
+          "configReportedTopic": "xorgate/devices/--endpoint/config/reported",
+          "commandTopic": "xorgate/devices/--endpoint/command",
+          "commandResponseTopic": "xorgate/devices/--endpoint/command/response",
+          "smsTopic": "xorgate/devices/--endpoint/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "positional args are ignored",
+      "input": {
+        "argv": [
+          "run",
+          "--offline",
+          "stray"
+        ],
+        "env": {},
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "sim-local",
+          "endpoint": "offline",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": true,
+          "telemetryTopic": "xorgate/devices/sim-local/telemetry",
+          "statusTopic": "xorgate/devices/sim-local/status",
+          "configTopic": "xorgate/devices/sim-local/config",
+          "configReportedTopic": "xorgate/devices/sim-local/config/reported",
+          "commandTopic": "xorgate/devices/sim-local/command",
+          "commandResponseTopic": "xorgate/devices/sim-local/command/response",
+          "smsTopic": "xorgate/devices/sim-local/sms",
+          "certPath": "/usr/creds/cert.crt",
+          "keyPath": "/usr/creds/private.key",
+          "caPath": "/usr/creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": false,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/usr/creds/cert.crt",
+            "keyPath": "/usr/creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    },
+    {
+      "name": "--offline=1 is not the boolean flag",
+      "input": {
+        "argv": [
+          "--offline=1"
+        ],
+        "env": {},
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "error": "DEVICE_ID (or --device-id) is required (or pass --offline)"
+      }
+    },
+    {
+      "name": "OFFLINE empty string",
+      "input": {
+        "argv": [],
+        "env": {
+          "DEVICE_ID": "dev-1",
+          "IOT_DATA_ENDPOINT": "abc-ats.iot.us-east-1.amazonaws.com",
+          "CERT_PATH": "/tmp/xg-wp1-creds/cert.crt",
+          "KEY_PATH": "/tmp/xg-wp1-creds/private.key",
+          "CA_PATH": "/tmp/xg-wp1-creds/ca.pem",
+          "OFFLINE": ""
+        },
+        "settingsJson": null,
+        "cwd": "/usr"
+      },
+      "expected": {
+        "ok": {
+          "deviceId": "dev-1",
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "mode": "sim",
+          "rateHz": 1,
+          "intervalMs": 1000,
+          "mqttKeepaliveSec": 60,
+          "offline": false,
+          "telemetryTopic": "xorgate/devices/dev-1/telemetry",
+          "statusTopic": "xorgate/devices/dev-1/status",
+          "configTopic": "xorgate/devices/dev-1/config",
+          "configReportedTopic": "xorgate/devices/dev-1/config/reported",
+          "commandTopic": "xorgate/devices/dev-1/command",
+          "commandResponseTopic": "xorgate/devices/dev-1/command/response",
+          "smsTopic": "xorgate/devices/dev-1/sms",
+          "certPath": "/tmp/xg-wp1-creds/cert.crt",
+          "keyPath": "/tmp/xg-wp1-creds/private.key",
+          "caPath": "/tmp/xg-wp1-creds/ca.pem",
+          "hardwarePath": "/etc/xorgate/hardware.json",
+          "replay": {
+            "assetsDir": "/assets/v1",
+            "defaultScenarioId": null
+          },
+          "media": {
+            "enabled": true,
+            "binaryPath": "/opt/xorgate/media/xorgate-kvs-webrtc",
+            "libDir": "/opt/xorgate/media/lib",
+            "manifestPath": "/usr/creds/kvs.json",
+            "source": "testsrc",
+            "mediaType": "video-only",
+            "pipelineDir": "/etc/xorgate/pipelines",
+            "logLevel": "3",
+            "idleTeardownSecs": "30",
+            "certPath": "/tmp/xg-wp1-creds/cert.crt",
+            "keyPath": "/tmp/xg-wp1-creds/private.key",
+            "caCertPath": "/opt/xorgate/media/cert.pem"
+          }
+        }
+      }
+    }
+  ]
+}

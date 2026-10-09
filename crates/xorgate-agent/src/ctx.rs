@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use xorgate_core::build_info::BuildInfo;
+use xorgate_core::clock::Clock;
 use xorgate_core::config_report::{ReportHints, ReportOrigin};
 use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::telemetry::{MetricGroup, RecordingStatus, TelemetryMedia, TelemetryReading};
@@ -97,6 +98,10 @@ pub struct AgentCtx {
     /// loaded at boot, replaced by the config plane when the cloud sends a
     /// changed one (`send_replace`), read by everyone else (`borrow()`).
     pub hardware: Arc<watch::Sender<Option<DeviceHardwareBlock>>>,
+    /// `Date.now()` / `monotonicMs()` for every subsystem. The system clock in
+    /// production; tests use [`AgentClock::following_tokio`] so
+    /// `tokio::time::pause`/`advance` move the wall clock too.
+    pub clock: Arc<AgentClock>,
     /// Cancelled when shutdown begins (= the TS `shuttingDown` flag).
     pub cancel: CancellationToken,
     /// Every long-lived task is spawned on this tracker.
@@ -104,6 +109,11 @@ pub struct AgentCtx {
 }
 
 impl AgentCtx {
+    /// `Date.now()` (stamps and names only — invariant 2).
+    pub fn now_ms(&self) -> i64 {
+        self.clock.wall_ms()
+    }
+
     /// The TS `shuttingDown` flag.
     pub fn shutting_down(&self) -> bool {
         self.cancel.is_cancelled()
@@ -118,6 +128,7 @@ impl AgentCtx {
     {
         let inner = tokio::spawn(fut);
         let state = self.state.clone();
+        let clock = self.clock.clone();
         self.tracker.spawn(async move {
             if let Err(e) = inner.await {
                 if e.is_panic() {
@@ -129,12 +140,56 @@ impl AgentCtx {
                         .unwrap_or_else(|| "panic".to_string());
                     let msg = format!("{name}: {msg}");
                     tracing::error!("[agent] unhandledRejection {msg}");
-                    let t = crate::now_ms();
+                    let t = clock.wall_ms();
                     state.set_error(&format!("unhandledRejection: {msg}"), t);
                     state.flush(t, true);
                 }
             }
         });
+    }
+}
+
+/// The agent's clock (implements `xorgate_core::clock::Clock`).
+///
+/// `mono_ms` is `tokio::time::Instant` elapsed since the clock was built, so
+/// it follows `tokio::time::pause`/`advance` in tests; `wall_ms` is
+/// `SystemTime` ([`AgentClock::system`]) or `base + mono`
+/// ([`AgentClock::following_tokio`]).
+#[derive(Debug)]
+pub struct AgentClock {
+    origin: tokio::time::Instant,
+    /// `None` = the system wall clock; `Some(base)` = `base + mono`.
+    wall_base: Option<i64>,
+}
+
+impl AgentClock {
+    /// Production: wall = `SystemTime::now()`.
+    pub fn system() -> Self {
+        Self {
+            origin: tokio::time::Instant::now(),
+            wall_base: None,
+        }
+    }
+
+    /// Tests: wall starts at `base` and advances with tokio's (pausable) clock.
+    pub fn following_tokio(base: i64) -> Self {
+        Self {
+            origin: tokio::time::Instant::now(),
+            wall_base: Some(base),
+        }
+    }
+}
+
+impl xorgate_core::clock::Clock for AgentClock {
+    fn wall_ms(&self) -> i64 {
+        match self.wall_base {
+            None => crate::now_ms(),
+            Some(base) => base + self.mono_ms() as i64,
+        }
+    }
+
+    fn mono_ms(&self) -> u64 {
+        self.origin.elapsed().as_millis() as u64
     }
 }
 
