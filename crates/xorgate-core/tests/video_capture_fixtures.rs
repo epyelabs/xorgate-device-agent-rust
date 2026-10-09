@@ -22,6 +22,9 @@ struct Case {
     op: String,
     input: Value,
     expected: Value,
+    /// `resolveBridgedCameras` cases: the `console.warn` lines the TS logged.
+    #[serde(default)]
+    warnings: Option<Vec<String>>,
 }
 
 fn opt_str<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
@@ -78,10 +81,8 @@ fn video_capture_builders_and_pipeline_helpers() {
                         .and_then(|n| files.get(n).cloned())
                 };
                 let (cams, warnings) = resolve_bridged_cameras(dir, &channels, &read);
-                // The fixture's skipped bridged streams each logged one warning.
-                for w in &warnings {
-                    assert!(w.starts_with("[video-capture] "), "{}", c.name);
-                }
+                // The TS's console.warn lines, verbatim and in order.
+                assert_eq!(Some(&warnings), c.warnings.as_ref(), "{}", c.name);
                 serde_json::to_value(cams).unwrap()
             }
             "extractCameraName" => extract_camera_name(i["gst"].as_str().unwrap()).into(),
@@ -96,7 +97,7 @@ fn video_capture_builders_and_pipeline_helpers() {
         };
         assert_eq!(got, c.expected, "{}", c.name);
     }
-    assert_eq!(f.cases.len(), 32);
+    assert_eq!(f.cases.len(), 34);
 }
 
 #[test]

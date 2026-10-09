@@ -119,6 +119,9 @@
           "streamKey": "cam0",
           "cameraName": "/base/cam0@1a"
         }
+      ],
+      "warnings": [
+        "[video-capture] cam2: bridged .gst but no camera identity (missing cam2.camera) — skipping"
       ]
     },
     {
@@ -142,6 +145,40 @@
           "streamKey": "cam0",
           "cameraName": "/base/cam0@1a"
         }
+      ],
+      "warnings": []
+    },
+    {
+      "name": "extra: empty camera-name falls through to the next file, empty everywhere warns and skips",
+      "op": "resolveBridgedCameras",
+      "input": {
+        "pipelineDir": "/p",
+        "files": {
+          "cam0.gst": "shmsrc socket-path=/x camera-name=/from-gst ! appsink",
+          "cam0.gst.direct": "libcamerasrc camera-name=\"\" ! appsink",
+          "cam1.gst": "shmsrc socket-path=/y ! appsink",
+          "cam1.camera": "  \n",
+          "cam1.gst.direct": "libcamerasrc camera-name=\"\" ! appsink"
+        },
+        "channels": [
+          {
+            "streamKey": "cam0",
+            "channelName": "d-cam0"
+          },
+          {
+            "streamKey": "cam1",
+            "channelName": "d-cam1"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "streamKey": "cam0",
+          "cameraName": "/from-gst"
+        }
+      ],
+      "warnings": [
+        "[video-capture] cam1: bridged .gst but no camera identity (missing cam1.camera) — skipping"
       ]
     },
     {
@@ -1062,6 +1099,16 @@
         "gst": null
       },
       "expected": null
+    },
+    {
+      "name": "extra: resolveCameraName skips an empty backup name (falsy) and takes the .gst",
+      "op": "resolveCameraName",
+      "input": {
+        "cameraFile": null,
+        "directBackup": "libcamerasrc camera-name=\"\" ! x",
+        "gst": "libcamerasrc camera-name=/from-gst ! x"
+      },
+      "expected": "/from-gst"
     }
   ]
 }

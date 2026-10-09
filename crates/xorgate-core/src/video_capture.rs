@@ -114,7 +114,10 @@ pub fn extract_camera_name(gst: &str) -> Option<String> {
 /// `resolveCameraName` (`pipeline.ts:55-71`) over the three file contents
 /// (`None` = unreadable): the `.camera` file (trimmed, non-empty) wins, else
 /// the camera name parsed out of the direct-pipeline backup, else out of the
-/// current `.gst` (covers a hand-rolled direct setup).
+/// current `.gst` (covers a hand-rolled direct setup). An EMPTY extracted
+/// name (`camera-name=""`) is falsy in the TS (`if (name) return name`): it
+/// falls through to the next file, and `None` at the end makes
+/// [`resolve_bridged_cameras`] warn and skip (`video-capture.ts:104`).
 pub fn resolve_camera_name(
     camera_file: Option<&str>,
     direct_backup: Option<&str>,
@@ -129,7 +132,7 @@ pub fn resolve_camera_name(
     [direct_backup, gst]
         .into_iter()
         .flatten()
-        .find_map(extract_camera_name)
+        .find_map(|t| extract_camera_name(t).filter(|n| !n.is_empty()))
 }
 
 /// The `console.warn` line `resolveBridgedCameras` logs for a bridged stream
