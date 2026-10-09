@@ -11,11 +11,18 @@
 #   scripts/docker-build.sh pack            # build --release, then scripts/pack.sh --channel bench
 #
 # Output: target/docker/release/xorgate-rs (a Linux aarch64 binary). The build
-# itself runs in a Docker volume (CARGO_TARGET_DIR=/target) — not in the
+# itself runs in a Docker volume (CARGO_TARGET_DIR=/target/<checkout>) — not in the
 # bind-mounted repo — because a host `cargo build` on macOS would otherwise
 # clobber/fight the Linux artifacts in target/release, and because named
 # volumes are much faster than virtiofs for cargo's thousands of small files.
 # Only the final binary is copied back into the repo tree.
+#
+# Each checkout builds into its OWN sub-directory of the shared volume,
+# /target/$(basename <repo dir>) — e.g. /target/xorgate-device-agent-rust for
+# the main checkout, /target/xorgate-device-agent-rust-wp3 for a worktree —
+# because parallel worktrees sharing one target dir leaked each other's stale
+# artifacts into test builds (PROGRESS decision D1.2). Override with
+# XORGATE_DOCKER_TARGET_DIR=/target/<name> (must live under /target).
 #
 # Caveat: in a `git worktree` checkout the repo's `.git` is a FILE pointing at the
 # main checkout's path, which does not exist inside the container, so
@@ -27,7 +34,7 @@
 # Caches (named Docker volumes, survive between runs; `--clean` removes them):
 #   xorgate-rs-cargo-registry  /usr/local/cargo/registry
 #   xorgate-rs-cargo-git       /usr/local/cargo/git
-#   xorgate-rs-target          /target
+#   xorgate-rs-target          /target  (one sub-directory per checkout, see above)
 # The image is tagged by the toolchain channel + a hash of Dockerfile.build, so
 # bumping rust-toolchain.toml or the apt list rebuilds it automatically.
 set -euo pipefail
@@ -35,6 +42,11 @@ set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PLATFORM=linux/arm64
 IMAGE_NAME=xorgate-rs-build
+TARGET_DIR="${XORGATE_DOCKER_TARGET_DIR:-/target/$(basename "$REPO")}"
+case "$TARGET_DIR" in
+  /target/?*) ;;
+  *) echo "XORGATE_DOCKER_TARGET_DIR must be /target/<name> (got $TARGET_DIR)" >&2; exit 2 ;;
+esac
 
 if [ "${1:-}" = "--clean" ]; then
   docker volume rm -f xorgate-rs-cargo-registry xorgate-rs-cargo-git xorgate-rs-target >/dev/null
@@ -71,7 +83,7 @@ run_in() {
     -v xorgate-rs-cargo-registry:/usr/local/cargo/registry \
     -v xorgate-rs-cargo-git:/usr/local/cargo/git \
     -v xorgate-rs-target:/target \
-    -e CARGO_TARGET_DIR=/target \
+    -e CARGO_TARGET_DIR="$TARGET_DIR" \
     -e CARGO_TERM_COLOR=always \
     -w /src \
     "$IMAGE" "$@"
@@ -80,13 +92,14 @@ run_in() {
 copy_out() {
   # The volume is only visible inside a container: copy the binary into the repo.
   mkdir -p "$REPO/target/docker/release"
-  run_in sh -c 'cp /target/release/xorgate-rs /src/target/docker/release/xorgate-rs && ls -l /target/release/xorgate-rs'
+  run_in sh -c "cp '$TARGET_DIR/release/xorgate-rs' /src/target/docker/release/xorgate-rs && ls -l '$TARGET_DIR/release/xorgate-rs'"
   echo ">> binary: $REPO/target/docker/release/xorgate-rs ($(wc -c < "$REPO/target/docker/release/xorgate-rs" | tr -d ' ') bytes)" >&2
 }
 
 MODE="${1:-build}"
 [ $# -gt 0 ] && shift
 t0=$(date +%s)
+echo ">> CARGO_TARGET_DIR=$TARGET_DIR (volume xorgate-rs-target)" >&2
 case "$MODE" in
   build)
     run_in cargo build --release "$@"

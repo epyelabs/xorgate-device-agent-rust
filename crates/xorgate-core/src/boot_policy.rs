@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::clock::{Clock, MonoMs};
-use crate::js_fmt::{date_parse, number_to_string, to_fixed};
+use crate::js::{date_parse, number_to_string, to_fixed};
 use crate::round::js_math_round;
 pub use crate::settings::BootDeferMode;
 use crate::types::{GnssView, PowerSampleReading, ShedConfig, SkyState};
@@ -116,11 +116,23 @@ pub const TELEMETRY_STALE_MS: f64 = 60_000.0;
 /// same in every comparison the decider makes.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PolicyTelemetry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
     pub timestamp: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
     pub status: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
     pub reg: Option<Value>,
 }
 
@@ -312,6 +324,10 @@ pub trait BootDeferSources {
     /// Negotiated PSU budget; `None` = unreadable. Called once per policy.
     fn read_budget_ma(&mut self) -> Option<u32>;
     /// telemetry.json; `None` = missing or unparseable. Called every evaluation.
+    /// HAL note (review-wp3 #4): the TS reads with `readFileSync(…, "utf8")`,
+    /// which is lossy — read the bytes, `String::from_utf8_lossy`, then
+    /// [`parse_policy_telemetry`], so a stray bad byte does not turn a
+    /// parseable file into "missing" (stale grace).
     fn read_telemetry(&mut self) -> Option<PolicyTelemetry>;
     /// GNSS view for stage 2; hosts without a GPS collector return `None`
     /// (the TS default `() => null`).

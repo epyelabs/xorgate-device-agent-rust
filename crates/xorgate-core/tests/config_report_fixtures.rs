@@ -4,6 +4,10 @@
 //! expectation is the exact `JSON.stringify` the TS produced, so the wire
 //! shape of `effective`, `status` and the whole report is proven byte for byte
 //! (status `detail` / `reason` wording included — plan README Appendix A).
+//! A bare `Map<String, Value>` result is printed with
+//! `js::map_to_json_string` — the form it takes inside the report /
+//! config-sync.json (serde_json's own formatter prints `0.000005` as `5e-6`;
+//! integration review M1).
 
 mod common;
 
@@ -12,6 +16,7 @@ use serde_json::{Map, Value};
 use xorgate_core::build_info::BuildInfo;
 use xorgate_core::cloud_config::parse_cloud_message;
 use xorgate_core::config_report::*;
+use xorgate_core::js;
 use xorgate_core::settings::AgentSettings;
 use xorgate_core::telemetry_scope::TelemetryScopeReport;
 use xorgate_core::types::CameraMountState;
@@ -74,7 +79,7 @@ fn config_report_suites() {
                 let scope: Option<TelemetryScopeReport> = present(i, "telemetryScope")
                     .filter(|v| !v.is_null())
                     .map(from);
-                Some(json(&build_effective(
+                Some(js::map_to_json_string(&build_effective(
                     &settings,
                     &modem,
                     mode.as_deref(),
@@ -142,12 +147,12 @@ fn config_report_suites() {
             }
             "namespacesOf" => {
                 let settings: AgentSettings = from(i["settings"].clone());
-                Some(json(&namespaces_of(&settings)))
+                Some(js::map_to_json_string(&namespaces_of(&settings)))
             }
             "diffNamespaces" => {
                 let base: Map<String, Value> = from(i["base"].clone());
                 let next: Map<String, Value> = from(i["next"].clone());
-                Some(json(&diff_namespaces(&base, &next)))
+                Some(js::map_to_json_string(&diff_namespaces(&base, &next)))
             }
             "readModemBias" => {
                 let now = i["now"].as_i64().unwrap();
@@ -158,9 +163,12 @@ fn config_report_suites() {
             }
             "loadConfigSyncState" => {
                 let state = parse_config_sync_state(i["text"].as_str());
-                // The saved form of the parsed state is its wire shape.
+                // The saved form of the parsed state is its wire shape: a
+                // re-read writes the same bytes. (Byte-, not value-equality:
+                // an integer above 2^53 parses exactly but prints as the JS
+                // double, which then re-reads as that double.)
                 let back: ConfigSyncState = serde_json::from_str(&json(&state)).unwrap();
-                assert_eq!(back, state, "{}: round trip", c.name);
+                assert_eq!(json(&back), json(&state), "{}: round trip", c.name);
                 Some(json(&state))
             }
             "ensureConfigSyncBaseline" => {
@@ -185,8 +193,8 @@ fn config_report_suites() {
         };
         assert_eq!(got, c.expected_json, "{}", c.name);
     }
-    assert_eq!(f.cases.len(), 149);
-    assert_eq!(ops["buildEffective"], 25);
+    assert_eq!(f.cases.len(), 155);
+    assert_eq!(ops["buildEffective"], 26);
     assert_eq!(ops["buildStatus"], 36);
-    assert_eq!(ops["buildConfigReport"], 18);
+    assert_eq!(ops["buildConfigReport"], 19);
 }

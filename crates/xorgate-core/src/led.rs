@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hardware_block::StatusLedPins;
-use crate::js_fmt::number_to_string;
+use crate::js::{self, number_to_string};
 use crate::telemetry::js_num;
 
 /// Argus CM5 Rev1 carrier pins (`led.ts:26`). HARDCODED deliberately; the
@@ -352,9 +352,11 @@ pub fn parse_busy_pins(gpioinfo_output: &str) -> Vec<u32> {
 
 /// `^\s*line\s+(\d+):` by hand (no regex crate in core).
 fn busy_line_number(line: &str) -> Option<u32> {
-    let rest = line.trim_start();
+    // `\s` is JS whitespace (review-wp3 F1: `str::trim_start` would also
+    // skip U+0085 and miss U+FEFF).
+    let rest = js::trim_start(line);
     let rest = rest.strip_prefix("line")?;
-    let after_ws = rest.trim_start();
+    let after_ws = js::trim_start(rest);
     if after_ws.len() == rest.len() {
         return None; // `\s+` needs at least one whitespace
     }
@@ -368,6 +370,15 @@ fn busy_line_number(line: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_pins_use_js_whitespace() {
+        // review-wp3 F1, node 24 `/^\s*line\s+(\d+):/`: JS `\s` matches
+        // U+FEFF and not U+0085 (Rust's `trim_start` does the opposite).
+        assert_eq!(parse_busy_pins("\u{85}line 5: x [used]"), Vec::<u32>::new());
+        assert_eq!(parse_busy_pins("\u{feff}line 6: x [used]"), vec![6]);
+        assert_eq!(parse_busy_pins("line\u{feff}7: x [used]"), vec![7]);
+    }
 
     #[test]
     fn colour_names_and_channels() {
