@@ -1,0 +1,17 @@
+{
+  "jsSourceFile": "test/system.test.ts",
+  "jsFunction": "parseMemAvailable (src/hardware/system.ts)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "cases": [
+    {
+      "name": "extracts MemTotal/MemAvailable in bytes",
+      "input": "MemTotal:        8000000 kB\nMemFree:         1000000 kB\nMemAvailable:    6000000 kB\n",
+      "expected": { "totalBytes": 8192000000, "availableBytes": 6144000000 }
+    },
+    {
+      "name": "returns null when MemAvailable is missing",
+      "input": "MemTotal:        8000000 kB\n",
+      "expected": null
+    }
+  ]
+}

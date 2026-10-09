@@ -1,0 +1,12 @@
+{
+  "jsSourceFile": "test/power.test.ts",
+  "jsFunction": "parseThrottled (src/hardware/power.ts)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "cases": [
+    { "name": "splits current and sticky nibbles", "input": "throttled=0x50005\n", "expected": { "current": 5, "sticky": 5 } },
+    { "name": "reads a clean device as all-zero", "input": "throttled=0x0\n", "expected": { "current": 0, "sticky": 0 } },
+    { "name": "keeps sticky-only events out of current", "input": "throttled=0x10000\n", "expected": { "current": 0, "sticky": 1 } },
+    { "name": "returns null on unexpected output", "input": "error: unknown command\n", "expected": null },
+    { "name": "returns null on empty output", "input": "", "expected": null }
+  ]
+}

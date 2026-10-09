@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/xorgate-core",
+  "crates/xorgate-hal",
+  "crates/xorgate-cloud",
+  "crates/xorgate-agent",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.99"
+license = "UNLICENSED"
+publish = false
+repository = "https://github.com/epyelabs/xorgate-device-agent-rust"
+
+[workspace.dependencies]
+xorgate-core = { path = "crates/xorgate-core" }
+xorgate-hal = { path = "crates/xorgate-hal" }
+xorgate-cloud = { path = "crates/xorgate-cloud" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "fs", "time", "sync", "io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-journald = "0.3"
+clap = { version = "4", features = ["derive"] }
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "tls12", "logging", "std"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+sd-notify = "0.5"
+nix = { version = "0.31", features = ["fs", "signal", "process"] }
+libc = "0.2"
+gstreamer = { version = "0.25", features = ["v1_22"] }
+
+# Release profile per plan README §7: fat LTO, one codegen unit, stripped
+# symbols but line tables kept for backtraces. `panic = "abort"` is deliberately
+# NOT set until Phase 2 (panics must stay visible early).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+debug = "line-tables-only"

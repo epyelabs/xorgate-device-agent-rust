@@ -1,0 +1,9 @@
+{
+  "jsSourceFile": "test/power.test.ts",
+  "jsFunction": "readMaxCurrentMa (src/hardware/power.ts) — the big-endian decode only; the file I/O is the HAL's",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "cases": [
+    { "name": "decodes the big-endian u32 device-tree node (00 00 13 88 = 5000)", "bytes": [0, 0, 19, 136], "expected": 5000 },
+    { "name": "returns null on a short buffer", "bytes": [19, 136], "expected": null }
+  ]
+}

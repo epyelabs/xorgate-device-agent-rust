@@ -1,0 +1,22 @@
+{
+  "jsSourceFile": "test/system.test.ts",
+  "jsFunction": "parseDf (src/hardware/system.ts)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "cases": [
+    {
+      "name": "computes usedPct from a df -kP block",
+      "input": "Filesystem     1024-blocks    Used Available Capacity Mounted on\n/dev/root         100000   25000     75000      25% /\n",
+      "expected": { "totalBytes": 102400000, "usedBytes": 25600000, "usedPct": 25 }
+    },
+    {
+      "name": "returns null on a header-only block",
+      "input": "Filesystem 1024-blocks Used Available Capacity Mounted on\n",
+      "expected": null
+    },
+    {
+      "name": "returns null on empty output",
+      "input": "",
+      "expected": null
+    }
+  ]
+}
