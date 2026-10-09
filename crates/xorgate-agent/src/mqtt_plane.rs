@@ -98,9 +98,14 @@ impl MqttHandle {
     ) -> AckOutcome {
         let deadline = Instant::now() + timeout;
         let mut w = self.t.connection_watch();
-        let up =
-            tokio::time::timeout_at(deadline, w.wait_for(|s| *s == LinkState::Connected)).await;
-        if !matches!(up, Ok(Ok(_))) {
+        // `matches!` drops the `watch::Ref` guard here: holding it across the
+        // publish await below would make this future !Send (WP4 awaits acks
+        // in spawned tasks).
+        let up = matches!(
+            tokio::time::timeout_at(deadline, w.wait_for(|s| *s == LinkState::Connected)).await,
+            Ok(Ok(_))
+        );
+        if !up {
             return AckOutcome::TimedOut;
         }
         let left = deadline.saturating_duration_since(Instant::now());
