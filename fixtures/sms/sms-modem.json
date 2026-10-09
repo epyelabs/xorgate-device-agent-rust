@@ -1,0 +1,785 @@
+{
+  "jsSourceFile": "test/sms-modem.test.ts (pure subset)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP5; not committed there)",
+  "SMS_PAYLOAD_MAX_BYTES": 122880,
+  "SMS_LIMIT_DEFAULT": 10,
+  "SMS_LIMIT_MAX": 50,
+  "SMS_TEXT_MAX": 4000,
+  "cases": [
+    {
+      "name": "reads the three storage triples",
+      "op": "parseCpmsQuery",
+      "input": "+CPMS: \"SR\",0,0,\"ME\",23,23,\"ME\",23,23",
+      "expectedJson": "[{\"mem\":\"SR\",\"used\":0,\"total\":0},{\"mem\":\"ME\",\"used\":23,\"total\":23},{\"mem\":\"ME\",\"used\":23,\"total\":23}]"
+    },
+    {
+      "name": "extra: parseCpmsQuery [bench SM mem1]",
+      "op": "parseCpmsQuery",
+      "input": "+CPMS: \"SM\",7,40,\"ME\",23,23,\"ME\",23,23",
+      "expectedJson": "[{\"mem\":\"SM\",\"used\":7,\"total\":40},{\"mem\":\"ME\",\"used\":23,\"total\":23},{\"mem\":\"ME\",\"used\":23,\"total\":23}]"
+    },
+    {
+      "name": "extra: parseCpmsQuery [spaces]",
+      "op": "parseCpmsQuery",
+      "input": "+CPMS:  \"SM\" , 7 , 40 , \"ME\",23,23",
+      "expectedJson": "[{\"mem\":\"SM\",\"used\":7,\"total\":40},{\"mem\":\"ME\",\"used\":23,\"total\":23}]"
+    },
+    {
+      "name": "extra: parseCpmsQuery [no prefix]",
+      "op": "parseCpmsQuery",
+      "input": "\"SM\",1,2",
+      "expectedJson": "[{\"mem\":\"SM\",\"used\":1,\"total\":2}]"
+    },
+    {
+      "name": "extra: parseCpmsQuery [set answer (no triples)]",
+      "op": "parseCpmsQuery",
+      "input": "+CPMS: 7,40,23,23,23,23",
+      "expectedJson": "[]"
+    },
+    {
+      "name": "extra: parseCpmsQuery [empty]",
+      "op": "parseCpmsQuery",
+      "input": "",
+      "expectedJson": "[]"
+    },
+    {
+      "name": "extra: parseCpmsQuery [lowercase mem ignored]",
+      "op": "parseCpmsQuery",
+      "input": "+CPMS: \"sm\",1,2,\"ME\",3,4",
+      "expectedJson": "[{\"mem\":\"ME\",\"used\":3,\"total\":4}]"
+    },
+    {
+      "name": "defaults, clamps and truncates [undefined]",
+      "op": "clampSmsLimit",
+      "input": {
+        "$undefined": true
+      },
+      "expectedJson": "10"
+    },
+    {
+      "name": "defaults, clamps and truncates [\"5\"]",
+      "op": "clampSmsLimit",
+      "input": "5",
+      "expectedJson": "10"
+    },
+    {
+      "name": "defaults, clamps and truncates [NaN]",
+      "op": "clampSmsLimit",
+      "input": {
+        "$nan": true
+      },
+      "expectedJson": "10"
+    },
+    {
+      "name": "defaults, clamps and truncates [0]",
+      "op": "clampSmsLimit",
+      "input": 0,
+      "expectedJson": "1"
+    },
+    {
+      "name": "defaults, clamps and truncates [-3]",
+      "op": "clampSmsLimit",
+      "input": -3,
+      "expectedJson": "1"
+    },
+    {
+      "name": "defaults, clamps and truncates [51]",
+      "op": "clampSmsLimit",
+      "input": 51,
+      "expectedJson": "50"
+    },
+    {
+      "name": "defaults, clamps and truncates [12.9]",
+      "op": "clampSmsLimit",
+      "input": 12.9,
+      "expectedJson": "12"
+    },
+    {
+      "name": "defaults, clamps and truncates [25]",
+      "op": "clampSmsLimit",
+      "input": 25,
+      "expectedJson": "25"
+    },
+    {
+      "name": "defaults, clamps and truncates [null]",
+      "op": "clampSmsLimit",
+      "input": null,
+      "expectedJson": "10"
+    },
+    {
+      "name": "defaults, clamps and truncates [true]",
+      "op": "clampSmsLimit",
+      "input": true,
+      "expectedJson": "10"
+    },
+    {
+      "name": "defaults, clamps and truncates [Infinity]",
+      "op": "clampSmsLimit",
+      "input": {
+        "$inf": 1
+      },
+      "expectedJson": "10"
+    },
+    {
+      "name": "defaults, clamps and truncates [-Infinity]",
+      "op": "clampSmsLimit",
+      "input": {
+        "$inf": -1
+      },
+      "expectedJson": "10"
+    },
+    {
+      "name": "defaults, clamps and truncates [0.9]",
+      "op": "clampSmsLimit",
+      "input": 0.9,
+      "expectedJson": "1"
+    },
+    {
+      "name": "defaults, clamps and truncates [-0.5]",
+      "op": "clampSmsLimit",
+      "input": -0.5,
+      "expectedJson": "1"
+    },
+    {
+      "name": "defaults, clamps and truncates [50]",
+      "op": "clampSmsLimit",
+      "input": 50,
+      "expectedJson": "50"
+    },
+    {
+      "name": "defaults, clamps and truncates [1]",
+      "op": "clampSmsLimit",
+      "input": 1,
+      "expectedJson": "1"
+    },
+    {
+      "name": "defaults, clamps and truncates [object]",
+      "op": "clampSmsLimit",
+      "input": {
+        "limit": 3
+      },
+      "expectedJson": "10"
+    },
+    {
+      "name": "the fixture inbox covers unread, alphanumeric and a joined message, newest first",
+      "op": "fixtureSmsSweep",
+      "input": 1790812800000,
+      "expectedJson": "{\"status\":\"ok\",\"error\":null,\"finishedAt\":1790812800000,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-09-30T23:30:00+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-09-29T22:00:00+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2026-09-22T00:00:00+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"2026-08-22T00:00:00+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+    },
+    {
+      "name": "extra: fixtureSmsSweep(0)",
+      "op": "fixtureSmsSweep",
+      "input": 0,
+      "expectedJson": "{\"status\":\"ok\",\"error\":null,\"finishedAt\":0,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"1969-12-31T23:30:00+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"1969-12-30T22:00:00+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"1969-12-23T00:00:00+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"1969-11-22T00:00:00+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+    },
+    {
+      "name": "extra: fixtureSmsSweep at a non-midnight instant",
+      "op": "fixtureSmsSweep",
+      "input": 1760000123456,
+      "expectedJson": "{\"status\":\"ok\",\"error\":null,\"finishedAt\":1760000123456,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-10-09T08:25:23+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-10-08T06:55:23+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2025-09-30T08:55:23+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"2025-08-30T08:55:23+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+    },
+    {
+      "name": "cuts to the limit per request and reports the full total [limit 2]",
+      "op": "buildSmsPayload",
+      "input": {
+        "sweep": {
+          "status": "ok",
+          "error": null,
+          "finishedAt": 1790812800000,
+          "durationMs": 0,
+          "storage": {
+            "SM": {
+              "used": 3,
+              "total": 40
+            },
+            "ME": {
+              "used": 2,
+              "total": 23
+            }
+          },
+          "skipped": 0,
+          "partial": false,
+          "messages": [
+            {
+              "id": "SM:2",
+              "storage": "SM",
+              "indexes": [
+                2
+              ],
+              "from": "XORGATE",
+              "fromType": "alphanumeric",
+              "sentAt": "2026-09-30T23:30:00+00:00",
+              "unread": true,
+              "text": "Simulated device: this is a fixture inbox, not a real modem.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "SM:0+SM:1",
+              "storage": "SM",
+              "indexes": [
+                0,
+                1
+              ],
+              "from": "+15550100001",
+              "fromType": "international",
+              "sentAt": "2026-09-29T22:00:00+00:00",
+              "unread": false,
+              "text": "Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:4",
+              "storage": "ME",
+              "indexes": [
+                4
+              ],
+              "from": "5550100",
+              "fromType": "national",
+              "sentAt": "2026-09-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Fixture with unicode: café, 東京, 👍",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:1",
+              "storage": "ME",
+              "indexes": [
+                1
+              ],
+              "from": "+15550100002",
+              "fromType": "international",
+              "sentAt": "2026-08-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Oldest fixture message.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            }
+          ]
+        },
+        "req": {
+          "deviceId": "d",
+          "requestId": "r",
+          "limit": 2
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"requestId\":\"r\",\"ts\":1790812800000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-09-30T23:30:00+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-09-29T22:00:00+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+    },
+    {
+      "name": "cuts to the limit per request and reports the full total [limit 999]",
+      "op": "buildSmsPayload",
+      "input": {
+        "sweep": {
+          "status": "ok",
+          "error": null,
+          "finishedAt": 1790812800000,
+          "durationMs": 0,
+          "storage": {
+            "SM": {
+              "used": 3,
+              "total": 40
+            },
+            "ME": {
+              "used": 2,
+              "total": 23
+            }
+          },
+          "skipped": 0,
+          "partial": false,
+          "messages": [
+            {
+              "id": "SM:2",
+              "storage": "SM",
+              "indexes": [
+                2
+              ],
+              "from": "XORGATE",
+              "fromType": "alphanumeric",
+              "sentAt": "2026-09-30T23:30:00+00:00",
+              "unread": true,
+              "text": "Simulated device: this is a fixture inbox, not a real modem.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "SM:0+SM:1",
+              "storage": "SM",
+              "indexes": [
+                0,
+                1
+              ],
+              "from": "+15550100001",
+              "fromType": "international",
+              "sentAt": "2026-09-29T22:00:00+00:00",
+              "unread": false,
+              "text": "Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:4",
+              "storage": "ME",
+              "indexes": [
+                4
+              ],
+              "from": "5550100",
+              "fromType": "national",
+              "sentAt": "2026-09-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Fixture with unicode: café, 東京, 👍",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:1",
+              "storage": "ME",
+              "indexes": [
+                1
+              ],
+              "from": "+15550100002",
+              "fromType": "international",
+              "sentAt": "2026-08-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Oldest fixture message.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            }
+          ]
+        },
+        "req": {
+          "deviceId": "d",
+          "requestId": "r",
+          "limit": 999
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"requestId\":\"r\",\"ts\":1790812800000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-09-30T23:30:00+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-09-29T22:00:00+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2026-09-22T00:00:00+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"2026-08-22T00:00:00+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+    },
+    {
+      "name": "empties messages and total on failure",
+      "op": "buildSmsPayload",
+      "input": {
+        "sweep": {
+          "status": "no_modem",
+          "error": "gone",
+          "finishedAt": 0,
+          "durationMs": 0,
+          "storage": {
+            "SM": {
+              "used": 3,
+              "total": 40
+            },
+            "ME": {
+              "used": 2,
+              "total": 23
+            }
+          },
+          "skipped": 0,
+          "partial": false,
+          "messages": [
+            {
+              "id": "SM:2",
+              "storage": "SM",
+              "indexes": [
+                2
+              ],
+              "from": "XORGATE",
+              "fromType": "alphanumeric",
+              "sentAt": "1969-12-31T23:30:00+00:00",
+              "unread": true,
+              "text": "Simulated device: this is a fixture inbox, not a real modem.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "SM:0+SM:1",
+              "storage": "SM",
+              "indexes": [
+                0,
+                1
+              ],
+              "from": "+15550100001",
+              "fromType": "international",
+              "sentAt": "1969-12-30T22:00:00+00:00",
+              "unread": false,
+              "text": "Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:4",
+              "storage": "ME",
+              "indexes": [
+                4
+              ],
+              "from": "5550100",
+              "fromType": "national",
+              "sentAt": "1969-12-23T00:00:00+00:00",
+              "unread": false,
+              "text": "Fixture with unicode: café, 東京, 👍",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:1",
+              "storage": "ME",
+              "indexes": [
+                1
+              ],
+              "from": "+15550100002",
+              "fromType": "international",
+              "sentAt": "1969-11-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Oldest fixture message.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            }
+          ]
+        },
+        "req": {
+          "deviceId": "d",
+          "requestId": "r",
+          "limit": 10
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"requestId\":\"r\",\"ts\":0,\"status\":\"no_modem\",\"error\":\"gone\",\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[]}"
+    },
+    {
+      "name": "extra: failure with null error reports the status as error",
+      "op": "buildSmsPayload",
+      "input": {
+        "sweep": {
+          "status": "error",
+          "error": null,
+          "finishedAt": 0,
+          "durationMs": 0,
+          "storage": {
+            "SM": {
+              "used": 3,
+              "total": 40
+            },
+            "ME": {
+              "used": 2,
+              "total": 23
+            }
+          },
+          "skipped": 0,
+          "partial": false,
+          "messages": [
+            {
+              "id": "SM:2",
+              "storage": "SM",
+              "indexes": [
+                2
+              ],
+              "from": "XORGATE",
+              "fromType": "alphanumeric",
+              "sentAt": "1969-12-31T23:30:00+00:00",
+              "unread": true,
+              "text": "Simulated device: this is a fixture inbox, not a real modem.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "SM:0+SM:1",
+              "storage": "SM",
+              "indexes": [
+                0,
+                1
+              ],
+              "from": "+15550100001",
+              "fromType": "international",
+              "sentAt": "1969-12-30T22:00:00+00:00",
+              "unread": false,
+              "text": "Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:4",
+              "storage": "ME",
+              "indexes": [
+                4
+              ],
+              "from": "5550100",
+              "fromType": "national",
+              "sentAt": "1969-12-23T00:00:00+00:00",
+              "unread": false,
+              "text": "Fixture with unicode: café, 東京, 👍",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:1",
+              "storage": "ME",
+              "indexes": [
+                1
+              ],
+              "from": "+15550100002",
+              "fromType": "international",
+              "sentAt": "1969-11-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Oldest fixture message.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            }
+          ]
+        },
+        "req": {
+          "deviceId": "d",
+          "requestId": "r",
+          "limit": 10
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"requestId\":\"r\",\"ts\":0,\"status\":\"error\",\"error\":\"error\",\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[]}"
+    },
+    {
+      "name": "extra: partial sweep with ME-only storage keeps its flags",
+      "op": "buildSmsPayload",
+      "input": {
+        "sweep": {
+          "status": "ok",
+          "error": null,
+          "finishedAt": 5,
+          "durationMs": 0,
+          "storage": {
+            "ME": {
+              "used": 1,
+              "total": 23
+            }
+          },
+          "skipped": 2,
+          "partial": true,
+          "messages": [
+            {
+              "id": "SM:2",
+              "storage": "SM",
+              "indexes": [
+                2
+              ],
+              "from": "XORGATE",
+              "fromType": "alphanumeric",
+              "sentAt": "1969-12-31T23:30:00+00:00",
+              "unread": true,
+              "text": "Simulated device: this is a fixture inbox, not a real modem.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "SM:0+SM:1",
+              "storage": "SM",
+              "indexes": [
+                0,
+                1
+              ],
+              "from": "+15550100001",
+              "fromType": "international",
+              "sentAt": "1969-12-30T22:00:00+00:00",
+              "unread": false,
+              "text": "Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:4",
+              "storage": "ME",
+              "indexes": [
+                4
+              ],
+              "from": "5550100",
+              "fromType": "national",
+              "sentAt": "1969-12-23T00:00:00+00:00",
+              "unread": false,
+              "text": "Fixture with unicode: café, 東京, 👍",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:1",
+              "storage": "ME",
+              "indexes": [
+                1
+              ],
+              "from": "+15550100002",
+              "fromType": "international",
+              "sentAt": "1969-11-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Oldest fixture message.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            }
+          ]
+        },
+        "req": {
+          "deviceId": "dev",
+          "requestId": "req",
+          "limit": 1
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev\",\"requestId\":\"req\",\"ts\":5,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"ME\":{\"used\":1,\"total\":23}},\"total\":4,\"skipped\":2,\"partial\":true,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"1969-12-31T23:30:00+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+    },
+    {
+      "name": "never exceeds the 128 KB IoT limit, dropping the oldest and flagging partial [fixture untouched]",
+      "op": "buildSmsPayload",
+      "input": {
+        "sweep": {
+          "status": "ok",
+          "error": null,
+          "finishedAt": 0,
+          "durationMs": 0,
+          "storage": {
+            "SM": {
+              "used": 3,
+              "total": 40
+            },
+            "ME": {
+              "used": 2,
+              "total": 23
+            }
+          },
+          "skipped": 0,
+          "partial": false,
+          "messages": [
+            {
+              "id": "SM:2",
+              "storage": "SM",
+              "indexes": [
+                2
+              ],
+              "from": "XORGATE",
+              "fromType": "alphanumeric",
+              "sentAt": "1969-12-31T23:30:00+00:00",
+              "unread": true,
+              "text": "Simulated device: this is a fixture inbox, not a real modem.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "SM:0+SM:1",
+              "storage": "SM",
+              "indexes": [
+                0,
+                1
+              ],
+              "from": "+15550100001",
+              "fromType": "international",
+              "sentAt": "1969-12-30T22:00:00+00:00",
+              "unread": false,
+              "text": "Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:4",
+              "storage": "ME",
+              "indexes": [
+                4
+              ],
+              "from": "5550100",
+              "fromType": "national",
+              "sentAt": "1969-12-23T00:00:00+00:00",
+              "unread": false,
+              "text": "Fixture with unicode: café, 東京, 👍",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            },
+            {
+              "id": "ME:1",
+              "storage": "ME",
+              "indexes": [
+                1
+              ],
+              "from": "+15550100002",
+              "fromType": "international",
+              "sentAt": "1969-11-22T00:00:00+00:00",
+              "unread": false,
+              "text": "Oldest fixture message.",
+              "binary": false,
+              "incomplete": false,
+              "truncated": false
+            }
+          ]
+        },
+        "req": {
+          "deviceId": "d",
+          "requestId": "r",
+          "limit": 50
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"requestId\":\"r\",\"ts\":0,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"1969-12-31T23:30:00+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"1969-12-30T22:00:00+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"1969-12-23T00:00:00+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"1969-11-22T00:00:00+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+    },
+    {
+      "name": "never exceeds the 128 KB IoT limit, dropping the oldest and flagging partial [cap]",
+      "op": "buildSmsPayloadCap",
+      "input": {
+        "sweep": {
+          "status": "ok",
+          "error": null,
+          "finishedAt": 0,
+          "durationMs": 0,
+          "storage": {
+            "SM": {
+              "used": 3,
+              "total": 40
+            },
+            "ME": {
+              "used": 2,
+              "total": 23
+            }
+          },
+          "skipped": 0,
+          "partial": false,
+          "messages": []
+        },
+        "messageTemplate": {
+          "id": "SM:2",
+          "storage": "SM",
+          "indexes": [
+            2
+          ],
+          "from": "+9999999999999999999",
+          "fromType": "alphanumeric",
+          "sentAt": "1969-12-31T23:30:00+00:00",
+          "unread": true,
+          "text": "👍",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        },
+        "textRepeat": 2000,
+        "messageRepeat": 50,
+        "req": {
+          "deviceId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "requestId": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "limit": 50
+        }
+      },
+      "expectedJson": "{\"bytes\":115242,\"messagesLength\":14,\"partial\":true,\"total\":50,\"uncappedBytes\":410875}"
+    }
+  ]
+}
