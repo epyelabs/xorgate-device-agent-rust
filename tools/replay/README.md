@@ -1,0 +1,189 @@
+# Record/replay harness (Phase 2, WP7)
+
+Parity evidence for the Rust port: the JS agent @ `89b5c64` and the Rust agent
+run side by side on the **same recorded inputs**, and everything they publish
+and write is diffed under a tolerance table whose every row has an id. Design:
+`plans/device-agent-js-to-rust/phase-2-cloud-plane.md` §Record/replay
+(README §5.3). Acceptance check C3:
+
+- **C3a calibration** — two JS instances on one tape diff clean;
+- **C3b parity** — JS vs Rust on the ≥10 min bench tape: zero UNTOLERATED rows.
+
+## Quick start (Mac, Docker Desktop)
+
+```sh
+# once: the CI build image (scripts/docker-build.sh builds it)
+tools/replay/gen-certs.sh          # rig CA + broker/agent/player certs (.cache/certs)
+tools/replay/js-build.sh           # git archive 89b5c64 → npm ci → npm run build (.cache/js-89b5c64)
+tools/replay/build-bins.sh         # xorgate-rs + xorgate-replay (linux/arm64) → .cache/bin
+
+# a tape: synthetic …
+docker compose -f tools/replay/docker-compose.yml run --rm -T rig \
+  synth calibration -o /rig/out/calibration.ndjson.gz --fixtures /rig/fixtures
+mv tools/replay/.cache/runs/calibration.ndjson.gz tools/replay/.cache/tapes/
+# … or the bench window tape: scripts/bench/tape-pull.sh
+
+tools/replay/run-rig.sh tools/replay/.cache/tapes/calibration.ndjson.gz --calibrate   # C3a (JS vs JS)
+tools/replay/run-rig.sh <bench tape>                                                    # C3b (JS vs Rust)
+```
+
+`run-rig.sh` = certs → JS build → binaries → `docker compose up mosquitto` →
+`xorgate-replay play` (REAL TIME: tape length + 20 s settle) → `xorgate-replay
+diff` → copies the run + `diff.md`/`diff.json` to
+`plans/…/phase-2/evidence/replay-<UTC ts>/` (or `--out`). Exit code = the diff's.
+`--speed` other than 1 exists for debugging only: timers differ, so a faster
+replay is NOT parity evidence.
+
+Never build on the bench (orchestrator rule: a cargo build browned the bench
+out); everything is built in the CI image and copied.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `crates/xorgate-hal/src/tape.rs` | tape format, `FileTape` gz writer (the Rust agent's `TapeSink` file impl), reader |
+| `crates/xorgate-replay/` | `xorgate-replay` binary: `inspect`, `synth`, `play`, `diff` |
+| `tools/replay/docker-compose.yml`, `Dockerfile.rig` | `mosquitto` (TLS, MQTT 5, client certs required) + `rig` (node 20 bookworm arm64 + GStreamer runtime libs) |
+| `mosquitto.conf`, `gen-certs.sh` | broker + throwaway PKI (SANs `broker`, `mosquitto`, `localhost`) |
+| `js-build.sh`, `build-bins.sh`, `run-rig.sh` | build + run drivers |
+| `shims/` | `vcgencmd`, `i2cdetect`, `timedatectl`, `sudo`, `rpicam-hello` (PATH shims) |
+| `fake-python/bno085_read.py` | IMU helper stand-in: relays the tape's IMU lines from the player |
+| `tolerances.toml` | T1–T9 (T7 = Phase 1 accepted divergences D1–D20, each with its pinning test) |
+| `js/run-tsx.sh` + `js/*.mts` | white-box tsx drivers against the scratch JS copy (WP2/WP3/WP4 add theirs) |
+| `.cache/` (gitignored) | JS build, binaries, certs, tapes, runs |
+
+## Tape format
+
+NDJSON, gzip (`.ndjson.gz`). Line 1:
+`{"v":1,"k":"meta","deviceId","build","startWall","hardware","kvs":{"channels"},"env":{…redacted},"home"?,"source"?,"synthetic"?}`.
+Then `{"t":<mono ms since start>,"w":<wall ms>,"k":<kind>,…}`:
+
+| `k` | payload | written |
+|---|---|---|
+| `nmea` | `line` (split on `\n`, `\r` kept) | tty reader, before parsing |
+| `imu` / `imu_spawn` / `imu_exit` | `line` / `argv` / `code` | Python child |
+| `i2cdetect` | `stdout` or `notFound:true` | detection |
+| `lte_file` | `text` / `textB64` / `absent:true` | every read reported, written on change |
+| `exec` | `argv`, `stdout`, `code` | every run reported, written on change per argv |
+| `dt` | `max_current` hex / `absent:true` | once |
+| `mqtt_in` | `topic`, `payload` / `payloadB64`, `retain`, `qos` | every inbound publish incl. retained redeliveries |
+| `conn` | `state` `connected`/`closed` | MQTT plane |
+| `cli` | `argv` | `xorgate-rs set …` while taping |
+| `clock` | `wall`, `mono` | every 10 s |
+| `proc` | `path`, `text` | optional, Rust-only replay |
+
+The agent writes a tape when `XORGATE_RS_TAPE=<path>` is set (WP1 wires
+`FileTape` behind its `TapeSink`). The writer sync-flushes every 2 s and on
+`conn`/`cli`/`clock`, so a tape cut by SIGKILL or the C7 reboot reads back up
+to the last flush (`inspect` says `TRUNCATED`). `meta.home` (optional) carries
+`settings.json`/`config-sync.json`/`commands.json` at start so the rig starts
+both agents from the bench's state. **Tapes are never committed** (bench
+location + SIM identity; O8) except `fixtures/replay/smoke.ndjson.gz`, which is
+synthetic.
+
+`xorgate-replay inspect <tape> [--dump [--kind nmea]…]` prints the header,
+per-kind counts, closed spans, NMEA gaps, wall steps and truncation.
+
+## Synthetic tapes
+
+`xorgate-replay synth --list`. Deterministic (fixed start wall
+`1785353400000`, the `now` of `fixtures/modem/telemetry-tolerance.json`; no
+randomness; byte-reproducible gzip), labelled in `meta.synthetic`, built from
+the fixtures (NMEA shapes + position of `fixtures/nmea`, `telemetry-tolerance`
+raw docs, BNO085 Q-point IMU samples, real `pmic_read_adc` layout). Scenarios:
+`smoke` (60 s), `calibration` (240 s), `full` (10 min, every track),
+`nmea-fix`, `nmea-nofix`, `nmea-silence` (35 s gap → C12 reopen), `lte-seq`
+(15 s absent span), `lte-fixtures`, `imu` (helper exit code 4 + respawn),
+`config` (rev 1 → rev 2 + retained redelivery after a 20 s cut), `commands`
+(refresh, rate-limited refresh, expired, duplicate requestId), `cli`.
+
+## The rig (`xorgate-replay play`)
+
+Both agents run inside the `rig` container as children of the player, with
+distinct deviceIds (`…000a`, `…000b`), `TZ=UTC`, `MODE=real`, and every input
+redirected through the knobs the TS already reads (the Rust agent must honour
+the same — common brief rule 6):
+
+| Knob | Rig value |
+|---|---|
+| `GPS_NMEA_PORT` | a pty per agent, raw mode (no echo / CR-NL translation); the player keeps the slave open |
+| `LTE_TELEMETRY_FILE` | a file per agent, rewritten atomically or removed |
+| `XORGATE_PYTHON_DIR` | `fake-python/` (relays lines from `$RIG_IMU_SOCK`, exits on `__EXIT__ <code>`) |
+| `PATH` | per-agent copy of `shims/` (+ system dirs); `i2cdetect` left out when the tape says notFound; `rpicam-hello` ABSENT unless `--with-rpicam` |
+| `IOT_DATA_ENDPOINT=broker` | `broker` → 127.0.0.1 in the rig: a TCP proxy to `mosquitto:8883` |
+| `CA_PATH`/`CERT_PATH`/`KEY_PATH` | rig CA + per-agent client cert |
+| `KVS_MANIFEST` / `HARDWARE_MANIFEST` / `KVS_PIPELINE_DIR` / `XORGATE_HOME` | scratch (`kvs.json` channels from the tape, `[]` for synth; hardware from `meta.hardware`) |
+| `KVS_RUNTIME_BIN` | a missing path (media self-gates) |
+
+- **Time shift.** Embedded wall times are shifted by the whole seconds between
+  the tape's `startWall` and the replay start (`rewrite.rs`): LTE-file ISO
+  strings, `read_at`, `cclk`; NMEA GGA/RMC/GLL/GNS/ZDA time + date (checksum
+  recomputed); command `ts`/`expiresAt`. Relative times are preserved (an
+  expired command stays expired). `--no-shift` disables it.
+- **Retained config.** Config publishes go to the broker retained (as the
+  cloud does); a tape `mqtt_in` with `retain:true` and the payload the broker
+  already holds is a redelivery and is NOT republished — the broker redelivers
+  on the agent's resubscribe by itself.
+- **Connection spans.** A tape `conn closed` … `connected` span drops every
+  proxied agent connection and refuses new ones until it ends. The phase file
+  says "docker pause of the broker"; the proxy has the same effect on the
+  agents while the capture client keeps recording and the rig needs no docker
+  socket.
+- **Hold gate (pairing).** Each agent ticks at 1 Hz on its own phase (and
+  Node's `setInterval` drifts ~1 ms/tick). An input changing between the two
+  agents' ticks would make every stream-fed field differ by one sample, so the
+  player never changes an input between the two ticks of a pair: it predicts
+  the next tick of each agent from its last telemetry `ts` and holds releases
+  from `lead tick − 60 ms` until the partner's tick is observed (timeout
+  1.5 s; no gating while an agent is silent > 2.5 s). Inputs are delayed by
+  less than one pair gap and never reordered. Pairs go to `pairs.ndjson`; the
+  diff compares exactly those ticks. When the drifting gap exceeds 800 ms the
+  roles flip and the one lead tick in between is recorded as a `skip`.
+- **Prefill.** `lte_file`/`exec`/`i2cdetect`/`dt` events in the tape's first
+  second are applied before the agents start (those files existed before the
+  recording agent did).
+- **Stop.** After the tape + `--settle-s` (20): SIGTERM to both at once, 30 s
+  grace, then SIGKILL of the process group (logged in `stderr.log`).
+
+Run directory (`<run>/`): `play.json` (start/end wall, shift, closed spans,
+input transitions, wall steps), `pairs.ndjson`, `player.log`,
+`inputs-mqtt.ndjson` (what the player published), and per agent `a/`, `b/`:
+`meta.json`, `mqtt.ndjson` (every publish), `files.ndjson` (state.json,
+settings.json, config-sync.json, commands.json, gnss-sky.json, agent.pid on
+change, 1 s poll), `final/`, `sudo.log`, `cli.log`, `stdout.log`, `stderr.log`.
+
+## The diff (`xorgate-replay diff <run>`)
+
+| Stream | Compared |
+|---|---|
+| telemetry | player pairs (fallback: nearest `ts` within ±500 ms); every leaf; key ORDER; numbers as JSON text (T9) |
+| report | quiet periods (10 s); equal counts → pairwise in order, else ±1 (T5) and the last report of each side exact |
+| ack, status, sms | in order |
+| files at end | settings.json byte-exact; config-sync / commands / gnss-sky / agent.pid as JSON |
+| state | state.json at end (recentEvents compared as `events`) |
+| events | the multiset of `level: msg` of every state.json event seen in the 1 s snapshots |
+| sudo | the argv sequence (`sudo.log`) |
+
+Every mismatch is listed with both values and the id of the row that covers it
+(`T1` … `T9`, `T7/D1`, `T8/O3`, …) or `UNTOLERATED`; exit 1 on any UNTOLERATED.
+Rows are explained in `tolerances.toml`. Editing rule: T1–T9 come from the
+phase file, T7 is imported verbatim from `phase-1/evidence/accepted-divergences.md`;
+a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
+
+## Limits of the rig (know these when reading a diff)
+
+- `/proc/device-tree/chosen/power/max_current` is a fixed path in both agents
+  and cannot be redirected in a container: `psu_max_current` is absent on both
+  sides; the tape's `dt` is replayed only by a Rust-only `ReplayHal` run.
+- `cpu_temp` (no thermal zone in the Docker VM) is absent on both sides;
+  `cpu_usage`, `ram_usage`, `disk_usage` are the rig host's live values (T3).
+- `rpicam-hello` is absent (camera reconcile = "cannot enumerate"); camera
+  mount, LED, recording and media are Phase 3/4 and tolerated as T6.
+
+## CI
+
+`cargo test -p xorgate-replay` covers the tape round trip, synth determinism,
+the gate state machine, the rewrite rules and the diff/tolerance engine; a
+smoke test reads `fixtures/replay/smoke.ndjson.gz`. The full rig needs Docker
+(not available inside the CI job's container), so CI runs the smoke tape
+Rust-only; the JS-vs-Rust run is the gate runner's C3 on the Mac.

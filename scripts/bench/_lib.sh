@@ -33,3 +33,124 @@ bench_scp_from() { scp "${BENCH_SSH_OPTS[@]}" -q "$BENCH:$1" "$2"; }
 bench_sudo_script() { ssh "${BENCH_SSH_OPTS[@]}" "$BENCH" sudo bash -s -- "$@"; }
 
 log() { printf '\033[1;34m>>\033[0m %s\n' "$*" >&2; }
+
+# ---------------------------------------------------------------------------
+# Phase 2 (WP7) additions — the input profiles and the exclusive window
+# (plan phase-2-cloud-plane.md §Bench recipe, decision O6). Appended only.
+DROPIN_DIR=/etc/systemd/system/$UNIT.service.d
+RUN_DROPIN_DIR=/run/systemd/system/$UNIT.service.d
+INPUTS_DROPIN=$DROPIN_DIR/95-inputs.conf
+EXCLUSIVE_DROPIN=$RUN_DROPIN_DIR/99-exclusive.conf
+TAPE_DROPIN=$RUN_DROPIN_DIR/98-tape.conf
+RS_ETC=$RS_HOME/etc
+EVIDENCE_PHASE2_LOCAL="${EVIDENCE_PHASE2_LOCAL:-/Users/vynci/vynci/xorgate/plans/device-agent-js-to-rust/phase-2/evidence}"
+
+# Shell functions shared by the Phase 2 remote scripts. Print them in front of
+# a remote heredoc: `{ bench_remote_lib; cat <<'REMOTE' … REMOTE; } | bench_sudo_script`.
+# Every MUTATING command goes through `act` so `--dry-run` (DRY=1) prints the
+# command instead of running it; reads always run.
+bench_remote_lib() {
+  cat <<'LIB'
+set -euo pipefail
+UNIT=xorgate-agent-rs
+JS_UNIT=xorgate-agent
+MODEM_UNIT=sim7600-lte
+RS_HOME=/var/lib/xorgate-rs
+RS_ETC=$RS_HOME/etc
+RS_ENV=/etc/xorgate/agent-rs-dev.env
+DEV_BACKUP=/etc/xorgate/dev-backup-20260823
+DROPIN_DIR=/etc/systemd/system/$UNIT.service.d
+RUN_DROPIN_DIR=/run/systemd/system/$UNIT.service.d
+INPUTS_DROPIN=$DROPIN_DIR/95-inputs.conf
+EXCLUSIVE_DROPIN=$RUN_DROPIN_DIR/99-exclusive.conf
+TAPE_DROPIN=$RUN_DROPIN_DIR/98-tape.conf
+C15_BASELINE=$RS_HOME/evidence/c15-baseline.sha256
+DRY="${DRY:-0}"
+CHANGED=()
+act() { if [ "$DRY" = 1 ]; then echo "  [dry-run] would: $*"; else "$@"; fi; }
+note() { CHANGED+=("$1"); echo "  - $1"; }
+# write_if_changed <path> <mode> : content on stdin
+write_if_changed() {
+  local path=$1 mode=$2 tmp
+  tmp=$(mktemp)
+  cat > "$tmp"
+  if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+    echo "  = $path unchanged"; rm -f "$tmp"; return 1
+  fi
+  if [ "$DRY" = 1 ]; then
+    echo "  [dry-run] would write $path:"; sed 's/^/      | /' "$tmp"; rm -f "$tmp"
+  else
+    install -d -m 0755 "$(dirname "$path")"
+    install -m "$mode" "$tmp" "$path"; rm -f "$tmp"
+  fi
+  note "$path written"
+  return 0
+}
+remove_if_present() {
+  if [ -e "$1" ]; then act rm -f "$1"; note "$1 removed"; return 0; fi
+  echo "  = $1 absent"; return 1
+}
+profile_shared() {
+  # O6 shared: the JS agent owns the GNSS tty and the BNO085, so the Rust
+  # agent's GPS port does not exist and its Python helper cannot spawn.
+  write_if_changed "$INPUTS_DROPIN" 0644 <<'CONF' || true
+# Phase 2 SHARED input profile (scripts/bench/profile.sh, plan O6). Persistent.
+# The JS prod agent owns /dev/ttyUSB1 (NMEA) and the BNO085 (I2C, SHTP): two
+# readers would split NMEA bytes and two SHTP clients break the sensor, so the
+# Rust agent gets an absent GPS port (gps group omitted) and a python dir with
+# no helper (spawn fails → IMU parked) while both agents run.
+[Service]
+Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps
+Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python
+CONF
+  remove_if_present "$EXCLUSIVE_DROPIN" || true
+}
+profile_exclusive() {
+  # Refuse while the JS agent runs: it must be stopped (exclusive.sh begin).
+  local js
+  js=$(systemctl is-active $JS_UNIT || true)
+  if [ "$js" = active ] || [ "$js" = activating ]; then
+    if [ "$DRY" = 1 ]; then
+      echo "  [dry-run] NOTE: $JS_UNIT is $js — a real run refuses here until it is stopped"
+    else
+      echo "refusing the exclusive profile: $JS_UNIT is $js (two NMEA/SHTP readers)"; exit 1
+    fi
+  fi
+  write_if_changed "$EXCLUSIVE_DROPIN" 0644 <<'CONF' || true
+# Phase 2 EXCLUSIVE input profile (scripts/bench/profile.sh exclusive, plan O6).
+# RUNTIME drop-in under /run: it vanishes on reboot, so a reboot during the
+# window falls back to the shared profile by construction. Unsetting the two
+# overrides gives the agent its own defaults (/dev/ttyUSB1 and the packaged
+# python dir), exactly as on a converted device.
+[Service]
+UnsetEnvironment=GPS_NMEA_PORT XORGATE_PYTHON_DIR
+CONF
+}
+reload_restart_rs() {
+  act systemctl daemon-reload
+  act systemctl restart $UNIT
+  if [ "$DRY" != 1 ]; then
+    sleep 3
+    echo "  $UNIT: $(systemctl is-active $UNIT || true)"
+  fi
+  echo "  unit Environment=: $(systemctl show $UNIT -p Environment --value | tr ' ' '\n' | grep -E '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|XORGATE_RS_TAPE)=' | tr '\n' ' ' || true)"
+  local mp
+  mp=$(systemctl show $UNIT -p MainPID --value)
+  if [ -n "$mp" ] && [ "$mp" != 0 ] && [ -r /proc/$mp/environ ]; then
+    echo "  process env (pid $mp): $(tr '\0' '\n' < /proc/$mp/environ | grep -E '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|XORGATE_RS_TAPE)=' | tr '\n' ' ' || true)(unset = the agent's defaults)"
+  fi
+  echo "  drop-ins: $(systemctl show $UNIT -p DropInPaths --value)"
+}
+units_report() {
+  for u in $JS_UNIT $UNIT $MODEM_UNIT; do printf '  %-18s %s\n' "$u" "$(systemctl is-active $u || true)"; done
+}
+c15_check() {
+  if [ ! -f "$C15_BASELINE" ]; then echo "  C15: no baseline at $C15_BASELINE (run dev-manifests.sh)"; return 0; fi
+  if sha256sum --quiet -c "$C15_BASELINE" >/dev/null 2>&1; then
+    echo "  C15: /etc/xorgate/{agent.env,kvs.json,hardware.json} sha256 UNCHANGED vs baseline"
+  else
+    echo "  C15: CHANGED vs baseline:"; sha256sum -c "$C15_BASELINE" 2>&1 | sed 's/^/      /'
+  fi
+}
+LIB
+}
