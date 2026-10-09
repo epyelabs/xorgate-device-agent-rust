@@ -1,0 +1,48 @@
+# cargo-deny configuration (run `cargo deny check` in CI; `cargo install cargo-deny`).
+# Licenses: permissive only. Advisories: RustSec, yanked crates denied.
+
+[graph]
+all-features = false
+targets = [{ triple = "aarch64-unknown-linux-gnu" }]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "MPL-2.0",
+  "OpenSSL",
+  "CDLA-Permissive-2.0",
+  "0BSD",
+]
+
+# ring / aws-lc ship composite licenses that the detector scores low.
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

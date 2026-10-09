@@ -1,0 +1,7 @@
+# Pinned stable toolchain (latest stable as of 2026-10-08, installed and
+# verified on the bench CM5 via rustup). Bump deliberately, never by accident:
+# the apt rustc on Bookworm (1.63) / Trixie (1.85) cannot build this workspace.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
