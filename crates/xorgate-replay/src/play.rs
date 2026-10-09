@@ -204,6 +204,8 @@ pub struct Gate {
     open_after: i64,
     /// A tick index that was given up at a phase flip, per agent.
     skip_k: [Option<i64>; 2],
+    /// The tick index of each agent's last paired tick.
+    paired_k: [Option<i64>; 2],
     guard_before: i64,
     guard_after: i64,
     pub pairs: Vec<Value>,
@@ -216,6 +218,7 @@ impl Gate {
             hold: None,
             open_after: 0,
             skip_k: [None, None],
+            paired_k: [None, None],
             guard_before: guard_ms,
             guard_after: 20,
             pairs: Vec::new(),
@@ -236,6 +239,7 @@ impl Gate {
             h.ts[idx].get_or_insert(ts);
         }
         if let [Some(a), Some(b)] = h.ts {
+            self.paired_k = [Some(h.k[0]), Some(h.k[1])];
             self.pairs.push(json!({"a": a, "b": b}));
             self.hold = None;
             self.open_after = now + self.guard_after;
@@ -276,6 +280,30 @@ impl Gate {
             return true;
         };
         let n = [n0, n1];
+        // Mid-pair: agent x already ticked (unpaired, not given up) and the
+        // other's NEXT tick is its natural partner (closer than the alignment
+        // with x's next tick): an input released now would land between the
+        // two reads of that pair, and pairing the next ticks instead would
+        // orphan x's tick without a `skip` (seen JS-vs-Rust 2026-10-09).
+        for x in 0..2 {
+            let y = 1 - x;
+            let kx = self.track[x].k;
+            if self.paired_k[x] == Some(kx) || self.skip_k[x] == Some(kx) {
+                continue;
+            }
+            let Some(tx) = self.track[x].tick_at(kx) else {
+                continue;
+            };
+            let d_mid = n[y] - tx;
+            if (0..=FLIP_GAP_MS).contains(&d_mid) && d_mid < (n[x] - n[y]).abs() {
+                let mut hk = k;
+                hk[x] = kx;
+                let mut ts = [None, None];
+                ts[x] = self.track[x].last_ts;
+                self.hold = Some(Hold { start: now, k: hk, ts });
+                return false;
+            }
+        }
         let lead = if n[0] <= n[1] { 0 } else { 1 };
         let lag = 1 - lead;
         if now < n[lead] - self.guard_before {
@@ -1437,6 +1465,20 @@ mod tests {
         // No partner observed: still holding until an agent is silent > 2.5 s.
         assert!(!g.is_open(3_400, false));
         assert!(g.is_open(3_600, false));
+    }
+
+    #[test]
+    fn gate_holds_a_pair_already_half_observed() {
+        let mut g = Gate::new(60);
+        g.on_tick(0, 1_000, 1_000);
+        g.on_tick(1, 1_440, 1_440);
+        g.on_tick(0, 2_000, 2_002);
+        // A's tick at 2000 is observed; B's partner is due at 2440 (440 ms)
+        // — closer than A's next (3000 − 2440 = 560): hold for (2000, 2440).
+        assert!(!g.is_open(2_100, false));
+        g.on_tick(1, 2_445, 2_446);
+        assert!(g.is_open(2_500, false));
+        assert_eq!(g.pairs, vec![json!({"a": 2_000, "b": 2_445})]);
     }
 
     #[test]

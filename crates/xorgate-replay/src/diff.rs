@@ -552,15 +552,29 @@ fn pair_telemetry<'a>(
             }
         }
     }
-    // Fallback: greedy nearest for whatever the player did not pair.
+    // Fallback: greedy nearest for whatever the player did not pair, aligned
+    // like the nearest player pair (its B − A offset, if one lies within 30 s):
+    // raw nearest-ts would re-align across a phase offset near ±500 ms and
+    // orphan a tick at the seam.
+    let offsets: Vec<(i64, i64)> = out
+        .iter()
+        .filter_map(|(x, y)| Some((ts_of(&x.payload)?, ts_of(&y.payload)? - ts_of(&x.payload)?)))
+        .collect();
     let mut j0 = 0;
     for (i, ma) in a.iter().enumerate() {
         if used_a[i] {
             continue;
         }
-        let Some(ta) = ts_of(&ma.payload) else {
+        let Some(ta_raw) = ts_of(&ma.payload) else {
             continue;
         };
+        let off = offsets
+            .iter()
+            .min_by_key(|(t, _)| (t - ta_raw).abs())
+            .filter(|(t, _)| (t - ta_raw).abs() <= 30_000)
+            .map(|(_, o)| *o)
+            .unwrap_or(0);
+        let ta = ta_raw + off;
         let mut best: Option<(i64, usize)> = None;
         for (j, mb) in b.iter().enumerate().skip(j0) {
             if used_b[j] {
