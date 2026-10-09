@@ -87,3 +87,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 cargo deny check            # needs `cargo install cargo-deny`
 ```
+
+`cargo deny` (blocking in CI) ignores five RustSec advisories by id in
+`deny.toml`: RUSTSEC-2025-0134 (rustls-pemfile unmaintained) and
+RUSTSEC-2026-0049/0098/0099/0104 (rustls-webpki 0.102.8). All five come only
+through rumqttc 0.25.1, whose `use-rustls` feature hard-depends on
+`rustls-webpki ^0.102` + `rustls-pemfile ^2` (no feature or `[patch]` avoids
+them). The agent never runs that code path: xorgate-cloud builds its own
+rustls 0.23 `ClientConfig` (webpki 0.103.x, aws-lc-rs) and passes it as
+`TlsConfiguration::Rustls`. Revisit (drop the ignores, expect one
+`rustls-webpki` in `Cargo.lock`) when rumqttc releases on webpki 0.103.
