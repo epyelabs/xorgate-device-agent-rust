@@ -136,7 +136,12 @@ pub const DEVICE_A: &str = "00000000-0000-4000-8000-00000000000a";
 pub const DEVICE_B: &str = "00000000-0000-4000-8000-00000000000b";
 const INTERVAL_MS: i64 = 1000;
 const FLIP_GAP_MS: i64 = 800;
-const HOLD_TIMEOUT_MS: i64 = 1500;
+/// A hold whose partner tick was not observed ends this long after the
+/// partner's PREDICTED tick (connected) …
+const HOLD_GRACE_MS: i64 = 500;
+/// … or this long while the broker path is cut (nothing is observable then;
+/// the prediction alone keeps the pairs consistent).
+const HOLD_GRACE_CUT_MS: i64 = 100;
 const STALE_MS: i64 = 2500;
 const PREFILL_MS: u64 = 1000;
 
@@ -145,6 +150,8 @@ const PREFILL_MS: u64 = 1000;
 #[derive(Debug, Clone)]
 struct Hold {
     start: i64,
+    /// Predicted tick of the lagging agent.
+    lag_due: i64,
     lead: usize,
     lead_tick: Option<i64>,
     lag_tick: Option<i64>,
@@ -203,18 +210,25 @@ impl Gate {
     }
 
     /// May an input change now?
-    pub fn is_open(&mut self, now: i64) -> bool {
+    pub fn is_open(&mut self, now: i64, cut: bool) -> bool {
         let (Some(a), Some(b)) = (self.last[0], self.last[1]) else {
             return true;
         };
-        // An agent that stopped publishing (cut connection, crash) cannot be
-        // paired: no gating until both tick again.
-        if now - a > STALE_MS || now - b > STALE_MS {
+        // An agent that stopped publishing while connected (crash, wedge)
+        // cannot be paired: no gating until both tick again. During a cut the
+        // agents keep ticking unobserved (JS queues QoS 0 offline, Rust skips),
+        // so the predictions keep gating.
+        if !cut && (now - a > STALE_MS || now - b > STALE_MS) {
             self.hold = None;
             return true;
         }
         if let Some(h) = &self.hold {
-            if now > h.start + HOLD_TIMEOUT_MS {
+            let grace = if cut {
+                HOLD_GRACE_CUT_MS
+            } else {
+                HOLD_GRACE_MS
+            };
+            if now > h.lag_due + grace {
                 self.hold = None;
                 self.open_after = now + self.guard_after;
             } else {
@@ -244,6 +258,7 @@ impl Gate {
         }
         self.hold = Some(Hold {
             start: n[lead] - self.guard_before,
+            lag_due: n[1 - lead],
             lead,
             lead_tick: None,
             lag_tick: None,
@@ -531,33 +546,48 @@ impl Agent {
         }
     }
 
-    async fn stop(&mut self) {
-        let Some(child) = self.child.as_mut() else {
-            return;
-        };
-        if let Some(pid) = child.id() {
+    /// SIGTERM the agent (both agents are signalled together, then awaited).
+    fn signal_term(&self) {
+        if let Some(pid) = self.child.as_ref().and_then(|c| c.id()) {
             let _ = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(pid as i32),
                 nix::sys::signal::Signal::SIGTERM,
             );
         }
-        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+    }
+
+    /// Wait up to 30 s for the graceful exit, then SIGKILL the process group
+    /// (which also takes a surviving IMU helper).
+    async fn wait_stopped(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        let pgid = child.id().map(|p| nix::unistd::Pid::from_raw(p as i32));
+        let started = std::time::Instant::now();
+        let graceful = tokio::time::timeout(Duration::from_secs(30), child.wait())
             .await
-            .is_err()
-        {
-            if let Some(pid) = child.id() {
-                let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pid as i32),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
-            }
+            .is_ok();
+        if let Some(pg) = pgid {
+            let _ = nix::sys::signal::killpg(pg, nix::sys::signal::Signal::SIGKILL);
+        }
+        if !graceful {
             let _ = child.wait().await;
         }
-        // The IMU helper (own process group under the agent's) may survive.
-        if let Some(pid) = child.id() {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pid as i32),
-                nix::sys::signal::Signal::SIGKILL,
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join("stderr.log"))
+        {
+            let _ = writeln!(
+                f,
+                "[rig] agent {} {} after SIGTERM in {} ms",
+                self.label,
+                if graceful {
+                    "exited"
+                } else {
+                    "did NOT exit in 30 s; SIGKILLed"
+                },
+                started.elapsed().as_millis()
             );
         }
     }
@@ -845,22 +875,26 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         ));
     }
 
-    // Prefill the state-like inputs the agents read at boot.
+    // Prefill the state-like inputs the agents read at boot (the files and
+    // tools existed before the recording agent started).
     let mut transitions: Vec<i64> = Vec::new();
-    let mut idx = 0;
-    while idx < tape.records.len() && tape.records[idx].t < PREFILL_MS {
-        let r = &tape.records[idx];
-        match &r.ev {
-            TapeEvent::LteFile { .. }
-            | TapeEvent::Exec { .. }
-            | TapeEvent::I2cdetect { .. }
-            | TapeEvent::Dt { .. } => {
-                apply_state(&agents, &r.ev, shift_s)?;
-            }
-            _ => break,
+    let mut prefilled = vec![false; tape.records.len()];
+    for (i, r) in tape.records.iter().enumerate() {
+        if r.t >= PREFILL_MS {
+            break;
         }
-        idx += 1;
+        if matches!(
+            r.ev,
+            TapeEvent::LteFile { .. }
+                | TapeEvent::Exec { .. }
+                | TapeEvent::I2cdetect { .. }
+                | TapeEvent::Dt { .. }
+        ) {
+            apply_state(&agents, &r.ev, shift_s)?;
+            prefilled[i] = true;
+        }
     }
+    let idx = prefilled.iter().filter(|p| **p).count();
     let snap_stop = CancellationToken::new();
     tokio::spawn(snapshot_loop(
         agents
@@ -889,18 +923,22 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let mut released = 0usize;
     let cutoff = args.max_s.map(|s| s * 1000).unwrap_or(u64::MAX);
 
-    for r in tape.records[idx..].iter() {
+    for (i, r) in tape.records.iter().enumerate() {
+        if prefilled[i] {
+            continue;
+        }
         if r.t > cutoff {
             break;
         }
         let due = t0 + Duration::from_millis((r.t as f64 / args.speed) as u64);
         tokio::time::sleep_until(due).await;
         if !args.no_gate {
+            let cut_active = closed_since.is_some();
             loop {
                 let open = caps
                     .gate
                     .lock()
-                    .map(|mut g| g.is_open(wall_now_ms()))
+                    .map(|mut g| g.is_open(wall_now_ms(), cut_active))
                     .unwrap_or(true);
                 if open {
                     break;
@@ -1070,9 +1108,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
 
     let end_wall = wall_now_ms();
     snap_stop.cancel();
-    for a in agents.iter_mut() {
-        a.stop().await;
+    for a in agents.iter() {
+        a.signal_term();
     }
+    let (first, second) = agents.split_at_mut(1);
+    tokio::join!(first[0].wait_stopped(), second[0].wait_stopped());
     // Final file copies.
     for a in &agents {
         for name in FILES {
@@ -1156,17 +1196,17 @@ mod tests {
     #[test]
     fn gate_holds_between_paired_ticks() {
         let mut g = Gate::new(60);
-        assert!(g.is_open(0));
+        assert!(g.is_open(0, false));
         g.on_tick(0, 1_000, 1_005); // A phase 0
         g.on_tick(1, 1_300, 1_305); // B phase 300
-        assert!(g.is_open(1_400));
-        assert!(g.is_open(1_939));
-        assert!(!g.is_open(1_941)); // A due at 2000
+        assert!(g.is_open(1_400, false));
+        assert!(g.is_open(1_939, false));
+        assert!(!g.is_open(1_941, false)); // A due at 2000
         g.on_tick(0, 2_000, 2_004);
-        assert!(!g.is_open(2_100)); // waiting for B
+        assert!(!g.is_open(2_100, false)); // waiting for B
         g.on_tick(1, 2_300, 2_306);
-        assert!(!g.is_open(2_310)); // guard after
-        assert!(g.is_open(2_330));
+        assert!(!g.is_open(2_310, false)); // guard after
+        assert!(g.is_open(2_330, false));
         assert_eq!(g.pairs, vec![json!({"a": 2_000, "b": 2_300})]);
     }
 
@@ -1175,16 +1215,32 @@ mod tests {
         let mut g = Gate::new(60);
         g.on_tick(0, 1_700, 1_700);
         g.on_tick(1, 1_200, 1_200);
-        assert!(!g.is_open(2_150)); // B due at 2200
-        assert!(!g.is_open(2_500));
+        assert!(!g.is_open(2_150, false)); // B due at 2200
+        assert!(!g.is_open(2_500, false));
         // B's tick at 2200 and A's at 2700 → pair.
         g.on_tick(1, 2_200, 2_205);
         g.on_tick(0, 2_700, 2_702);
         assert_eq!(g.pairs, vec![json!({"a": 2_700, "b": 2_200})]);
         // Nothing observed: the hold expires; a silent agent is not gated.
-        assert!(!g.is_open(3_150));
-        assert!(!g.is_open(3_150 + 1_400));
-        assert!(g.is_open(4_750));
+        assert!(!g.is_open(3_150, false));
+        assert!(!g.is_open(3_150 + 1_400, false));
+        assert!(g.is_open(4_750, false));
+    }
+
+    #[test]
+    fn gate_keeps_predicting_through_a_cut() {
+        let mut g = Gate::new(60);
+        g.on_tick(0, 1_000, 1_000);
+        g.on_tick(1, 1_300, 1_300);
+        // 10 s later nothing is observable (cut), but A still ticks at …000
+        // and B at …300: hold [A − 60, B + 100].
+        assert!(g.is_open(10_900, true));
+        assert!(!g.is_open(10_950, true));
+        assert!(!g.is_open(11_350, true));
+        assert!(!g.is_open(11_401, true));
+        assert!(g.is_open(11_421, true));
+        // Connected again but still silent → not gated.
+        assert!(g.is_open(11_900, false));
     }
 
     #[test]
@@ -1193,11 +1249,11 @@ mod tests {
         g.on_tick(0, 1_000, 1_000);
         g.on_tick(1, 1_850, 1_850);
         // At 1940: A due 2000, B due 2850 → gap 850 → skip A's 2000 tick.
-        assert!(g.is_open(1_945));
+        assert!(g.is_open(1_945, false));
         assert_eq!(g.pairs, vec![json!({"skip": "a", "ts": 2_000})]);
         // Now B (2850) leads A (3000).
-        assert!(g.is_open(2_700));
-        assert!(!g.is_open(2_800));
+        assert!(g.is_open(2_700, false));
+        assert!(!g.is_open(2_800, false));
     }
 
     #[test]

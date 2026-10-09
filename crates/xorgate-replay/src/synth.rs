@@ -36,7 +36,7 @@ use xorgate_hal::tape::{ConnState, KvsInfo, Tape, TapeEvent, TapeMeta, TapeRecor
 
 use crate::rewrite::{civil_from_epoch, iso_z, nmea_sentence};
 
-/// 2026-07-29T15:30:00Z — `now` of the modem telemetry-tolerance fixture.
+/// 2026-07-29T19:30:00Z — `now` of the modem telemetry-tolerance fixture.
 pub const SYNTH_START_WALL: i64 = 1_785_353_400_000;
 /// The tape's deviceId (the player substitutes the rig ids).
 pub const SYNTH_DEVICE_ID: &str = "00000000-0000-4000-8000-0000000005e1";
@@ -765,6 +765,26 @@ mod tests {
                 serde_json::from_slice::<Value>(&b).unwrap();
             }
         }
+    }
+
+    /// CI smoke (WP7 brief): the committed smoke tape reads back and is
+    /// exactly what `synth smoke` produces today (regenerate with
+    /// `xorgate-replay synth smoke -o fixtures/replay/smoke.ndjson.gz`).
+    #[test]
+    fn committed_smoke_tape_is_current() {
+        let path = fixtures().join("replay/smoke.ndjson.gz");
+        let tape = Tape::read(&path).unwrap();
+        assert!(!tape.truncated);
+        assert!(tape.duration_ms() <= 60_000, "O8: ≤60 s");
+        let fresh = build("smoke", None, &fixtures()).unwrap();
+        assert_eq!(tape.meta, fresh.meta);
+        assert_eq!(
+            tape.records, fresh.records,
+            "fixtures/replay/smoke.ndjson.gz is stale"
+        );
+        let s = crate::inspect::summarize(&tape);
+        assert_eq!(s.out_of_order, 0);
+        assert!(s.wall_steps.is_empty());
     }
 
     #[test]

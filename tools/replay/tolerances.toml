@@ -20,7 +20,7 @@ title = "ts-like fields are excluded; order is still checked"
 basis = "phase file T1"
 kind = "exclude"
 streams = ["telemetry", "report", "ack", "status", "sms", "state", "file:config-sync.json", "file:commands.json", "file:gnss-sky.json", "pidfile"]
-paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts"]
+paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts", "*Ts", "**.*Ts", "timestamp"]
 
 [[rule]]
 id = "T2"
@@ -30,6 +30,14 @@ kind = "deltas"
 streams = ["telemetry", "state"]
 paths = ["seq", "latest.seq"]
 normalize_ids = true
+
+[[rule]]
+id = "T2"
+title = "rig identities: a process id is per-instance like the deviceId"
+basis = "phase file T2 (deviceId/requestId normalised); WP7 reading — pid is the same kind of per-instance identity (reviewer to confirm)"
+kind = "exclude"
+streams = ["state", "pidfile"]
+paths = ["pid"]
 
 [[rule]]
 id = "T3"
@@ -244,7 +252,7 @@ kind = "decisions"
   id = "pidfile"
   what = "pidfile worker / argv / nodeVersion (CF4)"
   streams = ["pidfile"]
-  paths = ["worker", "argv", "argv.**", "nodeVersion", "pid"]
+  paths = ["worker", "argv", "argv.**", "nodeVersion"]
 
   [[rule.row]]
   id = "writtenBy"

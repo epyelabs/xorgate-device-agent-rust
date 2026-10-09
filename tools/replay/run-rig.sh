@@ -45,17 +45,19 @@ RUN="run-$TS-$A-$B"
 [ "$BUILD" -eq 0 ] || "$HERE/build-bins.sh"
 
 mkdir -p "$HERE/.cache/tapes" "$HERE/.cache/runs"
-cp "$TAPE" "$HERE/.cache/tapes/$(basename "$TAPE")"
+DEST_TAPE="$HERE/.cache/tapes/$(basename "$TAPE")"
+[ "$(cd "$(dirname "$TAPE")" && pwd)/$(basename "$TAPE")" = "$DEST_TAPE" ] || cp "$TAPE" "$DEST_TAPE"
 export RIG_TAPES="$HERE/.cache/tapes" RIG_RUNS="$HERE/.cache/runs"
 
 cd "$HERE"
+# shellcheck disable=SC2329  # invoked by the EXIT trap
 cleanup() { docker compose down --remove-orphans >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+trap 'rc=$?; cleanup; exit $rc' EXIT
 docker compose build --quiet rig
 docker compose up -d mosquitto
 echo ">> play $(basename "$TAPE") A=$A B=$B → .cache/runs/$RUN (real time)"
 docker compose run --rm -T rig play --tape "/rig/tapes/$(basename "$TAPE")" --out "/rig/out/$RUN" \
-  --a "$A" --b "$B" --js-dir "/rig/cache/js-89b5c64" --rs-bin /rig/cache/bin/xorgate-rs "${EXTRA[@]}"
+  --a "$A" --b "$B" --js-dir "/rig/cache/js-89b5c64" --rs-bin /rig/cache/bin/xorgate-rs ${EXTRA[@]+"${EXTRA[@]}"}
 set +e
 docker compose run --rm -T rig diff "/rig/out/$RUN" --tolerances /rig/tools/tolerances.toml
 RC=$?
