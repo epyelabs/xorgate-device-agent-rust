@@ -13,7 +13,7 @@
 //! applied" overlay is deliberately NOT here — it is time-based, so the LED
 //! manager (Phase 4) owns it.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::led::{LedColour, LedPattern};
 use crate::telemetry::{ConnectionState, RecordingStatus};
@@ -25,6 +25,22 @@ use crate::types::GnssView;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LteStatusView {
     pub status: Option<String>,
+}
+
+impl LteStatusView {
+    /// The view of a parsed telemetry.json value: `typeof s.lte?.status ===
+    /// "string" ? s.lte.status : null` (`led-state.ts:183`). A non-object
+    /// value is the caller's `lte: null`; a missing or non-string `status`
+    /// reads as `None` (fail open — "a malformed lte block is ignored").
+    pub fn from_value(v: &serde_json::Value) -> Option<Self> {
+        let obj = v.as_object()?;
+        Some(Self {
+            status: obj
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        })
+    }
 }
 
 /// `LedSignals` (`led-state.ts:25-36`).

@@ -358,10 +358,7 @@ fn busy_line_number(line: &str) -> Option<u32> {
     if after_ws.len() == rest.len() {
         return None; // `\s+` needs at least one whitespace
     }
-    let digits_len = after_ws
-        .bytes()
-        .take_while(|b| b.is_ascii_digit())
-        .count();
+    let digits_len = after_ws.bytes().take_while(|b| b.is_ascii_digit()).count();
     if digits_len == 0 || !after_ws[digits_len..].starts_with(':') {
         return None;
     }
@@ -454,7 +451,7 @@ mod tests {
             serde_json::to_string(&m).unwrap(),
             r#"{"kind":"rgb-gpio","pins":{"r":5,"g":6,"b":7},"activeHigh":true}"#
         );
-        assert_eq!(validate_pin_map(&m, &[]).ok, true);
+        assert!(validate_pin_map(&m, &[]).ok);
         let nan = LedPinMap {
             pins: LedPins {
                 r: f64::NAN,
