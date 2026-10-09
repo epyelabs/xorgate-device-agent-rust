@@ -127,6 +127,29 @@ struct State {
     inflight: Option<Flight>,
 }
 
+/// Clears `State::inflight` when dropped — but only while it still holds THIS
+/// fetch's channel. The TS `.finally` always runs; a Rust task can instead
+/// panic or be cancelled, and a handle left behind with its sender gone would
+/// fail every later `get()` with "IoT credentials fetch aborted" instead of
+/// starting a fresh fetch.
+struct InflightGuard {
+    state: Arc<Mutex<State>>,
+    flight: Flight,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st
+            .inflight
+            .as_ref()
+            .is_some_and(|f| f.same_channel(&self.flight))
+        {
+            st.inflight = None;
+        }
+    }
+}
+
 /// `IotCredentialsProvider` (`iot-creds.ts:44-132`). Cheap to clone (shared state).
 #[derive(Clone)]
 pub struct IotCredentialsProvider {
@@ -169,7 +192,14 @@ impl IotCredentialsProvider {
                     let (tx, rx) = watch::channel(None);
                     st.inflight = Some(rx.clone());
                     let opts = self.opts.clone();
-                    let state = self.state.clone();
+                    // Moved into the task: dropped on completion, on a panic
+                    // in the fetch, and when the runtime cancels the task
+                    // (even before its first poll), so the shared handle can
+                    // never outlive its sender (review-wp5 SHOULD-FIX 2).
+                    let guard = InflightGuard {
+                        state: self.state.clone(),
+                        flight: rx.clone(),
+                    };
                     tokio::spawn(async move {
                         let res = match &opts.fetch_fn {
                             Some(f) => f().await,
@@ -177,7 +207,7 @@ impl IotCredentialsProvider {
                         };
                         // `.finally(() => { this.inflight = null; })` runs
                         // before any awaiting caller resumes.
-                        state.lock().unwrap_or_else(|e| e.into_inner()).inflight = None;
+                        drop(guard);
                         let _ = tx.send(Some(res));
                     });
                     rx
@@ -343,125 +373,11 @@ pub fn parse_credentials_response(status: u16, body: &[u8]) -> Result<AwsCredent
                 access_key_id,
                 secret_access_key,
                 session_token,
-                expiration: date_parse(&exp),
+                expiration: xorgate_core::js::date_parse(&exp),
             })
         }
         _ => Err(CredsError("IoT credentials response missing fields".into())),
     }
-}
-
-/// `Date.parse` for the ECMAScript Date Time String Format (ES2023 §21.4.1.32):
-/// `YYYY[-MM[-DD]][THH:mm[:ss[.sss…]]][Z|±HH:mm]`, `±YYYYYY` years. A
-/// date-time without an offset is local time in JS; it is read as UTC here
-/// (accepted divergence "Date.parse without offset", tolerance T7). Anything
-/// else (V8's legacy fallback forms) is `NaN`. AWS vends
-/// `2026-10-09T13:00:00Z`. Private until integration (`xorgate_core::js::date_parse`).
-fn date_parse(s: &str) -> f64 {
-    parse_iso(s).unwrap_or(f64::NAN)
-}
-
-fn parse_iso(s: &str) -> Option<f64> {
-    let b = s.as_bytes();
-    let mut i = 0;
-    let num = |i: &mut usize, n: usize| -> Option<f64> {
-        let d = b.get(*i..*i + n)?;
-        if !d.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        *i += n;
-        std::str::from_utf8(d).ok()?.parse::<f64>().ok()
-    };
-    let year = match b.first()? {
-        b'+' | b'-' => {
-            let neg = b[0] == b'-';
-            i = 1;
-            let y = num(&mut i, 6)?;
-            if neg && y == 0.0 {
-                return None; // -000000 is invalid
-            }
-            if neg {
-                -y
-            } else {
-                y
-            }
-        }
-        _ => num(&mut i, 4)?,
-    };
-    let (mut month, mut day) = (1.0, 1.0);
-    if b.get(i) == Some(&b'-') {
-        i += 1;
-        month = num(&mut i, 2)?;
-        if b.get(i) == Some(&b'-') {
-            i += 1;
-            day = num(&mut i, 2)?;
-        }
-    }
-    let (mut h, mut mi, mut sec, mut ms) = (0.0, 0.0, 0.0, 0.0);
-    let mut offset_min = 0.0;
-    if b.get(i) == Some(&b'T') {
-        i += 1;
-        h = num(&mut i, 2)?;
-        if b.get(i) != Some(&b':') {
-            return None;
-        }
-        i += 1;
-        mi = num(&mut i, 2)?;
-        if b.get(i) == Some(&b':') {
-            i += 1;
-            sec = num(&mut i, 2)?;
-            if b.get(i) == Some(&b'.') {
-                i += 1;
-                let start = i;
-                while b.get(i).is_some_and(u8::is_ascii_digit) {
-                    i += 1;
-                }
-                if i == start {
-                    return None;
-                }
-                // Milliseconds = the first three digits (V8 truncates the rest).
-                let frac = &s[start..i];
-                let mut digits: String = frac.chars().take(3).collect();
-                while digits.len() < 3 {
-                    digits.push('0');
-                }
-                ms = digits.parse::<f64>().ok()?;
-            }
-        }
-        match b.get(i) {
-            Some(b'Z') => i += 1,
-            Some(&c @ (b'+' | b'-')) => {
-                i += 1;
-                let oh = num(&mut i, 2)?;
-                if b.get(i) != Some(&b':') {
-                    return None;
-                }
-                i += 1;
-                let om = num(&mut i, 2)?;
-                if oh > 23.0 || om > 59.0 {
-                    return None;
-                }
-                offset_min = (oh * 60.0 + om) * if c == b'+' { 1.0 } else { -1.0 };
-            }
-            _ => {}
-        }
-    }
-    if i != b.len() {
-        return None;
-    }
-    // V8 range-checks the day against 1..=31 only and lets MakeDay roll
-    // `2026-02-30` over into March (node 24: 1772409600000).
-    if !(1.0..=12.0).contains(&month)
-        || !(1.0..=31.0).contains(&day)
-        || h > 24.0
-        || mi > 59.0
-        || sec > 59.0
-        || (h == 24.0 && (mi, sec, ms) != (0.0, 0.0, 0.0))
-    {
-        return None;
-    }
-    let t =
-        xorgate_core::js::date_utc(year, month - 1.0, day, h, mi, sec) + ms - offset_min * 60_000.0;
-    (t.abs() <= 8.64e15).then_some(t)
 }
 
 #[cfg(test)]
@@ -470,6 +386,8 @@ mod tests {
 
     #[test]
     fn date_parse_matches_v8_on_the_iso_forms() {
+        // The vended `expiration` goes through `xorgate_core::js::date_parse`.
+        use xorgate_core::js::date_parse;
         // Values printed by node 24 `Date.parse(…)`.
         assert_eq!(date_parse("2026-10-09T13:00:00Z"), 1_791_550_800_000.0);
         assert_eq!(
@@ -540,6 +458,87 @@ mod tests {
             .unwrap()
             .expiration
             .is_nan());
+    }
+
+    fn provider_with(fetch_fn: FetchFn) -> IotCredentialsProvider {
+        let mut o = IotCredentialsOptions::new("h", "a", "t", "/nope/c", "/nope/k");
+        o.fetch_fn = Some(fetch_fn);
+        o.now = Some(Arc::new(|| 0.0));
+        IotCredentialsProvider::new(o)
+    }
+
+    fn creds() -> AwsCredentials {
+        AwsCredentials {
+            access_key_id: "AK".into(),
+            secret_access_key: "S".into(),
+            session_token: "T".into(),
+            expiration: 3_600_000.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicked_fetch_does_not_wedge_later_gets() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let p = provider_with(Arc::new(move || {
+            let n = c.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if n == 0 {
+                    panic!("fetch task panics (test)");
+                }
+                Ok(creds())
+            })
+        }));
+        // The caller awaiting the panicked fetch sees it fail...
+        assert_eq!(
+            p.get().await.unwrap_err().0,
+            "IoT credentials fetch aborted"
+        );
+        assert!(p.state.lock().unwrap().inflight.is_none());
+        // ...and the next call starts a fresh fetch instead of re-reading the
+        // dead handle.
+        assert_eq!(p.get().await.unwrap(), creds());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_cancelled_fetch_does_not_wedge_later_gets() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let p = provider_with(Arc::new(move || {
+            let n = c.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if n == 0 {
+                    std::future::pending::<()>().await;
+                }
+                Ok(creds())
+            })
+        }));
+        // First runtime: the fetch starts and hangs; the caller gives up and
+        // the runtime shuts down, cancelling the spawned fetch task.
+        {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let p1 = p.clone();
+            rt.block_on(async move {
+                let r = tokio::time::timeout(Duration::from_millis(20), p1.get()).await;
+                assert!(r.is_err(), "first fetch never completes");
+            });
+            assert!(p.state.lock().unwrap().inflight.is_some());
+        }
+        assert!(p.state.lock().unwrap().inflight.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // Second runtime: a later get() refetches.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(rt.block_on(p.get()).unwrap(), creds());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
