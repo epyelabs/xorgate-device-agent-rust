@@ -1,0 +1,3201 @@
+{
+  "jsSourceFile": "test/recording-video-segments.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there)",
+  "frozenClocks": {
+    "wallMs": 1750000240000,
+    "monoMs": 740000
+  },
+  "cases": [
+    {
+      "name": "resolves known presets and falls back to the default",
+      "op": "presets",
+      "input": {},
+      "expected": {
+        "find1080p30": {
+          "name": "1080p30-4mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 30,
+          "bitrateKbps": 4000
+        },
+        "resolveNope": "720p15-1mbps",
+        "names": [
+          "1080p30-4mbps",
+          "1080p15-2mbps",
+          "720p30-2mbps",
+          "720p15-2mbps",
+          "720p15-1mbps"
+        ],
+        "DEFAULT_VIDEO_PRESET": "720p15-1mbps"
+      }
+    },
+    {
+      "name": "settings default preset exists in the table",
+      "op": "presets",
+      "input": {},
+      "expected": {
+        "defaultPreset": "720p15-1mbps",
+        "found": {
+          "name": "720p15-1mbps",
+          "width": 1280,
+          "height": 720,
+          "fps": 15,
+          "bitrateKbps": 1000
+        }
+      }
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"00007.mp4\"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "00007.mp4"
+      },
+      "expected": 7
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"session.json\"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "session.json"
+      },
+      "expected": null
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"00007.json\"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "00007.json"
+      },
+      "expected": null
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"notes.mp4\"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "notes.mp4"
+      },
+      "expected": null
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"0007.mp4\"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "0007.mp4"
+      },
+      "expected": null
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"000070.mp4\"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "000070.mp4"
+      },
+      "expected": 70
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"99999999999999999999.mp4\"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "99999999999999999999.mp4"
+      },
+      "expected": 100000000000000000000
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [segmentSeq \"00007.mp4 \"]",
+      "op": "segmentSeq",
+      "input": {
+        "name": "00007.mp4 "
+      },
+      "expected": null
+    },
+    {
+      "name": "parses splitmuxsink fragment names only [sidecarPathFor]",
+      "op": "sidecarPathFor",
+      "input": {
+        "mp4Path": "/a/b/00007.mp4"
+      },
+      "expected": "/a/b/00007.json"
+    },
+    {
+      "name": "extra: sidecarPathFor without the suffix",
+      "op": "sidecarPathFor",
+      "input": {
+        "mp4Path": "/a/b/x.mp4.bak"
+      },
+      "expected": "/a/b/x.mp4.bak"
+    },
+    {
+      "name": "uses file birthtime when sane (anchor=fstat)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 2,
+        "stat": {
+          "sizeBytes": 123,
+          "birthtimeMs": 1750000120000,
+          "mtimeMs": 1750000180000
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000180000,
+            "monoMs": 680000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":60000,\"sizeBytes\":123,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "falls back to anchor arithmetic when birthtime is bogus (anchor=computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 5,
+          "birthtimeMs": 0,
+          "mtimeMs": 1750000240000
+        },
+        "opts": {
+          "finalized": false,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": true
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":5,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":false}"
+      }
+    },
+    {
+      "name": "anchors fragment 0 to the next fragment's birthtime (anchor=boundary, Phase 6.6)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 0,
+        "stat": {
+          "sizeBytes": 9,
+          "birthtimeMs": 1750000000000,
+          "mtimeMs": 1750000062000
+        },
+        "opts": {
+          "finalized": true,
+          "boundaryEndMs": 1750000062000,
+          "clockPair": {
+            "wallMs": 1750000062000,
+            "monoMs": 562000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000002000,\"startMono\":502000,\"durationMs\":60000,\"sizeBytes\":9,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "ignores a bogus boundary and falls back to fstat",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 0,
+        "stat": {
+          "sizeBytes": 9,
+          "birthtimeMs": 1750000000000,
+          "mtimeMs": 1750000060000
+        },
+        "opts": {
+          "finalized": true,
+          "boundaryEndMs": 0,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": true
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":60000,\"sizeBytes\":9,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: fractional birthtime/mtime round like Math.round; mtime before birth clamps duration to 0",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 4,
+        "stat": {
+          "sizeBytes": 77.5,
+          "birthtimeMs": 1750000000000.5,
+          "mtimeMs": 1749999999996.8
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000000100.4,
+            "monoMs": 1234.6
+          },
+          "timeSource": "gps"
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":4,\"startTs\":1750000000001,\"startMono\":1135,\"durationMs\":0,\"sizeBytes\":77.5,\"timeSource\":\"gps\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: negative-tie rounding (Math.round ties toward +∞)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 5,
+          "anchorMono": "500000000000"
+        },
+        "seq": 1,
+        "stat": {
+          "sizeBytes": 1,
+          "birthtimeMs": 1750000000001.5,
+          "mtimeMs": 1750000000002.5
+        },
+        "opts": {
+          "finalized": false,
+          "clockPair": {
+            "wallMs": 1750000000002.5,
+            "monoMs": -0.5
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000000002,\"startMono\":-1,\"durationMs\":1,\"sizeBytes\":1,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":false}"
+      }
+    },
+    {
+      "name": "extra: huge seq keeps float semantics",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 100000000000000000000,
+        "stat": {
+          "sizeBytes": 1,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":100000000000000000000,\"startTs\":6.00000000000175e+24,\"startMono\":6e+24,\"durationMs\":60000,\"sizeBytes\":1,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds string (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "60",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds hex+ws (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": " 0x3C\n",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds empty string (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":0,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds null (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": null,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":0,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds true (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": true,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000003000,\"startMono\":503000,\"durationMs\":1000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds [60] (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": [
+            60
+          ],
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds [\"60\"] (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": [
+            "60"
+          ],
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds [] (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": [],
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":0,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds [1,2] (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": [
+            1,
+            2
+          ],
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds {} (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": {},
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds exp (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "1e1",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000030000,\"startMono\":530000,\"durationMs\":10000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds .5 (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": ".5",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000001500,\"startMono\":501500,\"durationMs\":500,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds 5. (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "5.",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000015000,\"startMono\":515000,\"durationMs\":5000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds Infinity (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "Infinity",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds -Infinity (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "-Infinity",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds abc (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "abc",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds 1_0 (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "1_0",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds missing (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds 0b11 (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "0b11",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000009000,\"startMono\":509000,\"durationMs\":3000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds -0x10 (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "-0x10",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds 0o17 (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "0o17",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000045000,\"startMono\":545000,\"durationMs\":15000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds [[]] (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": [
+            []
+          ],
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":0,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds [null] (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": [
+            null
+          ],
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":0,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds [true] (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": [
+            true
+          ],
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds inf (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "inf",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds +.5e1 (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "+.5e1",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000015000,\"startMono\":515000,\"durationMs\":5000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, segmentSeconds BOM 7 (computed)",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": "﻿7",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 3,
+        "stat": {
+          "sizeBytes": 10,
+          "birthtimeMs": 0,
+          "mtimeMs": 0
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000021000,\"startMono\":521000,\"durationMs\":7000,\"sizeBytes\":10,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"computed\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest copy-through (no deviceId, string width, null fps, unknown timeSource, object bitrate) [boundary]",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "gnss-bogus",
+          "preset": "1080p15-2mbps",
+          "width": "1920",
+          "height": 1080,
+          "fps": null,
+          "bitrateKbps": {
+            "k": [
+              1.5,
+              7
+            ]
+          },
+          "segmentSeconds": "60",
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000",
+          "extra": true
+        },
+        "seq": 0,
+        "stat": {
+          "sizeBytes": 9,
+          "birthtimeMs": 1750000000000,
+          "mtimeMs": 1750000062000
+        },
+        "opts": {
+          "finalized": true,
+          "boundaryEndMs": 1750000062000,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000002000,\"startMono\":502000,\"durationMs\":60000,\"sizeBytes\":9,\"timeSource\":\"gnss-bogus\",\"codec\":\"h264\",\"width\":\"1920\",\"height\":1080,\"fps\":null,\"bitrateKbps\":{\"k\":[1.5,7]},\"anchor\":\"boundary\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, timeSource missing and no override [fstat]",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": [
+            1080
+          ],
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 2,
+        "stat": {
+          "sizeBytes": 9,
+          "birthtimeMs": 1750000120000,
+          "mtimeMs": 1750000180000
+        },
+        "opts": {
+          "finalized": false,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":60000,\"sizeBytes\":9,\"codec\":\"h264\",\"width\":1920,\"height\":[1080],\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":false}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, timeSource null and no override [fstat]",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": null,
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 2,
+        "stat": {
+          "sizeBytes": 9,
+          "birthtimeMs": 1750000120000,
+          "mtimeMs": 1750000180000
+        },
+        "opts": {
+          "finalized": true,
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":60000,\"sizeBytes\":9,\"timeSource\":null,\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "extra: untyped manifest, timeSource null, override wins [fstat]",
+      "op": "buildSidecar",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": null,
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        },
+        "seq": 2,
+        "stat": {
+          "sizeBytes": 9,
+          "birthtimeMs": 1750000120000,
+          "mtimeMs": 1750000180000
+        },
+        "opts": {
+          "finalized": true,
+          "timeSource": "ntp",
+          "clockPair": {
+            "wallMs": 1750000240000,
+            "monoMs": 740000
+          }
+        },
+        "clockPairInjected": false
+      },
+      "expected": {
+        "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":60000,\"sizeBytes\":9,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+      }
+    },
+    {
+      "name": "loses no segment and stays contiguous after a forward (fake-hwclock behind → NTP) step",
+      "op": "buildSidecarSeries",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1749999528000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "seq": 0,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000000000,
+            "mtimeMs": 1750000060000
+          },
+          "opts": {
+            "finalized": true,
+            "boundaryEndMs": 1750000060000,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}"
+        },
+        {
+          "seq": 1,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000060000,
+            "mtimeMs": 1750000120000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        },
+        {
+          "seq": 2,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000120000,
+            "mtimeMs": 1750000180000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        },
+        {
+          "seq": 3,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000180000,
+            "mtimeMs": 1750000240000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        }
+      ]
+    },
+    {
+      "name": "loses no segment and stays contiguous after a backward (2080 → NTP rewind) step",
+      "op": "buildSidecarSeries",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 3421408000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "seq": 0,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000000000,
+            "mtimeMs": 1750000060000
+          },
+          "opts": {
+            "finalized": true,
+            "boundaryEndMs": 1750000060000,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}"
+        },
+        {
+          "seq": 1,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000060000,
+            "mtimeMs": 1750000120000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        },
+        {
+          "seq": 2,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000120000,
+            "mtimeMs": 1750000180000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        },
+        {
+          "seq": 3,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000180000,
+            "mtimeMs": 1750000240000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        }
+      ]
+    },
+    {
+      "name": "loses no segment and stays contiguous after a small forward step",
+      "op": "buildSidecarSeries",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1749999997000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "seq": 0,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000000000,
+            "mtimeMs": 1750000060000
+          },
+          "opts": {
+            "finalized": true,
+            "boundaryEndMs": 1750000060000,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000000000,\"startMono\":500000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}"
+        },
+        {
+          "seq": 1,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000060000,
+            "mtimeMs": 1750000120000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        },
+        {
+          "seq": 2,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000120000,
+            "mtimeMs": 1750000180000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        },
+        {
+          "seq": 3,
+          "stat": {
+            "sizeBytes": 1000,
+            "birthtimeMs": 1750000180000,
+            "mtimeMs": 1750000240000
+          },
+          "opts": {
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        }
+      ]
+    },
+    {
+      "name": "keeps startMono positive where the old anchor-difference math went negative",
+      "op": "oldStyleMono",
+      "input": {
+        "M0": 500000,
+        "T0": 1750000000000,
+        "delta": 1671408000000
+      },
+      "expected": {
+        "oldStyle": -1671407500000
+      }
+    },
+    {
+      "name": "sidecars all but the newest fragment and reports it active",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-1",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 1002,
+                "birthtimeMs": 1750000180000,
+                "mtimeMs": 1750000180000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": false,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-1/00000.mp4",
+              "/home/recordings/video/cam0/sess-1/00001.mp4"
+            ],
+            "activePath": "/home/recordings/video/cam0/sess-1/00002.mp4",
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+            },
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "gives fragment 0 a boundary anchor when fragment 1 exists (Phase 6.6)",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-b",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 1002,
+                "birthtimeMs": 1750000180000,
+                "mtimeMs": 1750000180000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": false,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-b/00000.mp4",
+              "/home/recordings/video/cam0/sess-b/00001.mp4"
+            ],
+            "activePath": "/home/recordings/video/cam0/sess-b/00002.mp4",
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+            },
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "is idempotent — a second sweep writes nothing new",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-1",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 1002,
+                "birthtimeMs": 1750000180000,
+                "mtimeMs": 1750000180000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": false,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-1/00000.mp4",
+              "/home/recordings/video/cam0/sess-1/00001.mp4"
+            ],
+            "activePath": "/home/recordings/video/cam0/sess-1/00002.mp4",
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+            },
+            "deleted": []
+          }
+        },
+        {
+          "entries": [
+            {
+              "name": "00000.json",
+              "stat": {
+                "sizeBytes": 279,
+                "birthtimeMs": 1791567781039.5935,
+                "mtimeMs": 1791567781039.6628
+              }
+            },
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.json",
+              "stat": {
+                "sizeBytes": 272,
+                "birthtimeMs": 1791567781047.5679,
+                "mtimeMs": 1791567781047.6467
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 1002,
+                "birthtimeMs": 1750000180000,
+                "mtimeMs": 1750000180000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": false,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [],
+            "activePath": "/home/recordings/video/cam0/sess-1/00002.mp4",
+            "written": {},
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "includeNewest closes the last fragment (stop path)",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-1",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": false,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-1/00000.mp4"
+            ],
+            "activePath": "/home/recordings/video/cam0/sess-1/00001.mp4",
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}"
+            },
+            "deleted": []
+          }
+        },
+        {
+          "entries": [
+            {
+              "name": "00000.json",
+              "stat": {
+                "sizeBytes": 279,
+                "birthtimeMs": 1791567781056.6377,
+                "mtimeMs": 1791567781056.707
+              }
+            },
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": true,
+            "finalized": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-1/00001.mp4"
+            ],
+            "activePath": null,
+            "written": {
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+            },
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "reaps 0-byte power-cut fragments at session close instead of sidecaring them",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-1",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 0,
+                "birthtimeMs": 1791567781073.1526,
+                "mtimeMs": 1791567781073.1526
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": false,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-1/00000.mp4",
+              "/home/recordings/video/cam0/sess-1/00001.mp4"
+            ],
+            "activePath": "/home/recordings/video/cam0/sess-1/00002.mp4",
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+            },
+            "deleted": []
+          }
+        },
+        {
+          "entries": [
+            {
+              "name": "00000.json",
+              "stat": {
+                "sizeBytes": 279,
+                "birthtimeMs": 1791567781073.3984,
+                "mtimeMs": 1791567781073.4922
+              }
+            },
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.json",
+              "stat": {
+                "sizeBytes": 272,
+                "birthtimeMs": 1791567781080.5447,
+                "mtimeMs": 1791567781080.6094
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 0,
+                "birthtimeMs": 1791567781073.1526,
+                "mtimeMs": 1791567781073.1526
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [],
+            "activePath": null,
+            "written": {},
+            "deleted": [
+              "00002.mp4"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "handles an empty/missing dir",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/nope",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [],
+          "opts": {
+            "includeNewest": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [],
+            "activePath": null,
+            "written": {},
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "sidecars every closed fragment even when the clock stepped since spawn",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-step",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 3471724852000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 1002,
+                "birthtimeMs": 1750000180000,
+                "mtimeMs": 1750000180000
+              }
+            },
+            {
+              "name": "00003.mp4",
+              "stat": {
+                "sizeBytes": 1003,
+                "birthtimeMs": 1750000240000,
+                "mtimeMs": 1750000240000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": false,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-step/00000.mp4",
+              "/home/recordings/video/cam0/sess-step/00001.mp4",
+              "/home/recordings/video/cam0/sess-step/00002.mp4",
+              "/home/recordings/video/cam0/sess-step/00003.mp4"
+            ],
+            "activePath": null,
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}",
+              "00002.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":2,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":0,\"sizeBytes\":1002,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}",
+              "00003.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":3,\"startTs\":1750000240000,\"startMono\":740000,\"durationMs\":0,\"sizeBytes\":1003,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":false}"
+            },
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "sidecars carry the sweep-time value; session.json keeps the spawn value",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-1",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "unsynced",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "00002.mp4",
+              "stat": {
+                "sizeBytes": 1002,
+                "birthtimeMs": 1750000180000,
+                "mtimeMs": 1750000180000
+              }
+            },
+            {
+              "name": "session.json",
+              "stat": {
+                "sizeBytes": 261,
+                "birthtimeMs": 1791567781121.7554,
+                "mtimeMs": 1791567781121.808
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": false,
+            "timeSource": "ntp",
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-1/00000.mp4",
+              "/home/recordings/video/cam0/sess-1/00001.mp4"
+            ],
+            "activePath": "/home/recordings/video/cam0/sess-1/00002.mp4",
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+            },
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "crash recovery without an override falls back to the manifest value",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-dead",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "rtc",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            },
+            {
+              "name": "00001.mp4",
+              "stat": {
+                "sizeBytes": 1001,
+                "birthtimeMs": 1750000120000,
+                "mtimeMs": 1750000120000
+              }
+            },
+            {
+              "name": "session.json",
+              "stat": {
+                "sizeBytes": 256,
+                "birthtimeMs": 1791567781148.3928,
+                "mtimeMs": 1791567781148.4685
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": true,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-dead/00000.mp4",
+              "/home/recordings/video/cam0/sess-dead/00001.mp4"
+            ],
+            "activePath": null,
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"rtc\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+              "00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"rtc\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":false}"
+            },
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "extra: a stat race (next fragment vanished) and a bogus-birthtime listing",
+      "op": "sweepSessionDir",
+      "input": {
+        "dir": "/home/recordings/video/cam0/sess-x",
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": [
+        {
+          "entries": [
+            {
+              "name": "00000.mp4",
+              "stat": {
+                "sizeBytes": 1000,
+                "birthtimeMs": 1750000060000,
+                "mtimeMs": 1750000060000
+              }
+            }
+          ],
+          "opts": {
+            "includeNewest": true,
+            "finalized": false,
+            "clockPair": {
+              "wallMs": 1750000240000,
+              "monoMs": 740000
+            }
+          },
+          "clockPairInjected": true,
+          "expected": {
+            "closed": [
+              "/home/recordings/video/cam0/sess-x/00000.mp4"
+            ],
+            "activePath": null,
+            "written": {
+              "00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":0,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":false}"
+            },
+            "deleted": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "writes and reads back",
+      "op": "manifestRoundTrip",
+      "input": {
+        "manifest": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      },
+      "expected": {
+        "text": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-1\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"preset\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"segmentSeconds\":60,\"anchorTs\":1750000000000,\"anchorMono\":\"500000000000\"}",
+        "read": {
+          "v": 1,
+          "deviceId": "dev-1",
+          "streamKey": "cam0",
+          "sessionId": "sess-1",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "preset": "1080p15-2mbps",
+          "width": 1920,
+          "height": 1080,
+          "fps": 15,
+          "bitrateKbps": 2000,
+          "segmentSeconds": 60,
+          "anchorTs": 1750000000000,
+          "anchorMono": "500000000000"
+        }
+      }
+    },
+    {
+      "name": "returns null for missing or invalid manifests [missing]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": null
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null for missing or invalid manifests [broken]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": "{broken"
+      },
+      "expected": null
+    },
+    {
+      "name": "extra: readSessionManifest validation [0]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": "{\"v\":2,\"sessionId\":\"s\",\"anchorTs\":1}"
+      },
+      "expected": null
+    },
+    {
+      "name": "extra: readSessionManifest validation [1]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": "{\"v\":1,\"sessionId\":5,\"anchorTs\":1}"
+      },
+      "expected": null
+    },
+    {
+      "name": "extra: readSessionManifest validation [2]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": "{\"v\":1,\"sessionId\":\"s\",\"anchorTs\":\"1\"}"
+      },
+      "expected": null
+    },
+    {
+      "name": "extra: readSessionManifest validation [3]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": "[1]"
+      },
+      "expected": null
+    },
+    {
+      "name": "extra: readSessionManifest validation [4]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": "null"
+      },
+      "expected": null
+    },
+    {
+      "name": "extra: readSessionManifest validation [5]",
+      "op": "readSessionManifestText",
+      "input": {
+        "text": "{\"v\":1.0,\"sessionId\":\"s\",\"anchorTs\":1.5,\"extra\":true}"
+      },
+      "expected": {
+        "v": 1,
+        "sessionId": "s",
+        "anchorTs": 1.5,
+        "extra": true
+      }
+    },
+    {
+      "name": "backfills sidecars for dead sessions, marks the newest unfinalized",
+      "op": "recoverOrphanVideoSessions",
+      "input": {
+        "videoRoot": "/home/recordings/video",
+        "sessions": [
+          {
+            "streamKey": "cam0",
+            "sessionId": "sess-dead",
+            "manifestText": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-dead\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"preset\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"segmentSeconds\":60,\"anchorTs\":1750000000000,\"anchorMono\":\"500000000000\"}",
+            "entries": [
+              {
+                "name": "00000.mp4",
+                "stat": {
+                  "sizeBytes": 1000,
+                  "birthtimeMs": 1750000060000,
+                  "mtimeMs": 1750000060000
+                }
+              },
+              {
+                "name": "00001.mp4",
+                "stat": {
+                  "sizeBytes": 1001,
+                  "birthtimeMs": 1750000120000,
+                  "mtimeMs": 1750000120000
+                }
+              },
+              {
+                "name": "00002.mp4",
+                "stat": {
+                  "sizeBytes": 1002,
+                  "birthtimeMs": 1750000180000,
+                  "mtimeMs": 1750000180000
+                }
+              },
+              {
+                "name": "session.json",
+                "stat": {
+                  "sizeBytes": 259,
+                  "birthtimeMs": 1791567781191.949,
+                  "mtimeMs": 1791567781192.022
+                }
+              }
+            ]
+          }
+        ],
+        "activeSessionIds": [],
+        "clockPair": {
+          "wallMs": 1750000240000,
+          "monoMs": 740000
+        }
+      },
+      "expected": {
+        "recovered": 3,
+        "written": {
+          "/home/recordings/video/cam0/sess-dead/00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-dead\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+          "/home/recordings/video/cam0/sess-dead/00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-dead\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}",
+          "/home/recordings/video/cam0/sess-dead/00002.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-dead\",\"seq\":2,\"startTs\":1750000180000,\"startMono\":680000,\"durationMs\":0,\"sizeBytes\":1002,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":false}"
+        }
+      }
+    },
+    {
+      "name": "skips active sessions and sessions without a manifest",
+      "op": "recoverOrphanVideoSessions",
+      "input": {
+        "videoRoot": "/home/recordings/video",
+        "sessions": [
+          {
+            "streamKey": "cam0",
+            "sessionId": "sess-active",
+            "manifestText": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-active\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"preset\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"segmentSeconds\":60,\"anchorTs\":1750000000000,\"anchorMono\":\"500000000000\"}",
+            "entries": [
+              {
+                "name": "00000.mp4",
+                "stat": {
+                  "sizeBytes": 1000,
+                  "birthtimeMs": 1750000060000,
+                  "mtimeMs": 1750000060000
+                }
+              },
+              {
+                "name": "00001.mp4",
+                "stat": {
+                  "sizeBytes": 1001,
+                  "birthtimeMs": 1750000120000,
+                  "mtimeMs": 1750000120000
+                }
+              },
+              {
+                "name": "session.json",
+                "stat": {
+                  "sizeBytes": 261,
+                  "birthtimeMs": 1791567781222.9834,
+                  "mtimeMs": 1791567781223.048
+                }
+              }
+            ]
+          },
+          {
+            "streamKey": "cam1",
+            "sessionId": "sess-nomanifest",
+            "manifestText": null,
+            "entries": [
+              {
+                "name": "00000.mp4",
+                "stat": {
+                  "sizeBytes": 1000,
+                  "birthtimeMs": 1750000060000,
+                  "mtimeMs": 1750000060000
+                }
+              },
+              {
+                "name": "00001.mp4",
+                "stat": {
+                  "sizeBytes": 1001,
+                  "birthtimeMs": 1750000120000,
+                  "mtimeMs": 1750000120000
+                }
+              }
+            ]
+          }
+        ],
+        "activeSessionIds": [
+          "sess-active"
+        ],
+        "clockPair": {
+          "wallMs": 1750000240000,
+          "monoMs": 740000
+        }
+      },
+      "expected": {
+        "recovered": 0,
+        "written": {}
+      }
+    },
+    {
+      "name": "no-ops without a video tree",
+      "op": "recoverOrphanVideoSessions",
+      "input": {
+        "videoRoot": "/home/recordings/video",
+        "sessions": [],
+        "activeSessionIds": [],
+        "clockPair": {
+          "wallMs": 1750000240000,
+          "monoMs": 740000
+        }
+      },
+      "expected": {
+        "recovered": 0,
+        "written": {}
+      }
+    },
+    {
+      "name": "extra: a 0-byte newest fragment is reaped, an older one skipped",
+      "op": "recoverOrphanVideoSessions",
+      "input": {
+        "videoRoot": "/home/recordings/video",
+        "sessions": [
+          {
+            "streamKey": "cam0",
+            "sessionId": "sess-pc",
+            "manifestText": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-pc\",\"bootId\":\"boot-1\",\"timeSource\":\"gps\",\"preset\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"segmentSeconds\":60,\"anchorTs\":1750000000000,\"anchorMono\":\"500000000000\"}",
+            "entries": [
+              {
+                "name": "00000.mp4",
+                "stat": {
+                  "sizeBytes": 1000,
+                  "birthtimeMs": 1750000060000,
+                  "mtimeMs": 1750000060000
+                }
+              },
+              {
+                "name": "00001.mp4",
+                "stat": {
+                  "sizeBytes": 1001,
+                  "birthtimeMs": 1750000120000,
+                  "mtimeMs": 1750000120000
+                }
+              },
+              {
+                "name": "00002.mp4",
+                "stat": {
+                  "sizeBytes": 0,
+                  "birthtimeMs": 1791567781235.374,
+                  "mtimeMs": 1791567781235.374
+                }
+              },
+              {
+                "name": "session.json",
+                "stat": {
+                  "sizeBytes": 257,
+                  "birthtimeMs": 1791567781235.519,
+                  "mtimeMs": 1791567781235.6206
+                }
+              }
+            ]
+          }
+        ],
+        "activeSessionIds": [],
+        "clockPair": {
+          "wallMs": 1750000240000,
+          "monoMs": 740000
+        }
+      },
+      "expected": {
+        "recovered": 2,
+        "written": {
+          "/home/recordings/video/cam0/sess-pc/00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-pc\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"gps\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+          "/home/recordings/video/cam0/sess-pc/00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-pc\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"gps\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":true}"
+        }
+      }
+    },
+    {
+      "name": "extra: a TS-valid manifest with odd or missing fields is still recovered",
+      "op": "recoverOrphanVideoSessions",
+      "input": {
+        "videoRoot": "/home/recordings/video",
+        "sessions": [
+          {
+            "streamKey": "cam0",
+            "sessionId": "sess-odd",
+            "manifestText": "{\"v\":1,\"streamKey\":\"cam0\",\"sessionId\":\"sess-odd\",\"bootId\":\"boot-1\",\"timeSource\":\"gnss-bogus\",\"preset\":\"1080p15-2mbps\",\"width\":\"1920\",\"height\":1080,\"fps\":null,\"bitrateKbps\":2000,\"segmentSeconds\":\"60\",\"anchorTs\":1750000000000,\"anchorMono\":\"500000000000\",\"extra\":{\"a\":[1,2]}}",
+            "entries": [
+              {
+                "name": "00000.mp4",
+                "stat": {
+                  "sizeBytes": 1000,
+                  "birthtimeMs": 1750000060000,
+                  "mtimeMs": 1750000060000
+                }
+              },
+              {
+                "name": "00001.mp4",
+                "stat": {
+                  "sizeBytes": 1001,
+                  "birthtimeMs": 1750000120000,
+                  "mtimeMs": 1750000120000
+                }
+              },
+              {
+                "name": "session.json",
+                "stat": {
+                  "sizeBytes": 272,
+                  "birthtimeMs": 1791567781262.689,
+                  "mtimeMs": 1791567781262.7585
+                }
+              }
+            ]
+          },
+          {
+            "streamKey": "cam1",
+            "sessionId": "sess-invalid",
+            "manifestText": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-invalid\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"preset\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000,\"segmentSeconds\":60,\"anchorTs\":\"1750000000000\",\"anchorMono\":\"500000000000\"}",
+            "entries": [
+              {
+                "name": "00000.mp4",
+                "stat": {
+                  "sizeBytes": 1000,
+                  "birthtimeMs": 1750000060000,
+                  "mtimeMs": 1750000060000
+                }
+              },
+              {
+                "name": "session.json",
+                "stat": {
+                  "sizeBytes": 264,
+                  "birthtimeMs": 1791567781263.8396,
+                  "mtimeMs": 1791567781263.9053
+                }
+              }
+            ]
+          },
+          {
+            "streamKey": "cam1",
+            "sessionId": "sess-noseg",
+            "manifestText": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-noseg\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"preset\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000.5,\"anchorTs\":1750000000000,\"anchorMono\":\"500000000000\"}",
+            "entries": [
+              {
+                "name": "00000.mp4",
+                "stat": {
+                  "sizeBytes": 1000,
+                  "birthtimeMs": 1750000060000,
+                  "mtimeMs": 1750000060000
+                }
+              },
+              {
+                "name": "00001.mp4",
+                "stat": {
+                  "sizeBytes": 1001,
+                  "birthtimeMs": 1750000120000,
+                  "mtimeMs": 1750000120000
+                }
+              },
+              {
+                "name": "session.json",
+                "stat": {
+                  "sizeBytes": 242,
+                  "birthtimeMs": 1791567781263.4077,
+                  "mtimeMs": 1791567781263.5132
+                }
+              }
+            ]
+          }
+        ],
+        "activeSessionIds": [],
+        "clockPair": {
+          "wallMs": 1750000240000,
+          "monoMs": 740000
+        }
+      },
+      "expected": {
+        "recovered": 4,
+        "written": {
+          "/home/recordings/video/cam0/sess-odd/00000.json": "{\"v\":1,\"streamKey\":\"cam0\",\"sessionId\":\"sess-odd\",\"seq\":0,\"startTs\":1750000060000,\"startMono\":560000,\"durationMs\":60000,\"sizeBytes\":1000,\"timeSource\":\"gnss-bogus\",\"codec\":\"h264\",\"width\":\"1920\",\"height\":1080,\"fps\":null,\"bitrateKbps\":2000,\"anchor\":\"boundary\",\"finalized\":true}",
+          "/home/recordings/video/cam0/sess-odd/00001.json": "{\"v\":1,\"streamKey\":\"cam0\",\"sessionId\":\"sess-odd\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"gnss-bogus\",\"codec\":\"h264\",\"width\":\"1920\",\"height\":1080,\"fps\":null,\"bitrateKbps\":2000,\"anchor\":\"fstat\",\"finalized\":false}",
+          "/home/recordings/video/cam1/sess-noseg/00000.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-noseg\",\"seq\":0,\"startTs\":null,\"startMono\":null,\"durationMs\":null,\"sizeBytes\":1000,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000.5,\"anchor\":\"boundary\",\"finalized\":true}",
+          "/home/recordings/video/cam1/sess-noseg/00001.json": "{\"v\":1,\"deviceId\":\"dev-1\",\"streamKey\":\"cam0\",\"sessionId\":\"sess-noseg\",\"seq\":1,\"startTs\":1750000120000,\"startMono\":620000,\"durationMs\":0,\"sizeBytes\":1001,\"timeSource\":\"ntp\",\"codec\":\"h264\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000.5,\"anchor\":\"fstat\",\"finalized\":false}"
+        }
+      }
+    }
+  ]
+}

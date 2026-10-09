@@ -1,0 +1,264 @@
+{
+  "jsSourceFile": "test/hardware-block.test.ts (pipeline templates; reconcileHardware › recognizes both encoder renders as overwritable)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there)",
+  "SHM_BRIDGE_CAPS": "video/x-raw,format=I420,width=1280,height=720,framerate=15/1",
+  "cases": [
+    {
+      "name": "hw-h264 bridged .gst reproduces README Appendix A exactly",
+      "op": "buildBridgedKvsPipeline",
+      "input": {
+        "encoder": "hw-h264",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+    },
+    {
+      "name": "sw-h264 bridged .gst is byte-for-byte the historical pipeline",
+      "op": "buildBridgedKvsPipeline",
+      "input": {
+        "encoder": "sw-h264",
+        "shmSocketPath": "/shm/cam0.sock"
+      },
+      "expected": "shmsrc socket-path=/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+    },
+    {
+      "name": "sw-h264 bridged .gst is byte-for-byte the historical pipeline [legacy entry point]",
+      "op": "bridgedKvsPipeline",
+      "input": {
+        "shmSocketPath": "/shm/cam0.sock"
+      },
+      "expected": "shmsrc socket-path=/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+    },
+    {
+      "name": "hw templates never name the encoder sampleVideoEncoder (TWCC skip, D5) [bridged]",
+      "op": "buildBridgedKvsPipeline",
+      "input": {
+        "encoder": "hw-h264",
+        "shmSocketPath": "/s"
+      },
+      "expected": "shmsrc socket-path=/s is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+    },
+    {
+      "name": "hw templates never name the encoder sampleVideoEncoder (TWCC skip, D5) [direct]",
+      "op": "buildDirectKvsPipeline",
+      "input": {
+        "encoder": "hw-h264",
+        "streamKey": "cam0",
+        "cameraName": "/cam/path"
+      },
+      "expected": "libcamerasrc name=cam0 camera-name=/cam/path ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+    },
+    {
+      "name": "direct sw template matches the install script's historical bytes (no TWCC name)",
+      "op": "buildDirectKvsPipeline",
+      "input": {
+        "encoder": "sw-h264",
+        "streamKey": "cam0",
+        "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a"
+      },
+      "expected": "libcamerasrc name=cam0 camera-name=/base/soc/i2c0mux/i2c@0/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+    },
+    {
+      "name": "recording encode stage follows the encoder token (D6) [sw]",
+      "op": "buildRecordEncodeArgs",
+      "input": {
+        "encoder": "sw-h264",
+        "bitrateKbps": 2000,
+        "keyIntMax": 30
+      },
+      "expected": [
+        "x264enc",
+        "speed-preset=ultrafast",
+        "tune=zerolatency",
+        "threads=2",
+        "bitrate=2000",
+        "key-int-max=30"
+      ]
+    },
+    {
+      "name": "recording encode stage follows the encoder token (D6) [hw]",
+      "op": "buildRecordEncodeArgs",
+      "input": {
+        "encoder": "hw-h264",
+        "bitrateKbps": 2000,
+        "keyIntMax": 30
+      },
+      "expected": [
+        "videoconvert",
+        "!",
+        "v4l2h264enc",
+        "extra-controls=controls,video_bitrate=2000000,repeat_sequence_header=1,h264_i_frame_period=30",
+        "!",
+        "video/x-h264,profile=(string)constrained-baseline,level=(string)4"
+      ]
+    },
+    {
+      "name": "the hw recording stage carries the caps v4l2h264enc needs to negotiate [hw]",
+      "op": "buildRecordEncodeArgs",
+      "input": {
+        "encoder": "hw-h264",
+        "bitrateKbps": 1000,
+        "keyIntMax": 30
+      },
+      "expected": [
+        "videoconvert",
+        "!",
+        "v4l2h264enc",
+        "extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30",
+        "!",
+        "video/x-h264,profile=(string)constrained-baseline,level=(string)4"
+      ]
+    },
+    {
+      "name": "the hw recording stage carries the caps v4l2h264enc needs to negotiate [sw]",
+      "op": "buildRecordEncodeArgs",
+      "input": {
+        "encoder": "sw-h264",
+        "bitrateKbps": 1000,
+        "keyIntMax": 30
+      },
+      "expected": [
+        "x264enc",
+        "speed-preset=ultrafast",
+        "tune=zerolatency",
+        "threads=2",
+        "bitrate=1000",
+        "key-int-max=30"
+      ]
+    },
+    {
+      "name": "recognizes both encoder renders as overwritable [0]",
+      "op": "isRecognizedBridgedRender",
+      "input": {
+        "content": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": true
+    },
+    {
+      "name": "recognizes both encoder renders as overwritable [1]",
+      "op": "isRecognizedBridgedRender",
+      "input": {
+        "content": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": true
+    },
+    {
+      "name": "recognizes both encoder renders as overwritable [2]",
+      "op": "isRecognizedBridgedRender",
+      "input": {
+        "content": "something else",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": false
+    },
+    {
+      "name": "extra: bridged render recognized with surrounding whitespace",
+      "op": "isRecognizedBridgedRender",
+      "input": {
+        "content": "\n  shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": true
+    },
+    {
+      "name": "extra: JS trim strips a BOM and leaves U+0085",
+      "op": "isRecognizedBridgedRender",
+      "input": {
+        "content": "﻿shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": false
+    },
+    {
+      "name": "extra: JS trim strips a BOM",
+      "op": "isRecognizedBridgedRender",
+      "input": {
+        "content": "﻿shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video　",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": true
+    },
+    {
+      "name": "extra: bridged render for another socket is not recognized",
+      "op": "isRecognizedBridgedRender",
+      "input": {
+        "content": "shmsrc socket-path=/other.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video",
+        "shmSocketPath": "/var/lib/xorgate/shm/cam0.sock"
+      },
+      "expected": false
+    },
+    {
+      "name": "extra: isRecognizedDirectRender [0]",
+      "op": "isRecognizedDirectRender",
+      "input": {
+        "content": "libcamerasrc name=cam0 camera-name=/c ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+        "streamKey": "cam0",
+        "cameraName": "/c"
+      },
+      "expected": true
+    },
+    {
+      "name": "extra: isRecognizedDirectRender [1]",
+      "op": "isRecognizedDirectRender",
+      "input": {
+        "content": "libcamerasrc name=cam0 camera-name=/c ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video",
+        "streamKey": "cam0",
+        "cameraName": "/c"
+      },
+      "expected": true
+    },
+    {
+      "name": "extra: isRecognizedDirectRender [2]",
+      "op": "isRecognizedDirectRender",
+      "input": {
+        "content": "libcamerasrc camera-name=/c ! video/x-raw ! x264enc ! appsink name=appsink-video",
+        "streamKey": "cam0",
+        "cameraName": "/c"
+      },
+      "expected": true
+    },
+    {
+      "name": "extra: isRecognizedDirectRender [3]",
+      "op": "isRecognizedDirectRender",
+      "input": {
+        "content": "libcamerasrc camera-name=/d ! x264enc ! appsink",
+        "streamKey": "cam0",
+        "cameraName": "/c"
+      },
+      "expected": false
+    },
+    {
+      "name": "extra: isRecognizedDirectRender [4]",
+      "op": "isRecognizedDirectRender",
+      "input": {
+        "content": "libcamerasrc camera-name=/c !\n x264enc ! appsink",
+        "streamKey": "cam0",
+        "cameraName": "/c"
+      },
+      "expected": false
+    },
+    {
+      "name": "extra: isRecognizedDirectRender [5]",
+      "op": "isRecognizedDirectRender",
+      "input": {
+        "content": "videotestsrc ! x264enc ! appsink",
+        "streamKey": "cam0",
+        "cameraName": "/c"
+      },
+      "expected": false
+    },
+    {
+      "name": "extra: isRecognizedDirectRender [6]",
+      "op": "isRecognizedDirectRender",
+      "input": {
+        "content": "libcamerasrc camera-name=/c ! v4l2h264enc ! appsink",
+        "streamKey": "cam0",
+        "cameraName": "/c"
+      },
+      "expected": false
+    }
+  ]
+}
