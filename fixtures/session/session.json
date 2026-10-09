@@ -1,0 +1,303 @@
+{
+  "jsSourceFile": "test/recording-session.test.ts (mintSessionId; timeSource tracker with offline clock steps)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there)",
+  "cases": [
+    {
+      "name": "produces valid UUIDv7-shaped ids",
+      "op": "mintSessionId",
+      "input": {
+        "now": 1800000000000
+      },
+      "expected": "01a3185c-5000-7723-9fdf-f5628e522cad"
+    },
+    {
+      "name": "sorts by mint time (oldest-first upload/eviction ordering)",
+      "op": "mintSessionIdSort",
+      "input": {
+        "nows": [
+          1000000,
+          2000000,
+          1800000000000
+        ]
+      },
+      "expected": {
+        "ids": [
+          "0000000f-4240-7d11-a3fd-497c76c13a46",
+          "0000001e-8480-7a02-a4b0-81bb7583e29b",
+          "01a3185c-5000-769f-affd-4cd292486952"
+        ],
+        "sorted": [
+          "0000000f-4240-7d11-a3fd-497c76c13a46",
+          "0000001e-8480-7a02-a4b0-81bb7583e29b",
+          "01a3185c-5000-769f-affd-4cd292486952"
+        ]
+      }
+    },
+    {
+      "name": "is unique across calls at the same ms",
+      "op": "mintSessionIdMany",
+      "input": {
+        "now": 12345,
+        "count": 100
+      },
+      "expected": [
+        "00000000-3039-710f-bba6-ef8ab9525712",
+        "00000000-3039-7851-a593-99e8f67a7ebc",
+        "00000000-3039-73b1-9c36-d93f578c4113",
+        "00000000-3039-78a1-9bd8-d04f358709c8",
+        "00000000-3039-7c6a-9af0-08b1e12523e3",
+        "00000000-3039-73ee-9f5f-4bd31aa8a631",
+        "00000000-3039-79b8-a28b-40278c198330",
+        "00000000-3039-7fd3-8db3-9243772b8469",
+        "00000000-3039-70b9-958f-1d7dca63cd36",
+        "00000000-3039-71f0-bb15-1cc0f4357961",
+        "00000000-3039-7ec3-a1b4-2c93804d0870",
+        "00000000-3039-76bc-8dea-aa7ce3555085",
+        "00000000-3039-72f6-9fa4-5332e60153bb",
+        "00000000-3039-7f8e-845d-fe1d09460e68",
+        "00000000-3039-7ed7-803d-06b0a449ea4a",
+        "00000000-3039-7ccc-b4ab-4716a131fa5b",
+        "00000000-3039-7736-9bdd-a64178b4e1b9",
+        "00000000-3039-78f8-a35c-6b0035d9ba3c",
+        "00000000-3039-7907-b822-aa47839d1a14",
+        "00000000-3039-7b02-8211-e2fc44ca789f",
+        "00000000-3039-71ee-8060-58ad607bc4e7",
+        "00000000-3039-7469-b935-bf561c76cbb9",
+        "00000000-3039-7f52-90e0-491524406469",
+        "00000000-3039-7fe7-aee5-bb01bd8056dd",
+        "00000000-3039-7464-8ca5-56871f2e3958",
+        "00000000-3039-7ace-8247-794a5d8f64d2",
+        "00000000-3039-7c43-8795-b0ec9a594b02",
+        "00000000-3039-709f-beb5-f8707cd2c54a",
+        "00000000-3039-726e-80e0-24ea4b2b4d8c",
+        "00000000-3039-7c5c-b3a4-6727a96e33e2",
+        "00000000-3039-7ea2-9b2c-5a2631786e13",
+        "00000000-3039-7197-8b5c-c931214ff82d",
+        "00000000-3039-798e-a5f6-6e9cdf4e2d90",
+        "00000000-3039-78cd-ae5e-c4dd8b5f022a",
+        "00000000-3039-7c86-9459-6de137e43b69",
+        "00000000-3039-743a-82fd-5d42fcfdaaf5",
+        "00000000-3039-75e5-8c1c-e1895d9ae97a",
+        "00000000-3039-7374-8a96-be443fb8a409",
+        "00000000-3039-7972-9387-a17e209baec7",
+        "00000000-3039-7ecf-bec1-14cbaecf6185",
+        "00000000-3039-7d02-94c6-86fea286320f",
+        "00000000-3039-7313-bf37-453fac86ce63",
+        "00000000-3039-7a68-92f1-76a5567a239c",
+        "00000000-3039-7da0-940f-9206f1c4659d",
+        "00000000-3039-75ec-ba08-ebfcc23ab235",
+        "00000000-3039-711c-b723-7e9285d2aad4",
+        "00000000-3039-7c7a-9f97-abb41aef58e5",
+        "00000000-3039-7515-9efb-1da8f1360d5f",
+        "00000000-3039-78c8-9c8d-348d9e9dc5d0",
+        "00000000-3039-7c0d-a68a-b694e60ec7a2",
+        "00000000-3039-7d4a-9954-51eaa8491fb0",
+        "00000000-3039-74c5-9720-90c2d69741c3",
+        "00000000-3039-7815-b81e-1e3ebdd38ed6",
+        "00000000-3039-7157-ac67-2f1d9e88e3d4",
+        "00000000-3039-7a78-a6dd-ec577f08b143",
+        "00000000-3039-7d0f-84ae-bb91cb864921",
+        "00000000-3039-756d-b72d-0c94eddee3b0",
+        "00000000-3039-7e28-b004-8db94c254db5",
+        "00000000-3039-7323-b99d-41dbb04f6451",
+        "00000000-3039-7f22-b591-2d7ab844fbe0",
+        "00000000-3039-7100-b6df-15fba28b6de6",
+        "00000000-3039-764c-9604-1ad83fb5166f",
+        "00000000-3039-7d3b-b04c-085a1134dc7b",
+        "00000000-3039-7e7b-89b7-8c21c8da67b5",
+        "00000000-3039-77d5-bda7-79aef755aa76",
+        "00000000-3039-76a7-96a8-e4cee9c9970b",
+        "00000000-3039-79cb-80c9-347551689e6f",
+        "00000000-3039-786a-aa76-c16c2f6a1d7f",
+        "00000000-3039-785d-ab15-3fad395bc5ec",
+        "00000000-3039-7cad-a980-74b9e45a9318",
+        "00000000-3039-7e76-ac4c-9dc761003954",
+        "00000000-3039-79e7-bc87-58ca1917dae4",
+        "00000000-3039-7b5c-93ca-6759dc13f09f",
+        "00000000-3039-74d2-a7ff-da679db73906",
+        "00000000-3039-77cd-92b4-de0469ab6456",
+        "00000000-3039-7ab5-992b-5ec1308d067c",
+        "00000000-3039-7438-b513-c59fc83de486",
+        "00000000-3039-7fb9-aa11-e41a6098e40c",
+        "00000000-3039-7ec6-81ea-fd1d45a6cec5",
+        "00000000-3039-7cb5-9452-b93fe0e9b1a6",
+        "00000000-3039-7637-9c9b-0612d43615e7",
+        "00000000-3039-792a-977b-341ae1f5b89a",
+        "00000000-3039-7cb2-bde3-a8681646fdfa",
+        "00000000-3039-7e7c-9c63-08f998555949",
+        "00000000-3039-7901-97bf-c513df517ec5",
+        "00000000-3039-7162-876c-8a12224a685d",
+        "00000000-3039-7d14-b23e-4cb49b956308",
+        "00000000-3039-7625-b46e-84725af11cfe",
+        "00000000-3039-7e66-bc8e-bd03831543e9",
+        "00000000-3039-7f57-b363-92e47191e43b",
+        "00000000-3039-7bdb-9a42-fd98b3949027",
+        "00000000-3039-7c06-8e87-4129cb74003e",
+        "00000000-3039-781d-878a-af92ba2af9dc",
+        "00000000-3039-7aa7-9002-f8eb476701c6",
+        "00000000-3039-7067-9f8b-19ce94513d95",
+        "00000000-3039-7e14-87aa-72aac84c8b87",
+        "00000000-3039-7994-bb1e-9061a9d7abc8",
+        "00000000-3039-727b-a918-2885e1f3411e",
+        "00000000-3039-7d51-b1db-c675eca6e2d3",
+        "00000000-3039-7996-a901-c7697427a6f1"
+      ]
+    },
+    {
+      "name": "extra: mintSessionId edge now [0]",
+      "op": "mintSessionId",
+      "input": {
+        "now": 0
+      },
+      "expected": "00000000-0000-798d-b4b0-3fae1a1aa218"
+    },
+    {
+      "name": "extra: mintSessionId edge now [1]",
+      "op": "mintSessionId",
+      "input": {
+        "now": -5
+      },
+      "expected": "00000000-0000-79e2-9587-59e196783f20"
+    },
+    {
+      "name": "extra: mintSessionId edge now [2]",
+      "op": "mintSessionId",
+      "input": {
+        "now": 1.9
+      },
+      "expected": "00000000-0001-77ce-bbb0-deb4cd7c7afb"
+    },
+    {
+      "name": "extra: mintSessionId edge now [3]",
+      "op": "mintSessionId",
+      "input": {
+        "now": 281474976710655
+      },
+      "expected": "ffffffff-ffff-7115-98fe-89e7e561171f"
+    },
+    {
+      "name": "extra: mintSessionId edge now [4]",
+      "op": "mintSessionId",
+      "input": {
+        "now": 281474976710657
+      },
+      "expected": "00000000-0001-76fb-ac1b-3c99ef75a869"
+    },
+    {
+      "name": "extra: mintSessionId edge now [5]",
+      "op": "mintSessionId",
+      "input": {
+        "now": 9007199254740991
+      },
+      "expected": "ffffffff-ffff-761b-a923-de6cd1527d9f"
+    },
+    {
+      "name": "reports the stepped source over a weaker probe value, immediately and across refreshes",
+      "op": "timeSourceTracker",
+      "input": {
+        "refreshMs": 60000,
+        "now": 1750000240000
+      },
+      "expected": [
+        {
+          "op": "refresh",
+          "probe": "rtc",
+          "expect": "rtc"
+        },
+        {
+          "op": "noteStep",
+          "source": "gps"
+        },
+        {
+          "op": "current",
+          "expect": "gps"
+        },
+        {
+          "op": "refresh",
+          "probe": "rtc",
+          "expect": "gps"
+        }
+      ]
+    },
+    {
+      "name": "lets NTP supersede a step for good",
+      "op": "timeSourceTracker",
+      "input": {
+        "refreshMs": 60000,
+        "now": 1750000240000
+      },
+      "expected": [
+        {
+          "op": "noteStep",
+          "source": "nitz"
+        },
+        {
+          "op": "refresh",
+          "probe": "unsynced",
+          "expect": "nitz"
+        },
+        {
+          "op": "refresh",
+          "probe": "ntp",
+          "expect": "ntp"
+        },
+        {
+          "op": "refresh",
+          "probe": "rtc",
+          "expect": "rtc"
+        }
+      ]
+    },
+    {
+      "name": "never downgrades a current ntp value on a late noteStep",
+      "op": "timeSourceTracker",
+      "input": {
+        "refreshMs": 60000,
+        "now": 1750000240000
+      },
+      "expected": [
+        {
+          "op": "refresh",
+          "probe": "ntp",
+          "expect": "ntp"
+        },
+        {
+          "op": "noteStep",
+          "source": "gps"
+        },
+        {
+          "op": "current",
+          "expect": "ntp"
+        }
+      ]
+    },
+    {
+      "name": "extra: initial value is unsynced; a step before any probe shows immediately",
+      "op": "timeSourceTracker",
+      "input": {
+        "refreshMs": 60000,
+        "now": 1750000240000
+      },
+      "expected": [
+        {
+          "op": "current",
+          "expect": "unsynced"
+        },
+        {
+          "op": "noteStep",
+          "source": "nitz"
+        },
+        {
+          "op": "current",
+          "expect": "nitz"
+        },
+        {
+          "op": "refresh",
+          "probe": "rtc",
+          "expect": "nitz"
+        }
+      ]
+    }
+  ]
+}

@@ -1,17 +1,22 @@
 //! Recording session identity + time provenance. Port of the pure parts of
 //! `src/recording/session.ts` (157 lines; plan decisions D5/D6):
-//! the UUIDv7 encoder behind `mintSessionId` and the state machine inside
-//! `createTimeSourceTracker`.
+//! the UUIDv7 encoder behind `mintSessionId`, the boot-id and probe rules,
+//! and the state machine inside `createTimeSourceTracker`.
 //!
 //! Out of core: `randomBytes` / `Date.now()` defaults (`session.ts:25-26` —
-//! injected here), `readBootId` (`:49-65`, `/proc/sys/kernel/random/boot_id`
-//! + `XORGATE_BOOT_ID`), `probeTimeSource` (`:83-92`, `timedatectl` +
-//! `/sys/class/rtc/rtc0`) and the async refresh plumbing of the tracker
-//! (`:128-149`, `probing` flag + the fire-and-forget `void refresh()`).
+//! injected here), the reads behind `readBootId` (`:49-65`,
+//! `/proc/sys/kernel/random/boot_id` + `XORGATE_BOOT_ID`; the rule is
+//! [`resolve_boot_id`]), the execs behind `probeTimeSource` (`:83-92`,
+//! `timedatectl` + `/sys/class/rtc/rtc0`; the rule is [`probe_verdict`]) and
+//! the async probe call of the tracker (the state machine around it is
+//! [`TimeSourceTracker`]).
 //!
 //! `TimeSource` / `SteppedClockSource` themselves live in WP1's
 //! [`crate::types`] (`session.ts:67,76`).
 
+use serde::{Deserialize, Serialize};
+
+use crate::cameras::js_trim;
 use crate::clock::WallMs;
 use crate::types::{SteppedClockSource, TimeSource};
 
@@ -24,6 +29,8 @@ use crate::types::{SteppedClockSource, TimeSource};
 /// byte 8's top two bits by the variant). `now_ms` is `Math.max(0,
 /// Math.floor(now))` taken as a BigInt and masked to 48 bits byte by byte —
 /// a negative clock reads as 0, a value ≥ 2^48 silently drops its high bits.
+/// `now_ms` is an integer `WallMs` (`Date.now()` always is); a fractional
+/// `now` is the caller's `floor` to apply.
 pub fn mint_session_id(now_ms: WallMs, random: [u8; 16]) -> String {
     let mut b = random;
     let ms = now_ms.max(0) as u64;
@@ -46,9 +53,28 @@ pub fn mint_session_id(now_ms: WallMs, random: [u8; 16]) -> String {
     )
 }
 
+/// `BOOT_ID_FILE` (`session.ts:40`): the kernel's boot UUID.
+pub const BOOT_ID_FILE: &str = "/proc/sys/kernel/random/boot_id";
+/// The device-simulator override `readBootId` honours first (`session.ts:54`).
+pub const BOOT_ID_ENV: &str = "XORGATE_BOOT_ID";
+
+/// The decision of `readBootId` (`session.ts:49-65`) over what the HAL read:
+/// a non-blank `XORGATE_BOOT_ID` (trimmed) wins — a container shares the
+/// host's boot_id, so the simulator mints one per start; else the trimmed
+/// contents of [`BOOT_ID_FILE`]; `None` (file unreadable, off-Linux) means
+/// "mint a random per-process UUID" (`randomUUID()`), which keeps the
+/// contract: new process = new "boot". The per-process cache is the caller's.
+pub fn resolve_boot_id(forced_env: Option<&str>, boot_id_file: Option<&str>) -> Option<String> {
+    if let Some(forced) = forced_env.map(js_trim).filter(|f| !f.is_empty()) {
+        return Some(forced.to_string());
+    }
+    boot_id_file.map(|t| js_trim(t).to_string())
+}
+
 /// The hardware-only view `probeTimeSource` returns (`session.ts:83`): the
 /// probe cannot see an offline GPS/NITZ step, which the tracker layers on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProbedTimeSource {
     Ntp,
     Rtc,
@@ -65,10 +91,27 @@ impl From<ProbedTimeSource> for TimeSource {
     }
 }
 
-/// The state inside `createTimeSourceTracker` (`session.ts:119-157`) without
-/// the async probe: the caller runs the probe (HAL) and feeds its result to
-/// [`TimeSourceTracker::apply_probe`]; [`TimeSourceTracker::current`] says
-/// whether a refresh is due and claims the slot exactly like the TS does.
+/// The decision of `probeTimeSource` (`session.ts:83-92`). `ntp_synchronized`
+/// is the stdout of `timedatectl show -p NTPSynchronized --value` when the
+/// tool ran and succeeded (`!notFound && !failed`), else `None`;
+/// `rtc0_exists` is `existsSync("/sys/class/rtc/rtc0")` (a throw = false).
+pub fn probe_verdict(ntp_synchronized: Option<&str>, rtc0_exists: bool) -> ProbedTimeSource {
+    if ntp_synchronized.is_some_and(|out| js_trim(out) == "yes") {
+        ProbedTimeSource::Ntp
+    } else if rtc0_exists {
+        ProbedTimeSource::Rtc
+    } else {
+        ProbedTimeSource::Unsynced
+    }
+}
+
+/// The state captured by `createTimeSourceTracker`'s closure
+/// (`session.ts:119-157`: `value`, `stepped`, `lastProbeAt`, `probing`)
+/// with the async probe lifted out. The TS `refresh()` is split at its
+/// `await`: [`TimeSourceTracker::begin_refresh`] is the synchronous prefix
+/// (`probing = true`), [`TimeSourceTracker::apply_probe`] the continuation
+/// once the probe answered, [`TimeSourceTracker::probe_failed`] the
+/// `finally` of a probe that threw. `Date.now()` is the explicit `now`.
 ///
 /// Provenance rank unsynced < rtc < nitz < gps < ntp; an offline step
 /// (`note_step`) is reported over the weaker probed rtc/unsynced until NTP
@@ -80,10 +123,14 @@ pub struct TimeSourceTracker {
     value: TimeSource,
     stepped: Option<SteppedClockSource>,
     last_probe_at: WallMs,
+    probing: bool,
 }
 
 impl TimeSourceTracker {
-    /// `createTimeSourceTracker(refreshMs = 60_000)` (`session.ts:119-126`):
+    /// The default `refreshMs` (`session.ts:120`).
+    pub const DEFAULT_REFRESH_MS: i64 = 60_000;
+
+    /// `createTimeSourceTracker(refreshMs)` (`session.ts:119-126`):
     /// pessimistic initial `unsynced`, nothing stepped, never probed.
     pub fn new(refresh_ms: i64) -> Self {
         Self {
@@ -91,15 +138,21 @@ impl TimeSourceTracker {
             value: TimeSource::Unsynced,
             stepped: None,
             last_probe_at: 0,
+            probing: false,
         }
     }
 
-    /// The default `refreshMs` (`session.ts:120`).
-    pub const DEFAULT_REFRESH_MS: i64 = 60_000;
+    /// `refresh()` up to its `await` (`session.ts:129`): a probe is in flight.
+    /// The caller runs the probe, then calls [`Self::apply_probe`] or
+    /// [`Self::probe_failed`].
+    pub fn begin_refresh(&mut self) {
+        self.probing = true;
+    }
 
-    /// The body of `refresh()` once the probe has answered (`session.ts:132-134`):
-    /// NTP supersedes any offline step; otherwise the stepped source (if any)
-    /// is reported over the probed value. Returns the new value.
+    /// `refresh()` after the probe answered (`session.ts:131-138`): NTP
+    /// supersedes any offline step; otherwise the stepped source (if any) is
+    /// reported over the probed value. Returns the new value (what the
+    /// awaited `refresh()` resolves to).
     pub fn apply_probe(&mut self, probed: ProbedTimeSource, now: WallMs) -> TimeSource {
         if probed == ProbedTimeSource::Ntp {
             self.stepped = None; // NTP supersedes any offline step
@@ -110,18 +163,27 @@ impl TimeSourceTracker {
             (p, None) => p.into(),
         };
         self.last_probe_at = now;
+        self.probing = false;
         self.value
     }
 
-    /// `current()` (`session.ts:142-148`): the cached value, plus whether the
-    /// caller should kick a refresh now. When it is due the slot is claimed
-    /// (`lastProbeAt = now`) before the async probe lands, so a 20 Hz reader
-    /// never piles probes up. `probing` (a probe already in flight) is the
-    /// caller's flag — pass it in.
-    pub fn current(&mut self, now: WallMs, probing: bool) -> (TimeSource, bool) {
-        let due = !probing && now - self.last_probe_at >= self.refresh_ms;
+    /// The `finally` of a `refresh()` whose probe threw (`session.ts:135-137`):
+    /// nothing but `probing` changes (`value`/`lastProbeAt` keep their old
+    /// values; `current()`'s `void refresh().catch(() => {})` swallows it).
+    pub fn probe_failed(&mut self) {
+        self.probing = false;
+    }
+
+    /// `current()` (`session.ts:142-148`): the cached value — never blocks —
+    /// plus whether the caller must kick a background refresh now. When due,
+    /// the slot is claimed (`lastProbeAt = now`) and the refresh begun
+    /// ([`Self::begin_refresh`]) before returning, exactly as the TS does
+    /// synchronously, so a 20 Hz reader never piles probes up.
+    pub fn current(&mut self, now: WallMs) -> (TimeSource, bool) {
+        let due = !self.probing && now - self.last_probe_at >= self.refresh_ms;
         if due {
-            self.last_probe_at = now;
+            self.last_probe_at = now; // claim the slot before the async probe lands
+            self.begin_refresh();
         }
         (self.value, due)
     }
@@ -140,6 +202,11 @@ impl TimeSourceTracker {
     pub fn value(&self) -> TimeSource {
         self.value
     }
+
+    /// Whether a probe is in flight.
+    pub fn probing(&self) -> bool {
+        self.probing
+    }
 }
 
 #[cfg(test)]
@@ -150,11 +217,7 @@ mod tests {
     fn uuid_v7_layout() {
         let id = mint_session_id(1_800_000_000_000, [0xff; 16]);
         // 0x01a3185c5000 = 1_800_000_000_000
-        assert!(
-            id.starts_with("01a3185c-5000-7fff-bfff-ffffffffffff"),
-            "{id}"
-        );
-        assert_eq!(id.len(), 36);
+        assert_eq!(id, "01a3185c-5000-7fff-bfff-ffffffffffff");
         let neg = mint_session_id(-5, [0; 16]);
         assert_eq!(neg, "00000000-0000-7000-8000-000000000000");
         // 2^48 + 1 drops the high bit.
@@ -164,26 +227,54 @@ mod tests {
 
     #[test]
     fn tracker_claims_the_refresh_slot() {
+        let t0: WallMs = 1_750_000_000_000;
         let mut t = TimeSourceTracker::new(60_000);
-        assert_eq!(t.current(0, false), (TimeSource::Unsynced, true));
-        assert_eq!(t.current(1, false), (TimeSource::Unsynced, false));
-        assert_eq!(t.current(60_001, true), (TimeSource::Unsynced, false));
-        assert_eq!(t.current(60_001, false), (TimeSource::Unsynced, true));
+        // Never probed (lastProbeAt 0): the first read is due and claims the slot.
+        assert_eq!(t.current(t0), (TimeSource::Unsynced, true));
+        assert!(t.probing());
+        // In flight: no second probe, however stale.
+        assert_eq!(t.current(t0 + 120_000), (TimeSource::Unsynced, false));
         assert_eq!(
-            t.apply_probe(ProbedTimeSource::Rtc, 60_010),
+            t.apply_probe(ProbedTimeSource::Rtc, t0 + 10),
             TimeSource::Rtc
         );
+        assert_eq!(t.current(t0 + 60_009), (TimeSource::Rtc, false));
+        assert_eq!(t.current(t0 + 60_010), (TimeSource::Rtc, true));
+        // A failed probe changes nothing but the in-flight flag.
+        t.probe_failed();
+        assert!(!t.probing());
+        assert_eq!(t.current(t0 + 60_011), (TimeSource::Rtc, false));
         t.note_step(SteppedClockSource::Gps);
         assert_eq!(t.value(), TimeSource::Gps);
         assert_eq!(
-            t.apply_probe(ProbedTimeSource::Unsynced, 70_000),
+            t.apply_probe(ProbedTimeSource::Unsynced, t0 + 70_000),
             TimeSource::Gps
         );
         assert_eq!(
-            t.apply_probe(ProbedTimeSource::Ntp, 80_000),
+            t.apply_probe(ProbedTimeSource::Ntp, t0 + 80_000),
             TimeSource::Ntp
         );
         t.note_step(SteppedClockSource::Nitz);
         assert_eq!(t.value(), TimeSource::Ntp);
+    }
+
+    #[test]
+    fn probe_and_boot_id_decisions() {
+        assert_eq!(probe_verdict(Some("yes\n"), false), ProbedTimeSource::Ntp);
+        assert_eq!(probe_verdict(Some("no\n"), true), ProbedTimeSource::Rtc);
+        assert_eq!(probe_verdict(None, true), ProbedTimeSource::Rtc);
+        assert_eq!(
+            probe_verdict(Some("yes please"), false),
+            ProbedTimeSource::Unsynced
+        );
+        assert_eq!(
+            resolve_boot_id(Some("  sim-boot \n"), Some("k")).as_deref(),
+            Some("sim-boot")
+        );
+        assert_eq!(
+            resolve_boot_id(Some("   "), Some("abc\n")).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(resolve_boot_id(None, None), None);
     }
 }

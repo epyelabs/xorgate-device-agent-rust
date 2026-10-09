@@ -32,6 +32,7 @@ pub mod pipeline_builder;
 pub mod recording_config;
 pub mod round;
 pub mod segments;
+pub mod session;
 pub mod settings;
 pub mod settings_migrate;
 pub mod sidecar;
