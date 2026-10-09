@@ -1,0 +1,762 @@
+{
+  "jsSourceFile": "src/agent/config-sync.ts (class ConfigSync :1211-1651, observed) + src/agent/cloud-config.ts parseCloudMessage",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-2/evidence/wp3-tools/dump-config-sync.mts (npx tsx)",
+  "cases": [
+    {
+      "name": "coalesce boot localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "boot",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce cloud localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "cloud"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "cloud",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce local localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "local"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce boot+cloud+boot localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot",
+          "cloud",
+          "boot"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "cloud",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce cloud+boot localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "cloud",
+          "boot"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "cloud",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce local+cloud localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "local",
+          "cloud"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce boot+local+boot localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot",
+          "local",
+          "boot"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce cloud+local localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "cloud",
+          "local"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce boot+boot localPending=false",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot",
+          "boot"
+        ],
+        "localPending": false
+      },
+      "expected": {
+        "origin": "boot",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce boot localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce cloud localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "cloud"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "cloud",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce local localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "local"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce boot+cloud+boot localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot",
+          "cloud",
+          "boot"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce cloud+boot localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "cloud",
+          "boot"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce local+cloud localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "local",
+          "cloud"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce boot+local+boot localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot",
+          "local",
+          "boot"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce cloud+local localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "cloud",
+          "local"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "coalesce boot+boot localPending=true",
+      "op": "nextOrigin",
+      "input": {
+        "seq": [
+          "boot",
+          "boot"
+        ],
+        "localPending": true
+      },
+      "expected": {
+        "origin": "local",
+        "reports": 1
+      }
+    },
+    {
+      "name": "settle: gnssAntBias adjusted (modem behind)",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {
+          "gnssAntBias": {
+            "state": "adjusted",
+            "at": 1786017600000,
+            "detail": "saved; the modem daemon has not applied it yet (it re-checks about every 30 s)"
+          }
+        },
+        "origin": "cloud"
+      },
+      "expected": {
+        "settle": true,
+        "settleOrigin": "boot"
+      }
+    },
+    {
+      "name": "settle: gnssAntBias applied",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {
+          "gnssAntBias": {
+            "state": "applied",
+            "at": 1786017600000
+          }
+        },
+        "origin": "cloud"
+      },
+      "expected": {
+        "settle": false,
+        "settleOrigin": null
+      }
+    },
+    {
+      "name": "settle: gnssAntBias, modem unavailable",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {
+          "gnssAntBias": {
+            "state": "adjusted",
+            "at": 1786017600000,
+            "detail": "modem telemetry unavailable — the bias is saved and will be asserted by the modem daemon"
+          }
+        },
+        "origin": "boot"
+      },
+      "expected": {
+        "settle": true,
+        "settleOrigin": "boot"
+      }
+    },
+    {
+      "name": "settle: timeSync divergent (agent-poll)",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {
+          "timeSync": {
+            "state": "adjusted",
+            "at": 1786017600000,
+            "detail": "the device is holding a different value (changed locally?)"
+          }
+        },
+        "origin": "cloud"
+      },
+      "expected": {
+        "settle": false,
+        "settleOrigin": null
+      }
+    },
+    {
+      "name": "settle: lteRecovery divergent (modem-poll)",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {
+          "lteRecovery": {
+            "state": "rejected",
+            "at": 1786017600000,
+            "reason": "lteRecovery: no valid fields in the delivered value"
+          }
+        },
+        "origin": "cloud"
+      },
+      "expected": {
+        "settle": false,
+        "settleOrigin": null
+      }
+    },
+    {
+      "name": "settle: recording clamped (agent-poll adjusted)",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {
+          "recording": {
+            "state": "adjusted",
+            "at": 1786017600000,
+            "detail": "the device clamped or normalized the delivered value"
+          }
+        },
+        "origin": "cloud"
+      },
+      "expected": {
+        "settle": false,
+        "settleOrigin": null
+      }
+    },
+    {
+      "name": "settle: gnssAntBias adjusted, local origin",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {
+          "gnssAntBias": {
+            "state": "adjusted",
+            "at": 1786017600000,
+            "detail": "saved; the modem daemon has not applied it yet (it re-checks about every 30 s)"
+          }
+        },
+        "origin": "local"
+      },
+      "expected": {
+        "settle": true,
+        "settleOrigin": "boot"
+      }
+    },
+    {
+      "name": "settle: no desired doc",
+      "op": "needsSettleReport",
+      "input": {
+        "status": {},
+        "origin": "boot"
+      },
+      "expected": {
+        "settle": false,
+        "settleOrigin": null
+      }
+    },
+    {
+      "name": "arrival: sim only",
+      "op": "modemArrivalTrigger",
+      "input": {
+        "sample": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem has not applied a bias state yet",
+          "sim": {
+            "state": "ready",
+            "present": 1
+          }
+        }
+      },
+      "expected": {
+        "trigger": true
+      }
+    },
+    {
+      "name": "arrival: uplink only",
+      "op": "modemArrivalTrigger",
+      "input": {
+        "sample": {
+          "value": true,
+          "fresh": true,
+          "uplink": {
+            "primary": "wlan0",
+            "modem_only": 0
+          }
+        }
+      },
+      "expected": {
+        "trigger": true
+      }
+    },
+    {
+      "name": "arrival: apn only",
+      "op": "modemArrivalTrigger",
+      "input": {
+        "sample": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "x"
+          }
+        }
+      },
+      "expected": {
+        "trigger": false
+      }
+    },
+    {
+      "name": "arrival: bias only",
+      "op": "modemArrivalTrigger",
+      "input": {
+        "sample": {
+          "value": true,
+          "fresh": true
+        }
+      },
+      "expected": {
+        "trigger": false
+      }
+    },
+    {
+      "name": "arrival: unavailable",
+      "op": "modemArrivalTrigger",
+      "input": {
+        "sample": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        }
+      },
+      "expected": {
+        "trigger": false
+      }
+    },
+    {
+      "name": "apn fingerprint {\"state\":\"in-force\",\"apn_applied\":\"sp.mb.com\",\"fails\":0}",
+      "op": "apnFingerprint",
+      "input": {
+        "apn": {
+          "state": "in-force",
+          "apn_applied": "sp.mb.com",
+          "fails": 0
+        }
+      },
+      "expected": {
+        "sample": "{\"state\":\"in-force\",\"apn_applied\":\"sp.mb.com\",\"fails\":0}",
+        "effective": "{\"state\":\"in-force\",\"apn_applied\":\"sp.mb.com\",\"fails\":0}"
+      }
+    },
+    {
+      "name": "apn fingerprint {\"state\":\"applying\",\"apn_requested\":\"new.apn\",\"changed_at\":\"2026-08-06T11:59:00Z\"}",
+      "op": "apnFingerprint",
+      "input": {
+        "apn": {
+          "state": "applying",
+          "apn_requested": "new.apn",
+          "changed_at": "2026-08-06T11:59:00Z"
+        }
+      },
+      "expected": {
+        "sample": "{\"state\":\"applying\",\"apn_requested\":\"new.apn\",\"changed_at\":\"2026-08-06T11:59:00Z\"}",
+        "effective": "{\"state\":\"applying\",\"apn_requested\":\"new.apn\",\"changed_at\":\"2026-08-06T11:59:00Z\"}"
+      }
+    },
+    {
+      "name": "apn fingerprint {\"state\":\"rolled-back\",\"apn_applied\":\"old\",\"apn_requested\":\"bad\",\"last_error\":\"no attach\",\"fails\":3}",
+      "op": "apnFingerprint",
+      "input": {
+        "apn": {
+          "state": "rolled-back",
+          "apn_applied": "old",
+          "apn_requested": "bad",
+          "last_error": "no attach",
+          "fails": 3
+        }
+      },
+      "expected": {
+        "sample": "{\"state\":\"rolled-back\",\"apn_applied\":\"old\",\"apn_requested\":\"bad\",\"last_error\":\"no attach\",\"fails\":3}",
+        "effective": "{\"state\":\"rolled-back\",\"apn_applied\":\"old\",\"apn_requested\":\"bad\",\"last_error\":\"no attach\",\"fails\":3}"
+      }
+    },
+    {
+      "name": "apn fingerprint {\"state\":\"bogus\"}",
+      "op": "apnFingerprint",
+      "input": {
+        "apn": null
+      },
+      "expected": {
+        "sample": null,
+        "effective": null
+      }
+    },
+    {
+      "name": "apn fingerprint undefined",
+      "op": "apnFingerprint",
+      "input": {
+        "apn": null
+      },
+      "expected": {
+        "sample": null,
+        "effective": null
+      }
+    },
+    {
+      "name": "publish outcome: local with a diff, online",
+      "op": "publishOutcome",
+      "input": {
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}",
+        "settings": {
+          "gnssAntBias": false
+        },
+        "origin": "local",
+        "online": true,
+        "now": 1786017600000
+      },
+      "expected": {
+        "origin": "local",
+        "changed": {
+          "gnssAntBias": false
+        },
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":false},\"localPending\":false}"
+      }
+    },
+    {
+      "name": "publish outcome: local with a diff, offline",
+      "op": "publishOutcome",
+      "input": {
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}",
+        "settings": {
+          "gnssAntBias": false
+        },
+        "origin": "local",
+        "online": false,
+        "now": 1786017600000
+      },
+      "expected": {
+        "origin": "local",
+        "changed": {
+          "gnssAntBias": false
+        },
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}"
+      }
+    },
+    {
+      "name": "publish outcome: local reverted (empty diff)",
+      "op": "publishOutcome",
+      "input": {
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}",
+        "settings": {
+          "gnssAntBias": true
+        },
+        "origin": "local",
+        "online": true,
+        "now": 1786017600000
+      },
+      "expected": {
+        "origin": "boot",
+        "changed": null,
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":false}"
+      }
+    },
+    {
+      "name": "publish outcome: local, never baselined",
+      "op": "publishOutcome",
+      "input": {
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1}",
+        "settings": {
+          "gnssAntBias": true
+        },
+        "origin": "local",
+        "online": true,
+        "now": 1786017600000
+      },
+      "expected": {
+        "origin": "boot",
+        "changed": null,
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1786017600000,\"localPending\":false}"
+      }
+    },
+    {
+      "name": "publish outcome: local removal → null",
+      "op": "publishOutcome",
+      "input": {
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1,\"namespaces\":{\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":true}}}",
+        "settings": {
+          "gnssAntBias": true
+        },
+        "origin": "local",
+        "online": true,
+        "now": 1786017600000
+      },
+      "expected": {
+        "origin": "local",
+        "changed": {
+          "timeSync": null
+        },
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":false}"
+      }
+    },
+    {
+      "name": "publish outcome: boot keeps the baseline",
+      "op": "publishOutcome",
+      "input": {
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}",
+        "settings": {
+          "gnssAntBias": false
+        },
+        "origin": "boot",
+        "online": true,
+        "now": 1786017600000
+      },
+      "expected": {
+        "origin": "boot",
+        "changed": null,
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}"
+      }
+    },
+    {
+      "name": "publish outcome: cloud, offline",
+      "op": "publishOutcome",
+      "input": {
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1,\"settingsHash\":\"abc\",\"namespaces\":{}}",
+        "settings": {},
+        "origin": "cloud",
+        "online": false,
+        "now": 1786017600000
+      },
+      "expected": {
+        "origin": "cloud",
+        "changed": null,
+        "stateFile": "{\"lastAppliedRev\":2,\"lastReportTs\":1786017600000,\"settingsHash\":\"abc\",\"namespaces\":{}}"
+      }
+    },
+    {
+      "name": "summary {\"v\":1,\"rev\":9,\"gnssAntBias\":true}",
+      "op": "appliedSummary",
+      "input": {
+        "payload": "{\"v\":1,\"rev\":9,\"gnssAntBias\":true}"
+      },
+      "expected": {
+        "summary": "{\"rev\":9,\"gnssAntBias\":true}"
+      }
+    },
+    {
+      "name": "summary {\"v\":1,\"rev\":3,\"ts\":5,\"gnssAntBias\":false,\"imuMount\":{\"enabl",
+      "op": "appliedSummary",
+      "input": {
+        "payload": "{\"v\":1,\"rev\":3,\"ts\":5,\"gnssAntBias\":false,\"imuMount\":{\"enabled\":true,\"rollDeg\":90.5,\"pitchDeg\":0,\"yawDeg\":-90},\"recording\":{\"telemetry\":{\"rateHz\":999}},\"timeSync\":{\"stepThresholdSecs\":12}}"
+      },
+      "expected": {
+        "summary": "{\"rev\":3,\"gnssAntBias\":false,\"imuMount\":{\"enabled\":true,\"rollDeg\":90.5,\"pitchDeg\":0,\"yawDeg\":-90},\"recording\":{\"telemetry\":{\"rateHz\":20}},\"timeSync\":{\"stepThresholdSecs\":12}}"
+      }
+    },
+    {
+      "name": "summary {\"v\":1,\"rev\":11,\"uploadBucket\":\"xorgate-dev-media\",\"scope\":{",
+      "op": "appliedSummary",
+      "input": {
+        "payload": "{\"v\":1,\"rev\":11,\"uploadBucket\":\"xorgate-dev-media\",\"scope\":{\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\"},\"hardware\":{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\"}]},\"cellular\":{\"apn\":\"sp.mb.com\"},\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}"
+      },
+      "expected": {
+        "summary": "{\"rev\":11,\"uploadBucket\":\"xorgate-dev-media\",\"scope\":{\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\"},\"cellular\":{\"apn\":\"sp.mb.com\"},\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}},\"hardware\":{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\"}]}}"
+      }
+    },
+    {
+      "name": "summary {\"v\":1,\"imuMount\":{},\"recording\":null,\"lteRecovery\":{\"gpsFix",
+      "op": "appliedSummary",
+      "input": {
+        "payload": "{\"v\":1,\"imuMount\":{},\"recording\":null,\"lteRecovery\":{\"gpsFixResetPolicy\":\"never\",\"deadZoneProfile\":\"x\"},\"hardware\":{\"v\":1}}"
+      },
+      "expected": {
+        "summary": "{\"imuMount\":null,\"lteRecovery\":null,\"hardware\":null}"
+      }
+    },
+    {
+      "name": "summary {\"v\":1,\"rev\":2,\"recording\":{\"retention\":{\"maxBytes\":0.000005",
+      "op": "appliedSummary",
+      "input": {
+        "payload": "{\"v\":1,\"rev\":2,\"recording\":{\"retention\":{\"maxBytes\":0.000005,\"minFreeBytes\":1e+21}}}"
+      },
+      "expected": {
+        "summary": "{\"rev\":2,\"recording\":{\"retention\":{\"maxBytes\":0,\"minFreeBytes\":1e+21}}}"
+      }
+    },
+    {
+      "name": "save: zeros + rev",
+      "op": "stateFile",
+      "input": {
+        "step": "save42"
+      },
+      "expected": {
+        "file": "{\"lastAppliedRev\":42,\"lastReportTs\":1700}"
+      }
+    },
+    {
+      "name": "baseline over a Phase-3 file",
+      "op": "stateFile",
+      "input": {
+        "step": "baseline",
+        "settings": "{\"mode\":\"real\",\"gnssAntBias\":true,\"recording\":{\"shed\":{\"railLowVolts\":4.75,\"railRestoreVolts\":5}},\"imuMount\":{\"enabled\":true,\"rollDeg\":0.1,\"pitchDeg\":0,\"yawDeg\":90}}"
+      },
+      "expected": {
+        "file": "{\"lastAppliedRev\":42,\"lastReportTs\":1700,\"namespaces\":{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.1,\"pitchDeg\":0,\"yawDeg\":90}},\"settingsHash\":\"6837c2a6bcc27109322633a50a422e4a5de78ad5aa12e1c025090e12236404b8\"}",
+        "hash": "6837c2a6bcc27109322633a50a422e4a5de78ad5aa12e1c025090e12236404b8"
+      }
+    }
+  ]
+}

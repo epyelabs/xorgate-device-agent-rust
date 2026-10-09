@@ -32,6 +32,7 @@ pub mod cloud_config;
 pub mod commands;
 pub mod config_namespaces;
 pub mod config_report;
+pub mod config_sync_rules;
 pub mod hardware_block;
 pub mod imu;
 pub mod js;
