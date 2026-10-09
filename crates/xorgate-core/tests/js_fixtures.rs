@@ -10,6 +10,7 @@ mod common;
 use serde::Deserialize;
 use serde_json::Value;
 use xorgate_core::js::{date_parse, number_to_string, to_fixed};
+use xorgate_core::telemetry::JsNumber;
 
 #[test]
 fn js_fmt_probes() {
@@ -48,4 +49,45 @@ fn js_fmt_probes() {
         assert_eq!(got, c.expected, "{}", c.name);
     }
     assert_eq!(f.cases.len(), 180);
+}
+
+#[derive(Deserialize)]
+struct NumCase {
+    name: String,
+    /// IEEE-754 bit pattern, 16 hex digits.
+    input: String,
+    /// `String(x)` === `JSON.stringify(x)` in node.
+    expected: String,
+}
+
+fn from_bits(hex: &str) -> f64 {
+    f64::from_bits(u64::from_str_radix(hex, 16).expect("hex bits"))
+}
+
+/// Integration item 2 (review-wp6 M2): `js::number_to_string` and
+/// `telemetry::JsNumber` (bare and inside an array) print every double
+/// exactly as V8 does.
+#[test]
+fn number_format_matches_v8() {
+    let f = common::fixture::<NumCase>("js/number-format.json");
+    let mut bad = Vec::new();
+    for c in &f.cases {
+        let x = from_bits(&c.input);
+        let s = number_to_string(x);
+        let j = serde_json::to_string(&JsNumber(x)).unwrap();
+        let arr = serde_json::to_string(&[JsNumber(x)]).unwrap();
+        if s != c.expected || j != c.expected || arr != format!("[{}]", c.expected) {
+            bad.push(format!(
+                "{} {}: want {} got {s} / {j} / {arr}",
+                c.name, c.input, c.expected
+            ));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} mismatches: {:#?}",
+        bad.len(),
+        &bad[..bad.len().min(10)]
+    );
+    assert_eq!(f.cases.len(), 5141);
 }

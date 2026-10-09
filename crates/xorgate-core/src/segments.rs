@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
 use crate::clock::{MonoMs, WallMs};
-use crate::sidecar::js_num_exact as js_num;
+use crate::telemetry::js_num;
 use crate::types::TimeSource;
 use crate::video_capture::posix_join;
 

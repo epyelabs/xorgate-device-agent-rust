@@ -27,41 +27,9 @@ use serde_json::{Map, Value};
 use crate::clock::Clock;
 use crate::js::trim as js_trim;
 use crate::round::js_math_round;
+use crate::telemetry::{js_num, JsNumber};
 use crate::types::TimeSource;
 use crate::video_capture::posix_join;
-
-/// `#[serde(with = "js_num_exact")]` for this module: WP1's
-/// [`crate::telemetry::JsNumber`] prints integral doubles in [2^53, 1e21)
-/// through ryu's exponent form (`1e+20`), where JS `JSON.stringify` prints
-/// the shortest round-trip digits zero-padded (`100000000000000000000`;
-/// `2**60` → `1152921504606847000`). Local workaround (WP1 bug reported in
-/// the WP6 evidence file, `telemetry.rs:52`); everything else delegates.
-pub(crate) mod js_num_exact {
-    use crate::telemetry::JsNumber;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
-        let a = v.abs();
-        if v.is_finite() && v.fract() == 0.0 && (9_007_199_254_740_992.0..1e21).contains(&a) {
-            // `{:e}` = shortest round-trip digits, e.g. `1.152921504606847e18`.
-            let sci = format!("{a:e}");
-            let (mant, exp) = sci.split_once('e').expect("{:e} has an exponent");
-            let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
-            let exp: usize = exp.parse().expect("positive exponent");
-            let int = format!("{digits:0<width$}", width = exp + 1);
-            let n: u128 = int.parse().expect("integer < 1e21");
-            return if *v < 0.0 {
-                s.serialize_i128(-(n as i128))
-            } else {
-                s.serialize_u128(n)
-            };
-        }
-        JsNumber(*v).serialize(s)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
-        f64::deserialize(d)
-    }
-}
 
 /// `VideoSessionManifest` (`video-segments.ts:43-60`): per-session capture
 /// metadata, written once at capture-daemon spawn as `session.json`. Key
@@ -76,18 +44,18 @@ pub struct VideoSessionManifest {
     pub boot_id: String,
     pub time_source: TimeSource,
     pub preset: String,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub width: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub height: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub fps: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub bitrate_kbps: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub segment_seconds: f64,
     /// Wall-clock epoch ms at capture-daemon spawn.
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub anchor_ts: f64,
     /// `process.hrtime.bigint()` ns at capture-daemon spawn (stringified bigint).
     pub anchor_mono: String,
@@ -129,25 +97,25 @@ pub struct VideoSidecar {
     pub device_id: String,
     pub stream_key: String,
     pub session_id: String,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub seq: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub start_ts: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub start_mono: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub duration_ms: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub size_bytes: f64,
     pub time_source: TimeSource,
     pub codec: SidecarCodec,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub width: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub height: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub fps: f64,
-    #[serde(with = "js_num_exact")]
+    #[serde(with = "js_num")]
     pub bitrate_kbps: f64,
     pub anchor: SidecarAnchor,
     /// False when the fragment was cut off by a crash (may lack its moov atom).
@@ -503,14 +471,14 @@ impl SidecarBody {
 }
 
 /// Serializes a JSON value with every number printed like a JS number
-/// ([`js_num_exact`]) — the raw manifest's copy-through values included.
+/// ([`JsNumber`]) — the raw manifest's copy-through values included.
 struct JsJson<'a>(&'a Value);
 
 impl Serialize for JsJson<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::{SerializeMap, SerializeSeq};
         match self.0 {
-            Value::Number(n) => js_num_exact::serialize(&n.as_f64().unwrap_or(f64::NAN), s),
+            Value::Number(n) => JsNumber(n.as_f64().unwrap_or(f64::NAN)).serialize(s),
             Value::Array(a) => {
                 let mut seq = s.serialize_seq(Some(a.len()))?;
                 for v in a {
@@ -841,8 +809,9 @@ mod tests {
 
     #[test]
     fn js_number_printing_above_2_pow_53() {
+        // (was the local `js_num_exact` workaround; now WP1's `js_num` is exact)
         #[derive(Serialize)]
-        struct N(#[serde(with = "super::js_num_exact")] f64);
+        struct N(#[serde(with = "js_num")] f64);
         let p = |v: f64| serde_json::to_string(&N(v)).unwrap();
         assert_eq!(p(1e20), "100000000000000000000");
         assert_eq!(p(2f64.powi(60)), "1152921504606847000");
@@ -851,6 +820,7 @@ mod tests {
         assert_eq!(p(1e21), "1e+21");
         assert_eq!(p(1_750_000_000_000.0), "1750000000000");
         assert_eq!(p(0.5), "0.5");
+        assert_eq!(p(5e-6), "0.000005");
     }
 
     #[test]

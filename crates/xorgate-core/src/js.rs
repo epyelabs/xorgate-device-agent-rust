@@ -200,15 +200,67 @@ fn to_integer(v: f64) -> f64 {
 /// The shortest round-trip decimal digits of a finite, non-zero `a > 0` and
 /// its exponent `n` such that `a = 0.d₁d₂…d_k × 10ⁿ` — the `k`, `n` and `s`
 /// of ECMAScript Number::toString step 5. Rust's `{:e}` without a precision
-/// prints exactly these digits (shortest, closest to the exact value), as
-/// V8's Grisu3/bignum fallback does; `fixtures/js/number-format.json` pins
-/// the agreement over 5 141 doubles.
+/// prints shortest digits closest to the exact value, as V8 does; the one
+/// difference is an exact TIE between two k-digit candidates, where the spec
+/// (and V8) take the EVEN one and Rust rounds half up — e.g. 2^-25 =
+/// 2.98023223876953125e-8: V8 `2.9802322387695312e-8`, Rust `…313e-8`.
+/// [`shortest_tie_to_even`] fixes those up. `fixtures/js/number-format.json`
+/// pins the agreement over 5 141 doubles.
 fn shortest_digits(a: f64) -> (String, i32) {
     let sci = format!("{a:e}"); // "1.2345e-7", "5e21"
     let (mant, exp) = sci.split_once('e').expect("{:e} prints an exponent");
     let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
     let e: i32 = exp.parse().expect("{:e} exponent is an integer");
-    (digits, e + 1)
+    shortest_tie_to_even(a, digits.len()).unwrap_or((digits, e + 1))
+}
+
+/// When the exact value of `a` lies exactly halfway between two `k`-digit
+/// decimals, the even one (if it still round-trips) as `(digits, n)`.
+fn shortest_tie_to_even(a: f64, k: usize) -> Option<(String, i32)> {
+    let split = |s: String| -> Option<(String, i32)> {
+        let (m, x) = s.split_once('e')?;
+        Some((
+            m.chars().filter(char::is_ascii_digit).collect(),
+            x.parse().ok()?,
+        ))
+    };
+    // A halfway value has exactly k+1 significant digits, the last a 5; a
+    // double's exact expansion has at most 767, so 800 shows all of it.
+    let (wide, x) = split(format!("{a:.p$e}", p = k + 800))?;
+    if wide.as_bytes()[k] != b'5' || !wide.as_bytes()[k + 1..].iter().all(|&b| b == b'0') {
+        return None;
+    }
+    let lower = &wide[..k];
+    if (lower.as_bytes()[k - 1] - b'0').is_multiple_of(2) {
+        // `lower` is even; Rust picked `lower + 1`.
+        return check_round_trip(a, lower.to_string(), x);
+    }
+    // `lower` is odd: the even candidate is `lower + 1` (decimal increment).
+    let mut up = lower.as_bytes().to_vec();
+    let mut i = up.len();
+    let mut x = x;
+    loop {
+        if i == 0 {
+            up.insert(0, b'1');
+            up.pop();
+            x += 1;
+            break;
+        }
+        i -= 1;
+        if up[i] == b'9' {
+            up[i] = b'0';
+        } else {
+            up[i] += 1;
+            break;
+        }
+    }
+    check_round_trip(a, String::from_utf8(up).ok()?, x)
+}
+
+fn check_round_trip(a: f64, digits: String, x: i32) -> Option<(String, i32)> {
+    let digits = digits.trim_end_matches('0').to_string();
+    let text = format!("0.{digits}e{}", x + 1);
+    (text.parse::<f64>().ok()? == a).then_some((digits, x + 1))
 }
 
 /// ECMAScript `Number::toString(x)` radix 10 (ES2023 §6.1.6.1.20) — what
@@ -805,6 +857,8 @@ mod tests {
         assert_eq!(number_to_string(1.5e-7), "1.5e-7");
         assert_eq!(number_to_string(f64::MAX), "1.7976931348623157e+308");
         assert_eq!(number_to_string(5e-324), "5e-324");
+        // an exact tie between two 17-digit candidates: V8 takes the even one
+        assert_eq!(number_to_string(2f64.powi(-25)), "2.9802322387695312e-8");
         assert_eq!(number_to_string(f64::NAN), "NaN");
         assert_eq!(number_to_string(f64::NEG_INFINITY), "-Infinity");
     }
