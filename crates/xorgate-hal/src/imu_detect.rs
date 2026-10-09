@@ -45,8 +45,9 @@ impl ImuDetector {
         if res.failed {
             // execa (reject:false) reports a spawn failure with an EMPTY
             // stderr, so a binary that vanished after the `which` check reads
-            // as the generic wording — `exit_code: None` marks that case here.
-            let stderr = if res.exit_code.is_none() {
+            // as the generic wording. A signal-killed i2cdetect keeps its
+            // stderr, like the TS (WP2 review NIT 7).
+            let stderr = if res.spawn_failed {
                 ""
             } else {
                 xorgate_core::js::trim(&res.stderr)

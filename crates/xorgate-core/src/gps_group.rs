@@ -159,6 +159,10 @@ pub fn has_fix(fresh: Option<&GpsFix>) -> bool {
 /// `clock()`'s reading (`gps.ts:319-325`): the last distinct RMC `utcMs`, its
 /// mono arrival stamp and validity → `None` when absent or older than
 /// [`CLOCK_FRESH_MS`].
+///
+/// Accepted ≤1 ms skew (WP2 review NIT 8): the TS floors the ns difference,
+/// this subtracts two ms-truncated stamps, so `age_ms` can read 1 ms high or
+/// low and flip freshness exactly at the 10 s edge. Consumer is Phase 4.
 pub fn clock_reading(
     utc_ms: Option<f64>,
     arrived_mono: MonoMs,

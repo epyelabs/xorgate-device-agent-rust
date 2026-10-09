@@ -33,7 +33,7 @@ use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use xorgate_agent::collectors::gps::{GpsCollector, GpsOptions};
-use xorgate_agent::collectors::imu::ImuIo;
+use xorgate_agent::collectors::imu::{ImuCollector, ImuIo};
 use xorgate_agent::collectors::lte::LteCollector;
 use xorgate_agent::collectors::{Backends, Collector, Collectors, IoCapabilities};
 use xorgate_agent::ctx::{AgentClock, AgentCtx, BoxFut, NoopHooks, TelemetrySource};
@@ -514,4 +514,77 @@ async fn registry_order_omission_and_idle_media() {
         ]
     );
     src.stop();
+}
+
+// ---------------------------------------------------------------------------
+// IMU shutdown (WP2 review MUST-FIX 1 + NIT 5): `stop()` signals a running
+// helper's group, and nothing at all once the helper has exited.
+
+/// A BNO085 "found" at 0x4a whose helper is a real `sh -c <script>` child;
+/// keeps each handle's delivered-signal count (it outlives the handle).
+struct ShImu {
+    script: &'static str,
+    delivered: Mutex<Vec<xorgate_hal::child::DeliveredSignals>>,
+}
+impl ImuIo for ShImu {
+    fn detect<'a>(&'a self, _tape: &'a dyn TapeSink) -> BoxFut<'a, ImuDetect> {
+        Box::pin(async { xorgate_core::imu::build_detect(vec![0x4a]) })
+    }
+    fn spawn(&self, _spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEvent>) {
+        let (h, rx) =
+            xorgate_hal::child::spawn(&ChildSpec::new("sh", vec!["-c".into(), self.script.into()]));
+        self.delivered.lock().unwrap().push(h.delivered());
+        (h, rx)
+    }
+}
+
+async fn imu_with(script: &'static str, tag: &str) -> (ImuCollector, Arc<ShImu>) {
+    let home = scratch(tag);
+    let ctx = test_ctx(&home, "dev-wp2", Arc::new(NoopHooks), null_tape());
+    let io = Arc::new(ShImu {
+        script,
+        delivered: Mutex::default(),
+    });
+    let c = ImuCollector::new(&ctx, io.clone());
+    assert!(c.read().await.is_empty(), "first read only kicks detection");
+    (c, io)
+}
+
+async fn wait_until(what: &str, f: impl Fn() -> bool) {
+    for _ in 0..500 {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+#[tokio::test]
+async fn imu_stop_after_the_helper_exited_signals_nothing() {
+    let (c, io) = imu_with("exit 2", "imu-park-stop").await;
+    wait_until("the spawn", || io.delivered.lock().unwrap().len() == 1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await; // `exit 2` is long done
+                                                          // Park (exited before any sample) drops the dead handle …
+    wait_until("the park", || c.helper_pid().is_none()).await;
+    // … so a (late) shutdown has nothing to signal.
+    c.stop();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(io.delivered.lock().unwrap()[0].get(), 0);
+    assert!(
+        c.read().await.is_empty(),
+        "parked: no re-detect, no respawn"
+    );
+    assert_eq!(io.delivered.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn imu_stop_terminates_a_running_helper_group() {
+    // the background sleep holds the pipes: the helper only reaches Done
+    // (and parks) if the SIGTERM reached the whole group
+    let (c, io) = imu_with("sleep 30 & wait", "imu-run-stop").await;
+    wait_until("the spawn", || c.helper_pid().is_some()).await;
+    c.stop();
+    wait_until("the helper to end", || c.helper_pid().is_none()).await;
+    assert_eq!(io.delivered.lock().unwrap()[0].get(), 1);
 }

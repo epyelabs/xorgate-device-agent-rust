@@ -12,6 +12,14 @@
 //!   (execa resolves the result only once its stdio streams have ended), so
 //!   every stderr line is seen before the exit.
 //!
+//! Signals ([`ChildHandle::signal`], [`ChildHandle::signal_group`]) are
+//! NEVER sent to a bare pid: they are requests to the waiter task, which owns
+//! the tokio `Child` and delivers one only after `try_wait()` says the child
+//! is still unreaped. An unreaped child (even a zombie) pins its pid and its
+//! process-group id, so the number cannot have been recycled; once it is
+//! reaped the request is dropped (the TS `child.kill()` is likewise a no-op
+//! once Node has seen the exit, `lib/exec.ts:138-144`). WP2 review MUST-FIX 1.
+//!
 //! [`ChildDone`] carries `exit_code` (`None` when killed by a signal or when
 //! the spawn itself failed) and `not_found` (the binary was missing). NOTE the
 //! TS quirk the IMU collector reproduces: with execa 9 and `reject:false` a
@@ -21,6 +29,8 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
@@ -78,37 +88,59 @@ pub enum ChildEvent {
     Done(ChildDone),
 }
 
+/// A signal request to the waiter: `(signal, whole group?)`.
+type SignalReq = (i32, bool);
+
 /// The running child (`StreamHandle`).
 #[derive(Debug)]
 pub struct ChildHandle {
     pid: Option<u32>,
+    ctl: Option<mpsc::UnboundedSender<SignalReq>>,
+    delivered: Arc<AtomicUsize>,
     waiter: Option<AbortHandle>,
 }
 
 impl ChildHandle {
-    /// OS pid (absent when the spawn failed).
+    /// The pid the child was spawned with (absent when the spawn failed).
+    /// Informational only: it may already be reaped and recycled, so never
+    /// `kill(2)` it yourself; go through [`Self::signal`].
     pub fn pid(&self) -> Option<u32> {
         self.pid
     }
 
-    /// `stop(signal)` (`child.kill(signal)`): signal the child itself.
+    /// `stop(signal)` (`child.kill(signal)`): signal the child itself, if it
+    /// is still unreaped (a no-op afterwards).
     pub fn signal(&self, sig: i32) {
-        if let Some(pid) = self.pid {
-            // SAFETY: plain kill(2); a stale pid is at worst ESRCH.
-            unsafe {
-                libc::kill(pid as libc::pid_t, sig);
-            }
-        }
+        self.request(sig, false);
     }
 
-    /// Signal the child's whole process group (it leads its own group).
+    /// Signal the child's whole process group (it leads its own group), if
+    /// the leader is still unreaped (a no-op afterwards).
     pub fn signal_group(&self, sig: i32) {
-        if let Some(pid) = self.pid {
-            // SAFETY: plain kill(2) on the negative pgid.
-            unsafe {
-                libc::kill(-(pid as libc::pid_t), sig);
-            }
+        self.request(sig, true);
+    }
+
+    /// How many signals were actually delivered (tests / diagnostics).
+    pub fn delivered(&self) -> DeliveredSignals {
+        DeliveredSignals(self.delivered.clone())
+    }
+
+    fn request(&self, sig: i32, group: bool) {
+        if let Some(ctl) = &self.ctl {
+            // A closed channel = the waiter is done = the child is reaped.
+            let _ = ctl.send((sig, group));
         }
+    }
+}
+
+/// A shared count of the signals a [`ChildHandle`] delivered; it outlives the
+/// handle.
+#[derive(Debug, Clone)]
+pub struct DeliveredSignals(Arc<AtomicUsize>);
+
+impl DeliveredSignals {
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
     }
 }
 
@@ -150,6 +182,8 @@ pub fn spawn(spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEve
             return (
                 ChildHandle {
                     pid: None,
+                    ctl: None,
+                    delivered: Arc::default(),
                     waiter: None,
                 },
                 rx,
@@ -159,10 +193,37 @@ pub fn spawn(spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEve
     let pid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel::<SignalReq>();
+    let delivered: Arc<AtomicUsize> = Arc::default();
+    let counter = delivered.clone();
     let waiter = tokio::spawn(async move {
         let out = drain(stdout, tx.clone(), ChildEvent::Stdout);
         let err = drain(stderr, tx.clone(), ChildEvent::Stderr);
-        let (_, _, status) = tokio::join!(out, err, child.wait());
+        // The only place a signal reaches the OS: `child` is owned here, and
+        // `try_wait()` + `id()` prove it unreaped (pid/pgid still pinned).
+        let reap = async {
+            loop {
+                tokio::select! {
+                    st = child.wait() => break st, // cancel safe
+                    Some((sig, group)) = ctl_rx.recv() => match child.try_wait() {
+                        Ok(None) => {
+                            if let Some(pid) = child.id() {
+                                let target = if group { -(pid as libc::pid_t) } else { pid as libc::pid_t };
+                                // SAFETY: plain kill(2) on a pid we have not reaped.
+                                unsafe {
+                                    libc::kill(target, sig);
+                                }
+                                counter.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        Ok(Some(st)) => break Ok(st),
+                        Err(e) => break Err(e),
+                    },
+                }
+            }
+        };
+        let (_, _, status) = tokio::join!(out, err, reap);
+        drop(ctl_rx);
         let done = match status {
             Ok(st) => {
                 use std::os::unix::process::ExitStatusExt;
@@ -187,6 +248,8 @@ pub fn spawn(spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEve
     (
         ChildHandle {
             pid,
+            ctl: Some(ctl_tx),
+            delivered,
             waiter: Some(waiter.abort_handle()),
         },
         rx,
@@ -302,6 +365,36 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn no_signal_reaches_an_exited_child() {
+        // MUST-FIX 1: once the child is reaped its pid may be recycled, so a
+        // later signal()/signal_group() must deliver nothing.
+        let (h, rx) = spawn(&sh("exit 0"));
+        let ev = all(rx).await;
+        assert!(matches!(ev.last(), Some(ChildEvent::Done(d)) if d.exit_code == Some(0)));
+        h.signal(libc::SIGTERM);
+        h.signal_group(libc::SIGTERM);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(h.delivered().get(), 0);
+    }
+
+    #[tokio::test]
+    async fn signal_group_reaches_the_whole_group() {
+        let (h, mut rx) = spawn(&sh("sleep 30 & echo up; wait"));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .unwrap(),
+            Some(ChildEvent::Stdout("up".into()))
+        );
+        h.signal_group(libc::SIGTERM);
+        // Done needs both pipes at EOF: the background sleep holds them, so
+        // Done arriving proves the group signal reached it too.
+        let ev = all(rx).await;
+        assert!(matches!(ev.last(), Some(ChildEvent::Done(d)) if d.signal == Some(libc::SIGTERM)));
+        assert_eq!(h.delivered().get(), 1);
     }
 
     #[tokio::test]

@@ -115,15 +115,17 @@ impl ImuCollector {
         }
     }
 
-    /// SIGTERM the helper (execa's `cleanup` at process exit in the TS).
+    /// SIGTERM the helper's process group (execa's `cleanup` at process exit
+    /// in the TS). A no-op once the helper has exited: the handle is dropped
+    /// on that path, and `ChildHandle` never signals a reaped pid anyway.
     pub fn stop(&self) {
         let st = self.shared.lock();
         if let Some(h) = &st.stream {
-            h.signal(nix::libc::SIGTERM);
+            h.signal_group(nix::libc::SIGTERM);
         }
     }
 
-    /// The helper's pid while one runs (tests / diagnostics).
+    /// The helper's pid while one runs (tests / diagnostics; never `kill` it).
     pub fn helper_pid(&self) -> Option<u32> {
         self.shared
             .lock()
@@ -222,6 +224,9 @@ impl Shared {
                         }
                         ReaderExit::Park => {
                             error!("{}", exited_before_sample_line(done.exit_code));
+                            // Parked (`started` stays true): drop the dead
+                            // handle so `stop()` has nothing to signal.
+                            st.stream = None;
                         }
                     }
                     break;

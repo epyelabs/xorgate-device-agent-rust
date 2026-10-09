@@ -290,11 +290,9 @@ async fn imu_scenarios_match_the_ts_collector() {
             input["spawnCount"].as_u64().unwrap(),
             "[{name}]"
         );
-        if let Some(pid) = c.helper_pid() {
-            let alive =
-                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok();
-            assert!(!alive, "[{name}] no helper left running");
-        }
+        // every case ends with the helper gone, and its handle dropped (Park
+        // included), so `stop()` has nothing left to signal
+        assert_eq!(c.helper_pid(), None, "[{name}] no helper handle left");
         c.stop();
     }
     match saved_path {
