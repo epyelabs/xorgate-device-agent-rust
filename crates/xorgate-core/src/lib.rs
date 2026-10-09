@@ -26,6 +26,7 @@ pub mod boot_config;
 pub mod boot_policy;
 pub mod build_info;
 pub mod cameras;
+pub mod cli_set;
 pub mod clock;
 pub mod clock_step;
 pub mod cloud_config;

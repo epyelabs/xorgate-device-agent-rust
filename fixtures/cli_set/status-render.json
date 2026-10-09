@@ -1,0 +1,688 @@
+{
+  "jsSourceFile": "src/commands/status.ts:28-120 (print) over src/daemon/manager.ts inspect :105-120, src/lib/format.ts (uptimeLabel, ageLabel, formatBytes)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-cli-status.mts in a git-archive scratch copy of 89b5c64, non-root, stdout not a TTY (phase-2 WP6; script in evidence/wp6-tools, handed to WP7)",
+  "cases": [
+    {
+      "name": "stopped (no pidfile)",
+      "input": {
+        "pidfile": null,
+        "state": null,
+        "stateText": null,
+        "identity": "n/a",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "○ stopped — daemon not running",
+          "  start it with: xorgate start"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "unreadable home (EACCES)",
+      "input": {
+        "pidfile": null,
+        "state": null,
+        "stateText": null,
+        "identity": "n/a",
+        "homeDenied": true,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "○ unreadable — <HOME> is owned by another user",
+          "  the agent likely runs under systemd as root — try: sudo xorgate status"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "stale: process gone",
+      "input": {
+        "pidfile": {
+          "pid": 2147483000,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": null,
+        "stateText": null,
+        "identity": "n/a",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "◌ stale — pidfile for pid 2147483000, but process is gone",
+          "  it will be cleaned on the next start/stop"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "stale: pid recycled",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/nonexistent/zz-not-here.js",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": null,
+        "stateText": null,
+        "identity": "reused",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "◌ stale — pidfile for pid <PID>, but pid was recycled",
+          "  it will be cleaned on the next start/stop"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "running, no state snapshot",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": null,
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 1h 2m   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  (no state snapshot yet)",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, corrupt state.json",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": null,
+        "stateText": "{nope",
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 1h 2m   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  (no state snapshot yet)",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, state failing the structural gate",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 2,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999999600,
+          "connection": "connected",
+          "connectionSince": 1999996400000,
+          "seq": 3144,
+          "published": 3145,
+          "publishErrors": 0,
+          "lastPublishAt": 1999999999700,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": []
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 1h 2m   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  (no state snapshot yet)",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, JS-agent shape (recording on, video, last error)",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999999600,
+          "connection": "connected",
+          "connectionSince": 1999996400000,
+          "seq": 3144,
+          "published": 3145,
+          "publishErrors": 0,
+          "lastPublishAt": 1999999999700,
+          "lastError": "read ECONNRESET",
+          "latest": {
+            "media": {
+              "kvs": false,
+              "streams": [
+                {
+                  "streamKey": "cam0",
+                  "recording": false
+                },
+                {
+                  "streamKey": "cam1",
+                  "recording": true
+                },
+                {
+                  "streamKey": "cam2"
+                }
+              ]
+            }
+          },
+          "recentEvents": [],
+          "recording": {
+            "enabled": true,
+            "sessionId": "019f95d1-aaaa-bbbb",
+            "backlogBytes": 5368709120,
+            "backlogSegments": 12,
+            "droppedSegments": 2,
+            "uploading": false,
+            "lastUploadAt": null
+          }
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 1h 2m   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  endpoint   abc-ats.iot.us-east-1.amazonaws.com",
+          "  connection connected   since 1h ago",
+          "  telemetry  seq 3144  published 3145  errors 0  last just now  (fresh)",
+          "  recording  on   session 019f95d1…  backlog 12 seg / 5.0 GB  dropped 2",
+          "  video      cam0 idle   cam1 recording",
+          "  last error read ECONNRESET",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, Rust-agent shape (no recording block, never published)",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [
+            "run"
+          ],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999999600,
+          "connection": "reconnecting",
+          "connectionSince": 1999999990500,
+          "seq": 0,
+          "published": 0,
+          "publishErrors": 0,
+          "lastPublishAt": null,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": []
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 1h 2m   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  endpoint   abc-ats.iot.us-east-1.amazonaws.com",
+          "  connection reconnecting   since 9.5s ago",
+          "  telemetry  seq 0  published 0  errors 0  last never  (fresh)",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, offline 2 Hz, stale state",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999800000000,
+          "deviceId": "dev-1",
+          "mode": "sim",
+          "rateHz": 2,
+          "offline": true,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "offline",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999996000,
+          "connection": "connected",
+          "connectionSince": 1999999955000,
+          "seq": 3144,
+          "published": 3145,
+          "publishErrors": 0,
+          "lastPublishAt": 1999999996000,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": []
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 2d 7h   (identity verified)",
+          "  device     dev-1   mode sim   rate 2 Hz   offline",
+          "  build      <BUILD>",
+          "  endpoint   offline",
+          "  connection connected   since 45s ago",
+          "  telemetry  seq 3144  published 3145  errors 0  last 4.0s ago  (stale — worker may be wedged)",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, recording off with backlog",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999999941000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999999600,
+          "connection": "connected",
+          "connectionSince": 1999996400000,
+          "seq": 3144,
+          "published": 3145,
+          "publishErrors": 0,
+          "lastPublishAt": 1999999999700,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": [],
+          "recording": {
+            "enabled": false,
+            "sessionId": null,
+            "backlogBytes": 1536,
+            "backlogSegments": 3,
+            "droppedSegments": 0
+          }
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 59s   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  endpoint   abc-ats.iot.us-east-1.amazonaws.com",
+          "  connection connected   since 1h ago",
+          "  telemetry  seq 3144  published 3145  errors 0  last just now  (fresh)",
+          "  recording  off  backlog 3 seg / 1.5 KB",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, recording off, dropped only",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999999995000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999999600,
+          "connection": "connected",
+          "connectionSince": 1999996400000,
+          "seq": 3144,
+          "published": 3145,
+          "publishErrors": 0,
+          "lastPublishAt": 1999999999700,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": [],
+          "recording": {
+            "enabled": false,
+            "backlogBytes": 0,
+            "backlogSegments": 0,
+            "droppedSegments": 4
+          }
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 5s   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  endpoint   abc-ats.iot.us-east-1.amazonaws.com",
+          "  connection connected   since 1h ago",
+          "  telemetry  seq 3144  published 3145  errors 0  last just now  (fresh)",
+          "  recording  off  backlog 0 seg / 0 B, dropped 4",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, recording on, no session, tiny backlog",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999999600,
+          "connection": "connected",
+          "connectionSince": 1999996400000,
+          "seq": 3144,
+          "published": 3145,
+          "publishErrors": 0,
+          "lastPublishAt": 1999999999700,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": [],
+          "recording": {
+            "enabled": true,
+            "sessionId": null,
+            "backlogBytes": 512,
+            "backlogSegments": 1,
+            "droppedSegments": 0
+          }
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 1h 2m   (identity verified)",
+          "  device     dev-1   mode real   rate 1 Hz",
+          "  build      <BUILD>",
+          "  endpoint   abc-ats.iot.us-east-1.amazonaws.com",
+          "  connection connected   since 1h ago",
+          "  telemetry  seq 3144  published 3145  errors 0  last just now  (fresh)",
+          "  recording  on     backlog 1 seg / 512 B",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, odd values (missing endpoint/errors, 0 rateHz)",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 2000000005000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 0,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999999600,
+          "connection": "connected",
+          "connectionSince": 2000000000010,
+          "seq": 3144,
+          "published": 3145,
+          "lastPublishAt": 1999910000000,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": []
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 0s   (identity verified)",
+          "  device     dev-1   mode real   rate 0 Hz",
+          "  build      <BUILD>",
+          "  endpoint   undefined",
+          "  connection connected   since just now",
+          "  telemetry  seq 3144  published 3145  errors undefined  last 1d ago  (fresh)",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "running, fractional rate + float seq",
+      "input": {
+        "pidfile": {
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 0.5,
+          "offline": false,
+          "worker": "/x/dump-cli-status.mts",
+          "argv": [],
+          "nodeVersion": "v20"
+        },
+        "state": {
+          "v": 1,
+          "writtenBy": "test",
+          "deviceId": "dev-1",
+          "mode": "real",
+          "rateHz": 1,
+          "endpoint": "abc-ats.iot.us-east-1.amazonaws.com",
+          "offline": false,
+          "pid": 76464,
+          "startedAt": 1999996275000,
+          "lastWriteAt": 1999999994000,
+          "connection": "connected",
+          "connectionSince": 1999996400000,
+          "seq": 1.5,
+          "published": 3145,
+          "publishErrors": 0,
+          "lastPublishAt": 1999999992750,
+          "lastError": null,
+          "latest": null,
+          "recentEvents": []
+        },
+        "stateText": null,
+        "identity": "verified",
+        "homeDenied": false,
+        "now": 2000000000000
+      },
+      "expected": {
+        "lines": [
+          "● running   pid <PID>   up 1h 2m   (identity verified)",
+          "  device     dev-1   mode real   rate 0.5 Hz",
+          "  build      <BUILD>",
+          "  endpoint   abc-ats.iot.us-east-1.amazonaws.com",
+          "  connection connected   since 1h ago",
+          "  telemetry  seq 1.5  published 3145  errors 0  last 7.3s ago  (fresh)",
+          "  log        <HOME>/agent.log"
+        ],
+        "exitCode": 0
+      }
+    }
+  ]
+}
