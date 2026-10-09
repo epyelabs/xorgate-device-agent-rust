@@ -1,0 +1,420 @@
+{
+ "jsSourceFile": "test/led.test.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "tsx shim run from the scratchpad against the JS working tree (not committed there): the real test file with `vitest` swapped for an in-order describe/it runner and the module under test wrapped by a recorder; `expected` = the TS output of every pure call; `constants` names the exported tables an it() asserts on (pinned as top-level keys)",
+ "LED_COLOURS": {
+  "off": {
+   "r": false,
+   "g": false,
+   "b": false
+  },
+  "red": {
+   "r": true,
+   "g": false,
+   "b": false
+  },
+  "green": {
+   "r": false,
+   "g": true,
+   "b": false
+  },
+  "blue": {
+   "r": false,
+   "g": false,
+   "b": true
+  },
+  "purple": {
+   "r": true,
+   "g": false,
+   "b": true
+  },
+  "cyan": {
+   "r": false,
+   "g": true,
+   "b": true
+  },
+  "white": {
+   "r": true,
+   "g": true,
+   "b": true
+  }
+ },
+ "LED_COLOUR_NAMES": [
+  "off",
+  "red",
+  "green",
+  "blue",
+  "purple",
+  "cyan",
+  "white"
+ ],
+ "LED_PATTERN_NAMES": [
+  "solid",
+  "blink-fast",
+  "blink-slow",
+  "heartbeat",
+  "flash2"
+ ],
+ "STATUS_LED_MAP": {
+  "kind": "rgb-gpio",
+  "pins": {
+   "r": 12,
+   "g": 21,
+   "b": 16
+  },
+  "activeHigh": true
+ },
+ "notFixtureAble": {
+  "reason": "LedDriver (led.ts:249-417: timers, injected PinWriter, probe) is the impure half — Phase 4 HAL",
+  "its": [
+   "colour → channels > writes each colour to the hardcoded Argus pins, active high",
+   "colour → channels > inverts the channels when the map is active low",
+   "pattern playback > ends a non-repeating pattern dark rather than latched on its last flash",
+   "pattern playback > leaves solid lit — it is only cancelled by stop()",
+   "pattern playback > stops a repeating pattern and blanks on demand",
+   "write elision > only writes channels that change within a running pattern",
+   "write elision > costs ONE pinctrl call per transition, even for a two-channel colour",
+   "write elision > always writes all three on a new state, never trusting a stale cache",
+   "write elision > writes all three on the fail-safe blank even if they look unchanged",
+   "failure posture > blanks all three channels when a write fails rather than latching",
+   "failure posture > aborts a running pattern on a write failure",
+   "failure posture > survives a writer that throws",
+   "self-gating off-device > is inert and writes nothing when the probe fails",
+   "self-gating off-device > logs the resolved map exactly once"
+  ]
+ },
+ "cases": [
+  {
+   "name": "maps the six measured colours plus off",
+   "describe": "colour → channels",
+   "constants": [
+    "LED_COLOURS"
+   ],
+   "calls": []
+  },
+  {
+   "name": "has no yellow/amber — r+g is not identifiable on this LED",
+   "describe": "colour → channels",
+   "constants": [
+    "LED_COLOURS"
+   ],
+   "calls": []
+  },
+  {
+   "name": "holds solid indefinitely (ms 0 = until stopped)",
+   "describe": "pattern → timeline",
+   "constants": [],
+   "calls": [
+    {
+     "op": "ledTimeline",
+     "input": "solid",
+     "expected": {
+      "steps": [
+       {
+        "on": true,
+        "ms": 0
+       }
+      ],
+      "repeat": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "blinks fast at ~4 Hz and slow at ~1 Hz, both 50% duty",
+   "describe": "pattern → timeline",
+   "constants": [],
+   "calls": [
+    {
+     "op": "ledTimeline",
+     "input": "blink-fast",
+     "expected": {
+      "steps": [
+       {
+        "on": true,
+        "ms": 125
+       },
+       {
+        "on": false,
+        "ms": 125
+       }
+      ],
+      "repeat": true
+     }
+    },
+    {
+     "op": "ledTimeline",
+     "input": "blink-slow",
+     "expected": {
+      "steps": [
+       {
+        "on": true,
+        "ms": 500
+       },
+       {
+        "on": false,
+        "ms": 500
+       }
+      ],
+      "repeat": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "heartbeat double-pulses, then stays dark for the rest of a 5–6 s cycle",
+   "describe": "pattern → timeline",
+   "constants": [],
+   "calls": [
+    {
+     "op": "ledTimeline",
+     "input": "heartbeat",
+     "expected": {
+      "steps": [
+       {
+        "on": true,
+        "ms": 120
+       },
+       {
+        "on": false,
+        "ms": 180
+       },
+       {
+        "on": true,
+        "ms": 120
+       },
+       {
+        "on": false,
+        "ms": 5080
+       }
+      ],
+      "repeat": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "flash2 is two quick flashes and does not repeat",
+   "describe": "pattern → timeline",
+   "constants": [],
+   "calls": [
+    {
+     "op": "ledTimeline",
+     "input": "flash2",
+     "expected": {
+      "steps": [
+       {
+        "on": true,
+        "ms": 150
+       },
+       {
+        "on": false,
+        "ms": 200
+       },
+       {
+        "on": true,
+        "ms": 150
+       }
+      ],
+      "repeat": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "accepts the hardcoded Argus CM5 Rev1 map",
+   "describe": "pin-map validation",
+   "constants": [
+    "STATUS_LED_MAP"
+   ],
+   "calls": [
+    {
+     "op": "validatePinMap",
+     "input": {
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      },
+      "busyPins": []
+     },
+     "expected": {
+      "ok": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "rejects an unimplemented kind",
+   "describe": "pin-map validation",
+   "constants": [],
+   "calls": [
+    {
+     "op": "validatePinMap",
+     "input": {
+      "map": {
+       "kind": "pwm-rgb",
+       "pins": {
+        "r": 12,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      },
+      "busyPins": []
+     },
+     "expected": {
+      "ok": false,
+      "reason": "unimplemented LED kind 'pwm-rgb'"
+     }
+    }
+   ]
+  },
+  {
+   "name": "rejects pins outside the RP1 range",
+   "describe": "pin-map validation",
+   "constants": [],
+   "calls": [
+    {
+     "op": "validatePinMap",
+     "input": {
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12,
+        "g": 21,
+        "b": 54
+       },
+       "activeHigh": true
+      },
+      "busyPins": []
+     },
+     "expected": {
+      "ok": false,
+      "reason": "b pin 54 is outside the RP1 range 0–53"
+     }
+    },
+    {
+     "op": "validatePinMap",
+     "input": {
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": -1,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      },
+      "busyPins": []
+     },
+     "expected": {
+      "ok": false,
+      "reason": "r pin -1 is outside the RP1 range 0–53"
+     }
+    },
+    {
+     "op": "validatePinMap",
+     "input": {
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12.5,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      },
+      "busyPins": []
+     },
+     "expected": {
+      "ok": false,
+      "reason": "r pin 12.5 is outside the RP1 range 0–53"
+     }
+    }
+   ]
+  },
+  {
+   "name": "rejects a map that reuses a pin",
+   "describe": "pin-map validation",
+   "constants": [],
+   "calls": [
+    {
+     "op": "validatePinMap",
+     "input": {
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12,
+        "g": 12,
+        "b": 16
+       },
+       "activeHigh": true
+      },
+      "busyPins": []
+     },
+     "expected": {
+      "ok": false,
+      "reason": "pins 12,12,16 are not distinct"
+     }
+    }
+   ]
+  },
+  {
+   "name": "rejects a pin already held by another driver (the Phase 0 sdmode case)",
+   "describe": "pin-map validation",
+   "constants": [],
+   "calls": [
+    {
+     "op": "parseBusyPins",
+     "input": "\tline  12:      \"GPIO12\"       unused   input  active-high \n\tline  16:      \"GPIO16\"       \"sdmode\"  output  active-high [used]\n\tline  21:      \"GPIO21\"       unused   input  active-high ",
+     "expected": [
+      16
+     ]
+    },
+    {
+     "op": "validatePinMap",
+     "input": {
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      },
+      "busyPins": [
+       16
+      ]
+     },
+     "expected": {
+      "ok": false,
+      "reason": "b=GPIO16 already held by another driver (gpioinfo: [used])"
+     }
+    }
+   ]
+  },
+  {
+   "name": "parses no busy pins from an all-free chip",
+   "describe": "pin-map validation",
+   "constants": [],
+   "calls": [
+    {
+     "op": "parseBusyPins",
+     "input": "\tline  16:      \"GPIO16\"       unused  output  active-high ",
+     "expected": []
+    },
+    {
+     "op": "parseBusyPins",
+     "input": "",
+     "expected": []
+    }
+   ]
+  }
+ ]
+}

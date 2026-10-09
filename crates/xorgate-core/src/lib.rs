@@ -21,11 +21,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod boot_policy;
 pub mod build_info;
 pub mod clock;
 pub mod commands;
 pub mod config_namespaces;
 pub mod hardware_block;
+pub mod js_fmt;
+pub mod led;
+pub mod led_state;
 pub mod network;
 pub mod orientation;
 pub mod recording_config;

@@ -1,0 +1,1401 @@
+{
+ "jsSourceFile": "src/recording/boot-policy.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "node 24.14.0 (TZ=UTC) probing the V8 built-ins boot-policy.ts relies on: template-literal Number->String, Number#toFixed (computeShedSignals why strings, boot-policy.ts:620-628) and Date.parse (decideBootDefer stale check, boot-policy.ts:205). expected null = NaN. Legacy non-ISO forms V8 accepts (e.g. \"2026-1-9\") are deliberately absent: Rust returns NaN for them (evidence/wp3.md)",
+ "cases": [
+  {
+   "name": "String(4.85)",
+   "op": "numberToString",
+   "input": 4.85,
+   "expected": "4.85"
+  },
+  {
+   "name": "String(80)",
+   "op": "numberToString",
+   "input": 80,
+   "expected": "80"
+  },
+  {
+   "name": "String(5000)",
+   "op": "numberToString",
+   "input": 5000,
+   "expected": "5000"
+  },
+  {
+   "name": "String(-0)",
+   "op": "numberToString",
+   "input": {
+    "$negZero": true
+   },
+   "expected": "0"
+  },
+  {
+   "name": "String(0.30000000000000004)",
+   "op": "numberToString",
+   "input": 0.30000000000000004,
+   "expected": "0.30000000000000004"
+  },
+  {
+   "name": "String(1e+21)",
+   "op": "numberToString",
+   "input": 1e+21,
+   "expected": "1e+21"
+  },
+  {
+   "name": "String(1e-7)",
+   "op": "numberToString",
+   "input": 1e-7,
+   "expected": "1e-7"
+  },
+  {
+   "name": "String(70)",
+   "op": "numberToString",
+   "input": 70,
+   "expected": "70"
+  },
+  {
+   "name": "String(4.625)",
+   "op": "numberToString",
+   "input": 4.625,
+   "expected": "4.625"
+  },
+  {
+   "name": "String(4.875)",
+   "op": "numberToString",
+   "input": 4.875,
+   "expected": "4.875"
+  },
+  {
+   "name": "String(4.805)",
+   "op": "numberToString",
+   "input": 4.805,
+   "expected": "4.805"
+  },
+  {
+   "name": "String(4.8)",
+   "op": "numberToString",
+   "input": 4.8,
+   "expected": "4.8"
+  },
+  {
+   "name": "String(4.7)",
+   "op": "numberToString",
+   "input": 4.7,
+   "expected": "4.7"
+  },
+  {
+   "name": "String(5)",
+   "op": "numberToString",
+   "input": 5,
+   "expected": "5"
+  },
+  {
+   "name": "String(0.125)",
+   "op": "numberToString",
+   "input": 0.125,
+   "expected": "0.125"
+  },
+  {
+   "name": "String(-0.001)",
+   "op": "numberToString",
+   "input": -0.001,
+   "expected": "-0.001"
+  },
+  {
+   "name": "String(2.5)",
+   "op": "numberToString",
+   "input": 2.5,
+   "expected": "2.5"
+  },
+  {
+   "name": "String(1.005)",
+   "op": "numberToString",
+   "input": 1.005,
+   "expected": "1.005"
+  },
+  {
+   "name": "String(4.995)",
+   "op": "numberToString",
+   "input": 4.995,
+   "expected": "4.995"
+  },
+  {
+   "name": "String(4.845)",
+   "op": "numberToString",
+   "input": 4.845,
+   "expected": "4.845"
+  },
+  {
+   "name": "String(85)",
+   "op": "numberToString",
+   "input": 85,
+   "expected": "85"
+  },
+  {
+   "name": "String(0)",
+   "op": "numberToString",
+   "input": 0,
+   "expected": "0"
+  },
+  {
+   "name": "String(4.78)",
+   "op": "numberToString",
+   "input": 4.78,
+   "expected": "4.78"
+  },
+  {
+   "name": "String(4.93)",
+   "op": "numberToString",
+   "input": 4.93,
+   "expected": "4.93"
+  },
+  {
+   "name": "String(88)",
+   "op": "numberToString",
+   "input": 88,
+   "expected": "88"
+  },
+  {
+   "name": "String(62)",
+   "op": "numberToString",
+   "input": 62,
+   "expected": "62"
+  },
+  {
+   "name": "String(85.04999)",
+   "op": "numberToString",
+   "input": 85.04999,
+   "expected": "85.04999"
+  },
+  {
+   "name": "String(79.95)",
+   "op": "numberToString",
+   "input": 79.95,
+   "expected": "79.95"
+  },
+  {
+   "name": "String(4.849999)",
+   "op": "numberToString",
+   "input": 4.849999,
+   "expected": "4.849999"
+  },
+  {
+   "name": "String(123456)",
+   "op": "numberToString",
+   "input": 123456,
+   "expected": "123456"
+  },
+  {
+   "name": "String(0.0000015)",
+   "op": "numberToString",
+   "input": 0.0000015,
+   "expected": "0.0000015"
+  },
+  {
+   "name": "String(100000000000000000000)",
+   "op": "numberToString",
+   "input": 100000000000000000000,
+   "expected": "100000000000000000000"
+  },
+  {
+   "name": "String(3000)",
+   "op": "numberToString",
+   "input": 3000,
+   "expected": "3000"
+  },
+  {
+   "name": "String(0.5)",
+   "op": "numberToString",
+   "input": 0.5,
+   "expected": "0.5"
+  },
+  {
+   "name": "(4.85).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.85,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.85).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.85,
+    1
+   ],
+   "expected": "4.8"
+  },
+  {
+   "name": "(4.85).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.85,
+    2
+   ],
+   "expected": "4.85"
+  },
+  {
+   "name": "(80).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    80,
+    0
+   ],
+   "expected": "80"
+  },
+  {
+   "name": "(80).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    80,
+    1
+   ],
+   "expected": "80.0"
+  },
+  {
+   "name": "(80).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    80,
+    2
+   ],
+   "expected": "80.00"
+  },
+  {
+   "name": "(5000).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    5000,
+    0
+   ],
+   "expected": "5000"
+  },
+  {
+   "name": "(5000).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    5000,
+    1
+   ],
+   "expected": "5000.0"
+  },
+  {
+   "name": "(5000).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    5000,
+    2
+   ],
+   "expected": "5000.00"
+  },
+  {
+   "name": "(-0).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    {
+     "$negZero": true
+    },
+    0
+   ],
+   "expected": "0"
+  },
+  {
+   "name": "(-0).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    {
+     "$negZero": true
+    },
+    1
+   ],
+   "expected": "0.0"
+  },
+  {
+   "name": "(-0).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    {
+     "$negZero": true
+    },
+    2
+   ],
+   "expected": "0.00"
+  },
+  {
+   "name": "(0.30000000000000004).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    0.30000000000000004,
+    0
+   ],
+   "expected": "0"
+  },
+  {
+   "name": "(0.30000000000000004).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    0.30000000000000004,
+    1
+   ],
+   "expected": "0.3"
+  },
+  {
+   "name": "(0.30000000000000004).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    0.30000000000000004,
+    2
+   ],
+   "expected": "0.30"
+  },
+  {
+   "name": "(1e+21).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    1e+21,
+    0
+   ],
+   "expected": "1e+21"
+  },
+  {
+   "name": "(1e+21).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    1e+21,
+    1
+   ],
+   "expected": "1e+21"
+  },
+  {
+   "name": "(1e+21).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    1e+21,
+    2
+   ],
+   "expected": "1e+21"
+  },
+  {
+   "name": "(1e-7).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    1e-7,
+    0
+   ],
+   "expected": "0"
+  },
+  {
+   "name": "(1e-7).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    1e-7,
+    1
+   ],
+   "expected": "0.0"
+  },
+  {
+   "name": "(1e-7).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    1e-7,
+    2
+   ],
+   "expected": "0.00"
+  },
+  {
+   "name": "(70).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    70,
+    0
+   ],
+   "expected": "70"
+  },
+  {
+   "name": "(70).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    70,
+    1
+   ],
+   "expected": "70.0"
+  },
+  {
+   "name": "(70).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    70,
+    2
+   ],
+   "expected": "70.00"
+  },
+  {
+   "name": "(4.625).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.625,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.625).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.625,
+    1
+   ],
+   "expected": "4.6"
+  },
+  {
+   "name": "(4.625).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.625,
+    2
+   ],
+   "expected": "4.63"
+  },
+  {
+   "name": "(4.875).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.875,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.875).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.875,
+    1
+   ],
+   "expected": "4.9"
+  },
+  {
+   "name": "(4.875).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.875,
+    2
+   ],
+   "expected": "4.88"
+  },
+  {
+   "name": "(4.805).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.805,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.805).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.805,
+    1
+   ],
+   "expected": "4.8"
+  },
+  {
+   "name": "(4.805).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.805,
+    2
+   ],
+   "expected": "4.80"
+  },
+  {
+   "name": "(4.8).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.8,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.8).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.8,
+    1
+   ],
+   "expected": "4.8"
+  },
+  {
+   "name": "(4.8).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.8,
+    2
+   ],
+   "expected": "4.80"
+  },
+  {
+   "name": "(4.7).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.7,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.7).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.7,
+    1
+   ],
+   "expected": "4.7"
+  },
+  {
+   "name": "(4.7).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.7,
+    2
+   ],
+   "expected": "4.70"
+  },
+  {
+   "name": "(5).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    5,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(5).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    5,
+    1
+   ],
+   "expected": "5.0"
+  },
+  {
+   "name": "(5).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    5,
+    2
+   ],
+   "expected": "5.00"
+  },
+  {
+   "name": "(0.125).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    0.125,
+    0
+   ],
+   "expected": "0"
+  },
+  {
+   "name": "(0.125).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    0.125,
+    1
+   ],
+   "expected": "0.1"
+  },
+  {
+   "name": "(0.125).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    0.125,
+    2
+   ],
+   "expected": "0.13"
+  },
+  {
+   "name": "(-0.001).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    -0.001,
+    0
+   ],
+   "expected": "-0"
+  },
+  {
+   "name": "(-0.001).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    -0.001,
+    1
+   ],
+   "expected": "-0.0"
+  },
+  {
+   "name": "(-0.001).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    -0.001,
+    2
+   ],
+   "expected": "-0.00"
+  },
+  {
+   "name": "(2.5).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    2.5,
+    0
+   ],
+   "expected": "3"
+  },
+  {
+   "name": "(2.5).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    2.5,
+    1
+   ],
+   "expected": "2.5"
+  },
+  {
+   "name": "(2.5).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    2.5,
+    2
+   ],
+   "expected": "2.50"
+  },
+  {
+   "name": "(1.005).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    1.005,
+    0
+   ],
+   "expected": "1"
+  },
+  {
+   "name": "(1.005).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    1.005,
+    1
+   ],
+   "expected": "1.0"
+  },
+  {
+   "name": "(1.005).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    1.005,
+    2
+   ],
+   "expected": "1.00"
+  },
+  {
+   "name": "(4.995).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.995,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.995).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.995,
+    1
+   ],
+   "expected": "5.0"
+  },
+  {
+   "name": "(4.995).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.995,
+    2
+   ],
+   "expected": "5.00"
+  },
+  {
+   "name": "(4.845).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.845,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.845).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.845,
+    1
+   ],
+   "expected": "4.8"
+  },
+  {
+   "name": "(4.845).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.845,
+    2
+   ],
+   "expected": "4.84"
+  },
+  {
+   "name": "(85).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    85,
+    0
+   ],
+   "expected": "85"
+  },
+  {
+   "name": "(85).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    85,
+    1
+   ],
+   "expected": "85.0"
+  },
+  {
+   "name": "(85).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    85,
+    2
+   ],
+   "expected": "85.00"
+  },
+  {
+   "name": "(0).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    0,
+    0
+   ],
+   "expected": "0"
+  },
+  {
+   "name": "(0).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    0,
+    1
+   ],
+   "expected": "0.0"
+  },
+  {
+   "name": "(0).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    0,
+    2
+   ],
+   "expected": "0.00"
+  },
+  {
+   "name": "(4.78).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.78,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.78).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.78,
+    1
+   ],
+   "expected": "4.8"
+  },
+  {
+   "name": "(4.78).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.78,
+    2
+   ],
+   "expected": "4.78"
+  },
+  {
+   "name": "(4.93).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.93,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.93).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.93,
+    1
+   ],
+   "expected": "4.9"
+  },
+  {
+   "name": "(4.93).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.93,
+    2
+   ],
+   "expected": "4.93"
+  },
+  {
+   "name": "(88).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    88,
+    0
+   ],
+   "expected": "88"
+  },
+  {
+   "name": "(88).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    88,
+    1
+   ],
+   "expected": "88.0"
+  },
+  {
+   "name": "(88).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    88,
+    2
+   ],
+   "expected": "88.00"
+  },
+  {
+   "name": "(62).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    62,
+    0
+   ],
+   "expected": "62"
+  },
+  {
+   "name": "(62).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    62,
+    1
+   ],
+   "expected": "62.0"
+  },
+  {
+   "name": "(62).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    62,
+    2
+   ],
+   "expected": "62.00"
+  },
+  {
+   "name": "(85.04999).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    85.04999,
+    0
+   ],
+   "expected": "85"
+  },
+  {
+   "name": "(85.04999).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    85.04999,
+    1
+   ],
+   "expected": "85.0"
+  },
+  {
+   "name": "(85.04999).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    85.04999,
+    2
+   ],
+   "expected": "85.05"
+  },
+  {
+   "name": "(79.95).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    79.95,
+    0
+   ],
+   "expected": "80"
+  },
+  {
+   "name": "(79.95).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    79.95,
+    1
+   ],
+   "expected": "80.0"
+  },
+  {
+   "name": "(79.95).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    79.95,
+    2
+   ],
+   "expected": "79.95"
+  },
+  {
+   "name": "(4.849999).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    4.849999,
+    0
+   ],
+   "expected": "5"
+  },
+  {
+   "name": "(4.849999).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    4.849999,
+    1
+   ],
+   "expected": "4.8"
+  },
+  {
+   "name": "(4.849999).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    4.849999,
+    2
+   ],
+   "expected": "4.85"
+  },
+  {
+   "name": "(123456).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    123456,
+    0
+   ],
+   "expected": "123456"
+  },
+  {
+   "name": "(123456).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    123456,
+    1
+   ],
+   "expected": "123456.0"
+  },
+  {
+   "name": "(123456).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    123456,
+    2
+   ],
+   "expected": "123456.00"
+  },
+  {
+   "name": "(0.0000015).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    0.0000015,
+    0
+   ],
+   "expected": "0"
+  },
+  {
+   "name": "(0.0000015).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    0.0000015,
+    1
+   ],
+   "expected": "0.0"
+  },
+  {
+   "name": "(0.0000015).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    0.0000015,
+    2
+   ],
+   "expected": "0.00"
+  },
+  {
+   "name": "(100000000000000000000).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    100000000000000000000,
+    0
+   ],
+   "expected": "100000000000000000000"
+  },
+  {
+   "name": "(100000000000000000000).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    100000000000000000000,
+    1
+   ],
+   "expected": "100000000000000000000.0"
+  },
+  {
+   "name": "(100000000000000000000).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    100000000000000000000,
+    2
+   ],
+   "expected": "100000000000000000000.00"
+  },
+  {
+   "name": "(3000).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    3000,
+    0
+   ],
+   "expected": "3000"
+  },
+  {
+   "name": "(3000).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    3000,
+    1
+   ],
+   "expected": "3000.0"
+  },
+  {
+   "name": "(3000).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    3000,
+    2
+   ],
+   "expected": "3000.00"
+  },
+  {
+   "name": "(0.5).toFixed(0)",
+   "op": "toFixed",
+   "input": [
+    0.5,
+    0
+   ],
+   "expected": "1"
+  },
+  {
+   "name": "(0.5).toFixed(1)",
+   "op": "toFixed",
+   "input": [
+    0.5,
+    1
+   ],
+   "expected": "0.5"
+  },
+  {
+   "name": "(0.5).toFixed(2)",
+   "op": "toFixed",
+   "input": [
+    0.5,
+    2
+   ],
+   "expected": "0.50"
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00Z",
+   "expected": 1791547200000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00.123Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00.123Z",
+   "expected": 1791547200123
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00.123456Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00.123456Z",
+   "expected": 1791547200123
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00.1239Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00.1239Z",
+   "expected": 1791547200123
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00.1Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00.1Z",
+   "expected": 1791547200100
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00Z",
+   "expected": 1791547200000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09\")",
+   "op": "dateParse",
+   "input": "2026-10-09",
+   "expected": 1791504000000
+  },
+  {
+   "name": "Date.parse(\"2026-10\")",
+   "op": "dateParse",
+   "input": "2026-10",
+   "expected": 1790812800000
+  },
+  {
+   "name": "Date.parse(\"2026\")",
+   "op": "dateParse",
+   "input": "2026",
+   "expected": 1767225600000
+  },
+  {
+   "name": "Date.parse(\"2026T12:00Z\")",
+   "op": "dateParse",
+   "input": "2026T12:00Z",
+   "expected": 1767268800000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00+02:00\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00+02:00",
+   "expected": 1791540000000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00+0200\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00+0200",
+   "expected": 1791540000000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00-02:30\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00-02:30",
+   "expected": 1791556200000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00+23:59\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00+23:59",
+   "expected": 1791460860000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00",
+   "expected": 1791547200000
+  },
+  {
+   "name": "Date.parse(\"2026-02-30T00:00:00Z\")",
+   "op": "dateParse",
+   "input": "2026-02-30T00:00:00Z",
+   "expected": 1772409600000
+  },
+  {
+   "name": "Date.parse(\"2024-02-29T00:00:00Z\")",
+   "op": "dateParse",
+   "input": "2024-02-29T00:00:00Z",
+   "expected": 1709164800000
+  },
+  {
+   "name": "Date.parse(\"2026-04-31T00:00:00Z\")",
+   "op": "dateParse",
+   "input": "2026-04-31T00:00:00Z",
+   "expected": 1777593600000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T24:00:00Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T24:00:00Z",
+   "expected": 1791590400000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T24:00:01Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T24:00:01Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-13-01T00:00:00Z\")",
+   "op": "dateParse",
+   "input": "2026-13-01T00:00:00Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-00-01\")",
+   "op": "dateParse",
+   "input": "2026-00-01",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-00\")",
+   "op": "dateParse",
+   "input": "2026-10-00",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-32\")",
+   "op": "dateParse",
+   "input": "2026-10-32",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09t12:00:00z\")",
+   "op": "dateParse",
+   "input": "2026-10-09t12:00:00z",
+   "expected": 1791547200000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09 12:00:00Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09 12:00:00Z",
+   "expected": 1791547200000
+  },
+  {
+   "name": "Date.parse(\"+002026-10-09T12:00:00Z\")",
+   "op": "dateParse",
+   "input": "+002026-10-09T12:00:00Z",
+   "expected": 1791547200000
+  },
+  {
+   "name": "Date.parse(\"-000001-01-01T00:00:00Z\")",
+   "op": "dateParse",
+   "input": "-000001-01-01T00:00:00Z",
+   "expected": -62198755200000
+  },
+  {
+   "name": "Date.parse(\"\")",
+   "op": "dateParse",
+   "input": "",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"garbage\")",
+   "op": "dateParse",
+   "input": "garbage",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"1970-01-01T00:16:40.000Z\")",
+   "op": "dateParse",
+   "input": "1970-01-01T00:16:40.000Z",
+   "expected": 1000000
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:60Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:60Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:60:00Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:60:00Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\" 2026-10-09T12:00:00Z\")",
+   "op": "dateParse",
+   "input": " 2026-10-09T12:00:00Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00Z \")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00Z ",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00.Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00.Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T1:00Z\")",
+   "op": "dateParse",
+   "input": "2026-10-09T1:00Z",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"20261009\")",
+   "op": "dateParse",
+   "input": "20261009",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00GMT\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00GMT",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00+24:00\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00+24:00",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"2026-10-09T12:00:00+02\")",
+   "op": "dateParse",
+   "input": "2026-10-09T12:00:00+02",
+   "expected": null
+  },
+  {
+   "name": "Date.parse(\"1969-12-31T23:59:59.999Z\")",
+   "op": "dateParse",
+   "input": "1969-12-31T23:59:59.999Z",
+   "expected": -1
+  },
+  {
+   "name": "Date.parse(\"1983-11-14T09:41:21Z\")",
+   "op": "dateParse",
+   "input": "1983-11-14T09:41:21Z",
+   "expected": 437650881000
+  }
+ ]
+}

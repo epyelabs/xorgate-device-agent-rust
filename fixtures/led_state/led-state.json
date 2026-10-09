@@ -1,0 +1,1446 @@
+{
+ "jsSourceFile": "test/led-state.test.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "tsx shim run from the scratchpad against the JS working tree (not committed there): the real test file with `vitest` swapped for an in-order describe/it runner and the module under test wrapped by a recorder; `expected` = the TS output of every pure call; `constants` names the exported tables an it() asserts on (pinned as top-level keys)",
+ "LED_LADDER": [
+  {
+   "pri": "0",
+   "reason": "starting",
+   "label": "Starting up (no real state yet)",
+   "colour": "white",
+   "pattern": "solid"
+  },
+  {
+   "pri": "1",
+   "reason": "agent-down",
+   "label": "Agent not running",
+   "colour": "red",
+   "pattern": "solid"
+  },
+  {
+   "pri": "2",
+   "reason": "undervoltage",
+   "label": "Power fault — undervoltage / shedding",
+   "colour": "red",
+   "pattern": "blink-fast"
+  },
+  {
+   "pri": "4",
+   "reason": "thermal",
+   "label": "Running hot — thermal shed, still recording",
+   "colour": "cyan",
+   "pattern": "blink-slow"
+  },
+  {
+   "pri": "5",
+   "reason": "network",
+   "label": "Network trouble — LTE/cloud down, recovering",
+   "colour": "purple",
+   "pattern": "blink-fast"
+  },
+  {
+   "pri": "6",
+   "reason": "gps-wait",
+   "label": "Waiting for a GPS fix",
+   "colour": "blue",
+   "pattern": "blink-slow"
+  },
+  {
+   "pri": "7",
+   "reason": "healthy",
+   "label": "Healthy",
+   "colour": "green",
+   "pattern": "heartbeat"
+  },
+  {
+   "pri": "—",
+   "reason": "config-applied",
+   "label": "Settings applied / command accepted",
+   "colour": "white",
+   "pattern": "flash2"
+  }
+ ],
+ "cases": [
+  {
+   "name": "has no rung 3 — data loss is deferred, not silently dropped",
+   "describe": "the ladder table",
+   "constants": [
+    "LED_LADDER"
+   ],
+   "calls": []
+  },
+  {
+   "name": "uses only colours the hardware can actually distinguish",
+   "describe": "the ladder table",
+   "constants": [
+    "LED_LADDER"
+   ],
+   "calls": []
+  },
+  {
+   "name": "gives every rung a unique reason and a human label",
+   "describe": "the ladder table",
+   "constants": [
+    "LED_LADDER"
+   ],
+   "calls": []
+  },
+  {
+   "name": "0 — starting: white solid",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": true
+     },
+     "expected": {
+      "colour": "white",
+      "pattern": "solid",
+      "reason": "starting"
+     }
+    }
+   ]
+  },
+  {
+   "name": "1 — agent-down is systemd's to render, never resolved here",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "rung",
+     "input": "agent-down",
+     "expected": {
+      "pri": "1",
+      "reason": "agent-down",
+      "label": "Agent not running",
+      "colour": "red",
+      "pattern": "solid"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "red",
+      "pattern": "blink-fast",
+      "reason": "undervoltage"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "cyan",
+      "pattern": "blink-slow",
+      "reason": "thermal"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "closed",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": false,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "blue",
+      "pattern": "blink-slow",
+      "reason": "gps-wait"
+     }
+    }
+   ]
+  },
+  {
+   "name": "2 — undervoltage: red blink-fast",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "red",
+      "pattern": "blink-fast",
+      "reason": "undervoltage"
+     }
+    }
+   ]
+  },
+  {
+   "name": "4 — a THERMAL shed stays cyan even though it also sets powerShed",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "cpu 60.1°C >= 50°C for 15s",
+        "since": 1
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "cyan",
+      "pattern": "blink-slow",
+      "reason": "thermal"
+     }
+    }
+   ]
+  },
+  {
+   "name": "2 — an UNDERVOLTAGE shed is red, even though it sets the same powerShed",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "rail 4.66V",
+        "since": 1
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "red",
+      "pattern": "blink-fast",
+      "reason": "undervoltage"
+     }
+    }
+   ]
+  },
+  {
+   "name": "2 — a powerShed rung is a power fault even with no liveBlock",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "powerShed": "no-live"
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "red",
+      "pattern": "blink-fast",
+      "reason": "undervoltage"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "powerShed": "parked:bridge-only"
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "red",
+      "pattern": "blink-fast",
+      "reason": "undervoltage"
+     }
+    }
+   ]
+  },
+  {
+   "name": "4 — thermal: cyan blink-slow, milder than power by design",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "cyan",
+      "pattern": "blink-slow",
+      "reason": "thermal"
+     }
+    }
+   ]
+  },
+  {
+   "name": "5 — network: purple blink-fast for a trying-and-failing modem",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "disconnected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connecting"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    }
+   ]
+  },
+  {
+   "name": "5 — network: a down cloud link counts even with LTE connected",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connecting",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "reconnecting",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "closed",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "error",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    }
+   ]
+  },
+  {
+   "name": "6 — gps-wait: blue blink-slow when the receiver has no fix",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": false,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "blue",
+      "pattern": "blink-slow",
+      "reason": "gps-wait"
+     }
+    }
+   ]
+  },
+  {
+   "name": "6 — gps-wait also covers the boot video gate",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "blue",
+      "pattern": "blink-slow",
+      "reason": "gps-wait"
+     }
+    }
+   ]
+  },
+  {
+   "name": "7 — healthy: green heartbeat",
+   "describe": "each rung",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "power beats thermal, network and gps together",
+   "describe": "precedence — first match wins",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "closed",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "disconnected"
+      },
+      "gnss": {
+       "fix": false,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "red",
+      "pattern": "blink-fast",
+      "reason": "undervoltage"
+     }
+    }
+   ]
+  },
+  {
+   "name": "thermal beats network and gps",
+   "describe": "precedence — first match wins",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "closed",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": false,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "cyan",
+      "pattern": "blink-slow",
+      "reason": "thermal"
+     }
+    }
+   ]
+  },
+  {
+   "name": "network beats gps",
+   "describe": "precedence — first match wins",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "closed",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": false,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "purple",
+      "pattern": "blink-fast",
+      "reason": "network"
+     }
+    }
+   ]
+  },
+  {
+   "name": "starting beats everything, including a power fault",
+   "describe": "precedence — first match wins",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": true
+     },
+     "expected": {
+      "colour": "white",
+      "pattern": "solid",
+      "reason": "starting"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a declared dead zone is settled, not a fault",
+   "describe": "folded into green on purpose",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "dead_zone"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a dead zone ALSO suppresses the cloud-link clause",
+   "describe": "folded into green on purpose",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "closed",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "dead_zone"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "recording vs idle is not distinguished",
+   "describe": "folded into green on purpose",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": false,
+       "sessionId": null,
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "an upload backlog is healthy — it is working, not failing",
+   "describe": "folded into green on purpose",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 900000000,
+       "backlogSegments": 400,
+       "droppedSegments": 0,
+       "uploading": true,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "historical dropped segments do NOT light the LED (rung 3 deferred)",
+   "describe": "folded into green on purpose",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 5000,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "null LTE is unavailable, not down",
+   "describe": "fail open — unknown never means fault",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": null,
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "null GNSS is no receiver, not 'no fix'",
+   "describe": "fail open — unknown never means fault",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": null,
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "an absent liveBlock means live is allowed",
+   "describe": "fail open — unknown never means fault",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "an unrecognised liveBlock reason degrades to healthy, not to red",
+   "describe": "fail open — unknown never means fault",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "kvs-master-failed",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": "decommissioned",
+        "detail": "",
+        "since": 0
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a malformed liveBlock is ignored rather than trusted",
+   "describe": "fail open — unknown never means fault",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null,
+       "liveBlock": {
+        "reason": 42
+       }
+      },
+      "lte": {
+       "status": "connected"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a malformed lte block is ignored rather than trusted",
+   "describe": "fail open — unknown never means fault",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {},
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    },
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {},
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  },
+  {
+   "name": "an unknown lte status is not a fault",
+   "describe": "fail open — unknown never means fault",
+   "constants": [],
+   "calls": [
+    {
+     "op": "resolveLedState",
+     "input": {
+      "connection": "connected",
+      "recording": {
+       "enabled": true,
+       "sessionId": "s1",
+       "backlogBytes": 0,
+       "backlogSegments": 0,
+       "droppedSegments": 0,
+       "uploading": false,
+       "lastUploadAt": null
+      },
+      "lte": {
+       "status": "wedged-somehow"
+      },
+      "gnss": {
+       "fix": true,
+       "sky": "open"
+      },
+      "starting": false
+     },
+     "expected": {
+      "colour": "green",
+      "pattern": "heartbeat",
+      "reason": "healthy"
+     }
+    }
+   ]
+  }
+ ]
+}

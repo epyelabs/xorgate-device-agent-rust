@@ -1,0 +1,199 @@
+{
+ "jsSourceFile": "test/recording-boot-policy.test.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "tsx shim run from the scratchpad against the JS working tree (not committed there): the real test file with `vitest` swapped for an in-order describe/it runner and boot-policy.js wrapped by a recorder; `expected` = the TS output of every call",
+ "cases": [
+  {
+   "name": "reads budget + telemetry from disk and defers, then releases and LATCHES",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 1000000
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "now": 1000000,
+     "mono": 1000000,
+     "budgetHex": "00000bb8",
+     "telemetryText": "{\"timestamp\":\"1970-01-01T00:16:40.000Z\",\"status\":\"connecting\",\"reg\":0}",
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "deferring"
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "now": 1010000,
+     "mono": 1010000,
+     "budgetHex": "00000bb8",
+     "telemetryText": "{\"timestamp\":\"1970-01-01T00:16:50.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "connected",
+      "holdLive": false
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "released:connected"
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "now": 1010000,
+     "mono": 1010000,
+     "budgetHex": "00000bb8",
+     "telemetryText": "{\"timestamp\":\"1970-01-01T00:16:50.000Z\",\"status\":\"connecting\",\"reg\":0}",
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "connected",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "skips on a 5 A budget without ever reading telemetry",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 2840847344
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "now": 1791565970152,
+     "mono": 2840847344,
+     "budgetHex": "00001388",
+     "telemetryText": null,
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "expected": {
+      "allow": true,
+      "state": "skipped",
+      "why": "psu budget 5000mA >= 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "skipped"
+    }
+   ]
+  },
+  {
+   "name": "missing budget node (dev box) arms; corrupt telemetry counts as missing",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 5000000
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "now": 5000000,
+     "mono": 5000000,
+     "budgetHex": null,
+     "telemetryText": "{not json",
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget unknown < 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "now": 5061000,
+     "mono": 5061000,
+     "budgetHex": null,
+     "telemetryText": "{not json",
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "stale",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "statusString is null before the first evaluation",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 2840847345
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": null
+    }
+   ]
+  }
+ ]
+}
