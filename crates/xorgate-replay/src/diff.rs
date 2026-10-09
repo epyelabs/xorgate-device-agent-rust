@@ -65,9 +65,50 @@ pub struct PlayInfo {
     /// `host.ndjson` (T3 host attribution); loaded by `load_run`.
     #[serde(skip)]
     pub host: Vec<(i64, BTreeMap<String, f64>)>,
+    /// `(side "a"|"b", estimated tick wall ms)` of every lead tick the hold
+    /// gate logged as `skip` at a drift flip (`pairs.ndjson`); loaded by `load_run`.
+    #[serde(skip)]
+    pub skips: Vec<(String, i64)>,
 }
 
 impl PlayInfo {
+    /// Host CPU busy % over `[to − window, to]` from the player's `/proc/stat`
+    /// samples (`cpu_busy`/`cpu_total` jiffies), nearest samples at both ends.
+    pub fn host_cpu(&self, to: i64, window: i64) -> Option<f64> {
+        let at = |w: i64| {
+            self.host
+                .iter()
+                .filter(|(_, m)| m.contains_key("cpu_busy") && m.contains_key("cpu_total"))
+                .min_by_key(|(t, _)| (t - w).abs())
+                .filter(|(t, _)| (t - w).abs() <= 200)
+                .map(|(_, m)| (m["cpu_busy"], m["cpu_total"]))
+        };
+        let ((b0, t0), (b1, t1)) = (at(to - window)?, at(to)?);
+        (t1 > t0).then(|| (b1 - b0) / (t1 - t0) * 100.0)
+    }
+
+    /// Does `[t0, t1]` overlap a closed span padded by `pad` ms?
+    pub fn straddles_closed(&self, t0: i64, t1: i64, pad: i64) -> bool {
+        self.closed_spans
+            .iter()
+            .any(|(a, b)| t0 <= b + pad && t1 >= a - pad)
+    }
+
+    /// Closed spans extended to the moment BOTH agents publish telemetry again
+    /// (T8 `reconnect-cadence`: Rust backs off 1→60 s with jitter, mqtt.js
+    /// retries every 2 s, so one side resumes later than the span's end).
+    pub fn with_reconnects(&self, a: &[&Msg], b: &[&Msg]) -> PlayInfo {
+        let mut out = self.clone();
+        for span in out.closed_spans.iter_mut() {
+            let end = span.1;
+            let back = |ms: &[&Msg]| ms.iter().map(|m| m.w).filter(|w| *w > end).min();
+            if let (Some(x), Some(y)) = (back(a), back(b)) {
+                span.1 = end.max(x.max(y));
+            }
+        }
+        out
+    }
+
     /// Range (max − min) of the host series `name` over `[from − pad, to + pad]`
     /// wall ms; `None` without at least two samples in the window.
     pub fn host_swing(&self, name: &str, from: i64, to: i64, pad: i64) -> Option<f64> {
@@ -332,8 +373,15 @@ impl Cx<'_> {
     fn host_attributed(&self, path: &str, over: f64) -> Option<String> {
         let (id, series) = self.table.host_reference(&self.stream, path)?;
         let (a, b) = (self.when?, self.when_b?);
-        let swing = self.play.host_swing(&series, a, b, 250)?;
-        (swing + 1e-9 >= over).then(|| format!("{id}/host"))
+        let moved = if series == "cpu" {
+            // Each agent's cpu_usage is the busy share since its previous tick
+            // (1 s at RATE_HZ=1) ending at its read (≈ `ts`): compare the
+            // host's own busy share over the two windows.
+            (self.play.host_cpu(a, 1000)? - self.play.host_cpu(b, 1000)?).abs()
+        } else {
+            self.play.host_swing(&series, a, b, 250)?
+        };
+        (moved + 1e-9 >= over).then(|| format!("{id}/host"))
     }
 
     fn near_wall_step(&self) -> Option<String> {
@@ -599,6 +647,8 @@ pub fn diff(
         .iter()
         .filter(|m| m.topic.ends_with("/telemetry"))
         .collect();
+    let extended = play.with_reconnects(&ta, &tb);
+    let play = &extended;
     let (paired, ua, ub) = pair_telemetry(&ta, &tb, pairs);
     let bases = first_values(&paired, table, "telemetry");
     {
@@ -653,6 +703,15 @@ pub fn diff(
                     let w = w.unwrap_or(m.w);
                     (w - first_wall <= 5_000 || play.end_wall - w <= 3_000)
                         .then(|| "T4".to_string())
+                })
+                .or_else(|| {
+                    // A lead tick the hold gate skipped at a drift flip.
+                    let w = w.unwrap_or(m.w);
+                    let (rid, _) = table.decision_row("tick-drift")?;
+                    play.skips
+                        .iter()
+                        .any(|(s, t)| s.eq_ignore_ascii_case(side) && (w - t).abs() <= 400)
+                        .then(|| format!("{rid}/tick-drift"))
                 })
                 .unwrap_or_else(|| UNTOLERATED.into());
             let (pa, pb) = if side == "A" {
@@ -797,8 +856,12 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
         .collect();
     v.sort();
     let empty = BTreeMap::new();
+    let pad = table
+        .decision_row("cadence")
+        .and_then(|(_, r)| r.around_closed_ms)
+        .unwrap_or(5000) as i64;
     for w in v.windows(2) {
-        let ((_, s0), (t1, s1)) = (w[0], w[1]);
+        let ((t0, s0), (t1, s1)) = (w[0], w[1]);
         if s1 - s0 == 1 {
             continue;
         }
@@ -812,7 +875,16 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
             deltas: &empty,
             first_wall: play.start_wall,
         };
-        let tol = cx.near_closed().unwrap_or_else(|| UNTOLERATED.into());
+        // A jump whose interval straddles a closed span: Rust counts the
+        // ticks it skips while disconnected (T8 cadence).
+        let tol = cx
+            .near_closed()
+            .or_else(|| {
+                let (rid, _) = table.decision_row("cadence")?;
+                play.straddles_closed(t0, t1, pad)
+                    .then(|| format!("{rid}/cadence"))
+            })
+            .unwrap_or_else(|| UNTOLERATED.into());
         rep.push(cx.mismatch(
             "seq (increment)",
             Some(&Value::from(s0)),
@@ -945,6 +1017,17 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
             }
         }
     }
+    if let Some((rid, row)) = table.decision_row("fs-error-text") {
+        for p in &row.event_prefixes {
+            if let Some(rest) = msg.strip_prefix(p.as_str()) {
+                let norm = normalise_fs_error(rest);
+                if norm != rest {
+                    msg = format!("{p}{norm}");
+                    hit = Some(format!("{rid}/fs-error-text"));
+                }
+            }
+        }
+    }
     if level == "error" {
         if let Some((rid, row)) = table.decision_row("mqtt-error-text") {
             if !row.own_prefixes.iter().any(|p| msg.starts_with(p.as_str())) {
@@ -954,6 +1037,24 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
         }
     }
     (format!("{level}: {msg}"), hit)
+}
+
+/// Node fs error text `<CODE>: <text>, <syscall> '<path>'[ -> '<path>']` with
+/// the syscall and the quoted paths replaced (`<fs-op> '<path>'`): the TS
+/// names the temp file and the failing syscall (open/rename), Rust the final
+/// path (T8 `fs-error-text`). Anything else is returned unchanged.
+fn normalise_fs_error(rest: &str) -> String {
+    let Some(q) = rest.find('\'') else {
+        return rest.to_string();
+    };
+    let head = &rest[..q];
+    let Some((before, op)) = head.trim_end().rsplit_once(", ") else {
+        return rest.to_string();
+    };
+    if op.is_empty() || !op.chars().all(|c| c.is_ascii_lowercase()) {
+        return rest.to_string();
+    }
+    format!("{before}, <fs-op> '<path>'")
 }
 
 fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &mut Report) {
@@ -997,7 +1098,17 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
             continue;
         }
         let msg = k.split_once(": ").map(|(_, m)| m).unwrap_or(k);
-        let tol = if let Some(r) =
+        let rust_only = table.decision_row("rust-only-events").filter(|(_, row)| {
+            x == 0
+                && b.meta.kind == "rust"
+                && row
+                    .event_prefixes
+                    .iter()
+                    .any(|p| msg.starts_with(p.as_str()))
+        });
+        let tol = if let Some((rid, _)) = rust_only {
+            format!("{rid}/rust-only-events")
+        } else if let Some(r) =
             t6.filter(|r| r.event_prefixes.iter().any(|p| msg.starts_with(p.as_str())))
         {
             r.id.clone()
@@ -1231,6 +1342,12 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
             Some((w, m))
         })
         .collect();
+    play.skips = std::fs::read_to_string(run.join("pairs.ndjson"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| Some((v["skip"].as_str()?.to_string(), v["tick"].as_i64()?)))
+        .collect();
     let pairs = std::fs::read_to_string(run.join("pairs.ndjson"))
         .unwrap_or_default()
         .lines()
@@ -1282,6 +1399,81 @@ mod tests {
             m["metrics"]["gps"] = serde_json::json!({"lat":{"value":l,"unit":"°"}});
         }
         m
+    }
+
+    #[test]
+    fn fs_error_text_normalises_syscall_and_paths_only() {
+        assert_eq!(
+            normalise_fs_error("EACCES: permission denied, open '/h/.settings.json.tmp.12.0'"),
+            "EACCES: permission denied, <fs-op> '<path>'"
+        );
+        assert_eq!(
+            normalise_fs_error("EXDEV: cross-device link not permitted, rename '/a' -> '/b'"),
+            "EXDEV: cross-device link not permitted, <fs-op> '<path>'"
+        );
+        assert_eq!(normalise_fs_error("unexpected token"), "unexpected token");
+        let t = table();
+        // worker.ts:892 logs it at warn.
+        let (ka, ha) = event_key(
+            "warn",
+            "cloud config apply failed: EACCES: permission denied, open '/h/.settings.json.tmp.1.0'",
+            "js",
+            &t,
+        );
+        let (kb, _) = event_key(
+            "warn",
+            "cloud config apply failed: EACCES: permission denied, open '/h/settings.json'",
+            "rust",
+            &t,
+        );
+        assert_eq!(ka, kb);
+        assert_eq!(ha.as_deref(), Some("T8/fs-error-text"));
+    }
+
+    #[test]
+    fn outage_seq_jump_reconnect_tail_and_gate_skip_are_tolerated() {
+        let t = table();
+        let tel = |ts: i64, seq: i64| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
+        let mut play = PlayInfo {
+            start_wall: 0,
+            end_wall: 200_000,
+            closed_spans: vec![(50_000, 70_000)],
+            ..Default::default()
+        };
+        play.skips = vec![("b".into(), 30_000)];
+        // A (JS) resumes at 71 s; B (Rust, backoff) only at 78 s and its seq
+        // counted the ticks it skipped; B also has a gate-skipped tick at 30 s.
+        let a = cap(
+            "js",
+            vec![
+                msg(29_000, "telemetry", tel(29_000, 29)),
+                msg(31_000, "telemetry", tel(31_000, 30)),
+                msg(49_000, "telemetry", tel(49_000, 31)),
+                msg(71_000, "telemetry", tel(71_000, 32)),
+                msg(76_000, "telemetry", tel(76_000, 33)),
+                msg(78_000, "telemetry", tel(78_000, 34)),
+            ],
+        );
+        let b = cap(
+            "rust",
+            vec![
+                msg(29_000, "telemetry", tel(29_000, 1)),
+                msg(30_010, "telemetry", tel(30_010, 2)),
+                msg(31_000, "telemetry", tel(31_000, 3)),
+                msg(49_000, "telemetry", tel(49_000, 4)),
+                msg(78_000, "telemetry", tel(78_000, 33)),
+            ],
+        );
+        let rep = diff(&a, &b, &play, &[], &t);
+        let un: Vec<_> = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.tol == UNTOLERATED)
+            .collect();
+        assert!(un.is_empty(), "{un:?}");
+        let tols: Vec<&str> = rep.mismatches.iter().map(|m| m.tol.as_str()).collect();
+        assert!(tols.contains(&"T8/tick-drift"), "{tols:?}");
+        assert!(tols.contains(&"T8/cadence"), "{tols:?}");
     }
 
     #[test]

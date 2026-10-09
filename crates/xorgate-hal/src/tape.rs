@@ -801,9 +801,9 @@ impl crate::io::TapeSink for FileTape {
             ConnState::Closed
         });
     }
-    fn cli(&self, argv: &[String]) {
-        self.inner.cli(argv);
-    }
+    // No `cli` override (review-wp6 decision 1): the CLI is a separate process
+    // and writes `<tape>.cli.ndjson` (WP6 `cli/set.rs` `tape_cli`); only the
+    // agent writes this gz stream. `Tape::read` merges the side file.
     fn clock(&self, wall_ms: i64, mono_ms: u64) {
         self.inner.clock_sample(wall_ms, mono_ms);
     }

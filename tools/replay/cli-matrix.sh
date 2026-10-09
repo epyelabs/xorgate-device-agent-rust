@@ -69,7 +69,20 @@ root|-|set timeSync.stepThresholdSecs 12
 node|-|status
 node|expect:T8/logs-journal|logs -n 5
 node|expect:T8/cli-banner|-v
+node|expect:T8/cli-banner|help
+node|expect:T8/cli-banner|
+node|expect:T8/cli-banner|frobnicate
 node|expect:T8/set-wifi|set wifi on
+node|expect:T8/cli-systemd-verbs|start
+node|expect:T8/cli-systemd-verbs|stop
+node|expect:T8/cli-systemd-verbs|restart
+node|expect:T8/cli-later-verbs|update
+node|expect:T8/cli-later-verbs|pipeline
+node|expect:T8/cli-later-verbs|recording
+node|expect:T8/cli-later-verbs|led
+node|expect:T8/cli-later-verbs|sms
+node|expect:T8/cli-later-verbs|manage
+node|expect:T8/cli-later-verbs|monitor
 LIST
 )
 
@@ -82,7 +95,7 @@ run_side() { # label kind
     [ -n "$who" ] || continue
     i=$((i + 1))
     local pre=(env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp TZ=UTC NO_COLOR=1 XORGATE_HOME="$home" LTE_TELEMETRY_FILE=/nonexistent/telemetry.json)
-    local cmd="$cli $argv"
+    local cmd="timeout 20 $cli $argv"
     if [ "$who" = node ]; then
       setpriv --reuid=1000 --regid=1000 --init-groups "${pre[@]}" bash -c "$cmd" >"$OUT/$label/$i.out" 2>"$OUT/$label/$i.err" </dev/null
     else

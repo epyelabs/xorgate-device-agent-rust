@@ -866,6 +866,22 @@ fn host_ram_pct() -> Option<f64> {
     (total > 0.0).then(|| (total - avail) / total * 100.0)
 }
 
+/// Aggregate `/proc/stat` jiffies `(busy, total)`: busy = user + nice +
+/// system + irq + softirq + steal, total = busy + idle + iowait.
+fn host_cpu_jiffies() -> Option<(f64, f64)> {
+    let text = fs::read_to_string("/proc/stat").ok()?;
+    let f: Vec<f64> = text
+        .lines()
+        .next()?
+        .strip_prefix("cpu ")?
+        .split_whitespace()
+        .filter_map(|x| x.parse().ok())
+        .collect();
+    let g = |i: usize| f.get(i).copied().unwrap_or(0.0);
+    let busy = g(0) + g(1) + g(2) + g(5) + g(6) + g(7);
+    Some((busy, busy + g(3) + g(4)))
+}
+
 /// Host reference series for T3 (`host.ndjson`, every 50 ms): both agents read
 /// the rig's live /proc, so a concurrent load on the Docker VM moves their
 /// values apart between their two tick instants. The diff attributes such a
@@ -875,8 +891,17 @@ async fn host_loop(out: PathBuf, stop: CancellationToken) {
         return;
     };
     loop {
+        let mut row = serde_json::Map::new();
+        row.insert("w".into(), json!(wall_now_ms()));
         if let Some(ram) = host_ram_pct() {
-            let _ = writeln!(f, "{}", json!({"w": wall_now_ms(), "ram": ram}));
+            row.insert("ram".into(), json!(ram));
+        }
+        if let Some((busy, total)) = host_cpu_jiffies() {
+            row.insert("cpu_busy".into(), json!(busy));
+            row.insert("cpu_total".into(), json!(total));
+        }
+        if row.len() > 1 {
+            let _ = writeln!(f, "{}", Value::Object(row));
         }
         tokio::select! {
             _ = stop.cancelled() => return,
@@ -1324,6 +1349,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         wall_steps,
         calibration,
         host: Vec::new(),
+        skips: Vec::new(),
     };
     fs::write(
         args.out.join("play.json"),

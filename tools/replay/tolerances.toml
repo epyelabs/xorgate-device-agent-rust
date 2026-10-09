@@ -55,7 +55,11 @@ tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage
 # ±1 is cited as `T3/host` ONLY if the host's own series swung by at least the
 # excess between the two `ts` (±250 ms), else it stays UNTOLERATED. On the bench
 # tape replay in a quiet VM this never fires.
-host_reference = { "metrics.system.ram_usage.value" = "ram" }
+# cpu_usage likewise (JS-vs-Rust, pairs up to ~0.9 s apart while the two tick
+# phases differ): the player samples /proc/stat, and a cpu difference beyond
+# ±10 is `T3/host` only if the host's own busy share over the two agents' 1 s
+# windows (ending at each `ts`) differs by at least the excess.
+host_reference = { "metrics.system.ram_usage.value" = "ram", "metrics.system.cpu_usage.value" = "cpu" }
 
 [[rule]]
 id = "T4"
@@ -285,7 +289,17 @@ kind = "decisions"
 
   [[rule.row]]
   id = "cli-banner"
-  what = "build identity in `-v` and the usage banner (D20 / README §6; WP6 A5): `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,65); the usage lists only this binary's verbs. C11: stdout differs, exit code must match"
+  what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the SHORTER Rust usage (only this binary's verbs: run/status/set/logs; cli.rs usage()) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-systemd-verbs"
+  what = "`start` / `stop` / `restart` (WP6 A5; README §3.3 drops the self-managed daemon): Rust prints `xorgate-rs: '<verb>' is systemd's job for the Rust agent: sudo systemctl <verb> xorgate-agent-rs` and exits 1 (cli.rs) where the TS manages its detached worker (manager.ts start/stop/restart). C11: stdout/stderr/exit differ; settings.json must match"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-later-verbs"
+  what = "verbs owned by Phase 3/4 (`update`, `pipeline`, `recording`, `led`, `sms`, `manage`, `monitor`; WP6 A5): Rust prints `xorgate-rs: '<verb>' arrives in a later build` and exits 1 (cli.rs) — the TS has these verbs, so `unknown command` would be wrong. C11: stdout/stderr/exit differ; settings.json must match. Retire each verb's row when its phase lands"
   streams = ["cli"]
 
   [[rule.row]]
@@ -304,6 +318,9 @@ kind = "decisions"
   streams = ["telemetry", "status", "events"]
   around_closed_ms = 5000
   event_prefixes = ["publish error:"]
+  # The span used is [cut, the moment BOTH agents publish again] (the later
+  # reconnect, see `reconnect-cadence`), padded by around_closed_ms; a seq jump
+  # whose interval straddles it is the ticks Rust counted while disconnected.
 
   [[rule.row]]
   id = "counters"
@@ -325,6 +342,23 @@ kind = "decisions"
   matcher = "reconnect_cadence"
   event_exact = ["warn: reconnecting…", "warn: connection closed"]
   event_prefixes = ["info: connected to ", "error: <transport error>"]
+
+  [[rule.row]]
+  id = "tick-drift"
+  what = "FLAG (rig, reviewer to confirm; A2): Node's setInterval re-arms after each callback and drifts a few ms per tick, tokio's interval keeps its phase, so the two agents' tick phases slide past each other; when the pair gap exceeds 800 ms the hold gate flips roles and logs ONE lead tick as `skip` (pairs.ndjson). That tick's message is unpaired (within ±400 ms of the logged tick) and not value-compared; the values of every paired tick still are"
+  streams = ["telemetry"]
+
+  [[rule.row]]
+  id = "fs-error-text"
+  what = "failed atomic-write error TEXT (review-wp3 T8 item 1): the TS names the temp file and the failing syscall (`EACCES: permission denied, open '<dir>/.settings.json.tmp.<pid>.<n>'`, or `rename '…' -> '…'`), Rust the final path with `open`. Reaches state.json (warn) via `cloud config apply failed: …` (worker.ts:892) and `uploadBucket persist failed: …` (worker.ts:806) only on a failed write. Compared after replacing `, <syscall> '<path>'…` by `, <fs-op> '<path>'`; the code and text before it must match"
+  streams = ["events"]
+  event_prefixes = ["cloud config apply failed: ", "uploadBucket persist failed: "]
+
+  [[rule.row]]
+  id = "rust-only-events"
+  what = "Rust-only event `config report failed: …` (review-wp3 T8 item 2): emitted on `PublishFailure::Failed` (the report publish could not be queued); the TS wording exists (config-sync.ts:1567, a thrown publish) but mqtt.js queues offline and never reaches it in that case. Tolerated only when present on the Rust side and absent on the JS side"
+  streams = ["events"]
+  event_prefixes = ["config report failed: "]
 
   [[rule.row]]
   id = "write-error-survival"

@@ -25,6 +25,7 @@ recording.telemetry.rateHz abc
 recording.video.enabled off
 recording.video.segmentSeconds 5
 recording.video.cameras.cam0 off
+recording.video.cameras.__proto__ off
 recording.upload.mode auto
 recording.retention.maxBytes 1000000
 recording.powerShedding.cpuTempRestoreC 73
