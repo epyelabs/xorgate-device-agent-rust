@@ -1,7 +1,7 @@
 {
   "jsSourceFile": "test/recording-segments.test.ts",
   "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there)",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there); [integration M1] case: plans/device-agent-js-to-rust/phase-1 integration dump-m1.mts",
   "cases": [
     {
       "name": "opens lazily, writes a header first, and rotates by age into a gz",
@@ -739,6 +739,70 @@
         "files": {
           "/recordings/telemetry/session-a/seg-5000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":5,\"mono\":1,\"seq\":0,\"metrics\":{\"imu\":{\"a\":1}}}\n",
           "/recordings/telemetry/session-a/seg-6000-00001.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":6,\"mono\":2,\"seq\":1,\"metrics\":{\"imu\":{\"a\":\"ü€\"}}}\n"
+        }
+      }
+    },
+    {
+      "name": "extra: integration M1: a sample's gps lat 4e-6 and an integer 1e20 print like JS",
+      "op": "segmentWriter",
+      "input": {
+        "dir": "/recordings/telemetry/session-a",
+        "header": {
+          "type": "header",
+          "v": 1,
+          "deviceId": "dev-1",
+          "sessionId": "session-a",
+          "bootId": "boot-1",
+          "timeSource": "ntp",
+          "rateHz": 10,
+          "startedAt": 1000
+        },
+        "ctor": {},
+        "monoInjected": true
+      },
+      "expected": {
+        "steps": [
+          {
+            "op": "writeLine",
+            "line": {
+              "ts": 1000,
+              "mono": 1,
+              "seq": 0,
+              "metrics": {
+                "gps": {
+                  "lat": {
+                    "value": 0.000004,
+                    "unit": "deg"
+                  },
+                  "lon": {
+                    "value": -0.0000099
+                  }
+                },
+                "odo": {
+                  "m": {
+                    "value": 100000000000000000000
+                  }
+                }
+              }
+            },
+            "now": 1000,
+            "mono": 0,
+            "activePath": "/recordings/telemetry/session-a/seg-1000-00000.jsonl",
+            "closed": []
+          },
+          {
+            "op": "finalize",
+            "activePath": null,
+            "closed": [
+              "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+            ]
+          }
+        ],
+        "closed": [
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz"
+        ],
+        "files": {
+          "/recordings/telemetry/session-a/seg-1000-00000.jsonl.gz": "{\"type\":\"header\",\"v\":1,\"deviceId\":\"dev-1\",\"sessionId\":\"session-a\",\"bootId\":\"boot-1\",\"timeSource\":\"ntp\",\"rateHz\":10,\"startedAt\":1000}\n{\"ts\":1000,\"mono\":1,\"seq\":0,\"metrics\":{\"gps\":{\"lat\":{\"value\":0.000004,\"unit\":\"deg\"},\"lon\":{\"value\":-0.0000099}},\"odo\":{\"m\":{\"value\":100000000000000000000}}}}\n"
         }
       }
     },

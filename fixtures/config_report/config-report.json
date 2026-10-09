@@ -1,7 +1,7 @@
 {
   "jsSourceFile": "test/config-sync.test.ts + test/config-sync-cellular.test.ts + test/camera-mount.test.ts",
   "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): every pure it() replayed through the real buildEffective / buildStatus / buildConfigReport / parse*Telemetry / shouldApplyRev / namespacesOf / diffNamespaces, plus readModemBias over a tmp file (file text → sample), loadConfigSyncState (file text → state) and ensureConfigSyncBaseline over its injected inputs; settings inputs are normalised through loadSettings (parser order) as the worker does; `build` = the TS loadBuildInfo() fallback under tsx; [extra] cases pin wording branches the vitest only regex-matched",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): every pure it() replayed through the real buildEffective / buildStatus / buildConfigReport / parse*Telemetry / shouldApplyRev / namespacesOf / diffNamespaces, plus readModemBias over a tmp file (file text → sample), loadConfigSyncState (file text → state) and ensureConfigSyncBaseline over its injected inputs; settings inputs are normalised through loadSettings (parser order) as the worker does; `build` = the TS loadBuildInfo() fallback under tsx; [extra] cases pin wording branches the vitest only regex-matched; [integration M1] cases: plans/device-agent-js-to-rust/phase-1 integration dump-m1.mts",
   "build": {
     "version": "0.2.0",
     "channel": "local",
@@ -3312,6 +3312,148 @@
         }
       },
       "expectedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"9\":{\"rotationDeg\":0},\"10\":{\"rotationDeg\":0},\"-a\":{\"rotationDeg\":0},\"cam0\":{\"rotationDeg\":0}},\"pending\":{\"9\":{\"rotationDeg\":180},\"-a\":{\"rotationDeg\":180}},\"rebootRequired\":true}}"
+    },
+    {
+      "name": "[extra] integration M1: imuMount 5e-6 in effective + changed prints like JS",
+      "source": "src/agent/config-sync.ts:1059 (integration review M1)",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 1234,
+        "origin": "local",
+        "lastAppliedRev": 3,
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": true,
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 0.000005,
+            "pitchDeg": 0,
+            "yawDeg": -0.0000015
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "changed": {
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 0.000005,
+            "pitchDeg": 0,
+            "yawDeg": -0.0000015
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"rev\":3,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1234,\"rev\":3,\"origin\":\"local\",\"effective\":{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}},\"status\":{\"imuMount\":{\"state\":\"applied\",\"at\":1234}},\"changed\":{\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}}"
+    },
+    {
+      "name": "[extra] integration M1: namespacesOf keeps imuMount 5e-6 JS-printed",
+      "source": "src/agent/config-sync.ts:287 (integration review M1)",
+      "op": "namespacesOf",
+      "input": {
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": true,
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 0.000005,
+            "pitchDeg": 0,
+            "yawDeg": -0.0000015
+          }
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}"
+    },
+    {
+      "name": "[extra] integration M1: diffNamespaces keeps imuMount 5e-6 JS-printed",
+      "source": "src/agent/config-sync.ts:301 (integration review M1)",
+      "op": "diffNamespaces",
+      "input": {
+        "base": {
+          "gnssAntBias": true
+        },
+        "next": {
+          "gnssAntBias": true,
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 0.000005,
+            "pitchDeg": 0,
+            "yawDeg": -0.0000015
+          }
+        }
+      },
+      "expectedJson": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}"
+    },
+    {
+      "name": "[extra] integration M1: buildEffective keeps imuMount 5e-6 JS-printed",
+      "source": "src/agent/config-sync.ts:597 (integration review M1)",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": true,
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 0.000005,
+            "pitchDeg": 0,
+            "yawDeg": -0.0000015
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}"
+    },
+    {
+      "name": "[extra] integration M1: config-sync.json baseline keeps imuMount 5e-6 JS-printed",
+      "source": "src/agent/config-sync.ts:328 (integration review M1)",
+      "op": "ensureConfigSyncBaseline",
+      "input": {
+        "state": {
+          "lastAppliedRev": 0,
+          "lastReportTs": 0
+        },
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": true,
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 0.000005,
+            "pitchDeg": 0,
+            "yawDeg": -0.0000015
+          }
+        },
+        "settingsHash": "30ea1e04c760f93c5cbabd754eef841043cfc5a86cb147e46b55bab7c100d0d4"
+      },
+      "expectedJson": "{\"state\":{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}},\"settingsHash\":\"30ea1e04c760f93c5cbabd754eef841043cfc5a86cb147e46b55bab7c100d0d4\"},\"save\":true}"
+    },
+    {
+      "name": "[extra] integration M1: loadConfigSyncState round-trips imuMount 5e-6 and an integer 1e20",
+      "source": "src/agent/config-sync.ts:201 (integration review M1)",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "{\"lastAppliedRev\":3,\"lastReportTs\":1234,\"namespaces\":{\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015},\"x\":100000000000000000000,\"y\":9007199254740993},\"settingsHash\":\"h\"}"
+      },
+      "expectedJson": "{\"lastAppliedRev\":3,\"lastReportTs\":1234,\"settingsHash\":\"h\",\"namespaces\":{\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015},\"x\":100000000000000000000,\"y\":9007199254740992}}"
     }
   ]
 }

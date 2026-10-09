@@ -1,7 +1,7 @@
 {
   "jsSourceFile": "test/cloud-config.test.ts + test/config-sync-cellular.test.ts + test/camera-mount.test.ts + test/config-sync.test.ts",
   "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): parse cases = exact JSON.stringify of parseCloudConfig/parseCloudMessage; apply cases = file-state scripts (save/write/unreadable → apply) recording {changed, the raw file bytes after, loadSettings JSON} from the real applyCloudConfig over a tmp settings.json",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): parse cases = exact JSON.stringify of parseCloudConfig/parseCloudMessage; apply cases = file-state scripts (save/write/unreadable → apply) recording {changed, the raw file bytes after, loadSettings JSON} from the real applyCloudConfig over a tmp settings.json; [integration M1] case: plans/device-agent-js-to-rust/phase-1 integration dump-m1.mts",
   "cases": [
     {
       "name": "parses a v1 config message",
@@ -1410,6 +1410,46 @@
             "changed": false,
             "fileAfter": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}",
             "loadedJson": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] integration M1: imuMount 5e-6 survives the merge printed like JS",
+      "source": "src/agent/cloud-config.ts:293-411 (integration review M1)",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"rev\":3,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}",
+          "expectedJson": "{\"rev\":3,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}"
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"rev\":3,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"rev\":3,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}},\"config\":{\"rev\":3,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}}"
+        },
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "gnssAntBias": true
+          },
+          "fileAfter": "{\"mode\":\"real\",\"gnssAntBias\":true}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "imuMount": {
+              "enabled": true,
+              "rollDeg": 0.000005,
+              "pitchDeg": 0,
+              "yawDeg": -0.0000015
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}",
+            "loadedJson": "{\"mode\":\"real\",\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015}}"
           }
         }
       ]

@@ -609,117 +609,13 @@ fn truncate_text(units: &[u16]) -> (String, bool) {
     (String::from_utf16_lossy(&units[..cut]), true)
 }
 
-// --- JS Date arithmetic (proleptic Gregorian, no leap seconds) --------------
-
-/// Days since 1970-01-01 for a civil date (month 1..=12). The day is not
-/// range-checked: `day` beyond the month's length rolls into the next month,
-/// exactly as V8's `MakeDay` does for `Date.parse("2026-02-31…")`
-/// (→ 2026-03-03). Howard Hinnant's `days_from_civil`.
-pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let m = i64::from(month);
-    let mp = if m > 2 { m - 3 } else { m + 9 };
-    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// Civil date for days since 1970-01-01 (Hinnant's `civil_from_days`).
-pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn two_digits(s: &[u8]) -> Option<u32> {
-    if s.len() == 2 && s[0].is_ascii_digit() && s[1].is_ascii_digit() {
-        Some(u32::from(s[0] - b'0') * 10 + u32::from(s[1] - b'0'))
-    } else {
-        None
-    }
-}
-
-/// `Date.parse` of a `sentAt` string, i.e. of the one shape [`decode_scts`]
-/// produces (`YYYY-MM-DDThh:mm:ss±hh:mm`; `Z` is accepted too). Epoch ms, or
-/// `None` where `Date.parse` is `NaN` (`sentAtMs`, `sms-pdu.ts:348-352`). A
-/// day past the month's end rolls over like V8 (`2026-02-31` → 2026-03-03).
+/// `Date.parse(sentAt)` (`sentAtMs`, `sms-pdu.ts:348-352`): epoch ms, or
+/// `None` where `Date.parse` is `NaN`. [`decode_scts`] produces
+/// `YYYY-MM-DDThh:mm:ss±hh:mm`; a day past the month's end rolls over like V8
+/// (`2026-02-31` → 2026-03-03). Thin wrapper over the shared
+/// [`crate::js::date_parse_ms`] (Phase 1 integration).
 pub fn parse_sent_at_ms(sent_at: &str) -> Option<i64> {
-    let b = sent_at.as_bytes();
-    if b.len() < 20
-        || b[4] != b'-'
-        || b[7] != b'-'
-        || b[10] != b'T'
-        || b[13] != b':'
-        || b[16] != b':'
-    {
-        return None;
-    }
-    if !b[..4].iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    let year: i64 = sent_at[..4].parse().ok()?;
-    let month = two_digits(&b[5..7])?;
-    let day = two_digits(&b[8..10])?;
-    let hour = two_digits(&b[11..13])?;
-    let minute = two_digits(&b[14..16])?;
-    let second = two_digits(&b[17..19])?;
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 24
-        || minute > 59
-        || second > 59
-    {
-        return None;
-    }
-    let zone = &b[19..];
-    let offset_min: i64 = match zone {
-        b"Z" => 0,
-        [sign @ (b'+' | b'-'), rest @ ..] if rest.len() == 5 && rest[2] == b':' => {
-            let zh = two_digits(&rest[..2])?;
-            let zm = two_digits(&rest[3..])?;
-            if zh > 23 || zm > 59 {
-                return None;
-            }
-            let m = i64::from(zh) * 60 + i64::from(zm);
-            if *sign == b'-' {
-                -m
-            } else {
-                m
-            }
-        }
-        _ => return None,
-    };
-    let days = days_from_civil(year, month, day);
-    let local_ms = days * 86_400_000
-        + i64::from(hour) * 3_600_000
-        + i64::from(minute) * 60_000
-        + i64::from(second) * 1000;
-    Some(local_ms - offset_min * 60_000)
-}
-
-/// `new Date(ms).toISOString().slice(0, 19)` — the UTC civil time of an
-/// epoch-ms instant without the `.sssZ` tail (used by the sim/replay SMS
-/// fixture, `sms-modem.ts:621-624`). Negative instants floor like JS.
-pub fn iso_seconds_utc(ms: i64) -> String {
-    let secs = ms.div_euclid(1000);
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}",
-        sod / 3600,
-        (sod % 3600) / 60,
-        sod % 60
-    )
+    crate::js::date_parse_ms(sent_at)
 }
 
 /// `buildMessage` (`sms-pdu.ts:354-372`).
@@ -854,14 +750,8 @@ mod tests {
     }
 
     #[test]
-    fn dates_round_trip() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
-        assert_eq!(civil_from_days(11_017), (2000, 3, 1));
-        assert_eq!(civil_from_days(-1), (1969, 12, 31));
-        assert_eq!(iso_seconds_utc(0), "1970-01-01T00:00:00");
-        assert_eq!(iso_seconds_utc(-1), "1969-12-31T23:59:59");
-        assert_eq!(iso_seconds_utc(1_790_812_800_000), "2026-10-01T00:00:00");
+    fn sent_at_parses_like_date_parse() {
+        // days_from_civil / iso_seconds_utc moved to crate::js (tested there)
         assert_eq!(parse_sent_at_ms("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_sent_at_ms("1970-01-01T00:00:00+00:00"), Some(0));
         assert_eq!(parse_sent_at_ms("1970-01-01T01:00:00+01:00"), Some(0));

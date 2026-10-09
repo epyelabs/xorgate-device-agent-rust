@@ -26,10 +26,12 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::boot_config::{js_trim, CameraMountState, CameraMountVerdict};
+use crate::boot_config::{CameraMountState, CameraMountVerdict};
 use crate::build_info::BuildInfo;
 use crate::cloud_config::CloudConfig;
-use crate::settings::{js_object_key_order, AgentSettings, CameraMountSettings, CellularSettings};
+use crate::js::{self, trim as js_trim};
+use crate::js::{date_parse_ms, number_to_string, object_key_order, parsed_key_order};
+use crate::settings::{AgentSettings, CameraMountSettings, CellularSettings};
 use crate::telemetry::JsNumber;
 use crate::telemetry_scope::TelemetryScopeReport;
 use crate::types::{ApnState, SimRegistration, SimState};
@@ -130,11 +132,16 @@ pub struct ConfigReport {
     /// Last applied desired rev; 0 = never received one.
     pub rev: u64,
     pub origin: ReportOrigin,
+    #[serde(serialize_with = "js::json_map::serialize")]
     pub effective: Map<String, Value>,
     pub status: IndexMap<String, NamespaceStatus>,
     /// `origin: "local"` ONLY: the namespaces that moved since the cloud last
     /// knew, as settings.json now holds them (`null` = removed locally).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js::json_map_opt::serialize"
+    )]
     pub changed: Option<Map<String, Value>>,
 }
 
@@ -143,7 +150,8 @@ pub struct ConfigReport {
 pub const MAX_REPORT_BYTES: usize = 32_768;
 
 impl ConfigReport {
-    /// The exact wire bytes (`JSON.stringify(report)`).
+    /// The exact wire bytes (`JSON.stringify(report)`; every number in
+    /// `effective` / `changed` printed like JS — [`js::JsJson`]).
     pub fn to_wire(&self) -> String {
         serde_json::to_string(self).expect("ConfigReport serialises")
     }
@@ -292,7 +300,9 @@ impl Serialize for ConfigSyncState {
         for k in keys {
             match k {
                 SyncKey::SettingsHash => m.serialize_entry(k.name(), &self.settings_hash)?,
-                SyncKey::Namespaces => m.serialize_entry(k.name(), &self.namespaces)?,
+                SyncKey::Namespaces => {
+                    m.serialize_entry(k.name(), &self.namespaces.as_ref().map(js::JsJsonMap))?
+                }
                 SyncKey::LocalPending => m.serialize_entry(k.name(), &self.local_pending)?,
             }
         }
@@ -343,26 +353,6 @@ impl<'de> Deserialize<'de> for ConfigSyncState {
     }
 }
 
-/// The key order `JSON.parse` leaves behind, applied recursively: V8 own-key
-/// order at every object level (integer-like keys first, ascending, then the
-/// rest in text order). serde_json with `preserve_order` keeps TEXT order, so
-/// any object parsed from JSON text that can be re-serialised (the
-/// `config-sync.json` `namespaces` baseline re-persisted by `{...state, …}`,
-/// the cloud message's `raw` half) goes through this to stringify like the TS.
-pub fn js_parsed_key_order(v: Value) -> Value {
-    match v {
-        Value::Object(m) => {
-            let m: IndexMap<String, Value> = m
-                .into_iter()
-                .map(|(k, v)| (k, js_parsed_key_order(v)))
-                .collect();
-            Value::Object(js_object_key_order(m).into_iter().collect())
-        }
-        Value::Array(a) => Value::Array(a.into_iter().map(js_parsed_key_order).collect()),
-        other => other,
-    }
-}
-
 /// `Number.isFinite(v) && v > 0 ? Math.floor(v) : 0` (`config-sync.ts:210-211`).
 fn positive_floor(v: Option<&Value>) -> f64 {
     match v.and_then(Value::as_f64) {
@@ -379,8 +369,7 @@ pub fn parse_config_sync_state(text: Option<&str>) -> ConfigSyncState {
     let Some(text) = text else {
         return ConfigSyncState::default();
     };
-    let Ok(Value::Object(src)) = serde_json::from_str::<Value>(text).map(js_parsed_key_order)
-    else {
+    let Ok(Value::Object(src)) = serde_json::from_str::<Value>(text).map(parsed_key_order) else {
         // `obj && typeof obj === "object"` — arrays pass in the TS but every
         // field then reads as undefined, which is the zero state anyway.
         return ConfigSyncState::default();
@@ -598,7 +587,7 @@ pub const MAX_REPORTED_STRING: usize = 64;
 /// `reportedString` (`config-sync.ts:383`): a non-empty, length-capped
 /// string, or None. Control chars (< 0x20, 0x7f) are dropped per code point,
 /// then `trim().slice(0, 64)` (ECMAScript `trim`, see
-/// [`crate::boot_config`]'s `js_trim`) — `slice` counts UTF-16 code units, so the cap
+/// [`crate::js::trim`]) — `slice` counts UTF-16 code units, so the cap
 /// is applied on the UTF-16 form (a surrogate pair cut in half decodes to
 /// U+FFFD here, where V8 would keep a lone surrogate).
 pub fn reported_string(v: &Value) -> Option<String> {
@@ -723,100 +712,6 @@ pub fn parse_uplink_telemetry(raw: &Value) -> Option<UplinkBlock> {
 /// `MODEM_TELEMETRY_STALE_MS` (`config-sync.ts:503`): six stable CSQ cycles.
 pub const MODEM_TELEMETRY_STALE_MS: i64 = 180_000;
 
-/// Days since 1970-01-01 for a proleptic-Gregorian civil date (Howard
-/// Hinnant's `days_from_civil`).
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m as i64 + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// `Date.parse` for the ISO-8601 forms the daemon and the agent write
-/// (`YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, `…:SS`, `…:SS.sss`, with `Z`, `±HH:MM`
-/// or no designator — the latter read as UTC for date-only and as UTC here
-/// too, where V8 would use local time; the daemon always writes `Z`). None
-/// where V8 answers NaN for these shapes; other `Date.parse` legacy formats
-/// (RFC 2822 etc.) are not supported and also answer None.
-pub fn js_date_parse_iso(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    let num = |from: usize, len: usize| -> Option<i64> {
-        let slice = b.get(from..from + len)?;
-        if !slice.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        std::str::from_utf8(slice).ok()?.parse().ok()
-    };
-    let year = num(0, 4)?;
-    if b.get(4) != Some(&b'-') {
-        return None;
-    }
-    let month = num(5, 2)? as u32;
-    if b.get(7) != Some(&b'-') {
-        return None;
-    }
-    let day = num(8, 2)? as u32;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let mut pos = 10;
-    let (mut hh, mut mm, mut ss, mut ms) = (0i64, 0i64, 0i64, 0i64);
-    if b.get(pos) == Some(&b'T') {
-        hh = num(pos + 1, 2)?;
-        if b.get(pos + 3) != Some(&b':') {
-            return None;
-        }
-        mm = num(pos + 4, 2)?;
-        pos += 6;
-        if b.get(pos) == Some(&b':') {
-            ss = num(pos + 1, 2)?;
-            pos += 3;
-            if b.get(pos) == Some(&b'.') {
-                let start = pos + 1;
-                let mut end = start;
-                while b.get(end).is_some_and(u8::is_ascii_digit) {
-                    end += 1;
-                }
-                if end == start {
-                    return None;
-                }
-                let frac = &s[start..end];
-                let frac3: String = frac.chars().chain("000".chars()).take(3).collect();
-                ms = frac3.parse().ok()?;
-                pos = end;
-            }
-        }
-        if hh > 24 || mm > 59 || ss > 59 || (hh == 24 && (mm > 0 || ss > 0 || ms > 0)) {
-            return None;
-        }
-    }
-    let mut offset_min = 0i64;
-    match b.get(pos) {
-        None => {}
-        Some(b'Z') if pos + 1 == b.len() => {}
-        Some(sign @ (b'+' | b'-')) => {
-            let oh = num(pos + 1, 2)?;
-            if b.get(pos + 3) != Some(&b':') {
-                return None;
-            }
-            let om = num(pos + 4, 2)?;
-            if pos + 6 != b.len() {
-                return None;
-            }
-            offset_min = oh * 60 + om;
-            if *sign == b'-' {
-                offset_min = -offset_min;
-            }
-        }
-        _ => return None,
-    }
-    let days = days_from_civil(year, month, day);
-    Some((days * 86_400 + hh * 3_600 + mm * 60 + ss) * 1_000 + ms - offset_min * 60_000)
-}
-
 /// The decision inside `readModemBias` (`config-sync.ts:505-538`) over the
 /// telemetry snapshot the caller already read (`None` = file absent /
 /// unreadable / unparseable, exactly `readModemTelemetry`'s null).
@@ -837,8 +732,8 @@ pub fn modem_bias_from_telemetry(telemetry: Option<&Value>, now: i64) -> ModemBi
     // `Date.parse(`${String(telemetry.timestamp ?? "")}`)`
     let stamped_ms = match get("timestamp") {
         None | Some(Value::Null) => None,
-        Some(Value::String(s)) => js_date_parse_iso(s),
-        Some(other) => js_date_parse_iso(&other.to_string()),
+        Some(Value::String(s)) => date_parse_ms(s),
+        Some(other) => date_parse_ms(&other.to_string()),
     };
     if stamped_ms.is_none_or(|t| now - t > MODEM_TELEMETRY_STALE_MS) {
         // A stale snapshot takes the reported-only blocks down with it.
@@ -893,10 +788,6 @@ pub struct ReportHints {
 /// advertises as `effective.agent.capabilities`; the cloud gates commands on
 /// them (`sms.read` = the `read_sms` command + `…/sms` result).
 pub const AGENT_CAPABILITIES: &[&str] = &["sms.read"];
-
-fn js_number_string(v: f64) -> String {
-    serde_json::to_string(&JsNumber(v)).expect("number")
-}
 
 /// `buildEffective` (`config-sync.ts:597`): what settings.json actually holds
 /// right now, with `gnssAntBias` / `cellular.apn` / `cameraMount` overridden
@@ -1044,8 +935,8 @@ pub fn effective_camera_mount(
             pending.insert(cam.stream_key.clone(), rot(desired));
         }
     }
-    let cameras: Map<String, Value> = js_object_key_order(cameras).into_iter().collect();
-    let pending: Map<String, Value> = js_object_key_order(pending).into_iter().collect();
+    let cameras: Map<String, Value> = object_key_order(cameras).into_iter().collect();
+    let pending: Map<String, Value> = object_key_order(pending).into_iter().collect();
     let mut out = Map::new();
     out.insert("cameras".into(), Value::Object(cameras));
     if !pending.is_empty() {
@@ -1087,6 +978,7 @@ pub struct DesiredSnapshot {
     /// The message's `rev` (0 when the backend predates Phase 2).
     pub rev: u64,
     /// The raw namespaces as they arrived, BEFORE the device's tolerant parse.
+    #[serde(serialize_with = "js::json_map::serialize")]
     pub raw: Map<String, Value>,
     /// The same message after `parseCloudConfig` — i.e. post-clamp.
     pub parsed: CloudConfig,
@@ -1270,7 +1162,7 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
                 c.stream_key,
                 c.desired_deg.degrees(),
                 c.in_force_deg
-                    .map(js_number_string)
+                    .map(number_to_string)
                     .unwrap_or_else(|| "?".into())
             )
         })
@@ -1441,7 +1333,11 @@ pub struct ReportInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_scope: Option<TelemetryScopeReport>,
     /// Locally-changed namespaces; only meaningful on an `origin: "local"` report.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js::json_map_opt::serialize"
+    )]
     pub changed: Option<Map<String, Value>>,
 }
 
@@ -1486,26 +1382,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn date_parse_iso_matches_v8_for_the_daemon_forms() {
+    fn date_parse_matches_v8_for_the_daemon_forms() {
+        // `readModemBias` now goes through the shared `js::date_parse` (WP3's
+        // V8-checked grammar); the daemon's `date -u +%Y-%m-%dT%H:%M:%SZ` forms:
         assert_eq!(
-            js_date_parse_iso("2026-08-06T12:00:00Z"),
+            date_parse_ms("2026-08-06T12:00:00Z"),
             Some(1_786_017_600_000)
         );
         assert_eq!(
-            js_date_parse_iso("2026-08-06T11:59:40Z"),
+            date_parse_ms("2026-08-06T11:59:40Z"),
             Some(1_786_017_580_000)
         );
         assert_eq!(
-            js_date_parse_iso("2026-08-06T11:00:00Z"),
+            date_parse_ms("2026-08-06T11:00:00Z"),
             Some(1_786_014_000_000)
         );
-        assert_eq!(js_date_parse_iso("1970-01-01T00:00:00.5Z"), Some(500));
-        assert_eq!(js_date_parse_iso("1970-01-01"), Some(0));
-        assert_eq!(js_date_parse_iso("1970-01-01T01:00:00+01:00"), Some(0));
-        assert_eq!(js_date_parse_iso(""), None);
-        assert_eq!(js_date_parse_iso("garbage"), None);
-        assert_eq!(js_date_parse_iso("2026-13-01"), None);
-        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+        assert_eq!(date_parse_ms("1970-01-01T00:00:00.5Z"), Some(500));
+        assert_eq!(date_parse_ms("1970-01-01"), Some(0));
+        assert_eq!(date_parse_ms("1970-01-01T01:00:00+01:00"), Some(0));
+        assert_eq!(date_parse_ms(""), None);
+        assert_eq!(date_parse_ms("garbage"), None);
+        assert_eq!(date_parse_ms("2026-13-01"), None);
+    }
+
+    #[test]
+    fn reported_string_cut_inside_a_surrogate_pair_is_fffd() {
+        // ACCEPTED DIVERGENCE (review-wp4 #5, evidence/accepted-divergences.md):
+        // node 24 `JSON.stringify(("a".repeat(63) + "👍").trim().slice(0, 64))`
+        // ends `…aaa\ud83d"` (a lone surrogate escape); Rust keeps valid UTF-8.
+        let got = reported_string(&Value::from(format!("{}👍", "a".repeat(63))));
+        assert_eq!(got, Some(format!("{}\u{fffd}", "a".repeat(63))));
     }
 
     #[test]

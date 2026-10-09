@@ -24,13 +24,20 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// A float that serializes the way `JSON.stringify` prints a JS number.
+/// A float that serializes the way `JSON.stringify` prints a JS number —
+/// bit-exact with V8 for every double ([`crate::js::number_to_string`];
+/// `fixtures/js/number-format.json`, 5 141 doubles dumped from node).
 ///
-/// `serde_json` would print `0.0` / `3000.0` for integral f64s; JS prints `0`
-/// / `3000`. Both parse back to the same number, but Appendix A asks for
-/// byte-identical payloads, so the integral case is emitted as an integer.
-/// Non-finite values are not representable in JSON (JS prints `null`); the
-/// collectors never produce them, and we serialize them as `null` to match.
+/// `serde_json` alone differs from JS in three bands: integral f64s print as
+/// `0.0` / `3000.0` (JS `0` / `3000`); integers in [2^53, 1e21) print in
+/// exponent form or with a `.0` (`1e20`, `9007199254740992.0`; JS
+/// `100000000000000000000`, `9007199254740992`); and fractions in
+/// [1e-6, 1e-5) print as `5e-6` (JS `0.000005`) — review-wp6 M2. So safe
+/// integers go out as `i64`, and every other finite value as the JS text via
+/// `RawValue` (verbatim in `to_string`/`to_writer`; `to_value` re-parses it,
+/// so a `Value` built from a `JsNumber` holds the same f64). Non-finite
+/// values are not representable in JSON (JS prints `null`); the collectors
+/// never produce them, and we serialize them as `null` to match.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
 pub struct JsNumber(pub f64);
 
@@ -46,14 +53,13 @@ impl Serialize for JsNumber {
         if !v.is_finite() {
             return s.serialize_none();
         }
-        // 2^53: above this an f64 cannot hold a non-integer anyway, and i64
-        // formatting would differ from JS's exponent form; stay on the float
-        // path (ryu and JS agree on the shortest repr there).
         if v.fract() == 0.0 && v.abs() < 9_007_199_254_740_992.0 {
-            s.serialize_i64(v as i64)
-        } else {
-            s.serialize_f64(v)
+            // exact, and `-0` → `0` like JS
+            return s.serialize_i64(v as i64);
         }
+        serde_json::value::RawValue::from_string(crate::js::number_to_string(v))
+            .map_err(serde::ser::Error::custom)?
+            .serialize(s)
     }
 }
 
@@ -145,7 +151,10 @@ pub struct ImuGroup {
 /// TS interface's declaration order. `sats_heard`, `snr_max` and `sky_state`
 /// are emitted by the collector (`gps.ts:273-278`) but NOT declared in the TS
 /// interface (it types `mapLatest` as `Record<string, unknown>`); they are
-/// part of the wire contract and so of this struct.
+/// part of the wire contract and so of this struct. (review-wp1 #9: the TS
+/// simulator, `agent/simulator.ts:100-109`, emits `lat, lon, alt, speed,
+/// course, satellites, fix_quality, …`; a Rust sim going through this struct
+/// uses the collector order instead — consumers parse `metrics` by key.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GpsGroup {
     /// GGA fix quality: 0 = none, 1 = GPS, 2 = DGPS. Always present while NMEA flows.
@@ -532,6 +541,27 @@ mod tests {
             "0.0042735"
         );
         assert_eq!(serde_json::to_string(&JsNumber(f64::NAN)).unwrap(), "null");
+        assert_eq!(serde_json::to_string(&JsNumber(-0.0)).unwrap(), "0");
+        // review-wp6 M2 bands (node: JSON.stringify([2**53,2**60,1e20,1e21,5e-6,1e-7]))
+        let p = |v: f64| serde_json::to_string(&JsNumber(v)).unwrap();
+        assert_eq!(p(9_007_199_254_740_992.0), "9007199254740992");
+        assert_eq!(p(2f64.powi(60)), "1152921504606847000");
+        assert_eq!(p(-2f64.powi(60)), "-1152921504606847000");
+        assert_eq!(p(1e20), "100000000000000000000");
+        assert_eq!(p(1e21), "1e+21");
+        assert_eq!(p(5e-6), "0.000005");
+        assert_eq!(p(1e-7), "1e-7");
+        // through a Value the same f64 survives
+        assert_eq!(
+            serde_json::to_value(JsNumber(0.1)).unwrap().as_f64(),
+            Some(0.1)
+        );
+        assert_eq!(
+            serde_json::to_value(JsNumber(2f64.powi(60)))
+                .unwrap()
+                .as_f64(),
+            Some(2f64.powi(60))
+        );
     }
 
     #[test]

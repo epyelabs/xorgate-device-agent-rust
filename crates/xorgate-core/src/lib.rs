@@ -34,7 +34,6 @@ pub mod config_report;
 pub mod hardware_block;
 pub mod imu;
 pub mod js;
-pub mod js_fmt;
 pub mod kvs_manifest;
 pub mod led;
 pub mod led_state;

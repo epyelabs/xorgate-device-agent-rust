@@ -797,7 +797,10 @@ pub struct ModemTelemetry {
     /// writes 1/0/null, and `readModemBias` (`config-sync.ts:513-514`) maps
     /// `1 | true` → true, `0 | false` → false, anything else → null. Kept as
     /// the raw value so WP4's port applies that rule itself.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
     pub gnss_ant_bias: Option<Value>,
     /// Modem PMU temperature in °C (AT+CPMUTEMP), or null/absent when never read.
     #[serde(

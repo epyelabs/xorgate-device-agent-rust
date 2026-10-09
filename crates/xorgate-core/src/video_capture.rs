@@ -18,8 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cameras::{js_trim, js_ws};
 use crate::hardware_block::EncoderToken;
+use crate::js::{is_js_whitespace as js_ws, trim as js_trim};
 use crate::pipeline_builder::{build_bridged_kvs_pipeline, build_record_encode_args};
 use crate::video_presets::VideoPreset;
 

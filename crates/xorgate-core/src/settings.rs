@@ -27,6 +27,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::js::object_key_order;
 use crate::orientation::{parse_imu_mount, ImuMount};
 use crate::round::js_math_round;
 use crate::telemetry::{js_num_opt, RunMode};
@@ -117,42 +118,6 @@ fn object(v: &Value) -> Option<std::borrow::Cow<'_, serde_json::Map<String, Valu
         Value::Array(_) => Some(std::borrow::Cow::Owned(serde_json::Map::new())),
         _ => None,
     }
-}
-
-/// Is `key` a JS "array index" property name (canonical decimal integer in
-/// `0..2^32-1`)? Those enumerate first, ascending, in `Object.entries` /
-/// `JSON.stringify`, ahead of string keys in insertion order.
-fn is_array_index_key(key: &str) -> Option<u64> {
-    let b = key.as_bytes();
-    if b.is_empty() || b.len() > 10 || !b.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    if b.len() > 1 && b[0] == b'0' {
-        return None;
-    }
-    let n: u64 = key.parse().ok()?;
-    (n < 4_294_967_295).then_some(n)
-}
-
-/// Re-order a map the way V8 enumerates object keys: array-index keys first
-/// in ascending numeric order, then the rest in insertion order. Applied to
-/// every operator-keyed map (`recording.video.cameras`, `cameraMount.cameras`)
-/// so the serialised file matches `JSON.stringify` byte for byte.
-pub fn js_object_key_order<V>(map: IndexMap<String, V>) -> IndexMap<String, V> {
-    let mut indexed: Vec<(u64, String, V)> = Vec::new();
-    let mut named: Vec<(String, V)> = Vec::new();
-    for (k, v) in map {
-        match is_array_index_key(&k) {
-            Some(n) => indexed.push((n, k, v)),
-            None => named.push((k, v)),
-        }
-    }
-    indexed.sort_by_key(|(n, _, _)| *n);
-    indexed
-        .into_iter()
-        .map(|(_, k, v)| (k, v))
-        .chain(named)
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +350,7 @@ pub fn parse_recording_settings(v: &Value) -> Option<RecordingSettings> {
                 })
                 .collect();
             if !c.is_empty() {
-                o.cameras = Some(js_object_key_order(c));
+                o.cameras = Some(object_key_order(c));
             }
         }
         if o != VideoSettings::default() {
@@ -639,7 +604,7 @@ pub fn parse_camera_mount_settings(v: &Value) -> Option<CameraMountSettings> {
         out.insert(key.clone(), CameraMountEntry { rotation_deg: deg });
     }
     Some(CameraMountSettings {
-        cameras: Some(js_object_key_order(out)),
+        cameras: Some(object_key_order(out)),
     })
 }
 
@@ -794,6 +759,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn serde_json_is_stricter_than_json_parse() {
+        // ACCEPTED (review-wp1 #7, evidence/accepted-divergences.md): JSON.parse
+        // reads `1e400` as Infinity (the leaf is then dropped by `isFinite`);
+        // serde_json rejects the whole text → `invalid` (both refuse to write).
+        assert_eq!(
+            parse_settings_text(r#"{"recording":{"retention":{"maxBytes":1e400}}}"#),
+            Err(SettingsReadFailure::Invalid)
+        );
+    }
+
+    #[test]
     fn regex_ports() {
         assert!(apn_re_test(""));
         assert!(apn_re_test("sp.mb.com"));
@@ -824,7 +800,7 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-        let ordered = js_object_key_order(m);
+        let ordered = object_key_order(m);
         let keys: Vec<&str> = ordered.keys().map(String::as_str).collect();
         assert_eq!(keys, ["2", "10", "cam0", "01", "4294967295"]);
     }

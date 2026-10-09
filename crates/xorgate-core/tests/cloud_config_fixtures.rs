@@ -131,8 +131,9 @@ fn cloud_config_suites() {
                         "{ctx}: changed"
                     );
                     if out.changed {
-                        let doc = out.document.as_ref().unwrap();
-                        let bytes = serde_json::to_string(doc).unwrap();
+                        // The writer's bytes (`document_json`: JS number
+                        // printing — integration review M1).
+                        let bytes = out.document_json().unwrap();
                         // Byte-identical to what the TS `saveSettings` wrote.
                         assert_eq!(
                             Value::String(bytes.clone()),
@@ -177,7 +178,7 @@ fn cloud_config_suites() {
             }
         }
     }
-    assert_eq!(f.cases.len(), 45);
-    assert_eq!(parse_steps, 57);
-    assert_eq!(apply_steps, 47);
+    assert_eq!(f.cases.len(), 46);
+    assert_eq!(parse_steps, 59);
+    assert_eq!(apply_steps, 48);
 }
