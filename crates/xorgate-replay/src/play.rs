@@ -333,6 +333,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 fn open_pty() -> Result<(File, OwnedFd, PathBuf)> {
     use nix::sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg};
     let pty = nix::pty::openpty(None, None).context("openpty")?;
+    // openpty fds are NOT close-on-exec: without this every agent would
+    // inherit both ptys (and `pty_is_open` would always say yes).
+    for fd in [&pty.master, &pty.slave] {
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC))?;
+    }
     let mut t = tcgetattr(&pty.slave).context("tcgetattr")?;
     cfmakeraw(&mut t);
     tcsetattr(&pty.slave, SetArg::TCSANOW, &t).context("tcsetattr")?;

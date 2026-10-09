@@ -12,6 +12,7 @@
 mod diff;
 mod inspect;
 mod play;
+mod record;
 mod rewrite;
 mod synth;
 mod tolerances;
@@ -58,7 +59,13 @@ enum Cmd {
         fixtures: PathBuf,
         #[arg(long)]
         list: bool,
+        /// Splice onto a recorded base tape (`record-shared`): its LTE /
+        /// power / clock records replace the synthetic ones.
+        #[arg(long)]
+        base: Option<PathBuf>,
     },
+    /// Record the SHARED inputs only (LTE file, vcgencmd, dt) on the bench.
+    RecordShared(record::RecordArgs),
     /// Rig player: run two agents against one broker on a tape (in the rig).
     Play(Box<play::PlayArgs>),
     /// Diff a run dir (`<run>/a`, `<run>/b`) under the tolerance table.
@@ -90,6 +97,7 @@ fn main() -> Result<()> {
             duration_s,
             fixtures,
             list,
+            base,
         } => {
             if list || scenario.is_none() {
                 for (name, dur, tracks, desc) in synth::SCENARIOS {
@@ -99,7 +107,11 @@ fn main() -> Result<()> {
             }
             let scenario = scenario.unwrap_or_default();
             let out = out.unwrap_or_else(|| PathBuf::from(format!("{scenario}.ndjson.gz")));
-            let tape = synth::build(&scenario, duration_s, &fixtures)?;
+            let base = match base {
+                Some(p) => Some(Tape::read(&p).with_context(|| format!("reading {}", p.display()))?),
+                None => None,
+            };
+            let tape = synth::build_with(&scenario, duration_s, &fixtures, base.as_ref())?;
             let gz = out.extension().is_some_and(|e| e == "gz");
             tape.write(&out, gz)
                 .with_context(|| format!("writing {}", out.display()))?;
@@ -110,6 +122,7 @@ fn main() -> Result<()> {
                 tape.duration_ms() as f64 / 1000.0
             );
         }
+        Cmd::RecordShared(args) => record::run(args)?,
         Cmd::Play(args) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

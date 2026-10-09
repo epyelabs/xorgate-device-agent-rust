@@ -146,6 +146,17 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
     ("cli", 60, &["cli", "clock"], "one `set` edit"),
 ];
 
+thread_local! {
+    /// Start wall of the tape being built: [`SYNTH_START_WALL`], or the base
+    /// tape's when splicing (`--base`), so embedded NMEA/command/LTE times line
+    /// up with the meta `startWall` the player shifts from.
+    static W0: std::cell::Cell<i64> = const { std::cell::Cell::new(SYNTH_START_WALL) };
+}
+
+fn w0() -> i64 {
+    W0.with(|c| c.get())
+}
+
 /// Builder: events are pushed in any order and sorted (stably) by `t`.
 struct Builder {
     recs: Vec<TapeRecord>,
@@ -157,7 +168,7 @@ impl Builder {
         if t <= self.dur_ms {
             self.recs.push(TapeRecord {
                 t,
-                w: SYNTH_START_WALL + t as i64,
+                w: w0() + t as i64,
                 ev,
             });
         }
@@ -165,7 +176,7 @@ impl Builder {
 }
 
 fn wall_secs(t: u64) -> i64 {
-    (SYNTH_START_WALL + t as i64).div_euclid(1000)
+    (w0() + t as i64).div_euclid(1000)
 }
 
 fn hms(t: u64) -> String {
@@ -314,12 +325,41 @@ fn config_doc(rev: i64, step: u32, enabled_mount: bool) -> String {
 }
 
 fn command(id: &str, cmd: &str, t: u64, ttl_ms: i64) -> String {
-    let ts = SYNTH_START_WALL + t as i64;
+    let ts = w0() + t as i64;
     json!({"v": 1, "requestId": id, "command": cmd, "ts": ts, "expiresAt": ts + ttl_ms}).to_string()
 }
 
 /// Build a tape for `scenario` (`duration_s` overrides the default).
 pub fn build(scenario: &str, duration_s: Option<u64>, fixtures: &Path) -> Result<Tape> {
+    build_with(scenario, duration_s, fixtures, None)
+}
+
+/// Kinds a `--base` tape (record-shared) contributes; the synthetic tracks
+/// that produce them are dropped.
+const BASE_KINDS: &[&str] = &["lte_file", "exec", "dt", "clock", "proc"];
+
+/// [`build`] spliced onto a recorded base tape: the base's real
+/// `lte_file`/`exec`/`dt`/`clock` records (aligned at t = 0, cut to the
+/// duration) replace the synthetic ones; NMEA/IMU/MQTT/CLI stay synthetic and
+/// are generated on the base's start wall.
+pub fn build_with(
+    scenario: &str,
+    duration_s: Option<u64>,
+    fixtures: &Path,
+    base: Option<&Tape>,
+) -> Result<Tape> {
+    W0.with(|c| c.set(base.map(|b| b.meta.start_wall).unwrap_or(SYNTH_START_WALL)));
+    let res = build_inner(scenario, duration_s, fixtures, base);
+    W0.with(|c| c.set(SYNTH_START_WALL));
+    res
+}
+
+fn build_inner(
+    scenario: &str,
+    duration_s: Option<u64>,
+    fixtures: &Path,
+    base: Option<&Tape>,
+) -> Result<Tape> {
     let Some(&(name, default_s, tracks, desc)) = SCENARIOS.iter().find(|s| s.0 == scenario) else {
         bail!(
             "unknown scenario {scenario:?}; known: {}",
@@ -331,7 +371,8 @@ pub fn build(scenario: &str, duration_s: Option<u64>, fixtures: &Path) -> Result
         recs: Vec::new(),
         dur_ms,
     };
-    let has = |t: &str| tracks.contains(&t);
+    let base_owned = ["lte", "lte-fixtures", "exec", "dt", "clock"];
+    let has = |t: &str| tracks.contains(&t) && !(base.is_some() && base_owned.contains(&t));
     let topic = |s: &str| format!("xorgate/devices/{SYNTH_DEVICE_ID}/{s}");
     let pct = |p: u64| dur_ms * p / 100 / 1000 * 1000;
 
@@ -604,8 +645,8 @@ pub fn build(scenario: &str, duration_s: Option<u64>, fixtures: &Path) -> Result
             let t3 = at + 15_000;
             let mut exp: Value =
                 serde_json::from_str(&command("synth-expired", "refresh", t3, 60_000))?;
-            exp["ts"] = json!(SYNTH_START_WALL + t3 as i64 - 180_000);
-            exp["expiresAt"] = json!(SYNTH_START_WALL + t3 as i64 - 120_000);
+            exp["ts"] = json!(w0() + t3 as i64 - 180_000);
+            exp["expiresAt"] = json!(w0() + t3 as i64 - 120_000);
             b.push(
                 t3,
                 TapeEvent::mqtt_in(&topic("command"), exp.to_string().as_bytes(), false, 1),
@@ -666,7 +707,7 @@ pub fn build(scenario: &str, duration_s: Option<u64>, fixtures: &Path) -> Result
             b.push(
                 t,
                 TapeEvent::Clock {
-                    wall: SYNTH_START_WALL + t as i64,
+                    wall: w0() + t as i64,
                     mono: 1_000_000 + t,
                 },
             );
@@ -674,11 +715,25 @@ pub fn build(scenario: &str, duration_s: Option<u64>, fixtures: &Path) -> Result
         }
     }
 
+    if let Some(base) = base {
+        for r in &base.records {
+            if r.t <= dur_ms && BASE_KINDS.contains(&r.ev.kind()) {
+                b.recs.push(r.clone());
+            }
+        }
+    }
     b.recs.sort_by_key(|r| r.t);
-    let mut meta = TapeMeta::new(SYNTH_DEVICE_ID, "synth", SYNTH_START_WALL);
+    let mut meta = TapeMeta::new(SYNTH_DEVICE_ID, "synth", w0());
     meta.kvs = KvsInfo { channels: vec![] };
-    meta.source = Some(format!("synth:{name}"));
-    meta.synthetic = tracks.iter().map(|t| t.to_string()).collect();
+    meta.source = Some(match base {
+        Some(b) => format!("{}+synth:{name}", b.meta.source.as_deref().unwrap_or("bench")),
+        None => format!("synth:{name}"),
+    });
+    meta.synthetic = tracks
+        .iter()
+        .filter(|t| base.is_none() || !base_owned.contains(t))
+        .map(|t| t.to_string())
+        .collect();
     meta.env = TapeMeta::redacted_env(&|k| match k {
         "MODE" => Some("real".into()),
         _ => None,
@@ -785,6 +840,25 @@ mod tests {
         let s = crate::inspect::summarize(&tape);
         assert_eq!(s.out_of_order, 0);
         assert!(s.wall_steps.is_empty());
+    }
+
+    #[test]
+    fn splice_keeps_base_power_and_lte_and_synthesizes_the_rest() {
+        let mut base = build("lte-seq", Some(30), &fixtures()).unwrap();
+        base.meta.start_wall = 1_791_000_000_000;
+        base.meta.source = Some("record-shared".into());
+        let t = build_with("smoke", Some(30), &fixtures(), Some(&base)).unwrap();
+        assert_eq!(t.meta.start_wall, 1_791_000_000_000);
+        assert_eq!(t.meta.source.as_deref(), Some("record-shared+synth:smoke"));
+        assert!(!t.meta.synthetic.contains(&"lte".to_string()));
+        let lte: Vec<_> = t.records.iter().filter(|r| r.ev.kind() == "lte_file").collect();
+        let base_lte: Vec<_> = base.records.iter().filter(|r| r.ev.kind() == "lte_file").collect();
+        assert_eq!(lte, base_lte);
+        assert!(t.records.iter().any(|r| r.ev.kind() == "nmea"));
+        // Synthetic records are stamped on the base's wall clock.
+        assert!(t.records.iter().all(|r| r.w >= 1_791_000_000_000 || BASE_KINDS.contains(&r.ev.kind())));
+        // And the thread-local is restored.
+        assert_eq!(build("smoke", Some(5), &fixtures()).unwrap().meta.start_wall, SYNTH_START_WALL);
     }
 
     #[test]
