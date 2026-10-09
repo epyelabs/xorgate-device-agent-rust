@@ -278,7 +278,8 @@ impl Effects {
 
     /// `runSmsRead` (`worker.ts:924-945`): sweep (O4 / fixture), log + event,
     /// publish QoS 1 on `…/sms` once (mqtt.js-style offline queueing lives
-    /// in `MqttHandle`, WP1 follow-up — no retry here).
+    /// in the client, `xorgate_cloud::mqtt`, WP1 follow-up — no retry here;
+    /// the `NotConnected` arm below is unreachable since then).
     fn run_sms_read(&self, source: SmsSource, request_id: &str, limit: u32) {
         let sweep = sms_sweep(source, self.ctx.now_ms());
         let payload = build_sms_payload(

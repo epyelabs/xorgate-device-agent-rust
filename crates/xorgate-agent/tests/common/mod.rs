@@ -17,7 +17,7 @@ use xorgate_agent::ctx::{
     TelemetrySource,
 };
 use xorgate_agent::env::{paths, AgentEnv};
-use xorgate_agent::mqtt_plane::{AckOutcome, MqttTransport, QoS};
+use xorgate_agent::mqtt_plane::{AckOutcome, MqttTransport, PublishDone, QoS};
 use xorgate_agent::state::StateHandle;
 use xorgate_cloud::mqtt::ConnectionState as LinkState;
 use xorgate_core::agent_config::{load_config, ConfigInputs};
@@ -131,6 +131,9 @@ pub struct FakeLink {
     pub publishes: Mutex<Vec<(String, Vec<u8>, QoS)>>,
     /// What `publish_acked` resolves to; `None` = never (the caller's timeout wins).
     pub ack: Mutex<Option<AckOutcome>>,
+    /// `Some`: `publish_notify` callbacks are HELD here (like a real client's
+    /// offline queue) until the test fires them; `None`: they fire at once.
+    pub held: Mutex<Option<Vec<tokio::sync::oneshot::Sender<PublishDone>>>>,
 }
 
 impl FakeLink {
@@ -141,6 +144,7 @@ impl FakeLink {
             state,
             publishes: Mutex::new(vec![]),
             ack: Mutex::new(Some(AckOutcome::Acked)),
+            held: Mutex::new(None),
         })
     }
 
@@ -213,6 +217,25 @@ impl MqttTransport for FakeLink {
     fn subscribe(&self, topic: &str, _qos: QoS) -> Result<(), String> {
         push(&self.timeline, format!("subscribe {}", short(topic)));
         Ok(())
+    }
+
+    fn publish_notify(
+        &self,
+        topic: &str,
+        payload: Vec<u8>,
+        qos: QoS,
+        retain: bool,
+    ) -> BoxFut<'static, PublishDone> {
+        let r = self.publish(topic, payload, qos, retain);
+        let mut held = self.held.lock().unwrap();
+        match held.as_mut() {
+            Some(q) => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                q.push(tx);
+                Box::pin(async move { rx.await.ok().flatten() })
+            }
+            None => Box::pin(async move { Some(r) }),
+        }
     }
 
     fn connection_watch(&self) -> watch::Receiver<LinkState> {
@@ -294,6 +317,10 @@ impl PhaseHooks for FakeHooks {
     }
     fn recording_stop(&self) {
         push(&self.0, "hooks.recording_stop");
+    }
+    fn final_recording_status(&self) -> Option<xorgate_core::telemetry::RecordingStatus> {
+        push(&self.0, "hooks.final_recording_status");
+        None
     }
 }
 
