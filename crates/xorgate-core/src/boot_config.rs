@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::hardware_block::DeviceHardwareBlock;
 use crate::telemetry::js_num_opt;
-use crate::types::CameraRotationDeg;
 
 /// `BOOT_CONFIG_CANDIDATES` (`boot-config.ts:46`): Bookworm first, then the
 /// pre-Bookworm path.
@@ -55,11 +54,28 @@ pub struct OverlayLine {
     pub text: String,
 }
 
-/// JS `String.prototype.trim()` strips Unicode whitespace + line terminators;
-/// Rust's `str::trim` strips Unicode `White_Space`, which is the same set for
-/// everything a config.txt can carry (space, tab, CR, NBSP, BOM).
-fn js_trim(s: &str) -> &str {
-    s.trim()
+/// JS `String.prototype.trim()` exactly: ECMA-262 WhiteSpace (TAB, VT, FF,
+/// SP, NBSP, ZWNBSP/BOM U+FEFF, every `Zs`) + LineTerminator (LF, CR, LS, PS).
+/// NOT Rust's `str::trim`, which keeps U+FEFF and also strips U+0085 (NEL).
+pub(crate) fn js_trim(s: &str) -> &str {
+    s.trim_matches(is_js_whitespace)
+}
+
+fn is_js_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{9}'..='\u{d}'
+            | ' '
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    )
 }
 
 /// `parseOverlayLines` (`boot-config.ts:91`): every `dtoverlay=` line in the
@@ -230,27 +246,14 @@ pub fn dt_rotation_for_camera(
 
 // --- the reconciler's types + the one pure resolver ------------------------
 
-/// `CameraMountVerdict` (`boot-config.ts:219-233`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CameraMountVerdict {
-    /// In force right now: the running kernel booted with the desired rotation.
-    Applied,
-    /// config.txt now holds the desired rotation; it applies on the next boot.
-    PendingReboot,
-    /// config.txt holds it, but the rotation in force could not be read back.
-    Unconfirmed,
-    /// The device has no camera by that stream key.
-    UnknownCamera,
-    /// No `dtoverlay=` line configures that camera — nothing to edit.
-    NoOverlay,
-    /// That sensor's overlay has no `rotation` parameter (or the probe failed).
-    Unsupported,
-    /// The privileged write did not happen (helper/sudoers missing, or it failed).
-    WriteFailed,
-}
+/// The reconciler's verdict/state types (`boot-config.ts:219-253`) have ONE
+/// definition in the crate: `crate::types` (WP1, 7-verdict since the WP1
+/// review fixes). Re-exported here so boot-config callers keep one path.
+pub use crate::types::{CameraMountCameraState, CameraMountState, CameraMountVerdict};
 
 impl CameraMountVerdict {
+    /// The wire string (= the serde name), used where the TS interpolates the
+    /// verdict into a status detail (`config-sync.ts:893`).
     pub fn as_str(self) -> &'static str {
         match self {
             CameraMountVerdict::Applied => "applied",
@@ -262,36 +265,6 @@ impl CameraMountVerdict {
             CameraMountVerdict::WriteFailed => "write-failed",
         }
     }
-}
-
-/// `CameraMountCameraState` (`boot-config.ts:235`). Key order = the TS
-/// interface (= the reconciler's object literals, `base` first).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CameraMountCameraState {
-    pub stream_key: String,
-    pub desired_deg: CameraRotationDeg,
-    /// Rotation the running kernel booted with; null = could not read it.
-    #[serde(with = "js_num_opt")]
-    pub in_force_deg: Option<f64>,
-    /// Rotation config.txt now holds; null = no line (or lines disagree).
-    #[serde(with = "js_num_opt")]
-    pub boot_deg: Option<f64>,
-    pub verdict: CameraMountVerdict,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-/// `CameraMountState` (`boot-config.ts:246`): the reconciler's last pass.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CameraMountState {
-    pub at: i64,
-    pub cameras: Vec<CameraMountCameraState>,
-    /// Any camera whose desired rotation is written but not yet in force.
-    pub reboot_required: bool,
-    /// True when the boot config changed on THIS pass (the write actually ran).
-    pub wrote: bool,
 }
 
 /// `resolveCamToken` (`boot-config.ts:304`): which `camN` token in config.txt
@@ -329,6 +302,13 @@ mod tests {
         assert!(js_number("nan").is_nan());
         assert!(js_number("1_80").is_nan());
         assert_eq!(js_number("Infinity"), f64::INFINITY);
+    }
+
+    #[test]
+    fn js_trim_is_ecmascript_trim() {
+        assert_eq!(js_trim("\u{feff} a \u{3000}\n"), "a");
+        assert_eq!(js_trim("\u{85}a\u{85}"), "\u{85}a\u{85}");
+        assert_eq!(js_trim("\u{180e}a"), "\u{180e}a");
     }
 
     #[test]
