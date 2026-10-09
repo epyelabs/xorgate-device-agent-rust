@@ -15,8 +15,9 @@
 //! whole `class ConfigSync` (`:1211-1651`: debounce, heartbeat, settle /
 //! modem-arrival / APN watches, the settings.json fingerprint watcher and the
 //! publish). Two of that class's decisions are pure kernels and live here
-//! with line references: [`rebaseline_after_write`] (`:236-263`) and
-//! [`local_report_changes`] (`:422-434`).
+//! with line references: [`rebaseline_after_write`] (`:1335-1353`) and
+//! [`local_report_changes`] (`:1522-1534`); the class's `persist` merge
+//! (`:1277-1280`) is [`ConfigSyncState::merge`].
 //!
 //! `CONFIG_APPLY_CLASSES` / `CONFIG_NAMESPACE_KEYS` / `ApplyClass` have ONE
 //! definition, in [`crate::config_namespaces`]; they are re-exported here.
@@ -25,7 +26,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::boot_config::{CameraMountState, CameraMountVerdict};
+use crate::boot_config::{js_trim, CameraMountState, CameraMountVerdict};
 use crate::build_info::BuildInfo;
 use crate::cloud_config::CloudConfig;
 use crate::settings::{AgentSettings, CameraMountSettings, CellularSettings};
@@ -159,26 +160,187 @@ impl ConfigReport {
 // --- sync state -------------------------------------------------------------
 
 /// `ConfigSyncState` (`config-sync.ts:157`): the `config-sync.json` byte shape
-/// `{lastAppliedRev, lastReportTs, settingsHash?, namespaces?, localPending?}`.
-/// Lives in its OWN file, never inside settings.json (the allowlist rewriter
-/// would destroy it).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// `{lastAppliedRev, lastReportTs, settingsHash?, namespaces?, localPending?}`
+/// (`atomicWriteJson` = compact `JSON.stringify`). Lives in its OWN file,
+/// never inside settings.json (the allowlist rewriter would destroy it).
+///
+/// Key order is a JS object's: the TS only ever builds this with object
+/// literals and `{ ...state, ...patch }` spreads, so an optional key sits
+/// where it was FIRST set (`ensureConfigSyncBaseline` writes `namespaces`
+/// before `settingsHash`; `loadConfigSyncState` reads them back in the
+/// opposite order). `order` records that insertion order so the written bytes
+/// match the TS for the same history; [`ConfigSyncState::merge`] is the spread.
+/// `localPending: false` is a value, not an absence — the class persists it.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ConfigSyncState {
     /// Highest desired `rev` this device has applied. 0 = never received one.
     pub last_applied_rev: u64,
     /// Epoch ms of the last report we published (diagnostics only).
     pub last_report_ts: i64,
     /// sha256 of settings.json as of the last time we looked at it (Phase 4).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_hash: Option<String>,
     /// The synced namespaces as the CLOUD is believed to know them. Absent =
     /// "never baselined" — must be INITIALISED from the file, never read as `{}`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespaces: Option<Map<String, Value>>,
     /// A detected local change whose report has not gone out on a live link yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_pending: Option<bool>,
+    /// Insertion order of the optional keys (JS object key order).
+    order: Vec<SyncKey>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncKey {
+    SettingsHash,
+    Namespaces,
+    LocalPending,
+}
+
+impl SyncKey {
+    const ALL: [SyncKey; 3] = [
+        SyncKey::SettingsHash,
+        SyncKey::Namespaces,
+        SyncKey::LocalPending,
+    ];
+    fn name(self) -> &'static str {
+        match self {
+            SyncKey::SettingsHash => "settingsHash",
+            SyncKey::Namespaces => "namespaces",
+            SyncKey::LocalPending => "localPending",
+        }
+    }
+}
+
+/// One key of a `Partial<ConfigSyncState>` patch (`persist(patch)`,
+/// `config-sync.ts:1277`), in the patch literal's key order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SyncPatch {
+    LastAppliedRev(u64),
+    LastReportTs(i64),
+    SettingsHash(String),
+    Namespaces(Map<String, Value>),
+    LocalPending(bool),
+}
+
+impl ConfigSyncState {
+    fn is_set(&self, k: SyncKey) -> bool {
+        match k {
+            SyncKey::SettingsHash => self.settings_hash.is_some(),
+            SyncKey::Namespaces => self.namespaces.is_some(),
+            SyncKey::LocalPending => self.local_pending.is_some(),
+        }
+    }
+
+    fn touch(&mut self, k: SyncKey) {
+        if !self.order.contains(&k) {
+            self.order.push(k);
+        }
+    }
+
+    /// `this.state = { ...this.state, ...patch }` (`config-sync.ts:1278`): an
+    /// existing key keeps its position, a new one is appended in patch order.
+    pub fn merge(&mut self, patch: impl IntoIterator<Item = SyncPatch>) {
+        for p in patch {
+            match p {
+                SyncPatch::LastAppliedRev(v) => self.last_applied_rev = v,
+                SyncPatch::LastReportTs(v) => self.last_report_ts = v,
+                SyncPatch::SettingsHash(v) => {
+                    self.touch(SyncKey::SettingsHash);
+                    self.settings_hash = Some(v);
+                }
+                SyncPatch::Namespaces(v) => {
+                    self.touch(SyncKey::Namespaces);
+                    self.namespaces = Some(v);
+                }
+                SyncPatch::LocalPending(v) => {
+                    self.touch(SyncKey::LocalPending);
+                    self.local_pending = Some(v);
+                }
+            }
+        }
+    }
+
+    /// Optional keys to write: recorded order first, then any field set
+    /// directly (bypassing [`Self::merge`]) in the interface's order.
+    fn key_order(&self) -> Vec<SyncKey> {
+        let mut keys: Vec<SyncKey> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|k| self.is_set(*k))
+            .collect();
+        for k in SyncKey::ALL {
+            if self.is_set(k) && !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+        keys
+    }
+
+    /// The exact `config-sync.json` bytes `saveConfigSyncState` writes.
+    pub fn to_file_string(&self) -> String {
+        serde_json::to_string(self).expect("ConfigSyncState serialises")
+    }
+}
+
+impl Serialize for ConfigSyncState {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let keys = self.key_order();
+        let mut m = s.serialize_map(Some(2 + keys.len()))?;
+        m.serialize_entry("lastAppliedRev", &self.last_applied_rev)?;
+        m.serialize_entry("lastReportTs", &self.last_report_ts)?;
+        for k in keys {
+            match k {
+                SyncKey::SettingsHash => m.serialize_entry(k.name(), &self.settings_hash)?,
+                SyncKey::Namespaces => m.serialize_entry(k.name(), &self.namespaces)?,
+                SyncKey::LocalPending => m.serialize_entry(k.name(), &self.local_pending)?,
+            }
+        }
+        m.end()
+    }
+}
+
+/// Strict typed read of an in-memory state document (key order recorded).
+/// The device's tolerant FILE read is [`parse_config_sync_state`].
+impl<'de> Deserialize<'de> for ConfigSyncState {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let src = Map::<String, Value>::deserialize(d)?;
+        let mut out = ConfigSyncState {
+            last_applied_rev: match src.get("lastAppliedRev") {
+                None => 0,
+                Some(v) => v
+                    .as_u64()
+                    .ok_or_else(|| D::Error::custom("lastAppliedRev"))?,
+            },
+            last_report_ts: match src.get("lastReportTs") {
+                None => 0,
+                Some(v) => v.as_i64().ok_or_else(|| D::Error::custom("lastReportTs"))?,
+            },
+            ..Default::default()
+        };
+        for (k, v) in &src {
+            let p = match k.as_str() {
+                "settingsHash" => SyncPatch::SettingsHash(
+                    v.as_str()
+                        .ok_or_else(|| D::Error::custom("settingsHash"))?
+                        .to_string(),
+                ),
+                "namespaces" => SyncPatch::Namespaces(
+                    v.as_object()
+                        .ok_or_else(|| D::Error::custom("namespaces"))?
+                        .clone(),
+                ),
+                "localPending" => SyncPatch::LocalPending(
+                    v.as_bool()
+                        .ok_or_else(|| D::Error::custom("localPending"))?,
+                ),
+                _ => continue,
+            };
+            out.merge([p]);
+        }
+        Ok(out)
+    }
 }
 
 /// `Number.isFinite(v) && v > 0 ? Math.floor(v) : 0` (`config-sync.ts:210-211`).
@@ -207,17 +369,17 @@ pub fn parse_config_sync_state(text: Option<&str>) -> ConfigSyncState {
         last_report_ts: positive_floor(src.get("lastReportTs")) as i64,
         ..Default::default()
     };
-    // Phase 4 fields, each independently optional.
+    // Phase 4 fields, each independently optional, set in the TS's order.
     if let Some(h) = src.get("settingsHash").and_then(Value::as_str) {
         if !h.is_empty() {
-            out.settings_hash = Some(h.to_string());
+            out.merge([SyncPatch::SettingsHash(h.to_string())]);
         }
     }
     if let Some(Value::Object(ns)) = src.get("namespaces") {
-        out.namespaces = Some(ns.clone());
+        out.merge([SyncPatch::Namespaces(ns.clone())]);
     }
     if src.get("localPending") == Some(&Value::Bool(true)) {
-        out.local_pending = Some(true);
+        out.merge([SyncPatch::LocalPending(true)]);
     }
     out
 }
@@ -284,19 +446,20 @@ pub fn ensure_config_sync_baseline(
     if state.namespaces.is_some() {
         return (state, false);
     }
-    let next = ConfigSyncState {
-        namespaces: Some(namespaces_of(settings)),
-        settings_hash: Some(settings_hash.to_string()),
-        ..state
-    };
+    // `{ ...state, namespaces, settingsHash }`
+    let mut next = state;
+    next.merge([
+        SyncPatch::Namespaces(namespaces_of(settings)),
+        SyncPatch::SettingsHash(settings_hash.to_string()),
+    ]);
     (next, true)
 }
 
 /// The re-baseline inside `ConfigSync.noteSettingsWritten`
-/// (`config-sync.ts:236-263`): after a write the WORKER performed, adopt the
+/// (`config-sync.ts:1335-1353`): after a write the WORKER performed, adopt the
 /// file's value for exactly the namespaces that write could have touched,
 /// keeping any other namespace's still-unreported local change. The caller
-/// has already refused an unreadable/invalid read (`:242`), so `current` is
+/// has already refused an unreadable/invalid read (`:1341`), so `current` is
 /// `namespacesOf(settings)` (or `{}` for an absent file).
 pub fn rebaseline_after_write(
     baseline: Option<&Map<String, Value>>,
@@ -321,7 +484,7 @@ pub fn rebaseline_after_write(
 }
 
 /// The local-diff decision inside `ConfigSync.publishReport`
-/// (`config-sync.ts:422-434`): computed at PUBLISH time so several edits
+/// (`config-sync.ts:1522-1534`): computed at PUBLISH time so several edits
 /// between two reports collapse into one statement. `None` = the edit was
 /// reverted (or overwritten by a cloud apply) before the report went out —
 /// the caller then downgrades the origin to `boot` and clears `localPending`.
@@ -413,7 +576,8 @@ pub const MAX_REPORTED_STRING: usize = 64;
 
 /// `reportedString` (`config-sync.ts:383`): a non-empty, length-capped
 /// string, or None. Control chars (< 0x20, 0x7f) are dropped per code point,
-/// then `trim().slice(0, 64)` — `slice` counts UTF-16 code units, so the cap
+/// then `trim().slice(0, 64)` (ECMAScript `trim`, see
+/// [`crate::boot_config`]'s `js_trim`) — `slice` counts UTF-16 code units, so the cap
 /// is applied on the UTF-16 form (a surrogate pair cut in half decodes to
 /// U+FFFD here, where V8 would keep a lone surrogate).
 pub fn reported_string(v: &Value) -> Option<String> {
@@ -422,7 +586,10 @@ pub fn reported_string(v: &Value) -> Option<String> {
         .chars()
         .filter(|c| (*c as u32) >= 0x20 && (*c as u32) != 0x7f)
         .collect();
-    let units: Vec<u16> = clean.trim().encode_utf16().take(MAX_REPORTED_STRING).collect();
+    let units: Vec<u16> = js_trim(&clean)
+        .encode_utf16()
+        .take(MAX_REPORTED_STRING)
+        .collect();
     let out = String::from_utf16_lossy(&units);
     (!out.is_empty()).then_some(out)
 }
@@ -836,7 +1003,10 @@ pub fn effective_camera_mount(
     };
     let rot = |deg: f64| {
         let mut m = Map::new();
-        m.insert("rotationDeg".into(), serde_json::to_value(JsNumber(deg)).unwrap());
+        m.insert(
+            "rotationDeg".into(),
+            serde_json::to_value(JsNumber(deg)).unwrap(),
+        );
         Value::Object(m)
     };
     let mut cameras = Map::new();
@@ -877,8 +1047,7 @@ pub fn deep_equal(a: &Value, b: &Value) -> bool {
         }
         (Value::Object(x), Value::Object(y)) => {
             x.len() == y.len()
-                && x
-                    .iter()
+                && x.iter()
                     .all(|(k, v)| y.get(k).is_some_and(|w| deep_equal(v, w)))
         }
         _ => a == b,
@@ -967,12 +1136,19 @@ pub fn build_status(
             Some(None) => {
                 out.insert(
                     key_s,
-                    NamespaceStatus::rejected(at, format!("{key}: no valid fields in the delivered value")),
+                    NamespaceStatus::rejected(
+                        at,
+                        format!("{key}: no valid fields in the delivered value"),
+                    ),
                 );
                 continue;
             }
             None => {
-                let what = if *key == "gnssAntBias" { "boolean" } else { "object" };
+                let what = if *key == "gnssAntBias" {
+                    "boolean"
+                } else {
+                    "object"
+                };
                 out.insert(
                     key_s,
                     NamespaceStatus::rejected(at, format!("{key}: not a valid {what}")),
@@ -1000,7 +1176,10 @@ pub fn build_status(
         if *key == "cellular" {
             let desired_cell: CellularSettings =
                 serde_json::from_value(parsed).expect("parsed cellular");
-            out.insert(key_s, cellular_status(&desired_cell, modem.apn.as_ref(), at));
+            out.insert(
+                key_s,
+                cellular_status(&desired_cell, modem.apn.as_ref(), at),
+            );
             continue;
         }
 
@@ -1013,20 +1192,11 @@ pub fn build_status(
             continue;
         }
 
-        let st = match latch_detail(key, hints) {
-            Some(detail) => NamespaceStatus::adjusted(at, detail).with_state(NamespaceState::Applied),
-            None => NamespaceStatus::applied(at),
-        };
+        let mut st = NamespaceStatus::applied(at);
+        st.detail = latch_detail(key, hints);
         out.insert(key_s, st);
     }
     out
-}
-
-impl NamespaceStatus {
-    fn with_state(mut self, state: NamespaceState) -> Self {
-        self.state = state;
-        self
-    }
 }
 
 /// `cameraMountStatus` (`config-sync.ts:879`): `adjusted` + `detail` is the
@@ -1055,7 +1225,9 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
             format!(
                 "{}: {}",
                 c.stream_key,
-                c.detail.clone().unwrap_or_else(|| c.verdict.as_str().to_string())
+                c.detail
+                    .clone()
+                    .unwrap_or_else(|| c.verdict.as_str().to_string())
             )
         })
         .collect();
@@ -1071,7 +1243,9 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
                 "{} {}° (running {}°)",
                 c.stream_key,
                 c.desired_deg.degrees(),
-                c.in_force_deg.map(js_number_string).unwrap_or_else(|| "?".into())
+                c.in_force_deg
+                    .map(js_number_string)
+                    .unwrap_or_else(|| "?".into())
             )
         })
         .collect();
@@ -1104,7 +1278,11 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
 
 /// `cellularStatus` (`config-sync.ts:930`): the verdict off the modem
 /// daemon's own apply machinery — a rollback or a rejection must be VISIBLE.
-pub fn cellular_status(desired: &CellularSettings, apn: Option<&ApnBlock>, at: i64) -> NamespaceStatus {
+pub fn cellular_status(
+    desired: &CellularSettings,
+    apn: Option<&ApnBlock>,
+    at: i64,
+) -> NamespaceStatus {
     let wanted = desired.apn.clone().unwrap_or_default();
     if wanted.is_empty() {
         // "Don't touch the modem" needs no confirmation.
@@ -1283,9 +1461,18 @@ mod tests {
 
     #[test]
     fn date_parse_iso_matches_v8_for_the_daemon_forms() {
-        assert_eq!(js_date_parse_iso("2026-08-06T12:00:00Z"), Some(1_786_017_600_000));
-        assert_eq!(js_date_parse_iso("2026-08-06T11:59:40Z"), Some(1_786_017_580_000));
-        assert_eq!(js_date_parse_iso("2026-08-06T11:00:00Z"), Some(1_786_014_000_000));
+        assert_eq!(
+            js_date_parse_iso("2026-08-06T12:00:00Z"),
+            Some(1_786_017_600_000)
+        );
+        assert_eq!(
+            js_date_parse_iso("2026-08-06T11:59:40Z"),
+            Some(1_786_017_580_000)
+        );
+        assert_eq!(
+            js_date_parse_iso("2026-08-06T11:00:00Z"),
+            Some(1_786_014_000_000)
+        );
         assert_eq!(js_date_parse_iso("1970-01-01T00:00:00.5Z"), Some(500));
         assert_eq!(js_date_parse_iso("1970-01-01"), Some(0));
         assert_eq!(js_date_parse_iso("1970-01-01T01:00:00+01:00"), Some(0));
@@ -1297,13 +1484,22 @@ mod tests {
 
     #[test]
     fn reported_string_rules() {
-        assert_eq!(reported_string(&Value::from("  Public\u{1} Mobile  ")), Some("Public Mobile".into()));
+        assert_eq!(
+            reported_string(&Value::from("  Public\u{1} Mobile  ")),
+            Some("Public Mobile".into())
+        );
         assert_eq!(reported_string(&Value::from("   ")), None);
         assert_eq!(reported_string(&Value::from(5)), None);
-        assert_eq!(reported_string(&Value::from("A".repeat(200))).map(|s| s.len()), Some(64));
+        assert_eq!(
+            reported_string(&Value::from("A".repeat(200))).map(|s| s.len()),
+            Some(64)
+        );
         // 64 UTF-16 units, not chars: 33 emoji = 66 units → 32 emoji kept.
         let emoji = "😀".repeat(33);
-        assert_eq!(reported_string(&Value::from(emoji)).map(|s| s.chars().count()), Some(32));
+        assert_eq!(
+            reported_string(&Value::from(emoji)).map(|s| s.chars().count()),
+            Some(32)
+        );
     }
 
     #[test]
@@ -1336,7 +1532,10 @@ mod tests {
             serde_json::to_string(&ConfigSyncState::default()).unwrap(),
             r#"{"lastAppliedRev":0,"lastReportTs":0}"#
         );
-        assert_eq!(parse_config_sync_state(Some("{not json")), ConfigSyncState::default());
+        assert_eq!(
+            parse_config_sync_state(Some("{not json")),
+            ConfigSyncState::default()
+        );
         assert_eq!(
             parse_config_sync_state(Some(r#"{"lastAppliedRev":"12"}"#)),
             ConfigSyncState::default()
@@ -1345,18 +1544,66 @@ mod tests {
     }
 
     #[test]
+    fn config_sync_state_keeps_js_key_order() {
+        // `ensureConfigSyncBaseline` on a Phase-3 file: `{...state, namespaces, settingsHash}`.
+        let (mut st, save) = ensure_config_sync_baseline(
+            parse_config_sync_state(Some(r#"{"lastAppliedRev":12,"lastReportTs":5}"#)),
+            &AgentSettings::default(),
+            "h",
+        );
+        assert!(save);
+        assert_eq!(
+            st.to_file_string(),
+            r#"{"lastAppliedRev":12,"lastReportTs":5,"namespaces":{},"settingsHash":"h"}"#
+        );
+        // `persist({ localPending: false })` writes the false; an existing key stays put.
+        st.merge([
+            SyncPatch::LocalPending(false),
+            SyncPatch::SettingsHash("h2".into()),
+        ]);
+        st.merge([SyncPatch::LastReportTs(9)]);
+        let wire = st.to_file_string();
+        assert_eq!(
+            wire,
+            r#"{"lastAppliedRev":12,"lastReportTs":9,"namespaces":{},"settingsHash":"h2","localPending":false}"#
+        );
+        let back: ConfigSyncState = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back, st);
+        // The tolerant FILE read normalises to the TS read order and drops `false`.
+        assert_eq!(
+            parse_config_sync_state(Some(&wire)).to_file_string(),
+            r#"{"lastAppliedRev":12,"lastReportTs":9,"settingsHash":"h2","namespaces":{}}"#
+        );
+        // A field set directly (no merge) still serialises, in interface order.
+        let direct = ConfigSyncState {
+            local_pending: Some(true),
+            settings_hash: Some("x".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            direct.to_file_string(),
+            r#"{"lastAppliedRev":0,"lastReportTs":0,"settingsHash":"x","localPending":true}"#
+        );
+    }
+
+    #[test]
     fn rebaseline_and_local_changes() {
         let base: Map<String, Value> =
-            serde_json::from_str(r#"{"gnssAntBias":true,"timeSync":{"offlineSources":true}}"#).unwrap();
+            serde_json::from_str(r#"{"gnssAntBias":true,"timeSync":{"offlineSources":true}}"#)
+                .unwrap();
         let current: Map<String, Value> =
-            serde_json::from_str(r#"{"gnssAntBias":false,"timeSync":{"offlineSources":false}}"#).unwrap();
+            serde_json::from_str(r#"{"gnssAntBias":false,"timeSync":{"offlineSources":false}}"#)
+                .unwrap();
         let re = rebaseline_after_write(Some(&base), &current, &["gnssAntBias", "agent"]);
         assert_eq!(
             serde_json::to_string(&re).unwrap(),
             r#"{"gnssAntBias":false,"timeSync":{"offlineSources":true}}"#
         );
         let changes = local_report_changes(Some(&re), &current).unwrap();
-        assert_eq!(serde_json::to_string(&changes).unwrap(), r#"{"timeSync":{"offlineSources":false}}"#);
+        assert_eq!(
+            serde_json::to_string(&changes).unwrap(),
+            r#"{"timeSync":{"offlineSources":false}}"#
+        );
         assert_eq!(local_report_changes(None, &current), None);
         assert_eq!(local_report_changes(Some(&current), &current), None);
     }

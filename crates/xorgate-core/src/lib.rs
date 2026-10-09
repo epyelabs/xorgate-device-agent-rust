@@ -26,6 +26,7 @@ pub mod build_info;
 pub mod clock;
 pub mod cloud_config;
 pub mod config_namespaces;
+pub mod config_report;
 pub mod hardware_block;
 pub mod network;
 pub mod orientation;

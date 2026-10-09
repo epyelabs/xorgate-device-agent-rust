@@ -1,0 +1,3237 @@
+{
+  "jsSourceFile": "test/config-sync.test.ts + test/config-sync-cellular.test.ts + test/camera-mount.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): every pure it() replayed through the real buildEffective / buildStatus / buildConfigReport / parse*Telemetry / shouldApplyRev / namespacesOf / diffNamespaces, plus readModemBias over a tmp file (file text → sample), loadConfigSyncState (file text → state) and ensureConfigSyncBaseline over its injected inputs; settings inputs are normalised through loadSettings (parser order) as the worker does; `build` = the TS loadBuildInfo() fallback under tsx; [extra] cases pin wording branches the vitest only regex-matched",
+  "build": {
+    "version": "0.2.0",
+    "channel": "local",
+    "builtAt": null,
+    "packageVersion": "0.2.0"
+  },
+  "cases": [
+    {
+      "name": "round-trips and defaults to zeros when absent [absent]",
+      "source": "test/config-sync.test.ts",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": null
+      },
+      "expectedJson": "{\"lastAppliedRev\":0,\"lastReportTs\":0}"
+    },
+    {
+      "name": "round-trips and defaults to zeros when absent [saved 42/1700]",
+      "source": "test/config-sync.test.ts",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "{\"lastAppliedRev\":42,\"lastReportTs\":1700}"
+      },
+      "expectedJson": "{\"lastAppliedRev\":42,\"lastReportTs\":1700}"
+    },
+    {
+      "name": "treats a corrupt or mistyped file as never-applied [{not json]",
+      "source": "test/config-sync.test.ts",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "{not json"
+      },
+      "expectedJson": "{\"lastAppliedRev\":0,\"lastReportTs\":0}"
+    },
+    {
+      "name": "treats a corrupt or mistyped file as never-applied [lastAppliedRev string]",
+      "source": "test/config-sync.test.ts",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "{\"lastAppliedRev\":\"12\"}"
+      },
+      "expectedJson": "{\"lastAppliedRev\":0,\"lastReportTs\":0}"
+    },
+    {
+      "name": "[extra] loadConfigSyncState phase-4 fields",
+      "source": "src/agent/config-sync.ts:201-229",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "{\"lastAppliedRev\":3.7,\"lastReportTs\":-5,\"settingsHash\":\"abc\",\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}"
+      },
+      "expectedJson": "{\"lastAppliedRev\":3,\"lastReportTs\":0,\"settingsHash\":\"abc\",\"namespaces\":{\"gnssAntBias\":true},\"localPending\":true}"
+    },
+    {
+      "name": "[extra] loadConfigSyncState empty hash / array namespaces / localPending false",
+      "source": "src/agent/config-sync.ts:201-229",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "{\"lastAppliedRev\":1,\"settingsHash\":\"\",\"namespaces\":[1],\"localPending\":false}"
+      },
+      "expectedJson": "{\"lastAppliedRev\":1,\"lastReportTs\":0}"
+    },
+    {
+      "name": "[extra] loadConfigSyncState array document",
+      "source": "src/agent/config-sync.ts:201-229",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "[1,2]"
+      },
+      "expectedJson": "{\"lastAppliedRev\":0,\"lastReportTs\":0}"
+    },
+    {
+      "name": "[extra] loadConfigSyncState null document",
+      "source": "src/agent/config-sync.ts:201-229",
+      "op": "loadConfigSyncState",
+      "input": {
+        "text": "null"
+      },
+      "expectedJson": "{\"lastAppliedRev\":0,\"lastReportTs\":0}"
+    },
+    {
+      "name": "always applies when the backend sends no rev (pre-Phase-2 compat) [undefined,0]",
+      "source": "test/config-sync.test.ts",
+      "op": "shouldApplyRev",
+      "input": {
+        "rev": {
+          "$undefined": true
+        },
+        "lastAppliedRev": 0
+      },
+      "expectedJson": "true"
+    },
+    {
+      "name": "always applies when the backend sends no rev (pre-Phase-2 compat) [undefined,99]",
+      "source": "test/config-sync.test.ts",
+      "op": "shouldApplyRev",
+      "input": {
+        "rev": {
+          "$undefined": true
+        },
+        "lastAppliedRev": 99
+      },
+      "expectedJson": "true"
+    },
+    {
+      "name": "always applies when the backend sends no rev (pre-Phase-2 compat) [0,99]",
+      "source": "test/config-sync.test.ts",
+      "op": "shouldApplyRev",
+      "input": {
+        "rev": 0,
+        "lastAppliedRev": 99
+      },
+      "expectedJson": "true"
+    },
+    {
+      "name": "applies a newer rev and skips one already applied [43,42]",
+      "source": "test/config-sync.test.ts",
+      "op": "shouldApplyRev",
+      "input": {
+        "rev": 43,
+        "lastAppliedRev": 42
+      },
+      "expectedJson": "true"
+    },
+    {
+      "name": "applies a newer rev and skips one already applied [42,42]",
+      "source": "test/config-sync.test.ts",
+      "op": "shouldApplyRev",
+      "input": {
+        "rev": 42,
+        "lastAppliedRev": 42
+      },
+      "expectedJson": "false"
+    },
+    {
+      "name": "applies a newer rev and skips one already applied [41,42]",
+      "source": "test/config-sync.test.ts",
+      "op": "shouldApplyRev",
+      "input": {
+        "rev": 41,
+        "lastAppliedRev": 42
+      },
+      "expectedJson": "false"
+    },
+    {
+      "name": "omits namespaces the device is not holding (absent = device defaults)",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "sources gnssAntBias from the modem, not from settings.json",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": false,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":false}"
+    },
+    {
+      "name": "omits gnssAntBias entirely when the modem has never reported one",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "carries the other namespaces verbatim from settings.json",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 90,
+            "pitchDeg": 0,
+            "yawDeg": 90
+          },
+          "recording": {
+            "video": {
+              "enabled": true
+            }
+          },
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90},\"recording\":{\"video\":{\"enabled\":true}},\"timeSync\":{\"offlineSources\":true}}"
+    },
+    {
+      "name": "carries the modem's sim and uplink blocks as reported-only keys",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "sim": {
+            "state": "ready",
+            "present": 1,
+            "iccid": "8912230000507537488"
+          },
+          "uplink": {
+            "primary": "wlan0",
+            "modem_only": 0
+          }
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"sim\":{\"state\":\"ready\",\"present\":1,\"iccid\":\"8912230000507537488\"},\"uplink\":{\"primary\":\"wlan0\",\"modem_only\":0}}"
+    },
+    {
+      "name": "omits sim entirely when the daemon reported none",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "gives sim no status entry, ever [effective]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "sim": {
+            "state": "ready",
+            "present": 1
+          }
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"sim\":{\"state\":\"ready\",\"present\":1}}"
+    },
+    {
+      "name": "gives sim no status entry, ever [status]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"gnssAntBias\":true,\"sim\":{\"present\":0}}",
+        "effective": {
+          "gnssAntBias": true,
+          "sim": {
+            "state": "ready",
+            "present": 1
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"applied\",\"at\":1700000000000}}"
+    },
+    {
+      "name": "accepts a full block from the daemon",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "present": 1,
+          "state": "ready",
+          "iccid": "8912230000507537488",
+          "msisdn": "+14379073824",
+          "carrier": "Public Mobile",
+          "act": "lte",
+          "registration": "home",
+          "checked_at": "2026-08-09T00:22:44Z"
+        }
+      },
+      "expectedJson": "{\"state\":\"ready\",\"present\":1,\"iccid\":\"8912230000507537488\",\"msisdn\":\"+14379073824\",\"carrier\":\"Public Mobile\",\"act\":\"lte\",\"registration\":\"home\",\"checked_at\":\"2026-08-09T00:22:44Z\"}"
+    },
+    {
+      "name": "carries an absent SIM through as a first-class fact",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "present": 0,
+          "state": "not-detected",
+          "registration": "unknown"
+        }
+      },
+      "expectedJson": "{\"state\":\"not-detected\",\"present\":0,\"registration\":\"unknown\"}"
+    },
+    {
+      "name": "fails open on anything malformed [undefined]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [null]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": null
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [string]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": "ready"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [array]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": []
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [empty]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {}
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [unknown state]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "present": 0,
+          "state": "wat"
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "reports present as null when the daemon could not tell [no present]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "state": "unknown"
+        }
+      },
+      "expectedJson": "{\"state\":\"unknown\",\"present\":null}"
+    },
+    {
+      "name": "reports present as null when the daemon could not tell [string present]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "present": "1",
+          "state": "ready"
+        }
+      },
+      "expectedJson": "{\"state\":\"ready\",\"present\":null}"
+    },
+    {
+      "name": "drops identifiers that are not shaped like identifiers",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "state": "ready",
+          "iccid": "not-an-iccid",
+          "msisdn": "call me",
+          "registration": "somewhere"
+        }
+      },
+      "expectedJson": "{\"state\":\"ready\",\"present\":null}"
+    },
+    {
+      "name": "caps and cleans network-supplied text",
+      "source": "test/config-sync.test.ts",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "state": "ready",
+          "carrier": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      },
+      "expectedJson": "{\"state\":\"ready\",\"present\":null,\"carrier\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}"
+    },
+    {
+      "name": "[extra] parseSimTelemetry present true/false booleans",
+      "source": "src/agent/config-sync.ts:419-448",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "state": "ready",
+          "present": true,
+          "iccid": "1234567890",
+          "msisdn": "123"
+        }
+      },
+      "expectedJson": "{\"state\":\"ready\",\"present\":1,\"iccid\":\"1234567890\",\"msisdn\":\"123\"}"
+    },
+    {
+      "name": "[extra] parseSimTelemetry present false",
+      "source": "src/agent/config-sync.ts:419-448",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "state": "locked",
+          "present": false,
+          "msisdn": "+12345678901234567890"
+        }
+      },
+      "expectedJson": "{\"state\":\"locked\",\"present\":0,\"msisdn\":\"+12345678901234567890\"}"
+    },
+    {
+      "name": "[extra] parseSimTelemetry control chars + trim + 1.0 present",
+      "source": "src/agent/config-sync.ts:419-448",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "state": "error",
+          "present": 1,
+          "carrier": "  Pub\u0001lic Mobile\n ",
+          "act": "",
+          "checked_at": 5
+        }
+      },
+      "expectedJson": "{\"state\":\"error\",\"present\":1,\"carrier\":\"Public Mobile\"}"
+    },
+    {
+      "name": "[extra] parseSimTelemetry iccid too long / msisdn too long",
+      "source": "src/agent/config-sync.ts:419-448",
+      "op": "parseSimTelemetry",
+      "input": {
+        "raw": {
+          "state": "ready",
+          "iccid": "11111111111111111111111",
+          "msisdn": "+111111111111111111111"
+        }
+      },
+      "expectedJson": "{\"state\":\"ready\",\"present\":null}"
+    },
+    {
+      "name": "reads the primary interface and the modem-only flag [usb0]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {
+          "primary": "usb0",
+          "modem_only": 1
+        }
+      },
+      "expectedJson": "{\"primary\":\"usb0\",\"modem_only\":1}"
+    },
+    {
+      "name": "reads the primary interface and the modem-only flag [wlan0]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {
+          "primary": "wlan0",
+          "modem_only": 0
+        }
+      },
+      "expectedJson": "{\"primary\":\"wlan0\",\"modem_only\":0}"
+    },
+    {
+      "name": "reports no primary rather than guessing when there is no default route",
+      "source": "test/config-sync.test.ts",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {
+          "primary": null,
+          "modem_only": 0
+        }
+      },
+      "expectedJson": "{\"primary\":null,\"modem_only\":0}"
+    },
+    {
+      "name": "fails open on anything malformed [uplink undefined]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [uplink null]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": null
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [uplink empty]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {}
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fails open on anything malformed [uplink string]",
+      "source": "test/config-sync.test.ts",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": "usb0"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "[extra] parseUplinkTelemetry modem_only null only",
+      "source": "src/agent/config-sync.ts:488-495",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {
+          "modem_only": null
+        }
+      },
+      "expectedJson": "{\"primary\":null,\"modem_only\":0}"
+    },
+    {
+      "name": "[extra] parseUplinkTelemetry modem_only true",
+      "source": "src/agent/config-sync.ts:488-495",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {
+          "primary": "usb0",
+          "modem_only": true
+        }
+      },
+      "expectedJson": "{\"primary\":\"usb0\",\"modem_only\":1}"
+    },
+    {
+      "name": "[extra] parseUplinkTelemetry primary only",
+      "source": "src/agent/config-sync.ts:488-495",
+      "op": "parseUplinkTelemetry",
+      "input": {
+        "raw": {
+          "primary": "eth0"
+        }
+      },
+      "expectedJson": "{\"primary\":\"eth0\",\"modem_only\":0}"
+    },
+    {
+      "name": "says nothing about namespaces the cloud never sent",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"gnssAntBias\":true}",
+        "effective": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"applied\",\"at\":1700000000000}}"
+    },
+    {
+      "name": "applied when the delivered value survived the parser and is in force",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"applied\",\"at\":1700000000000}}"
+    },
+    {
+      "name": "adjusted when the device clamped the delivered value",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"recording\":{\"telemetry\":{\"rateHz\":999}}}",
+        "effective": {
+          "recording": {
+            "telemetry": {
+              "rateHz": 20
+            }
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"recording\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"the device clamped or normalized the delivered value\"}}"
+    },
+    {
+      "name": "adjusted when the device is holding something else (a local edit)",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": false
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"the device is holding a different value (changed locally?)\"}}"
+    },
+    {
+      "name": "applied when the cloud's revert marker cleared the namespace",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"imuMount\":{}}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"imuMount\":{\"state\":\"applied\",\"at\":1700000000000}}"
+    },
+    {
+      "name": "applied for a revert marker on every object namespace",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"recording\":{},\"lteRecovery\":{},\"timeSync\":{}}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"recording\":{\"state\":\"applied\",\"at\":1700000000000},\"lteRecovery\":{\"state\":\"applied\",\"at\":1700000000000},\"timeSync\":{\"state\":\"applied\",\"at\":1700000000000}}"
+    },
+    {
+      "name": "adjusted when a revert marker arrived but the device still holds a value",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"imuMount\":{}}",
+        "effective": {
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 90,
+            "pitchDeg": 0,
+            "yawDeg": 90
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"imuMount\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"asked to revert to defaults, but the device is still holding a value\"}}"
+    },
+    {
+      "name": "rejected when an object namespace parsed to nothing",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"imuMount\":{\"enabled\":\"yes\"}}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"imuMount\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"imuMount: no valid fields in the delivered value\"}}"
+    },
+    {
+      "name": "rejected when a scalar namespace arrived with the wrong type",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"gnssAntBias\":\"on\"}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"gnssAntBias: not a valid boolean\"}}"
+    },
+    {
+      "name": "explains a bias the modem has not applied yet",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"gnssAntBias\":true}",
+        "effective": {
+          "gnssAntBias": false
+        },
+        "modem": {
+          "value": false,
+          "fresh": true
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"saved; the modem daemon has not applied it yet (it re-checks about every 30 s)\"}}"
+    },
+    {
+      "name": "explains a bias whose modem telemetry is missing or stale",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"gnssAntBias\":true}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"modem telemetry unavailable — the bias is saved and will be asserted by the modem daemon\"}}"
+    },
+    {
+      "name": "stays honest about latched boot state instead of claiming a clean applied [gating]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"recording\":{\"video\":{\"enabled\":true}}}",
+        "effective": {
+          "recording": {
+            "video": {
+              "enabled": true
+            }
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "bootDefer": "gating"
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"recording\":{\"state\":\"applied\",\"at\":1700000000000,\"detail\":\"in force, but video is held by the GPS/LTE gate and starts when it releases\"}}"
+    },
+    {
+      "name": "stays honest about latched boot state instead of claiming a clean applied [shed]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"recording\":{\"video\":{\"enabled\":true}}}",
+        "effective": {
+          "recording": {
+            "video": {
+              "enabled": true
+            }
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "powerShed": "live-parked"
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"recording\":{\"state\":\"applied\",\"at\":1700000000000,\"detail\":\"in force, but load shedding is active (live-parked)\"}}"
+    },
+    {
+      "name": "stays honest about latched boot state instead of claiming a clean applied [released]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"recording\":{\"video\":{\"enabled\":true}}}",
+        "effective": {
+          "recording": {
+            "video": {
+              "enabled": true
+            }
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "bootDefer": "released:connected"
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"recording\":{\"state\":\"applied\",\"at\":1700000000000}}"
+    },
+    {
+      "name": "[extra] latch detail: deferring + shed together",
+      "source": "src/agent/config-sync.ts:1007-1020",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"recording\":{\"video\":{\"enabled\":true}}}",
+        "effective": {
+          "recording": {
+            "video": {
+              "enabled": true
+            }
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "bootDefer": "deferring",
+          "powerShed": "rung1"
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"recording\":{\"state\":\"applied\",\"at\":1700000000000,\"detail\":\"in force, but video is held by the boot power staging gate and starts when it releases; load shedding is active (rung1)\"}}"
+    },
+    {
+      "name": "[extra] latch detail: empty powerShed is falsy",
+      "source": "src/agent/config-sync.ts:1018",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"recording\":{\"video\":{\"enabled\":true}}}",
+        "effective": {
+          "recording": {
+            "video": {
+              "enabled": true
+            }
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "bootDefer": null,
+          "powerShed": ""
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"recording\":{\"state\":\"applied\",\"at\":1700000000000}}"
+    },
+    {
+      "name": "notes a clock stepper that stood down for the boot",
+      "source": "test/config-sync.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "clockStepperArmed": false
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"applied\",\"at\":1700000000000,\"detail\":\"in force, but the clock stepper stood down for this boot (NTP is synchronized)\"}}"
+    },
+    {
+      "name": "[extra] every namespace rejected on wrong container type",
+      "source": "src/agent/config-sync.ts:811-824",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"imuMount\":\"x\",\"recording\":5,\"lteRecovery\":[],\"timeSync\":true,\"cellular\":1,\"cameraMount\":\"180\",\"simulation\":null,\"gnssAntBias\":0}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"gnssAntBias: not a valid boolean\"},\"imuMount\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"imuMount: not a valid object\"},\"recording\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"recording: not a valid object\"},\"lteRecovery\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"lteRecovery: not a valid object\"},\"timeSync\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"timeSync: not a valid object\"},\"cellular\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"cellular: not a valid object\"},\"cameraMount\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"cameraMount: not a valid object\"},\"simulation\":{\"state\":\"rejected\",\"at\":1700000000000,\"reason\":\"simulation: not a valid object\"}}"
+    },
+    {
+      "name": "[extra] stale modem detail text",
+      "source": "src/agent/config-sync.ts:989-995",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"gnssAntBias\":true}",
+        "effective": {},
+        "modem": {
+          "value": false,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"modem telemetry is stale — the bias is saved and will be asserted by the modem daemon\"}}"
+    },
+    {
+      "name": "[extra] unfresh modem without detail",
+      "source": "src/agent/config-sync.ts:992",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"gnssAntBias\":true}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"modem state unknown — the bias is saved and will be asserted by the modem daemon\"}}"
+    },
+    {
+      "name": "[extra] not holding the namespace yet",
+      "source": "src/agent/config-sync.ts:996-998",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":1,\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"}}",
+        "effective": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"lteRecovery\":{\"state\":\"adjusted\",\"at\":1700000000000,\"detail\":\"saved, but the device is not holding this namespace yet\"}}"
+    },
+    {
+      "name": "[extra] no desired doc → empty status",
+      "source": "src/agent/config-sync.ts:786",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": null,
+        "effective": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 1700000000000,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "matches the shape the mirror Lambda validates",
+      "source": "test/config-sync.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 1234,
+        "origin": "cloud",
+        "lastAppliedRev": 9,
+        "settings": {
+          "recording": {
+            "video": {
+              "enabled": true
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "desiredPayload": "{\"v\":1,\"rev\":9,\"recording\":{\"video\":{\"enabled\":true}}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1234,\"rev\":9,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"recording\":{\"video\":{\"enabled\":true}}},\"status\":{\"recording\":{\"state\":\"applied\",\"at\":1234}}}"
+    },
+    {
+      "name": "reports rev 0 and an empty status when no desired doc has arrived",
+      "source": "test/config-sync.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 1,
+        "origin": "boot",
+        "lastAppliedRev": 0,
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "desiredPayload": null,
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1,\"rev\":0,\"origin\":\"boot\",\"effective\":{},\"status\":{}}"
+    },
+    {
+      "name": "returns the applied bias from a fresh snapshot",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:59:40Z\",\"gnss_ant_bias\":1}"
+      },
+      "expectedJson": "{\"value\":true,\"fresh\":true}"
+    },
+    {
+      "name": "marks a stale snapshot unfresh but keeps its last-known value",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:00:00Z\",\"gnss_ant_bias\":0}"
+      },
+      "expectedJson": "{\"value\":false,\"fresh\":false,\"detail\":\"modem telemetry is stale\"}"
+    },
+    {
+      "name": "degrades to unknown when the daemon has written nothing",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": null
+      },
+      "expectedJson": "{\"value\":null,\"fresh\":false,\"detail\":\"modem telemetry unavailable\"}"
+    },
+    {
+      "name": "degrades to unknown when the daemon has not asserted a bias yet",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:59:40Z\",\"gnss_ant_bias\":null}"
+      },
+      "expectedJson": "{\"value\":null,\"fresh\":false,\"detail\":\"modem has not applied a bias state yet\"}"
+    },
+    {
+      "name": "carries sim and uplink off the same snapshot",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:59:40Z\",\"gnss_ant_bias\":1,\"sim\":{\"present\":1,\"state\":\"ready\",\"iccid\":\"8912230000507537488\"},\"uplink\":{\"primary\":\"wlan0\",\"modem_only\":0}}"
+      },
+      "expectedJson": "{\"value\":true,\"fresh\":true,\"sim\":{\"state\":\"ready\",\"present\":1,\"iccid\":\"8912230000507537488\"},\"uplink\":{\"primary\":\"wlan0\",\"modem_only\":0}}"
+    },
+    {
+      "name": "still carries sim when only the BIAS is unknown",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:59:40Z\",\"gnss_ant_bias\":null,\"sim\":{\"present\":0,\"state\":\"not-detected\"}}"
+      },
+      "expectedJson": "{\"value\":null,\"fresh\":false,\"detail\":\"modem has not applied a bias state yet\",\"sim\":{\"state\":\"not-detected\",\"present\":0}}"
+    },
+    {
+      "name": "drops sim and uplink when the snapshot is stale",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:00:00Z\",\"gnss_ant_bias\":1,\"sim\":{\"present\":1,\"state\":\"ready\"},\"uplink\":{\"primary\":\"wlan0\",\"modem_only\":0}}"
+      },
+      "expectedJson": "{\"value\":true,\"fresh\":false,\"detail\":\"modem telemetry is stale\"}"
+    },
+    {
+      "name": "reports no sim at all when the telemetry file is missing",
+      "source": "test/config-sync.test.ts",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": null
+      },
+      "expectedJson": "{\"value\":null,\"fresh\":false,\"detail\":\"modem telemetry unavailable\"}"
+    },
+    {
+      "name": "[extra] unparseable file",
+      "source": "src/hardware/modem.ts:203-212",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{ not json"
+      },
+      "expectedJson": "{\"value\":null,\"fresh\":false,\"detail\":\"modem telemetry unavailable\"}"
+    },
+    {
+      "name": "[extra] no timestamp → stale",
+      "source": "src/agent/config-sync.ts:515-521",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"gnss_ant_bias\":1}"
+      },
+      "expectedJson": "{\"value\":true,\"fresh\":false,\"detail\":\"modem telemetry is stale\"}"
+    },
+    {
+      "name": "[extra] exactly 180 s old is fresh; cellular block rides along",
+      "source": "src/agent/config-sync.ts:516",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:57:00Z\",\"gnss_ant_bias\":true,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"sp.mb.com\",\"fails\":0}}"
+      },
+      "expectedJson": "{\"value\":true,\"fresh\":true,\"apn\":{\"state\":\"in-force\",\"apn_applied\":\"sp.mb.com\",\"fails\":0}}"
+    },
+    {
+      "name": "[extra] 180.001 s old is stale",
+      "source": "src/agent/config-sync.ts:516",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T11:56:59.999Z\",\"gnss_ant_bias\":1}"
+      },
+      "expectedJson": "{\"value\":true,\"fresh\":false,\"detail\":\"modem telemetry is stale\"}"
+    },
+    {
+      "name": "[extra] gnss_ant_bias false + offset timestamp",
+      "source": "src/agent/config-sync.ts:514",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "{\"timestamp\":\"2026-08-06T13:59:40+02:00\",\"gnss_ant_bias\":false}"
+      },
+      "expectedJson": "{\"value\":false,\"fresh\":true}"
+    },
+    {
+      "name": "[extra] JSON null document",
+      "source": "src/agent/config-sync.ts:510",
+      "op": "readModemBias",
+      "input": {
+        "now": 1786017600000,
+        "text": "null"
+      },
+      "expectedJson": "{\"value\":null,\"fresh\":false,\"detail\":\"modem telemetry unavailable\"}"
+    },
+    {
+      "name": "takes only the synced namespaces, never `mode`",
+      "source": "test/config-sync.test.ts",
+      "op": "namespacesOf",
+      "input": {
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": true,
+          "timeSync": {
+            "offlineSources": false
+          }
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":false}}"
+    },
+    {
+      "name": "reports a changed value, an added namespace and a removed one",
+      "source": "test/config-sync.test.ts",
+      "op": "diffNamespaces",
+      "input": {
+        "base": {
+          "gnssAntBias": true,
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "next": {
+          "gnssAntBias": false,
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 0,
+            "pitchDeg": 0,
+            "yawDeg": 0
+          }
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":false,\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":0},\"timeSync\":null}"
+    },
+    {
+      "name": "is key-order insensitive, so a re-serialized file is not a change",
+      "source": "test/config-sync.test.ts",
+      "op": "diffNamespaces",
+      "input": {
+        "base": {
+          "imuMount": {
+            "enabled": true,
+            "rollDeg": 1,
+            "pitchDeg": 2,
+            "yawDeg": 3
+          }
+        },
+        "next": {
+          "imuMount": {
+            "yawDeg": 3,
+            "pitchDeg": 2,
+            "rollDeg": 1,
+            "enabled": true
+          }
+        }
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "[extra] diffNamespaces: numeric equality 2 vs 2.0, unknown keys ignored, order = registry",
+      "source": "src/agent/config-sync.ts:301-314",
+      "op": "diffNamespaces",
+      "input": {
+        "base": {
+          "simulation": {
+            "gapSeconds": 2
+          },
+          "mode": "a",
+          "gnssAntBias": true
+        },
+        "next": {
+          "gnssAntBias": true,
+          "simulation": {
+            "gapSeconds": 2
+          },
+          "mode": "b",
+          "recording": {
+            "telemetry": {
+              "enabled": true
+            }
+          }
+        }
+      },
+      "expectedJson": "{\"recording\":{\"telemetry\":{\"enabled\":true}}}"
+    },
+    {
+      "name": "adopts the current file once, and never re-adopts it [first]",
+      "source": "test/config-sync.test.ts",
+      "op": "ensureConfigSyncBaseline",
+      "input": {
+        "state": {
+          "lastAppliedRev": 0,
+          "lastReportTs": 0
+        },
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": true
+        },
+        "settingsHash": "4501fe6b5cde51c482b6b8d837c43989b280e44ab1309277ae91ffb53236472e"
+      },
+      "expectedJson": "{\"state\":{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true},\"settingsHash\":\"4501fe6b5cde51c482b6b8d837c43989b280e44ab1309277ae91ffb53236472e\"},\"save\":true}"
+    },
+    {
+      "name": "adopts the current file once, and never re-adopts it [second]",
+      "source": "test/config-sync.test.ts",
+      "op": "ensureConfigSyncBaseline",
+      "input": {
+        "state": {
+          "lastAppliedRev": 0,
+          "lastReportTs": 0,
+          "settingsHash": "4501fe6b5cde51c482b6b8d837c43989b280e44ab1309277ae91ffb53236472e",
+          "namespaces": {
+            "gnssAntBias": true
+          }
+        },
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": false
+        },
+        "settingsHash": "d6a25d22cb24fe38677e31b0f036341077cc33bc2779ec835e8be01f7d486e52"
+      },
+      "expectedJson": "{\"state\":{\"lastAppliedRev\":0,\"lastReportTs\":0,\"settingsHash\":\"4501fe6b5cde51c482b6b8d837c43989b280e44ab1309277ae91ffb53236472e\",\"namespaces\":{\"gnssAntBias\":true}},\"save\":false}"
+    },
+    {
+      "name": "leaves a Phase-3 sync file's rev intact",
+      "source": "test/config-sync.test.ts",
+      "op": "ensureConfigSyncBaseline",
+      "input": {
+        "state": {
+          "lastAppliedRev": 12,
+          "lastReportTs": 5
+        },
+        "settings": {
+          "mode": "real",
+          "gnssAntBias": false
+        },
+        "settingsHash": "d6a25d22cb24fe38677e31b0f036341077cc33bc2779ec835e8be01f7d486e52"
+      },
+      "expectedJson": "{\"state\":{\"lastAppliedRev\":12,\"lastReportTs\":5,\"namespaces\":{\"gnssAntBias\":false},\"settingsHash\":\"d6a25d22cb24fe38677e31b0f036341077cc33bc2779ec835e8be01f7d486e52\"},\"save\":true}"
+    },
+    {
+      "name": "carries `agent.mode` in effective and never in status",
+      "source": "test/config-sync.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 5,
+        "origin": "boot",
+        "lastAppliedRev": 3,
+        "settings": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": "real",
+        "desiredPayload": "{\"v\":1,\"rev\":3,\"gnssAntBias\":true}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":5,\"rev\":3,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":5}}}"
+    },
+    {
+      "name": "omits it entirely when the caller does not supply a mode",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "carries the running build alongside the mode",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "real",
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+    },
+    {
+      "name": "advertises the build's capabilities (device-sms-inbox contract §3) [real]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "real",
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+    },
+    {
+      "name": "advertises the build's capabilities (device-sms-inbox contract §3) [sim]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "sim",
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"agent\":{\"mode\":\"sim\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+    },
+    {
+      "name": "advertises the build's capabilities (device-sms-inbox contract §3) [replay]",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "replay",
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"agent\":{\"mode\":\"replay\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+    },
+    {
+      "name": "omits the block entirely when the caller does not track it",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "real",
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+    },
+    {
+      "name": "carries the topic in force, and never a status entry",
+      "source": "test/config-sync.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 5,
+        "origin": "boot",
+        "lastAppliedRev": 3,
+        "settings": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": "real",
+        "telemetryScope": {
+          "topic": "xorgate/orgs/org-1/ws/ws-a/devices/dev-1/telemetry",
+          "scoped": true,
+          "organizationId": "org-1",
+          "workspaceId": "ws-a"
+        },
+        "desiredPayload": "{\"v\":1,\"rev\":3,\"gnssAntBias\":true}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":5,\"rev\":3,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]},\"telemetryScope\":{\"topic\":\"xorgate/orgs/org-1/ws/ws-a/devices/dev-1/telemetry\",\"scoped\":true,\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\"}},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":5}}}"
+    },
+    {
+      "name": "carries the fallback block, naming the tenancy it could not reach",
+      "source": "test/config-sync.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "real",
+        "cameraMount": null,
+        "telemetryScope": {
+          "topic": "xorgate/devices/dev-1/telemetry",
+          "scoped": false,
+          "organizationId": "org-1",
+          "workspaceId": "ws-a",
+          "fallback": {
+            "since": 1700000000000,
+            "count": 1
+          }
+        }
+      },
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]},\"telemetryScope\":{\"topic\":\"xorgate/devices/dev-1/telemetry\",\"scoped\":false,\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\",\"fallback\":{\"since\":1700000000000,\"count\":1}}}"
+    },
+    {
+      "name": "declares one for every namespace the worker applies",
+      "source": "test/config-sync.test.ts",
+      "op": "CONFIG_APPLY_CLASSES",
+      "input": {},
+      "expectedJson": "{\"gnssAntBias\":\"modem-poll\",\"imuMount\":\"agent-poll\",\"recording\":\"agent-poll\",\"lteRecovery\":\"modem-poll\",\"timeSync\":\"agent-poll\",\"cellular\":\"modem-poll\",\"cameraMount\":\"agent-poll\",\"simulation\":\"agent-poll\"}"
+    },
+    {
+      "name": "[extra] origin local carries `changed`; empty changed is dropped",
+      "source": "src/agent/config-sync.ts:1085-1087",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 9,
+        "origin": "local",
+        "lastAppliedRev": 2,
+        "settings": {
+          "gnssAntBias": false
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "changed": {
+          "gnssAntBias": false,
+          "timeSync": null
+        },
+        "desiredPayload": null,
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":9,\"rev\":2,\"origin\":\"local\",\"effective\":{\"gnssAntBias\":true},\"status\":{},\"changed\":{\"gnssAntBias\":false,\"timeSync\":null}}"
+    },
+    {
+      "name": "[extra] origin cloud never carries `changed`",
+      "source": "src/agent/config-sync.ts:1085-1087",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 9,
+        "origin": "cloud",
+        "lastAppliedRev": 2,
+        "settings": {},
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "changed": {
+          "gnssAntBias": false
+        },
+        "desiredPayload": null,
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":9,\"rev\":2,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true},\"status\":{}}"
+    },
+    {
+      "name": "[extra] origin local with empty changed drops the key",
+      "source": "src/agent/config-sync.ts:1085-1087",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 9,
+        "origin": "local",
+        "lastAppliedRev": 2,
+        "settings": {},
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "changed": {},
+        "desiredPayload": null,
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":9,\"rev\":2,\"origin\":\"local\",\"effective\":{\"gnssAntBias\":true},\"status\":{}}"
+    },
+    {
+      "name": "keeps a full block",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "parseApnTelemetry",
+      "input": {
+        "raw": {
+          "state": "rolled-back",
+          "apn_applied": "sp.mb.com",
+          "apn_requested": "wrong.apn",
+          "last_error": "no data session within 300s (ping and tcp both failed)",
+          "fails": 2,
+          "changed_at": "2026-08-09T18:00:00Z"
+        }
+      },
+      "expectedJson": "{\"state\":\"rolled-back\",\"apn_applied\":\"sp.mb.com\",\"apn_requested\":\"wrong.apn\",\"last_error\":\"no data session within 300s (ping and tcp both failed)\",\"fails\":2,\"changed_at\":\"2026-08-09T18:00:00Z\"}"
+    },
+    {
+      "name": "drops the whole block on an unknown state (fail open = no rollback net) [confused]",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "parseApnTelemetry",
+      "input": {
+        "raw": {
+          "state": "confused"
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "drops the whole block on an unknown state (fail open = no rollback net) [null]",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "parseApnTelemetry",
+      "input": {
+        "raw": null
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "drops the whole block on an unknown state (fail open = no rollback net) [string]",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "parseApnTelemetry",
+      "input": {
+        "raw": "in-force"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "drops APN fields that fail the charset check, and keeps a full-length one intact",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "parseApnTelemetry",
+      "input": {
+        "raw": {
+          "state": "in-force",
+          "apn_applied": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "apn_requested": "evil\";x"
+        }
+      },
+      "expectedJson": "{\"state\":\"in-force\",\"apn_applied\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+    },
+    {
+      "name": "[extra] parseApnTelemetry fails capped at 99, floored; negative dropped; 101-char apn dropped",
+      "source": "src/agent/config-sync.ts:467-485",
+      "op": "parseApnTelemetry",
+      "input": {
+        "raw": {
+          "state": "rejected",
+          "fails": 250.7,
+          "apn_applied": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "last_error": " x\u0000y ",
+          "changed_at": null
+        }
+      },
+      "expectedJson": "{\"state\":\"rejected\",\"last_error\":\"xy\",\"fails\":99}"
+    },
+    {
+      "name": "[extra] parseApnTelemetry negative fails",
+      "source": "src/agent/config-sync.ts:479",
+      "op": "parseApnTelemetry",
+      "input": {
+        "raw": {
+          "state": "applying",
+          "fails": -1
+        }
+      },
+      "expectedJson": "{\"state\":\"applying\"}"
+    },
+    {
+      "name": "an unconfigured device reports the machinery but NEVER an effective.cellular",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0
+          }
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"apn\":{\"state\":\"in-force\",\"apn_applied\":\"sp.mb.com\",\"fails\":0}}"
+    },
+    {
+      "name": "carries the APPLIED apn, not the requested one, while a change is in flight",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "applying",
+            "apn_applied": "sp.mb.com",
+            "apn_requested": "wrong.apn"
+          }
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"sp.mb.com\"},\"apn\":{\"state\":\"applying\",\"apn_applied\":\"sp.mb.com\",\"apn_requested\":\"wrong.apn\"}}"
+    },
+    {
+      "name": "echoes the empty apn as-is — 'don't touch' needs no modem confirmation",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cellular": {
+            "apn": ""
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"\"}}"
+    },
+    {
+      "name": "omits effective.cellular when the modem has never reported an applied APN",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cellular": {
+            "apn": "new.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true}"
+    },
+    {
+      "name": "applying reads as adjusted with an 'applying' detail, never a tick",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "applying",
+            "apn_applied": "sp.mb.com",
+            "apn_requested": "wrong.apn"
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"wrong.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"sp.mb.com\"},\"apn\":{\"state\":\"applying\",\"apn_applied\":\"sp.mb.com\",\"apn_requested\":\"wrong.apn\"}},\"status\":{\"cellular\":{\"state\":\"adjusted\",\"at\":1,\"detail\":\"applying — the modem daemon is confirming the new APN with real traffic over the cellular link (allow a few minutes)\"}}}"
+    },
+    {
+      "name": "a rollback is fully legible: what was tried, what is running, and why",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "rolled-back",
+            "apn_applied": "sp.mb.com",
+            "apn_requested": "wrong.apn",
+            "last_error": "no data session within 300s (ping and tcp both failed)",
+            "fails": 1
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"wrong.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"sp.mb.com\"},\"apn\":{\"state\":\"rolled-back\",\"apn_applied\":\"sp.mb.com\",\"apn_requested\":\"wrong.apn\",\"last_error\":\"no data session within 300s (ping and tcp both failed)\",\"fails\":1}},\"status\":{\"cellular\":{\"state\":\"adjusted\",\"at\":1,\"detail\":\"the device applied \\\"wrong.apn\\\", could not pass data, and rolled back to \\\"sp.mb.com\\\" (no data session within 300s (ping and tcp both failed))\"}}}"
+    },
+    {
+      "name": "the give-up lands as REJECTED with the reason",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "rejected",
+            "apn_applied": "sp.mb.com",
+            "apn_requested": "wrong.apn",
+            "last_error": "no data session within 300s (ping and tcp both failed)",
+            "fails": 3
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"wrong.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"sp.mb.com\"},\"apn\":{\"state\":\"rejected\",\"apn_applied\":\"sp.mb.com\",\"apn_requested\":\"wrong.apn\",\"last_error\":\"no data session within 300s (ping and tcp both failed)\",\"fails\":3}},\"status\":{\"cellular\":{\"state\":\"rejected\",\"at\":1,\"reason\":\"the device gave up on \\\"wrong.apn\\\" after 3 failed applies (no data session within 300s (ping and tcp both failed)) — change the value to try again\"}}}"
+    },
+    {
+      "name": "a confirmed apply reads applied",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "new.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "new.apn",
+            "fails": 0
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"new.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"new.apn\"},\"apn\":{\"state\":\"in-force\",\"apn_applied\":\"new.apn\",\"fails\":0}},\"status\":{\"cellular\":{\"state\":\"applied\",\"at\":1}}}"
+    },
+    {
+      "name": "an empty apn is applied by definition",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": ""
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"\"}},\"status\":{\"cellular\":{\"state\":\"applied\",\"at\":1}}}"
+    },
+    {
+      "name": "a daemon with no APN machinery is called out — the change will never apply",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"wrong.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true},\"status\":{\"cellular\":{\"state\":\"adjusted\",\"at\":1,\"detail\":\"saved, but this device's modem daemon has not reported its APN machinery — it may predate the rollback-capable agent and will never apply this\"}}}"
+    },
+    {
+      "name": "[extra] rejected without fails/last_error",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "rejected",
+            "apn_requested": "wrong.apn"
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"wrong.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"apn\":{\"state\":\"rejected\",\"apn_requested\":\"wrong.apn\"}},\"status\":{\"cellular\":{\"state\":\"rejected\",\"at\":1,\"reason\":\"the device gave up on \\\"wrong.apn\\\" after repeated failed applies — change the value to try again\"}}}"
+    },
+    {
+      "name": "[extra] rolled back without apn_applied",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "rolled-back",
+            "apn_requested": "wrong.apn"
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"wrong.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"apn\":{\"state\":\"rolled-back\",\"apn_requested\":\"wrong.apn\"}},\"status\":{\"cellular\":{\"state\":\"adjusted\",\"at\":1,\"detail\":\"the device applied \\\"wrong.apn\\\", could not pass data, and rolled back to \\\"the previous APN\\\"\"}}}"
+    },
+    {
+      "name": "[extra] rolled back for a DIFFERENT requested apn falls through to the 30 s detail",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {
+          "cellular": {
+            "apn": "wrong.apn"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "rolled-back",
+            "apn_applied": "sp.mb.com",
+            "apn_requested": "other.apn"
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"wrong.apn\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"sp.mb.com\"},\"apn\":{\"state\":\"rolled-back\",\"apn_applied\":\"sp.mb.com\",\"apn_requested\":\"other.apn\"}},\"status\":{\"cellular\":{\"state\":\"adjusted\",\"at\":1,\"detail\":\"saved; the modem daemon has not applied it yet (it re-checks about every 30 s)\"}}}"
+    },
+    {
+      "name": "an injection attempt is rejected by the tolerant parse before any verdict",
+      "source": "test/config-sync-cellular.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "d",
+        "ts": 1,
+        "origin": "cloud",
+        "lastAppliedRev": 1,
+        "settings": {},
+        "modem": {
+          "value": true,
+          "fresh": true,
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0
+          }
+        },
+        "desiredPayload": "{\"v\":1,\"cellular\":{\"apn\":\"a\\\";+CFUN=0\"}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"d\",\"ts\":1,\"rev\":1,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"apn\":{\"state\":\"in-force\",\"apn_applied\":\"sp.mb.com\",\"fails\":0}},\"status\":{\"cellular\":{\"state\":\"rejected\",\"at\":1,\"reason\":\"cellular: no valid fields in the delivered value\"}}}"
+    },
+    {
+      "name": "reports the rotation IN FORCE, with the written one as pending",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0}},\"pending\":{\"cam0\":{\"rotationDeg\":180}},\"rebootRequired\":true}}"
+    },
+    {
+      "name": "never grows an effective block on a device that was never configured",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": null,
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true}"
+    },
+    {
+      "name": "says a reboot is required, in a state both frontends badge honestly [effective]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0}},\"pending\":{\"cam0\":{\"rotationDeg\":180}},\"rebootRequired\":true}}"
+    },
+    {
+      "name": "says a reboot is required, in a state both frontends badge honestly [status]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              }
+            },
+            "pending": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            },
+            "rebootRequired": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"adjusted\",\"at\":99,\"detail\":\"written to the boot config — REBOOT REQUIRED to apply: cam0 180° (running 0°)\"}}"
+    },
+    {
+      "name": "reads applied once the device has actually booted with it [effective]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 180,
+              "bootDeg": 180,
+              "verdict": "applied"
+            }
+          ],
+          "rebootRequired": false,
+          "wrote": false
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}},\"rebootRequired\":false}}"
+    },
+    {
+      "name": "reads applied once the device has actually booted with it [status]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            },
+            "rebootRequired": false
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 180,
+              "bootDeg": 180,
+              "verdict": "applied"
+            }
+          ],
+          "rebootRequired": false,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"applied\",\"at\":99}}"
+    },
+    {
+      "name": "rejects — loudly — what the device cannot do at all [unsupported]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": false
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 0,
+              "verdict": "unsupported",
+              "detail": "cannot: unsupported"
+            }
+          ],
+          "rebootRequired": false,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"rejected\",\"at\":99,\"reason\":\"cam0: cannot: unsupported\"}}"
+    },
+    {
+      "name": "rejects — loudly — what the device cannot do at all [no-overlay]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": false
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 0,
+              "verdict": "no-overlay",
+              "detail": "cannot: no-overlay"
+            }
+          ],
+          "rebootRequired": false,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"rejected\",\"at\":99,\"reason\":\"cam0: cannot: no-overlay\"}}"
+    },
+    {
+      "name": "rejects — loudly — what the device cannot do at all [unknown-camera]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": false
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 0,
+              "verdict": "unknown-camera",
+              "detail": "cannot: unknown-camera"
+            }
+          ],
+          "rebootRequired": false,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"rejected\",\"at\":99,\"reason\":\"cam0: cannot: unknown-camera\"}}"
+    },
+    {
+      "name": "rejects — loudly — what the device cannot do at all [write-failed]",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": false
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 0,
+              "verdict": "write-failed",
+              "detail": "cannot: write-failed"
+            }
+          ],
+          "rebootRequired": false,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"rejected\",\"at\":99,\"reason\":\"cam0: cannot: write-failed\"}}"
+    },
+    {
+      "name": "admits it when the reconciler has not run yet",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            },
+            "reconciled": false
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": null
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"adjusted\",\"at\":99,\"detail\":\"saved; the device has not reconciled its boot config yet\"}}"
+    },
+    {
+      "name": "carries the whole thing through a built report",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 7,
+        "origin": "cloud",
+        "lastAppliedRev": 4,
+        "settings": {
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        },
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "build": {
+          "version": "0.2.0",
+          "channel": "local",
+          "builtAt": null,
+          "packageVersion": "0.2.0"
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":7,\"rev\":4,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0}},\"pending\":{\"cam0\":{\"rotationDeg\":180}},\"rebootRequired\":true}},\"status\":{\"cameraMount\":{\"state\":\"adjusted\",\"at\":7,\"detail\":\"written to the boot config — REBOOT REQUIRED to apply: cam0 180° (running 0°)\"}}}"
+    },
+    {
+      "name": "says nothing about a namespace the cloud never mentioned",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4}",
+        "effective": {
+          "gnssAntBias": true
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": null
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "still reports the value it holds before the first reconcile",
+      "source": "test/camera-mount.test.ts",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              }
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": null,
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}},\"reconciled\":false}}"
+    },
+    {
+      "name": "[extra] multi-camera effective: unreadable omitted, pending only when written",
+      "source": "src/agent/config-sync.ts:694-713",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 180
+              },
+              "cam1": {
+                "rotationDeg": 0
+              },
+              "cam2": {
+                "rotationDeg": 180
+              },
+              "cam3": {
+                "rotationDeg": 180
+              }
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            },
+            {
+              "streamKey": "cam1",
+              "desiredDeg": 0,
+              "inForceDeg": null,
+              "bootDeg": 0,
+              "verdict": "unconfirmed"
+            },
+            {
+              "streamKey": "cam2",
+              "desiredDeg": 180,
+              "inForceDeg": 90,
+              "bootDeg": null,
+              "verdict": "no-overlay"
+            },
+            {
+              "streamKey": "cam3",
+              "desiredDeg": 180,
+              "inForceDeg": 180,
+              "bootDeg": 180,
+              "verdict": "applied"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        },
+        "telemetryScope": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"cam2\":{\"rotationDeg\":90},\"cam3\":{\"rotationDeg\":180}},\"pending\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}},\"rebootRequired\":true}}"
+    },
+    {
+      "name": "[extra] multi-camera status: blocked (detail-less) outranks pending",
+      "source": "src/agent/config-sync.ts:879-923",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0},\"cam2\":{\"rotationDeg\":180},\"cam3\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              },
+              "cam2": {
+                "rotationDeg": 90
+              },
+              "cam3": {
+                "rotationDeg": 180
+              }
+            },
+            "pending": {
+              "cam0": {
+                "rotationDeg": 180
+              },
+              "cam1": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            },
+            {
+              "streamKey": "cam1",
+              "desiredDeg": 0,
+              "inForceDeg": null,
+              "bootDeg": 0,
+              "verdict": "unconfirmed"
+            },
+            {
+              "streamKey": "cam2",
+              "desiredDeg": 180,
+              "inForceDeg": 90,
+              "bootDeg": null,
+              "verdict": "no-overlay"
+            },
+            {
+              "streamKey": "cam3",
+              "desiredDeg": 180,
+              "inForceDeg": 180,
+              "bootDeg": 180,
+              "verdict": "applied"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"rejected\",\"at\":99,\"reason\":\"cam2: no-overlay\"}}"
+    },
+    {
+      "name": "[extra] two pending cameras joined, running '?' when unreadable",
+      "source": "src/agent/config-sync.ts:901-911",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0},\"cam2\":{\"rotationDeg\":180},\"cam3\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              },
+              "cam2": {
+                "rotationDeg": 90
+              },
+              "cam3": {
+                "rotationDeg": 180
+              }
+            },
+            "pending": {
+              "cam0": {
+                "rotationDeg": 180
+              },
+              "cam1": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            },
+            {
+              "streamKey": "cam1",
+              "desiredDeg": 0,
+              "inForceDeg": null,
+              "bootDeg": 0,
+              "verdict": "pending-reboot"
+            },
+            {
+              "streamKey": "cam2",
+              "desiredDeg": 0,
+              "inForceDeg": null,
+              "bootDeg": 0,
+              "verdict": "unconfirmed"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"adjusted\",\"at\":99,\"detail\":\"written to the boot config — REBOOT REQUIRED to apply: cam0 180° (running 0°), cam1 0° (running ?°)\"}}"
+    },
+    {
+      "name": "[extra] unconfirmed-only detail",
+      "source": "src/agent/config-sync.ts:912-921",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0},\"cam2\":{\"rotationDeg\":180},\"cam3\":{\"rotationDeg\":180}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              },
+              "cam2": {
+                "rotationDeg": 90
+              },
+              "cam3": {
+                "rotationDeg": 180
+              }
+            },
+            "pending": {
+              "cam0": {
+                "rotationDeg": 180
+              },
+              "cam1": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": null,
+              "bootDeg": 180,
+              "verdict": "unconfirmed"
+            },
+            {
+              "streamKey": "cam1",
+              "desiredDeg": 0,
+              "inForceDeg": null,
+              "bootDeg": 0,
+              "verdict": "unconfirmed"
+            }
+          ],
+          "rebootRequired": false,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"adjusted\",\"at\":99,\"detail\":\"written to the boot config, but the device could not read back the rotation currently in force (cam0, cam1) — reboot to apply\"}}"
+    },
+    {
+      "name": "[extra] cameraMount `{cameras:{}}` is a value: applied with an empty state",
+      "source": "src/agent/config-sync.ts:835-843",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {},
+            "rebootRequired": false
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [],
+          "rebootRequired": false,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"applied\",\"at\":99}}"
+    },
+    {
+      "name": "[extra] cameraMount with a clamped key is adjusted before the reconciler verdict",
+      "source": "src/agent/config-sync.ts:826-833",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":4,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"bad key\":{\"rotationDeg\":0}}}}",
+        "effective": {
+          "gnssAntBias": true,
+          "cameraMount": {
+            "cameras": {
+              "cam0": {
+                "rotationDeg": 0
+              },
+              "cam2": {
+                "rotationDeg": 90
+              },
+              "cam3": {
+                "rotationDeg": 180
+              }
+            },
+            "pending": {
+              "cam0": {
+                "rotationDeg": 180
+              },
+              "cam1": {
+                "rotationDeg": 0
+              }
+            },
+            "rebootRequired": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 99,
+        "hints": {},
+        "cameraMount": {
+          "at": 1,
+          "cameras": [
+            {
+              "streamKey": "cam0",
+              "desiredDeg": 180,
+              "inForceDeg": 0,
+              "bootDeg": 180,
+              "verdict": "pending-reboot"
+            }
+          ],
+          "rebootRequired": true,
+          "wrote": false
+        }
+      },
+      "expectedJson": "{\"cameraMount\":{\"state\":\"adjusted\",\"at\":99,\"detail\":\"the device clamped or normalized the delivered value\"}}"
+    }
+  ]
+}

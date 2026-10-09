@@ -9,12 +9,12 @@ mod common;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use xorgate_core::boot_config::CameraMountState;
 use xorgate_core::build_info::BuildInfo;
 use xorgate_core::cloud_config::parse_cloud_message;
 use xorgate_core::config_report::*;
 use xorgate_core::settings::AgentSettings;
 use xorgate_core::telemetry_scope::TelemetryScopeReport;
+use xorgate_core::types::CameraMountState;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,8 +71,9 @@ fn config_report_suites() {
                 let mode = present(i, "mode").map(|m| m.as_str().unwrap().to_string());
                 let cam: Option<CameraMountState> =
                     present(i, "cameraMount").filter(|v| !v.is_null()).map(from);
-                let scope: Option<TelemetryScopeReport> =
-                    present(i, "telemetryScope").filter(|v| !v.is_null()).map(from);
+                let scope: Option<TelemetryScopeReport> = present(i, "telemetryScope")
+                    .filter(|v| !v.is_null())
+                    .map(from);
                 Some(json(&build_effective(
                     &settings,
                     &modem,
@@ -108,7 +109,12 @@ fn config_report_suites() {
                 obj.insert("desired".into(), serde_json::to_value(&desired).unwrap());
                 let input: ReportInput = from(v);
                 let report = build_config_report(&input, &build);
-                assert!(report.within_cap(), "{}: {} bytes", c.name, report.wire_bytes());
+                assert!(
+                    report.within_cap(),
+                    "{}: {} bytes",
+                    c.name,
+                    report.wire_bytes()
+                );
                 // The report must survive its own round trip (the agent also
                 // parses what it wrote into state files).
                 let back: ConfigReport = serde_json::from_str(&report.to_wire()).unwrap();
@@ -164,7 +170,7 @@ fn config_report_suites() {
                 let (next, save) = ensure_config_sync_baseline(state, &settings, hash);
                 Some(format!(
                     r#"{{"state":{},"save":{}}}"#,
-                    json(&next),
+                    next.to_file_string(),
                     save
                 ))
             }
@@ -179,8 +185,8 @@ fn config_report_suites() {
         };
         assert_eq!(got, c.expected_json, "{}", c.name);
     }
-    assert_eq!(f.cases.len(), 149);
-    assert_eq!(ops["buildEffective"], 23);
-    assert_eq!(ops["buildStatus"], 40);
-    assert_eq!(ops["buildConfigReport"], 21);
+    assert_eq!(f.cases.len(), 147);
+    assert_eq!(ops["buildEffective"], 24);
+    assert_eq!(ops["buildStatus"], 36);
+    assert_eq!(ops["buildConfigReport"], 18);
 }
