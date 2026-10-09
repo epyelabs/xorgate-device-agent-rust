@@ -889,4 +889,39 @@ mod tests {
         assert!(!tr2);
         assert_eq!(t2.len(), SMS_TEXT_MAX - 1);
     }
+
+    /// ACCEPTED DIVERGENCE (review-wp5 #1, Phase 2 tolerance table): an
+    /// incomplete UCS2 concatenation (part 1 of 2 only) whose body is
+    /// `a` + the high half of U+1F44D (`0061 D83D`). The TS keeps code units
+    /// (`decodeUcs2`, `sms-pdu.ts:207-215`; `truncateText`, `:340-346`, does
+    /// not touch a short string), so `JSON.stringify` emits the 6-byte escape
+    /// `"text":"a\ud83d"` (reproduced under tsx). Rust emits valid UTF-8
+    /// `"text":"a\u{FFFD}"` (`61 EF BF BD`). Kept on purpose: an unpaired
+    /// `\ud83d` escape is rejected by Postgres `jsonb`, so the TS bytes are
+    /// the bug, not the contract.
+    #[test]
+    fn lone_surrogate_in_incomplete_concat_becomes_replacement_char() {
+        // SMSC len 00 | DELIVER+UDHI 44 | OA 11 digits intl 0B91 5155100000F1
+        // | PID 00 | DCS 08 (UCS2) | SCTS | UDL 0A | UDH 0500032A0201 (ref
+        // 0x2A, 2 parts, seq 1) | body 0061 D83D.
+        let pdu = "00440B915155100000F1000862900110000000\
+                   0A0500032A02010061D83D"
+            .to_string();
+        let rec = StoredPdu {
+            storage: SmsStorage::SM,
+            index: 3,
+            stat: 0,
+            length: None,
+            pdu,
+        };
+        let out = assemble_messages(std::slice::from_ref(&rec));
+        assert_eq!(out.skipped, 0);
+        let m = &out.messages[0];
+        assert!(m.incomplete);
+        assert!(!m.truncated);
+        assert_eq!(m.text, "a\u{FFFD}");
+        let json = serde_json::to_string(m).unwrap();
+        assert!(json.contains("\"text\":\"a\u{FFFD}\""), "{json}");
+        assert!(!json.contains("\\ud83d"), "{json}");
+    }
 }
