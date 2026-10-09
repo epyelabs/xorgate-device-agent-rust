@@ -1,0 +1,5073 @@
+{
+ "jsSourceFile": "test/recording-boot-policy.test.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "tsx shim run from the scratchpad against the JS working tree (not committed there): the real test file with `vitest` swapped for an in-order describe/it runner and boot-policy.js wrapped by a recorder; `expected` = the TS output of every call",
+ "cases": [
+  {
+   "name": "healthy samples never shed",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 120,
+     "reading": {
+      "uv": false,
+      "railV": 5.05
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": null
+    }
+   ]
+  },
+  {
+   "name": "sheds live (rung 1) on the 3rd UV sample in the window, not before",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 1,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 2000,
+     "n": 10,
+     "reading": {
+      "uv": false,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 12000,
+     "n": 1,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 13000,
+     "n": 1,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    }
+   ]
+  },
+  {
+   "name": "UV positives age out of the window (sparse UV never sheds)",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 1,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 2000,
+     "n": 40,
+     "reading": {
+      "uv": false,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 42000,
+     "n": 1,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 43000,
+     "n": 40,
+     "reading": {
+      "uv": false,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 83000,
+     "n": 1,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 84000,
+     "n": 40,
+     "reading": {
+      "uv": false,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "sustained rail low sheds; a brief sag does not",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 10,
+     "reading": {
+      "uv": false,
+      "railV": 4.8
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 11000,
+     "n": 1,
+     "reading": {
+      "uv": false,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 12000,
+     "n": 14,
+     "reading": {
+      "uv": false,
+      "railV": 4.8
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "new",
+     "inst": 1,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.8
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.80V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (rail 4.80V < 4.85V for 15s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.80V < 4.85V for 15s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "rail trigger requires fresh samples (a dead sampler cannot shed)",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 14,
+     "reading": {
+      "uv": false,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "mono": 74000,
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "expected": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "escalates to bridge-only (rung 2) only after the dwell of continued trigger",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 4000,
+     "n": 59,
+     "reading": {
+      "uv": true,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 63000,
+     "n": 2,
+     "reading": {
+      "uv": true,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (undervoltage 31x in 30s, triggered 100% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "bridge-only"
+    }
+   ]
+  },
+  {
+   "name": "a mostly-clean rung does not escalate (duty stays under the threshold)",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 4000,
+     "n": 35,
+     "reading": {
+      "uv": false,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 39000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 42000,
+     "n": 20,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 62000,
+     "n": 30,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 1,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (undervoltage 25x in 30s, triggered 88% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "escalates on a BOUNCING rail (duty cycle) — the iteration-2 crash case",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 40,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 57000,
+     "n": 11,
+     "reading": {
+      "uv": false,
+      "railV": 4.93
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 68000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (rail 4.78V < 4.85V for 15s, triggered 82% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → bridge-only (rail 4.78V < 4.85V for 15s, triggered 82% of the last 60s past no-live): video recording off, telemetry recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "bridge-only"
+    }
+   ]
+  },
+  {
+   "name": "escalateDutyPct=100 reproduces the old continuous-dwell semantics",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 40,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 57000,
+     "n": 11,
+     "reading": {
+      "uv": false,
+      "railV": 4.93
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 68000,
+     "n": 30,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 98000,
+     "n": 11,
+     "reading": {
+      "uv": false,
+      "railV": 4.93
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 109000,
+     "n": 23,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 132000,
+     "n": 10,
+     "reading": {
+      "uv": false,
+      "railV": 4.93
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    },
+    {
+     "op": "new",
+     "inst": 1,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 17000,
+     "n": 59,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 76000,
+     "n": 2,
+     "reading": {
+      "uv": false,
+      "railV": 4.78
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 100,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (rail 4.78V < 4.85V for 15s, triggered 100% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a rung is always observed for a full window before the next one engages",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 600,
+     "reading": {
+      "uv": false,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.70V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      },
+      {
+       "i": 75,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (rail 4.70V < 4.85V for 15s, triggered 100% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.70V < 4.85V for 15s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "restores one rung per clean interval; a sub-restore rail blocks it",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 4000,
+     "n": 62,
+     "reading": {
+      "uv": true,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 59,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (undervoltage 31x in 30s, triggered 100% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "bridge-only"
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 66000,
+     "n": 130,
+     "reading": {
+      "uv": false,
+      "railV": 4.9
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 196000,
+     "n": 119,
+     "reading": {
+      "uv": false,
+      "railV": 5.02
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 315000,
+     "n": 2,
+     "reading": {
+      "uv": false,
+      "railV": 5.02
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → no-live (clean for 120s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 317000,
+     "n": 121,
+     "reading": {
+      "uv": false,
+      "railV": 5.02
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 118,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → full (clean for 120s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": null
+    }
+   ]
+  },
+  {
+   "name": "shed-cycle cap parks at the shed level (no flapping)",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 4000,
+     "n": 45,
+     "reading": {
+      "uv": false,
+      "railV": 5.02
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [
+      {
+       "i": 28,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → full (clean for 10s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": null
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 49000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues; shed-cycle cap (1/h) exhausted — parked until reboot or settings change"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": true,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues; shed-cycle cap (1/h) exhausted — parked until reboot or settings change"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 52000,
+     "n": 600,
+     "reading": {
+      "uv": false,
+      "railV": 5.05
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": true,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "parked:no-live"
+    }
+   ]
+  },
+  {
+   "name": "disabling via settings restores immediately and reports once",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "mono": 3000,
+     "cfg": {
+      "enabled": false,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "expected": {
+      "level": 0,
+      "parked": false,
+      "event": {
+       "level": "info",
+       "msg": "power shedding disabled by settings — restoring full operation"
+      },
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "mono": 3000,
+     "cfg": {
+      "enabled": false,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "expected": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "fails open: a shed device whose sampler dies restores on the clean interval",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 4.7
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "mono": 124000,
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "expected": {
+      "level": 0,
+      "parked": false,
+      "event": {
+       "level": "info",
+       "msg": "power shed restore → full (clean for 120s)"
+      },
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "reset() clears park and level (settings-change escape hatch)",
+   "describe": "LoadShedPolicy (Phase 3 runtime undervoltage shedding)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 5
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 0
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues; shed-cycle cap (0/h) exhausted — parked until reboot or settings change"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": true,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues; shed-cycle cap (0/h) exhausted — parked until reboot or settings change"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "reset",
+     "inst": 0,
+     "mono": 3000
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "mono": 3000,
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 0
+     },
+     "expected": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": null
+    }
+   ]
+  },
+  {
+   "name": "sustained heat sheds live at exactly cpuTempSecs, not before",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 15,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 16000,
+     "n": 1,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    }
+   ]
+  },
+  {
+   "name": "a single spike inside the window does not shed",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 10,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 11000,
+     "n": 1,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 75
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 12000,
+     "n": 14,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "hysteresis: shedding at 80 does not restore at 79 — it needs cpuTempRestoreC",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 400,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 79
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 417000,
+     "n": 119,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 69
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 536000,
+     "n": 2,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 69
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → full (clean for 120s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": null
+    }
+   ]
+  },
+  {
+   "name": "thermal trigger requires fresh samples (a dead sampler cannot shed)",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 14,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "evaluate",
+     "inst": 0,
+     "mono": 74000,
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "expected": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "a host that reports a cool temperature behaves exactly as it does with none",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.8,
+      "tempC": 55,
+      "softTemp": false
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.80V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (rail 4.80V < 4.85V for 15s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.80V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "new",
+     "inst": 1,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 1000,
+     "n": 120,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": null,
+      "softTemp": false
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "throttle bit 0x8 sheds on its own; 0x2 and 0x4 never do (Q3)",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 1,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 62,
+      "softTemp": true
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu soft temp limit (throttle bit 0x8)): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu soft temp limit (throttle bit 0x8)): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu soft temp limit (throttle bit 0x8)"
+     }
+    },
+    {
+     "op": "new",
+     "inst": 1,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 1000,
+     "n": 300,
+     "reading": {
+      "uv": false,
+      "railV": null,
+      "tempC": 62,
+      "softTemp": false
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "new",
+     "inst": 2,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 2,
+     "firstMono": 1000,
+     "n": 300,
+     "reading": {
+      "uv": false,
+      "railV": null,
+      "tempC": 62,
+      "softTemp": false
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "new",
+     "inst": 3,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 3,
+     "firstMono": 1000,
+     "n": 300,
+     "reading": {
+      "uv": false,
+      "railV": null,
+      "tempC": 62,
+      "softTemp": false
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "a thermal-only trigger NEVER escalates past rung 1, however long it runs",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 88.0°C >= 80°C for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 88.0°C >= 80°C for 15s): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu 88.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 600,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu 88.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    }
+   ]
+  },
+  {
+   "name": "the firmware's 0x8 bit is capped the same way (it is still thermal)",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 601,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 62,
+      "softTemp": true
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu soft temp limit (throttle bit 0x8)): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu soft temp limit (throttle bit 0x8)"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    }
+   ]
+  },
+  {
+   "name": "thermal PLUS a concurrent power trigger does escalate — the cap is cause-scoped",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 64,
+     "reading": {
+      "uv": true,
+      "railV": 4.7,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      },
+      {
+       "i": 62,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (undervoltage 31x in 30s, triggered 100% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "new",
+     "inst": 1,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 1000,
+     "n": 77,
+     "reading": {
+      "uv": false,
+      "railV": 4.78,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      },
+      {
+       "i": 75,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (rail 4.78V < 4.85V for 15s, triggered 100% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a power shed that cools into a thermal-only one stops escalating",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.78,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (rail 4.78V < 4.85V for 15s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 30,
+     "reading": {
+      "uv": false,
+      "railV": 4.78,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "rail 4.78V < 4.85V for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 47000,
+     "n": 600,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu 88.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    }
+   ]
+  },
+  {
+   "name": "a thermal-only shed still counts toward maxShedsPerHour and still parks",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "no-live"
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 12,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 65
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [
+      {
+       "i": 9,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → full (clean for 10s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": null
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 29000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues; shed-cycle cap (1/h) exhausted — parked until reboot or settings change"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": true,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues; shed-cycle cap (1/h) exhausted — parked until reboot or settings change"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 45000,
+     "n": 600,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 60
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 10,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 1
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": true,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "statusString",
+     "inst": 0,
+     "expected": "parked:no-live"
+    }
+   ]
+  },
+  {
+   "name": "undervoltage names the event when both arms fire (precedence)",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 5,
+      "tempC": 88
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "computeShedSignals reports the cause discriminant Phase 2 will publish",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1)",
+   "ops": [
+    {
+     "op": "computeShedSignals",
+     "samples": [
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 1000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 2000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 3000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 4000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 5000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 6000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 7000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 8000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 9000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 10000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 11000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 12000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 13000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 14000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 15000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 85,
+       "softTemp": false,
+       "tMs": 16000
+      }
+     ],
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "nowMs": 16000,
+     "expected": {
+      "trigger": true,
+      "dirty": true,
+      "why": "cpu 85.0°C >= 80°C for 15s",
+      "cause": "thermal",
+      "lastDirtyMs": 16000
+     }
+    },
+    {
+     "op": "computeShedSignals",
+     "samples": [
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 1000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 2000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 3000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 4000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 5000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 6000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 7000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 8000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 9000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 10000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 11000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 12000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 13000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 14000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 15000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 62,
+       "softTemp": true,
+       "tMs": 16000
+      }
+     ],
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "nowMs": 16000,
+     "expected": {
+      "trigger": true,
+      "dirty": true,
+      "why": "cpu soft temp limit (throttle bit 0x8)",
+      "cause": "thermal",
+      "lastDirtyMs": 16000
+     }
+    },
+    {
+     "op": "computeShedSignals",
+     "samples": [
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 1000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 2000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 3000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 4000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 5000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 6000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 7000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 8000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 9000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 10000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 11000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 12000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 13000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 14000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 15000
+      },
+      {
+       "uv": false,
+       "railV": 4.78,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 16000
+      }
+     ],
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "nowMs": 16000,
+     "expected": {
+      "trigger": true,
+      "dirty": true,
+      "why": "rail 4.78V < 4.85V for 15s",
+      "cause": "power",
+      "lastDirtyMs": 16000
+     }
+    },
+    {
+     "op": "computeShedSignals",
+     "samples": [
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 1000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 2000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 3000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 4000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 5000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 6000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 7000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 8000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 9000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 10000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 11000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 12000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 13000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 14000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 15000
+      },
+      {
+       "uv": true,
+       "railV": 5.05,
+       "tempC": 88,
+       "softTemp": false,
+       "tMs": 16000
+      }
+     ],
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "nowMs": 16000,
+     "expected": {
+      "trigger": true,
+      "dirty": true,
+      "why": "undervoltage 16x in 30s",
+      "cause": "power",
+      "lastDirtyMs": 16000
+     }
+    },
+    {
+     "op": "computeShedSignals",
+     "samples": [
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 1000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 2000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 3000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 4000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 5000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 6000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 7000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 8000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 9000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 10000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 11000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 12000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 13000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 14000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 15000
+      },
+      {
+       "uv": false,
+       "railV": 5.05,
+       "tempC": 55,
+       "softTemp": false,
+       "tMs": 16000
+      }
+     ],
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "nowMs": 16000,
+     "expected": {
+      "trigger": false,
+      "dirty": false,
+      "why": null,
+      "cause": null,
+      "lastDirtyMs": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "holds the reason through a cleared trigger, and only drops it on restore",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1) > ShedVerdict.reason — the latch Phase 2 publishes",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 400,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 79
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 417000,
+     "n": 121,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 60
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 119,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → full (clean for 120s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "names undervoltage for the UV bit AND for the rail (one published case)",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1) > ShedVerdict.reason — the latch Phase 2 publishes",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 3,
+     "reading": {
+      "uv": true,
+      "railV": 5.05,
+      "tempC": 60
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 2,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (undervoltage 3x in 30s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "new",
+     "inst": 1,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 1,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 4.7,
+      "tempC": 60
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.70V < 4.85V for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (rail 4.70V < 4.85V for 15s): live streaming off, recording continues"
+      },
+      "reason": "undervoltage",
+      "detail": "rail 4.70V < 4.85V for 15s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "the firmware's 0x8 bit is thermal too",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1) > ShedVerdict.reason — the latch Phase 2 publishes",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 1,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 62,
+      "softTemp": true
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu soft temp limit (throttle bit 0x8)): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu soft temp limit (throttle bit 0x8)): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu soft temp limit (throttle bit 0x8)"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a shed that changes cause is re-latched, and rung 2 → 1 keeps it",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1) > ShedVerdict.reason — the latch Phase 2 publishes",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 70,
+     "reading": {
+      "uv": true,
+      "railV": 4.7,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 59,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → bridge-only (undervoltage 31x in 30s, triggered 100% of the last 60s past no-live): video recording off, telemetry recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 2,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 87000,
+     "n": 121,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 60
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 119,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → no-live (clean for 120s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": null,
+      "reason": "undervoltage",
+      "detail": "undervoltage 3x in 30s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 208000,
+     "n": 121,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 60
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 118,
+       "event": {
+        "level": "info",
+        "msg": "power shed restore → full (clean for 120s)"
+       }
+      }
+     ],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": null,
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "a parked shed keeps its reason indefinitely (no restore to clear it)",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1) > ShedVerdict.reason — the latch Phase 2 publishes",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 0
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues; shed-cycle cap (0/h) exhausted — parked until reboot or settings change"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": true,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues; shed-cycle cap (0/h) exhausted — parked until reboot or settings change"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 600,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 50
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 0
+     },
+     "events": [],
+     "last": {
+      "level": 1,
+      "parked": true,
+      "event": null,
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    }
+   ]
+  },
+  {
+   "name": "disabling power shedding drops the reason with the ladder",
+   "describe": "LoadShedPolicy — thermal arm (Phase 1) > ShedVerdict.reason — the latch Phase 2 publishes",
+   "ops": [
+    {
+     "op": "new",
+     "inst": 0,
+     "mono": 0
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 1000,
+     "n": 16,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": true,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 15,
+       "event": {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+       }
+      }
+     ],
+     "last": {
+      "level": 1,
+      "parked": false,
+      "event": {
+       "level": "warn",
+       "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 15s): live streaming off, recording continues"
+      },
+      "reason": "thermal",
+      "detail": "cpu 85.0°C >= 80°C for 15s"
+     }
+    },
+    {
+     "op": "tick",
+     "inst": 0,
+     "firstMono": 17000,
+     "n": 1,
+     "reading": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 85
+     },
+     "cfg": {
+      "enabled": false,
+      "uvSamples": 3,
+      "uvWindowSecs": 30,
+      "railLowVolts": 4.85,
+      "railLowSecs": 15,
+      "escalateDwellSecs": 60,
+      "escalateDutyPct": 70,
+      "cpuTempC": 80,
+      "cpuTempRestoreC": 70,
+      "cpuTempSecs": 15,
+      "restoreSecs": 120,
+      "railRestoreVolts": 4.95,
+      "maxShedsPerHour": 4
+     },
+     "events": [
+      {
+       "i": 0,
+       "event": {
+        "level": "info",
+        "msg": "power shedding disabled by settings — restoring full operation"
+       }
+      }
+     ],
+     "last": {
+      "level": 0,
+      "parked": false,
+      "event": {
+       "level": "info",
+       "msg": "power shedding disabled by settings — restoring full operation"
+      },
+      "reason": null,
+      "detail": null
+     }
+    }
+   ]
+  }
+ ]
+}

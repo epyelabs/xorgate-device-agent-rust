@@ -1,0 +1,1724 @@
+{
+ "jsSourceFile": "test/recording-boot-policy.test.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "tsx shim run from the scratchpad against the JS working tree (not committed there): the real test file with `vitest` swapped for an in-order describe/it runner and boot-policy.js wrapped by a recorder; `expected` = the TS output of every call",
+ "cases": [
+  {
+   "name": "mode=off and maxSecs=0 both disable the feature (today's behavior)",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "off",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "off",
+      "why": "disabled",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 0,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "off",
+      "why": "disabled",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "auto skips at/above the budget threshold, arms below it",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 5000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "skipped",
+      "why": "psu budget 5000mA >= 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "auto honors an EEPROM-override threshold (>= semantics, not == 5000)",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 4000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 4000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "skipped",
+      "why": "psu budget 4000mA >= 4000",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 4000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 4000mA < 5000",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "unreadable budget keeps the defer armed in auto (cap still bounds it)",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": null,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget unknown < 5000",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "always arms regardless of a 5 A budget",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "always",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 5000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "mode=always",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "releases on connected and dead_zone (terminal modem verdicts)",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "connected",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "dead_zone",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "dead_zone",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "releases on reg 1/5 while connecting, keeps deferring otherwise",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "reg",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 5
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "reg",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 2
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "disconnected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "fails open when telemetry.json is stale (>60 s) or has a bad timestamp",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:45:35.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 65000,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "stale",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": 42,
+       "status": "connecting"
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "stale",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "a clock STEP cannot forge a dead daemon (Phase 6 monotonic guard)",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "1948-09-22T01:46:40.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 2000,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "1948-09-22T01:46:40.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 10000,
+      "telemetryUnchangedMs": 60001,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "stale",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "missing file gets the stale grace window, then fails open",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": null,
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": null,
+      "nowMs": 1000000000000,
+      "elapsedMs": 61000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "stale",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "hard cap releases with 'timeout' even against fresh connecting telemetry",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 90000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "timeout",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "a shortened maxSecs releases an active defer (live-tunable cap)",
+   "describe": "decideBootDefer",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 20000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": false,
+      "state": "deferring",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 15,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 20000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "timeout",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "holds video AND live while LTE is up but the fix has not landed",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "releases on LTE connected + GPS fix (the happy path)",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": true,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "gps-fix",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "a fix alone does not release while LTE is still connecting",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": true,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "reg",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connecting",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": true,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "releases on a declared dead zone (the modem gave up on LTE)",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "dead_zone"
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "dead_zone",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "releases on a sustained no-RF sky (a fix is not coming)",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "no-rf"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "no-rf",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "obstructed"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "unknown"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "releases at the give-up cap, and never on the stage-1 cap",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 120000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 600000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "gate-timeout",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "gateMaxSecs 0 means no time cap at all (Q8)",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 0,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 86400000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 0,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 86400000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "no-rf"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "no-rf",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "fails open when the modem daemon is gone",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": null,
+      "nowMs": 1000000000000,
+      "elapsedMs": 61000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "stale",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "auto is budget-gated; always gates a 5 A device; off is pre-Phase-7 behavior",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 5000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "skipped",
+      "why": "psu budget 5000mA >= 5000",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "always",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 5000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "mode=always",
+      "holdLive": true
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "off",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "connected",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "arms on its own when the stage-1 defer is switched off",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "off",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "cannot arm without a GNSS view — a receiver-less host is never held",
+   "describe": "decideBootDefer — GPS/LTE gate (Phase 7)",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "always",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "connected",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "off",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "always",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 30000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": null
+     },
+     "expected": {
+      "allow": true,
+      "state": "off",
+      "why": "disabled",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "releases once neither a fix nor LTE has arrived for the window",
+   "describe": "decideBootDefer — gate no-progress escape hatch",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 120
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "disconnected",
+       "reg": 99
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 130000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "no-progress",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "keeps gating before the window elapses",
+   "describe": "decideBootDefer — gate no-progress escape hatch",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 120
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "disconnected",
+       "reg": 99
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 119000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    }
+   ]
+  },
+  {
+   "name": "never fires while LTE IS connected — that is the acquiring case",
+   "describe": "decideBootDefer — gate no-progress escape hatch",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 120
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 500000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 120
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 600000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "gate-timeout",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "does not pre-empt a fix that did arrive",
+   "describe": "decideBootDefer — gate no-progress escape hatch",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 120
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "connected",
+       "reg": 1
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 130000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": true,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "gps-fix",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "0 disables it, restoring cap-only behavior",
+   "describe": "decideBootDefer — gate no-progress escape hatch",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "disconnected",
+       "reg": 99
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 130000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": false,
+      "state": "gating",
+      "why": "psu budget 3000mA < 5000",
+      "holdLive": true
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 0
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "disconnected",
+       "reg": 99
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 600000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "gate-timeout",
+      "holdLive": false
+     }
+    }
+   ]
+  },
+  {
+   "name": "more specific arms still win — dead_zone and no-rf name the cause",
+   "describe": "decideBootDefer — gate no-progress escape hatch",
+   "calls": [
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 120
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "dead_zone",
+       "reg": 0
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 130000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "clear"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "dead_zone",
+      "holdLive": false
+     }
+    },
+    {
+     "cfg": {
+      "mode": "auto",
+      "maxSecs": 90,
+      "minBudgetMa": 5000,
+      "gateMode": "auto",
+      "gateMaxSecs": 600,
+      "gateNoProgressSecs": 120
+     },
+     "input": {
+      "budgetMa": 3000,
+      "telemetry": {
+       "timestamp": "2001-09-09T01:46:39.000Z",
+       "status": "disconnected",
+       "reg": 99
+      },
+      "nowMs": 1000000000000,
+      "elapsedMs": 130000,
+      "telemetryUnchangedMs": 0,
+      "staleMs": 60000,
+      "gnss": {
+       "fix": false,
+       "sky": "no-rf"
+      }
+     },
+     "expected": {
+      "allow": true,
+      "state": "released",
+      "why": "no-rf",
+      "holdLive": false
+     }
+    }
+   ]
+  }
+ ]
+}
