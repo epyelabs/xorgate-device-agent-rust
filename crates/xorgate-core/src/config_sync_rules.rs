@@ -100,9 +100,7 @@ pub fn modem_seen(effective: &Map<String, Value>) -> bool {
 /// `sample.apn === undefined ? undefined : JSON.stringify(sample.apn)`
 /// (`config-sync.ts:1497`): the APN watch's fingerprint of a fresh probe.
 pub fn apn_fingerprint(apn: Option<&ApnBlock>) -> Option<String> {
-    apn.map(|a| {
-        crate::js::to_json_string(&serde_json::to_value(a).expect("ApnBlock serialises"))
-    })
+    apn.map(|a| crate::js::to_json_string(&serde_json::to_value(a).expect("ApnBlock serialises")))
 }
 
 /// `apnBlock === undefined ? undefined : JSON.stringify(apnBlock)` over the

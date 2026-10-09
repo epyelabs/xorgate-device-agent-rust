@@ -32,9 +32,7 @@ use sync::{ConfigSync, ConfigSyncOptions};
 /// `JSON.stringify(settings)` — the bytes `saveSettings` writes
 /// (`settings.ts:640-642`), numbers printed like JS (`5`, not `5.0`).
 pub fn settings_json(settings: &AgentSettings) -> String {
-    xorgate_core::js::to_json_string(
-        &serde_json::to_value(settings).expect("settings serialise"),
-    )
+    xorgate_core::js::to_json_string(&serde_json::to_value(settings).expect("settings serialise"))
 }
 
 /// `saveSettings(settings, path)` with JS-exact bytes.

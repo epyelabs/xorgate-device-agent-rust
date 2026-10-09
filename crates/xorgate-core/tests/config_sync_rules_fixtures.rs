@@ -55,12 +55,21 @@ fn rules_fixture() {
                 let settle = needs_settle_report(&status);
                 assert_eq!(json!(settle), e["settle"], "{}", c.name);
                 if settle {
-                    assert_eq!(
-                        settle_origin(origin(&i["origin"])),
-                        origin(&e["settleOrigin"]),
-                        "{}",
-                        c.name
-                    );
+                    // The fixture records the origin the settle report was
+                    // PUBLISHED with. A `local` first report that went out
+                    // online retired the change (baseline = current,
+                    // `:1556-1559`), so the settle timer's `request("local")`
+                    // meets an empty diff at publish time and downgrades to
+                    // `boot` (`:1527-1533`) — model both steps.
+                    let requested = settle_origin(origin(&i["origin"]));
+                    let empty = AgentSettings::default();
+                    let published = resolve_report_origin(
+                        requested,
+                        Some(&xorgate_core::config_report::namespaces_of(&empty)),
+                        &empty,
+                    )
+                    .origin;
+                    assert_eq!(published, origin(&e["settleOrigin"]), "{}", c.name);
                 }
             }
             "modemArrivalTrigger" => {
@@ -69,7 +78,12 @@ fn rules_fixture() {
             }
             "apnFingerprint" => {
                 let apn: Option<ApnBlock> = serde_json::from_value(i["apn"].clone()).unwrap();
-                assert_eq!(json!(apn_fingerprint(apn.as_ref())), e["sample"], "{}", c.name);
+                assert_eq!(
+                    json!(apn_fingerprint(apn.as_ref())),
+                    e["sample"],
+                    "{}",
+                    c.name
+                );
                 let report = build_config_report(
                     &ReportInput {
                         device_id: "d".into(),
@@ -108,13 +122,17 @@ fn rules_fixture() {
             "publishOutcome" => {
                 let mut state = parse_config_sync_state(i["stateFile"].as_str());
                 let s = settings(&i["settings"]);
-                let res = resolve_report_origin(origin(&i["origin"]), state.namespaces.as_ref(), &s);
+                let res =
+                    resolve_report_origin(origin(&i["origin"]), state.namespaces.as_ref(), &s);
                 if res.clear_local_pending {
                     state.merge([SyncPatch::LocalPending(false)]);
                 }
                 assert_eq!(res.origin, origin(&e["origin"]), "{}", c.name);
                 assert_eq!(
-                    res.changed.clone().map(Value::Object).unwrap_or(Value::Null),
+                    res.changed
+                        .clone()
+                        .map(Value::Object)
+                        .unwrap_or(Value::Null),
                     e["changed"],
                     "{}",
                     c.name
@@ -162,7 +180,13 @@ fn local_check_edges() {
         }
     );
     assert_eq!(
-        check_local_change(&st, "h2", &Err(SettingsReadFailure::Invalid), true, "/s.json"),
+        check_local_change(
+            &st,
+            "h2",
+            &Err(SettingsReadFailure::Invalid),
+            true,
+            "/s.json"
+        ),
         LocalCheck::Paused { warn: None }
     );
     // Never baselined: adopt silently (namespaces, then settingsHash).
@@ -185,8 +209,15 @@ fn local_check_edges() {
         other => panic!("{other:?}"),
     }
     // noteSettingsWritten refuses unreadable AND invalid, accepts absent.
-    assert!(note_settings_written(&st, &Err(SettingsReadFailure::Invalid), &["gnssAntBias"], "").is_none());
-    let p = note_settings_written(&st, &Err(SettingsReadFailure::Absent), &["gnssAntBias"], "").unwrap();
+    assert!(note_settings_written(
+        &st,
+        &Err(SettingsReadFailure::Invalid),
+        &["gnssAntBias"],
+        ""
+    )
+    .is_none());
+    let p = note_settings_written(&st, &Err(SettingsReadFailure::Absent), &["gnssAntBias"], "")
+        .unwrap();
     st.merge(p);
     assert_eq!(
         st.to_file_string(),

@@ -132,7 +132,10 @@ fn boot_upgrades() {
     let cases = rules("bootUpgrade");
     assert_eq!(cases.len(), 4);
     for (k, c) in cases.iter().enumerate() {
-        let (ctx, home) = ctx_in(&format!("wp3-boot{k}"), Arc::new(xorgate_agent::ctx::NoopHooks));
+        let (ctx, home) = ctx_in(
+            &format!("wp3-boot{k}"),
+            Arc::new(xorgate_agent::ctx::NoopHooks),
+        );
         std::fs::write(&ctx.paths.settings, c.input["settings"].as_str().unwrap()).unwrap();
         if let Some(ch) = c.input["channels"].as_array() {
             let channels: Vec<Value> = ch
@@ -183,7 +186,10 @@ fn hardware_block_save_load_round_trip() {
     struct HwFixture {
         cases: Vec<HwCase>,
     }
-    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/hardware_block/parse.json");
+    let p = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/hardware_block/parse.json"
+    );
     let f: HwFixture = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
     let home = scratch("wp3-hw");
     let path = home.join("hardware.json");
@@ -201,7 +207,12 @@ fn hardware_block_save_load_round_trip() {
             "{}",
             c.name
         );
-        assert_eq!(read_hardware_file(&path), HardwareFile::Block(block), "{}", c.name);
+        assert_eq!(
+            read_hardware_file(&path),
+            HardwareFile::Block(block),
+            "{}",
+            c.name
+        );
         n += 1;
     }
     assert_eq!(n, 2);
@@ -226,7 +237,10 @@ async fn read_modem_bias_over_the_tolerance_fixture() {
     struct MFixture {
         cases: Vec<MCase>,
     }
-    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/modem/telemetry-tolerance.json");
+    let p = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/modem/telemetry-tolerance.json"
+    );
     let f: MFixture = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
     let home = scratch("wp3-modem");
     let file = home.join("telemetry.json");
@@ -302,7 +316,10 @@ fn rig(tag: &str) -> Rig {
     let (s, t) = (sent.clone(), timeline.clone());
     o.publish = Arc::new(move |_topic, payload| {
         let v: Value = serde_json::from_slice(&payload).unwrap();
-        push(&t, format!("report {} rev={}", v["origin"].as_str().unwrap(), v["rev"]));
+        push(
+            &t,
+            format!("report {} rev={}", v["origin"].as_str().unwrap(), v["rev"]),
+        );
         s.lock().unwrap().push(v);
         Ok(())
     });
@@ -417,8 +434,7 @@ async fn handle_config_message_order() {
     //    BEFORE the reapply hooks; the rev does not advance; still reported.
     std::fs::remove_file(&ctx.paths.settings).unwrap();
     std::fs::create_dir(&ctx.paths.settings).unwrap(); // EISDIR = unreadable
-    r.handler
-        .handle(br#"{"v":1,"rev":12,"gnssAntBias":false}"#);
+    r.handler.handle(br#"{"v":1,"rev":12,"gnssAntBias":false}"#);
     tokio::time::sleep(Duration::from_millis(2500)).await;
     assert_eq!(r.take(), vec!["report cloud rev=11"]);
     assert_eq!(
@@ -456,15 +472,18 @@ async fn handle_config_message_order() {
 #[tokio::test(start_paused = true)]
 async fn upload_bucket_is_skipped_offline() {
     let mut r = rig("wp3-offline");
-    let mut env = (*r.ctx.env).clone_for_test();
+    let mut env = (*r.ctx.env).clone();
     env.config.offline = true;
     r.ctx.env = Arc::new(env);
     r.handler.ctx = r.ctx.clone();
-    let kvs = r#"{"deviceId":"d","region":"r","credentialEndpoint":"c","roleAlias":"a","channels":[]}"#;
+    let kvs =
+        r#"{"deviceId":"d","region":"r","credentialEndpoint":"c","roleAlias":"a","channels":[]}"#;
     std::fs::write(&r.ctx.paths.kvs_manifest, kvs).unwrap();
-    r.handler
-        .handle(br#"{"v":1,"uploadBucket":"b"}"#);
-    assert_eq!(std::fs::read_to_string(&r.ctx.paths.kvs_manifest).unwrap(), kvs);
+    r.handler.handle(br#"{"v":1,"uploadBucket":"b"}"#);
+    assert_eq!(
+        std::fs::read_to_string(&r.ctx.paths.kvs_manifest).unwrap(),
+        kvs
+    );
     r.sync.stop();
     let _ = std::fs::remove_dir_all(&r.home);
 }
@@ -514,7 +533,10 @@ async fn plane_wiring_through_config_plane() {
     };
     let r = reports(&link);
     assert_eq!(r.len(), 1);
-    assert_eq!((r[0]["origin"].as_str(), r[0]["rev"].as_u64()), (Some("cloud"), Some(3)));
+    assert_eq!(
+        (r[0]["origin"].as_str(), r[0]["rev"].as_u64()),
+        (Some("cloud"), Some(3))
+    );
     assert_eq!(r[0]["effective"]["agent"]["mode"], "real");
     assert_eq!(
         r[0]["effective"]["telemetryScope"]["topic"],

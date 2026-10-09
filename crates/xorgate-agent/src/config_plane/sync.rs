@@ -40,8 +40,8 @@ use xorgate_core::boot_config::CameraMountState;
 use xorgate_core::build_info::BuildInfo;
 use xorgate_core::cloud_config::CloudConfig;
 use xorgate_core::config_report::{
-    build_config_report, modem_bias_from_telemetry, ConfigReport, ConfigSyncState,
-    DesiredSnapshot, ModemBiasSample, ReportHints, ReportInput, ReportOrigin, SyncPatch,
+    build_config_report, modem_bias_from_telemetry, ConfigReport, ConfigSyncState, DesiredSnapshot,
+    ModemBiasSample, ReportHints, ReportInput, ReportOrigin, SyncPatch,
 };
 use xorgate_core::config_sync_rules as rules;
 use xorgate_core::settings::{AgentSettings, SettingsReadResult};
@@ -327,13 +327,8 @@ impl ConfigSync {
         }
         let read = self.read_settings();
         let file = self.opts().settings_file.display().to_string();
-        match rules::check_local_change(
-            &core.state,
-            &hash,
-            &read,
-            core.unreadable_settings,
-            &file,
-        ) {
+        match rules::check_local_change(&core.state, &hash, &read, core.unreadable_settings, &file)
+        {
             rules::LocalCheck::Unchanged => {}
             rules::LocalCheck::Paused { warn } => {
                 core.unreadable_settings = true;

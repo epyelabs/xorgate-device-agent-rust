@@ -234,7 +234,11 @@ fn check(it: &str, h: &Home, cap: &Cap, extras: Value) {
         e["reads"],
         "{it}: reads"
     );
-    assert_eq!(h.state_file(), e["configSyncFile"], "{it}: config-sync.json");
+    assert_eq!(
+        h.state_file(),
+        e["configSyncFile"],
+        "{it}: config-sync.json"
+    );
     for (k, v) in extras.as_object().unwrap() {
         assert_eq!(v, &e[k], "{it}: {k}");
     }
@@ -254,7 +258,9 @@ fn state_file_lives_beside_settings() {
     };
     let e = expected("config-sync.test.ts:60");
     assert_eq!(
-        json!(rel(&xorgate_hal::config_sync_file::config_sync_path(&h.dir))),
+        json!(rel(&xorgate_hal::config_sync_file::config_sync_path(
+            &h.dir
+        ))),
         e["configSyncPath"]
     );
     assert_eq!(
@@ -427,7 +433,10 @@ async fn settle_rereport() {
     let mut o = harness(&h, &cap);
     o.topic = "t".into();
     // `modemReads++ > 0`: false on the first read, true after.
-    o.modem = base(&h, &cap, |n| Ok(sample(json!({"value": n > 1, "fresh": true})))).modem;
+    o.modem = base(&h, &cap, |n| {
+        Ok(sample(json!({"value": n > 1, "fresh": true})))
+    })
+    .modem;
     o.settle_ms = 5;
     let sync = ConfigSync::new(o);
     desired(&sync, json!({"rev": 4, "gnssAntBias": true}), true);
@@ -448,7 +457,10 @@ async fn settle_rereports_are_bounded() {
     let (h, cap) = (Home::new("t718"), Arc::new(Cap::default()));
     let mut o = harness(&h, &cap);
     o.topic = "t".into();
-    o.modem = base(&h, &cap, |_| Ok(sample(json!({"value": false, "fresh": true})))).modem;
+    o.modem = base(&h, &cap, |_| {
+        Ok(sample(json!({"value": false, "fresh": true})))
+    })
+    .modem;
     o.settle_ms = 5;
     o.settle_reports = 2;
     let sync = ConfigSync::new(o);
@@ -570,7 +582,8 @@ async fn watcher_ignores_a_write_that_moved_nothing() {
     h.save_settings(r#"{"mode":"sim","gnssAntBias":true}"#);
     delay(40).await;
     sync.stop();
-    let hash_matches = sync.sync_state().settings_hash.as_deref() == Some(&sha256_file(&h.settings()));
+    let hash_matches =
+        sync.sync_state().settings_hash.as_deref() == Some(&sha256_file(&h.settings()));
     check(
         "config-sync.test.ts:888",
         &h,

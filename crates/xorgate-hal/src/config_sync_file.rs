@@ -128,10 +128,19 @@ mod tests {
         assert_eq!(first.last_applied_rev, 12);
         assert_eq!(
             first.namespaces.as_ref().unwrap(),
-            serde_json::json!({"gnssAntBias": true}).as_object().unwrap()
+            serde_json::json!({"gnssAntBias": true})
+                .as_object()
+                .unwrap()
         );
         std::fs::write(&s, r#"{"mode":"real","gnssAntBias":false}"#).unwrap();
-        assert_eq!(ensure_config_sync_baseline(&p, &s), first);
+        // Re-loaded from the file: same values; the key order is the
+        // loader's (`settingsHash` before `namespaces`, `config-sync.ts:220-226`).
+        let again = ensure_config_sync_baseline(&p, &s);
+        assert_eq!(again, load_config_sync_state(&p));
+        assert_eq!(
+            (again.namespaces.as_ref(), again.settings_hash.as_ref()),
+            (first.namespaces.as_ref(), first.settings_hash.as_ref())
+        );
         // Absent settings.json: `{}` and hash "".
         let _ = std::fs::remove_file(&p);
         let _ = std::fs::remove_file(&s);
