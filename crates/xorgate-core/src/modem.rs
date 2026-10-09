@@ -1,9 +1,15 @@
-//! Modem presence — the pure `findModemLine` of `src/hardware/modem.ts:215-229`.
-//! The telemetry types (`modem.ts:21-196`) are WP1's [`crate::types`];
-//! `readModemTelemetry:203` (file read), `listTtyUsb:231` and
-//! `detectModem:248` (`lsusb` spawn) are HAL.
+//! Modem presence — the pure `findModemLine` of `src/hardware/modem.ts:215-229`
+//! — and the lte telemetry group, the pure `mapTelemetry` of
+//! `src/agent/collectors/lte.ts:43-57`. The telemetry types (`modem.ts:21-196`)
+//! are WP1's [`crate::types`] (parse with [`ModemTelemetry::from_json`]);
+//! `readModemTelemetry:203` (file read), `listTtyUsb:231`,
+//! `detectModem:248` (`lsusb` spawn) and the lte collector's read/sample
+//! cadence (`lte.ts:62-98`) are HAL / agent.
 
 use serde::{Deserialize, Serialize};
+
+use crate::telemetry::{LteGroup, MetricLeaf};
+use crate::types::{GnssHealth, ModemTelemetry};
 
 /// `MODEM_USB_VENDOR` (`modem.ts:17`): SimCom SIM7600 as seen by lsusb.
 pub const MODEM_USB_VENDOR: &str = "1e0e";
@@ -104,6 +110,39 @@ fn match_id_line(line: &str) -> Option<(&str, &str, &str)> {
         ));
     }
     None
+}
+
+/// `mapTelemetry` (`collectors/lte.ts:43-57`): the `lte` telemetry group, or
+/// `None` (the collector returns `{}`, the worker omits the group) when `csq`
+/// is not a number or is 99 (unknown signal). Every other leaf is gated on
+/// its own `typeof` check, so one bad field drops only its own leaf.
+///
+/// Deviation (unreachable from the daemon, which writes only the four labels
+/// via `gnss_health_state`): the TS tests `health in GNSS_HEALTH_CODES`, which
+/// is also true for inherited keys such as `"toString"` and would emit a
+/// value-less `gnss_health: {}`; here only the four labels map.
+pub fn lte_group(t: &ModemTelemetry) -> Option<LteGroup> {
+    let csq = t.csq.filter(|&c| c != 99.0)?;
+    Some(LteGroup {
+        quality: MetricLeaf::with_unit(csq, "asu"),
+        rssi: t.rssi_dbm.map(|v| MetricLeaf::with_unit(v, "dBm")),
+        modem_temp: t
+            .modem_temp
+            .filter(|v| v.is_finite())
+            .map(|v| MetricLeaf::with_unit(v, "°C")),
+        gnss_health: t
+            .gnss
+            .as_ref()
+            .and_then(|g| g.health.as_deref())
+            .and_then(GnssHealth::parse)
+            .map(|h| MetricLeaf::new(f64::from(h.code()))),
+        resets_24h: t
+            .recovery
+            .as_ref()
+            .and_then(|r| r.resets_24h)
+            .filter(|v| v.is_finite())
+            .map(MetricLeaf::new),
+    })
 }
 
 #[cfg(test)]

@@ -125,18 +125,26 @@ pub struct ModemClockReading {
 /// stale. Trust gate (Phase 8): used ONLY when `modem_clock.reg` — falling
 /// back to the snapshot's top-level `reg` for pre-Phase-8 daemons — is 1 or
 /// 5. Fail CLOSED: no evidence of registration ⇒ `None`.
+///
+/// Field checks are per field, as the TS `typeof`s (`:144-146`): a
+/// non-string `cclk` or non-number `read_at` ⇒ `None`; a `modem_clock.reg`
+/// that is not a number (absent, null, `"1"`) falls back to the top-level
+/// `reg`, while a NUMBER that is not 1/5 does not fall back. The stat
+/// comparison is on the JS number (`Set.has(1.0)` is `has(1)`).
 pub fn read_modem_clock(now: WallMs, t: Option<&ModemTelemetry>) -> Option<ModemClockReading> {
-    let mc = t?.modem_clock.as_ref()?;
-    let reg = mc.reg.or(t?.reg)?;
-    if !REGISTERED_STATS.contains(&reg) {
+    let t = t?;
+    let mc = t.modem_clock.as_ref()?;
+    let (cclk, read_at) = (mc.cclk.as_deref()?, mc.read_at?);
+    let reg = mc.reg.or(t.reg)?;
+    if !REGISTERED_STATS.iter().any(|&s| s as f64 == reg) {
         return None;
     }
-    let read_at_ms = mc.read_at * 1000.0;
+    let read_at_ms = read_at * 1000.0;
     let age = now as f64 - read_at_ms;
     if age < -5_000.0 || age > MODEM_CLOCK_FRESH_MS {
         return None;
     }
-    let utc_ms = parse_cclk_utc_ms(&mc.cclk)?;
+    let utc_ms = parse_cclk_utc_ms(cclk)?;
     Some(ModemClockReading {
         offset_ms: utc_ms as f64 - read_at_ms,
     })
