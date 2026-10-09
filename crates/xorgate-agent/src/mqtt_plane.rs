@@ -22,13 +22,21 @@ use crate::scope::ScopeHandle;
 /// Why a fire-and-forget publish did not go out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublishFailure {
-    /// Not connected: nothing was queued (Phase 0 documented deviation #8 —
-    /// mqtt.js would queue it offline and flush it on reconnect).
+    /// Kept for the frozen wave-B enum; no longer returned. Since the WP1
+    /// follow-up a publish made while disconnected is QUEUED by the client and
+    /// sent after reconnect, exactly like mqtt.js's offline queue
+    /// (`client.js:1068-1096`; review-wp1 I-b) — Phase 0 deviation #8 is gone.
     NotConnected,
-    /// The client refused to queue it (request channel full / loop gone);
-    /// the text is the client's error message.
+    /// The client refused it (request channel full / loop gone / offline
+    /// queue disabled); the text is the client's error message.
     Failed(String),
 }
+
+/// The outcome of a publish with a callback (`client.publish(…, cb)`):
+/// `Some(Ok(()))` = sent (QoS 0 written / QoS 1 PUBACKed), `Some(Err(msg))` =
+/// the callback's error, `None` = the callback never fires (a QoS 0 publish
+/// discarded by a link drop or a full offline queue, or the client gone).
+pub type PublishDone = Option<Result<(), String>>;
 
 /// The transport under [`MqttHandle`]: the real client, the `--offline`
 /// stub, or a test fake.
@@ -44,6 +52,20 @@ pub trait MqttTransport: Send + Sync + 'static {
     ) -> BoxFut<'static, AckOutcome>;
     /// Queue a SUBSCRIBE.
     fn subscribe(&self, topic: &str, qos: QoS) -> Result<(), String>;
+    /// `client.publish(topic, payload, { qos, retain }, callback)`: queued NOW
+    /// (call order = wire order), the future is the callback. The default — for
+    /// fakes and the `--offline` stub, whose callback fires at once
+    /// (`mqtt.ts:91-94`) — is [`publish`](Self::publish) resolved immediately.
+    fn publish_notify(
+        &self,
+        topic: &str,
+        payload: Vec<u8>,
+        qos: QoS,
+        retain: bool,
+    ) -> BoxFut<'static, PublishDone> {
+        let r = self.publish(topic, payload, qos, retain);
+        Box::pin(async move { Some(r) })
+    }
     /// The link state.
     fn connection_watch(&self) -> watch::Receiver<LinkState>;
 }
@@ -70,7 +92,8 @@ impl MqttHandle {
     }
 
     /// `client.publish(topic, payload, { qos, retain })` without a callback
-    /// (reports, sms results, status). Not queued while disconnected.
+    /// (reports, sms results, status). While disconnected the client queues it
+    /// and sends it after reconnect (mqtt.js offline queue, review-wp1 I-b).
     pub fn publish(
         &self,
         topic: &str,
@@ -78,38 +101,36 @@ impl MqttHandle {
         qos: QoS,
         retain: bool,
     ) -> Result<(), PublishFailure> {
-        if !self.connected() {
-            return Err(PublishFailure::NotConnected);
-        }
         self.t
             .publish(topic, payload, qos, retain)
             .map_err(PublishFailure::Failed)
     }
 
+    /// `client.publish(…, callback)`: queued now, the returned future is the
+    /// callback (see [`PublishDone`]). The future is `Send` and `'static`.
+    pub fn publish_notify(
+        &self,
+        topic: &str,
+        payload: Vec<u8>,
+        qos: QoS,
+        retain: bool,
+    ) -> BoxFut<'static, PublishDone> {
+        self.t.publish_notify(topic, payload, qos, retain)
+    }
+
     /// `publishCommandAck`'s wait (`worker.ts:953-974`): QoS 1, resolves on
     /// the PUBACK or after `timeout`, whichever is first. While disconnected
-    /// it waits (within the same budget) for the link to come back and then
-    /// publishes — what mqtt.js's offline queue does for the TS.
+    /// the client stores the publish and sends it after reconnect, and a
+    /// publish whose link dropped before its PUBACK is resent; the PUBACK of
+    /// the (re)sent packet resolves it within the same budget — mqtt.js's
+    /// outgoingStore (review-wp1 I-b). The future is `Send` (WP4).
     pub async fn publish_acked(
         &self,
         topic: &str,
         payload: Vec<u8>,
         timeout: Duration,
     ) -> AckOutcome {
-        let deadline = Instant::now() + timeout;
-        let mut w = self.t.connection_watch();
-        // `matches!` drops the `watch::Ref` guard here: holding it across the
-        // publish await below would make this future !Send (WP4 awaits acks
-        // in spawned tasks).
-        let up = matches!(
-            tokio::time::timeout_at(deadline, w.wait_for(|s| *s == LinkState::Connected)).await,
-            Ok(Ok(_))
-        );
-        if !up {
-            return AckOutcome::TimedOut;
-        }
-        let left = deadline.saturating_duration_since(Instant::now());
-        self.t.publish_acked(topic, payload, left).await
+        self.t.publish_acked(topic, payload, timeout).await
     }
 
     pub(crate) fn subscribe(&self, topic: &str, qos: QoS) -> Result<(), String> {
@@ -151,6 +172,23 @@ impl MqttTransport for RealTransport {
 
     fn connection_watch(&self) -> watch::Receiver<LinkState> {
         self.0.state_watch()
+    }
+
+    fn publish_notify(
+        &self,
+        topic: &str,
+        payload: Vec<u8>,
+        qos: QoS,
+        retain: bool,
+    ) -> BoxFut<'static, PublishDone> {
+        let rx = self.0.publish_tracked(topic, qos, retain, payload);
+        Box::pin(async move {
+            match rx.await {
+                Ok(AckOutcome::Acked) => Some(Ok(())),
+                Ok(AckOutcome::Failed(msg)) => Some(Err(msg)),
+                Ok(AckOutcome::TimedOut) | Err(_) => None,
+            }
+        })
     }
 }
 
@@ -273,7 +311,8 @@ impl MqttPlane {
             }
             MqttEvent::Reconnecting { attempt, delay } => self.on_reconnect(attempt, delay),
             MqttEvent::ServerDisconnect { reason } => {
-                // mqtt.js emits `disconnect`, which the worker does not handle; log only.
+                // mqtt.js emits `disconnect`, which the worker does not handle;
+                // journal only (amb. #7). The close follows as `Disconnected`.
                 info!("[agent] broker sent DISCONNECT ({reason})");
             }
             MqttEvent::SubscribeFailed { topic, reason } => {
@@ -456,6 +495,7 @@ impl PublishTick {
         let ts = self.ctx.now_ms();
         let media = self.ctx.hooks.overlay_media(reading.media);
         let recording = self.ctx.hooks.recording_status();
+        self.ctx.hooks.note_recording_status(&recording);
         let payload = TelemetryPayload {
             v: 1,
             device_id: self.ctx.env.config.device_id.clone(),
@@ -469,28 +509,87 @@ impl PublishTick {
         self.ctx.state.set_latest(payload);
         // The backoff re-probe lives on this tick (`:1233-1234`).
         self.scope.note_tick(ts);
-        match self
+        let mut done = self
             .mqtt
-            .publish(&self.scope.topic(), bytes, QoS::AtMostOnce, false)
-        {
-            Ok(()) => {
-                if self.ctx.shutting_down() {
-                    return;
-                }
-                let t = self.ctx.now_ms();
-                self.ctx.state.record_publish(t);
-                self.scope.note_publish();
-                self.ctx.state.flush(t, false);
-            }
-            Err(PublishFailure::NotConnected) => {}
-            Err(PublishFailure::Failed(msg)) => {
-                if self.ctx.shutting_down() {
-                    return;
-                }
-                let t = self.ctx.now_ms();
-                self.ctx.state.record_publish_error(&msg, t);
-                self.ctx.state.flush(t, false);
-            }
+            .publish_notify(&self.scope.topic(), bytes, QoS::AtMostOnce, false);
+        let on_done = PublishCallback {
+            ctx: self.ctx.clone(),
+            scope: self.scope.clone(),
+        };
+        // The callback (`:1235-1245`). Connected, it fires once the payload is
+        // written; disconnected, the payload waits in the client's offline
+        // queue and the callback fires when it is flushed after the reconnect
+        // (`queueQoSZero`) — so `published` counts what left the client, as in
+        // the TS. Run inline when already settled (fakes, the offline stub).
+        if let Some(r) = ready_now(&mut done) {
+            on_done.run(r);
+            return;
         }
+        let cancel = self.ctx.cancel.clone();
+        self.ctx.spawn("publish_callback", async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                r = done => on_done.run(r),
+            }
+        });
+    }
+}
+
+/// The tick's publish callback (`worker.ts:1235-1245`).
+struct PublishCallback {
+    ctx: AgentCtx,
+    scope: ScopeHandle,
+}
+
+impl PublishCallback {
+    fn run(&self, r: PublishDone) {
+        let Some(r) = r else {
+            return; // never called back (discarded QoS 0)
+        };
+        if self.ctx.shutting_down() {
+            return; // don't re-write state after the final flush
+        }
+        let t = self.ctx.now_ms();
+        match r {
+            Ok(()) => {
+                self.ctx.state.record_publish(t);
+                // Counts toward "this connection carried traffic on the scoped topic".
+                self.scope.note_publish();
+            }
+            Err(msg) => self.ctx.state.record_publish_error(&msg, t),
+        }
+        self.ctx.state.flush(t, false);
+    }
+}
+
+/// Poll a future once without a runtime waker: `Some` when already settled.
+fn ready_now<T>(f: &mut BoxFut<'static, T>) -> Option<T> {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match f.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(v) => Some(v),
+        std::task::Poll::Pending => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_send<T: Send>(_: &T) {}
+
+    /// WP4 (`publish_acked` used to hold a `watch::Ref` across an await): the
+    /// publish futures must be `Send` so planes can spawn them.
+    #[allow(dead_code)]
+    fn publish_futures_are_send(h: &MqttHandle) {
+        assert_send(&h.publish_acked("t", vec![], Duration::ZERO));
+        assert_send(&h.publish_notify("t", vec![], QoS::AtMostOnce, false));
+    }
+
+    #[test]
+    fn ready_now_polls_once() {
+        let mut ready: BoxFut<'static, u8> = Box::pin(async { 7 });
+        assert_eq!(ready_now(&mut ready), Some(7));
+        let mut pending: BoxFut<'static, u8> = Box::pin(std::future::pending());
+        assert_eq!(ready_now(&mut pending), None);
     }
 }

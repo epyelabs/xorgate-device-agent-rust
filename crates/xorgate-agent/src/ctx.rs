@@ -222,8 +222,10 @@ pub trait TelemetrySource: Send + Sync + 'static {
 }
 
 /// The config plane (WP3): `ConfigSync` + `handleConfigMessage`. Every method
-/// is non-blocking — an implementation queues onto its own task, which
-/// handles config messages strictly in arrival order (O11).
+/// is non-blocking — an implementation pushes onto a LOSSLESS (unbounded)
+/// queue drained by its own task, which handles config messages strictly in
+/// arrival order (O11). A bounded `try_send` would bring back the CF1 loss
+/// one hop later (review-wp1 I-a).
 pub trait ConfigPlane: Send + Sync + 'static {
     /// The connect handler's `configSync.request("boot"); configSync.startHeartbeat();`
     /// (`worker.ts:1186-1187`), called after the subscribes.
@@ -238,8 +240,10 @@ pub trait ConfigPlane: Send + Sync + 'static {
 /// What the worker hands the config plane (WP3) at construction
 /// (`new ConfigSync({...})`, `worker.ts:700-737`).
 pub struct ConfigPlaneDeps {
-    /// Report publishes (QoS 1, fire-and-forget like the TS) and `online()`
-    /// (= `mqtt.connected()`).
+    /// Report publishes (QoS 1, fire-and-forget like the TS; queued by the
+    /// client while the link is down). The TS `online()` gate
+    /// (`store.snapshot().connection === "connected"`, `worker.ts:712`) is
+    /// `ctx.state.is_connected()`, not `mqtt.connected()` (review-wp1 I-c).
     pub mqtt: MqttHandle,
     /// `telemetryScope.report()` + `applyScope` for config messages.
     pub scope: ScopeHandle,
@@ -257,8 +261,9 @@ pub struct CommandPlaneDeps {
     pub reports: ReportRequester,
 }
 
-/// The command plane (WP4): `handleCommandMessage`. Non-blocking; decide +
-/// claim run sequentially on the plane's own task, execution is spawned (O11).
+/// The command plane (WP4): `handleCommandMessage`. Non-blocking: push onto a
+/// LOSSLESS (unbounded) queue (review-wp1 I-a); decide + claim run
+/// sequentially on the plane's own task, execution is spawned (O11).
 pub trait CommandPlane: Send + Sync + 'static {
     /// One message on `…/command`, raw bytes.
     fn on_message(&self, payload: Vec<u8>);
@@ -314,8 +319,33 @@ pub trait PhaseHooks: Send + Sync + 'static {
     /// `reconcileHardwareNow()` + master bounce + `recording.reapply()` after a
     /// changed hardware block (`:839-845`).
     fn hardware_changed(&self) {}
-    /// `reconcileCameraMountNow()` (config path `:888`, 60 s poll `:647-651`).
+    /// `void reconcileCameraMountNow()` — fire-and-forget: the config path
+    /// (`:889`, WP3) and the worker's 60 s poll (`:648-651`).
     fn reconcile_camera_mount(&self) {}
+    /// `await reconcileHardwareNow()` at boot (`:427`), before anything reads
+    /// the pipelines. Awaited by the worker.
+    fn reconcile_hardware_boot(&self) -> BoxFut<'_, ()> {
+        Box::pin(async {})
+    }
+    /// `await reconcileCameraMountNow()` at boot (`:432`), after the hardware
+    /// reconcile and before the report plane. Awaited by the worker.
+    fn reconcile_camera_mount_boot(&self) -> BoxFut<'_, ()> {
+        Box::pin(async {})
+    }
+    /// `await recording.start()` (`:529`), after the recording manager is
+    /// built (`buildUploadOptions`, CF33). Awaited by the worker.
+    fn recording_start(&self) -> BoxFut<'_, ()> {
+        Box::pin(async {})
+    }
+    /// `noteRecordingStatus(recordingStatus)` from the publish tick (`:1207`;
+    /// the LED's recording view, `:581-587`).
+    fn note_recording_status(&self, _status: &RecordingStatus) {}
+    /// `store.setRecording(recording.status())` at shutdown (`:1307`), after
+    /// `recording_stop`. `None` writes nothing — Phase 2 keeps state.json's
+    /// `recording` absent (T6).
+    fn final_recording_status(&self) -> Option<RecordingStatus> {
+        None
+    }
     /// `cameraMountState` (Phase 4). `None` = not reconciled yet.
     fn camera_mount_state(&self) -> Option<CameraMountState> {
         None

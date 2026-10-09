@@ -9,8 +9,12 @@
 //! - a ledger write failure on disk;
 //! - acks enqueued in arrival order while an earlier PUBACK is pending.
 //!
-//! Queueing note (review-wp1 I-b): every test here runs with the link UP,
-//! so none depends on `MqttHandle` offline queueing (WP1 follow-up).
+//! - (WP1 follow-up, review-wp4 #1 / review-wp1 I-b) the link dropping before
+//!   the ack's PUBACK, through the REAL client and a local stub broker: the
+//!   ack is resent and the `read_sms` result delivered once after reconnect.
+
+#[path = "../../xorgate-cloud/tests/support/stub_broker.rs"]
+mod stub_broker;
 
 mod common;
 
@@ -386,4 +390,94 @@ async fn acks_are_enqueued_in_arrival_order_while_a_puback_is_pending() {
         vec![vec!["sudo", "-n", "systemctl", "poweroff"]]
     );
     r.ctx.cancel.cancel();
+}
+
+/// review-wp4 #1 / review-wp1 I-b, on real time through the REAL client
+/// (`RealTransport` over `MqttClient`) and the stub broker: a `read_sms`
+/// arrives, its `accepted` ack is written but the link dies before the
+/// PUBACK. The 3 s budget is only a wait — the plane proceeds (TS
+/// `setTimeout(done)`), the sms result is published while the link is down
+/// and QUEUED (no `publish failed: not connected`); after the reconnect the
+/// client resends the ack, then sends the sms result, each exactly once.
+#[tokio::test]
+async fn link_down_before_the_ack_resends_it_and_delivers_the_sms_once() {
+    use std::sync::atomic::Ordering;
+    use xorgate_agent::mqtt_plane::RealTransport;
+
+    let mut b = stub_broker::broker().await;
+    let (publisher, mut link_events, end) = stub_broker::client(b.port, 60).split();
+    stub_broker::connected(&mut link_events).await;
+    b.ctl.no_ack.store(true, Ordering::SeqCst);
+    b.ctl.hold_connack.store(true, Ordering::SeqCst);
+
+    let home = scratch("cmd-linkdown");
+    let mut ctx = test_ctx(&home, "dev-1", Arc::new(NoopHooks), null_tape());
+    let mut env: AgentEnv = (*ctx.env).clone();
+    env.config.mode = RunMode::Sim;
+    ctx.env = Arc::new(env);
+    ctx.clock = Arc::new(AgentClock::system());
+    let (reports, _rx) = ReportRequester::channel();
+    let plane = start_with(
+        &ctx,
+        CommandPlaneDeps {
+            mqtt: MqttHandle::new(Arc::new(RealTransport(publisher.clone()))),
+            reports,
+        },
+        Arc::new(RecordingRunner::new()),
+    );
+    let topics = ctx.env.config.topics.clone();
+    let now = ctx.now_ms();
+    plane.on_message(
+        format!(
+            r#"{{"v":1,"requestId":"req-ld","command":"read_sms","ts":{now},"expiresAt":{}}}"#,
+            now + 60_000
+        )
+        .into_bytes(),
+    );
+
+    // Connection 1 carries the ack, never PUBACKed; then the link dies.
+    assert_eq!(
+        b.next_seen().await,
+        (1, topics.command_response.clone(), QoS::AtLeastOnce)
+    );
+    b.cmd(1, stub_broker::Cmd::Kill);
+    let ev = stub_broker::next(&mut link_events).await;
+    assert!(
+        matches!(ev, xorgate_cloud::mqtt::MqttEvent::Disconnected { .. }),
+        "{ev:?}"
+    );
+
+    // After the 3 s budget the plane runs the sweep and publishes the result
+    // while the link is down (connection 2 holds its CONNACK).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    while !events(&ctx)
+        .iter()
+        .any(|e| e.contains("read_sms req-ld: status=ok"))
+    {
+        assert!(tokio::time::Instant::now() < deadline, "{:?}", events(&ctx));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    while b.ctl.conns.lock().unwrap().len() < 2 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!publisher.is_connected());
+    assert!(b.seen.try_recv().is_err(), "nothing sent while down");
+
+    b.ctl.no_ack.store(false, Ordering::SeqCst);
+    b.cmd(2, stub_broker::Cmd::ConnAck);
+    stub_broker::connected(&mut link_events).await;
+    assert_eq!(
+        b.next_seen().await,
+        (2, topics.command_response.clone(), QoS::AtLeastOnce),
+        "the unacknowledged ack is resent first"
+    );
+    assert_eq!(
+        b.next_seen().await,
+        (2, topics.sms.clone(), QoS::AtLeastOnce),
+        "then the queued sms result"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(b.seen.try_recv().is_err(), "each delivered once");
+    ctx.cancel.cancel();
+    assert!(end.shutdown(Duration::from_secs(2)).await);
 }
