@@ -68,7 +68,7 @@ jobs:
           pkg-config --modversion gstreamer-1.0
           aws --version
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # release event: the tag ref; manual: the provided tag input.
           ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
@@ -79,6 +79,10 @@ jobs:
             | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           export PATH="$CARGO_HOME/bin:$PATH"
+          if [ ! -f rust-toolchain.toml ]; then
+            echo "::error::rust-toolchain.toml is missing — the workspace must pin its toolchain (plan Phase 0)"
+            exit 1
+          fi
           rustup toolchain install
           rustup show
 
