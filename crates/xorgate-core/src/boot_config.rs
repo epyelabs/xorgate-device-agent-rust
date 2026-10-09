@@ -18,6 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hardware_block::DeviceHardwareBlock;
+use crate::js;
 use crate::telemetry::js_num_opt;
 
 /// `BOOT_CONFIG_CANDIDATES` (`boot-config.ts:46`): Bookworm first, then the
@@ -54,30 +55,6 @@ pub struct OverlayLine {
     pub text: String,
 }
 
-/// JS `String.prototype.trim()` exactly: ECMA-262 WhiteSpace (TAB, VT, FF,
-/// SP, NBSP, ZWNBSP/BOM U+FEFF, every `Zs`) + LineTerminator (LF, CR, LS, PS).
-/// NOT Rust's `str::trim`, which keeps U+FEFF and also strips U+0085 (NEL).
-pub(crate) fn js_trim(s: &str) -> &str {
-    s.trim_matches(is_js_whitespace)
-}
-
-fn is_js_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\u{9}'..='\u{d}'
-            | ' '
-            | '\u{a0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-            | '\u{feff}'
-    )
-}
-
 /// `parseOverlayLines` (`boot-config.ts:91`): every `dtoverlay=` line in the
 /// file, in order. Commented-out lines (`#dtoverlay=…`) are skipped; section
 /// conditionals (`[cm4]`, `[all]`, …) are deliberately NOT interpreted —
@@ -85,13 +62,13 @@ fn is_js_whitespace(c: char) -> bool {
 pub fn parse_overlay_lines(text: &str) -> Vec<OverlayLine> {
     let mut out = Vec::new();
     for (index, line) in text.split('\n').enumerate() {
-        let trimmed = js_trim(line);
+        let trimmed = js::trim(line);
         let Some(value) = trimmed.strip_prefix("dtoverlay=") else {
             continue;
         };
         let tokens: Vec<String> = value
             .split(',')
-            .map(js_trim)
+            .map(js::trim)
             .filter(|t| !t.is_empty())
             .map(str::to_string)
             .collect();
@@ -112,40 +89,11 @@ pub fn parse_overlay_lines(text: &str) -> Vec<OverlayLine> {
 /// (`/^csi(\d+)$/` on the trimmed connector). None for a connector this
 /// mapping does not know.
 pub fn overlay_cam_token(connector: &str) -> Option<String> {
-    let digits = js_trim(connector).strip_prefix("csi")?;
+    let digits = js::trim(connector).strip_prefix("csi")?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     Some(format!("cam{digits}"))
-}
-
-/// JS `Number(string)` for the subset a config.txt token can carry: trimmed;
-/// empty → 0; `0x`/`0o`/`0b` integer prefixes; `Infinity`; otherwise a
-/// decimal literal (`StrDecimalLiteral`). Anything else → NaN.
-fn js_number(s: &str) -> f64 {
-    let t = js_trim(s);
-    if t.is_empty() {
-        return 0.0;
-    }
-    let lower = t.to_ascii_lowercase();
-    for (prefix, radix) in [("0x", 16), ("0o", 8), ("0b", 2)] {
-        if let Some(rest) = lower.strip_prefix(prefix) {
-            return u64::from_str_radix(rest, radix)
-                .map(|v| v as f64)
-                .unwrap_or(f64::NAN);
-        }
-    }
-    match t {
-        "Infinity" | "+Infinity" => return f64::INFINITY,
-        "-Infinity" => return f64::NEG_INFINITY,
-        _ => {}
-    }
-    // Rust's f64 parser also accepts "inf"/"nan"/"infinity" (any case), which
-    // JS does not; a decimal literal never contains those letters.
-    if lower.contains(['i', 'n', 'a']) {
-        return f64::NAN;
-    }
-    t.parse::<f64>().unwrap_or(f64::NAN)
 }
 
 /// `rotationOfLine` (`boot-config.ts:118`): the rotation a line declares —
@@ -156,7 +104,7 @@ pub fn rotation_of_line(line: &OverlayLine) -> Option<f64> {
     let Some(token) = line.params.iter().find(|p| p.starts_with("rotation=")) else {
         return Some(0.0);
     };
-    let value = js_number(&token["rotation=".len()..]);
+    let value = js::number(&token["rotation=".len()..]);
     (value == 0.0 || value == 180.0).then_some(value)
 }
 
@@ -217,7 +165,7 @@ pub fn boot_config_camera(text: &str, cam_token: &str) -> BootConfigCameraView {
 /// libcamera's `/base/…` prefix maps onto `/proc/device-tree`; an empty node
 /// or one containing `..` is refused.
 pub fn dt_rotation_node(camera_name: &str) -> Option<String> {
-    let trimmed = js_trim(camera_name);
+    let trimmed = js::trim(camera_name);
     let node = trimmed.strip_prefix("/base/").unwrap_or(trimmed);
     if node.is_empty() || node.contains("..") {
         return None;
@@ -290,25 +238,23 @@ mod tests {
 
     #[test]
     fn js_number_subset() {
-        assert_eq!(js_number(""), 0.0);
-        assert_eq!(js_number("  "), 0.0);
-        assert_eq!(js_number("180"), 180.0);
-        assert_eq!(js_number(" 180 "), 180.0);
-        assert_eq!(js_number("1.8e2"), 180.0);
-        assert_eq!(js_number("0x0"), 0.0);
-        assert_eq!(js_number("0xb4"), 180.0);
-        assert!(js_number("abc").is_nan());
-        assert!(js_number("inf").is_nan());
-        assert!(js_number("nan").is_nan());
-        assert!(js_number("1_80").is_nan());
-        assert_eq!(js_number("Infinity"), f64::INFINITY);
-    }
-
-    #[test]
-    fn js_trim_is_ecmascript_trim() {
-        assert_eq!(js_trim("\u{feff} a \u{3000}\n"), "a");
-        assert_eq!(js_trim("\u{85}a\u{85}"), "\u{85}a\u{85}");
-        assert_eq!(js_trim("\u{180e}a"), "\u{180e}a");
+        // `rotation=` goes through the shared `Number(string)` (crate::js).
+        let n = js::number;
+        assert_eq!(n(""), 0.0);
+        assert_eq!(n("  "), 0.0);
+        assert_eq!(n("180"), 180.0);
+        assert_eq!(n(" 180 "), 180.0);
+        assert_eq!(n("1.8e2"), 180.0);
+        assert_eq!(n("0x0"), 0.0);
+        assert_eq!(n("0xb4"), 180.0);
+        assert!(n("abc").is_nan());
+        assert!(n("inf").is_nan());
+        assert!(n("nan").is_nan());
+        assert!(n("1_80").is_nan());
+        assert_eq!(n("Infinity"), f64::INFINITY);
+        // review-wp4 NIT 7: no sign after a radix prefix (JS: NaN)
+        assert!(n("0x+b4").is_nan());
+        assert!(n("0x-b4").is_nan());
     }
 
     #[test]

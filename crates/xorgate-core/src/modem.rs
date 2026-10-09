@@ -71,7 +71,7 @@ fn match_id_line(line: &str) -> Option<(&str, &str, &str)> {
         }
         let mut k = ci + 2;
         let ws_start = k;
-        while k < chars.len() && chars[k].1.is_whitespace() {
+        while k < chars.len() && crate::js::is_js_whitespace(chars[k].1) {
             k += 1;
         }
         if k == ws_start {
@@ -93,7 +93,7 @@ fn match_id_line(line: &str) -> Option<(&str, &str, &str)> {
         }
         let Some(pid) = hex4(k + 5) else { continue };
         let mut r = k + 9;
-        while r < chars.len() && chars[r].1.is_whitespace() {
+        while r < chars.len() && crate::js::is_js_whitespace(chars[r].1) {
             r += 1;
         }
         // `.*` runs to the end of input or the first line terminator.

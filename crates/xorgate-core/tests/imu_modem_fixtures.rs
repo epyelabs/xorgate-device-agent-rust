@@ -13,6 +13,7 @@ mod common;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use xorgate_core::clock_step::read_modem_clock;
+use xorgate_core::config_report::modem_bias_from_telemetry;
 use xorgate_core::imu::*;
 use xorgate_core::modem::*;
 use xorgate_core::types::ModemTelemetry;
@@ -130,6 +131,15 @@ fn modem_telemetry_tolerance() {
                 c.name
             );
         }
+        // config-sync.ts:505-538 over the same file (review-wp2 merge note;
+        // drives the shared js::date_parse on the daemon's `timestamp`).
+        let parsed: Option<Value> = serde_json::from_str(raw).ok();
+        assert_eq!(
+            serde_json::to_value(modem_bias_from_telemetry(parsed.as_ref(), now)).unwrap(),
+            e["readModemBias"],
+            "{}: readModemBias",
+            c.name
+        );
     }
     assert_eq!(f.cases.len(), 17);
 }

@@ -261,7 +261,11 @@ pub struct LedgerEntry {
     pub request_id: String,
     #[serde(with = "js_num")]
     pub at: f64,
-    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    #[serde(
+        flatten,
+        skip_serializing_if = "serde_json::Map::is_empty",
+        serialize_with = "crate::js::json_map::serialize"
+    )]
     pub extra: serde_json::Map<String, Value>,
 }
 
@@ -635,6 +639,19 @@ impl CommandAck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ledger_extra_keys_print_like_js() {
+        // A copy-through key's number goes out as `JSON.stringify` prints it
+        // (review-integration M1), not serde_json's `5e-6` / `1e20`.
+        let l = load_ledger(Some(
+            r#"{"v":1,"executed":[{"requestId":"r","at":1,"x":0.000005,"y":100000000000000000000}]}"#,
+        ));
+        assert_eq!(
+            serde_json::to_string(&l).unwrap(),
+            r#"{"v":1,"executed":[{"requestId":"r","at":1,"x":0.000005,"y":100000000000000000000}]}"#
+        );
+    }
 
     #[test]
     fn only_plan_hands_out_privileged_argv() {

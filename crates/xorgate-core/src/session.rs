@@ -16,8 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cameras::js_trim;
 use crate::clock::WallMs;
+use crate::js::trim as js_trim;
 use crate::types::{SteppedClockSource, TimeSource};
 
 /// `mintSessionId` (`session.ts:25-38`): UUIDv7 — 48-bit big-endian epoch
