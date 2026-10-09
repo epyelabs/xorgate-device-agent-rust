@@ -1,0 +1,5 @@
+#!/bin/sh
+# Rig shim: sudo — logs "<epoch ms> <argv…>" to $RIG_SUDO_LOG and succeeds,
+# so reboot/power_off/update/set-clock never touch the rig (C7/O3 diff input).
+printf '%s %s\n' "$(date +%s%3N)" "$*" >> "${RIG_SUDO_LOG:-/dev/null}"
+exit 0

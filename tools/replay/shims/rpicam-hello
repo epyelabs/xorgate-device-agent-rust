@@ -1,0 +1,6 @@
+#!/bin/sh
+# Rig shim: rpicam-hello. NOT on PATH by default (the phase file runs the rig
+# with rpicam-hello ABSENT, i.e. "cannot enumerate"); `play --with-rpicam`
+# installs it to exercise the "enumerated zero cameras" branch instead.
+echo "No cameras available!"
+exit 255

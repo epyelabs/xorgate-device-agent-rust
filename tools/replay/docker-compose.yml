@@ -1,0 +1,34 @@
+# Record/replay rig (plan phase-2-cloud-plane.md §Record/replay). Driven by
+# run-rig.sh; see README.md. `rig` runs `xorgate-replay` (play | diff) with the
+# two agents as its children; `mosquitto` is the TLS broker both agents and the
+# capture client talk to. The agents reach the broker through the player's
+# proxy on `broker:8883` (= 127.0.0.1 inside the rig) so a tape `conn closed`
+# span can cut them without touching the capture client.
+name: xorgate-replay
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    platform: linux/arm64
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./.cache/certs:/mosquitto/certs:ro
+  rig:
+    build:
+      context: .
+      dockerfile: Dockerfile.rig
+    image: xorgate-replay-rig:node20-bookworm
+    platform: linux/arm64
+    depends_on: [mosquitto]
+    extra_hosts:
+      - "broker:127.0.0.1"
+    environment:
+      - TZ=UTC
+    volumes:
+      - .:/rig/tools:ro
+      - ../../fixtures:/rig/fixtures:ro
+      - ./.cache:/rig/cache
+      - ./.cache/certs:/rig/certs:ro
+      - ${RIG_TAPES:-./.cache/tapes}:/rig/tapes:ro
+      - ${RIG_RUNS:-./.cache/runs}:/rig/out
+    working_dir: /rig/tools
+    entrypoint: ["/rig/cache/bin/xorgate-replay"]

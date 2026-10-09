@@ -1,0 +1,282 @@
+# Record/replay tolerance table — plan phase-2-cloud-plane.md §Record/replay,
+# "Tolerance table". `xorgate-replay diff` cites the `id` of the row that
+# covered every tolerated mismatch; a mismatch no row covers is UNTOLERATED and
+# makes the diff exit non-zero (C3).
+#
+# Rules for editing (wp-specific-briefs.md WP7): T1-T9 come from the phase file;
+# T7 rows are imported VERBATIM from phase-1/evidence/accepted-divergences.md
+# (D1-D20), each with its pinning test. A NEW row (or a widened one) needs an
+# O-decision or a reviewer's OK, cited in `basis` — never a silent widening.
+#
+# Path syntax: dot-separated JSON paths; `*` matches one segment (or part of
+# one: `*At`), `**` any number of segments. Streams: telemetry, report, ack,
+# status, sms, file:<name>, state, events, sudo, pidfile.
+
+version = 1
+
+[[rule]]
+id = "T1"
+title = "ts-like fields are excluded; order is still checked"
+basis = "phase file T1"
+kind = "exclude"
+streams = ["telemetry", "report", "ack", "status", "sms", "state", "file:config-sync.json", "file:commands.json", "file:gnss-sky.json", "pidfile"]
+paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts"]
+
+[[rule]]
+id = "T2"
+title = "seq compared as deltas; deviceId and requestId normalised to rig ids"
+basis = "phase file T2"
+kind = "deltas"
+streams = ["telemetry", "state"]
+paths = ["seq", "latest.seq"]
+normalize_ids = true
+
+[[rule]]
+id = "T3"
+title = "system metrics read live from the rig host (both agents, minutes apart at most)"
+basis = "phase file T3"
+kind = "numeric"
+streams = ["telemetry"]
+# throttled / rail_5v / psu_max_current are tape-fed and therefore EXACT (no row).
+tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage.value" = 1.0, "metrics.system.disk_usage.value" = 0.1, "metrics.system.cpu_temp.value" = 0.5 }
+
+[[rule]]
+id = "T4"
+title = "group/field presence may differ within ±1 tick of an input transition and in the first 5 s"
+basis = "phase file T4"
+kind = "presence_window"
+streams = ["telemetry"]
+startup_ms = 5000
+# ±1 tick (1000 ms at 1 Hz) + 500 ms for the phase offset between the agents.
+window_ms = 1500
+# Transitions: lte_file change/absence, i2cdetect, imu_spawn/imu_exit, exec
+# change, conn, mqtt_in, cli, NMEA stream start/stop (gap > 2 s) and GGA
+# fix-quality changes; plus gaps > 2 s in the IMU line stream.
+
+[[rule]]
+id = "T5"
+title = "report count may differ by ±1 where two triggers straddle the 2 s debounce; the last report of every quiet period must be identical"
+basis = "phase file T5"
+kind = "report_count"
+streams = ["report"]
+max_count_delta = 1
+quiet_ms = 10000
+
+[[rule]]
+id = "T6"
+title = "phase-owned gaps until Phase 3/4"
+basis = "phase file T6; scope boundary table; CF30"
+kind = "phase_owned"
+streams = ["telemetry", "report", "state", "events", "sudo"]
+paths = [
+  "media", "media.**",
+  "recording", "recording.**",
+  "status.bootDefer", "status.bootDefer.**", "status.powerShed", "status.powerShed.**",
+  "effective.recording.bootDefer", "effective.recording.bootDefer.**",
+  "effective.recording.powerShed", "effective.recording.powerShed.**",
+  "**.clockStepperArmed",
+  "effective.cameraMount", "effective.cameraMount.**",
+]
+# state.json `recentEvents` msg prefixes owned by Phase 3/4.
+event_prefixes = ["hardware:", "camera mount", "camera-mount", "led", "LED", "recording", "media", "[media", "upload"]
+# sudo argv owned by Phase 3/4 (camera-mount helper, set-clock helper).
+sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
+
+[[rule]]
+id = "T7"
+title = "Phase 1 accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20)"
+basis = "phase file T7; accepted-divergences.md"
+kind = "import"
+source = "phase-1/evidence/accepted-divergences.md"
+
+  [[rule.row]]
+  id = "D1"
+  what = "SMS lone surrogate in an incomplete UCS2 concat: TS \\ud83d escape, Rust U+FFFD"
+  streams = ["sms"]
+  matcher = "fffd_vs_lone_surrogate"
+  pinned_by = "sms_pdu::tests::lone_surrogate_in_incomplete_concat_becomes_replacement_char"
+
+  [[rule.row]]
+  id = "D2"
+  what = "reportedString 64-unit cut inside a surrogate pair: lone \\ud83d vs U+FFFD"
+  streams = ["report"]
+  matcher = "fffd_vs_lone_surrogate"
+  pinned_by = "config_report::tests::reported_string_cut_inside_a_surrogate_pair_is_fffd"
+
+  [[rule.row]]
+  id = "D3"
+  what = "JSON.parse vs serde_json: 1e400 / lone-surrogate escapes / nesting > 128 reject the whole text in Rust"
+  streams = ["telemetry", "report", "ack", "file:settings.json", "file:commands.json"]
+  matcher = "doc_only"
+  pinned_by = "settings::tests::serde_json_is_stricter_than_json_parse"
+
+  [[rule.row]]
+  id = "D4"
+  what = "lossy UTF-8 reads (TS readFileSync utf8 / payload.toString())"
+  matcher = "doc_only"
+  pinned_by = "Phase 2 HAL rule (String::from_utf8_lossy before the core parser)"
+
+  [[rule.row]]
+  id = "D5"
+  what = "settings_migrate saved key order when recording/video/cameras was absent (one-shot mediaEnabled:false migration)"
+  streams = ["file:settings.json"]
+  matcher = "same_json_different_key_order"
+  pinned_by = "doc only (settings_migrate.rs module doc)"
+
+  [[rule.row]]
+  id = "D6"
+  what = "commands.json ledger entry with unknown keys: Rust writes requestId, at, …extras"
+  streams = ["file:commands.json"]
+  matcher = "same_json_different_key_order"
+  pinned_by = "doc only (commands.rs LedgerEntry.extra)"
+
+  [[rule.row]]
+  id = "D7"
+  what = "re-serialised ModemTelemetry / PowerSampleReading null fields omitted"
+  matcher = "doc_only"
+  pinned_by = "doc only (types.rs module comment)"
+
+  [[rule.row]]
+  id = "D8"
+  what = "GPS group key order from a SIMULATED source"
+  streams = ["telemetry"]
+  matcher = "doc_only"
+  pinned_by = "doc only (telemetry.rs GpsGroup)"
+
+  [[rule.row]]
+  id = "D9"
+  what = "Date.parse without an offset: TS local time, Rust UTC (rig runs TZ=UTC)"
+  matcher = "doc_only"
+  pinned_by = "js::tests::date_parse_accepted_divergences"
+
+  [[rule.row]]
+  id = "D10"
+  what = "Date.parse legacy non-ISO forms: TS parses, Rust NaN"
+  matcher = "doc_only"
+  pinned_by = "js::tests::date_parse_accepted_divergences"
+
+  [[rule.row]]
+  id = "D11"
+  what = "IMU partial sample line: Rust rejects it and keeps the previous sample"
+  streams = ["telemetry"]
+  matcher = "doc_only"
+  pinned_by = "imu::tests::partial_sample_is_rejected"
+
+  [[rule.row]]
+  id = "D12"
+  what = "NMEA malformed numeric field: NaN vs None (both absent on the wire)"
+  matcher = "doc_only"
+  pinned_by = "tests/nmea_fixtures.rs [extra] unparseable numeric fields"
+
+  [[rule.row]]
+  id = "D13"
+  what = "sortInterfaces localeCompare (ICU) vs ASCII"
+  matcher = "doc_only"
+  pinned_by = "network::tests::sort_interfaces_icu_divergences"
+
+  [[rule.row]]
+  id = "D14"
+  what = "toISOString beyond ±8.64e15: RangeError vs \"Invalid Date\""
+  matcher = "doc_only"
+  pinned_by = "js::tests::iso_string_matches_v8 (±(8.64e15 + 1), ±Infinity, NaN)"
+
+  [[rule.row]]
+  id = "D15"
+  what = "modem telemetry health an inherited key (\"toString\"): gnss_health {} vs not emitted"
+  matcher = "doc_only"
+  pinned_by = "doc only (modem::lte_group)"
+
+  [[rule.row]]
+  id = "D16"
+  what = "modem telemetry non-string timestamp (modem::lte_group AND readModemBias / config_report::modem_bias_from_telemetry): stringified / Date.parse(String(n)) vs None (lte key absent; bias stale, fresh:false)"
+  matcher = "doc_only"
+  pinned_by = "doc only"
+
+  [[rule.row]]
+  id = "D17"
+  what = "throttled mask > 16 hex digits: precision loss vs saturation"
+  matcher = "doc_only"
+  pinned_by = "doc only (system.rs)"
+
+  [[rule.row]]
+  id = "D18"
+  what = "sky-state mono arithmetic: negative vs saturating_sub"
+  matcher = "doc_only"
+  pinned_by = "doc only (sky_state.rs)"
+
+  [[rule.row]]
+  id = "D19"
+  what = "toFixed digits > 100: RangeError vs assert"
+  matcher = "doc_only"
+  pinned_by = "doc only (js::to_fixed)"
+
+  [[rule.row]]
+  id = "D20"
+  what = "build-info fallback channel: \"local\" + package version vs \"dev-local\" + baked sha (Phase 0 decision)"
+  streams = ["report"]
+  matcher = "doc_only"
+  pinned_by = "xorgate-agent::build_info tests"
+
+[[rule]]
+id = "T8"
+title = "Phase 2 orchestrator decisions"
+basis = "phase file T8; O2, O3, O4; WP1 brief (publish while disconnected); README §6 (build identity)"
+kind = "decisions"
+
+  [[rule.row]]
+  id = "O2"
+  what = "mono-vs-wall intervals: only differ when a tape `clock` event shows a wall step"
+  matcher = "wall_step_window"
+
+  [[rule.row]]
+  id = "O3"
+  what = "`update` sudo argv names xorgate-updater-rs.service"
+  streams = ["sudo"]
+  normalize = { "xorgate-updater-rs.service" = "xorgate-updater.service" }
+
+  [[rule.row]]
+  id = "O4"
+  what = "real-mode read_sms: sms result status:error \"sms reader not available in this build\""
+  streams = ["sms"]
+  matcher = "read_sms_unavailable"
+
+  [[rule.row]]
+  id = "pidfile"
+  what = "pidfile worker / argv / nodeVersion (CF4)"
+  streams = ["pidfile"]
+  paths = ["worker", "argv", "argv.**", "nodeVersion", "pid"]
+
+  [[rule.row]]
+  id = "writtenBy"
+  what = "state.json writtenBy"
+  streams = ["state"]
+  paths = ["writtenBy"]
+
+  [[rule.row]]
+  id = "build"
+  what = "the agent's own build identity in the report (README §6, Q7: each agent reports its own build)"
+  streams = ["report"]
+  paths = ["effective.agent.build", "effective.agent.build.**"]
+
+  [[rule.row]]
+  id = "set-wifi"
+  what = "`set wifi` is Phase 4 (CF22)"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cadence"
+  what = "`published N messages` cadence + telemetry/status while disconnected (JS mqtt.js queues QoS 0 offline and flushes on reconnect; Rust skips and counts nothing — Phase 0 deviation #8, WP1 brief): unpaired or seq-shifted messages within 5 s of a closed span"
+  streams = ["telemetry", "status"]
+  around_closed_ms = 5000
+
+  [[rule.row]]
+  id = "counters"
+  what = "state.json publish counters and the last payload follow the cadence above (`published`, `publishErrors`, `lastError`, `seq`, `latest`)"
+  streams = ["state"]
+  paths = ["published", "publishErrors", "lastError", "seq", "latest", "latest.**"]
+
+[[rule]]
+id = "T9"
+title = "NO numeric-format tolerance: numbers are compared as their JSON text (1 vs 1.0 is a FAIL)"
+basis = "phase file T9"
+kind = "strict_numbers"
