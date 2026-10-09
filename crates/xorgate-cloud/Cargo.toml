@@ -24,6 +24,8 @@ hmac = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+# examples/s3_probe loads kvs.json through the HAL like the agent will.
+xorgate-hal = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "net"] }
 tokio-rustls = { workspace = true }
 serde = { workspace = true }

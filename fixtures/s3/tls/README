@@ -1,0 +1,5 @@
+Throwaway TEST-ONLY PKI for crates/xorgate-cloud/tests/transport.rs (local mTLS server).
+Generated with openssl 3 in the build image on 2026-10-09; the CA key was deleted.
+ca.pem = root; server.pem/key = localhost + 127.0.0.1; client.pem/key = PKCS#1 RSA
+(the AWS IoT one-click key format) signed by ca.pem; rogue.pem/key = self-signed, untrusted.
+Never trusted by anything outside the tests.

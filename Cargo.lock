@@ -2321,6 +2321,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "xorgate-core",
+ "xorgate-hal",
 ]
 
 [[package]]
