@@ -1,0 +1,87 @@
+{
+  "jsSourceFile": "test/modem.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP2 dump-wp2.ts; not committed there); readModemTelemetry (3 F) and createLteCollector (8 M) are HAL / Phase 2",
+  "cases": [
+    {
+      "name": "finds the SIM7600 by vendor/product id",
+      "op": "findModemLine",
+      "input": {
+        "stdout": "Bus 003 Device 002: ID 1e0e:9011 Qualcomm / Option SimTech, Incorporated\nBus 004 Device 003: ID 32e4:2210 USB Cam Manufacturer HD USB Camera\nBus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub",
+        "vendorId": {
+          "$undefined": true
+        },
+        "productIds": {
+          "$undefined": true
+        }
+      },
+      "expected": {
+        "usbId": "1e0e:9011",
+        "description": "Qualcomm / Option SimTech, Incorporated"
+      }
+    },
+    {
+      "name": "returns null when no modem line matches",
+      "op": "findModemLine",
+      "input": {
+        "stdout": "Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub",
+        "vendorId": {
+          "$undefined": true
+        },
+        "productIds": {
+          "$undefined": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] 9001 product, upper-case ids, no description",
+      "op": "findModemLine",
+      "input": {
+        "stdout": "Bus 002 Device 005: ID 1E0E:9001",
+        "vendorId": {
+          "$undefined": true
+        },
+        "productIds": {
+          "$undefined": true
+        }
+      },
+      "expected": {
+        "usbId": "1E0E:9001",
+        "description": ""
+      }
+    },
+    {
+      "name": "[extra] custom vendor/product list",
+      "op": "findModemLine",
+      "input": {
+        "stdout": "Bus 003 Device 002: ID 1e0e:9011 Qualcomm / Option SimTech, Incorporated\nBus 004 Device 003: ID 32e4:2210 USB Cam Manufacturer HD USB Camera\nBus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub",
+        "vendorId": "32e4",
+        "productIds": [
+          "2210"
+        ]
+      },
+      "expected": {
+        "usbId": "32e4:2210",
+        "description": "USB Cam Manufacturer HD USB Camera"
+      }
+    },
+    {
+      "name": "[extra] lower-case `id` matches (the regex is case-insensitive)",
+      "op": "findModemLine",
+      "input": {
+        "stdout": "bus 003 device 002: id 1e0e:9011 SimTech",
+        "vendorId": {
+          "$undefined": true
+        },
+        "productIds": {
+          "$undefined": true
+        }
+      },
+      "expected": {
+        "usbId": "1e0e:9011",
+        "description": "SimTech"
+      }
+    }
+  ]
+}

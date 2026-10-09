@@ -1,0 +1,440 @@
+{
+  "jsSourceFile": "test/power.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP2 dump-wp2.ts; not committed there); powerReadingFromFields from src/agent/collectors/index.ts:44-64; the readMaxCurrentMa file cases are expressed as bytes → value (the absent-node case is HAL)",
+  "throttleBits": [
+    {
+      "bit": 1,
+      "label": "undervoltage"
+    },
+    {
+      "bit": 2,
+      "label": "freq capped"
+    },
+    {
+      "bit": 4,
+      "label": "throttled"
+    },
+    {
+      "bit": 8,
+      "label": "soft temp limit"
+    }
+  ],
+  "cases": [
+    {
+      "name": "splits current and sticky nibbles",
+      "op": "parseThrottled",
+      "input": "throttled=0x50005\n",
+      "expected": {
+        "current": 5,
+        "sticky": 5
+      }
+    },
+    {
+      "name": "reads a clean device as all-zero",
+      "op": "parseThrottled",
+      "input": "throttled=0x0\n",
+      "expected": {
+        "current": 0,
+        "sticky": 0
+      }
+    },
+    {
+      "name": "keeps sticky-only events out of current",
+      "op": "parseThrottled",
+      "input": "throttled=0x10000\n",
+      "expected": {
+        "current": 0,
+        "sticky": 1
+      }
+    },
+    {
+      "name": "returns null on unexpected output [error]",
+      "op": "parseThrottled",
+      "input": "error: unknown command\n",
+      "expected": null
+    },
+    {
+      "name": "returns null on unexpected output [empty]",
+      "op": "parseThrottled",
+      "input": "",
+      "expected": null
+    },
+    {
+      "name": "[extra] bench value 0xe0008",
+      "op": "parseThrottled",
+      "input": "throttled=0xe0008\n",
+      "expected": {
+        "current": 8,
+        "sticky": 14
+      }
+    },
+    {
+      "name": "[extra] upper-case hex",
+      "op": "parseThrottled",
+      "input": "throttled=0xF000F\n",
+      "expected": {
+        "current": 15,
+        "sticky": 15
+      }
+    },
+    {
+      "name": "parses the full CM5 dump into paired rails",
+      "op": "parsePmicAdc",
+      "input": " 3V7_WL_SW_A current(0)=0.09759300A\n   3V3_SYS_A current(1)=0.07709848A\n   1V8_SYS_A current(2)=0.12296720A\n  DDR_VDD2_A current(3)=0.00585558A\n  DDR_VDDQ_A current(4)=0.00000000A\n   1V1_SYS_A current(5)=0.36597380A\n    0V8_SW_A current(6)=0.36890160A\n  VDD_CORE_A current(7)=0.95551000A\n   3V3_DAC_A current(17)=0.00006105A\n   3V3_ADC_A current(18)=0.00067155A\n   0V8_AON_A current(16)=0.00347985A\n      HDMI_A current(22)=0.01404150A\n 3V7_WL_SW_V volt(8)=3.70812800V\n   3V3_SYS_V volt(9)=3.30910500V\n   1V8_SYS_V volt(10)=1.81684800V\n  DDR_VDD2_V volt(11)=1.10695900V\n  DDR_VDDQ_V volt(12)=0.60402870V\n   1V1_SYS_V volt(13)=1.10109800V\n    0V8_SW_V volt(14)=0.79926660V\n  VDD_CORE_V volt(15)=0.86952300V\n   3V3_DAC_V volt(20)=3.30860500V\n   3V3_ADC_V volt(21)=3.30219400V\n   0V8_AON_V volt(19)=0.80058540V\n      HDMI_V volt(23)=5.10004000V\n     EXT5V_V volt(24)=5.13756000V\n      BATT_V volt(25)=0.00427350V\n",
+      "expected": {
+        "3V7_WL_SW": {
+          "amps": 0.097593,
+          "volts": 3.708128
+        },
+        "3V3_SYS": {
+          "amps": 0.07709848,
+          "volts": 3.309105
+        },
+        "1V8_SYS": {
+          "amps": 0.1229672,
+          "volts": 1.816848
+        },
+        "DDR_VDD2": {
+          "amps": 0.00585558,
+          "volts": 1.106959
+        },
+        "DDR_VDDQ": {
+          "amps": 0,
+          "volts": 0.6040287
+        },
+        "1V1_SYS": {
+          "amps": 0.3659738,
+          "volts": 1.101098
+        },
+        "0V8_SW": {
+          "amps": 0.3689016,
+          "volts": 0.7992666
+        },
+        "VDD_CORE": {
+          "amps": 0.95551,
+          "volts": 0.869523
+        },
+        "3V3_DAC": {
+          "amps": 0.00006105,
+          "volts": 3.308605
+        },
+        "3V3_ADC": {
+          "amps": 0.00067155,
+          "volts": 3.302194
+        },
+        "0V8_AON": {
+          "amps": 0.00347985,
+          "volts": 0.8005854
+        },
+        "HDMI": {
+          "amps": 0.0140415,
+          "volts": 5.10004
+        },
+        "EXT5V": {
+          "volts": 5.13756
+        },
+        "BATT": {
+          "volts": 0.0042735
+        }
+      },
+      "keyCount": 14
+    },
+    {
+      "name": "returns null on Pi-4-style unsupported output [error]",
+      "op": "parsePmicAdc",
+      "input": "error_msg: Command not registered\n",
+      "expected": null,
+      "keyCount": null
+    },
+    {
+      "name": "returns null on Pi-4-style unsupported output [empty]",
+      "op": "parsePmicAdc",
+      "input": "",
+      "expected": null,
+      "keyCount": null
+    },
+    {
+      "name": "extracts the EXT5V rail voltage from the dump",
+      "op": "rail5vFrom",
+      "input": {
+        "3V7_WL_SW": {
+          "amps": 0.097593,
+          "volts": 3.708128
+        },
+        "3V3_SYS": {
+          "amps": 0.07709848,
+          "volts": 3.309105
+        },
+        "1V8_SYS": {
+          "amps": 0.1229672,
+          "volts": 1.816848
+        },
+        "DDR_VDD2": {
+          "amps": 0.00585558,
+          "volts": 1.106959
+        },
+        "DDR_VDDQ": {
+          "amps": 0,
+          "volts": 0.6040287
+        },
+        "1V1_SYS": {
+          "amps": 0.3659738,
+          "volts": 1.101098
+        },
+        "0V8_SW": {
+          "amps": 0.3689016,
+          "volts": 0.7992666
+        },
+        "VDD_CORE": {
+          "amps": 0.95551,
+          "volts": 0.869523
+        },
+        "3V3_DAC": {
+          "amps": 0.00006105,
+          "volts": 3.308605
+        },
+        "3V3_ADC": {
+          "amps": 0.00067155,
+          "volts": 3.302194
+        },
+        "0V8_AON": {
+          "amps": 0.00347985,
+          "volts": 0.8005854
+        },
+        "HDMI": {
+          "amps": 0.0140415,
+          "volts": 5.10004
+        },
+        "EXT5V": {
+          "volts": 5.13756
+        },
+        "BATT": {
+          "volts": 0.0042735
+        }
+      },
+      "expected": 5.13756
+    },
+    {
+      "name": "returns null when EXT5V is absent",
+      "op": "rail5vFrom",
+      "input": {},
+      "expected": null
+    },
+    {
+      "name": "[extra] EXT5V without volts",
+      "op": "rail5vFrom",
+      "input": {
+        "EXT5V": {
+          "amps": 1
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "decodes the big-endian u32 device-tree node (00 00 13 88 = 5000)",
+      "op": "maxCurrentFromBytes",
+      "input": [
+        0,
+        0,
+        19,
+        136
+      ],
+      "expected": 5000
+    },
+    {
+      "name": "returns null on a short buffer",
+      "op": "maxCurrentFromBytes",
+      "input": [
+        19,
+        136
+      ],
+      "expected": null
+    },
+    {
+      "name": "[extra] 3000 mA with trailing bytes ignored",
+      "op": "maxCurrentFromBytes",
+      "input": [
+        0,
+        0,
+        11,
+        184,
+        255
+      ],
+      "expected": 3000
+    },
+    {
+      "name": "decodes a healthy Pi sample",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 0
+        },
+        "rail_5v": {
+          "value": 5.127
+        },
+        "cpu_temp": {
+          "value": 57.1
+        }
+      },
+      "expected": {
+        "uv": false,
+        "railV": 5.127,
+        "tempC": 57.1,
+        "softTemp": false
+      }
+    },
+    {
+      "name": "reads the undervoltage (0x1) and soft-temp (0x8) CAUSE bits [0x1]",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 1
+        }
+      },
+      "expected": {
+        "uv": true,
+        "railV": null,
+        "tempC": null,
+        "softTemp": false
+      }
+    },
+    {
+      "name": "reads the undervoltage (0x1) and soft-temp (0x8) CAUSE bits [0x8]",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 8
+        }
+      },
+      "expected": {
+        "uv": false,
+        "railV": null,
+        "tempC": null,
+        "softTemp": true
+      }
+    },
+    {
+      "name": "reads the undervoltage (0x1) and soft-temp (0x8) CAUSE bits [0x9]",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 9
+        }
+      },
+      "expected": {
+        "uv": true,
+        "railV": null,
+        "tempC": null,
+        "softTemp": true
+      }
+    },
+    {
+      "name": "ignores the CONSEQUENCE bits 0x2/0x4 and every sticky bit (Q3) [0x6]",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 6
+        }
+      },
+      "expected": {
+        "uv": false,
+        "railV": null,
+        "tempC": null,
+        "softTemp": false
+      }
+    },
+    {
+      "name": "ignores the CONSEQUENCE bits 0x2/0x4 and every sticky bit (Q3) [0xe0000]",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 917504
+        }
+      },
+      "expected": {
+        "uv": false,
+        "railV": null,
+        "tempC": null,
+        "softTemp": false
+      }
+    },
+    {
+      "name": "returns a reading when only the temperature is readable (no vcgencmd)",
+      "op": "powerReadingFromFields",
+      "input": {
+        "cpu_temp": {
+          "value": 81.4
+        }
+      },
+      "expected": {
+        "uv": false,
+        "railV": null,
+        "tempC": 81.4,
+        "softTemp": false
+      }
+    },
+    {
+      "name": "returns a reading when only the throttle mask is readable (Pi 4, no PMIC ADC)",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 1
+        }
+      },
+      "expected": {
+        "uv": true,
+        "railV": null,
+        "tempC": null,
+        "softTemp": false
+      }
+    },
+    {
+      "name": "returns null with neither half readable — the feature stays inert off-Pi [cpu_usage only]",
+      "op": "powerReadingFromFields",
+      "input": {
+        "cpu_usage": {
+          "value": 12
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null with neither half readable — the feature stays inert off-Pi [empty]",
+      "op": "powerReadingFromFields",
+      "input": {},
+      "expected": null
+    },
+    {
+      "name": "returns null with neither half readable — the feature stays inert off-Pi [undefined]",
+      "op": "powerReadingFromFields",
+      "input": {
+        "$undefined": true
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] full sample with 0x50005 (uv current + sticky)",
+      "op": "powerReadingFromFields",
+      "input": {
+        "throttled": {
+          "value": 327685
+        },
+        "rail_5v": {
+          "value": 4.66,
+          "unit": "V"
+        },
+        "cpu_temp": {
+          "value": 71.5,
+          "unit": "°C"
+        }
+      },
+      "expected": {
+        "uv": true,
+        "railV": 4.66,
+        "tempC": 71.5,
+        "softTemp": false
+      }
+    }
+  ]
+}

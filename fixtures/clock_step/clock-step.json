@@ -1,0 +1,1982 @@
+{
+  "jsSourceFile": "test/clock-step.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP2 dump-wp2.ts; not committed there); stepper cases replay test/clock-step.test.ts makeHarness (:123-167) tick by tick through the REAL createClockStepper and record inputs + cumulative outputs",
+  "constants": {
+    "TIME_SYNC_DEFAULTS": {
+      "offlineSources": true,
+      "stepThresholdSecs": 10,
+      "maxStepsPerBoot": 4
+    },
+    "SETCLOCK_HELPER": "/usr/local/bin/xorgate-setclock",
+    "MIN_PLAUSIBLE_MS": 1735689600000,
+    "MAX_PLAUSIBLE_MS": 4102444800000,
+    "HOLD_OFF_MS": 300000,
+    "CHECK_INTERVAL_MS": 30000,
+    "MODEM_CLOCK_FRESH_MS": 300000
+  },
+  "stepperCases": [
+    {
+      "name": "steps from a valid GPS time when the offset exceeds the threshold",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326700000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785326700000
+              }
+            },
+            "appliedThisTick": [
+              1785326700000
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ignores GPS below the threshold and an invalid-fix GPS time [below]",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326405000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "ignores GPS below the threshold and an invalid-fix GPS time [invalid]",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": false
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "falls back to NITZ when GPS is absent or fixless",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": false
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326280000
+            },
+            "modem": {
+              "offsetMs": -120000
+            }
+          },
+          "expected": {
+            "applied": [
+              1785326280000
+            ],
+            "stepped": [
+              {
+                "source": "nitz",
+                "offsetMs": -120000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock -120.0s from nitz (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "nitz",
+                "offsetMs": -120000,
+                "at": 1785326280000
+              }
+            },
+            "appliedThisTick": [
+              1785326280000
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "disarms permanently once NTP reports synchronized",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": true,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] NTP synchronized — offline clock stepping stood down for this boot"
+              }
+            ],
+            "status": {
+              "armed": false,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] NTP synchronized — offline clock stepping stood down for this boot"
+              }
+            ],
+            "status": {
+              "armed": false,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "does nothing while the kill switch is off but stays armed for a live re-enable",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": false,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326700000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785326700000
+              }
+            },
+            "appliedThisTick": [
+              1785326700000
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "holds off after a step and enforces the per-boot cap with a single warn",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 2
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326700000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/2 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785326700000
+              }
+            },
+            "appliedThisTick": [
+              1785326700000
+            ]
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 2
+            },
+            "gps": {
+              "utcMs": 1785327000000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326700000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326700000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/2 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785326700000
+              }
+            },
+            "appliedThisTick": []
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 2
+            },
+            "gps": {
+              "utcMs": 1785327360000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785327060000,
+            "mono": 460000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785327360000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000,
+              1785327360000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              },
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/2 this boot)"
+              },
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 2/2 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 2,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785327360000
+              }
+            },
+            "appliedThisTick": [
+              1785327360000
+            ]
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 2
+            },
+            "gps": {
+              "utcMs": 1785328020000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785327720000,
+            "mono": 820000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785327720000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000,
+              1785327360000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              },
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/2 this boot)"
+              },
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 2/2 this boot)"
+              },
+              {
+                "level": "warn",
+                "msg": "[clock] step cap reached (2/2 this boot) — no further offline steps"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 2,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785327360000
+              }
+            },
+            "appliedThisTick": []
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 2
+            },
+            "gps": {
+              "utcMs": 1785328380000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785328080000,
+            "mono": 1180000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785328080000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000,
+              1785327360000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              },
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/2 this boot)"
+              },
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 2/2 this boot)"
+              },
+              {
+                "level": "warn",
+                "msg": "[clock] step cap reached (2/2 this boot) — no further offline steps"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 2,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785327360000
+              }
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "rejects an implausible target and backs off instead of spamming",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": null,
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": {
+              "offsetMs": -1469361600000
+            }
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [
+              {
+                "level": "warn",
+                "msg": "[clock] ignoring implausible nitz time 1980-01-06T00:00:00.000Z"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": null,
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": {
+              "offsetMs": -1469361600000
+            }
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [
+              {
+                "level": "warn",
+                "msg": "[clock] ignoring implausible nitz time 1980-01-06T00:00:00.000Z"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "takes no step from a cold-booted, unregistered modem (Phase 8, end to end)",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": null,
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modemTelemetry": {
+              "timestamp": "",
+              "csq": 99,
+              "rssi_dbm": null,
+              "csq_interval": 30,
+              "status": "connecting",
+              "reg": 2,
+              "iface": "usb0",
+              "ip": null,
+              "modem_clock": {
+                "cclk": "80/01/06,00:00:52+00",
+                "read_at": 1785326400,
+                "reg": 2
+              }
+            }
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": null,
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modemTelemetry": {
+              "timestamp": "",
+              "csq": 99,
+              "rssi_dbm": null,
+              "csq_interval": 30,
+              "status": "connecting",
+              "reg": 1,
+              "iface": "usb0",
+              "ip": null,
+              "modem_clock": {
+                "cclk": "80/01/06,00:00:52+00",
+                "read_at": 1785326400,
+                "reg": 1
+              }
+            }
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [
+              {
+                "level": "warn",
+                "msg": "[clock] ignoring implausible nitz time 1980-01-06T00:00:52.000Z"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "logs a failed apply (missing sudoers) without counting a step, then holds off",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": false,
+              "detail": "sudo: a password is required",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [],
+            "events": [
+              {
+                "level": "warn",
+                "msg": "[clock] step from gps failed: sudo: a password is required"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": [
+              1785326700000
+            ]
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": false,
+              "detail": "sudo: a password is required",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [],
+            "events": [
+              {
+                "level": "warn",
+                "msg": "[clock] step from gps failed: sudo: a password is required"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] hold-off expires exactly at HOLD_OFF_MS on the monotonic clock",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326700000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326700000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785326700000
+              }
+            },
+            "appliedThisTick": [
+              1785326700000
+            ]
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785327120000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326820000,
+            "mono": 220000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326820000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785326700000
+              }
+            },
+            "appliedThisTick": []
+          }
+        },
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785327300000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785327000000,
+            "mono": 400000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785327300000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326700000,
+              1785327300000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              },
+              {
+                "source": "gps",
+                "offsetMs": 300000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 1/4 this boot)"
+              },
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +300.0s from gps (NTP unsynced; step 2/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 2,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 300000,
+                "at": 1785327300000
+              }
+            },
+            "appliedThisTick": [
+              1785327300000
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] offset exactly at the threshold does not step",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326410000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] offset one ms over the threshold steps (negative sign formatting below)",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326410001,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326410001
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326410001
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 10001
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +10.0s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 10001,
+                "at": 1785326410001
+              }
+            },
+            "appliedThisTick": [
+              1785326410001
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] negative offset formats with a minus sign",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326354322,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326354322
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326354322
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": -45678
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock -45.7s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": -45678,
+                "at": 1785326354322
+              }
+            },
+            "appliedThisTick": [
+              1785326354322
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] target at MAX_PLAUSIBLE (2100-01-01) is rejected",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 4102444800000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326400000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [],
+            "stepped": [],
+            "events": [
+              {
+                "level": "warn",
+                "msg": "[clock] ignoring implausible gps time 2100-01-01T00:00:00.000Z"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 0,
+              "lastStep": null
+            },
+            "appliedThisTick": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] target at MIN_PLAUSIBLE (2025-01-01) is accepted",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1735689600000,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1735689600000
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1735689600000
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": -49636800000
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock -49636800.0s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": -49636800000,
+                "at": 1735689600000
+              }
+            },
+            "appliedThisTick": [
+              1735689600000
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] GPS target includes the reading's monotonic age",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326460000,
+              "ageMs": 2500,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326462500
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326462500
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 62500
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +62.5s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 62500,
+                "at": 1785326462500
+              }
+            },
+            "appliedThisTick": [
+              1785326462500
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "converts local time + quarter-hour zone to UTC (EDT example)",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/29,15:26:30-16",
+      "expected": 1785353190000
+    },
+    {
+      "name": "handles positive zones and strips surrounding whitespace",
+      "op": "parseCclkUtcMs",
+      "input": " 26/01/02,01:00:00+08 ",
+      "expected": 1767308400000
+    },
+    {
+      "name": "rejects a zone-less value (local time can't be anchored to UTC)",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/29,15:26:30",
+      "expected": null
+    },
+    {
+      "name": "rejects malformed fields [empty]",
+      "op": "parseCclkUtcMs",
+      "input": "",
+      "expected": null
+    },
+    {
+      "name": "rejects malformed fields [garbage]",
+      "op": "parseCclkUtcMs",
+      "input": "garbage",
+      "expected": null
+    },
+    {
+      "name": "rejects malformed fields [month 13]",
+      "op": "parseCclkUtcMs",
+      "input": "26/13/29,15:26:30-16",
+      "expected": null
+    },
+    {
+      "name": "rejects malformed fields [hour 24]",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/29,24:26:30-16",
+      "expected": null
+    },
+    {
+      "name": "maps a never-NITZ'd 1980 clock to 19xx so plausibility rejects it (Phase 8) [80]",
+      "op": "parseCclkUtcMs",
+      "input": "80/01/06,00:00:00+00",
+      "expected": 315964800000
+    },
+    {
+      "name": "maps a never-NITZ'd 1980 clock to 19xx so plausibility rejects it (Phase 8) [99]",
+      "op": "parseCclkUtcMs",
+      "input": "99/12/31,23:59:59+00",
+      "expected": 946684799000
+    },
+    {
+      "name": "maps a never-NITZ'd 1980 clock to 19xx so plausibility rejects it (Phase 8) [79]",
+      "op": "parseCclkUtcMs",
+      "input": "79/06/01,00:00:00+00",
+      "expected": 3452803200000
+    },
+    {
+      "name": "maps a never-NITZ'd 1980 clock to 19xx so plausibility rejects it (Phase 8) [00]",
+      "op": "parseCclkUtcMs",
+      "input": "00/01/01,00:00:00+00",
+      "expected": 946684800000
+    },
+    {
+      "name": "[extra] single-digit zone",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/29,15:26:30-4",
+      "expected": 1785342390000
+    },
+    {
+      "name": "[extra] leap second 60 accepted",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/29,15:26:60+00",
+      "expected": 1785338820000
+    },
+    {
+      "name": "[extra] second 61 rejected",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/29,15:26:61+00",
+      "expected": null
+    },
+    {
+      "name": "[extra] day 0 rejected",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/00,15:26:30+00",
+      "expected": null
+    },
+    {
+      "name": "[extra] day 31 of a 30-day month rolls over (Date.UTC)",
+      "op": "parseCclkUtcMs",
+      "input": "26/06/31,00:00:00+00",
+      "expected": 1782864000000
+    },
+    {
+      "name": "[extra] three-digit zone rejected",
+      "op": "parseCclkUtcMs",
+      "input": "26/07/29,15:26:30+100",
+      "expected": null
+    },
+    {
+      "name": "reduces a fresh cclk + read_at pair to a clock offset",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 5
+          }
+        }
+      },
+      "expected": {
+        "offsetMs": 5000
+      }
+    },
+    {
+      "name": "returns null when the reading is stale, from the future, absent, or unparseable [stale]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353040
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null when the reading is stale, from the future, absent, or unparseable [future]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353460
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null when the reading is stale, from the future, absent, or unparseable [absent]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": null
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null when the reading is stale, from the future, absent, or unparseable [no telemetry]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": null
+      },
+      "expected": null
+    },
+    {
+      "name": "returns null when the reading is stale, from the future, absent, or unparseable [unparseable]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "garbage",
+            "read_at": 1785353400
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "refuses a reading taken while the modem was not registered (Phase 8) [reg 0]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 0
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "refuses a reading taken while the modem was not registered (Phase 8) [reg 2]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 2
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "refuses a reading taken while the modem was not registered (Phase 8) [reg 3]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 3
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "refuses a reading taken while the modem was not registered (Phase 8) [reg 99]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 99
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "refuses a reading taken while the modem was not registered (Phase 8) [reg 1]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 1
+          }
+        }
+      },
+      "expected": {
+        "offsetMs": 5000
+      }
+    },
+    {
+      "name": "refuses a reading taken while the modem was not registered (Phase 8) [reg 5]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 5
+          }
+        }
+      },
+      "expected": {
+        "offsetMs": 5000
+      }
+    },
+    {
+      "name": "falls back to the snapshot's top-level reg on a pre-Phase-8 daemon [top 5]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 5,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190
+          }
+        }
+      },
+      "expected": {
+        "offsetMs": 5000
+      }
+    },
+    {
+      "name": "falls back to the snapshot's top-level reg on a pre-Phase-8 daemon [top 2]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 2,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "falls back to the snapshot's top-level reg on a pre-Phase-8 daemon [neither]",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] age exactly -5 s is still fresh (future tolerance edge)",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353405,
+            "reg": 1
+          }
+        }
+      },
+      "expected": {
+        "offsetMs": -210000
+      }
+    },
+    {
+      "name": "[extra] age exactly 5 min is still fresh",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353100,
+            "reg": 1
+          }
+        }
+      },
+      "expected": {
+        "offsetMs": 95000
+      }
+    },
+    {
+      "name": "[extra] modem_clock.reg wins over a registered top-level reg",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190,
+            "reg": 2
+          }
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] fractional read_at keeps a fractional offset",
+      "op": "readModemClock",
+      "input": {
+        "now": 1785353400000,
+        "telemetry": {
+          "timestamp": "",
+          "csq": 20,
+          "rssi_dbm": -73,
+          "csq_interval": 30,
+          "status": "connected",
+          "reg": 1,
+          "iface": "usb0",
+          "ip": null,
+          "modem_clock": {
+            "cclk": "26/07/29,15:26:35-16",
+            "read_at": 1785353190.25,
+            "reg": 1
+          }
+        }
+      },
+      "expected": {
+        "offsetMs": 4750
+      }
+    },
+    {
+      "name": "applies defaults and overrides [defaults]",
+      "op": "resolveTimeSyncConfig",
+      "input": {
+        "$undefined": true
+      },
+      "expected": {
+        "offlineSources": true,
+        "stepThresholdSecs": 10,
+        "maxStepsPerBoot": 4
+      }
+    },
+    {
+      "name": "applies defaults and overrides [overrides]",
+      "op": "resolveTimeSyncConfig",
+      "input": {
+        "offlineSources": false,
+        "stepThresholdSecs": 30
+      },
+      "expected": {
+        "offlineSources": false,
+        "stepThresholdSecs": 30,
+        "maxStepsPerBoot": 4
+      }
+    }
+  ]
+}

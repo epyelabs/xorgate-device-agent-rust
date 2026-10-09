@@ -36,3 +36,11 @@ pub mod telemetry;
 pub mod topics;
 pub mod types;
 pub mod video_presets;
+
+pub mod clock_step;
+pub mod imu;
+pub mod js;
+pub mod modem;
+pub mod nmea;
+pub mod power;
+pub mod sky_state;
