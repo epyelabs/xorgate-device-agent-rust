@@ -91,3 +91,34 @@ fn number_format_matches_v8() {
     );
     assert_eq!(f.cases.len(), 5141);
 }
+
+/// Integration item 3 (review-wp5 NIT 5 / review-wp6 S5): with `serde_json`'s
+/// `float_roundtrip` feature every V8-printed double parses back to the exact
+/// f64 node had (as `f64` and inside a `Value`), and re-emitting it through
+/// `JsNumber` reproduces node's text — `JSON.parse` → `JSON.stringify` parity.
+#[test]
+fn number_format_parse_round_trip() {
+    let f = common::fixture::<NumCase>("js/number-format.json");
+    let mut bad = Vec::new();
+    for c in &f.cases {
+        let x = from_bits(&c.input);
+        let direct: f64 = serde_json::from_str(&c.expected).unwrap();
+        let in_value: Value = serde_json::from_str(&format!("{{\"v\":[{}]}}", c.expected)).unwrap();
+        let via_value = in_value["v"][0].as_f64().unwrap();
+        // `-0` prints as `0`, so it parses back as +0 (as in JS).
+        let same = |p: f64| p.to_bits() == x.to_bits() || (x == 0.0 && p == 0.0);
+        let re_emitted = serde_json::to_string(&JsNumber(via_value)).unwrap();
+        if !same(direct) || !same(via_value) || re_emitted != c.expected {
+            bad.push(format!(
+                "{} {}: {} -> {direct:e} / {via_value:e} -> {re_emitted}",
+                c.name, c.input, c.expected
+            ));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} mismatches: {:#?}",
+        bad.len(),
+        &bad[..bad.len().min(10)]
+    );
+}

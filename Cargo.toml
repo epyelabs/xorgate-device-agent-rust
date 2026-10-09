@@ -27,7 +27,9 @@ anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 # `raw_value`: `telemetry::JsNumber` emits V8's number text verbatim.
-serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+# `float_roundtrip`: parse every JS-printed double to the exact f64 V8 had
+# (without it ~1 in 5 random doubles came back 1 ulp off; review-wp5/wp6 S5).
+serde_json = { version = "1", features = ["preserve_order", "raw_value", "float_roundtrip"] }
 indexmap = { version = "2", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "fs", "time", "sync", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
