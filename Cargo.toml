@@ -44,6 +44,15 @@ sd-notify = "0.5"
 nix = { version = "0.31", features = ["fs", "signal", "process"] }
 libc = "0.2"
 gstreamer = { version = "0.25", features = ["v1_22"] }
+# Phase 2 WP5 (IoT creds + S3 PUT): HTTPS over rustls/aws-lc-rs with the
+# platform verifier, HTTP/1.1 only and no env proxies (node:https parity);
+# `stream` for the idle-timeout body wrapper. Hand-rolled SigV4 (no aws-sdk, Q5).
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+bytes = "1"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
 
 # Release profile per plan README §7: fat LTO, one codegen unit, stripped
 # symbols but line tables kept for backtraces. `panic = "abort"` is deliberately
