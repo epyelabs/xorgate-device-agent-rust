@@ -151,7 +151,10 @@ pub struct ImuGroup {
 /// TS interface's declaration order. `sats_heard`, `snr_max` and `sky_state`
 /// are emitted by the collector (`gps.ts:273-278`) but NOT declared in the TS
 /// interface (it types `mapLatest` as `Record<string, unknown>`); they are
-/// part of the wire contract and so of this struct.
+/// part of the wire contract and so of this struct. (review-wp1 #9: the TS
+/// simulator, `agent/simulator.ts:100-109`, emits `lat, lon, alt, speed,
+/// course, satellites, fix_quality, …`; a Rust sim going through this struct
+/// uses the collector order instead — consumers parse `metrics` by key.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GpsGroup {
     /// GGA fix quality: 0 = none, 1 = GPS, 2 = DGPS. Always present while NMEA flows.

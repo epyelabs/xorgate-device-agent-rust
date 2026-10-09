@@ -11,6 +11,14 @@
 //! `recording.video.cameras` — a behaviour-preserving conversion, not an
 //! approximation. Reads the RAW document because the allowlist has already
 //! dropped the key by the time `loadSettings` has run.
+//!
+//! Key-order deviation (review-wp1 #4, accepted): the TS spreads
+//! `{...recording, video: {...video, cameras}}`, so a `video` (or `cameras`,
+//! or `recording`) key that was ABSENT is appended after the existing keys
+//! (`{upload}` → `{upload, video}`); the typed [`AgentSettings`] saves parser
+//! order (`video` before `upload`). Same values; the next load→save by either
+//! agent canonicalises the file, so `readSettingsHash` differs for one cycle
+//! of this one-shot migration only.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};

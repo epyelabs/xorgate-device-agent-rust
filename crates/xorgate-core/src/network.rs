@@ -43,7 +43,10 @@ fn iface_rank(name: &str) -> u8 {
 /// `localeCompare` is ICU collation (case-insensitive at the primary level,
 /// then case as a tie-break); for the lowercase+digit names interfaces carry
 /// it coincides with byte order. We compare case-insensitively first and fall
-/// back to byte order, which matches ICU for ASCII names.
+/// back to byte order. Accepted divergences (review-wp1 #8; Linux interface
+/// names are lowercase + digits): ICU sorts punctuation before digits
+/// (`a_1` < `a01`; here `'0' < '_'`), and on a case-only tie ICU puts the
+/// lowercase name first (here `Eth0` < `eth0`).
 pub fn sort_interfaces(names: &[String]) -> Vec<String> {
     let mut v = names.to_vec();
     v.sort_by(|a, b| {

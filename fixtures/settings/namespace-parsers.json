@@ -20,7 +20,7 @@
       "expectedJson": "{\"apn\":\"\"}"
     },
     {
-      "name": "DROPS an invalid apn instead of repairing it [AT injection]",
+      "name": "DROPS an invalid apn instead of repairing it — a fixed APN is a different APN [AT injection]",
       "op": "parseCellularSettings",
       "input": {
         "apn": "a\";+CFUN=0"
@@ -28,7 +28,7 @@
       "expectedJson": null
     },
     {
-      "name": "DROPS an invalid apn instead of repairing it [space]",
+      "name": "DROPS an invalid apn instead of repairing it — a fixed APN is a different APN [space]",
       "op": "parseCellularSettings",
       "input": {
         "apn": "a b"
@@ -36,7 +36,7 @@
       "expectedJson": null
     },
     {
-      "name": "DROPS an invalid apn instead of repairing it [101 chars]",
+      "name": "DROPS an invalid apn instead of repairing it — a fixed APN is a different APN [101 chars]",
       "op": "parseCellularSettings",
       "input": {
         "apn": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -44,7 +44,7 @@
       "expectedJson": null
     },
     {
-      "name": "DROPS an invalid apn instead of repairing it [number]",
+      "name": "DROPS an invalid apn instead of repairing it — a fixed APN is a different APN [number]",
       "op": "parseCellularSettings",
       "input": {
         "apn": 5
@@ -52,7 +52,7 @@
       "expectedJson": null
     },
     {
-      "name": "DROPS an invalid apn instead of repairing it [string value]",
+      "name": "DROPS an invalid apn instead of repairing it — a fixed APN is a different APN [string value]",
       "op": "parseCellularSettings",
       "input": "sp.mb.com",
       "expectedJson": null
@@ -207,25 +207,25 @@
       "expectedJson": "{\"cameras\":{}}"
     },
     {
-      "name": "maps the cloud's erase marker to undefined [{}]",
+      "name": "maps the cloud's erase marker to undefined, and keeps an empty camera map [{}]",
       "op": "parseCameraMountSettings",
       "input": {},
       "expectedJson": null
     },
     {
-      "name": "maps the cloud's erase marker to undefined [null]",
+      "name": "maps the cloud's erase marker to undefined, and keeps an empty camera map [null]",
       "op": "parseCameraMountSettings",
       "input": null,
       "expectedJson": null
     },
     {
-      "name": "maps the cloud's erase marker to undefined [string]",
+      "name": "maps the cloud's erase marker to undefined, and keeps an empty camera map [string]",
       "op": "parseCameraMountSettings",
       "input": "cam0",
       "expectedJson": null
     },
     {
-      "name": "keeps an empty camera map",
+      "name": "maps the cloud's erase marker to undefined, and keeps an empty camera map [empty map]",
       "op": "parseCameraMountSettings",
       "input": {
         "cameras": {}

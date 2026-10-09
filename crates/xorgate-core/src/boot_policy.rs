@@ -312,6 +312,10 @@ pub trait BootDeferSources {
     /// Negotiated PSU budget; `None` = unreadable. Called once per policy.
     fn read_budget_ma(&mut self) -> Option<u32>;
     /// telemetry.json; `None` = missing or unparseable. Called every evaluation.
+    /// HAL note (review-wp3 #4): the TS reads with `readFileSync(…, "utf8")`,
+    /// which is lossy — read the bytes, `String::from_utf8_lossy`, then
+    /// [`parse_policy_telemetry`], so a stray bad byte does not turn a
+    /// parseable file into "missing" (stale grace).
     fn read_telemetry(&mut self) -> Option<PolicyTelemetry>;
     /// GNSS view for stage 2; hosts without a GPS collector return `None`
     /// (the TS default `() => null`).

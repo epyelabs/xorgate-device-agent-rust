@@ -107,11 +107,12 @@ pub struct CpmsTriple {
     pub total: u64,
 }
 
-fn skip_ws(b: &[u8], mut i: usize) -> usize {
-    while i < b.len() && (b[i] as char).is_whitespace() {
-        i += 1;
-    }
-    i
+/// `\s*` at byte `i` of a `&str`'s bytes: JS whitespace, decoded as UTF-8
+/// (review-wp5 NIT 7: a per-byte `char::is_whitespace` took the UTF-8
+/// continuation bytes 0x85/0xA0 for spaces).
+fn skip_ws(b: &[u8], i: usize) -> usize {
+    let rest = std::str::from_utf8(&b[i..]).unwrap_or("");
+    i + (rest.len() - crate::js::trim_start(rest).len())
 }
 
 fn digits(b: &[u8], i: usize) -> Option<(u64, usize)> {
@@ -167,7 +168,7 @@ fn cpms_triple_at(b: &[u8], i: usize) -> Option<(CpmsTriple, usize)> {
 pub fn parse_cpms_query(line: &str) -> Vec<CpmsTriple> {
     let body = line
         .strip_prefix("+CPMS:")
-        .map(str::trim_start)
+        .map(crate::js::trim_start)
         .unwrap_or(line);
     let b = body.as_bytes();
     let mut out = Vec::new();
