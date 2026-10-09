@@ -1,0 +1,172 @@
+{
+  "jsSourceFile": "test/imu.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP2 dump-wp2.ts; not committed there); the quatToEuler cases are WP1's (fixtures/orientation)",
+  "imuConstants": {
+    "i2cBus": 1,
+    "addresses": [
+      74,
+      75
+    ],
+    "bmsAddress": 107
+  },
+  "cases": [
+    {
+      "name": "parses a sample message",
+      "op": "parseImuLine",
+      "input": "{\"type\":\"sample\",\"quat\":{\"r\":0.853,\"i\":-0.162,\"j\":-0.331,\"k\":-0.370},\"linaccel\":{\"x\":0.01,\"y\":0,\"z\":0}}",
+      "expected": {
+        "type": "sample",
+        "quat": {
+          "r": 0.853,
+          "i": -0.162,
+          "j": -0.331,
+          "k": -0.37
+        },
+        "linaccel": {
+          "x": 0.01,
+          "y": 0,
+          "z": 0
+        }
+      }
+    },
+    {
+      "name": "parses ready and error messages [ready]",
+      "op": "parseImuLine",
+      "input": "{\"type\":\"ready\",\"address\":\"0x4b\"}",
+      "expected": {
+        "type": "ready",
+        "address": "0x4b"
+      }
+    },
+    {
+      "name": "parses ready and error messages [error]",
+      "op": "parseImuLine",
+      "input": "{\"type\":\"error\",\"error\":\"import failed\"}",
+      "expected": {
+        "type": "error",
+        "error": "import failed"
+      }
+    },
+    {
+      "name": "ignores non-JSON / partial lines [traceback]",
+      "op": "parseImuLine",
+      "input": "Traceback (most recent call last):",
+      "expected": null
+    },
+    {
+      "name": "ignores non-JSON / partial lines [unknown type]",
+      "op": "parseImuLine",
+      "input": "{\"type\":\"unknown\"}",
+      "expected": null
+    },
+    {
+      "name": "ignores non-JSON / partial lines [empty]",
+      "op": "parseImuLine",
+      "input": "",
+      "expected": null
+    },
+    {
+      "name": "[extra] partial JSON line",
+      "op": "parseImuLine",
+      "input": "{\"type\":\"sample\",\"quat\":{\"r\":0.8",
+      "expected": null
+    },
+    {
+      "name": "[extra] ready without address",
+      "op": "parseImuLine",
+      "input": "{\"type\":\"ready\"}",
+      "expected": {
+        "type": "ready"
+      }
+    },
+    {
+      "name": "[extra] surrounding whitespace is trimmed",
+      "op": "parseImuLine",
+      "input": "  {\"type\":\"error\",\"error\":\"x\"}\r\n",
+      "expected": {
+        "type": "error",
+        "error": "x"
+      }
+    },
+    {
+      "name": "extracts acked addresses from the grid",
+      "op": "parseI2cDetect",
+      "input": "     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n00:                         -- -- -- -- -- -- -- --\n10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n40: -- -- -- -- -- -- -- -- -- -- -- 4b -- -- -- --\n50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n60: -- -- -- -- -- -- -- -- -- -- -- 6b -- -- -- --\n70: -- -- -- -- -- -- -- --",
+      "expected": [
+        75,
+        107
+      ]
+    },
+    {
+      "name": "[extra] UU cells count as present; CRLF rows are skipped (JS `.` stops at \\r)",
+      "op": "parseI2cDetect",
+      "input": "40: -- -- -- -- -- -- -- -- -- -- UU 4b -- -- -- --\n50: -- -- -- -- -- -- -- -- -- -- -- 5b -- -- -- --\r\n",
+      "expected": [
+        74,
+        75
+      ]
+    },
+    {
+      "name": "[extra] empty / garbage input",
+      "op": "parseI2cDetect",
+      "input": "nothing here\n",
+      "expected": []
+    },
+    {
+      "name": "findImuAddress picks the first present BNO085 candidate [grid]",
+      "op": "findImuAddress",
+      "input": {
+        "present": [
+          75,
+          107
+        ],
+        "candidates": {
+          "$undefined": true
+        }
+      },
+      "expected": 75
+    },
+    {
+      "name": "findImuAddress picks the first present BNO085 candidate [both]",
+      "op": "findImuAddress",
+      "input": {
+        "present": [
+          74,
+          75
+        ],
+        "candidates": {
+          "$undefined": true
+        }
+      },
+      "expected": 74
+    },
+    {
+      "name": "findImuAddress picks the first present BNO085 candidate [bms only]",
+      "op": "findImuAddress",
+      "input": {
+        "present": [
+          107
+        ],
+        "candidates": {
+          "$undefined": true
+        }
+      },
+      "expected": null
+    },
+    {
+      "name": "[extra] explicit candidates",
+      "op": "findImuAddress",
+      "input": {
+        "present": [
+          16,
+          75
+        ],
+        "candidates": [
+          16
+        ]
+      },
+      "expected": 16
+    }
+  ]
+}

@@ -4,7 +4,8 @@
 //! Every struct that reaches a file or the wire keeps the TS key order and
 //! optional-field omission (plan Phase 1 rule 5).
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::{Map, Value};
 
 use crate::telemetry::{js_num, js_num_opt};
 
@@ -283,13 +284,29 @@ pub struct CameraMountState {
 // modem telemetry — `src/hardware/modem.ts:21-196` (the daemon's telemetry.json)
 // ---------------------------------------------------------------------------
 //
-// The agent only READS this file (`readModemTelemetry`: a bare `JSON.parse`,
-// no validation — `modem.ts:203-212`), so the structs below are tolerant on
-// input: enum-valued fields stay `String` (an unknown label must not fail the
-// whole read; the WP4 `parse*Telemetry` validators classify them), and every
-// optional field is `Option`. On output an `Option` that is `None` is omitted
-// where the TS marks the field `?:`, and written as `null` where the TS type
-// is `X | null` without `?`.
+// The agent only READS this file. `readModemTelemetry` is a bare `JSON.parse`
+// with no validation (`modem.ts:203-212`), and each consumer `typeof`-checks
+// the fields it uses one at a time (`clock-step.ts:144-146`,
+// `collectors/lte.ts:43-57`, `config-sync.ts:513-525`, `led-state.ts:183`).
+// One wrong-typed or null field must therefore cost THAT field only, never the
+// snapshot. So these structs are built by hand from a `serde_json::Value`
+// ([`ModemTelemetry::from_json`] / [`ModemTelemetry::from_value`]), field by
+// field, instead of by a derived `Deserialize` (which fails as a whole):
+//
+// - a string field is `Some` only for a JSON string (`typeof x === "string"`);
+// - a number field is `Some` for ANY JSON number, as `f64`
+//   (`typeof x === "number"`, so `1.0` is `1` and `1.5` stays `1.5`);
+// - a nested block is `Some` only for a JSON object, and the same rules apply
+//   inside it, so `{"ts": null, "path": "ladder"}` keeps `path`;
+// - null, a missing key or any other type is `None` for that field alone;
+// - unknown keys are ignored, and enum-valued fields stay `String` (an
+//   unknown label is classified downstream: [`GnssHealth::parse`], WP4's
+//   `parse*Telemetry`).
+//
+// `Deserialize` is implemented through the same builder, so a struct nested
+// in a fixture or a status document reads identically. On output a `None` is
+// written as `null` where the TS type is `X | null` without `?`, and omitted
+// otherwise (a TS-required field is only `None` on malformed input).
 
 /// `ModemPresence` (`modem.ts:21`): lsusb + tty enumeration for the monitor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,73 +353,194 @@ impl GnssHealth {
     }
 }
 
-/// `last_engine_restart` (`modem.ts:49`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A JSON object (`typeof v === "object"`, not null, not an array).
+type JsonMap = Map<String, Value>;
+
+fn field_str(o: &JsonMap, k: &str) -> Option<String> {
+    o.get(k)?.as_str().map(str::to_owned)
+}
+
+fn field_num(o: &JsonMap, k: &str) -> Option<f64> {
+    o.get(k)?.as_f64()
+}
+
+fn field_obj<'a>(o: &'a JsonMap, k: &str) -> Option<&'a JsonMap> {
+    o.get(k)?.as_object()
+}
+
+/// `Deserialize` for the hand-built modem structs: decode a `Value`, require
+/// an object, then run the lenient `from_map` builder.
+macro_rules! deserialize_via_from_map {
+    ($($t:ident),* $(,)?) => {$(
+        impl<'de> Deserialize<'de> for $t {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let v = Value::deserialize(d)?;
+                v.as_object().map($t::from_map).ok_or_else(|| {
+                    serde::de::Error::custom(concat!(stringify!($t), ": expected a JSON object"))
+                })
+            }
+        }
+    )*};
+}
+
+/// `last_engine_restart` (`modem.ts:49`). `ts` is `null` when the daemon's
+/// epoch was 0/empty (`iso_or_null`, `sim7600-lte.sh:311-318,509`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct GnssEngineRestart {
-    pub ts: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
     /// "off" | "wedge" | "post-reset".
-    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl GnssEngineRestart {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            ts: field_str(o, "ts"),
+            reason: field_str(o, "reason"),
+        }
+    }
 }
 
 /// `ModemGnssTelemetry` (`modem.ts:42`): all LAST-KNOWLEDGE values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ModemGnssTelemetry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine_on: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub has_fix: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub engine_on: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub has_fix: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fix_checked_at: Option<String>,
     /// Coarse daemon-side TTFF (engine start → first fix-probe success), secs.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "js_num_opt")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
     pub ttff_s: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_engine_start: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_engine_restart: Option<GnssEngineRestart>,
     /// 1 while the engine runs the plain-standalone fallback (SUPL start failed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub standalone_fallback: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub standalone_fallback: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub no_fix_since: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wedge_restarts_1h: Option<i64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub wedge_restarts_1h: Option<f64>,
     /// A `GnssHealth` label, or anything the daemon wrote (validated downstream).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<String>,
 }
 
-/// `last_reset` (`modem.ts:62`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModemLastReset {
-    pub ts: String,
-    /// "ladder" | "deadzone" | "config-drift".
-    pub path: String,
+impl ModemGnssTelemetry {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            engine_on: field_num(o, "engine_on"),
+            has_fix: field_num(o, "has_fix"),
+            fix_checked_at: field_str(o, "fix_checked_at"),
+            ttff_s: field_num(o, "ttff_s"),
+            last_engine_start: field_str(o, "last_engine_start"),
+            last_engine_restart: field_obj(o, "last_engine_restart")
+                .map(GnssEngineRestart::from_map),
+            standalone_fallback: field_num(o, "standalone_fallback"),
+            no_fix_since: field_str(o, "no_fix_since"),
+            wedge_restarts_1h: field_num(o, "wedge_restarts_1h"),
+            health: field_str(o, "health"),
+        }
+    }
 }
 
-/// `last_gate_skip` (`modem.ts:63`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `last_reset` (`modem.ts:62`). `ts` may be `null` (`sim7600-lte.sh:513`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ModemLastReset {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
+    /// "ladder" | "deadzone" | "config-drift".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl ModemLastReset {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            ts: field_str(o, "ts"),
+            path: field_str(o, "path"),
+        }
+    }
+}
+
+/// `last_gate_skip` (`modem.ts:63`). `ts` may be `null` (`sim7600-lte.sh:517`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct ModemGateSkip {
-    pub ts: String,
-    pub context: String,
-    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ModemGateSkip {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            ts: field_str(o, "ts"),
+            context: field_str(o, "context"),
+            reason: field_str(o, "reason"),
+        }
+    }
 }
 
 /// `ModemRecoveryTelemetry` (`modem.ts:58`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ModemRecoveryTelemetry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect_fails: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub radio_cycles_since_ok: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resets_24h: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub connect_fails: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub radio_cycles_since_ok: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub resets_24h: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reset: Option<ModemLastReset>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_gate_skip: Option<ModemGateSkip>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_lte_ok: Option<String>,
+}
+
+impl ModemRecoveryTelemetry {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            connect_fails: field_num(o, "connect_fails"),
+            radio_cycles_since_ok: field_num(o, "radio_cycles_since_ok"),
+            resets_24h: field_num(o, "resets_24h"),
+            last_reset: field_obj(o, "last_reset").map(ModemLastReset::from_map),
+            last_gate_skip: field_obj(o, "last_gate_skip").map(ModemGateSkip::from_map),
+            last_lte_ok: field_str(o, "last_lte_ok"),
+        }
+    }
 }
 
 /// `SimState` (`modem.ts:68`).
@@ -456,26 +594,46 @@ impl SimRegistration {
     }
 }
 
-/// `ModemSimTelemetry` (`modem.ts:92`): ABSENT until the first probe reaches the modem.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// `ModemSimTelemetry` (`modem.ts:92`): ABSENT until the first probe reaches
+/// the modem. WP4's `parseSimTelemetry` port sanitises the RAW block (it also
+/// accepts `present: true`), so this typed view is informational.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ModemSimTelemetry {
     /// 1 present, 0 the modem says no card is inserted, null we cannot tell.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub present: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub present: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub iccid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub msisdn: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub carrier: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub act: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub registration: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<String>,
+}
+
+impl ModemSimTelemetry {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            present: field_num(o, "present"),
+            state: field_str(o, "state"),
+            iccid: field_str(o, "iccid"),
+            msisdn: field_str(o, "msisdn"),
+            carrier: field_str(o, "carrier"),
+            act: field_str(o, "act"),
+            registration: field_str(o, "registration"),
+            checked_at: field_str(o, "checked_at"),
+        }
+    }
 }
 
 /// `ApnState` (`modem.ts:116`).
@@ -501,86 +659,225 @@ impl ApnState {
 }
 
 /// `ModemCellularTelemetry` (`modem.ts:127`): ABSENT = no rollback safety net.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// WP4's `parseApnTelemetry` port sanitises the RAW block.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ModemCellularTelemetry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     /// The APN in the modem's data context. Absent while never read / NV empty.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub apn_applied: Option<String>,
     /// Last non-empty desired value seen. Absent when nothing was ever asked.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub apn_requested: Option<String>,
     /// Why the last apply rolled back / was rejected. Absent after a clean apply.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     /// Failed applies of apn_requested — capped, keyed on the value.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fails: Option<i64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub fails: Option<f64>,
     /// ISO ts of the last state transition.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_at: Option<String>,
 }
 
-/// `ModemUplinkTelemetry` (`modem.ts:146`): which interface carries the default route.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+impl ModemCellularTelemetry {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            state: field_str(o, "state"),
+            apn_applied: field_str(o, "apn_applied"),
+            apn_requested: field_str(o, "apn_requested"),
+            last_error: field_str(o, "last_error"),
+            fails: field_num(o, "fails"),
+            changed_at: field_str(o, "changed_at"),
+        }
+    }
+}
+
+/// `ModemUplinkTelemetry` (`modem.ts:146`): which interface carries the
+/// default route. WP4's `parseUplinkTelemetry` port sanitises the RAW block.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ModemUplinkTelemetry {
     /// Interface from the kernel's own route lookup, or null when there is none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<String>,
     /// 1 when the modem interface is the ONLY default route.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub modem_only: Option<u8>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub modem_only: Option<f64>,
+}
+
+impl ModemUplinkTelemetry {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            primary: field_str(o, "primary"),
+            modem_only: field_num(o, "modem_only"),
+        }
+    }
 }
 
 /// `modem_clock` (`modem.ts:185`): raw AT+CCLK? + the daemon-clock epoch
 /// seconds at the instant it was read, + registration <stat> at that instant.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Each field is independent: [`crate::clock_step::read_modem_clock`] needs
+/// `cclk` and `read_at`, and falls back to the top-level `reg` when this
+/// `reg` is not a number (`clock-step.ts:144-145`).
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ModemClock {
-    pub cclk: String,
-    #[serde(with = "js_num")]
-    pub read_at: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reg: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cclk: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub read_at: Option<f64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub reg: Option<f64>,
 }
 
-/// `ModemTelemetry` (`modem.ts:153`): the daemon's atomic telemetry snapshot.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+impl ModemClock {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            cclk: field_str(o, "cclk"),
+            read_at: field_num(o, "read_at"),
+            reg: field_num(o, "reg"),
+        }
+    }
+}
+
+/// `ModemTelemetry` (`modem.ts:153`): the daemon's atomic telemetry snapshot
+/// (`write_telemetry`, `sim7600-lte.sh:473-621`). Every field is independent;
+/// see the section comment for the per-field typing rules.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ModemTelemetry {
-    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
     /// AT+CSQ value 0–31, or 99 when unknown. Doubles as ASU.
-    #[serde(with = "js_num")]
-    pub csq: f64,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub csq: Option<f64>,
     /// Derived dBm (-113 + csq*2), or null when csq is unknown.
-    #[serde(with = "js_num_opt")]
+    #[serde(serialize_with = "js_num_opt::serialize")]
     pub rssi_dbm: Option<f64>,
-    #[serde(with = "js_num")]
-    pub csq_interval: f64,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub csq_interval: Option<f64>,
     /// "connected" | "connecting" | "disconnected" | "dead_zone".
-    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     /// Last seen 3GPP registration <stat>: 1 home, 5 roaming, 2 searching,
     /// 3 denied, 0 none, 99 unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reg: Option<i64>,
-    pub iface: String,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub reg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iface: Option<String>,
     pub ip: Option<String>,
+    /// Minutes of XTRA assistance validity left (written by the daemon,
+    /// `sim7600-lte.sh:587`; no agent consumer).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
+    pub xtra_valid_min: Option<f64>,
+    /// The APPLIED antenna-bias state, RAW (`sim7600-lte.sh:588`): the daemon
+    /// writes 1/0/null, and `readModemBias` (`config-sync.ts:513-514`) maps
+    /// `1 | true` → true, `0 | false` → false, anything else → null. Kept as
+    /// the raw value so WP4's port applies that rule itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gnss_ant_bias: Option<Value>,
     /// Modem PMU temperature in °C (AT+CPMUTEMP), or null/absent when never read.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "js_num_opt")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_num_opt::serialize"
+    )]
     pub modem_temp: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub modem_clock: Option<ModemClock>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gnss: Option<ModemGnssTelemetry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<ModemRecoveryTelemetry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sim: Option<ModemSimTelemetry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cellular: Option<ModemCellularTelemetry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uplink: Option<ModemUplinkTelemetry>,
 }
 
+impl ModemTelemetry {
+    pub fn from_map(o: &JsonMap) -> Self {
+        Self {
+            timestamp: field_str(o, "timestamp"),
+            csq: field_num(o, "csq"),
+            rssi_dbm: field_num(o, "rssi_dbm"),
+            csq_interval: field_num(o, "csq_interval"),
+            status: field_str(o, "status"),
+            reg: field_num(o, "reg"),
+            iface: field_str(o, "iface"),
+            ip: field_str(o, "ip"),
+            xtra_valid_min: field_num(o, "xtra_valid_min"),
+            // `null` is a real daemon value (never applied); keep it raw.
+            gnss_ant_bias: o.get("gnss_ant_bias").cloned(),
+            modem_temp: field_num(o, "modem_temp"),
+            modem_clock: field_obj(o, "modem_clock").map(ModemClock::from_map),
+            gnss: field_obj(o, "gnss").map(ModemGnssTelemetry::from_map),
+            recovery: field_obj(o, "recovery").map(ModemRecoveryTelemetry::from_map),
+            sim: field_obj(o, "sim").map(ModemSimTelemetry::from_map),
+            cellular: field_obj(o, "cellular").map(ModemCellularTelemetry::from_map),
+            uplink: field_obj(o, "uplink").map(ModemUplinkTelemetry::from_map),
+        }
+    }
+
+    /// The snapshot as `readModemTelemetry` hands it on, from an already
+    /// `JSON.parse`d value. `None` exactly when the TS value is falsy (`null`,
+    /// `false`, `0`, `""`): the case every consumer treats as "no telemetry"
+    /// (`if (!t)`, `lte.ts:65`). Any other non-object (a number, a string, an
+    /// array, `true`) is a snapshot whose every field is undefined, which is
+    /// what a field lookup on it yields in JS.
+    pub fn from_value(v: &Value) -> Option<Self> {
+        match v {
+            Value::Null | Value::Bool(false) => None,
+            Value::Number(n) if n.as_f64() == Some(0.0) => None,
+            Value::String(s) if s.is_empty() => None,
+            Value::Object(o) => Some(Self::from_map(o)),
+            _ => Some(Self::default()),
+        }
+    }
+
+    /// `readModemTelemetry`'s parse half (`modem.ts:207-208`) over the file
+    /// text the HAL read: unparseable JSON is `None`, like the TS `catch`.
+    pub fn from_json(raw: &str) -> Option<Self> {
+        Self::from_value(&serde_json::from_str::<Value>(raw).ok()?)
+    }
+}
+
+deserialize_via_from_map!(
+    GnssEngineRestart,
+    ModemGnssTelemetry,
+    ModemLastReset,
+    ModemGateSkip,
+    ModemRecoveryTelemetry,
+    ModemSimTelemetry,
+    ModemCellularTelemetry,
+    ModemUplinkTelemetry,
+    ModemClock,
+    ModemTelemetry,
+);
 #[cfg(test)]
 mod tests {
     use super::*;

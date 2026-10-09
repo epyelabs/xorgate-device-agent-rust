@@ -1,0 +1,705 @@
+{
+  "jsSourceFile": "test/sky-state.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP2 dump-wp2.ts; not committed there); snapshot expectations are the FULL snapshot the TS tracker returned (vitest only toMatchObject-checks a subset)",
+  "skyDefaults": {
+    "usableSnrDb": 20,
+    "clearMinSats": 4,
+    "clearHoldMs": 5000,
+    "leaveClearMs": 15000,
+    "noRfHoldMs": 60000,
+    "leaveNoRfMs": 5000,
+    "dataStaleMs": 15000
+  },
+  "skyStateCodes": {
+    "clear": 0,
+    "obstructed": 1,
+    "no-rf": 2
+  },
+  "gnssSkyFileCases": [
+    {
+      "name": "gnss-sky.json shape [0]",
+      "snapshot": {
+        "state": "clear",
+        "heard": 6,
+        "usable": 6,
+        "inView": 17,
+        "maxSnr": 30,
+        "holdMs": 5000
+      },
+      "timestampMs": 1785420306789,
+      "expectedJson": "{\"v\":1,\"timestamp\":\"2026-07-30T14:05:06.789Z\",\"state\":\"clear\",\"heard\":6,\"usable\":6,\"in_view\":17,\"max_snr\":30,\"hold_s\":5}"
+    },
+    {
+      "name": "gnss-sky.json shape [1]",
+      "snapshot": {
+        "state": "unknown",
+        "heard": 0,
+        "usable": 0,
+        "inView": 0,
+        "maxSnr": null,
+        "holdMs": 0
+      },
+      "timestampMs": 0,
+      "expectedJson": "{\"v\":1,\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"state\":\"unknown\",\"heard\":0,\"usable\":0,\"in_view\":0,\"max_snr\":null,\"hold_s\":0}"
+    },
+    {
+      "name": "gnss-sky.json shape [2]",
+      "snapshot": {
+        "state": "no-rf",
+        "heard": 0,
+        "usable": 0,
+        "inView": 8,
+        "maxSnr": null,
+        "holdMs": 61500
+      },
+      "timestampMs": 1767225600000,
+      "expectedJson": "{\"v\":1,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"state\":\"no-rf\",\"heard\":0,\"usable\":0,\"in_view\":8,\"max_snr\":null,\"hold_s\":62}"
+    },
+    {
+      "name": "gnss-sky.json shape [3]",
+      "snapshot": {
+        "state": "obstructed",
+        "heard": 4,
+        "usable": 0,
+        "inView": 4,
+        "maxSnr": 14,
+        "holdMs": 1499
+      },
+      "timestampMs": 1791511485433,
+      "expectedJson": "{\"v\":1,\"timestamp\":\"2026-10-09T02:04:45.433Z\",\"state\":\"obstructed\",\"heard\":4,\"usable\":0,\"in_view\":4,\"max_snr\":14,\"hold_s\":1}"
+    }
+  ],
+  "cases": [
+    {
+      "name": "starts unknown and stays unknown until GSV arrives",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "unknown",
+            "heard": 0,
+            "usable": 0,
+            "inView": 0,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "counts only satellites with a C/N0 as heard, and promotes to clear after the hold",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B",
+            "$GLGSV,2,1,07,66,29,037,20,76,04,067,21,82,80,220,,75,06,018,,1*79",
+            "$GLGSV,2,2,07,81,35,158,,67,75,310,,68,31,237,,1*47"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 6,
+            "usable": 6,
+            "inView": 17,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 5000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B",
+            "$GLGSV,2,1,07,66,29,037,20,76,04,067,21,82,80,220,,75,06,018,,1*79",
+            "$GLGSV,2,2,07,81,35,158,,67,75,310,,68,31,237,,1*47"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 6000,
+          "expected": {
+            "state": "clear",
+            "heard": 6,
+            "usable": 6,
+            "inView": 17,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a silent sky reads obstructed first and only becomes no-rf after the sustain window",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 0,
+            "usable": 0,
+            "inView": 8,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 59000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 60000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 0,
+            "usable": 0,
+            "inView": 8,
+            "maxSnr": null,
+            "holdMs": 59000
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 1000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 61000,
+          "expected": {
+            "state": "no-rf",
+            "heard": 0,
+            "usable": 0,
+            "inView": 8,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "silence is never no-rf when NMEA itself stops — that is unknown (the wedge case)",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "advance",
+          "ms": 5000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 6000,
+          "expected": {
+            "state": "clear",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 16000
+        },
+        {
+          "op": "snapshot",
+          "at": 22000,
+          "expected": {
+            "state": "unknown",
+            "heard": 0,
+            "usable": 0,
+            "inView": 0,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 300000
+        },
+        {
+          "op": "snapshot",
+          "at": 322000,
+          "expected": {
+            "state": "unknown",
+            "heard": 0,
+            "usable": 0,
+            "inView": 0,
+            "maxSnr": null,
+            "holdMs": 300000
+          }
+        }
+      ]
+    },
+    {
+      "name": "does not flap out of clear on a single bad cycle",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "advance",
+          "ms": 5000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 6000,
+          "expected": {
+            "state": "clear",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 1000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 7000,
+          "expected": {
+            "state": "clear",
+            "heard": 0,
+            "usable": 0,
+            "inView": 8,
+            "maxSnr": null,
+            "holdMs": 1000
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 13000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 20000,
+          "expected": {
+            "state": "clear",
+            "heard": 0,
+            "usable": 0,
+            "inView": 8,
+            "maxSnr": null,
+            "holdMs": 14000
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 2000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 22000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 0,
+            "usable": 0,
+            "inView": 8,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "leaves no-rf quickly once anything is heard again",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "advance",
+          "ms": 60000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,2,1,08,05,31,077,,15,79,067,,20,46,052,,21,,,,1",
+            "$GPGSV,2,2,08,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 61000,
+          "expected": {
+            "state": "no-rf",
+            "heard": 0,
+            "usable": 0,
+            "inView": 8,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 1000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 62000,
+          "expected": {
+            "state": "no-rf",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 1000
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 5000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 67000,
+          "expected": {
+            "state": "clear",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "ignores a cycle joined mid-stream, then reads the next one whole",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "unknown",
+            "heard": 0,
+            "usable": 0,
+            "inView": 0,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "weak-but-present signal is obstructed, never clear",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,1,1,04,05,31,077,12,15,79,067,09,20,46,052,14,21,10,100,11,1"
+          ]
+        },
+        {
+          "op": "advance",
+          "ms": 15000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,1,1,04,05,31,077,12,15,79,067,09,20,46,052,14,21,10,100,11,1"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 16000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 4,
+            "usable": 0,
+            "inView": 4,
+            "maxSnr": 14,
+            "holdMs": 15000
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] holdMs accrues on the published state and inView sums per talker",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B",
+            "$GLGSV,2,1,07,66,29,037,20,76,04,067,21,82,80,220,,75,06,018,,1*79",
+            "$GLGSV,2,2,07,81,35,158,,67,75,310,,68,31,237,,1*47"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 6,
+            "usable": 6,
+            "inView": 17,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 2000
+        },
+        {
+          "op": "snapshot",
+          "at": 3000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 6,
+            "usable": 6,
+            "inView": 17,
+            "maxSnr": 30,
+            "holdMs": 2000
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 14000
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 17000,
+          "expected": {
+            "state": "clear",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 2000
+        },
+        {
+          "op": "snapshot",
+          "at": 19000,
+          "expected": {
+            "state": "clear",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 2000
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] out-of-order message restarts the cycle on the next message 1",
+      "startMono": 1000,
+      "ops": [
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "unknown",
+            "heard": 0,
+            "usable": 0,
+            "inView": 0,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "unknown",
+            "heard": 0,
+            "usable": 0,
+            "inView": 0,
+            "maxSnr": null,
+            "holdMs": 0
+          }
+        },
+        {
+          "op": "feed",
+          "lines": [
+            "$GPGSV,3,1,10,05,31,077,29,15,79,067,20,20,46,052,30,21,,,21,1*56",
+            "$GPGSV,3,2,10,10,11,274,,18,75,292,,23,41,286,,27,09,322,,1*61",
+            "$GPGSV,3,3,10,29,21,202,,30,04,032,,1*6B"
+          ]
+        },
+        {
+          "op": "snapshot",
+          "at": 1000,
+          "expected": {
+            "state": "obstructed",
+            "heard": 4,
+            "usable": 4,
+            "inView": 10,
+            "maxSnr": 30,
+            "holdMs": 0
+          }
+        }
+      ]
+    }
+  ]
+}

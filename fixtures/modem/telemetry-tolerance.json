@@ -1,0 +1,612 @@
+{
+  "jsSourceFile": "src/hardware/modem.ts + src/agent/clock-step.ts + src/agent/collectors/lte.ts + src/agent/config-sync.ts + src/lib/led-state.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-modem-tolerance.mts run in the JS repo working tree (throwaway, scratchpad; not committed anywhere). Each raw file text is written to a temp LTE_TELEMETRY_FILE and read through the REAL readModemTelemetry, readModemClock(now), createLteCollector().read() and readModemBias(now, file); ledLteStatus is led-state.ts:183's expression over the parsed value. Review-wp2 MUST-FIX 1(f).",
+  "cases": [
+    {
+      "name": "modem_clock.reg is the string \"1\": falls back to the top-level reg 1 (review case)",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\"reg\":1,\"modem_clock\":{\"cclk\":\"26/07/29,15:26:35-16\",\"read_at\":1785353395,\"reg\":\"1\"}}"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        }
+      }
+    },
+    {
+      "name": "modem_clock.reg is the string \"1\" and there is no top-level reg: no registration evidence",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\"modem_clock\":{\"cclk\":\"26/07/29,15:26:35-16\",\"read_at\":1785353395,\"reg\":\"1\"}}"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": null,
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        }
+      }
+    },
+    {
+      "name": "modem_clock.reg null falls back to the top-level reg 5",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\"reg\":5,\"modem_clock\":{\"cclk\":\"26/07/29,15:26:35-16\",\"read_at\":1785353395,\"reg\":null}}"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        }
+      }
+    },
+    {
+      "name": "modem_clock.reg 2 is a number: no fallback to the top-level reg 1",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\"reg\":1,\"modem_clock\":{\"cclk\":\"26/07/29,15:26:35-16\",\"read_at\":1785353395,\"reg\":2}}"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": null,
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        }
+      }
+    },
+    {
+      "name": "integral floats (reg 1.0, read_at .0, csq 18.0) read as the JS numbers",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\"timestamp\":\"2026-07-29T19:29:50Z\",\"csq\":18.0,\"rssi_dbm\":-77.0,\"csq_interval\":30,\"status\":\"connected\",\"reg\":1.0,\"iface\":\"usb0\",\"ip\":null,\"modem_temp\":40.5,\"modem_clock\":{\"cclk\":\"26/07/29,15:26:35-16\",\"read_at\":1785353395.0,\"reg\":5.0},\"recovery\":{\"resets_24h\":2.0}}"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {
+          "quality": {
+            "value": 18,
+            "unit": "asu"
+          },
+          "rssi": {
+            "value": -77,
+            "unit": "dBm"
+          },
+          "modem_temp": {
+            "value": 40.5,
+            "unit": "°C"
+          },
+          "resets_24h": {
+            "value": 2
+          }
+        },
+        "ledLteStatus": "connected",
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem has not applied a bias state yet"
+        }
+      }
+    },
+    {
+      "name": "null nested ts (iso_or_null) + missing csq: lte omitted, clock and blocks kept",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\n  \"timestamp\": \"2026-07-29T19:29:50Z\",\n  \"rssi_dbm\": null,\n  \"csq_interval\": 30,\n  \"status\": \"connecting\",\n  \"reg\": 5,\n  \"iface\": \"usb0\",\n  \"ip\": null,\n  \"xtra_valid_min\": null,\n  \"gnss_ant_bias\": null,\n  \"modem_temp\": null,\n  \"modem_clock\": {\"cclk\": \"26/07/29,15:26:35-16\", \"read_at\": 1785353395, \"reg\": 5},\n  \"gnss\": {\n    \"engine_on\": null,\n    \"has_fix\": null,\n    \"fix_checked_at\": null,\n    \"ttff_s\": null,\n    \"last_engine_start\": null,\n    \"last_engine_restart\": {\"ts\": null, \"reason\": \"wedge\"},\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 2,\n    \"health\": \"degraded\"\n  },\n  \"recovery\": {\n    \"connect_fails\": 3,\n    \"radio_cycles_since_ok\": 1,\n    \"resets_24h\": 0,\n    \"last_reset\": {\"ts\": null, \"path\": \"deadzone\"},\n    \"last_gate_skip\": {\"ts\": null, \"context\": \"ladder\", \"reason\": \"cooldown\"},\n    \"last_lte_ok\": null\n  },\n  \"sim\": {\"present\": null, \"state\": \"unknown\", \"registration\": \"unknown\", \"checked_at\": null},\n  \"cellular\": {\"state\": \"applying\", \"apn_requested\": \"sp.mb.com\", \"fails\": 0, \"changed_at\": null},\n  \"uplink\": {\n    \"primary\": null,\n    \"modem_only\": 0\n  }\n}\n"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {},
+        "ledLteStatus": "connecting",
+        "gnssAntBiasRaw": null,
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem has not applied a bias state yet",
+          "sim": {
+            "state": "unknown",
+            "present": null,
+            "registration": "unknown"
+          },
+          "uplink": {
+            "primary": null,
+            "modem_only": 0
+          },
+          "apn": {
+            "state": "applying",
+            "apn_requested": "sp.mb.com",
+            "fails": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "modem_temp is the string \"41\": only the modem_temp leaf drops; csq and modem_clock stay usable",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\n  \"timestamp\": \"2026-07-29T19:29:50Z\",\n  \"csq\": 18,\n  \"rssi_dbm\": -77,\n  \"csq_interval\": 30,\n  \"status\": \"connected\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"10.164.20.3\",\n  \"xtra_valid_min\": 4210,\n  \"gnss_ant_bias\": 1,\n  \"modem_temp\": \"41\",\n  \"modem_clock\": {\"cclk\": \"26/07/29,15:26:35-16\", \"read_at\": 1785353395, \"reg\": 1},\n  \"gnss\": {\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"2026-07-29T19:20:00Z\",\n    \"ttff_s\": 38,\n    \"last_engine_start\": \"2026-07-29T19:00:12Z\",\n    \"last_engine_restart\": {\"ts\": \"2026-07-29T19:00:12Z\", \"reason\": \"post-reset\"},\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"ok\"\n  },\n  \"recovery\": {\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 1,\n    \"last_reset\": {\"ts\": \"2026-07-29T18:59:40Z\", \"path\": \"ladder\"},\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"2026-07-29T19:29:50Z\"\n  },\n  \"sim\": {\"present\": 1, \"state\": \"ready\", \"iccid\": \"8912230000507537488\", \"carrier\": \"Public Mobile\", \"act\": \"4G\", \"registration\": \"home\", \"checked_at\": \"2026-07-29T19:25:00Z\"},\n  \"cellular\": {\"state\": \"in-force\", \"apn_applied\": \"sp.mb.com\", \"fails\": 0, \"changed_at\": \"2026-07-29T19:01:00Z\"},\n  \"uplink\": {\n    \"primary\": \"usb0\",\n    \"modem_only\": 1\n  }\n}\n"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {
+          "quality": {
+            "value": 18,
+            "unit": "asu"
+          },
+          "rssi": {
+            "value": -77,
+            "unit": "dBm"
+          },
+          "gnss_health": {
+            "value": 0
+          },
+          "resets_24h": {
+            "value": 1
+          }
+        },
+        "ledLteStatus": "connected",
+        "gnssAntBiasRaw": 1,
+        "readModemBias": {
+          "value": true,
+          "fresh": true,
+          "sim": {
+            "state": "ready",
+            "present": 1,
+            "iccid": "8912230000507537488",
+            "carrier": "Public Mobile",
+            "act": "4G",
+            "registration": "home",
+            "checked_at": "2026-07-29T19:25:00Z"
+          },
+          "uplink": {
+            "primary": "usb0",
+            "modem_only": 1
+          },
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0,
+            "changed_at": "2026-07-29T19:01:00Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "full real-shaped daemon snapshot (write_telemetry layout, bench facts)",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\n  \"timestamp\": \"2026-07-29T19:29:50Z\",\n  \"csq\": 18,\n  \"rssi_dbm\": -77,\n  \"csq_interval\": 30,\n  \"status\": \"connected\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"10.164.20.3\",\n  \"xtra_valid_min\": 4210,\n  \"gnss_ant_bias\": 1,\n  \"modem_temp\": 41,\n  \"modem_clock\": {\"cclk\": \"26/07/29,15:26:35-16\", \"read_at\": 1785353395, \"reg\": 1},\n  \"gnss\": {\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"2026-07-29T19:20:00Z\",\n    \"ttff_s\": 38,\n    \"last_engine_start\": \"2026-07-29T19:00:12Z\",\n    \"last_engine_restart\": {\"ts\": \"2026-07-29T19:00:12Z\", \"reason\": \"post-reset\"},\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"ok\"\n  },\n  \"recovery\": {\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 1,\n    \"last_reset\": {\"ts\": \"2026-07-29T18:59:40Z\", \"path\": \"ladder\"},\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"2026-07-29T19:29:50Z\"\n  },\n  \"sim\": {\"present\": 1, \"state\": \"ready\", \"iccid\": \"8912230000507537488\", \"carrier\": \"Public Mobile\", \"act\": \"4G\", \"registration\": \"home\", \"checked_at\": \"2026-07-29T19:25:00Z\"},\n  \"cellular\": {\"state\": \"in-force\", \"apn_applied\": \"sp.mb.com\", \"fails\": 0, \"changed_at\": \"2026-07-29T19:01:00Z\"},\n  \"uplink\": {\n    \"primary\": \"usb0\",\n    \"modem_only\": 1\n  }\n}\n"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {
+          "quality": {
+            "value": 18,
+            "unit": "asu"
+          },
+          "rssi": {
+            "value": -77,
+            "unit": "dBm"
+          },
+          "modem_temp": {
+            "value": 41,
+            "unit": "°C"
+          },
+          "gnss_health": {
+            "value": 0
+          },
+          "resets_24h": {
+            "value": 1
+          }
+        },
+        "ledLteStatus": "connected",
+        "gnssAntBiasRaw": 1,
+        "readModemBias": {
+          "value": true,
+          "fresh": true,
+          "sim": {
+            "state": "ready",
+            "present": 1,
+            "iccid": "8912230000507537488",
+            "carrier": "Public Mobile",
+            "act": "4G",
+            "registration": "home",
+            "checked_at": "2026-07-29T19:25:00Z"
+          },
+          "uplink": {
+            "primary": "usb0",
+            "modem_only": 1
+          },
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0,
+            "changed_at": "2026-07-29T19:01:00Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "wrong-typed fields everywhere: each costs only its own consumer value",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\"timestamp\":12,\"csq\":20,\"rssi_dbm\":\"x\",\"csq_interval\":\"30\",\"status\":5,\"reg\":\"1\",\"iface\":null,\"ip\":7,\"gnss_ant_bias\":true,\"modem_temp\":null,\"modem_clock\":{\"cclk\":123,\"read_at\":1785353395,\"reg\":1},\"gnss\":\"broken\",\"recovery\":{\"resets_24h\":\"2\"},\"sim\":[],\"cellular\":\"x\",\"uplink\":5}"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": null,
+        "lteRead": {
+          "quality": {
+            "value": 20,
+            "unit": "asu"
+          }
+        },
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": true,
+        "readModemBias": {
+          "value": true,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        }
+      }
+    },
+    {
+      "name": "modem_clock read_at is a string: clock null, lte intact",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\n  \"timestamp\": \"2026-07-29T19:29:50Z\",\n  \"csq\": 18,\n  \"rssi_dbm\": -77,\n  \"csq_interval\": 30,\n  \"status\": \"connected\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"10.164.20.3\",\n  \"xtra_valid_min\": 4210,\n  \"gnss_ant_bias\": 1,\n  \"modem_temp\": 41,\n  \"modem_clock\": {\"cclk\": \"26/07/29,15:26:35-16\", \"read_at\": \"1785353395\", \"reg\": 1},\n  \"gnss\": {\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"2026-07-29T19:20:00Z\",\n    \"ttff_s\": 38,\n    \"last_engine_start\": \"2026-07-29T19:00:12Z\",\n    \"last_engine_restart\": {\"ts\": \"2026-07-29T19:00:12Z\", \"reason\": \"post-reset\"},\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"ok\"\n  },\n  \"recovery\": {\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 1,\n    \"last_reset\": {\"ts\": \"2026-07-29T18:59:40Z\", \"path\": \"ladder\"},\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"2026-07-29T19:29:50Z\"\n  },\n  \"sim\": {\"present\": 1, \"state\": \"ready\", \"iccid\": \"8912230000507537488\", \"carrier\": \"Public Mobile\", \"act\": \"4G\", \"registration\": \"home\", \"checked_at\": \"2026-07-29T19:25:00Z\"},\n  \"cellular\": {\"state\": \"in-force\", \"apn_applied\": \"sp.mb.com\", \"fails\": 0, \"changed_at\": \"2026-07-29T19:01:00Z\"},\n  \"uplink\": {\n    \"primary\": \"usb0\",\n    \"modem_only\": 1\n  }\n}\n"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": null,
+        "lteRead": {
+          "quality": {
+            "value": 18,
+            "unit": "asu"
+          },
+          "rssi": {
+            "value": -77,
+            "unit": "dBm"
+          },
+          "modem_temp": {
+            "value": 41,
+            "unit": "°C"
+          },
+          "gnss_health": {
+            "value": 0
+          },
+          "resets_24h": {
+            "value": 1
+          }
+        },
+        "ledLteStatus": "connected",
+        "gnssAntBiasRaw": 1,
+        "readModemBias": {
+          "value": true,
+          "fresh": true,
+          "sim": {
+            "state": "ready",
+            "present": 1,
+            "iccid": "8912230000507537488",
+            "carrier": "Public Mobile",
+            "act": "4G",
+            "registration": "home",
+            "checked_at": "2026-07-29T19:25:00Z"
+          },
+          "uplink": {
+            "primary": "usb0",
+            "modem_only": 1
+          },
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0,
+            "changed_at": "2026-07-29T19:01:00Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "modem_clock is an array: clock null, lte intact",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\n  \"timestamp\": \"2026-07-29T19:29:50Z\",\n  \"csq\": 18,\n  \"rssi_dbm\": -77,\n  \"csq_interval\": 30,\n  \"status\": \"connected\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"10.164.20.3\",\n  \"xtra_valid_min\": 4210,\n  \"gnss_ant_bias\": 1,\n  \"modem_temp\": 41,\n  \"modem_clock\": [\"26/07/29,15:26:35-16\", 1785353395, 1],\n  \"gnss\": {\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"2026-07-29T19:20:00Z\",\n    \"ttff_s\": 38,\n    \"last_engine_start\": \"2026-07-29T19:00:12Z\",\n    \"last_engine_restart\": {\"ts\": \"2026-07-29T19:00:12Z\", \"reason\": \"post-reset\"},\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"ok\"\n  },\n  \"recovery\": {\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 1,\n    \"last_reset\": {\"ts\": \"2026-07-29T18:59:40Z\", \"path\": \"ladder\"},\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"2026-07-29T19:29:50Z\"\n  },\n  \"sim\": {\"present\": 1, \"state\": \"ready\", \"iccid\": \"8912230000507537488\", \"carrier\": \"Public Mobile\", \"act\": \"4G\", \"registration\": \"home\", \"checked_at\": \"2026-07-29T19:25:00Z\"},\n  \"cellular\": {\"state\": \"in-force\", \"apn_applied\": \"sp.mb.com\", \"fails\": 0, \"changed_at\": \"2026-07-29T19:01:00Z\"},\n  \"uplink\": {\n    \"primary\": \"usb0\",\n    \"modem_only\": 1\n  }\n}\n"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": null,
+        "lteRead": {
+          "quality": {
+            "value": 18,
+            "unit": "asu"
+          },
+          "rssi": {
+            "value": -77,
+            "unit": "dBm"
+          },
+          "modem_temp": {
+            "value": 41,
+            "unit": "°C"
+          },
+          "gnss_health": {
+            "value": 0
+          },
+          "resets_24h": {
+            "value": 1
+          }
+        },
+        "ledLteStatus": "connected",
+        "gnssAntBiasRaw": 1,
+        "readModemBias": {
+          "value": true,
+          "fresh": true,
+          "sim": {
+            "state": "ready",
+            "present": 1,
+            "iccid": "8912230000507537488",
+            "carrier": "Public Mobile",
+            "act": "4G",
+            "registration": "home",
+            "checked_at": "2026-07-29T19:25:00Z"
+          },
+          "uplink": {
+            "primary": "usb0",
+            "modem_only": 1
+          },
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0,
+            "changed_at": "2026-07-29T19:01:00Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "csq 99 (unknown signal) omits the lte group; gnss_ant_bias false (bool)",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\n  \"timestamp\": \"2026-07-29T19:29:50Z\",\n  \"csq\": 99,\n  \"rssi_dbm\": null,\n  \"csq_interval\": 30,\n  \"status\": \"connected\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"10.164.20.3\",\n  \"xtra_valid_min\": 4210,\n  \"gnss_ant_bias\": false,\n  \"modem_temp\": 41,\n  \"modem_clock\": {\"cclk\": \"26/07/29,15:26:35-16\", \"read_at\": 1785353395, \"reg\": 1},\n  \"gnss\": {\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"2026-07-29T19:20:00Z\",\n    \"ttff_s\": 38,\n    \"last_engine_start\": \"2026-07-29T19:00:12Z\",\n    \"last_engine_restart\": {\"ts\": \"2026-07-29T19:00:12Z\", \"reason\": \"post-reset\"},\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"ok\"\n  },\n  \"recovery\": {\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 1,\n    \"last_reset\": {\"ts\": \"2026-07-29T18:59:40Z\", \"path\": \"ladder\"},\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"2026-07-29T19:29:50Z\"\n  },\n  \"sim\": {\"present\": 1, \"state\": \"ready\", \"iccid\": \"8912230000507537488\", \"carrier\": \"Public Mobile\", \"act\": \"4G\", \"registration\": \"home\", \"checked_at\": \"2026-07-29T19:25:00Z\"},\n  \"cellular\": {\"state\": \"in-force\", \"apn_applied\": \"sp.mb.com\", \"fails\": 0, \"changed_at\": \"2026-07-29T19:01:00Z\"},\n  \"uplink\": {\n    \"primary\": \"usb0\",\n    \"modem_only\": 1\n  }\n}\n"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {},
+        "ledLteStatus": "connected",
+        "gnssAntBiasRaw": false,
+        "readModemBias": {
+          "value": false,
+          "fresh": true,
+          "sim": {
+            "state": "ready",
+            "present": 1,
+            "iccid": "8912230000507537488",
+            "carrier": "Public Mobile",
+            "act": "4G",
+            "registration": "home",
+            "checked_at": "2026-07-29T19:25:00Z"
+          },
+          "uplink": {
+            "primary": "usb0",
+            "modem_only": 1
+          },
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0,
+            "changed_at": "2026-07-29T19:01:00Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "unknown gnss.health label: gnss_health leaf drops",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\n  \"timestamp\": \"2026-07-29T19:29:50Z\",\n  \"csq\": 18,\n  \"rssi_dbm\": -77,\n  \"csq_interval\": 30,\n  \"status\": \"connected\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"10.164.20.3\",\n  \"xtra_valid_min\": 4210,\n  \"gnss_ant_bias\": 1,\n  \"modem_temp\": 41,\n  \"modem_clock\": {\"cclk\": \"26/07/29,15:26:35-16\", \"read_at\": 1785353395, \"reg\": 1},\n  \"gnss\": {\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"2026-07-29T19:20:00Z\",\n    \"ttff_s\": 38,\n    \"last_engine_start\": \"2026-07-29T19:00:12Z\",\n    \"last_engine_restart\": {\"ts\": \"2026-07-29T19:00:12Z\", \"reason\": \"post-reset\"},\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"confused\"\n  },\n  \"recovery\": {\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 1,\n    \"last_reset\": {\"ts\": \"2026-07-29T18:59:40Z\", \"path\": \"ladder\"},\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"2026-07-29T19:29:50Z\"\n  },\n  \"sim\": {\"present\": 1, \"state\": \"ready\", \"iccid\": \"8912230000507537488\", \"carrier\": \"Public Mobile\", \"act\": \"4G\", \"registration\": \"home\", \"checked_at\": \"2026-07-29T19:25:00Z\"},\n  \"cellular\": {\"state\": \"in-force\", \"apn_applied\": \"sp.mb.com\", \"fails\": 0, \"changed_at\": \"2026-07-29T19:01:00Z\"},\n  \"uplink\": {\n    \"primary\": \"usb0\",\n    \"modem_only\": 1\n  }\n}\n"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": {
+          "offsetMs": -200000
+        },
+        "lteRead": {
+          "quality": {
+            "value": 18,
+            "unit": "asu"
+          },
+          "rssi": {
+            "value": -77,
+            "unit": "dBm"
+          },
+          "modem_temp": {
+            "value": 41,
+            "unit": "°C"
+          },
+          "resets_24h": {
+            "value": 1
+          }
+        },
+        "ledLteStatus": "connected",
+        "gnssAntBiasRaw": 1,
+        "readModemBias": {
+          "value": true,
+          "fresh": true,
+          "sim": {
+            "state": "ready",
+            "present": 1,
+            "iccid": "8912230000507537488",
+            "carrier": "Public Mobile",
+            "act": "4G",
+            "registration": "home",
+            "checked_at": "2026-07-29T19:25:00Z"
+          },
+          "uplink": {
+            "primary": "usb0",
+            "modem_only": 1
+          },
+          "apn": {
+            "state": "in-force",
+            "apn_applied": "sp.mb.com",
+            "fails": 0,
+            "changed_at": "2026-07-29T19:01:00Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "top level is an array: every field undefined",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "[1,2,3]"
+      },
+      "expected": {
+        "noTelemetry": false,
+        "readModemClock": null,
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        }
+      }
+    },
+    {
+      "name": "top level is null: no telemetry",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "null"
+      },
+      "expected": {
+        "noTelemetry": true,
+        "readModemClock": null,
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        }
+      }
+    },
+    {
+      "name": "top level is 0 (falsy): no telemetry",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "0"
+      },
+      "expected": {
+        "noTelemetry": true,
+        "readModemClock": null,
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry is stale"
+        }
+      }
+    },
+    {
+      "name": "unparseable file: no telemetry",
+      "op": "modemTelemetryConsumers",
+      "input": {
+        "now": 1785353400000,
+        "raw": "{\"csq\": 18,"
+      },
+      "expected": {
+        "noTelemetry": true,
+        "readModemClock": null,
+        "lteRead": {},
+        "ledLteStatus": null,
+        "gnssAntBiasRaw": {
+          "$undefined": true
+        },
+        "readModemBias": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        }
+      }
+    }
+  ]
+}
