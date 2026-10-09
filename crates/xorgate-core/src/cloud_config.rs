@@ -124,6 +124,7 @@ pub struct CloudConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CloudConfigMessage {
     /// Every top-level key as delivered, before the tolerant parse.
+    #[serde(serialize_with = "crate::js::json_map::serialize")]
     pub raw: Map<String, Value>,
     pub config: CloudConfig,
 }
@@ -247,10 +248,22 @@ pub struct MergeOutcome {
     /// existing keys keep the parsed file's order, newly-added keys append in
     /// `gnssAntBias, imuMount, recording, lteRecovery, timeSync, cellular,
     /// cameraMount, simulation` order. Present only when `changed`.
+    /// Write it as [`MergeOutcome::document_json`] — NOT a plain
+    /// `serde_json::to_string`/`to_vec` of the map, whose number formatter
+    /// differs from JS (`0.000005` → `5e-6`; review-integration M1).
     pub document: Option<Map<String, Value>>,
     pub changed: bool,
     /// Set when the merge REFUSED (unreadable file); `changed` is then false.
     pub refuse_reason: Option<String>,
+}
+
+impl MergeOutcome {
+    /// The exact settings.json bytes `saveSettings` writes
+    /// (`JSON.stringify(merged)`, compact, numbers printed like JS); `None`
+    /// when nothing changed.
+    pub fn document_json(&self) -> Option<String> {
+        self.document.as_ref().map(crate::js::map_to_json_string)
+    }
 }
 
 /// `set` / `clear` / untouched for one replace-whole namespace
@@ -459,9 +472,6 @@ mod tests {
             "p",
         );
         assert!(out.changed);
-        assert_eq!(
-            serde_json::to_string(&out.document.unwrap()).unwrap(),
-            r#"{"gnssAntBias":true}"#
-        );
+        assert_eq!(out.document_json().unwrap(), r#"{"gnssAntBias":true}"#);
     }
 }

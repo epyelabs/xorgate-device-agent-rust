@@ -29,7 +29,7 @@ use serde_json::{Map, Value};
 use crate::boot_config::{CameraMountState, CameraMountVerdict};
 use crate::build_info::BuildInfo;
 use crate::cloud_config::CloudConfig;
-use crate::js::trim as js_trim;
+use crate::js::{self, trim as js_trim};
 use crate::js::{date_parse_ms, number_to_string, object_key_order, parsed_key_order};
 use crate::settings::{AgentSettings, CameraMountSettings, CellularSettings};
 use crate::telemetry::JsNumber;
@@ -132,11 +132,16 @@ pub struct ConfigReport {
     /// Last applied desired rev; 0 = never received one.
     pub rev: u64,
     pub origin: ReportOrigin,
+    #[serde(serialize_with = "js::json_map::serialize")]
     pub effective: Map<String, Value>,
     pub status: IndexMap<String, NamespaceStatus>,
     /// `origin: "local"` ONLY: the namespaces that moved since the cloud last
     /// knew, as settings.json now holds them (`null` = removed locally).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js::json_map_opt::serialize"
+    )]
     pub changed: Option<Map<String, Value>>,
 }
 
@@ -145,7 +150,8 @@ pub struct ConfigReport {
 pub const MAX_REPORT_BYTES: usize = 32_768;
 
 impl ConfigReport {
-    /// The exact wire bytes (`JSON.stringify(report)`).
+    /// The exact wire bytes (`JSON.stringify(report)`; every number in
+    /// `effective` / `changed` printed like JS — [`js::JsJson`]).
     pub fn to_wire(&self) -> String {
         serde_json::to_string(self).expect("ConfigReport serialises")
     }
@@ -294,7 +300,9 @@ impl Serialize for ConfigSyncState {
         for k in keys {
             match k {
                 SyncKey::SettingsHash => m.serialize_entry(k.name(), &self.settings_hash)?,
-                SyncKey::Namespaces => m.serialize_entry(k.name(), &self.namespaces)?,
+                SyncKey::Namespaces => {
+                    m.serialize_entry(k.name(), &self.namespaces.as_ref().map(js::JsJsonMap))?
+                }
                 SyncKey::LocalPending => m.serialize_entry(k.name(), &self.local_pending)?,
             }
         }
@@ -970,6 +978,7 @@ pub struct DesiredSnapshot {
     /// The message's `rev` (0 when the backend predates Phase 2).
     pub rev: u64,
     /// The raw namespaces as they arrived, BEFORE the device's tolerant parse.
+    #[serde(serialize_with = "js::json_map::serialize")]
     pub raw: Map<String, Value>,
     /// The same message after `parseCloudConfig` — i.e. post-clamp.
     pub parsed: CloudConfig,
@@ -1324,7 +1333,11 @@ pub struct ReportInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry_scope: Option<TelemetryScopeReport>,
     /// Locally-changed namespaces; only meaningful on an `origin: "local"` report.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js::json_map_opt::serialize"
+    )]
     pub changed: Option<Map<String, Value>>,
 }
 

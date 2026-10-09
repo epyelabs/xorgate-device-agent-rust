@@ -21,13 +21,13 @@
 //! the directory walk of `recoverOrphanVideoSessions` (`:341-375` — its
 //! per-session rule is [`plan_recover_orphan_sessions`]).
 
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::clock::Clock;
-use crate::js::trim as js_trim;
+use crate::js::{trim as js_trim, JsJsonMap};
 use crate::round::js_math_round;
-use crate::telemetry::{js_num, JsNumber};
+use crate::telemetry::js_num;
 use crate::types::TimeSource;
 use crate::video_capture::posix_join;
 
@@ -456,7 +456,7 @@ impl SidecarBody {
     pub fn to_json(&self) -> String {
         match self {
             SidecarBody::Typed(sc) => serde_json::to_string(sc),
-            SidecarBody::Raw(m) => serde_json::to_string(&JsJson(&Value::Object(m.clone()))),
+            SidecarBody::Raw(m) => serde_json::to_string(&JsJsonMap(m)),
         }
         .expect("a sidecar always serializes")
     }
@@ -466,34 +466,6 @@ impl SidecarBody {
         match self {
             SidecarBody::Typed(sc) => Some(sc),
             SidecarBody::Raw(_) => None,
-        }
-    }
-}
-
-/// Serializes a JSON value with every number printed like a JS number
-/// ([`JsNumber`]) — the raw manifest's copy-through values included.
-struct JsJson<'a>(&'a Value);
-
-impl Serialize for JsJson<'_> {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{SerializeMap, SerializeSeq};
-        match self.0 {
-            Value::Number(n) => JsNumber(n.as_f64().unwrap_or(f64::NAN)).serialize(s),
-            Value::Array(a) => {
-                let mut seq = s.serialize_seq(Some(a.len()))?;
-                for v in a {
-                    seq.serialize_element(&JsJson(v))?;
-                }
-                seq.end()
-            }
-            Value::Object(o) => {
-                let mut map = s.serialize_map(Some(o.len()))?;
-                for (k, v) in o {
-                    map.serialize_entry(k, &JsJson(v))?;
-                }
-                map.end()
-            }
-            other => other.serialize(s),
         }
     }
 }

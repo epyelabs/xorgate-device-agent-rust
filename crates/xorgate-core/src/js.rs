@@ -11,6 +11,7 @@
 //! | `Number(string)` | [`number`] (= [`crate::system::js_number`]) |
 //! | `parseInt`, `parseFloat`, `ToInt32` | [`parse_int`], [`parse_float`], [`to_int32`] |
 //! | `String(n)`, template literals, `JSON.stringify` of a number | [`number_to_string`] (and [`crate::telemetry::JsNumber`] for serde) |
+//! | `JSON.stringify` of a parsed/built object (`serde_json::Value`) | [`JsJson`], [`JsJsonMap`], [`to_json_string`], serde helpers [`json_map`] / [`json_map_opt`] / [`json_value_opt`] |
 //! | `Number.prototype.toFixed` | [`to_fixed`] |
 //! | `Math.round` | [`math_round`] (= [`crate::round::js_math_round`]) |
 //! | `Date.UTC`, `Date.parse`, `toISOString` | [`date_utc`], [`date_parse`] / [`date_parse_ms`], [`to_iso_string`], [`iso_seconds_utc`] |
@@ -21,7 +22,8 @@
 //! (5 141 doubles by bit pattern), both dumped from node.
 
 use indexmap::IndexMap;
-use serde_json::Value;
+use serde::Serialize;
+use serde_json::{Map, Value};
 
 pub use crate::round::js_math_round as math_round;
 pub use crate::system::js_number as number;
@@ -224,8 +226,16 @@ fn shortest_tie_to_even(a: f64, k: usize) -> Option<(String, i32)> {
             x.parse().ok()?,
         ))
     };
-    // A halfway value has exactly k+1 significant digits, the last a 5; a
-    // double's exact expansion has at most 767, so 800 shows all of it.
+    // Cheap pre-filter (review-integration N3): a halfway value has exactly
+    // k+1 significant digits, the last a 5, so rounding it to k+1 digits is
+    // exact and ends in '5'. Anything else cannot be a tie, and the ~90% of
+    // values that fail this skip the wide expansion below.
+    let narrow = format!("{a:.k$e}");
+    if narrow.split_once('e')?.0.as_bytes().last() != Some(&b'5') {
+        return None;
+    }
+    // A double's exact expansion has at most 767 significant digits, so 800
+    // shows all of it: confirm the digits after that '5' are all zero.
     let (wide, x) = split(format!("{a:.p$e}", p = k + 800))?;
     if wide.as_bytes()[k] != b'5' || !wide.as_bytes()[k + 1..].iter().all(|&b| b == b'0') {
         return None;
@@ -365,6 +375,112 @@ pub fn to_fixed(x: f64, digits: u32) -> String {
         }
     }
     format!("{sign}{}", String::from_utf8(out).expect("ASCII digits"))
+}
+
+// ---------------------------------------------------------------------------
+// JSON values (`JSON.stringify` of a parsed / built object)
+// ---------------------------------------------------------------------------
+
+/// A [`serde_json::Value`] that serialises the way `JSON.stringify` prints it.
+///
+/// serde_json's own formatter prints a `Value::Number` holding an f64 in its
+/// own shortest form, which differs from JS in two bands: fractions in
+/// [1e-6, 1e-5) (`0.000005` → `5e-6`) and integers ≥ 2^64 (`1e20` →
+/// `1e+20`) — review-integration M1. An integer `Value::Number` (`u64` /
+/// `i64`, what serde_json parses an integral literal into) prints its EXACT
+/// digits, while JS holds every JSON number as a double: above 2^53 the two
+/// differ too (`9007199254740993` → JS `9007199254740992`). So EVERY number,
+/// integer-backed or not, is routed through its f64 value and
+/// [`crate::telemetry::JsNumber`] ([`number_to_string`]); strings, bools,
+/// null and key order (`preserve_order`) are already JS-exact.
+///
+/// Use it (or [`to_json_string`], the `serialize_with` helpers [`json_map`],
+/// [`json_map_opt`], [`json_value_opt`]) wherever a `Value` / `Map<String,
+/// Value>` reaches the wire or a file.
+#[derive(Debug, Clone, Copy)]
+pub struct JsJson<'a>(pub &'a Value);
+
+impl Serialize for JsJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Number(n) => {
+                crate::telemetry::JsNumber(n.as_f64().unwrap_or(f64::NAN)).serialize(s)
+            }
+            Value::Array(a) => {
+                use serde::ser::SerializeSeq;
+                let mut seq = s.serialize_seq(Some(a.len()))?;
+                for v in a {
+                    seq.serialize_element(&JsJson(v))?;
+                }
+                seq.end()
+            }
+            Value::Object(o) => JsJsonMap(o).serialize(s),
+            other => other.serialize(s),
+        }
+    }
+}
+
+/// [`JsJson`] for an object held as a bare `Map<String, Value>`.
+#[derive(Debug, Clone, Copy)]
+pub struct JsJsonMap<'a>(pub &'a Map<String, Value>);
+
+impl Serialize for JsJsonMap<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(self.0.len()))?;
+        for (k, v) in self.0 {
+            map.serialize_entry(k, &JsJson(v))?;
+        }
+        map.end()
+    }
+}
+
+/// `JSON.stringify(v)` (compact) of a JSON value.
+pub fn to_json_string(v: &Value) -> String {
+    serde_json::to_string(&JsJson(v)).expect("a JSON value always serialises")
+}
+
+/// `JSON.stringify(m)` (compact) of a JSON object.
+pub fn map_to_json_string(m: &Map<String, Value>) -> String {
+    serde_json::to_string(&JsJsonMap(m)).expect("a JSON object always serialises")
+}
+
+/// `#[serde(serialize_with = "js::json_map::serialize")]` on a
+/// `Map<String, Value>` field: printed like `JSON.stringify` ([`JsJson`]).
+pub mod json_map {
+    use super::JsJsonMap;
+    use serde::{Serialize, Serializer};
+    use serde_json::{Map, Value};
+
+    pub fn serialize<S: Serializer>(m: &Map<String, Value>, s: S) -> Result<S::Ok, S::Error> {
+        JsJsonMap(m).serialize(s)
+    }
+}
+
+/// [`json_map`] for an `Option<Map<String, Value>>` field (`None` → `null`;
+/// pair with `skip_serializing_if` where the TS omits the key).
+pub mod json_map_opt {
+    use super::JsJsonMap;
+    use serde::{Serialize, Serializer};
+    use serde_json::{Map, Value};
+
+    pub fn serialize<S: Serializer>(
+        m: &Option<Map<String, Value>>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        m.as_ref().map(JsJsonMap).serialize(s)
+    }
+}
+
+/// [`JsJson`] for an `Option<Value>` field (`None` → `null`).
+pub mod json_value_opt {
+    use super::JsJson;
+    use serde::{Serialize, Serializer};
+    use serde_json::Value;
+
+    pub fn serialize<S: Serializer>(v: &Option<Value>, s: S) -> Result<S::Ok, S::Error> {
+        v.as_ref().map(JsJson).serialize(s)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +875,11 @@ mod tests {
             "-000001-01-01T00:00:00.000Z"
         );
         assert_eq!(to_iso_string(f64::NAN), "Invalid Date");
+        // D14: beyond ±8.64e15 ms JS throws RangeError; we render the string
+        assert_eq!(to_iso_string(8.64e15), "+275760-09-13T00:00:00.000Z");
+        assert_eq!(to_iso_string(8.64e15 + 1.0), "Invalid Date");
+        assert_eq!(to_iso_string(-8.64e15 - 1.0), "Invalid Date");
+        assert_eq!(to_iso_string(f64::INFINITY), "Invalid Date");
     }
 
     #[test]
@@ -875,6 +996,57 @@ mod tests {
         assert_eq!(number_to_string(2f64.powi(-25)), "2.9802322387695312e-8");
         assert_eq!(number_to_string(f64::NAN), "NaN");
         assert_eq!(number_to_string(f64::NEG_INFINITY), "-Infinity");
+    }
+
+    #[test]
+    fn json_values_print_like_json_stringify() {
+        // review-integration M1: serde_json's formatter on a `Value` differs
+        // from JS in [1e-6, 1e-5) and for integers ≥ 2^64 …
+        let v: Value = serde_json::from_str(
+            r#"{"r":0.000005,"y":-0.0000015,"big":100000000000000000000,"unsafe":9007199254740993,"a":[1,0.5,1e21,5e-7],"s":"x","n":null,"b":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"r":5e-6,"y":-1.5e-6,"big":1e+20,"unsafe":9007199254740993,"a":[1,0.5,1e+21,5e-7],"s":"x","n":null,"b":true}"#
+        );
+        // … and JsJson prints node's `JSON.stringify(JSON.parse(text))`
+        // (an integer above 2^53 is a double in JS too).
+        let js = r#"{"r":0.000005,"y":-0.0000015,"big":100000000000000000000,"unsafe":9007199254740992,"a":[1,0.5,1e+21,5e-7],"s":"x","n":null,"b":true}"#;
+        assert_eq!(to_json_string(&v), js);
+        assert_eq!(map_to_json_string(v.as_object().unwrap()), js);
+        // f64-backed integral values print without `.0`; -0 → 0
+        assert_eq!(
+            to_json_string(&serde_json::json!([1.0, -0.0, 3000.0])),
+            "[1,0,3000]"
+        );
+        // integer-backed (u64/i64) values print as the double JS holds
+        assert_eq!(
+            to_json_string(&serde_json::json!([u64::MAX, i64::MIN, 42])),
+            "[18446744073709552000,-9223372036854776000,42]"
+        );
+        // the serde_with helpers
+        #[derive(serde::Serialize)]
+        struct S {
+            #[serde(serialize_with = "json_map::serialize")]
+            m: Map<String, Value>,
+            #[serde(serialize_with = "json_map_opt::serialize")]
+            o: Option<Map<String, Value>>,
+            #[serde(serialize_with = "json_value_opt::serialize")]
+            x: Option<Value>,
+        }
+        let m = v.as_object().unwrap().clone();
+        let s = S {
+            m: m.clone(),
+            o: Some(m),
+            x: Some(serde_json::json!(5e-6)),
+        };
+        assert_eq!(
+            serde_json::to_string(&s).unwrap(),
+            format!(r#"{{"m":{js},"o":{js},"x":0.000005}}"#)
+        );
+        // `to_value` keeps the same f64 (the JS text re-parses exactly)
+        assert_eq!(serde_json::to_value(&s).unwrap()["x"].as_f64(), Some(5e-6));
     }
 
     #[test]

@@ -65,12 +65,12 @@ pub struct SegmentHeader {
 }
 
 /// `SampleLine` (`segments.ts:58-63`): `{ts, mono, seq, metrics}`. `metrics`
-/// keeps insertion order (`serde_json` `preserve_order`), so the line prints
-/// exactly as `JSON.stringify` did — PROVIDED its numbers were built the JS
-/// way (e.g. `serde_json::to_value` of `telemetry::MetricGroup`, whose
-/// `JsNumber` turns integral floats into integers; a raw `Value::from(1.0)`
-/// would print `1.0`). `mono` is `Number(process.hrtime.bigint())` — NANO-
-/// seconds (`telemetry-recorder.ts:116`), past 2^53 after ~104 days of
+/// keeps insertion order (`serde_json` `preserve_order`) and every number in
+/// it is printed by [`crate::js::JsJson`], so the line serialises exactly as
+/// `JSON.stringify` did however the `Value` was built (`Value::from(1.0)` →
+/// `1`, a gps `lat` of `0.000004` → `0.000004`, not serde_json's `4e-6`;
+/// review-integration M1). `mono` is `Number(process.hrtime.bigint())` —
+/// NANO-seconds (`telemetry-recorder.ts:116`), past 2^53 after ~104 days of
 /// uptime, hence the exact-integer printer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SampleLine {
@@ -80,6 +80,7 @@ pub struct SampleLine {
     pub mono: f64,
     #[serde(with = "js_num")]
     pub seq: f64,
+    #[serde(serialize_with = "crate::js::json_map::serialize")]
     pub metrics: Map<String, serde_json::Value>,
 }
 

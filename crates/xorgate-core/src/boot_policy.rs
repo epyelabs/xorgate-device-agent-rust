@@ -116,11 +116,23 @@ pub const TELEMETRY_STALE_MS: f64 = 60_000.0;
 /// same in every comparison the decider makes.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PolicyTelemetry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
     pub timestamp: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
     pub status: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
     pub reg: Option<Value>,
 }
 
