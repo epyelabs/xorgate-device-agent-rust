@@ -261,6 +261,10 @@ async fn run_loop(
 ) {
     let mut backoff = Backoff::new(backoff_cfg);
     let mut ever_connected = false;
+    // TODO(phase-2): `try_send` drops a retained-config / command `Message`
+    // when the consumer lags (cap 256). Harmless while they are only logged;
+    // switch to `send().await` (or an unbounded channel for `Message`) before
+    // config/commands are acted on.
     let send = |ev: MqttEvent| {
         if let Err(e) = events_tx.try_send(ev) {
             warn!("[mqtt] event dropped (consumer lagging): {e}");

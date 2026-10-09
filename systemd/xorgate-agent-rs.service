@@ -43,7 +43,9 @@
 # reflects THIS running service.
 #
 # Type=notify: the Rust agent calls sd_notify(READY=1) once its MQTT client is
-# constructed and pings WATCHDOG=1 from its main loop; NotifyAccess=main keeps
+# constructed and pings WATCHDOG=1 every second from its main loop REGARDLESS
+# of MQTT state (a device booting without network keeps reconnecting under the
+# watchdog, as the JS Type=simple unit does); NotifyAccess=main keeps
 # child processes (python IMU reader, KVS runtime, ...) from satisfying the
 # watchdog on the agent's behalf. A wedged main loop is restarted by systemd
 # after WatchdogSec. Phase 0 keeps the watchdog generous (60 s); tune later.

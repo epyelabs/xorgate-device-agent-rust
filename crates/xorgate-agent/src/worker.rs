@@ -123,7 +123,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             started_at: now0,
             device_id: cfg.device_id.clone(),
             mode: cfg.mode.clone(),
-            rate_hz: cfg.rate_hz,
+            rate_hz: JsNumber(cfg.rate_hz),
             offline: cfg.offline,
             worker: worker_path,
             argv: std::env::args().skip(1).collect(),
@@ -289,6 +289,7 @@ async fn run_online(cfg: &AgentEnv, mut ticker: Ticker, store: &mut StateStore) 
     let mut mqtt = MqttClient::connect(mqtt_cfg);
 
     let mut tick: Option<Interval> = None;
+    // Always running, connection state or not: feeds the systemd watchdog.
     let mut heartbeat = new_interval(Duration::from_secs(1));
     let mut log_timer = new_interval(Duration::from_secs(10));
     log_timer.tick().await;
@@ -335,6 +336,8 @@ async fn run_online(cfg: &AgentEnv, mut ticker: Ticker, store: &mut StateStore) 
                         }
                         info!("[agent] subscribed: {} (retained config), {} (commands)", topics.config, topics.command);
                         send_ready(store);
+                        // The publish tick only ever drives telemetry; the watchdog
+                        // is fed by `heartbeat` below so it runs before the first CONNACK.
                         if tick.is_none() {
                             tick = Some(new_interval(Duration::from_millis(cfg.interval_ms)));
                         }
@@ -386,9 +389,17 @@ async fn run_online(cfg: &AgentEnv, mut ticker: Ticker, store: &mut StateStore) 
                     }
                 }
                 store.flush(t, false);
-                sd_notify(&[sd_notify::NotifyState::Watchdog]);
             }
             _ = heartbeat.tick() => {
+                // The systemd watchdog proves only that THIS loop is alive, never
+                // that MQTT is up: a device booting without network (LTE not yet
+                // attached) must keep reconnecting under WatchdogSec exactly like
+                // the JS agent (Type=simple) does, not be SIGABRTed every 60 s.
+                // Safe to ping from here because every connect attempt runs in
+                // the mqtt task (bounded by its 30 s connection timeout) and
+                // `next_event()` is only a channel recv — nothing in this select
+                // can block on the network.
+                sd_notify(&[sd_notify::NotifyState::Watchdog]);
                 // Keep lastWriteAt fresh while not connected so the file never looks stale.
                 if !mqtt.is_connected() {
                     store.flush(now_ms(), true);
