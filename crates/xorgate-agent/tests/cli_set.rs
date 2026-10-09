@@ -1,5 +1,5 @@
 //! `xorgate-rs set` against the REAL TS `setCommand` (`set.ts:391-671`):
-//! `fixtures/cli_set/set-command.json` (tsx-dumped, 105 invocations incl. the
+//! `fixtures/cli_set/set-command.json` (tsx-dumped, 114 invocations incl. the
 //! APN watch on fake time) — stdout/stderr lines in call order, exit code and
 //! the exact settings.json bytes left behind — plus the ports of
 //! `test/set-command.test.ts` (11 it()s).

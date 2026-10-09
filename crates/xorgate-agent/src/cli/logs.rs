@@ -123,8 +123,36 @@ fn exec_journal(n: f64, follow: bool) -> i32 {
     1
 }
 
+/// Copy the bytes appended since `offset` (up to `size`) to `out` — the
+/// `pump` of `logs.ts:41-54`. A read hiccup just ends this round (as
+/// `readSync <= 0` does); only a WRITE/flush failure is an `Err`.
+fn pump(
+    f: &mut std::fs::File,
+    offset: &mut u64,
+    size: u64,
+    buf: &mut [u8],
+    out: &mut impl Write,
+) -> std::io::Result<()> {
+    while *offset < size {
+        let want = (buf.len() as u64).min(size - *offset) as usize;
+        if f.seek(SeekFrom::Start(*offset)).is_err() {
+            break;
+        }
+        let read = match f.read(&mut buf[..want]) {
+            Ok(r) if r > 0 => r,
+            _ => break,
+        };
+        *offset += read as u64;
+        out.write_all(&buf[..read])?;
+    }
+    out.flush()
+}
+
 /// `logs.ts:30-64`: re-read appended bytes on change; reset on truncation;
-/// Ctrl-C exits 0. Polls every 200 ms in place of `fs.watch`.
+/// Ctrl-C exits 0. Polls every 200 ms in place of `fs.watch`. A stdout
+/// write error (EPIPE once the reader of `logs -f | grep -m1 X` is gone)
+/// ends the follow with exit 1: Node's `process.stdout.write` (`:54`) emits
+/// an unhandled EPIPE `error` there and the process dies non-zero.
 fn follow_file(path: &Path) -> i32 {
     let mut f = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -147,28 +175,23 @@ fn follow_file(path: &Path) -> i32 {
     rt.block_on(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(200));
         let mut buf = vec![0u8; 64 * 1024];
+        // ONE listener for the whole loop (the TS installs one SIGINT handler,
+        // `:59`): a fresh `ctrl_c()` per `select!` would drop a SIGINT that
+        // lands while the tick arm runs.
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
         loop {
             tokio::select! {
-                _ = tokio::signal::ctrl_c() => return 0,
+                _ = &mut ctrl_c => return 0,
                 _ = tick.tick() => {
                     let Ok(size) = f.metadata().map(|m| m.len()) else { continue };
                     if size < offset {
                         offset = 0; // truncated
                     }
                     let mut stdout = std::io::stdout().lock();
-                    while offset < size {
-                        let want = (buf.len() as u64).min(size - offset) as usize;
-                        if f.seek(SeekFrom::Start(offset)).is_err() {
-                            break;
-                        }
-                        let read = match f.read(&mut buf[..want]) {
-                            Ok(r) if r > 0 => r,
-                            _ => break,
-                        };
-                        offset += read as u64;
-                        let _ = stdout.write_all(&buf[..read]);
+                    if pump(&mut f, &mut offset, size, &mut buf, &mut stdout).is_err() {
+                        return 1;
                     }
-                    let _ = stdout.flush();
                 }
             }
         }
@@ -181,6 +204,34 @@ mod tests {
 
     fn s(a: &[&str]) -> Vec<String> {
         a.iter().map(|x| x.to_string()).collect()
+    }
+
+    struct Broken;
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pump_copies_appended_bytes_and_surfaces_write_errors() {
+        let d = std::env::temp_dir().join(format!("xg-logs-pump-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("agent.log");
+        std::fs::write(&p, "old\nnew 1\nnew 2\n").unwrap();
+        let mut f = std::fs::File::open(&p).unwrap();
+        let mut buf = vec![0u8; 4]; // several reads per round
+        let mut offset = 4;
+        let mut out = Vec::new();
+        pump(&mut f, &mut offset, 16, &mut buf, &mut out).unwrap();
+        assert_eq!(out, b"new 1\nnew 2\n");
+        assert_eq!(offset, 16);
+        let mut offset = 0;
+        assert!(pump(&mut f, &mut offset, 16, &mut buf, &mut Broken).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

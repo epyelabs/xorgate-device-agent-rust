@@ -179,7 +179,8 @@ fn emit_all(io: &dyn SetIo, lines: impl IntoIterator<Item = Line>) {
 /// `setCommand(rest)` (`set.ts:391-531`) → exit code.
 pub fn run(rest: &[String], io: &dyn SetIo) -> i32 {
     let args = parse_set_args(rest);
-    let Some(key) = args.key.clone() else {
+    // `if (!key)` (`set.ts:398`): an empty positional is falsy too.
+    let Some(key) = args.key.clone().filter(|k| !k.is_empty()) else {
         io.emit(&Line::err(cli_set::USAGE));
         return 1;
     };

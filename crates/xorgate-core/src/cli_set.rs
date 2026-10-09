@@ -25,8 +25,9 @@ use serde_json::{Map, Value};
 use crate::config_report::{parse_apn_telemetry, ApnBlock};
 use crate::js::{number_to_string, object_key_order, to_json_string};
 use crate::settings::{
-    apn_re_test, parse_camera_mount_settings, parse_recording_settings, parse_time_sync_settings,
-    stream_key_re_test, AgentSettings, RECORDING_RATE_HZ_MAX, RECORDING_RATE_HZ_MIN,
+    apn_re_test, js_assign_drops_key, parse_camera_mount_settings, parse_recording_settings,
+    parse_time_sync_settings, stream_key_re_test, AgentSettings, RECORDING_RATE_HZ_MAX,
+    RECORDING_RATE_HZ_MIN,
 };
 use crate::system::js_number;
 use crate::types::ApnState;
@@ -604,9 +605,14 @@ fn set_camera_mount(key: &str, value: Option<&str>, loaded: &AgentSettings) -> K
         "cameras",
         Value::Object(one(stream_key, entry.clone())),
     ));
-    let ok = parse_camera_mount_settings(&patch_src)
-        .and_then(|p| p.cameras)
-        .is_some_and(|c| c.contains_key(stream_key));
+    // `patch?.cameras?.[streamKey]` (`set.ts:291`): for `__proto__` the read
+    // returns the map's (inherited) prototype, always truthy, though the
+    // parser dropped the key (`settings::js_assign_drops_key`); the write
+    // below is a computed-key literal (`:299`), so it lands as an own key.
+    let ok = js_assign_drops_key(stream_key)
+        || parse_camera_mount_settings(&patch_src)
+            .and_then(|p| p.cameras)
+            .is_some_and(|c| c.contains_key(stream_key));
     if !ok {
         return fail(format!(
             "unknown or invalid cameraMount setting '{key}' = '{}'",

@@ -1,0 +1,67 @@
+{
+  "jsSourceFile": "src/daemon/settings.ts (parseCameraMountSettings :266-279, parseRecordingSettings cameras :476-484, loadSettings/saveSettings :610-642)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-settings-proto.mts in a git-archive scratch copy of 89b5c64, non-root (phase-2 WP6 fix, review-wp6 row 5; script in phase-2/evidence/wp6-tools)",
+  "cases": [
+    {
+      "name": "load: __proto__ camera enable dropped, siblings kept in order",
+      "op": "loadSettings",
+      "input": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"__proto__\":false,\"constructor\":false,\"7\":true}}}}",
+      "expectedJson": "{\"recording\":{\"video\":{\"cameras\":{\"7\":true,\"cam0\":true,\"constructor\":false}}}}"
+    },
+    {
+      "name": "load: __proto__-only camera enables drop cameras, video and recording",
+      "op": "loadSettings",
+      "input": "{\"mode\":\"real\",\"recording\":{\"video\":{\"cameras\":{\"__proto__\":true}}}}",
+      "expectedJson": "{\"mode\":\"real\"}"
+    },
+    {
+      "name": "load: __proto__ with a non-boolean value is dropped as before",
+      "op": "loadSettings",
+      "input": "{\"recording\":{\"video\":{\"enabled\":true,\"cameras\":{\"__proto__\":{\"x\":1},\"cam1\":false}}}}",
+      "expectedJson": "{\"recording\":{\"video\":{\"enabled\":true,\"cameras\":{\"cam1\":false}}}}"
+    },
+    {
+      "name": "load: __proto__ cameraMount entry dropped",
+      "op": "loadSettings",
+      "input": "{\"cameraMount\":{\"cameras\":{\"__proto__\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0},\"toString\":{\"rotationDeg\":180}}}}",
+      "expectedJson": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"toString\":{\"rotationDeg\":180}}}}"
+    },
+    {
+      "name": "load: __proto__-only cameraMount keeps {cameras:{}}",
+      "op": "loadSettings",
+      "input": "{\"cameraMount\":{\"cameras\":{\"__proto__\":{\"rotationDeg\":0}}}}",
+      "expectedJson": "{\"cameraMount\":{\"cameras\":{}}}"
+    },
+    {
+      "name": "load: invalid __proto__ cameraMount entry",
+      "op": "loadSettings",
+      "input": "{\"cameraMount\":{\"cameras\":{\"__proto__\":{\"rotationDeg\":90},\"cam0\":{\"rotationDeg\":180}}}}",
+      "expectedJson": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}"
+    },
+    {
+      "name": "load: top-level and namespace-level __proto__ are just unknown keys",
+      "op": "loadSettings",
+      "input": "{\"__proto__\":{\"mode\":\"sim\"},\"mode\":\"real\",\"recording\":{\"__proto__\":{\"telemetry\":{\"enabled\":true}},\"video\":{\"__proto__\":{\"enabled\":true},\"enabled\":false}},\"cameraMount\":{\"__proto__\":{\"cameras\":{}}}}",
+      "expectedJson": "{\"mode\":\"real\",\"recording\":{\"video\":{\"enabled\":false}}}"
+    },
+    {
+      "name": "parse (cloud): recording cameras __proto__",
+      "op": "parseRecordingSettings",
+      "input": "{\"video\":{\"cameras\":{\"__proto__\":true,\"cam0\":false}}}",
+      "expectedJson": "{\"video\":{\"cameras\":{\"cam0\":false}}}"
+    },
+    {
+      "name": "parse (cloud): recording cameras __proto__ only",
+      "op": "parseRecordingSettings",
+      "input": "{\"video\":{\"cameras\":{\"__proto__\":true}}}",
+      "expectedJson": null
+    },
+    {
+      "name": "parse (cloud): cameraMount __proto__",
+      "op": "parseCameraMountSettings",
+      "input": "{\"cameras\":{\"cam1\":{\"rotationDeg\":180},\"__proto__\":{\"rotationDeg\":180}}}",
+      "expectedJson": "{\"cameras\":{\"cam1\":{\"rotationDeg\":180}}}"
+    }
+  ]
+}

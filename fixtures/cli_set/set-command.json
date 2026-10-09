@@ -51,6 +51,31 @@
       }
     },
     {
+      "name": "empty key → usage (set.ts:398 `!key`)",
+      "input": {
+        "args": [
+          "",
+          "on"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
       "name": "unknown key",
       "input": {
         "args": [
@@ -2351,6 +2376,246 @@
         ],
         "exitCode": 0,
         "settingsAfter": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":1.5,\"yawDeg\":-90},\"recording\":{\"powerShedding\":{\"railLowVolts\":4.75,\"cpuTempC\":82.5}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__ camera enable dropped on load → re-save",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"__proto__\":true,\"cam0\":false,\"constructor\":true}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"constructor\":true}}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__-only camera enables drop the whole video section",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"__proto__\":false}},\"telemetry\":{\"enabled\":true}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"enabled\":true}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__ cameraMount entry dropped on load → re-save",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"__proto__\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0},\"constructor\":{\"rotationDeg\":180}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"cam1\":{\"rotationDeg\":0},\"constructor\":{\"rotationDeg\":180}}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__-only cameraMount keeps an empty cameras map",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"__proto__\":{\"rotationDeg\":180}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set recording.video.cameras.__proto__ writes an own key",
+      "input": {
+        "args": [
+          "recording.video.cameras.__proto__",
+          "on"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.cameras.__proto__ = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"__proto__\":true}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set cameraMount.__proto__.rotationDeg writes an own key",
+      "input": {
+        "args": [
+          "cameraMount.__proto__.rotationDeg",
+          "180"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ cameraMount.__proto__.rotationDeg = 180 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent updates the camera overlay in /boot/firmware/config.txt within ~a minute,"
+          },
+          {
+            "stream": "out",
+            "text": "  then a REBOOT is required before the image changes (the agent never reboots itself)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"__proto__\":{\"rotationDeg\":180}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set over a stored __proto__ camera drops it",
+      "input": {
+        "args": [
+          "recording.video.cameras.cam1",
+          "on"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"__proto__\":true,\"cam0\":false}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.cameras.cam1 = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"cam1\":true}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set over a stored __proto__ cameraMount drops it",
+      "input": {
+        "args": [
+          "cameraMount.cam1.rotationDeg",
+          "180"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"__proto__\":{\"rotationDeg\":180}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ cameraMount.cam1.rotationDeg = 180 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent updates the camera overlay in /boot/firmware/config.txt within ~a minute,"
+          },
+          {
+            "stream": "out",
+            "text": "  then a REBOOT is required before the image changes (the agent never reboots itself)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"cam1\":{\"rotationDeg\":180}}}}",
         "elapsedMs": 0
       }
     },
