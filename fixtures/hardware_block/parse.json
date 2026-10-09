@@ -59,7 +59,7 @@
       "expectedJson": "\"hw-h264\""
     },
     {
-      "name": "rejects unknown enums [platform]",
+      "name": "rejects unknown enums and malformed shapes loudly (null) [platform]",
       "op": "parseHardwareBlock",
       "input": {
         "v": 2,
@@ -81,7 +81,7 @@
       "expectedJson": "null"
     },
     {
-      "name": "rejects unknown enums [encoder]",
+      "name": "rejects unknown enums and malformed shapes loudly (null) [encoder]",
       "op": "parseHardwareBlock",
       "input": {
         "v": 2,
@@ -103,7 +103,7 @@
       "expectedJson": "null"
     },
     {
-      "name": "rejects unknown enums [v]",
+      "name": "rejects unknown enums and malformed shapes loudly (null) [v]",
       "op": "parseHardwareBlock",
       "input": {
         "v": 1,
@@ -125,7 +125,7 @@
       "expectedJson": "null"
     },
     {
-      "name": "rejects unknown enums [statusLed partial]",
+      "name": "rejects unknown enums and malformed shapes loudly (null) [statusLed partial]",
       "op": "parseHardwareBlock",
       "input": {
         "v": 2,
@@ -149,7 +149,7 @@
       "expectedJson": "null"
     },
     {
-      "name": "rejects unknown enums [video entry missing fields]",
+      "name": "rejects unknown enums and malformed shapes loudly (null) [video entry missing fields]",
       "op": "parseHardwareBlock",
       "input": {
         "v": 2,
@@ -167,13 +167,13 @@
       "expectedJson": "null"
     },
     {
-      "name": "rejects unknown enums [null]",
+      "name": "rejects unknown enums and malformed shapes loudly (null) [null]",
       "op": "parseHardwareBlock",
       "input": null,
       "expectedJson": "null"
     },
     {
-      "name": "rejects unknown enums [string]",
+      "name": "rejects unknown enums and malformed shapes loudly (null) [string]",
       "op": "parseHardwareBlock",
       "input": "nope",
       "expectedJson": "null"

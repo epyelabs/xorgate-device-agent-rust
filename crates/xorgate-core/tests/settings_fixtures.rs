@@ -2,7 +2,10 @@
 //! `video_presets`, `config_namespaces` and `settings_migrate`, extracted
 //! from `test/settings.test.ts`, `test/recording-settings.test.ts`,
 //! `test/config-sync-cellular.test.ts`, `test/camera-mount.test.ts`,
-//! `test/orientation.test.ts` (parseImuMount) and `test/settings-migrate.test.ts`.
+//! `test/orientation.test.ts` (parseImuMount) and `test/settings-migrate.test.ts`;
+//! the cellular / cameraMount settings.json round trips
+//! (`config-sync-cellular.test.ts:61`, `camera-mount.test.ts:84`) ride in
+//! `settings/settings.json`.
 //!
 //! Every expectation is the exact `JSON.stringify` of what the TS produced,
 //! so these tests prove the parsers AND the serialisation (invariant 10).
@@ -60,7 +63,7 @@ fn settings_test_ts_documents() {
         let derived: AgentSettings = serde_json::from_str(&c.expected_json).unwrap();
         assert_eq!(derived, loaded, "{}: derive", c.name);
     }
-    assert_eq!(f.cases.len(), 22);
+    assert_eq!(f.cases.len(), 24);
 }
 
 #[test]

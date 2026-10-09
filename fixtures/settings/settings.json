@@ -1,5 +1,5 @@
 {
-  "jsSourceFile": "test/settings.test.ts",
+  "jsSourceFile": "test/settings.test.ts + test/config-sync-cellular.test.ts:61 + test/camera-mount.test.ts:84 (settings.json round trips)",
   "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
   "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
   "cases": [
@@ -133,6 +133,18 @@
       "name": "integer-like camera keys sort first (JS object key order)",
       "input": "{\"recording\":{\"video\":{\"cameras\":{\"2\":true,\"10\":false,\"cam0\":true,\"cam1\":false}}},\"cameraMount\":{\"cameras\":{\"7\":{\"rotationDeg\":180},\"b\":{\"rotationDeg\":0},\"a\":{\"rotationDeg\":180}}}}",
       "expectedJson": "{\"recording\":{\"video\":{\"cameras\":{\"2\":true,\"10\":false,\"cam0\":true,\"cam1\":false}}},\"cameraMount\":{\"cameras\":{\"7\":{\"rotationDeg\":180},\"b\":{\"rotationDeg\":0},\"a\":{\"rotationDeg\":180}}}}",
+      "readResult": "ok"
+    },
+    {
+      "name": "config-sync-cellular: survives a settings.json round trip (the allowlist rewriter knows it)",
+      "input": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+      "expectedJson": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+      "readResult": "ok"
+    },
+    {
+      "name": "camera-mount: survives a settings.json round trip",
+      "input": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+      "expectedJson": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
       "readResult": "ok"
     }
   ]
