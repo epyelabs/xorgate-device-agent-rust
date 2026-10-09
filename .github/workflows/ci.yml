@@ -1,0 +1,154 @@
+name: CI
+
+# Lint + test + release-build of the Rust agent on every branch except main
+# (main is covered by device-rs-deploy-dev.yml, which runs the same checks
+# before publishing). No secrets: anything here is safe on a PR.
+#
+# Why an arm64 runner + a Bookworm container (plan README §7 / research
+# rust-crates-sysint-toolchain-deepdive.md "Area 11"): the agent links
+# gstreamer-rs dynamically against the device's GStreamer 1.22 and glibc 2.36,
+# so it must be built on Bookworm (never a newer glibc) and natively on
+# aarch64 (QEMU on x64 runners is 5-10x slower). `ubuntu-24.04-arm` is a
+# standard hosted runner for private repos too.
+#
+# Container gotchas (recorded for whoever edits this next):
+#   - debian:bookworm has no git, so apt runs BEFORE actions/checkout; without
+#     git on PATH, checkout falls back to a tarball download with no .git dir
+#     and `git rev-parse` in build-info.sh would fail.
+#   - The checkout lands owned by a different uid than the container's root,
+#     which git treats as a "dubious ownership" error; actions/checkout sets a
+#     safe.directory for $GITHUB_WORKSPACE, and we add '*' explicitly because
+#     cargo/rust-cache also invoke git (e.g. for git dependencies).
+#   - RUSTUP_HOME/CARGO_HOME are pinned under /usr/local so they do not depend
+#     on the container's $HOME (/github/home); Swatinem/rust-cache reads
+#     CARGO_HOME to find the registry.
+#   - The runner's own node is bind-mounted into the container, so actions run
+#     fine; the container just needs glibc >= 2.28 (Bookworm: 2.36).
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTUP_HOME: /usr/local/rustup
+  CARGO_HOME: /usr/local/cargo
+
+jobs:
+  build-test:
+    name: fmt + clippy + test + release build (arm64 / bookworm)
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    timeout-minutes: 60
+    steps:
+      # Keep the apt list in sync with Dockerfile.build and the deploy workflows.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates pkg-config git \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libssl-dev lld
+          git config --global --add safe.directory '*'
+          pkg-config --modversion gstreamer-1.0
+
+      - uses: actions/checkout@v5
+
+      - name: Install rustup (toolchain from rust-toolchain.toml)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if [ ! -f rust-toolchain.toml ]; then
+            echo "::error::rust-toolchain.toml is missing — the workspace must pin its toolchain (plan Phase 0)"
+            exit 1
+          fi
+          # With no argument rustup installs the toolchain + components pinned
+          # by ./rust-toolchain.toml (rustup >= 1.28).
+          rustup toolchain install
+          rustup show
+          cargo -V && rustc -V
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo build --release
+        run: |
+          cargo build --release
+          ls -l target/release/xorgate-rs
+          file target/release/xorgate-rs || true
+          # Proves the dynamic-link path: the binary must need libgstreamer-1.0.so.0.
+          ldd target/release/xorgate-rs | grep -E 'gstreamer|libc\.so' || true
+
+      # Exercises the packaging scripts on every push so the deploy workflows
+      # never meet them for the first time. channel "ci" marks a tarball that
+      # is a workflow artifact only — it is never uploaded to a dist bucket.
+      - name: Pack (channel ci)
+        id: pack
+        run: scripts/pack.sh --channel ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xorgate-rs-${{ steps.pack.outputs.version }}
+          path: |
+            target/release/xorgate-rs
+            target/dist/${{ steps.pack.outputs.tarball }}
+            target/dist/${{ steps.pack.outputs.tarball }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ steps.pack.outputs.version }}
+          BIN_BYTES: ${{ steps.pack.outputs.binaryBytes }}
+          TAR_BYTES: ${{ steps.pack.outputs.tarballBytes }}
+        run: |
+          {
+            echo "## xorgate-rs CI"
+            echo ""
+            echo "- Version: \`$VERSION\` (channel ci, not published)"
+            echo "- Binary: $BIN_BYTES bytes (stripped release)"
+            echo "- Tarball: $TAR_BYTES bytes"
+            echo "- rustc: \`$(rustc -V 2>/dev/null || echo n/a)\`"
+            echo "- gstreamer-1.0: \`$(pkg-config --modversion gstreamer-1.0 2>/dev/null || echo n/a)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Licenses + advisories + bans from deny.toml. Platform-independent (it reads
+  # Cargo.lock), so it runs on the cheap x86 runner in parallel with the build
+  # instead of adding minutes to the arm job. Skips cleanly while deny.toml does
+  # not exist yet (the skeleton branch owns it).
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Has deny.toml?
+        id: has
+        run: |
+          if [ -f deny.toml ]; then echo "yes=true" >> "$GITHUB_OUTPUT"; else echo "no deny.toml yet — skipping"; echo "yes=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        if: steps.has.outputs.yes == 'true'
+        with:
+          command: check
+          arguments: --all-features

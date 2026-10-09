@@ -1,0 +1,217 @@
+name: Device (Rust) — deploy prod
+
+# Builds the Rust device agent at a release tag and uploads its dist tarball to
+# the prod S3 bucket (xorgate-device-dist-<account>-<region>) — the SAME bucket
+# the JS agent's device-deploy-prod.yml publishes to, under `-rs` keys only
+# (xorgate-agent-rs-<tag>.tar.gz, xorgate-agent-rs-latest.tar.gz, both
+# .sha256, latest-rs.json). NEVER `latest.json` / `xorgate-agent-<tag>`: those
+# are the JS agent's until cutover (README §6, Q7).
+#
+# Triggered when a GitHub Release is published (or manually via workflow_dispatch
+# with an existing tag). The version baked into the tarball is the release tag,
+# so a prod device can pin a specific build via DEVICE_DIST_VERSION.
+#
+# Prerequisites: prod lives in its own AWS account (865609249890) and each
+# stage carries its own machine user, delivered via GitHub ENVIRONMENT secrets
+# (per-environment AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY; the
+# `environment:` on the job below selects which set this run gets). This job
+# uses the `production` environment, whose secrets belong to the prod-account
+# machine user (xorgate-device-ci in 865609249890: cloudformation:DescribeStacks
+# on XorgateCoreStorageStack + s3 put/list on the prod dist bucket, nothing
+# else — its policy is keyed on the bucket, so `-rs` keys need no IAM change
+# and the JS repo's key pair can be reused here). The dev workflow's
+# `development` environment holds the dev-account user. If the production
+# environment ever gets deployment branch/tag restrictions, they must allow
+# release tags — this workflow runs on tag refs, not main.
+#
+# Build recipe = ci.yml / device-rs-deploy-dev.yml (arm64 runner +
+# debian:bookworm container; container gotchas documented in ci.yml). Keep the
+# apt list in sync with those and Dockerfile.build.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (must already exist)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: device-rs-deploy-prod
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTUP_HOME: /usr/local/rustup
+  CARGO_HOME: /usr/local/cargo
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    environment: production # scopes secrets.AWS_* to the prod-account machine user
+    timeout-minutes: 60
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates pkg-config git \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libssl-dev lld \
+            awscli
+          git config --global --add safe.directory '*'
+          pkg-config --modversion gstreamer-1.0
+          aws --version
+
+      - uses: actions/checkout@v5
+        with:
+          # release event: the tag ref; manual: the provided tag input.
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+      - name: Install rustup (toolchain from rust-toolchain.toml)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if [ ! -f rust-toolchain.toml ]; then
+            echo "::error::rust-toolchain.toml is missing — the workspace must pin its toolchain (plan Phase 0)"
+            exit 1
+          fi
+          rustup toolchain install
+          rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo build --release
+        run: |
+          cargo build --release
+          ls -l target/release/xorgate-rs
+          ldd target/release/xorgate-rs | grep -E 'gstreamer|libc\.so' || true
+
+      - name: Resolve version
+        id: ver
+        env:
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          if [ -z "$TAG" ]; then echo "no release tag"; exit 1; fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+
+      # On prod the version is the release tag rather than a short sha
+      # (build-info.json {version:<tag>, channel:"prod", builtAt, packageVersion}).
+      - name: Stamp build-info.json (channel prod)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: scripts/build-info.sh prod --version "$VERSION"
+
+      - name: Pack tarball
+        id: pack
+        run: scripts/pack.sh
+
+      # These resolve from the `production` ENVIRONMENT secrets (prod-account
+      # machine user), not the `development` ones the dev workflow uses — same
+      # names, different scope.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      # Fails fast if the environment carries the wrong account's keys (e.g. a
+      # copy-paste of the dev user into the production environment).
+      - name: Verify target account
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          if [ "$ACCOUNT" != "865609249890" ]; then
+            echo "expected to be in prod account 865609249890, got $ACCOUNT"
+            exit 1
+          fi
+
+      - name: Resolve dist bucket from CloudFormation
+        id: bucket
+        env:
+          STACK: XorgateCoreStorageStack
+        run: |
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='DeviceDistBucketName'].OutputValue" \
+            --output text)
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+            echo "could not resolve DeviceDistBucketName from $STACK"
+            exit 1
+          fi
+          echo "Using dist bucket: $BUCKET"
+          echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to S3 (versioned + latest, -rs keys only)
+        env:
+          BUCKET: ${{ steps.bucket.outputs.name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          TARBALL_PATH: ${{ steps.pack.outputs.path }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          BUILT_AT: ${{ steps.pack.outputs.builtAt }}
+          PKG_VERSION: ${{ steps.pack.outputs.packageVersion }}
+          SHA256: ${{ steps.pack.outputs.sha256 }}
+        run: |
+          case "$TARBALL" in
+            xorgate-agent-rs-*.tar.gz) ;;
+            *) echo "refusing to upload non -rs key: $TARBALL"; exit 1 ;;
+          esac
+          aws s3 cp "$TARBALL_PATH" "s3://$BUCKET/$TARBALL" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --content-type "application/gzip"
+          aws s3 cp "$TARBALL_PATH.sha256" "s3://$BUCKET/$TARBALL.sha256" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --content-type "text/plain"
+          aws s3 cp "$TARBALL_PATH" "s3://$BUCKET/xorgate-agent-rs-latest.tar.gz" \
+            --cache-control "no-cache" \
+            --content-type "application/gzip"
+          printf '%s  %s\n' "$SHA256" "xorgate-agent-rs-latest.tar.gz" > latest-rs.sha256
+          aws s3 cp latest-rs.sha256 "s3://$BUCKET/xorgate-agent-rs-latest.tar.gz.sha256" \
+            --cache-control "no-cache" \
+            --content-type "text/plain"
+          # Describes what the `-rs-latest` alias now points at — same step as
+          # the alias upload so the two cannot drift. Field set = the JS
+          # latest.json (device-deploy-prod.yml:158-161).
+          cat > latest-rs.json <<EOF
+          { "version": "$VERSION", "channel": "prod", "builtAt": "$BUILT_AT",
+            "packageVersion": "$PKG_VERSION", "tarball": "$TARBALL" }
+          EOF
+          aws s3 cp latest-rs.json "s3://$BUCKET/latest-rs.json" \
+            --cache-control "no-cache" \
+            --content-type "application/json"
+
+      - name: Summary
+        if: always()
+        env:
+          BUCKET: ${{ steps.bucket.outputs.name }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          BIN_BYTES: ${{ steps.pack.outputs.binaryBytes }}
+          TAR_BYTES: ${{ steps.pack.outputs.tarballBytes }}
+        run: |
+          {
+            echo "## Device (Rust) prod deploy"
+            echo ""
+            echo "- Version: \`$VERSION\`"
+            echo "- Bucket: \`$BUCKET\`"
+            echo "- Binary: $BIN_BYTES bytes, tarball: $TAR_BYTES bytes"
+            echo "  - \`s3://$BUCKET/xorgate-agent-rs-$VERSION.tar.gz\` (immutable, + .sha256)"
+            echo "  - \`s3://$BUCKET/xorgate-agent-rs-latest.tar.gz\` (alias, + .sha256)"
+            echo "- Manifest: \`s3://$BUCKET/latest-rs.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"

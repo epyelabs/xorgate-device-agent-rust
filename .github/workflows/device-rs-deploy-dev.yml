@@ -1,0 +1,224 @@
+name: Device (Rust) — deploy dev
+
+# Builds the Rust device agent and uploads its dist tarball to the dev S3 bucket
+# (xorgate-device-dist-dev-<account>-<region>) — the SAME bucket the JS agent's
+# device-deploy-dev.yml publishes to, under `-rs` keys only:
+#
+#   xorgate-agent-rs-<sha>.tar.gz          immutable
+#   xorgate-agent-rs-<sha>.tar.gz.sha256   sidecar, `sha256sum -c` format
+#   xorgate-agent-rs-latest.tar.gz         alias (what `xorgate-rs update` pulls)
+#   xorgate-agent-rs-latest.tar.gz.sha256
+#   latest-rs.json                         manifest, same field set as latest.json
+#
+# NEVER write `latest.json` or any `xorgate-agent-<sha>` key without `-rs`:
+# those belong to the JS agent and the console's `GET /device-dist/latest`
+# keeps meaning the JS build until the cutover plan flips it (README §6, Q7).
+#
+# # Prerequisites (one-time, manual — same model as the JS repo)
+#
+# Each stage has its own AWS account and its own machine user, delivered via
+# GitHub ENVIRONMENT secrets: the `development` environment holds the
+# dev-account user's keys (this workflow), `production` holds the prod-account
+# user's (device-rs-deploy-prod.yml). Same secret names in both; the job's
+# `environment:` selects which set a run gets.
+#
+#   1. An IAM machine user in the DEV account (111910761410) with an inline
+#      policy granting:
+#        - s3:PutObject, s3:PutObjectAcl, s3:DeleteObject on the dev dist
+#          bucket ("/*" suffix)
+#        - s3:ListBucket on the dev dist bucket (no suffix)
+#        - cloudformation:DescribeStacks on XorgateCoreStorageStackDev (so we
+#          read the dist bucket name from the stack output instead of
+#          hard-coding it)
+#      The JS repo's dev machine user already has exactly this (its policy is
+#      keyed on the bucket, not on object names), so the same key pair can be
+#      reused for this repo.
+#   2. Store as ENVIRONMENT secrets on `development` (Settings → Environments):
+#        AWS_ACCESS_KEY_ID     = AKIA…
+#        AWS_SECRET_ACCESS_KEY = the secret half
+#      Optional repo VARIABLE (Variables tab), defaults to us-east-1:
+#        AWS_REGION            = us-east-1
+#
+# Static keys are a temporary measure; migrate to GitHub OIDC later.
+#
+# Build recipe = ci.yml (arm64 runner + debian:bookworm container; see the
+# container gotchas documented there). Keep the apt list in sync with ci.yml
+# and Dockerfile.build.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "systemd/**"
+      - "scripts/**"
+      - "python/**"
+      - "modem/**"
+      - "media/**"
+      - "system/**"
+      - ".github/workflows/device-rs-deploy-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: device-rs-deploy-dev
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTUP_HOME: /usr/local/rustup
+  CARGO_HOME: /usr/local/cargo
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    environment: development # scopes secrets.AWS_* to the dev-account machine user
+    timeout-minutes: 60
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates pkg-config git \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libssl-dev lld \
+            awscli
+          git config --global --add safe.directory '*'
+          pkg-config --modversion gstreamer-1.0
+          aws --version
+
+      - uses: actions/checkout@v5
+
+      - name: Install rustup (toolchain from rust-toolchain.toml)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if [ ! -f rust-toolchain.toml ]; then
+            echo "::error::rust-toolchain.toml is missing — the workspace must pin its toolchain (plan Phase 0)"
+            exit 1
+          fi
+          rustup toolchain install
+          rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: cargo build --release
+        run: |
+          cargo build --release
+          ls -l target/release/xorgate-rs
+          ldd target/release/xorgate-rs | grep -E 'gstreamer|libc\.so' || true
+
+      # build-info.json {version:<short sha>, channel:"dev", builtAt, packageVersion}
+      # is baked INTO the artifact (same reason as the JS workflow: a device
+      # must be able to say which build it runs), then pack.sh builds
+      # xorgate-agent-rs-<sha>.tar.gz with bin/ build-info.json systemd/ (+
+      # python/ modem/ media/ system/ once they exist) and its .sha256.
+      - name: Stamp build-info.json (channel dev)
+        run: scripts/build-info.sh dev
+
+      - name: Pack tarball
+        id: pack
+        run: scripts/pack.sh
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Resolve dist bucket from CloudFormation
+        id: bucket
+        env:
+          STACK: XorgateCoreStorageStackDev
+        run: |
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='DeviceDistBucketName'].OutputValue" \
+            --output text)
+          if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
+            echo "could not resolve DeviceDistBucketName from $STACK"
+            exit 1
+          fi
+          echo "Using dist bucket: $BUCKET"
+          echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to S3 (versioned + latest, -rs keys only)
+        env:
+          BUCKET: ${{ steps.bucket.outputs.name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          TARBALL_PATH: ${{ steps.pack.outputs.path }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          BUILT_AT: ${{ steps.pack.outputs.builtAt }}
+          PKG_VERSION: ${{ steps.pack.outputs.packageVersion }}
+          SHA256: ${{ steps.pack.outputs.sha256 }}
+        run: |
+          case "$TARBALL" in
+            xorgate-agent-rs-*.tar.gz) ;;
+            *) echo "refusing to upload non -rs key: $TARBALL"; exit 1 ;;
+          esac
+          # Versioned tarball: immutable, cache forever.
+          aws s3 cp "$TARBALL_PATH" "s3://$BUCKET/$TARBALL" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --content-type "application/gzip"
+          aws s3 cp "$TARBALL_PATH.sha256" "s3://$BUCKET/$TARBALL.sha256" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --content-type "text/plain"
+          # `latest` alias: what `xorgate-rs update` (Phase 5) pulls by default.
+          aws s3 cp "$TARBALL_PATH" "s3://$BUCKET/xorgate-agent-rs-latest.tar.gz" \
+            --cache-control "no-cache" \
+            --content-type "application/gzip"
+          printf '%s  %s\n' "$SHA256" "xorgate-agent-rs-latest.tar.gz" > latest-rs.sha256
+          aws s3 cp latest-rs.sha256 "s3://$BUCKET/xorgate-agent-rs-latest.tar.gz.sha256" \
+            --cache-control "no-cache" \
+            --content-type "text/plain"
+          # latest-rs.json describes exactly what the `-rs-latest` alias now
+          # points at — written in THIS step so the manifest and the alias
+          # cannot drift. Same field set as the JS latest.json
+          # (device-deploy-dev.yml:156-159) so a future `GET /device-dist/latest-rs`
+          # can reuse the console's comparison as-is.
+          cat > latest-rs.json <<EOF
+          { "version": "$VERSION", "channel": "dev", "builtAt": "$BUILT_AT",
+            "packageVersion": "$PKG_VERSION", "tarball": "$TARBALL" }
+          EOF
+          aws s3 cp latest-rs.json "s3://$BUCKET/latest-rs.json" \
+            --cache-control "no-cache" \
+            --content-type "application/json"
+
+      - name: Summary
+        if: always()
+        env:
+          BUCKET: ${{ steps.bucket.outputs.name }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          BIN_BYTES: ${{ steps.pack.outputs.binaryBytes }}
+          TAR_BYTES: ${{ steps.pack.outputs.tarballBytes }}
+        run: |
+          {
+            echo "## Device (Rust) dev deploy"
+            echo ""
+            echo "- Version: \`$VERSION\`"
+            echo "- Bucket: \`$BUCKET\`"
+            echo "- Binary: $BIN_BYTES bytes, tarball: $TAR_BYTES bytes"
+            echo "- Tarballs:"
+            echo "  - \`s3://$BUCKET/xorgate-agent-rs-$VERSION.tar.gz\` (immutable, + .sha256)"
+            echo "  - \`s3://$BUCKET/xorgate-agent-rs-latest.tar.gz\` (alias, + .sha256)"
+            echo "- Manifest: \`s3://$BUCKET/latest-rs.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"

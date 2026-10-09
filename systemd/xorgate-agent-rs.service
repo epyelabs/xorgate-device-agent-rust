@@ -1,0 +1,93 @@
+# xorgate device agent (Rust) systemd unit.
+#
+# This is the Rust port of xorgate-agent.service (device/xorgate-device-agent).
+# It mirrors that unit line for line except where the Rust binary differs; keep
+# the two in sync when the JS unit changes until cutover.
+#
+# Coexistence model (plans/device-agent-js-to-rust, README §6): a device is
+# provisioned with the JS agent as today and later CONVERTED by install-rs.sh,
+# which drops this build at /opt/xorgate-rs, installs this unit + the
+# /usr/local/bin/xorgate-rs wrapper, and swaps the active unit:
+#
+#   install -m 0644 /opt/xorgate-rs/systemd/xorgate-agent-rs.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl disable --now xorgate-agent
+#   systemctl enable --now xorgate-agent-rs
+#
+# Only ONE agent may own the device identity at a time: both connect with
+# clientId = DEVICE_ID, and AWS IoT kicks the older session when a second one
+# connects, so two agents on the same identity would fight forever. The
+# `Conflicts=` below makes systemd stop xorgate-agent when this unit starts
+# (and vice versa) — it is the belt to install-rs.sh's braces. The bench-only
+# drop-in systemd/bench/90-bench-dev.conf resets it (and points this unit at a
+# SEPARATE dev identity + state dir) so Phase 0-5 can soak both agents on one
+# CM5; that drop-in is never shipped.
+#
+# Prerequisites on the host (all handled by install-rs.sh / the converter):
+#   - The agent binary at /opt/xorgate-rs/bin/xorgate-rs (+ build-info.json).
+#   - /etc/xorgate/agent.env with DEVICE_ID, IOT_DATA_ENDPOINT, CERT_PATH,
+#     KEY_PATH, CA_PATH (and optionally MODE=sim|real) — the SAME file the JS
+#     agent reads; nothing under /etc/xorgate changes at conversion.
+#   - The cert/key files readable by the service user (chmod 0600).
+#
+# User=root here is the fallback. The converter re-uses the JS unit's
+# `xorgate-agent.service.d/10-user.conf` (copied to this unit's .d/) that
+# overrides it to run the agent as the provisioning user (captured from
+# $SUDO_USER), so that operator can inspect it without sudo. The agent only
+# needs an outbound mTLS connection, so it does not require root.
+#
+# XORGATE_HOME points at the StateDirectory (/var/lib/xorgate) — the same dir
+# the JS agent used, so settings.json / config-sync.json / counters survive the
+# conversion; systemd creates and chowns it to the (drop-in) service user. The
+# `xorgate-rs` CLI wrapper defaults to the same path, so `xorgate-rs status`
+# reflects THIS running service.
+#
+# Type=notify: the Rust agent calls sd_notify(READY=1) once its MQTT client is
+# constructed and pings WATCHDOG=1 from its main loop; NotifyAccess=main keeps
+# child processes (python IMU reader, KVS runtime, ...) from satisfying the
+# watchdog on the agent's behalf. A wedged main loop is restarted by systemd
+# after WatchdogSec. Phase 0 keeps the watchdog generous (60 s); tune later.
+#
+# RGB status LED hooks (ExecStartPre=-… led boot / ExecStopPost=-… led
+# exit-state in the JS unit) are deliberately ABSENT in Phase 0 — Phase 4
+# (operations) adds them as `/usr/local/bin/xorgate-rs led …` once the LED
+# subsystem is ported. Until then the JS agent's LED state is left alone.
+
+[Unit]
+Description=Xorgate device agent (Rust) (IoT MQTT telemetry)
+After=network-online.target
+Wants=network-online.target
+# One identity, one agent: starting this unit stops the JS agent and vice
+# versa (see header). Reset to empty by the bench-only drop-in.
+Conflicts=xorgate-agent.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
+User=root
+EnvironmentFile=/etc/xorgate/agent.env
+# systemd creates/owns /var/lib/xorgate (persists across reboots); the worker
+# writes its pidfile + state.json there.
+StateDirectory=xorgate
+StateDirectoryMode=0700
+Environment=XORGATE_HOME=/var/lib/xorgate
+# Run from the writable StateDirectory. The IMU reader's GPIO backend (lgpio,
+# used by Adafruit Blinka on Pi 5) creates `.lgd-nfy*` notify files in the CWD;
+# the default service CWD "/" isn't writable by the service user, which makes
+# `import board` fail. /var/lib/xorgate is created + owned by the service user.
+WorkingDirectory=/var/lib/xorgate
+ExecStart=/opt/xorgate-rs/bin/xorgate-rs run
+
+# Restart on every exit (including a clean exit 0 after SIGTERM). Recovers from
+# a brief IoT/cert outage and from operator-induced stops.
+Restart=always
+RestartSec=5s
+
+# Break crash-loops: 10 failures in 60s and systemd holds off until the operator
+# runs `systemctl reset-failed xorgate-agent-rs`.
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target
