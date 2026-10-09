@@ -13,6 +13,7 @@
 //! caps are MANDATORY for WebRTC (browser renders black otherwise). The HW
 //! encoder is deliberately NOT named `sampleVideoEncoder` (TWCC skip, D5).
 
+use crate::cameras::js_trim;
 use crate::hardware_block::EncoderToken;
 
 /// `SHM_BRIDGE_CAPS` (`pipeline-builder.ts:27`): fixed low-res bridge caps —
@@ -112,11 +113,10 @@ pub fn build_record_encode_args(
 /// `.gst` content look like something this builder rendered? The reconciler
 /// only overwrites files it recognises, never an operator's hand-tuned pipeline.
 ///
-/// JS `String.prototype.trim` strips Unicode whitespace + line terminators;
-/// Rust `str::trim` strips `char::is_whitespace`, the same set for every
-/// character a `.gst` file plausibly carries (ASCII whitespace, NBSP).
+/// `content.trim()` is JS `trim` ([`crate::cameras::js_trim`]: it also strips
+/// a BOM and leaves U+0085, unlike Rust `str::trim`).
 pub fn is_recognized_bridged_render(content: &str, shm_socket_path: &str) -> bool {
-    let t = content.trim();
+    let t = js_trim(content);
     t == build_bridged_kvs_pipeline(EncoderToken::SwH264, shm_socket_path)
         || t == build_bridged_kvs_pipeline(EncoderToken::HwH264, shm_socket_path)
 }
@@ -125,7 +125,7 @@ pub fn is_recognized_bridged_render(content: &str, shm_socket_path: &str) -> boo
 /// two direct renders, or — so legacy installs adopt cleanly — any
 /// single-line `libcamerasrc`→`x264enc`→`appsink` render for THIS camera.
 pub fn is_recognized_direct_render(content: &str, stream_key: &str, camera_name: &str) -> bool {
-    let t = content.trim();
+    let t = js_trim(content);
     if t == build_direct_kvs_pipeline(EncoderToken::SwH264, stream_key, camera_name)
         || t == build_direct_kvs_pipeline(EncoderToken::HwH264, stream_key, camera_name)
     {

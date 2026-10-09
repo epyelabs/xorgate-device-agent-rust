@@ -65,15 +65,26 @@ pub(crate) fn js_ws(c: char) -> bool {
     )
 }
 
+/// JS `String.prototype.trim` (strips exactly the [`js_ws`] set at both ends).
+pub(crate) fn js_trim(s: &str) -> &str {
+    s.trim_matches(js_ws)
+}
+
+/// JS `LineTerminator` — the characters `.` does NOT match (no `s` flag).
+fn js_line_terminator(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
+}
+
 /// Hand-rolled equivalent of the TS line regex
 /// `/^\s*\d+\s*:\s*(\S+)\s.*\((\S+)\)\s*$/` (`cameras.ts:54`), returning
 /// `(sensor, cameraName)`. `\d` is ASCII-only in JS; `\s` is [`js_ws`].
 ///
 /// Backtracking semantics reproduced: `(\S+)\s` forces the sensor to be the
 /// whole first token after the colon followed by at least one whitespace
-/// char; the greedy `.*` picks the RIGHTMOST `(` such that everything from
-/// it to the final `)` (after trailing whitespace) is non-whitespace and
-/// non-empty.
+/// char; the greedy `.*` tries each `(` from the RIGHT and takes the first
+/// whose tail up to the final `)` (after trailing whitespace) is a non-empty
+/// run of non-whitespace, and whose prefix (the `.*`) holds no line
+/// terminator (`.` matches none without the `s` flag).
 fn match_camera_line(line: &str) -> Option<(&str, &str)> {
     let s = line.trim_start_matches(js_ws);
     let digits = s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
@@ -96,13 +107,22 @@ fn match_camera_line(line: &str) -> Option<(&str, &str)> {
     let rest = rest.as_str();
     // `\((\S+)\)\s*$`: strip trailing whitespace, require a final `)`.
     let body = rest.trim_end_matches(js_ws).strip_suffix(')')?;
-    // Rightmost `(` whose tail is a non-empty run of non-whitespace.
-    let open = body.rfind('(')?;
-    let name = &body[open + 1..];
-    if name.is_empty() || name.chars().any(js_ws) {
-        return None;
+    for (open, _) in body.rmatch_indices('(') {
+        let name = &body[open + 1..];
+        if name.is_empty() || name.chars().any(js_ws) {
+            // A longer tail (an earlier `(`) still contains this whitespace,
+            // but an EMPTY tail can grow into a valid one: keep looking.
+            if name.is_empty() {
+                continue;
+            }
+            return None;
+        }
+        if body[..open].chars().any(js_line_terminator) {
+            return None;
+        }
+        return Some((sensor, name));
     }
-    Some((sensor, name))
+    None
 }
 
 /// `parseCameraList` (`cameras.ts:51-61`): parse `rpicam-hello --list-cameras`
@@ -152,6 +172,10 @@ mod tests {
         assert_eq!(match_camera_line("1 : foo(bar)"), None);
         assert_eq!(match_camera_line("1 : foo (x) (a(b))"), Some(("foo", "b)")));
         assert_eq!(match_camera_line("1 : foo ()"), None);
+        // `.*` backtracks past an empty `()` to an earlier `(`.
+        assert_eq!(match_camera_line("1 : foo (a()"), Some(("foo", "a(")));
+        // `.` does not match a carriage return inside the line.
+        assert_eq!(match_camera_line("1 : foo \r (x)"), None);
         assert_eq!(match_camera_line("1 : foo (a b)"), None);
         assert_eq!(
             match_camera_line("  7:imx708 x (/p)\r"),
