@@ -1,0 +1,2052 @@
+{
+  "jsSourceFile": "test/sms-pdu.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP5; not committed there); PDU hex frozen from test/sms-pdu-builder.ts",
+  "cases": [
+    {
+      "name": "decodes sender, timestamp and text",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690AE8329BFD4697D9EC37",
+        "length": 28
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"hellohello\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "assumes the SMSC prefix when no length is given, and handles its absence [no length]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690AE8329BFD4697D9EC37"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"hellohello\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "assumes the SMSC prefix when no length is given, and handles its absence [no smsc]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "040B915155100000F10000628011025095690AE8329BFD4697D9EC37",
+        "length": 28
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"hellohello\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "round-trips the basic table",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095695AC8329BFD06014001C1004428180E085002B460801C0F10242299502A960B26A301713A1ED00704DC72BBDE2F08BCE7F7FD7F102C269BD16AB61B2E070A8946A492E9844AA956AC96EBA5DBF17ABE1F",
+        "length": 98
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"Hello @ £$¥ èéùìò Ç Øø Åå Δ_ΦΓΛΩΠΨΣΘΞ Ææß É ¡ÄÖÑÜ§ ¿äöñüà 0123456789 !\\\"#¤%&'()*+,-./:;<=>?\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "decodes the extension table",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095692370797A5C066DCA35D08617DEF8401B947893026D7AE30D05B40192372F5019",
+        "length": 50
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"price €5 [a] {b} ~c^ |d\\\\ e\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=1]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690161",
+        "length": 20
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"a\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=2]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F1000062801102509569026131",
+        "length": 21
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"ab\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=3]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690361F118",
+        "length": 22
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abc\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=4]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690461F1980C",
+        "length": 23
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcd\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=5]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690561F1985C06",
+        "length": 24
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcde\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=6]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690661F1985C3603",
+        "length": 25
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdef\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=7]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690761F1985C369F01",
+        "length": 26
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefg\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=8]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690861F1985C369FD1",
+        "length": 26
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefgh\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=9]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690961F1985C369FD169",
+        "length": 27
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghi\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=10]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690A61F1985C369FD16935",
+        "length": 28
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghij\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=11]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690B61F1985C369FD169F51A",
+        "length": 29
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghijk\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=12]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690C61F1985C369FD169F59A0D",
+        "length": 30
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghijkl\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=13]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690D61F1985C369FD169F59ADD06",
+        "length": 31
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghijklm\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=14]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690E61F1985C369FD169F59ADD7603",
+        "length": 32
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghijklmn\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=15]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095690F61F1985C369FD169F59ADD76BF01",
+        "length": 33
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghijklmno\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=16]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095691061F1985C369FD169F59ADD76BFE1",
+        "length": 33
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghijklmnop\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "handles lengths that end on every septet boundary [n=17]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10000628011025095691161F1985C369FD169F59ADD76BFE171",
+        "length": 34
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"abcdefghijklmnopq\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "an empty body decodes to empty text",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F100006280110250956900",
+        "length": 19
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "decodes UCS2 including surrogate pairs (emoji)",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F100086280110250956928041A043804400438043B043B043804460430002067714EAC0020D83DDC4DD83CDFFD0020006F006B",
+        "length": 59
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"Кириллица 東京 👍🏽 ok\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "returns 8-bit data as lowercase hex, flagged binary",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F10004628011025095690400FF10AB",
+        "length": 23
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"00ff10ab\",\"binary\":true,\"concat\":null}"
+    },
+    {
+      "name": "maps DCS groups to alphabets [0x00]",
+      "op": "dcsAlphabet",
+      "input": 0,
+      "expectedJson": "\"gsm7\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0x04]",
+      "op": "dcsAlphabet",
+      "input": 4,
+      "expectedJson": "\"8bit\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0x08]",
+      "op": "dcsAlphabet",
+      "input": 8,
+      "expectedJson": "\"ucs2\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0x10]",
+      "op": "dcsAlphabet",
+      "input": 16,
+      "expectedJson": "\"gsm7\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0x18]",
+      "op": "dcsAlphabet",
+      "input": 24,
+      "expectedJson": "\"ucs2\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0x24]",
+      "op": "dcsAlphabet",
+      "input": 36,
+      "expectedJson": "\"8bit\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0x48]",
+      "op": "dcsAlphabet",
+      "input": 72,
+      "expectedJson": "\"ucs2\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0xf0]",
+      "op": "dcsAlphabet",
+      "input": 240,
+      "expectedJson": "\"gsm7\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0xf4]",
+      "op": "dcsAlphabet",
+      "input": 244,
+      "expectedJson": "\"8bit\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0xe0]",
+      "op": "dcsAlphabet",
+      "input": 224,
+      "expectedJson": "\"ucs2\""
+    },
+    {
+      "name": "maps DCS groups to alphabets [0xc0]",
+      "op": "dcsAlphabet",
+      "input": 192,
+      "expectedJson": "\"gsm7\""
+    },
+    {
+      "name": "extra: dcsAlphabet over all 256 values",
+      "op": "dcsAlphabetTable",
+      "input": null,
+      "expectedJson": "{\"0\":\"gsm7\",\"1\":\"gsm7\",\"2\":\"gsm7\",\"3\":\"gsm7\",\"4\":\"8bit\",\"5\":\"8bit\",\"6\":\"8bit\",\"7\":\"8bit\",\"8\":\"ucs2\",\"9\":\"ucs2\",\"10\":\"ucs2\",\"11\":\"ucs2\",\"12\":\"gsm7\",\"13\":\"gsm7\",\"14\":\"gsm7\",\"15\":\"gsm7\",\"16\":\"gsm7\",\"17\":\"gsm7\",\"18\":\"gsm7\",\"19\":\"gsm7\",\"20\":\"8bit\",\"21\":\"8bit\",\"22\":\"8bit\",\"23\":\"8bit\",\"24\":\"ucs2\",\"25\":\"ucs2\",\"26\":\"ucs2\",\"27\":\"ucs2\",\"28\":\"gsm7\",\"29\":\"gsm7\",\"30\":\"gsm7\",\"31\":\"gsm7\",\"32\":\"8bit\",\"33\":\"8bit\",\"34\":\"8bit\",\"35\":\"8bit\",\"36\":\"8bit\",\"37\":\"8bit\",\"38\":\"8bit\",\"39\":\"8bit\",\"40\":\"8bit\",\"41\":\"8bit\",\"42\":\"8bit\",\"43\":\"8bit\",\"44\":\"8bit\",\"45\":\"8bit\",\"46\":\"8bit\",\"47\":\"8bit\",\"48\":\"8bit\",\"49\":\"8bit\",\"50\":\"8bit\",\"51\":\"8bit\",\"52\":\"8bit\",\"53\":\"8bit\",\"54\":\"8bit\",\"55\":\"8bit\",\"56\":\"8bit\",\"57\":\"8bit\",\"58\":\"8bit\",\"59\":\"8bit\",\"60\":\"8bit\",\"61\":\"8bit\",\"62\":\"8bit\",\"63\":\"8bit\",\"64\":\"gsm7\",\"65\":\"gsm7\",\"66\":\"gsm7\",\"67\":\"gsm7\",\"68\":\"8bit\",\"69\":\"8bit\",\"70\":\"8bit\",\"71\":\"8bit\",\"72\":\"ucs2\",\"73\":\"ucs2\",\"74\":\"ucs2\",\"75\":\"ucs2\",\"76\":\"gsm7\",\"77\":\"gsm7\",\"78\":\"gsm7\",\"79\":\"gsm7\",\"80\":\"gsm7\",\"81\":\"gsm7\",\"82\":\"gsm7\",\"83\":\"gsm7\",\"84\":\"8bit\",\"85\":\"8bit\",\"86\":\"8bit\",\"87\":\"8bit\",\"88\":\"ucs2\",\"89\":\"ucs2\",\"90\":\"ucs2\",\"91\":\"ucs2\",\"92\":\"gsm7\",\"93\":\"gsm7\",\"94\":\"gsm7\",\"95\":\"gsm7\",\"96\":\"8bit\",\"97\":\"8bit\",\"98\":\"8bit\",\"99\":\"8bit\",\"100\":\"8bit\",\"101\":\"8bit\",\"102\":\"8bit\",\"103\":\"8bit\",\"104\":\"8bit\",\"105\":\"8bit\",\"106\":\"8bit\",\"107\":\"8bit\",\"108\":\"8bit\",\"109\":\"8bit\",\"110\":\"8bit\",\"111\":\"8bit\",\"112\":\"8bit\",\"113\":\"8bit\",\"114\":\"8bit\",\"115\":\"8bit\",\"116\":\"8bit\",\"117\":\"8bit\",\"118\":\"8bit\",\"119\":\"8bit\",\"120\":\"8bit\",\"121\":\"8bit\",\"122\":\"8bit\",\"123\":\"8bit\",\"124\":\"8bit\",\"125\":\"8bit\",\"126\":\"8bit\",\"127\":\"8bit\",\"128\":\"gsm7\",\"129\":\"gsm7\",\"130\":\"gsm7\",\"131\":\"gsm7\",\"132\":\"gsm7\",\"133\":\"gsm7\",\"134\":\"gsm7\",\"135\":\"gsm7\",\"136\":\"gsm7\",\"137\":\"gsm7\",\"138\":\"gsm7\",\"139\":\"gsm7\",\"140\":\"gsm7\",\"141\":\"gsm7\",\"142\":\"gsm7\",\"143\":\"gsm7\",\"144\":\"gsm7\",\"145\":\"gsm7\",\"146\":\"gsm7\",\"147\":\"gsm7\",\"148\":\"gsm7\",\"149\":\"gsm7\",\"150\":\"gsm7\",\"151\":\"gsm7\",\"152\":\"gsm7\",\"153\":\"gsm7\",\"154\":\"gsm7\",\"155\":\"gsm7\",\"156\":\"gsm7\",\"157\":\"gsm7\",\"158\":\"gsm7\",\"159\":\"gsm7\",\"160\":\"gsm7\",\"161\":\"gsm7\",\"162\":\"gsm7\",\"163\":\"gsm7\",\"164\":\"gsm7\",\"165\":\"gsm7\",\"166\":\"gsm7\",\"167\":\"gsm7\",\"168\":\"gsm7\",\"169\":\"gsm7\",\"170\":\"gsm7\",\"171\":\"gsm7\",\"172\":\"gsm7\",\"173\":\"gsm7\",\"174\":\"gsm7\",\"175\":\"gsm7\",\"176\":\"gsm7\",\"177\":\"gsm7\",\"178\":\"gsm7\",\"179\":\"gsm7\",\"180\":\"gsm7\",\"181\":\"gsm7\",\"182\":\"gsm7\",\"183\":\"gsm7\",\"184\":\"gsm7\",\"185\":\"gsm7\",\"186\":\"gsm7\",\"187\":\"gsm7\",\"188\":\"gsm7\",\"189\":\"gsm7\",\"190\":\"gsm7\",\"191\":\"gsm7\",\"192\":\"gsm7\",\"193\":\"gsm7\",\"194\":\"gsm7\",\"195\":\"gsm7\",\"196\":\"gsm7\",\"197\":\"gsm7\",\"198\":\"gsm7\",\"199\":\"gsm7\",\"200\":\"gsm7\",\"201\":\"gsm7\",\"202\":\"gsm7\",\"203\":\"gsm7\",\"204\":\"gsm7\",\"205\":\"gsm7\",\"206\":\"gsm7\",\"207\":\"gsm7\",\"208\":\"gsm7\",\"209\":\"gsm7\",\"210\":\"gsm7\",\"211\":\"gsm7\",\"212\":\"gsm7\",\"213\":\"gsm7\",\"214\":\"gsm7\",\"215\":\"gsm7\",\"216\":\"gsm7\",\"217\":\"gsm7\",\"218\":\"gsm7\",\"219\":\"gsm7\",\"220\":\"gsm7\",\"221\":\"gsm7\",\"222\":\"gsm7\",\"223\":\"gsm7\",\"224\":\"ucs2\",\"225\":\"ucs2\",\"226\":\"ucs2\",\"227\":\"ucs2\",\"228\":\"ucs2\",\"229\":\"ucs2\",\"230\":\"ucs2\",\"231\":\"ucs2\",\"232\":\"ucs2\",\"233\":\"ucs2\",\"234\":\"ucs2\",\"235\":\"ucs2\",\"236\":\"ucs2\",\"237\":\"ucs2\",\"238\":\"ucs2\",\"239\":\"ucs2\",\"240\":\"gsm7\",\"241\":\"gsm7\",\"242\":\"gsm7\",\"243\":\"gsm7\",\"244\":\"8bit\",\"245\":\"8bit\",\"246\":\"8bit\",\"247\":\"8bit\",\"248\":\"gsm7\",\"249\":\"gsm7\",\"250\":\"gsm7\",\"251\":\"gsm7\",\"252\":\"8bit\",\"253\":\"8bit\",\"254\":\"8bit\",\"255\":\"8bit\"}"
+    },
+    {
+      "name": "decodes an alphanumeric sender verbatim [MYBANK]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040BD0CDAC30E85C020000628011025095690178",
+        "length": 20
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"MYBANK\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"x\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "decodes an alphanumeric sender verbatim [Info-Line]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F10410D049B7F9DD62A6DD650000628011025095690178",
+        "length": 22
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"Info-Line\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"x\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "decodes an alphanumeric sender verbatim [A]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F10402D0410000628011025095690178",
+        "length": 15
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"A\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"x\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "decodes an alphanumeric sender verbatim [XORGATE1234]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F10414D0D8A7F418A41663B2190D0000628011025095690178",
+        "length": 24
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"XORGATE1234\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"x\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "national and unknown-type numbers keep their digits, odd lengths drop the filler [national]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F10407A1550501F00000628011025095690178"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"x\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "national and unknown-type numbers keep their digits, odd lengths drop the filler [unknown]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F10405812143F50000628011025095690178"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"12345\",\"fromType\":\"other\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"x\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "formats positive, negative and quarter-hour zones [+00:00]",
+      "op": "decodeScts",
+      "input": [
+        98,
+        16,
+        32,
+        48,
+        64,
+        80,
+        0
+      ],
+      "expectedJson": "\"2026-01-02T03:04:05+00:00\""
+    },
+    {
+      "name": "formats positive, negative and quarter-hour zones [+02:00]",
+      "op": "decodeScts",
+      "input": [
+        98,
+        33,
+        19,
+        50,
+        149,
+        149,
+        128
+      ],
+      "expectedJson": "\"2026-12-31T23:59:59+02:00\""
+    },
+    {
+      "name": "formats positive, negative and quarter-hour zones [-04:00]",
+      "op": "decodeScts",
+      "input": [
+        98,
+        80,
+        16,
+        0,
+        0,
+        0,
+        105
+      ],
+      "expectedJson": "\"2026-05-01T00:00:00-04:00\""
+    },
+    {
+      "name": "formats positive, negative and quarter-hour zones [+05:45]",
+      "op": "decodeScts",
+      "input": [
+        98,
+        80,
+        16,
+        0,
+        0,
+        0,
+        50
+      ],
+      "expectedJson": "\"2026-05-01T00:00:00+05:45\""
+    },
+    {
+      "name": "formats positive, negative and quarter-hour zones [-09:30]",
+      "op": "decodeScts",
+      "input": [
+        98,
+        80,
+        16,
+        0,
+        0,
+        0,
+        139
+      ],
+      "expectedJson": "\"2026-05-01T00:00:00-09:30\""
+    },
+    {
+      "name": "is parseable by Date and keeps the instant",
+      "op": "sentAtMs",
+      "input": "2026-08-11T20:05:59-04:00",
+      "expectedJson": "1786493159000"
+    },
+    {
+      "name": "extra: Date.parse rolls an out-of-range day over (V8)",
+      "op": "sentAtMs",
+      "input": "2026-02-31T00:00:00+00:00",
+      "expectedJson": "1772496000000"
+    },
+    {
+      "name": "extra: Date.parse applies the zone",
+      "op": "sentAtMs",
+      "input": "2026-12-31T23:59:59+05:45",
+      "expectedJson": "1798740899000"
+    },
+    {
+      "name": "extra: Date.parse negative zone",
+      "op": "sentAtMs",
+      "input": "2000-01-01T00:00:00-09:30",
+      "expectedJson": "946719000000"
+    },
+    {
+      "name": "returns null for garbage [ff]",
+      "op": "decodeScts",
+      "input": [
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255
+      ],
+      "expectedJson": "null"
+    },
+    {
+      "name": "returns null for garbage [month 13]",
+      "op": "decodeScts",
+      "input": [
+        98,
+        49,
+        16,
+        0,
+        0,
+        0,
+        0
+      ],
+      "expectedJson": "null"
+    },
+    {
+      "name": "returns null for garbage [short]",
+      "op": "decodeScts",
+      "input": [
+        98,
+        128
+      ],
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: negative zero zone prints +00:00",
+      "op": "decodeScts",
+      "input": [
+        98,
+        128,
+        17,
+        2,
+        80,
+        149,
+        8
+      ],
+      "expectedJson": "\"2026-08-11T20:05:59+00:00\""
+    },
+    {
+      "name": "extra: zone units nibble > 9 is null",
+      "op": "decodeScts",
+      "input": [
+        98,
+        128,
+        17,
+        2,
+        80,
+        149,
+        160
+      ],
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: zone beyond 18 h is null",
+      "op": "decodeScts",
+      "input": [
+        98,
+        128,
+        17,
+        2,
+        80,
+        149,
+        55
+      ],
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: zone of exactly 18 h",
+      "op": "decodeScts",
+      "input": [
+        98,
+        128,
+        17,
+        2,
+        80,
+        149,
+        39
+      ],
+      "expectedJson": "\"2026-08-11T20:05:59+18:00\""
+    },
+    {
+      "name": "extra: day 31 in February is accepted",
+      "op": "decodeScts",
+      "input": [
+        98,
+        32,
+        19,
+        0,
+        0,
+        0,
+        0
+      ],
+      "expectedJson": "\"2026-02-31T00:00:00+00:00\""
+    },
+    {
+      "name": "skips SUBMIT and status-report PDUs [submit]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "0001000B915155100000F9000002C834",
+        "length": 15
+      },
+      "expectedJson": "{\"kind\":\"skip\",\"reason\":\"not-deliver\"}"
+    },
+    {
+      "name": "skips SUBMIT and status-report PDUs [status report]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "0006"
+      },
+      "expectedJson": "{\"kind\":\"skip\",\"reason\":\"not-deliver\"}"
+    },
+    {
+      "name": "reports malformed input instead of throwing [zz]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "zz"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"not hex\"}"
+    },
+    {
+      "name": "reports malformed input instead of throwing [empty]",
+      "op": "decodePdu",
+      "input": {
+        "hex": ""
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"not hex\"}"
+    },
+    {
+      "name": "reports malformed input instead of throwing [0]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "0"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"not hex\"}"
+    },
+    {
+      "name": "reports malformed input instead of throwing [00040B91]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B91"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"truncated\"}"
+    },
+    {
+      "name": "reports malformed input instead of throwing [cut at 40]",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1040B915155100000F1000062",
+        "length": 24
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"truncated\"}"
+    },
+    {
+      "name": "extra: truncated after first octet",
+      "op": "decodePdu",
+      "input": {
+        "hex": "0004"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"truncated\"}"
+    },
+    {
+      "name": "extra: truncated before dcs",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F100"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"truncated\"}"
+    },
+    {
+      "name": "extra: truncated inside scts",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F1000062801102"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"truncated\"}"
+    },
+    {
+      "name": "extra: truncated before udl",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F1000062801102509569"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"truncated\"}"
+    },
+    {
+      "name": "extra: udl present, empty ud",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F100006280110250956900"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "extra: bad UDH (header longer than ud)",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00440B915155100000F1000062801102509569050500"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"bad UDH\"}"
+    },
+    {
+      "name": "extra: smsc longer than the line",
+      "op": "decodePdu",
+      "input": {
+        "hex": "0A0004"
+      },
+      "expectedJson": "{\"kind\":\"invalid\",\"reason\":\"truncated\"}"
+    },
+    {
+      "name": "extra: whitespace around hex is trimmed",
+      "op": "decodePdu",
+      "input": {
+        "hex": "  07915178850007F1040B915155100000F100006280110250956905E8329BFD06\n",
+        "length": 24
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"hello\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "extra: ucs2 udl shorter than ud",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F1000862801102509569026771672C"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"東\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "extra: 8-bit with udhi but no concat IE",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00440B915155100000F1000462801102509569060401020300FF"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"ff\",\"binary\":true,\"concat\":null}"
+    },
+    {
+      "name": "extra: gsm7 dangling escape dropped",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F100006280110250956902E80D"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"h\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "extra: gsm7 escape of unknown code shows basic char",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F100006280110250956902DB10"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"Ä!\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "extra: gsm7 double escape shows a space",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040B915155100000F100006280110250956902DB36"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"Äm\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "extra: alphanumeric sender with text",
+      "op": "decodePdu",
+      "input": {
+        "hex": "00040ED0D4F29C0E9A36A70000628011025095690168"
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"Test SMS\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"h\",\"binary\":false,\"concat\":null}"
+    },
+    {
+      "name": "reads IEI 0x00 (8-bit ref) and keeps GSM-7 septet alignment",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1440B915155100000F100006280110250956910050003420201E061391DF4769741",
+        "length": 33
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"part one \",\"binary\":false,\"concat\":{\"ref\":66,\"total\":2,\"seq\":1}}"
+    },
+    {
+      "name": "reads IEI 0x08 (16-bit ref) for UCS2",
+      "op": "decodePdu",
+      "input": {
+        "hex": "07915178850007F1440B915155100000F10008628011025095690B0608041234030267714EAC",
+        "length": 30
+      },
+      "expectedJson": "{\"kind\":\"deliver\",\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"text\":\"東京\",\"binary\":false,\"concat\":{\"ref\":4660,\"total\":3,\"seq\":2}}"
+    },
+    {
+      "name": "joins a 3-part message in sequence order whatever the storage order",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 5,
+          "stat": 1,
+          "length": 30,
+          "pdu": "07915178850007F1440B915155100000F10000628011025095690C050003070303E86879B90C"
+        },
+        {
+          "storage": "SM",
+          "index": 3,
+          "stat": 1,
+          "length": 29,
+          "pdu": "07915178850007F1440B915155100000F10000628011025095690B050003070301DEEE3208"
+        },
+        {
+          "storage": "SM",
+          "index": 4,
+          "stat": 0,
+          "length": 29,
+          "pdu": "07915178850007F1440B915155100000F10000628011025095690B050003070302E8F73708"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:3+SM:4+SM:5\",\"storage\":\"SM\",\"indexes\":[3,4,5],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":true,\"text\":\"one two three\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "rejoins an emoji split across UCS2 parts",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 3,
+          "stat": 1,
+          "length": 30,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095690B060804012C02010061D83D"
+        },
+        {
+          "storage": "SM",
+          "index": 4,
+          "stat": 1,
+          "length": 30,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095690B060804012C0202DC4D0062"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:3+SM:4\",\"storage\":\"SM\",\"indexes\":[3,4],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"a👍b\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "flags missing parts as incomplete and keeps what is there",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 5,
+          "stat": 1,
+          "length": 31,
+          "pdu": "07915178850007F1440B915155100000F10000628011025095690D050003090301CC69F99C0E02"
+        },
+        {
+          "storage": "SM",
+          "index": 6,
+          "stat": 1,
+          "length": 29,
+          "pdu": "07915178850007F1440B915155100000F10000628011025095690B050003090303D8E1391D"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:5+SM:6\",\"storage\":\"SM\",\"indexes\":[5,6],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"first last\",\"binary\":false,\"incomplete\":true,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "does not merge parts from different senders or totals sharing a ref",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 7,
+          "stat": 1,
+          "length": 26,
+          "pdu": "07915178850007F1440B915155100000F100006280110250956908050003010201C2"
+        },
+        {
+          "storage": "SM",
+          "index": 8,
+          "stat": 1,
+          "length": 24,
+          "pdu": "07915178850007F14407D0C2A0730900006280110250956908050003010201C4"
+        },
+        {
+          "storage": "SM",
+          "index": 9,
+          "stat": 1,
+          "length": 26,
+          "pdu": "07915178850007F1440B915155100000F100006280110250956908050003010301C6"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:9\",\"storage\":\"SM\",\"indexes\":[9],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"c\",\"binary\":false,\"incomplete\":true,\"truncated\":false},{\"id\":\"SM:8\",\"storage\":\"SM\",\"indexes\":[8],\"from\":\"BANK\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"b\",\"binary\":false,\"incomplete\":true,\"truncated\":false},{\"id\":\"SM:7\",\"storage\":\"SM\",\"indexes\":[7],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"a\",\"binary\":false,\"incomplete\":true,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "splits two messages that reuse the same 8-bit ref",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 0,
+          "stat": 1,
+          "length": 27,
+          "pdu": "07915178850007F1440B915155100000F100006280110250956909050003C802018231"
+        },
+        {
+          "storage": "SM",
+          "index": 1,
+          "stat": 1,
+          "length": 27,
+          "pdu": "07915178850007F1440B915155100000F100006280110250956909050003C802028232"
+        },
+        {
+          "storage": "SM",
+          "index": 2,
+          "stat": 1,
+          "length": 27,
+          "pdu": "07915178850007F1440B915155100000F100006280110250956909050003C802018431"
+        },
+        {
+          "storage": "SM",
+          "index": 3,
+          "stat": 1,
+          "length": 27,
+          "pdu": "07915178850007F1440B915155100000F100006280110250956909050003C802028432"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:2+SM:3\",\"storage\":\"SM\",\"indexes\":[2,3],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"B1B2\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"A1A2\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "sorts newest first across stores, undecodable timestamps last",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "ME",
+          "index": 0,
+          "stat": 1,
+          "length": 22,
+          "pdu": "07915178850007F1040B915155100000F1000062801021000000036F3619"
+        },
+        {
+          "storage": "SM",
+          "index": 0,
+          "stat": 1,
+          "length": 22,
+          "pdu": "07915178850007F1040B915155100000F100006280022100000003EEF21D"
+        },
+        {
+          "storage": "ME",
+          "index": 1,
+          "stat": 1,
+          "length": 22,
+          "pdu": "07915178850007F1040B915155100000F100006280012100000003ED3419"
+        },
+        {
+          "storage": "SM",
+          "index": 1,
+          "stat": 1,
+          "length": 22,
+          "pdu": "07915178850007F1040B915155100000F10000FFFFFFFFFFFFFF03E23019"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:0\",\"storage\":\"SM\",\"indexes\":[0],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-20T12:00:00+00:00\",\"unread\":false,\"text\":\"new\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-10T12:00:00+00:00\",\"unread\":false,\"text\":\"mid\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:0\",\"storage\":\"ME\",\"indexes\":[0],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-01T12:00:00+00:00\",\"unread\":false,\"text\":\"old\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:1\",\"storage\":\"SM\",\"indexes\":[1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":null,\"unread\":false,\"text\":\"bad\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "orders by instant, not by wall clock, across zones",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 18,
+          "stat": 1,
+          "length": 24,
+          "pdu": "07915178850007F1040B915155100000F100006280102100006905EC30BD2C07"
+        },
+        {
+          "storage": "SM",
+          "index": 19,
+          "stat": 1,
+          "length": 26,
+          "pdu": "07915178850007F1040B915155100000F100006280104100000007E5B09C9D2ECB01"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:18\",\"storage\":\"SM\",\"indexes\":[18],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-01T12:00:00-04:00\",\"unread\":false,\"text\":\"later\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:19\",\"storage\":\"SM\",\"indexes\":[19],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-01T14:00:00+00:00\",\"unread\":false,\"text\":\"earlier\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "counts skipped and invalid PDUs",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 20,
+          "stat": 1,
+          "length": 21,
+          "pdu": "07915178850007F1040B915155100000F100006280110250956902EF35"
+        },
+        {
+          "storage": "SM",
+          "index": 50,
+          "stat": 2,
+          "length": 15,
+          "pdu": "0001000B915155100000F9000002C834"
+        },
+        {
+          "storage": "ME",
+          "index": 51,
+          "stat": 1,
+          "pdu": "nothex"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:20\",\"storage\":\"SM\",\"indexes\":[20],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"ok\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":2}"
+    },
+    {
+      "name": "truncates long text at the cap without splitting a surrogate pair [70 parts]",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 21,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346010078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 22,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346020078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 23,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346030078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 24,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346040078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 25,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346050078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 26,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346060078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 27,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346070078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 28,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346080078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 29,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346090078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 30,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303460A0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 31,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303460B0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 32,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303460C0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 33,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303460D0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 34,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303460E0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 35,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303460F0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 36,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346100078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 37,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346110078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 38,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346120078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 39,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346130078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 40,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346140078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 41,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346150078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 42,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346160078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 43,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346170078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 44,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346180078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 45,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346190078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 46,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303461A0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 47,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303461B0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 48,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303461C0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 49,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303461D0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 50,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303461E0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 51,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303461F0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 52,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346200078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 53,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346210078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 54,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346220078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 55,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346230078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 56,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346240078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 57,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346250078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 58,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346260078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 59,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346270078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 60,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346280078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 61,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346290078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 62,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303462A0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 63,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303462B0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 64,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303462C0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 65,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303462D0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 66,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303462E0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 67,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303462F0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 68,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346300078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 69,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346310078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 70,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346320078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 71,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346330078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 72,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346340078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 73,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346350078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 74,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346360078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 75,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346370078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 76,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346380078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 77,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346390078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 78,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303463A0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 79,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303463B0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 80,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303463C007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078D83D"
+        },
+        {
+          "storage": "SM",
+          "index": 81,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303463D0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 82,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303463E0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 83,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C05000303463F0078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 84,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346400078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 85,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346410078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 86,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346420078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 87,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346430078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 88,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346440078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 89,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346450078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        },
+        {
+          "storage": "SM",
+          "index": 90,
+          "stat": 1,
+          "length": 159,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095698C0500030346460078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780078007800780079"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:21+SM:22+SM:23+SM:24+SM:25+SM:26+SM:27+SM:28+SM:29+SM:30+SM:31+SM:32+SM:33+SM:34+SM:35+SM:36+SM:37+SM:38+SM:39+SM:40+SM:41+SM:42+SM:43+SM:44+SM:45+SM:46+SM:47+SM:48+SM:49+SM:50+SM:51+SM:52+SM:53+SM:54+SM:55+SM:56+SM:57+SM:58+SM:59+SM:60+SM:61+SM:62+SM:63+SM:64+SM:65+SM:66+SM:67+SM:68+SM:69+SM:70+SM:71+SM:72+SM:73+SM:74+SM:75+SM:76+SM:77+SM:78+SM:79+SM:80+SM:81+SM:82+SM:83+SM:84+SM:85+SM:86+SM:87+SM:88+SM:89+SM:90\",\"storage\":\"SM\",\"indexes\":[21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"binary\":false,\"incomplete\":false,\"truncated\":true}],\"skipped\":0}"
+    },
+    {
+      "name": "truncates long text at the cap without splitting a surrogate pair [emoji at cap]",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 91,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044301006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 92,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044302006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 93,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044303006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 94,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044304006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 95,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044305006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 96,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044306006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 97,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044307006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 98,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044308006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 99,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044309006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 100,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304430A006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 101,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304430B006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 102,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304430C006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 103,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304430D006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 104,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304430E006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 105,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304430F006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 106,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044310006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 107,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044311006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 108,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044312006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 109,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044313006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 110,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044314006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 111,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044315006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 112,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044316006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 113,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044317006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 114,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044318006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 115,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044319006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 116,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304431A006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 117,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304431B006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 118,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304431C006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 119,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304431D006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 120,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304431E006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 121,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304431F006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 122,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044320006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 123,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044321006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 124,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044322006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 125,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044323006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 126,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044324006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 127,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044325006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 128,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044326006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 129,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044327006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 130,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044328006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 131,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044329006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 132,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304432A006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 133,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304432B006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 134,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304432C006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 135,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304432D006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 136,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304432E006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 137,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304432F006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 138,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044330006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 139,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044331006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 140,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044332006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 141,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044333006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 142,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044334006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 143,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044335006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 144,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044336006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 145,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044337006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 146,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044338006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 147,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044339006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 148,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304433A006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 149,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304433B006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 150,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304433C006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 151,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304433D006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 152,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304433E006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 153,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E05000304433F006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 154,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044340006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 155,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044341006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 156,
+          "stat": 1,
+          "length": 145,
+          "pdu": "07915178850007F1440B915155100000F10008628011025095697E050003044342006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061"
+        },
+        {
+          "storage": "SM",
+          "index": 157,
+          "stat": 1,
+          "length": 107,
+          "pdu": "07915178850007F1440B915155100000F100086280110250956958050003044343006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061006100610061D83DDC4D"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:91+SM:92+SM:93+SM:94+SM:95+SM:96+SM:97+SM:98+SM:99+SM:100+SM:101+SM:102+SM:103+SM:104+SM:105+SM:106+SM:107+SM:108+SM:109+SM:110+SM:111+SM:112+SM:113+SM:114+SM:115+SM:116+SM:117+SM:118+SM:119+SM:120+SM:121+SM:122+SM:123+SM:124+SM:125+SM:126+SM:127+SM:128+SM:129+SM:130+SM:131+SM:132+SM:133+SM:134+SM:135+SM:136+SM:137+SM:138+SM:139+SM:140+SM:141+SM:142+SM:143+SM:144+SM:145+SM:146+SM:147+SM:148+SM:149+SM:150+SM:151+SM:152+SM:153+SM:154+SM:155+SM:156+SM:157\",\"storage\":\"SM\",\"indexes\":[91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"binary\":false,\"incomplete\":false,\"truncated\":true}],\"skipped\":0}"
+    },
+    {
+      "name": "extra: a rolled-over day (Feb 31 = Mar 3) sorts by its instant",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 0,
+          "stat": 1,
+          "length": 23,
+          "pdu": "07915178850007F1040B915155100000F100006230202100000004EDB05C06"
+        },
+        {
+          "storage": "SM",
+          "index": 1,
+          "stat": 1,
+          "length": 24,
+          "pdu": "07915178850007F1040B915155100000F100006220132100000005E6B2781603"
+        },
+        {
+          "storage": "SM",
+          "index": 2,
+          "stat": 1,
+          "length": 23,
+          "pdu": "07915178850007F1040B915155100000F100006230402100000004EDB09C06"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-03-04T12:00:00+00:00\",\"unread\":false,\"text\":\"mar4\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:1\",\"storage\":\"SM\",\"indexes\":[1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-02-31T12:00:00+00:00\",\"unread\":false,\"text\":\"feb31\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0\",\"storage\":\"SM\",\"indexes\":[0],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-03-02T12:00:00+00:00\",\"unread\":false,\"text\":\"mar2\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "extra: equal instants order by id descending; ME before SM in visit order",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 1,
+          "stat": 1,
+          "length": 21,
+          "pdu": "07915178850007F1040B915155100000F100006210102100000002F318"
+        },
+        {
+          "storage": "ME",
+          "index": 9,
+          "stat": 1,
+          "length": 21,
+          "pdu": "07915178850007F1040B915155100000F100006210102100000002ED1C"
+        },
+        {
+          "storage": "SM",
+          "index": 0,
+          "stat": 1,
+          "length": 21,
+          "pdu": "07915178850007F1040B915155100000F1000062101021000000027318"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:1\",\"storage\":\"SM\",\"indexes\":[1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-01-01T12:00:00+00:00\",\"unread\":false,\"text\":\"s1\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0\",\"storage\":\"SM\",\"indexes\":[0],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-01-01T12:00:00+00:00\",\"unread\":false,\"text\":\"s0\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:9\",\"storage\":\"ME\",\"indexes\":[9],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-01-01T12:00:00+00:00\",\"unread\":false,\"text\":\"m9\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "extra: two undecodable timestamps order by id descending",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "ME",
+          "index": 2,
+          "stat": 1,
+          "length": 20,
+          "pdu": "07915178850007F1040B915155100000F10000FFFFFFFFFFFFFF0161"
+        },
+        {
+          "storage": "SM",
+          "index": 1,
+          "stat": 1,
+          "length": 20,
+          "pdu": "07915178850007F1040B915155100000F10000FFFFFFFFFFFFFF0162"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:1\",\"storage\":\"SM\",\"indexes\":[1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":null,\"unread\":false,\"text\":\"b\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:2\",\"storage\":\"ME\",\"indexes\":[2],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":null,\"unread\":false,\"text\":\"a\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "extra: concat total 1 is a single",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 166,
+          "stat": 1,
+          "length": 29,
+          "pdu": "07915178850007F1440B915155100000F10000628011025095690B050003050101E66FF61B"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:166\",\"storage\":\"SM\",\"indexes\":[166],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"solo\",\"binary\":false,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "extra: binary part flags the joined message",
+      "op": "assembleMessages",
+      "input": [
+        {
+          "storage": "SM",
+          "index": 167,
+          "stat": 1,
+          "length": 28,
+          "pdu": "07915178850007F1440B915155100000F10000628011025095690A050003060201E8783A"
+        },
+        {
+          "storage": "SM",
+          "index": 168,
+          "stat": 1,
+          "length": 27,
+          "pdu": "07915178850007F1440B915155100000F100046280110250956908050003060202DEAD"
+        }
+      ],
+      "expectedJson": "{\"messages\":[{\"id\":\"SM:167+SM:168\",\"storage\":\"SM\",\"indexes\":[167,168],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2026-08-11T20:05:59-04:00\",\"unread\":false,\"text\":\"txtdead\",\"binary\":true,\"incomplete\":false,\"truncated\":false}],\"skipped\":0}"
+    },
+    {
+      "name": "extra: empty input",
+      "op": "assembleMessages",
+      "input": [],
+      "expectedJson": "{\"messages\":[],\"skipped\":0}"
+    }
+  ]
+}
