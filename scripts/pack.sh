@@ -23,7 +23,10 @@
 #                            four unconditionally; here a missing dir is not an
 #                            error, a missing REQUIRED entry is.
 # Required entries verified after packing: bin/xorgate-rs, build-info.json,
-# systemd/xorgate-agent-rs.service.
+# systemd/xorgate-agent-rs.service, python/bno085_read.py (Phase 2 WP2: the
+# IMU collector spawns `python3 <root>/python/bno085_read.py`, vendored
+# byte-identical from the JS repo @ 89b5c64, sha256 7af7a856…; the JS
+# tarball ships python/ too, device-deploy-dev.yml:98).
 #
 # Sidecar: <tarball>.sha256 in `sha256sum -c` format ("<hex>  <basename>").
 # Prints key=value lines (tarball, version, channel, builtAt, packageVersion,
@@ -59,6 +62,7 @@ fi
 [ -f "$INFO" ] || { echo "pack: $INFO missing — run scripts/build-info.sh <channel> or pass --channel" >&2; exit 1; }
 [ -f "$BIN" ] || { echo "pack: binary $BIN missing — cargo build --release first (or --bin <path>)" >&2; exit 1; }
 [ -f "$REPO/systemd/xorgate-agent-rs.service" ] || { echo "pack: systemd/xorgate-agent-rs.service missing" >&2; exit 1; }
+[ -f "$REPO/python/bno085_read.py" ] || { echo "pack: python/bno085_read.py missing (the IMU helper)" >&2; exit 1; }
 
 # Tiny JSON field reader (no jq on the bench): first "key": "value" occurrence.
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -n1; }
@@ -98,7 +102,7 @@ tar -tzf "$OUT_DIR/$TARBALL" | head -30 >&2
 # List once: `tar -tzf | grep -q` under pipefail fails spuriously (grep -q exits
 # on the first match and tar dies of SIGPIPE).
 LISTING=$(tar -tzf "$OUT_DIR/$TARBALL")
-for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service; do
+for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service python/bno085_read.py; do
   grep -qx "$required" <<<"$LISTING" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
 done
 
