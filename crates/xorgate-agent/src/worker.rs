@@ -1,38 +1,54 @@
-//! The worker — port of the Phase 0 slice of `src/worker.ts`: boot, pidfile +
-//! state.json, MQTT connect / status / LWT, config + command subscriptions
-//! (logged, not acted on), the 1 Hz publish loop, systemd notify/watchdog,
-//! graceful SIGTERM/SIGINT (`online:false`, ≤3 s, exit 0), SIGHUP ignored.
+//! The worker — the composition root that `src/worker.ts` is (README §3.2):
+//! boot (config, home, settings upgrades, hardware block, pidfile, initial
+//! state.json), the subsystems (collectors, MQTT plane + publish loop, config
+//! plane, command plane), the 1 s heartbeat (systemd watchdog), the 10 s
+//! `published N messages` line, signals, and the ordered shutdown.
 //!
-//! `--offline`: no network; every would-be payload is printed to stdout once
-//! per tick (acceptance check A2).
+//! Boot order mirrors `worker.ts` top to bottom; every Phase 3/4 call site is
+//! either a [`PhaseHooks`](crate::ctx::PhaseHooks) no-op or a comment naming
+//! the TS line it stands in for (O5).
 
 use std::os::unix::fs::DirBuilderExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use serde_json::Value;
+use anyhow::{bail, Context, Result};
+use indexmap::IndexMap;
+use serde_json::{Map, Value};
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::{interval, Interval, MissedTickBehavior};
+use tokio::time::{interval_at, Instant, Interval, MissedTickBehavior};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
-use xorgate_cloud::mqtt::{ConnectionState, MqttClient, MqttConfig, MqttEvent, QoS, Will};
-use xorgate_core::telemetry::{JsNumber, Metrics, StatusPayload, TelemetryPayload};
-use xorgate_core::topics::Topics;
-use xorgate_hal::system::SystemSampler;
+use xorgate_cloud::mqtt::{MqttClient, MqttConfig, MqttEvent, QoS, Will};
+use xorgate_core::hardware_block::{parse_hardware_block, DeviceHardwareBlock};
+use xorgate_core::telemetry::{
+    ActivityEvent, ActivityLevel, ConnectionState, JsNumber, RunMode, StateSnapshot, StatusPayload,
+    TelemetryMedia, TelemetryReading,
+};
+use xorgate_core::types::{GnssView, GpsClockReading, PowerSampleReading};
+use xorgate_hal::io::{null_tape, open_file_tape, TapeStart};
+use xorgate_hal::read_lossy::{read_text, FileText};
 
-use crate::env::AgentEnv;
-use crate::state::{StateSnapshot, StateStore};
-use crate::{build_info, env, logging, pidfile};
+use crate::ctx::{
+    AgentClock, AgentCtx, BoxFut, CommandPlaneDeps, ConfigPlaneDeps, GroupSample, NoopHooks,
+    ReportRequester, TelemetrySource,
+};
+use crate::env::{AgentEnv, Creds};
+use crate::mqtt_plane::{MqttHandle, MqttPlane, OfflineTransport, RealTransport};
+use crate::scope::ScopeHandle;
+use crate::shutdown::Shutdown;
+use crate::state::StateHandle;
+use crate::{build_info, collectors, command_plane, config_plane, env, logging, pidfile};
 
-/// How long the graceful stop waits for the final `online:false` to reach the wire.
-const ACK_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+/// `WRITTEN_BY` (`worker.ts:77`), Rust-flavoured (tolerated, T8).
 const WRITTEN_BY_PREFIX: &str = "xorgate-device-agent-rs@";
+/// rumqttc refuses a keepalive under 5 s (it asserts); the TS accepts any > 0.
+const MIN_KEEPALIVE_SECS: f64 = 5.0;
 
-pub struct RunArgs {
-    pub offline: bool,
-}
-
-pub fn main(args: RunArgs) -> i32 {
+/// `xorgate-rs run [flags]`: run the worker to completion; the exit code.
+pub fn main(args: &[String]) -> i32 {
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -53,49 +69,200 @@ pub fn main(args: RunArgs) -> i32 {
     }
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn sd_notify(states: &[sd_notify::NotifyState]) {
     // Harmless when not under systemd (NOTIFY_SOCKET unset).
     let _ = sd_notify::notify(states);
 }
 
-/// Per-process publish state: `seq` starts at 0 and increments per tick.
-struct Ticker {
-    device_id: String,
-    seq: u64,
-    sampler: SystemSampler,
+/// A `setInterval(fn, period)`: first fire one period from now.
+fn every(period: Duration) -> Interval {
+    let mut i = interval_at(Instant::now() + period, period);
+    i.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    i
 }
 
-impl Ticker {
-    async fn payload(&mut self) -> TelemetryPayload {
-        let system = self.sampler.read().await;
-        let mut metrics = Metrics::new();
-        if !system.is_empty() {
-            metrics.insert("system".into(), system);
-        }
-        let seq = self.seq;
-        self.seq += 1;
-        TelemetryPayload::new(&self.device_id, now_ms(), seq, metrics)
+/// `ensureHome()` (`runtime.ts:37-41`): mkdir -p, 0700.
+fn ensure_home(home: &Path) -> Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(home)
+        .with_context(|| format!("create XORGATE_HOME {}", home.display()))
+}
+
+/// `loadHardwareBlock(path)` (`hardware-config.ts:129-151`): absent →
+/// `None` silently; not JSON / failing validation → `None` + one
+/// `[hardware] …` warning. (WP3's `hardware_file.rs` owns the save side.)
+pub fn load_hardware_block(path: &Path) -> Option<DeviceHardwareBlock> {
+    let text = read_text(path).ok()?;
+    let p = path.display();
+    let Ok(obj) = serde_json::from_str::<Value>(&text) else {
+        warn!("[hardware] {p} is not valid JSON — ignoring; using legacy hardware behavior");
+        return None;
+    };
+    let block = parse_hardware_block(&obj);
+    if block.is_none() {
+        warn!("[hardware] {p} failed validation — ignoring; using legacy hardware behavior");
+    }
+    block
+}
+
+/// The boot log line of a loaded hardware block (`worker.ts:115-121`).
+pub fn hardware_block_line(b: &DeviceHardwareBlock) -> String {
+    let cameras = b
+        .video
+        .iter()
+        .map(|v| format!("{}@{}", v.key, v.connector))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "[agent] hardware block: {} encoder={} cameras={} rails={} led={} imu={}",
+        b.platform.as_str(),
+        b.encoder.as_str(),
+        if cameras.is_empty() { "none" } else { &cameras },
+        b.rails,
+        if b.status_led.is_some() { "yes" } else { "no" },
+        b.imu.as_deref().unwrap_or("none"),
+    )
+}
+
+/// `sim` mode's source (O7): collectors off, no generator — empty metrics
+/// and the idle media block every tick.
+struct SimSource;
+
+impl TelemetrySource for SimSource {
+    fn read(&self) -> BoxFut<'_, Result<TelemetryReading, String>> {
+        Box::pin(async {
+            Ok(TelemetryReading {
+                metrics: Default::default(),
+                media: TelemetryMedia::idle(),
+            })
+        })
+    }
+    fn sample_groups(&self) -> BoxFut<'_, IndexMap<String, GroupSample>> {
+        Box::pin(async { IndexMap::new() })
+    }
+    fn sample_power(&self) -> BoxFut<'_, Option<PowerSampleReading>> {
+        Box::pin(async { None })
+    }
+    fn gps_clock(&self) -> Option<GpsClockReading> {
+        None
+    }
+    fn gnss_view(&self) -> Option<GnssView> {
+        None
+    }
+    fn stop(&self) {}
+}
+
+/// The tape's meta inputs (hardware.json, kvs.json channels, home files).
+fn tape_start(env: &AgentEnv, build: &str, now0: i64, paths: &crate::ctx::Paths) -> TapeStart {
+    let json = |p: &Path| -> Value {
+        read_text(p)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null)
+    };
+    let kvs = json(&paths.kvs_manifest);
+    let mut home = Map::new();
+    for (name, p) in [
+        ("settings.json", &paths.settings),
+        ("config-sync.json", &paths.config_sync),
+        ("commands.json", &paths.commands),
+    ] {
+        let v = match read_text(p) {
+            FileText::Text(t) => Value::String(t),
+            _ => Value::Null,
+        };
+        home.insert(name.to_string(), v);
+    }
+    TapeStart {
+        device_id: env.config.device_id.clone(),
+        build: build.to_string(),
+        start_wall: now0,
+        hardware: json(&paths.hardware),
+        kvs_channels: kvs
+            .get("channels")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        home_files: Some(home),
     }
 }
 
-async fn run(args: RunArgs) -> Result<i32> {
-    let log_sink = logging::init();
-    let cfg = env::load(args.offline)?;
-    let build = build_info::load();
-    info!(
-        "[agent] xorgate-rs {} starting (mode={}, home={}, log={log_sink}, rust phase 0)",
-        build.format(),
-        cfg.mode,
-        cfg.home.display()
-    );
+/// The MQTT side of the run: the handle, the event stream, and how to end it.
+struct Link {
+    mqtt: MqttHandle,
+    events: tokio::sync::mpsc::UnboundedReceiver<MqttEvent>,
+    shutdown: Option<xorgate_cloud::mqtt::MqttShutdown>,
+}
 
+/// `connect(config)` (`mqtt.ts:38-67`; offline stub `:74-105`).
+fn connect(env: &AgentEnv, creds: Option<Creds>) -> Result<Link> {
+    let cfg = &env.config;
+    let Some(creds) = creds else {
+        let (t, events) = OfflineTransport::new();
+        return Ok(Link {
+            mqtt: MqttHandle::new(t),
+            events,
+            shutdown: None,
+        });
+    };
+    let tls = xorgate_cloud::tls::client_config(Some(&creds.ca), &creds.cert, &creds.key)
+        .context("TLS client config")?;
+    let mut mqtt_cfg = MqttConfig::new(&cfg.device_id, &cfg.endpoint, tls);
+    let mut keepalive = cfg.mqtt_keepalive_sec;
+    if keepalive < MIN_KEEPALIVE_SECS {
+        warn!(
+            "[agent] MQTT_KEEPALIVE_SEC {} is below the client's 5 s floor — using 5",
+            xorgate_core::js::number_to_string(keepalive)
+        );
+        keepalive = MIN_KEEPALIVE_SECS;
+    }
+    mqtt_cfg.keep_alive = Duration::from_secs_f64(keepalive);
+    {
+        let topic = cfg.topics.status.clone();
+        let id = cfg.device_id.clone();
+        mqtt_cfg.will = Some(Arc::new(move || Will {
+            topic: topic.clone(),
+            payload: serde_json::to_vec(&StatusPayload::new(&id, crate::now_ms(), false))
+                .unwrap_or_default(),
+            qos: QoS::AtMostOnce,
+            retain: false,
+        }));
+    }
+    info!(
+        "[agent] connecting to {}:8883 as {} (keepalive {} s)",
+        cfg.endpoint,
+        cfg.device_id,
+        xorgate_core::js::number_to_string(keepalive)
+    );
+    let (publisher, events, shutdown) = MqttClient::connect(mqtt_cfg).split();
+    Ok(Link {
+        mqtt: MqttHandle::new(Arc::new(RealTransport(publisher))),
+        events,
+        shutdown: Some(shutdown),
+    })
+}
+
+async fn run(args: &[String]) -> Result<i32> {
+    let log_sink = logging::init();
+    let build = build_info::load();
+    // `const config = loadConfig();` (`worker.ts:79`) — throws → exit 1.
+    let env = env::load(args)?;
+    if env.config.mode == RunMode::Replay {
+        bail!("MODE=replay is not supported by the Rust agent (plan Q6) — run the JS agent for replay containers");
+    }
+    let creds = if env.config.offline {
+        None
+    } else {
+        Some(env::read_creds(&env.config)?)
+    };
+    info!(
+        "[agent] xorgate-rs {} starting (mode={}, home={}, log={log_sink})",
+        build.format(),
+        env.config.mode.as_str(),
+        env.home.display()
+    );
     // A10: gstreamer-rs (`v1_22`) links libgstreamer-1.0 dynamically; prove it at boot.
     match gstreamer::init() {
         Ok(()) => info!(
@@ -104,47 +271,28 @@ async fn run(args: RunArgs) -> Result<i32> {
         ),
         Err(e) => error!("[agent] gstreamer init failed: {e}"),
     }
+    ensure_home(&env.home)?;
 
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&cfg.home)
-        .with_context(|| format!("create XORGATE_HOME {}", cfg.home.display()))?;
-
-    let now0 = now_ms();
+    let paths = Arc::new(env::paths(&env));
+    let env = Arc::new(env);
+    let cfg = &env.config;
+    let now0 = crate::now_ms();
     let pid = std::process::id();
-    let worker_path = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    if let Err(e) = pidfile::write(
-        &cfg.home,
-        &pidfile::PidRecord {
-            pid,
-            started_at: now0,
-            device_id: cfg.device_id.clone(),
-            mode: cfg.mode.clone(),
-            rate_hz: JsNumber(cfg.rate_hz),
-            offline: cfg.offline,
-            worker: worker_path,
-            argv: std::env::args().skip(1).collect(),
-        },
-    ) {
-        warn!("[agent] pidfile write failed: {e}");
-    }
 
-    let mut store = StateStore::new(
+    let state = StateHandle::new(
         StateSnapshot {
             v: 1,
             written_by: format!("{WRITTEN_BY_PREFIX}{}", build.package_version),
             device_id: cfg.device_id.clone(),
-            mode: cfg.mode.clone(),
+            mode: cfg.mode,
+            media_enabled: Some(cfg.media.enabled),
             rate_hz: JsNumber(cfg.rate_hz),
             endpoint: cfg.endpoint.clone(),
             offline: cfg.offline,
             pid,
             started_at: now0,
             last_write_at: now0,
-            connection: ConnectionState::Connecting.as_str(),
+            connection: ConnectionState::Connecting,
             connection_since: now0,
             seq: 0,
             published: 0,
@@ -152,347 +300,224 @@ async fn run(args: RunArgs) -> Result<i32> {
             last_publish_at: None,
             last_error: None,
             latest: None,
-            recent_events: vec![crate::state::ActivityEvent {
+            recent_events: vec![ActivityEvent {
                 ts: now0,
-                level: "info",
-                msg: format!("agent starting (mode={})", cfg.mode),
+                level: ActivityLevel::Info,
+                msg: format!("agent starting (mode={})", cfg.mode.as_str()),
             }],
+            recording: None,
         },
-        cfg.home.join("state.json"),
+        paths.state.clone(),
     );
-    store.flush(now0, true);
-
-    let rails = env::hardware_rails(&cfg.hardware_path);
-    let ticker = Ticker {
-        device_id: cfg.device_id.clone(),
-        seq: 0,
-        sampler: SystemSampler::new(rails).await,
+    let (hardware_tx, _) = tokio::sync::watch::channel(None);
+    let mut ctx = AgentCtx {
+        env: env.clone(),
+        paths: paths.clone(),
+        build: Arc::new(build.clone()),
+        tape: null_tape(),
+        state: state.clone(),
+        hooks: Arc::new(NoopHooks),
+        hardware: Arc::new(hardware_tx),
+        clock: Arc::new(AgentClock::system()),
+        cancel: CancellationToken::new(),
+        tracker: TaskTracker::new(),
     };
 
-    let code = if cfg.offline {
-        run_offline(&cfg, ticker, &mut store).await
-    } else {
-        run_online(&cfg, ticker, &mut store).await
+    // settings.json upgrades before any other reader/writer (`worker.ts:92-105`).
+    config_plane::boot(&ctx);
+
+    // Hardware block (`worker.ts:114-121`).
+    let block = load_hardware_block(&paths.hardware);
+    if let Some(b) = &block {
+        info!("{}", hardware_block_line(b));
+    }
+    ctx.hardware.send_replace(block);
+
+    // Record/replay tape (Rust only): opened once the inputs above are known.
+    if let Some(tape_path) = &paths.tape {
+        let start = tape_start(&env, &build.format(), now0, &paths);
+        match open_file_tape(tape_path, &start) {
+            Ok(t) => {
+                info!("[agent] recording tape → {}", tape_path.display());
+                ctx.tape = t;
+            }
+            Err(e) => warn!("[agent] tape not opened: {e}"),
+        }
+    }
+
+    // `source` (`worker.ts:270-326`): real collectors, or the empty sim source (O7).
+    let source: Arc<dyn TelemetrySource> = match cfg.mode {
+        RunMode::Real => collectors::start(&ctx).await,
+        _ => Arc::new(SimSource),
     };
-    pidfile::remove(&cfg.home);
-    sd_notify(&[sd_notify::NotifyState::Stopping]);
-    code
-}
 
-fn new_interval(period: Duration) -> Interval {
-    let mut i = interval(period);
-    i.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    i
-}
+    // Pidfile (`worker.ts:340-353`), then the initial state (`:356-379`).
+    if env.self_managed {
+        let worker = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let rec = pidfile::PidRecord {
+            pid,
+            started_at: now0,
+            device_id: cfg.device_id.clone(),
+            mode: cfg.mode.as_str().to_string(),
+            rate_hz: JsNumber(cfg.rate_hz),
+            offline: cfg.offline,
+            worker,
+            argv: std::iter::once("run".to_string())
+                .chain(env.argv.iter().cloned())
+                .collect(),
+        };
+        if let Err(e) = pidfile::write_pidfile(&paths.pid, &rec) {
+            warn!("[agent] pidfile write failed: {e}");
+        }
+    }
+    state.flush(now0, true);
 
-async fn run_offline(cfg: &AgentEnv, mut ticker: Ticker, store: &mut StateStore) -> Result<i32> {
+    // Phase 3/4 boot steps (O5): reconcileHardwareNow (`:438`), reconcileCameraMountNow
+    // (`:443`), the RecordingManager — whose construction calls buildUploadOptions()
+    // (`:439`, CF33 → WP3) — recording.start() (`:540`), the clock stepper (`:548`),
+    // the LED manager (`:609`).
+    config_plane::boot_upload_options(&ctx);
+
+    // MQTT (`worker.ts:664`), scope (`:684`), config plane (`:700-746`), commands.
+    let link = connect(&env, creds)?;
+    let Link {
+        mqtt,
+        mut events,
+        shutdown: mqtt_end,
+    } = link;
+    let (reports, report_rx) = ReportRequester::channel();
+    let scope = ScopeHandle::new(
+        &cfg.device_id,
+        &cfg.topics.telemetry,
+        state.clone(),
+        reports.clone(),
+    );
+    let config = config_plane::start(
+        &ctx,
+        ConfigPlaneDeps {
+            mqtt: mqtt.clone(),
+            scope: scope.clone(),
+            reports: reports.clone(),
+            report_rx,
+        },
+    );
+    let commands = command_plane::start(
+        &ctx,
+        CommandPlaneDeps {
+            mqtt: mqtt.clone(),
+            reports: reports.clone(),
+        },
+    );
+    let mut plane = MqttPlane::new(
+        ctx.clone(),
+        mqtt.clone(),
+        scope.clone(),
+        config.clone(),
+        commands,
+        source.clone(),
+    );
+
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
     let mut sighup = signal(SignalKind::hangup())?;
-
-    // The TS offline stub emits `connect` on the next tick.
-    let now = now_ms();
-    info!(
-        "[agent] connected as {} → {} (mode={}, {} Hz, offline)",
-        cfg.device_id, cfg.endpoint, cfg.mode, cfg.rate_hz
-    );
-    store.set_connection(ConnectionState::Connected, now);
-    store.event("info", format!("connected to {}", cfg.endpoint), now);
-    store.flush(now, true);
+    let mut heartbeat = every(Duration::from_secs(1));
+    let mut published_log = every(Duration::from_secs(10));
+    let mut tape_clock = every(Duration::from_secs(10));
+    let tape_on = ctx.tape.enabled();
+    let mono0 = Instant::now();
     sd_notify(&[sd_notify::NotifyState::Ready]);
 
-    let mut tick = new_interval(Duration::from_millis(cfg.interval_ms));
-    let mut log_timer = new_interval(Duration::from_secs(10));
-    log_timer.tick().await; // skip the immediate first tick
     let sig = loop {
         tokio::select! {
             _ = sigterm.recv() => break "SIGTERM",
             _ = sigint.recv() => break "SIGINT",
-            _ = sighup.recv() => {
-                let t = now_ms();
-                warn!("[agent] SIGHUP ignored (tty hangup — likely modem USB drop/re-enumeration)");
-                store.event("warn", "SIGHUP ignored (likely modem USB re-enumeration)".into(), t);
-                store.flush(t, true);
-            }
-            _ = tick.tick() => {
-                let payload = ticker.payload().await;
-                let json = serde_json::to_string(&payload)?;
-                println!("{json}");
-                let t = now_ms();
-                store.set_latest(payload);
-                store.record_publish(t);
-                store.flush(t, false);
-                sd_notify(&[sd_notify::NotifyState::Watchdog]);
-            }
-            _ = log_timer.tick() => info!("[agent] published {} messages", store.snapshot().published),
-        }
-    };
-    let now = now_ms();
-    info!("[agent] shutting down ({sig})…");
-    store.set_connection(ConnectionState::Closed, now);
-    store.event("info", format!("shutting down ({sig})"), now);
-    store.flush(now, true);
-    Ok(0)
-}
-
-fn read_pem(path: &std::path::Path, what: &str) -> Result<Vec<u8>> {
-    std::fs::read(path).with_context(|| {
-        format!(
-            "failed to read creds ({what} {}). Provision the device, or run with --offline.",
-            path.display()
-        )
-    })
-}
-
-async fn run_online(cfg: &AgentEnv, mut ticker: Ticker, store: &mut StateStore) -> Result<i32> {
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut sigint = signal(SignalKind::interrupt())?;
-    let mut sighup = signal(SignalKind::hangup())?;
-
-    let cert = read_pem(&cfg.cert_path, "cert")?;
-    let key = read_pem(&cfg.key_path, "key")?;
-    let ca = match std::fs::read(&cfg.ca_path) {
-        Ok(ca) => Some(ca),
-        Err(e) => {
-            warn!(
-                "[agent] CA_PATH {} unreadable ({e}) — using the bundled Amazon Root CA 1",
-                cfg.ca_path.display()
-            );
-            None
-        }
-    };
-    let tls = xorgate_cloud::tls::client_config(ca.as_deref(), &cert, &key)
-        .context("TLS client config")?;
-
-    let topics = Topics::for_device(&cfg.device_id);
-    let mut mqtt_cfg = MqttConfig::new(&cfg.device_id, &cfg.endpoint, tls);
-    mqtt_cfg.keep_alive = Duration::from_secs(cfg.mqtt_keepalive_sec);
-    mqtt_cfg.subscriptions = vec![
-        (topics.config.clone(), QoS::AtLeastOnce),
-        (topics.command.clone(), QoS::AtLeastOnce),
-    ];
-    {
-        let topic = topics.status.clone();
-        let id = cfg.device_id.clone();
-        mqtt_cfg.will = Some(Arc::new(move || Will {
-            topic: topic.clone(),
-            payload: serde_json::to_vec(&StatusPayload::new(&id, now_ms(), false))
-                .unwrap_or_default(),
-            qos: QoS::AtMostOnce,
-            retain: false,
-        }));
-    }
-    info!(
-        "[agent] connecting to {}:8883 as {} (keepalive {} s)",
-        cfg.endpoint, cfg.device_id, cfg.mqtt_keepalive_sec
-    );
-    let mut mqtt = MqttClient::connect(mqtt_cfg);
-
-    let mut tick: Option<Interval> = None;
-    // Always running, connection state or not: feeds the systemd watchdog.
-    let mut heartbeat = new_interval(Duration::from_secs(1));
-    let mut log_timer = new_interval(Duration::from_secs(10));
-    log_timer.tick().await;
-    let mut ready_sent = false;
-    let mut send_ready = |store: &mut StateStore| {
-        if !ready_sent {
-            ready_sent = true;
-            sd_notify(&[sd_notify::NotifyState::Ready]);
-            store.flush(now_ms(), true);
-        }
-    };
-
-    let sig = loop {
-        tokio::select! {
-            _ = sigterm.recv() => break "SIGTERM",
-            _ = sigint.recv() => break "SIGINT",
-            _ = sighup.recv() => {
-                let t = now_ms();
-                warn!("[agent] SIGHUP ignored (tty hangup — likely modem USB drop/re-enumeration)");
-                store.event("warn", "SIGHUP ignored (likely modem USB re-enumeration)".into(), t);
-                store.flush(t, true);
-            }
-            ev = mqtt.next_event() => {
-                let now = now_ms();
-                match ev {
-                    None => {
-                        error!("[agent] mqtt event loop ended unexpectedly");
-                        store.set_error("mqtt event loop ended", now);
-                        store.flush(now, true);
-                        return Ok(1);
-                    }
-                    Some(MqttEvent::Connected { session_present }) => {
-                        info!(
-                            "[agent] connected as {} → {} (mode={}, {} Hz{})",
-                            cfg.device_id, cfg.endpoint, cfg.mode, cfg.rate_hz,
-                            if session_present { ", session present" } else { "" }
-                        );
-                        store.set_connection(ConnectionState::Connected, now);
-                        store.event("info", format!("connected to {}", cfg.endpoint), now);
-                        store.flush(now, true);
-                        let status = serde_json::to_vec(&StatusPayload::new(&cfg.device_id, now, true))?;
-                        if let Err(e) = mqtt.try_publish(&topics.status, QoS::AtMostOnce, false, status) {
-                            error!("[agent] status publish failed: {e}");
-                        }
-                        info!("[agent] subscribed: {} (retained config), {} (commands)", topics.config, topics.command);
-                        send_ready(store);
-                        // The publish tick only ever drives telemetry; the watchdog
-                        // is fed by `heartbeat` below so it runs before the first CONNACK.
-                        if tick.is_none() {
-                            tick = Some(new_interval(Duration::from_millis(cfg.interval_ms)));
-                        }
-                    }
-                    Some(MqttEvent::Disconnected { reason }) => {
-                        warn!("[agent] connection closed: {reason}");
-                        store.set_connection(ConnectionState::Closed, now);
-                        store.set_error(&reason, now);
-                        store.event("warn", "connection closed".into(), now);
-                        store.flush(now, true);
-                        send_ready(store);
-                    }
-                    Some(MqttEvent::Reconnecting { attempt, delay }) => {
-                        info!("[agent] reconnecting… (attempt {attempt}, in {:.1} s)", delay.as_secs_f64());
-                        store.set_connection(ConnectionState::Reconnecting, now);
-                        store.event("warn", "reconnecting…".into(), now);
-                        store.flush(now, true);
-                    }
-                    Some(MqttEvent::ServerDisconnect { reason }) => {
-                        warn!("[agent] broker sent DISCONNECT ({reason}) — another client with our clientId?");
-                        store.event("warn", format!("broker disconnect: {reason}"), now);
-                        store.flush(now, true);
-                    }
-                    Some(MqttEvent::SubscribeFailed { topic, reason }) => {
-                        error!("[agent] subscribe failed for {topic}: {reason}");
-                        store.event("warn", format!("subscribe failed: {topic}: {reason}"), now);
-                        store.flush(now, true);
-                    }
-                    Some(MqttEvent::Message(m)) => {
-                        if m.topic == topics.config {
-                            on_config_message(&m.payload, m.retain, store, now);
-                        } else if m.topic == topics.command {
-                            on_command_message(&m.payload, store, now);
-                        } else {
-                            warn!("[agent] message on unexpected topic {}", m.topic);
-                        }
-                    }
+            _ = sighup.recv() => crate::shutdown::on_sighup(&ctx),
+            ev = events.recv() => match ev {
+                Some(ev) => plane.on_event(ev),
+                None => {
+                    let t = ctx.now_ms();
+                    error!("[agent] mqtt event loop ended unexpectedly");
+                    state.set_error("mqtt event loop ended", t);
+                    state.flush(t, true);
+                    return Ok(1);
                 }
-            }
-            _ = async { tick.as_mut().expect("tick set").tick().await }, if tick.is_some() => {
-                let payload = ticker.payload().await;
-                let json = serde_json::to_vec(&payload)?;
-                let t = now_ms();
-                store.set_latest(payload);
-                if mqtt.is_connected() {
-                    match mqtt.try_publish(&topics.telemetry, QoS::AtMostOnce, false, json) {
-                        Ok(()) => store.record_publish(t),
-                        Err(e) => store.record_publish_error(&e.to_string(), t),
-                    }
-                }
-                store.flush(t, false);
-            }
+            },
+            // `heartbeat` (`worker.ts:633-638`) + the systemd watchdog: the
+            // loop is alive whatever the MQTT state (Phase 0 A7).
             _ = heartbeat.tick() => {
-                // The systemd watchdog proves only that THIS loop is alive, never
-                // that MQTT is up: a device booting without network (LTE not yet
-                // attached) must keep reconnecting under WatchdogSec exactly like
-                // the JS agent (Type=simple) does, not be SIGABRTed every 60 s.
-                // Safe to ping from here because every connect attempt runs in
-                // the mqtt task (bounded by its 30 s connection timeout) and
-                // `next_event()` is only a channel recv — nothing in this select
-                // can block on the network.
                 sd_notify(&[sd_notify::NotifyState::Watchdog]);
-                // Keep lastWriteAt fresh while not connected so the file never looks stale.
-                if !mqtt.is_connected() {
-                    store.flush(now_ms(), true);
+                ctx.hooks.led_tick();
+                if state.connection() != ConnectionState::Connected {
+                    state.flush(ctx.now_ms(), true);
                 }
             }
-            _ = log_timer.tick() => info!("[agent] published {} messages", store.snapshot().published),
+            // `published N messages` (`worker.ts:1286-1289`).
+            _ = published_log.tick() => info!("[agent] published {} messages", state.published()),
+            _ = tape_clock.tick(), if tape_on => {
+                ctx.tape.clock(ctx.now_ms(), mono0.elapsed().as_millis() as u64);
+            }
         }
     };
 
-    let now = now_ms();
-    info!("[agent] shutting down ({sig})…");
-    store.set_connection(ConnectionState::Closed, now);
-    store.event("info", format!("shutting down ({sig})"), now);
-    store.flush(now, true);
-    let offline = serde_json::to_vec(&StatusPayload::new(&cfg.device_id, now, false))?;
-    if let Err(e) = mqtt.try_publish(&topics.status, QoS::AtMostOnce, false, offline) {
-        warn!("[agent] final status publish not queued: {e}");
+    let code = Shutdown {
+        ctx: &ctx,
+        mqtt: &mqtt,
+        plane: &mut plane,
+        config: config.as_ref(),
+        source: source.as_ref(),
+        link_closes: mqtt_end.is_some(),
     }
-    let clean = mqtt.shutdown(ACK_FLUSH_TIMEOUT).await;
-    if clean {
-        info!("[agent] disconnected cleanly (online:false sent)");
-    } else {
-        warn!(
-            "[agent] disconnect not confirmed within {} s — exiting anyway",
-            ACK_FLUSH_TIMEOUT.as_secs()
+    .run(sig, 0, |budget| async move {
+        match mqtt_end {
+            Some(end) => end.shutdown(budget).await,
+            None => true,
+        }
+    })
+    .await;
+    ctx.tracker.close();
+    let _ = tokio::time::timeout(Duration::from_millis(500), ctx.tracker.wait()).await;
+    ctx.tape.close();
+    sd_notify(&[sd_notify::NotifyState::Stopping]);
+    Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `loadHardwareBlock` (`hardware-config.ts:129-151`) + the boot line
+    /// (`worker.ts:115-121`) over the CM4 block of `fixtures/hardware_block/parse.json`.
+    #[test]
+    fn hardware_block_load_and_line() {
+        let d = std::env::temp_dir().join(format!("xg-hw-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("hardware.json");
+        assert!(load_hardware_block(&p).is_none()); // absent: legacy, silent
+        std::fs::write(&p, "{not json").unwrap();
+        assert!(load_hardware_block(&p).is_none());
+        std::fs::write(&p, r#"{"v":1}"#).unwrap();
+        assert!(load_hardware_block(&p).is_none());
+        std::fs::write(
+            &p,
+            r#"{"v":2,"platform":"rpi-cm4","encoder":"hw-h264","rails":false,"statusLed":null,"imu":"bno085","video":[{"key":"cam0","connector":"csi0","sensor":"imx290","codec":"h264","label":"Front"}]}"#,
+        )
+        .unwrap();
+        let b = load_hardware_block(&p).expect("valid block");
+        assert_eq!(
+            hardware_block_line(&b),
+            "[agent] hardware block: rpi-cm4 encoder=hw-h264 cameras=cam0@csi0 rails=false led=no imu=bno085"
         );
+        let none = DeviceHardwareBlock {
+            video: vec![],
+            imu: None,
+            ..b
+        };
+        assert_eq!(
+            hardware_block_line(&none),
+            "[agent] hardware block: rpi-cm4 encoder=hw-h264 cameras=none rails=false led=no imu=none"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
-    Ok(0)
-}
-
-fn on_config_message(payload: &[u8], retain: bool, store: &mut StateStore, now: i64) {
-    match serde_json::from_slice::<Value>(payload) {
-        Ok(v) if v.is_object() => {
-            let rev = v.get("rev").and_then(Value::as_i64).unwrap_or(0);
-            let scope = v
-                .get("scope")
-                .and_then(|s| s.get("workspaceId"))
-                .and_then(Value::as_str)
-                .map(|ws| format!(", scope ws={ws}"))
-                .unwrap_or_default();
-            let namespaces: Vec<&str> = v
-                .as_object()
-                .map(|o| {
-                    o.keys()
-                        .map(String::as_str)
-                        .filter(|k| {
-                            !matches!(
-                                *k,
-                                "v" | "rev" | "ts" | "scope" | "uploadBucket" | "hardware"
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            info!(
-                "[agent] retained config rev={rev} (not applied, phase 0){scope}; namespaces: {}; {} bytes, retain={retain}",
-                namespaces.join(","),
-                payload.len()
-            );
-            store.event(
-                "info",
-                format!("retained config rev={rev} received (not applied, phase 0)"),
-                now,
-            );
-        }
-        _ => {
-            error!("[agent] ignoring malformed config message");
-            store.event(
-                "warn",
-                "ignoring malformed cloud config message".into(),
-                now,
-            );
-        }
-    }
-    store.flush(now, true);
-}
-
-fn on_command_message(payload: &[u8], store: &mut StateStore, now: i64) {
-    match serde_json::from_slice::<Value>(payload) {
-        Ok(v) if v.is_object() => {
-            let command = v.get("command").and_then(Value::as_str).unwrap_or("?");
-            let request_id = v.get("requestId").and_then(Value::as_str).unwrap_or("?");
-            warn!("[agent] {command} command received ({request_id}) — not executed, phase 0");
-            store.event(
-                "warn",
-                format!("{command} command received (not executed, phase 0)"),
-                now,
-            );
-        }
-        _ => {
-            error!("[agent] ignoring malformed command message");
-            store.event("warn", "ignoring malformed command message".into(), now);
-        }
-    }
-    store.flush(now, true);
 }

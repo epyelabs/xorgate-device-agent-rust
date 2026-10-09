@@ -107,11 +107,14 @@ fn main() -> Result<()> {
             }
             let scenario = scenario.unwrap_or_default();
             let out = out.unwrap_or_else(|| PathBuf::from(format!("{scenario}.ndjson.gz")));
-            let base = match base {
-                Some(p) => Some(Tape::read(&p).with_context(|| format!("reading {}", p.display()))?),
-                None => None,
+            let tape = match base {
+                Some(p) => {
+                    let base =
+                        Tape::read(&p).with_context(|| format!("reading {}", p.display()))?;
+                    synth::build_with(&scenario, duration_s, &fixtures, Some(&base))?
+                }
+                None => synth::build(&scenario, duration_s, &fixtures)?,
             };
-            let tape = synth::build_with(&scenario, duration_s, &fixtures, base.as_ref())?;
             let gz = out.extension().is_some_and(|e| e == "gz");
             tape.write(&out, gz)
                 .with_context(|| format!("writing {}", out.display()))?;

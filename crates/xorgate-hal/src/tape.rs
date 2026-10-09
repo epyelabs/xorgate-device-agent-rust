@@ -3,9 +3,10 @@
 //! A tape is NDJSON, normally gzip-compressed (`.ndjson.gz`). The first line is
 //! the [`TapeMeta`] header (`{"v":1,"k":"meta",…}`); every other line is one
 //! [`TapeRecord`]: `{"t":<mono ms since tape start>,"w":<wall ms>,"k":<kind>,…}`.
-//! The Rust agent writes one when `XORGATE_RS_TAPE=<path>` is set (WP1 wires the
-//! [`FileTape`] behind its `TapeSink` API; every HAL reader reports the raw input
-//! at the point of reading). `xorgate-replay` reads tapes back to drive the rig.
+//! The Rust agent writes one when `XORGATE_RS_TAPE=<path>` is set: WP1's spine
+//! calls [`crate::io::open_file_tape`], which returns a [`FileTape`] as its
+//! [`crate::io::TapeSink`]; every HAL reader reports the raw input at the point
+//! of reading. `xorgate-replay` reads tapes back to drive the rig.
 //!
 //! Tapes are NEVER committed except the shifted ≤60 s smoke tape (decision O8):
 //! a bench tape carries the device's location and SIM identity.
@@ -601,7 +602,7 @@ impl<W: Write + Send> TapeWriter<W> {
     }
 
     /// Report EVERY tool run; only a changed (stdout, code) per argv is taped.
-    pub fn exec(&self, argv: &[String], stdout: &str, code: Option<i32>) {
+    pub fn exec_argv(&self, argv: &[String], stdout: &str, code: Option<i32>) {
         if let Ok(mut st) = self.state.lock() {
             let cur = (stdout.to_string(), code);
             if st.last_exec.get(argv) == Some(&cur) {
@@ -635,7 +636,7 @@ impl<W: Write + Send> TapeWriter<W> {
         self.record(TapeEvent::mqtt_in(topic, payload, retain, qos));
     }
 
-    pub fn conn(&self, state: ConnState) {
+    pub fn conn_state(&self, state: ConnState) {
         if let Ok(mut st) = self.state.lock() {
             self.write_locked(&mut st, TapeEvent::Conn { state }, true);
         }
@@ -653,10 +654,16 @@ impl<W: Write + Send> TapeWriter<W> {
         }
     }
 
-    /// The 10 s clock sample; also forces a flush.
-    pub fn clock(&self) {
+    /// The 10 s clock sample from this writer's own clocks; forces a flush.
+    pub fn clock_now(&self) {
+        let (_, wall, mono) = self.clock.now();
+        self.clock_sample(wall, mono);
+    }
+
+    /// A clock sample with the caller's values (the agent's `AgentClock`);
+    /// forces a flush.
+    pub fn clock_sample(&self, wall: i64, mono: u64) {
         if let Ok(mut st) = self.state.lock() {
-            let (_, wall, mono) = self.clock.now();
             self.write_locked(&mut st, TapeEvent::Clock { wall, mono }, true);
         }
     }
@@ -735,31 +742,77 @@ impl FileTape {
     }
 }
 
-/// The factory the agent calls once at boot (WP1 wiring): `XORGATE_RS_TAPE`
-/// set and non-empty → a [`FileTape`] at that path (parent dirs created);
-/// unset → `None` (the `NullTape` path). An open error logs ONE warning and
-/// yields `None`: a tape must never stop the agent.
-///
-/// `meta` should carry: the deviceId, the `xorgate-rs -v` build string,
-/// `start_wall`, the parsed `hardware.json`, the manifest's channels,
-/// `TapeMeta::redacted_env(&|k| std::env::var(k).ok())`, and in `home` the
-/// texts of `settings.json`, `config-sync.json`, `commands.json` at start
-/// (`null` when absent) so the rig starts both agents from the same state.
-pub fn open_from_env(meta: &TapeMeta) -> Option<FileTape> {
-    open_from(std::env::var(TAPE_ENV).ok().as_deref(), meta)
+/// The tape meta line from what the agent knows at start (WP1's
+/// [`crate::io::TapeStart`]); `env` is the redacted knob block.
+pub fn meta_from_start(
+    start: &crate::io::TapeStart,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> TapeMeta {
+    let mut meta = TapeMeta::new(&start.device_id, &start.build, start.start_wall);
+    meta.hardware = start.hardware.clone();
+    meta.kvs = KvsInfo {
+        channels: start.kvs_channels.clone(),
+    };
+    meta.env = TapeMeta::redacted_env(env);
+    meta.home = start.home_files.clone();
+    meta.source = Some("bench".into());
+    meta
 }
 
-/// [`open_from_env`] with the env value passed in (testable).
-pub fn open_from(value: Option<&str>, meta: &TapeMeta) -> Option<FileTape> {
-    let path = value.map(str::trim).filter(|v| !v.is_empty())?;
-    match FileTape::create(Path::new(path), meta) {
-        Ok(t) => {
-            tracing::info!("[agent] recording a replay tape to {path}");
-            Some(t)
-        }
-        Err(e) => {
-            tracing::warn!("[agent] cannot open replay tape {path}: {e}; running without a tape");
-            None
+/// WP1's [`crate::io::TapeSink`] over the gz file writer. The writer
+/// de-duplicates `lte_file` / `exec` / `dt`; `conn`, `cli` and `clock` force a
+/// gzip sync-flush (as does any record ≥ 2 s after the last flush).
+impl crate::io::TapeSink for FileTape {
+    fn enabled(&self) -> bool {
+        self.inner.is_active()
+    }
+    fn nmea(&self, line: &str) {
+        self.inner.nmea(line);
+    }
+    fn imu(&self, line: &str) {
+        self.inner.imu_line(line);
+    }
+    fn imu_spawn(&self, argv: &[String]) {
+        self.inner.imu_spawn(argv);
+    }
+    fn imu_exit(&self, code: Option<i32>) {
+        self.inner.imu_exit(code);
+    }
+    fn i2cdetect(&self, stdout: Option<&str>) {
+        self.inner.i2cdetect(stdout);
+    }
+    fn lte_file(&self, bytes: Option<&[u8]>) {
+        self.inner.lte_file(bytes);
+    }
+    fn exec(&self, argv: &[&str], stdout: &str, code: Option<i32>) {
+        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        self.inner.exec_argv(&argv, stdout, code);
+    }
+    fn dt(&self, max_current: Option<&[u8]>) {
+        self.inner.dt(max_current);
+    }
+    fn mqtt_in(&self, topic: &str, payload: &[u8], retain: bool, qos: u8) {
+        self.inner.mqtt_in(topic, payload, retain, qos);
+    }
+    fn conn(&self, connected: bool) {
+        self.inner.conn_state(if connected {
+            ConnState::Connected
+        } else {
+            ConnState::Closed
+        });
+    }
+    fn cli(&self, argv: &[String]) {
+        self.inner.cli(argv);
+    }
+    fn clock(&self, wall_ms: i64, mono_ms: u64) {
+        self.inner.clock_sample(wall_ms, mono_ms);
+    }
+    fn proc_read(&self, path: &str, text: &str) {
+        self.inner.proc_read(path, text);
+    }
+    fn close(&self) {
+        if let Err(e) = FileTape::close(self) {
+            tracing::warn!("[agent] tape close failed: {e}");
         }
     }
 }
@@ -1152,14 +1205,14 @@ mod tests {
             tape.lte_file(None);
             tape.lte_file(None); // same → not taped
             let argv = vec!["vcgencmd".to_string(), "get_throttled".to_string()];
-            tape.exec(&argv, "throttled=0x0\n", Some(0));
-            tape.exec(&argv, "throttled=0x0\n", Some(0)); // same
-            tape.exec(&argv, "throttled=0x50000\n", Some(0));
+            tape.exec_argv(&argv, "throttled=0x0\n", Some(0));
+            tape.exec_argv(&argv, "throttled=0x0\n", Some(0)); // same
+            tape.exec_argv(&argv, "throttled=0x50000\n", Some(0));
             tape.dt(Some(&[0, 0, 0x13, 0x88]));
             tape.dt(None); // once only
             t.store(2500, Ordering::SeqCst);
             tape.nmea("$GPGGA");
-            tape.clock();
+            tape.clock_now();
             assert_eq!(tape.records(), 7);
             tape.close().unwrap();
             tape.nmea("after close"); // no-op
@@ -1191,7 +1244,7 @@ mod tests {
         let (clock, t) = manual(0);
         let tape = FileTape::create_with_clock(&path, &TapeMeta::new("d", "b", 0), clock).unwrap();
         tape.nmea("one");
-        tape.clock(); // forces a sync flush
+        tape.clock_now(); // forces a sync flush
         t.store(10, Ordering::SeqCst);
         tape.nmea("two (never flushed)");
         // Simulate SIGKILL: forget the tape without finishing the gzip stream.
@@ -1229,17 +1282,38 @@ mod tests {
     }
 
     #[test]
-    fn open_from_env_value() {
-        let meta = TapeMeta::new("d", "b", 0);
-        assert!(open_from(None, &meta).is_none());
-        assert!(open_from(Some("  "), &meta).is_none());
-        assert!(open_from(Some("/proc/definitely/not/writable.gz"), &meta).is_none());
-        let dir = std::env::temp_dir().join(format!("xorgate-tape-env-{}", std::process::id()));
+    fn tape_sink_through_open_file_tape() {
+        use crate::io::{open_file_tape, TapeSink, TapeStart};
+        let dir = std::env::temp_dir().join(format!("xorgate-tape-sink-{}", std::process::id()));
         let p = dir.join("sub/t.ndjson.gz");
-        let t = open_from(Some(p.to_str().unwrap()), &meta).unwrap();
-        t.nmea("x");
-        drop(t);
-        assert_eq!(Tape::read(&p).unwrap().records.len(), 1);
+        let start = TapeStart {
+            device_id: "a73f".into(),
+            build: "xorgate-rs 0.0.1".into(),
+            start_wall: 5,
+            hardware: serde_json::json!({"platform": "cm5"}),
+            kvs_channels: vec![],
+            home_files: Some(serde_json::Map::from_iter([(
+                "settings.json".to_string(),
+                serde_json::Value::Null,
+            )])),
+        };
+        let t: std::sync::Arc<dyn TapeSink> = open_file_tape(&p, &start).unwrap();
+        assert!(t.enabled());
+        t.nmea("$GPGGA");
+        t.exec(&["vcgencmd", "get_throttled"], "throttled=0x0\n", Some(0));
+        t.exec(&["vcgencmd", "get_throttled"], "throttled=0x0\n", Some(0));
+        t.conn(false);
+        t.clock(7, 8);
+        t.close();
+        t.close(); // idempotent
+        assert!(!t.enabled());
+        let tape = Tape::read(&p).unwrap();
+        assert_eq!(tape.meta.device_id, "a73f");
+        assert_eq!(tape.meta.hardware["platform"], "cm5");
+        assert_eq!(tape.meta.source.as_deref(), Some("bench"));
+        let kinds: Vec<_> = tape.records.iter().map(|r| r.ev.kind()).collect();
+        assert_eq!(kinds, ["nmea", "exec", "conn", "clock"]);
+        assert_eq!(tape.records[3].ev, TapeEvent::Clock { wall: 7, mono: 8 });
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -735,7 +735,7 @@ pub fn diff(
     }
 
     // ---- recentEvents msg multiset
-    diff_events(a, b, table, &mut rep);
+    diff_events(a, b, play, table, &mut rep);
 
     // ---- sudo argv sequence
     diff_sudo(a, b, table, &mut rep);
@@ -864,32 +864,116 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
     rep.stats.entry("report".into()).or_default().compared = compared;
 }
 
-fn diff_events(a: &Capture, b: &Capture, table: &Table, rep: &mut Report) {
+/// The `level: msg` key of a state.json event after the T8 normalisations:
+/// the Rust `<task>: ` segment of an unhandledRejection (`task-prefix`), a
+/// transport-library error text (`mqtt-error-text`), and the suffix of an
+/// upload retry (`s3-error-text`, pending Phase 3). Returns the key and the
+/// row that changed it.
+fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Option<String>) {
+    let mut msg = msg.to_string();
+    let mut hit = None;
+    if kind == "rust" {
+        if let Some((rid, _)) = table.decision_row("task-prefix") {
+            if let Some(rest) = msg.strip_prefix("unhandledRejection: ") {
+                if let Some((task, tail)) = rest.split_once(": ") {
+                    if !task.is_empty()
+                        && task
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    {
+                        msg = format!("unhandledRejection: {tail}");
+                        hit = Some(format!("{rid}/task-prefix"));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((rid, row)) = table.decision_row("s3-error-text") {
+        for p in &row.event_prefixes {
+            if let Some(rest) = msg.strip_prefix(p.as_str()) {
+                if let Some((secs, _)) = rest.split_once(": ") {
+                    msg = format!("{p}{secs}: <transport error>");
+                    hit = Some(format!("{rid}/s3-error-text"));
+                }
+            }
+        }
+    }
+    if level == "error" {
+        if let Some((rid, row)) = table.decision_row("mqtt-error-text") {
+            if !row.own_prefixes.iter().any(|p| msg.starts_with(p.as_str())) {
+                msg = "<transport error>".into();
+                hit = Some(format!("{rid}/mqtt-error-text"));
+            }
+        }
+    }
+    (format!("{level}: {msg}"), hit)
+}
+
+fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &mut Report) {
     let count = |c: &Capture| {
-        let mut m: BTreeMap<String, usize> = BTreeMap::new();
+        let mut m: BTreeMap<String, (usize, Option<String>)> = BTreeMap::new();
         for (_, level, msg) in &c.events {
-            *m.entry(format!("{level}: {msg}")).or_default() += 1;
+            let (k, hit) = event_key(level, msg, &c.meta.kind, table);
+            let e = m.entry(k).or_insert((0, None));
+            e.0 += 1;
+            if hit.is_some() {
+                e.1 = hit;
+            }
         }
         m
     };
     let (ca, cb) = (count(a), count(b));
     let keys: BTreeSet<&String> = ca.keys().chain(cb.keys()).collect();
     let t6 = table.of_kind("phase_owned", "events").next();
-    let st = rep.stats.entry("events".into()).or_default();
-    st.compared = keys.len();
+    let cadence = table.decision_row("reconnect-cadence");
+    let offline = table.decision_row("cadence");
+    let had_cut = !play.closed_spans.is_empty();
+    rep.stats.entry("events".into()).or_default().compared = keys.len();
     for k in keys {
-        let (x, y) = (
-            ca.get(k).copied().unwrap_or(0),
-            cb.get(k).copied().unwrap_or(0),
-        );
+        let (x, hx) = ca.get(k).cloned().unwrap_or((0, None));
+        let (y, hy) = cb.get(k).cloned().unwrap_or((0, None));
+        let norm = hx.or(hy);
         if x == y {
+            if let Some(id) = norm {
+                // Equal only after a normalisation: record which row did it.
+                if k.contains("<transport error>") || k.contains("unhandledRejection") {
+                    rep.push(Mismatch {
+                        stream: "events".into(),
+                        at: "multiset (normalised)".into(),
+                        path: k.clone(),
+                        a: x.to_string(),
+                        b: y.to_string(),
+                        tol: id,
+                    });
+                }
+            }
             continue;
         }
         let msg = k.split_once(": ").map(|(_, m)| m).unwrap_or(k);
-        let tol = t6
-            .filter(|r| r.event_prefixes.iter().any(|p| msg.starts_with(p.as_str())))
-            .map(|r| r.id.clone())
-            .unwrap_or_else(|| UNTOLERATED.into());
+        let tol = if let Some(r) =
+            t6.filter(|r| r.event_prefixes.iter().any(|p| msg.starts_with(p.as_str())))
+        {
+            r.id.clone()
+        } else if let Some((rid, row)) = cadence.as_ref().filter(|(_, row)| {
+            had_cut
+                && (row.event_exact.iter().any(|e| e == k)
+                    || row.event_prefixes.iter().any(|p| k.starts_with(p.as_str())))
+        }) {
+            let _ = row;
+            format!("{rid}/reconnect-cadence")
+        } else if let Some((rid, _)) = offline.as_ref().filter(|(_, row)| {
+            had_cut
+                && row
+                    .event_prefixes
+                    .iter()
+                    .any(|p| msg.starts_with(p.as_str()))
+        }) {
+            format!("{rid}/cadence")
+        } else if k.contains("<transport error>") && x > 0 && y > 0 {
+            norm.unwrap_or_else(|| UNTOLERATED.into())
+        } else {
+            UNTOLERATED.into()
+        };
         rep.push(Mismatch {
             stream: "events".into(),
             at: "multiset".into(),
@@ -1290,6 +1374,64 @@ mod tests {
             tols.contains(&("warn: something new", UNTOLERATED)),
             "{tols:?}"
         );
+    }
+
+    #[test]
+    fn events_wp1_rows_error_text_cadence_task_prefix() {
+        let t = table();
+        let mut a = cap("js", vec![]);
+        let mut b = cap("rust", vec![]);
+        a.events = vec![
+            (1, "error".into(), "read ECONNRESET".into()),
+            (2, "warn".into(), "reconnecting…".into()),
+            (3, "warn".into(), "reconnecting…".into()),
+            (4, "error".into(), "unhandledRejection: boom".into()),
+        ];
+        b.events = vec![
+            (
+                1,
+                "error".into(),
+                "I/O: Connection reset by peer (os error 104)".into(),
+            ),
+            (2, "warn".into(), "reconnecting…".into()),
+            (
+                4,
+                "error".into(),
+                "unhandledRejection: config_plane: boom".into(),
+            ),
+        ];
+        let tols_of = |rep: &Report| -> Vec<(String, String)> {
+            rep.mismatches
+                .iter()
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect()
+        };
+        let has =
+            |v: &[(String, String)], p: &str, t: &str| v.iter().any(|(a, b)| a == p && b == t);
+        // Without a closed span the reconnect count difference is a FAIL …
+        let rep = diff(&a, &b, &PlayInfo::default(), &[], &t);
+        let tols = tols_of(&rep);
+        assert!(has(&tols, "warn: reconnecting…", UNTOLERATED), "{tols:?}");
+        assert!(
+            has(&tols, "error: <transport error>", "T8/mqtt-error-text"),
+            "{tols:?}"
+        );
+        assert!(
+            has(&tols, "error: unhandledRejection: boom", "T8/task-prefix"),
+            "{tols:?}"
+        );
+        // … with one it is the backoff cadence.
+        let play = PlayInfo {
+            closed_spans: vec![(0, 10)],
+            ..Default::default()
+        };
+        let rep = diff(&a, &b, &play, &[], &t);
+        let tols = tols_of(&rep);
+        assert!(
+            has(&tols, "warn: reconnecting…", "T8/reconnect-cadence"),
+            "{tols:?}"
+        );
+        assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
 
     #[test]

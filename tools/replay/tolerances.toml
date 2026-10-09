@@ -273,15 +273,49 @@ kind = "decisions"
 
   [[rule.row]]
   id = "cadence"
-  what = "`published N messages` cadence + telemetry/status while disconnected (JS mqtt.js queues QoS 0 offline and flushes on reconnect; Rust skips and counts nothing — Phase 0 deviation #8, WP1 brief): messages stamped within 5 s of a closed span are not compared (unpaired, or values sampled while the rig could not pair ticks)"
-  streams = ["telemetry", "status"]
+  what = "publishing while disconnected (wp1.md amb. #8, Phase 0 deviation #8; review-wp1 MUST-FIX #1 item 3): JS mqtt.js keeps its offline behaviour, Rust skips and counts nothing — telemetry/status stamped within 5 s of a closed span are not compared (unpaired, or values sampled while the rig could not pair ticks); `publish error: …` event wording around a closed span is compared by presence only"
+  streams = ["telemetry", "status", "events"]
   around_closed_ms = 5000
+  event_prefixes = ["publish error:"]
 
   [[rule.row]]
   id = "counters"
   what = "state.json publish counters and the last payload follow the cadence above (`published`, `publishErrors`, `lastError`, `seq`, `latest`)"
   streams = ["state"]
   paths = ["published", "publishErrors", "lastError", "seq", "latest", "latest.**"]
+
+  [[rule.row]]
+  id = "mqtt-error-text"
+  what = "MQTT/TLS transport error TEXT (wp1.md amb. #6; review-wp1 MUST-FIX #1 item 1): state.json `error` events and `lastError` carry the client library's message (mqtt.js/Node `read ECONNRESET`, `Client network socket disconnected …` vs rumqttc/rustls); WP1 maps AwaitPingResp → `Keepalive timeout` (review-wp1 #3), the rest differ. Error-level events that are not one of the agent's own wordings are compared as one class `<transport error>`: present on both sides or on neither"
+  streams = ["events"]
+  matcher = "transport_error_event"
+  own_prefixes = ["publish error:", "config subscribe failed", "command subscribe failed", "unhandledRejection", "ledger write failed", "read error:", "upload failed"]
+
+  [[rule.row]]
+  id = "reconnect-cadence"
+  what = "reconnect cadence (review-wp1 MUST-FIX #1 item 2): Rust backs off 1→60 s with jitter (xorgate-cloud mqtt.rs:545-572, sanctioned in Phase 0) where mqtt.js retries every 2 s (mqtt.ts:63 reconnectPeriod 2000), so the COUNTS (and times) of `reconnecting…`, `connection closed`, `connected to …` and transport-error events differ during an outage; tolerated only when the run had a closed span"
+  streams = ["events"]
+  matcher = "reconnect_cadence"
+  event_exact = ["warn: reconnecting…", "warn: connection closed"]
+  event_prefixes = ["info: connected to ", "error: <transport error>"]
+
+  [[rule.row]]
+  id = "write-error-survival"
+  what = "state.json / pidfile write errors (wp1.md amb. #11; review-wp1 MUST-FIX #1 item 4): the TS throws from a timer and the process dies, Rust logs `[agent] state.json write failed: …` / `pidfile write failed` and continues. Consumer-invisible; not reachable in the rig unless the home is made unwritable — a JS crash with such a write error ends its streams (the diff then lists every later message as unpaired)"
+  matcher = "doc_only"
+
+  [[rule.row]]
+  id = "task-prefix"
+  what = "panics in supervised tasks are reported like unhandledRejection with an extra `<task>:` segment (wp1.md amb. #15; review-wp1 MUST-FIX #1 item 5): Rust `unhandledRejection: <task>: <msg>` vs TS `unhandledRejection: <msg>` (worker.ts:656-662) — the Rust side's `<task>: ` is stripped before comparing"
+  streams = ["events", "state"]
+  matcher = "task_prefix"
+
+  [[rule.row]]
+  id = "s3-error-text"
+  what = "PENDING Phase 3 (CF32, review-wp5 MUST-FIX 1): S3 / IoT-creds transport error TEXT (s3.rs:381-393, iot_creds.rs:252-316 vs node) reaches state.json via `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) once the uploader is wired; the suffix after the prefix is not compared for non-HTTP failures. Not reachable in Phase 2 (recording off)"
+  streams = ["events"]
+  matcher = "suffix_after_prefix"
+  event_prefixes = ["upload failed, retrying in "]
 
 [[rule]]
 id = "T9"

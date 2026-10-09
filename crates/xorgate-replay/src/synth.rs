@@ -726,7 +726,10 @@ fn build_inner(
     let mut meta = TapeMeta::new(SYNTH_DEVICE_ID, "synth", w0());
     meta.kvs = KvsInfo { channels: vec![] };
     meta.source = Some(match base {
-        Some(b) => format!("{}+synth:{name}", b.meta.source.as_deref().unwrap_or("bench")),
+        Some(b) => format!(
+            "{}+synth:{name}",
+            b.meta.source.as_deref().unwrap_or("bench")
+        ),
         None => format!("synth:{name}"),
     });
     meta.synthetic = tracks
@@ -851,14 +854,31 @@ mod tests {
         assert_eq!(t.meta.start_wall, 1_791_000_000_000);
         assert_eq!(t.meta.source.as_deref(), Some("record-shared+synth:smoke"));
         assert!(!t.meta.synthetic.contains(&"lte".to_string()));
-        let lte: Vec<_> = t.records.iter().filter(|r| r.ev.kind() == "lte_file").collect();
-        let base_lte: Vec<_> = base.records.iter().filter(|r| r.ev.kind() == "lte_file").collect();
+        let lte: Vec<_> = t
+            .records
+            .iter()
+            .filter(|r| r.ev.kind() == "lte_file")
+            .collect();
+        let base_lte: Vec<_> = base
+            .records
+            .iter()
+            .filter(|r| r.ev.kind() == "lte_file")
+            .collect();
         assert_eq!(lte, base_lte);
         assert!(t.records.iter().any(|r| r.ev.kind() == "nmea"));
         // Synthetic records are stamped on the base's wall clock.
-        assert!(t.records.iter().all(|r| r.w >= 1_791_000_000_000 || BASE_KINDS.contains(&r.ev.kind())));
+        assert!(t
+            .records
+            .iter()
+            .all(|r| r.w >= 1_791_000_000_000 || BASE_KINDS.contains(&r.ev.kind())));
         // And the thread-local is restored.
-        assert_eq!(build("smoke", Some(5), &fixtures()).unwrap().meta.start_wall, SYNTH_START_WALL);
+        assert_eq!(
+            build("smoke", Some(5), &fixtures())
+                .unwrap()
+                .meta
+                .start_wall,
+            SYNTH_START_WALL
+        );
     }
 
     #[test]

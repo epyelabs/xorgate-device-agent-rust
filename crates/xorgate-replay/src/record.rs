@@ -39,17 +39,27 @@ pub struct RecordArgs {
 
 fn vcgencmd(arg: &str) -> (String, Option<i32>) {
     match Command::new("vcgencmd").arg(arg).output() {
-        Ok(o) => (String::from_utf8_lossy(&o.stdout).to_string(), o.status.code()),
+        Ok(o) => (
+            String::from_utf8_lossy(&o.stdout).to_string(),
+            o.status.code(),
+        ),
         Err(_) => (String::new(), None),
     }
 }
 
 pub fn run(args: RecordArgs) -> Result<()> {
-    let mut meta = TapeMeta::new(&args.device_id, concat!("xorgate-replay record-shared ", env!("CARGO_PKG_VERSION")), wall_now_ms());
+    let mut meta = TapeMeta::new(
+        &args.device_id,
+        concat!("xorgate-replay record-shared ", env!("CARGO_PKG_VERSION")),
+        wall_now_ms(),
+    );
     meta.source = Some("record-shared".into());
     meta.env = TapeMeta::redacted_env(&|k| std::env::var(k).ok());
-    let tape = FileTape::create(&args.out, &meta).with_context(|| format!("creating {}", args.out.display()))?;
-    tape.record(TapeEvent::Conn { state: ConnState::Connected });
+    let tape = FileTape::create(&args.out, &meta)
+        .with_context(|| format!("creating {}", args.out.display()))?;
+    tape.record(TapeEvent::Conn {
+        state: ConnState::Connected,
+    });
     tape.dt(std::fs::read(&args.dt_path).ok().as_deref());
     let start = Instant::now();
     let mut next = start;
@@ -59,11 +69,11 @@ pub fn run(args: RecordArgs) -> Result<()> {
     while start.elapsed() < Duration::from_secs(args.duration_s) {
         tape.lte_file(std::fs::read(&args.lte_file).ok().as_deref());
         let (o, c) = vcgencmd("get_throttled");
-        tape.exec(&thr, &o, c);
+        tape.exec_argv(&thr, &o, c);
         let (o, c) = vcgencmd("pmic_read_adc");
-        tape.exec(&pmic, &o, c);
+        tape.exec_argv(&pmic, &o, c);
         if last_clock.elapsed() >= Duration::from_secs(10) {
-            tape.clock();
+            tape.clock_now();
             last_clock = Instant::now();
         }
         next += Duration::from_secs(1);
@@ -71,9 +81,14 @@ pub fn run(args: RecordArgs) -> Result<()> {
             std::thread::sleep(d);
         }
     }
-    tape.clock();
+    tape.clock_now();
     let n = tape.records();
     tape.close()?;
-    eprintln!("recorded {} records in {:.0} s to {}", n, start.elapsed().as_secs_f64(), args.out.display());
+    eprintln!(
+        "recorded {} records in {:.0} s to {}",
+        n,
+        start.elapsed().as_secs_f64(),
+        args.out.display()
+    );
     Ok(())
 }

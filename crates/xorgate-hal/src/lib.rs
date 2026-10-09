@@ -8,5 +8,10 @@
 
 pub mod atomic_write;
 pub mod exec;
+pub mod io;
+pub mod kvs_manifest_io;
+pub mod modem_file;
+pub mod read_lossy;
+pub mod settings_io;
 pub mod system;
 pub mod tape;

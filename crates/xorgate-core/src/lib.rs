@@ -21,6 +21,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod agent_config;
 pub mod boot_config;
 pub mod boot_policy;
 pub mod build_info;
@@ -34,6 +35,7 @@ pub mod config_report;
 pub mod hardware_block;
 pub mod imu;
 pub mod js;
+pub mod kvs_manifest;
 pub mod led;
 pub mod led_state;
 pub mod modem;

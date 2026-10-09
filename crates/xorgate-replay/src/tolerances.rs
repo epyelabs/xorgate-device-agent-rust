@@ -66,6 +66,12 @@ pub struct Row {
     pub normalize: BTreeMap<String, String>,
     #[serde(default)]
     pub around_closed_ms: Option<u64>,
+    #[serde(default)]
+    pub event_prefixes: Vec<String>,
+    #[serde(default)]
+    pub event_exact: Vec<String>,
+    #[serde(default)]
+    pub own_prefixes: Vec<String>,
 }
 
 const KINDS: &[&str] = &[
