@@ -2,9 +2,12 @@
 //!
 //! - Device cert + key from `CERT_PATH` / `KEY_PATH` (AWS one-click certs are
 //!   RSA-2048 PKCS#1; `rustls-pki-types` auto-detects PKCS#1/PKCS#8/SEC1).
-//! - Roots from `CA_PATH` when readable (the installer writes Amazon Root CA 1
-//!   there); when no CA is supplied, the bundled Amazon Root CA 1 is used so a
-//!   device with a missing root file can still connect to the `-ats` endpoint.
+//! - Roots from the CA PEM the caller passes. The agent ALWAYS passes the
+//!   bytes of `CA_PATH` (the installer writes Amazon Root CA 1 there), and an
+//!   unreadable `CA_PATH` is fatal at boot exactly like the TS `loadConfig`
+//!   (`config.ts:233-247`; WP1 amb. #1, review-wp1 #9) — there is no silent
+//!   fallback on a device. The bundled Amazon Root CA 1 is used only when a
+//!   caller passes `None` (probes, tests).
 //!   A supplied-but-wrong CA is honoured as given (it must FAIL the handshake —
 //!   that is how A6 forces a TLS error on the bench).
 

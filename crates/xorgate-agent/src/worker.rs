@@ -46,6 +46,35 @@ use crate::{build_info, collectors, command_plane, config_plane, env, logging, p
 const WRITTEN_BY_PREFIX: &str = "xorgate-device-agent-rs@";
 /// rumqttc refuses a keepalive under 5 s (it asserts); the TS accepts any > 0.
 const MIN_KEEPALIVE_SECS: f64 = 5.0;
+/// The MQTT CONNECT keepalive is a u16 (rumqttc casts `as u16`, so a larger
+/// value would wrap); review-wp1 #6.
+const MAX_KEEPALIVE_SECS: f64 = 65535.0;
+
+/// `MQTT_KEEPALIVE_SEC` → what the client can use: clamped to [5, 65535] s
+/// with the one warning line to log (amb. #2, review-wp1 #6). The TS accepts
+/// any finite > 0 (`config.ts:217-228`); no provisioned device sets the key
+/// (default 60), and a TS client given a value outside the range would never
+/// have connected cleanly either.
+fn clamp_keepalive(sec: f64) -> (f64, Option<String>) {
+    let shown = xorgate_core::js::number_to_string(sec);
+    if sec < MIN_KEEPALIVE_SECS {
+        (
+            MIN_KEEPALIVE_SECS,
+            Some(format!(
+                "[agent] MQTT_KEEPALIVE_SEC {shown} is below the client's 5 s floor — using 5"
+            )),
+        )
+    } else if sec > MAX_KEEPALIVE_SECS {
+        (
+            MAX_KEEPALIVE_SECS,
+            Some(format!(
+                "[agent] MQTT_KEEPALIVE_SEC {shown} is above the MQTT maximum of 65535 s — using 65535"
+            )),
+        )
+    } else {
+        (sec, None)
+    }
+}
 
 /// `xorgate-rs run [flags]`: run the worker to completion; the exit code.
 pub fn main(args: &[String]) -> i32 {
@@ -154,15 +183,11 @@ impl TelemetrySource for SimSource {
     fn stop(&self) {}
 }
 
-/// The tape's meta inputs (hardware.json, kvs.json channels, home files).
-fn tape_start(env: &AgentEnv, build: &str, now0: i64, paths: &crate::ctx::Paths) -> TapeStart {
-    let json = |p: &Path| -> Value {
-        read_text(p)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or(Value::Null)
-    };
-    let kvs = json(&paths.kvs_manifest);
+/// The home files a replay instance starts from (settings.json,
+/// config-sync.json, commands.json) — captured BEFORE the boot baseline /
+/// migration can rewrite them (review-wp1 #5), so the JS replay starts from
+/// what the Rust agent found, not from what it wrote.
+fn tape_home_files(paths: &crate::ctx::Paths) -> Map<String, Value> {
     let mut home = Map::new();
     for (name, p) in [
         ("settings.json", &paths.settings),
@@ -175,6 +200,24 @@ fn tape_start(env: &AgentEnv, build: &str, now0: i64, paths: &crate::ctx::Paths)
         };
         home.insert(name.to_string(), v);
     }
+    home
+}
+
+/// The tape's meta inputs (hardware.json, kvs.json channels, the pre-boot home files).
+fn tape_start(
+    env: &AgentEnv,
+    build: &str,
+    now0: i64,
+    paths: &crate::ctx::Paths,
+    home: Map<String, Value>,
+) -> TapeStart {
+    let json = |p: &Path| -> Value {
+        read_text(p)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null)
+    };
+    let kvs = json(&paths.kvs_manifest);
     TapeStart {
         device_id: env.config.device_id.clone(),
         build: build.to_string(),
@@ -210,13 +253,9 @@ fn connect(env: &AgentEnv, creds: Option<Creds>) -> Result<Link> {
     let tls = xorgate_cloud::tls::client_config(Some(&creds.ca), &creds.cert, &creds.key)
         .context("TLS client config")?;
     let mut mqtt_cfg = MqttConfig::new(&cfg.device_id, &cfg.endpoint, tls);
-    let mut keepalive = cfg.mqtt_keepalive_sec;
-    if keepalive < MIN_KEEPALIVE_SECS {
-        warn!(
-            "[agent] MQTT_KEEPALIVE_SEC {} is below the client's 5 s floor — using 5",
-            xorgate_core::js::number_to_string(keepalive)
-        );
-        keepalive = MIN_KEEPALIVE_SECS;
+    let (keepalive, warning) = clamp_keepalive(cfg.mqtt_keepalive_sec);
+    if let Some(w) = warning {
+        warn!("{w}");
     }
     mqtt_cfg.keep_alive = Duration::from_secs_f64(keepalive);
     {
@@ -323,6 +362,9 @@ async fn run(args: &[String]) -> Result<i32> {
         tracker: TaskTracker::new(),
     };
 
+    // The tape's home-file snapshot, before boot can write any of them (#5).
+    let tape_home = paths.tape.as_ref().map(|_| tape_home_files(&paths));
+
     // settings.json upgrades before any other reader/writer (`worker.ts:92-105`).
     config_plane::boot(&ctx);
 
@@ -334,8 +376,8 @@ async fn run(args: &[String]) -> Result<i32> {
     ctx.hardware.send_replace(block);
 
     // Record/replay tape (Rust only): opened once the inputs above are known.
-    if let Some(tape_path) = &paths.tape {
-        let start = tape_start(&env, &build.format(), now0, &paths);
+    if let (Some(tape_path), Some(home)) = (&paths.tape, tape_home) {
+        let start = tape_start(&env, &build.format(), now0, &paths, home);
         match open_file_tape(tape_path, &start) {
             Ok(t) => {
                 info!("[agent] recording tape → {}", tape_path.display());
@@ -498,6 +540,28 @@ async fn run(args: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// review-wp1 #6 / amb. #2: [5, 65535] s, one warning outside it.
+    #[test]
+    fn keepalive_is_clamped_to_the_client_range() {
+        assert_eq!(clamp_keepalive(60.0), (60.0, None));
+        assert_eq!(clamp_keepalive(5.0), (5.0, None));
+        assert_eq!(clamp_keepalive(65535.0), (65535.0, None));
+        let (v, w) = clamp_keepalive(1.5);
+        assert_eq!(v, 5.0);
+        assert_eq!(
+            w.unwrap(),
+            "[agent] MQTT_KEEPALIVE_SEC 1.5 is below the client's 5 s floor — using 5"
+        );
+        let (v, w) = clamp_keepalive(1e300);
+        assert_eq!(v, 65535.0);
+        assert_eq!(
+            w.unwrap(),
+            "[agent] MQTT_KEEPALIVE_SEC 1e+300 is above the MQTT maximum of 65535 s — using 65535"
+        );
+        // No panic in the Duration conversion at either bound.
+        let _ = Duration::from_secs_f64(clamp_keepalive(f64::MAX).0);
+    }
 
     /// `loadHardwareBlock` (`hardware-config.ts:129-151`) + the boot line
     /// (`worker.ts:115-121`) over the CM4 block of `fixtures/hardware_block/parse.json`.
