@@ -95,8 +95,11 @@ tar -czf "$OUT_DIR/$TARBALL" ${TAR_OPTS[@]+"${TAR_OPTS[@]}"} -C "$STAGE" "${MEMB
 echo "Contents:" >&2
 tar -tzf "$OUT_DIR/$TARBALL" | head -30 >&2
 # Keys install-rs.sh / scripts/bench/install.sh extract and expect.
+# List once: `tar -tzf | grep -q` under pipefail fails spuriously (grep -q exits
+# on the first match and tar dies of SIGPIPE).
+LISTING=$(tar -tzf "$OUT_DIR/$TARBALL")
 for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service; do
-  tar -tzf "$OUT_DIR/$TARBALL" | grep -qx "$required" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
+  grep -qx "$required" <<<"$LISTING" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
 done
 
 if command -v sha256sum >/dev/null 2>&1; then

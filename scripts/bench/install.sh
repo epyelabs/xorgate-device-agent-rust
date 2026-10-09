@@ -56,8 +56,10 @@ if [ "$FROM_BENCH" -eq 1 ]; then
   [ -n "$REMOTE_TARBALL" ] || { echo "pack.sh on the bench did not report a tarball path" >&2; exit 1; }
 else
   [ -f "$TARBALL" ] || { echo "no such tarball: $TARBALL" >&2; exit 1; }
+  # List once: `tar -tzf | grep -q` under pipefail fails spuriously (SIGPIPE).
+  LISTING=$(tar -tzf "$TARBALL")
   for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service systemd/bench/90-bench-dev.conf; do
-    tar -tzf "$TARBALL" | grep -qx "$required" || { echo "$TARBALL lacks $required" >&2; exit 1; }
+    grep -qx "$required" <<<"$LISTING" || { echo "$TARBALL lacks $required" >&2; exit 1; }
   done
   REMOTE_TARBALL="/home/pi/xorgate-rs-upload/$(basename "$TARBALL")"
   log "uploading $(basename "$TARBALL") ($(wc -c < "$TARBALL" | tr -d ' ') bytes) to $BENCH:$REMOTE_TARBALL"
@@ -86,8 +88,9 @@ note() { CHANGES+=("$1"); echo "  - $1"; }
 case "$RS_ROOT" in /opt/xorgate-rs) ;; *) echo "refusing RS_ROOT=$RS_ROOT"; exit 1 ;; esac
 
 echo "== 1. stage + swap $RS_ROOT"
+LISTING=$(tar -tzf "$TARBALL")  # list once (pipefail + grep -q = spurious SIGPIPE failure)
 for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service; do
-  tar -tzf "$TARBALL" | grep -qx "$required" || { echo "tarball lacks $required"; exit 1; }
+  grep -qx "$required" <<<"$LISTING" || { echo "tarball lacks $required"; exit 1; }
 done
 rm -rf "$RS_ROOT.new"
 mkdir -p "$RS_ROOT.new"
