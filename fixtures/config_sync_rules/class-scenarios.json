@@ -1,0 +1,453 @@
+{
+  "jsSourceFile": "src/agent/config-sync.ts (class ConfigSync :1211-1651) via test/config-sync.test.ts + test/config-sync-cellular.test.ts scenarios",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-2/evidence/wp3-tools/dump-config-sync.mts (npx tsx, real timers; now() pinned to 1786017600000)",
+  "cases": [
+    {
+      "name": "state file: lives beside settings.json",
+      "it": "config-sync.test.ts:60",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [],
+        "reads": 0,
+        "configSyncFile": null,
+        "configSyncPath": "/config-sync.json",
+        "settingsPath": "/settings.json"
+      }
+    },
+    {
+      "name": "state file: a failed persist returns false",
+      "it": "config-sync.test.ts:67",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [],
+        "reads": 0,
+        "configSyncFile": null,
+        "saved": false
+      }
+    },
+    {
+      "name": "boot race: re-reports once the daemon speaks",
+      "it": "config-sync.test.ts:199",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{},\"status\":{}}",
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"sim\":{\"state\":\"ready\",\"present\":1}},\"status\":{}}"
+        ],
+        "topics": [
+          "t",
+          "t"
+        ],
+        "events": [
+          "info: modem telemetry arrived after the boot report — re-reporting"
+        ],
+        "reads": 4,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000}"
+      }
+    },
+    {
+      "name": "boot race: no watch when the modem already spoke",
+      "it": "config-sync.test.ts:221",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"sim\":{\"state\":\"ready\",\"present\":1}},\"status\":{}}"
+        ],
+        "topics": [
+          "t"
+        ],
+        "events": [],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000}"
+      }
+    },
+    {
+      "name": "boot race: gives up on a device with no modem",
+      "it": "config-sync.test.ts:235",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{},\"status\":{}}"
+        ],
+        "topics": [
+          "t"
+        ],
+        "events": [],
+        "reads": 21,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000}"
+      }
+    },
+    {
+      "name": "boot race: survives a probe that throws",
+      "it": "config-sync.test.ts:249",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [
+          "warn: config report failed: telemetry exploded"
+        ],
+        "reads": 1,
+        "configSyncFile": null
+      }
+    },
+    {
+      "name": "coalesces boot+cloud+boot into one cloud report",
+      "it": "config-sync.test.ts:620",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true},\"status\":{}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000}"
+      }
+    },
+    {
+      "name": "publishes to the reported topic",
+      "it": "config-sync.test.ts:632",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{},\"status\":{}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000}"
+      }
+    },
+    {
+      "name": "advances lastAppliedRev only when applied",
+      "it": "config-sync.test.ts:648",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [],
+        "reads": 0,
+        "configSyncFile": "{\"lastAppliedRev\":5,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true},\"settingsHash\":\"\"}",
+        "steps": [
+          true,
+          0,
+          5,
+          false,
+          true,
+          5
+        ],
+        "afterSkip": null
+      }
+    },
+    {
+      "name": "carries the last desired doc on a skipped redelivery",
+      "it": "config-sync.test.ts:666",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":3,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":true},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":1786017600000}}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":3,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":true},\"settingsHash\":\"\"}"
+      }
+    },
+    {
+      "name": "settle re-report of a modem-poll namespace",
+      "it": "config-sync.test.ts:680",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":4,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":false},\"status\":{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1786017600000,\"detail\":\"saved; the modem daemon has not applied it yet (it re-checks about every 30 s)\"}}}",
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":4,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":1786017600000}}}"
+        ],
+        "topics": [
+          "t",
+          "t"
+        ],
+        "events": [],
+        "reads": 2,
+        "configSyncFile": "{\"lastAppliedRev\":4,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":true},\"settingsHash\":\"\"}"
+      }
+    },
+    {
+      "name": "settle re-reports are bounded",
+      "it": "config-sync.test.ts:718",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":4,\"origin\":\"cloud\",\"effective\":{\"gnssAntBias\":false},\"status\":{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1786017600000,\"detail\":\"saved; the modem daemon has not applied it yet (it re-checks about every 30 s)\"}}}",
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":4,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":false},\"status\":{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1786017600000,\"detail\":\"saved; the modem daemon has not applied it yet (it re-checks about every 30 s)\"}}}",
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":4,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":false},\"status\":{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1786017600000,\"detail\":\"saved; the modem daemon has not applied it yet (it re-checks about every 30 s)\"}}}"
+        ],
+        "topics": [
+          "t",
+          "t",
+          "t"
+        ],
+        "events": [],
+        "reads": 3,
+        "configSyncFile": "{\"lastAppliedRev\":4,\"lastReportTs\":1786017600000,\"namespaces\":{\"gnssAntBias\":true},\"settingsHash\":\"\"}"
+      }
+    },
+    {
+      "name": "no settle for a divergent agent-poll namespace",
+      "it": "config-sync.test.ts:741",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":4,\"origin\":\"cloud\",\"effective\":{\"timeSync\":{\"offlineSources\":false}},\"status\":{\"timeSync\":{\"state\":\"adjusted\",\"at\":1786017600000,\"detail\":\"the device is holding a different value (changed locally?)\"}}}"
+        ],
+        "topics": [
+          "t"
+        ],
+        "events": [],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":4,\"lastReportTs\":1786017600000,\"namespaces\":{\"timeSync\":{\"offlineSources\":false}},\"settingsHash\":\"\"}"
+      }
+    },
+    {
+      "name": "swallows a publish failure",
+      "it": "config-sync.test.ts:763",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [
+          "warn: config report failed: broker gone"
+        ],
+        "reads": 1,
+        "configSyncFile": null
+      }
+    },
+    {
+      "name": "stops queueing once stopped",
+      "it": "config-sync.test.ts:778",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [],
+        "reads": 0,
+        "configSyncFile": null
+      }
+    },
+    {
+      "name": "watcher: out-of-band edit → local",
+      "it": "config-sync.test.ts:857",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"local\",\"effective\":{},\"status\":{},\"changed\":{\"gnssAntBias\":false}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [
+          "info: local settings change detected: gnssAntBias"
+        ],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"d6a25d22cb24fe38677e31b0f036341077cc33bc2779ec835e8be01f7d486e52\",\"namespaces\":{\"gnssAntBias\":false},\"localPending\":false}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"d6a25d22cb24fe38677e31b0f036341077cc33bc2779ec835e8be01f7d486e52\",\"namespaces\":{\"gnssAntBias\":false},\"localPending\":false}"
+      }
+    },
+    {
+      "name": "watcher: edit made while stopped",
+      "it": "config-sync.test.ts:876",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"local\",\"effective\":{},\"status\":{},\"changed\":{\"gnssAntBias\":false}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [
+          "info: local settings change detected: gnssAntBias"
+        ],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"b1fb6c8f84f013624e7053459c0e953e749d3600da957b4917d334d6329613de\",\"namespaces\":{\"gnssAntBias\":false},\"localPending\":false}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"b1fb6c8f84f013624e7053459c0e953e749d3600da957b4917d334d6329613de\",\"namespaces\":{\"gnssAntBias\":false},\"localPending\":false}"
+      }
+    },
+    {
+      "name": "watcher: a write that moved no synced namespace",
+      "it": "config-sync.test.ts:888",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [],
+        "reads": 0,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"settingsHash\":\"b451667c9b917f4d34a3388b935ed4f5a25bdbd077e9df916363075ea5e4a7bb\",\"namespaces\":{\"gnssAntBias\":true}}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"settingsHash\":\"b451667c9b917f4d34a3388b935ed4f5a25bdbd077e9df916363075ea5e4a7bb\",\"namespaces\":{\"gnssAntBias\":true}}",
+        "hashMatches": true
+      }
+    },
+    {
+      "name": "watcher: the worker's own cloud apply is not local",
+      "it": "config-sync.test.ts:901",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":4,\"origin\":\"cloud\",\"effective\":{},\"status\":{\"gnssAntBias\":{\"state\":\"adjusted\",\"at\":1786017600000,\"detail\":\"modem telemetry unavailable — the bias is saved and will be asserted by the modem daemon\"}}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":4,\"lastReportTs\":1786017600000,\"settingsHash\":\"b1fb6c8f84f013624e7053459c0e953e749d3600da957b4917d334d6329613de\",\"namespaces\":{\"gnssAntBias\":false}}",
+        "syncState": "{\"lastAppliedRev\":4,\"lastReportTs\":1786017600000,\"settingsHash\":\"b1fb6c8f84f013624e7053459c0e953e749d3600da957b4917d334d6329613de\",\"namespaces\":{\"gnssAntBias\":false}}",
+        "settingsFile": "{\"gnssAntBias\":false}"
+      }
+    },
+    {
+      "name": "watcher: pending local change survives a cloud doc",
+      "it": "config-sync.test.ts:921",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"local\",\"effective\":{\"timeSync\":{\"offlineSources\":false}},\"status\":{},\"changed\":{\"timeSync\":{\"offlineSources\":false}}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [
+          "info: local settings change detected: timeSync"
+        ],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":7,\"lastReportTs\":1786017600000,\"settingsHash\":\"ec7bfc7d5cbd09a80a67f5735d649d6ab74016f657835fc035e2706c45dedbce\",\"namespaces\":{\"gnssAntBias\":false,\"timeSync\":{\"offlineSources\":true}},\"localPending\":true}",
+        "syncState": "{\"lastAppliedRev\":7,\"lastReportTs\":1786017600000,\"settingsHash\":\"ec7bfc7d5cbd09a80a67f5735d649d6ab74016f657835fc035e2706c45dedbce\",\"namespaces\":{\"gnssAntBias\":false,\"timeSync\":{\"offlineSources\":true}},\"localPending\":true}",
+        "pendingMid": true
+      }
+    },
+    {
+      "name": "watcher: re-sends a local report on the next connect",
+      "it": "config-sync.test.ts:944",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"local\",\"effective\":{},\"status\":{},\"changed\":{\"gnssAntBias\":false}}",
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"local\",\"effective\":{},\"status\":{},\"changed\":{\"gnssAntBias\":false}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported",
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [
+          "info: local settings change detected: gnssAntBias"
+        ],
+        "reads": 2,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"b1fb6c8f84f013624e7053459c0e953e749d3600da957b4917d334d6329613de\",\"namespaces\":{\"gnssAntBias\":false},\"localPending\":false}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"b1fb6c8f84f013624e7053459c0e953e749d3600da957b4917d334d6329613de\",\"namespaces\":{\"gnssAntBias\":false},\"localPending\":false}",
+        "pendingMid": true,
+        "sentMid": 1
+      }
+    },
+    {
+      "name": "watcher: reverted edit downgrades to boot",
+      "it": "config-sync.test.ts:965",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{},\"status\":{}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [
+          "info: local settings change detected: gnssAntBias"
+        ],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"2479241256424c99e4256840adb26c8d3fce5e5f6e170e0526f862991a1a90d0\",\"namespaces\":{\"gnssAntBias\":true},\"localPending\":false}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"2479241256424c99e4256840adb26c8d3fce5e5f6e170e0526f862991a1a90d0\",\"namespaces\":{\"gnssAntBias\":true},\"localPending\":false}"
+      }
+    },
+    {
+      "name": "watcher: unreadable settings.json never reports",
+      "it": "config-sync.test.ts:985",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [
+          "warn: settings.json is unreadable — local-change sync paused (check owner/permissions on <home>/settings.json)"
+        ],
+        "reads": 0,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90},\"timeSync\":{\"offlineSources\":true}},\"settingsHash\":\"d764aecac8092403936cb02078623165cf2e535357b7c1c6a615ff00e6abbc6a\"}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"settingsHash\":\"d764aecac8092403936cb02078623165cf2e535357b7c1c6a615ff00e6abbc6a\",\"namespaces\":{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90},\"timeSync\":{\"offlineSources\":true}}}",
+        "baselineFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90},\"timeSync\":{\"offlineSources\":true}},\"settingsHash\":\"d764aecac8092403936cb02078623165cf2e535357b7c1c6a615ff00e6abbc6a\"}"
+      }
+    },
+    {
+      "name": "watcher: warns once while unreadable",
+      "it": "config-sync.test.ts:1010",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [
+          "warn: settings.json is invalid — local-change sync paused (check owner/permissions on <home>/settings.json)"
+        ],
+        "reads": 0,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true},\"settingsHash\":\"2479241256424c99e4256840adb26c8d3fce5e5f6e170e0526f862991a1a90d0\"}"
+      }
+    },
+    {
+      "name": "watcher: an ABSENT settings.json is an erase",
+      "it": "config-sync.test.ts:1028",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"local\",\"effective\":{},\"status\":{},\"changed\":{\"gnssAntBias\":null,\"timeSync\":null}}"
+        ],
+        "topics": [
+          "xorgate/devices/dev-1/config/reported"
+        ],
+        "events": [
+          "info: local settings change detected: gnssAntBias, timeSync"
+        ],
+        "reads": 1,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"\",\"namespaces\":{},\"localPending\":false}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000,\"settingsHash\":\"\",\"namespaces\":{},\"localPending\":false}"
+      }
+    },
+    {
+      "name": "noteSettingsWritten refuses an unreadable file",
+      "it": "config-sync.test.ts:1040",
+      "expected": {
+        "sent": [],
+        "topics": [],
+        "events": [],
+        "reads": 0,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":true}},\"settingsHash\":\"af9880323ef47a51e182be5046d42e4497945eddaa396369e4bb1e1d511b2280\"}",
+        "syncState": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"settingsHash\":\"af9880323ef47a51e182be5046d42e4497945eddaa396369e4bb1e1d511b2280\",\"namespaces\":{\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":true}}}",
+        "before": "{\"lastAppliedRev\":0,\"lastReportTs\":0,\"namespaces\":{\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":true}},\"settingsHash\":\"af9880323ef47a51e182be5046d42e4497945eddaa396369e4bb1e1d511b2280\"}"
+      }
+    },
+    {
+      "name": "apn watch: reports when the machinery moves",
+      "it": "config-sync-cellular.test.ts:263",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"apn\":{\"state\":\"applying\",\"apn_requested\":\"new.apn\"}},\"status\":{}}",
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"apn\":{\"state\":\"in-force\",\"apn_applied\":\"new.apn\",\"fails\":0}},\"status\":{}}"
+        ],
+        "topics": [
+          "t",
+          "t"
+        ],
+        "events": [
+          "info: modem APN state changed — re-reporting"
+        ],
+        "reads": 4,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000}",
+        "sentMid": 1
+      }
+    },
+    {
+      "name": "apn watch: silent without APN machinery",
+      "it": "config-sync-cellular.test.ts:284",
+      "expected": {
+        "sent": [
+          "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1786017600000,\"rev\":0,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true},\"status\":{}}"
+        ],
+        "topics": [
+          "t"
+        ],
+        "events": [],
+        "reads": 2,
+        "configSyncFile": "{\"lastAppliedRev\":0,\"lastReportTs\":1786017600000}"
+      }
+    }
+  ]
+}
