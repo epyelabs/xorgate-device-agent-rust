@@ -1,0 +1,143 @@
+{
+  "jsSourceFile": "test/hardware-block.test.ts (camera enumeration parsing)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there)",
+  "cases": [
+    {
+      "name": "parses the CM5 bench listing with RP1 connector order (88000=csi0, 70000=csi1)",
+      "op": "parseCameraList",
+      "input": {
+        "output": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+        "platform": "rpi-cm5"
+      },
+      "expected": [
+        {
+          "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+          "sensor": "imx290",
+          "connector": "csi0"
+        },
+        {
+          "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+          "sensor": "imx290",
+          "connector": "csi1"
+        }
+      ]
+    },
+    {
+      "name": "maps CM4 Unicam paths [0]",
+      "op": "connectorForPath",
+      "input": {
+        "platform": "rpi-cm4",
+        "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a"
+      },
+      "expected": "csi0"
+    },
+    {
+      "name": "maps CM4 Unicam paths [1]",
+      "op": "connectorForPath",
+      "input": {
+        "platform": "rpi-cm4",
+        "cameraName": "/base/soc/i2c0mux/i2c@1/imx290@1a"
+      },
+      "expected": "csi1"
+    },
+    {
+      "name": "maps CM4 Unicam paths [2]",
+      "op": "connectorForPath",
+      "input": {
+        "platform": "rpi-cm4",
+        "cameraName": "/weird/path"
+      },
+      "expected": null
+    },
+    {
+      "name": "extra: CM4 listing (reconcileHardware fixture) on rpi-cm4",
+      "op": "parseCameraList",
+      "input": {
+        "output": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/soc/i2c0mux/i2c@0/imx290@1a)\n    Modes: whatever\n",
+        "platform": "rpi-cm4"
+      },
+      "expected": [
+        {
+          "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+          "sensor": "imx290",
+          "connector": "csi0"
+        }
+      ]
+    },
+    {
+      "name": "extra: CM5 listing parsed for rpi-cm4 maps no connector",
+      "op": "parseCameraList",
+      "input": {
+        "output": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+        "platform": "rpi-cm4"
+      },
+      "expected": [
+        {
+          "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+          "sensor": "imx290",
+          "connector": null
+        },
+        {
+          "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+          "sensor": "imx290",
+          "connector": null
+        }
+      ]
+    },
+    {
+      "name": "extra: no cameras",
+      "op": "parseCameraList",
+      "input": {
+        "output": "No cameras available!\n",
+        "platform": "rpi-cm5"
+      },
+      "expected": []
+    },
+    {
+      "name": "extra: regex edge cases",
+      "op": "parseCameraList",
+      "input": {
+        "output": "  7:imx708 x (/p)\r\n1 : foo (x) (a(b))\n1 : foo(bar)\n1 : foo ()\n2 : ov5647 [2592x1944 10-bit GBRG] (/base/axi/pcie@1000120000/rp1/i2c@70000/ov5647@36) \n",
+        "platform": "rpi-cm5"
+      },
+      "expected": [
+        {
+          "cameraName": "/p",
+          "sensor": "imx708",
+          "connector": null
+        },
+        {
+          "cameraName": "b)",
+          "sensor": "foo",
+          "connector": null
+        },
+        {
+          "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/ov5647@36",
+          "sensor": "ov5647",
+          "connector": "csi1"
+        }
+      ]
+    },
+    {
+      "name": "extra: regex backtracking edge cases",
+      "op": "parseCameraList",
+      "input": {
+        "output": "1 : foo (a()\n1 : foo \r (x)\n1 : foo (a\r(b)\n﻿3 : bar baz (/q) \n",
+        "platform": "rpi-cm4"
+      },
+      "expected": [
+        {
+          "cameraName": "a(",
+          "sensor": "foo",
+          "connector": null
+        },
+        {
+          "cameraName": "/q",
+          "sensor": "bar",
+          "connector": null
+        }
+      ]
+    }
+  ]
+}
