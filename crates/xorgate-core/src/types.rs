@@ -234,10 +234,16 @@ impl<'de> Deserialize<'de> for CameraRotationDeg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CameraMountVerdict {
-    /// Boot config and running kernel both carry the desired rotation.
+    /// In force right now: the running kernel booted with the desired rotation.
     Applied,
-    /// Written to config.txt; takes effect on the next boot.
-    Pending,
+    /// config.txt now holds the desired rotation; it applies on the next boot.
+    PendingReboot,
+    /// config.txt holds it, but the rotation in force could not be read back.
+    Unconfirmed,
+    /// The device has no camera by that stream key.
+    UnknownCamera,
+    /// No `dtoverlay=` line configures that camera — nothing to edit.
+    NoOverlay,
     /// That sensor's overlay has no `rotation` parameter (or the probe failed).
     Unsupported,
     /// The privileged write did not happen (helper/sudoers missing, or it failed).
@@ -669,13 +675,37 @@ mod tests {
     #[test]
     fn camera_mount_state_shape() {
         // Mirrors the reconciler's report block (boot-config.ts:233-253).
-        let s = r#"{"at":1791511485433,"cameras":[{"streamKey":"cam0","desiredDeg":180,"inForceDeg":0,"bootDeg":180,"verdict":"pending","detail":"written; reboot to apply"},{"streamKey":"cam1","desiredDeg":0,"inForceDeg":null,"bootDeg":null,"verdict":"write-failed"}],"rebootRequired":true,"wrote":true}"#;
+        let s = r#"{"at":1791511485433,"cameras":[{"streamKey":"cam0","desiredDeg":180,"inForceDeg":0,"bootDeg":180,"verdict":"pending-reboot","detail":"written; reboot to apply"},{"streamKey":"cam1","desiredDeg":0,"inForceDeg":null,"bootDeg":null,"verdict":"write-failed"}],"rebootRequired":true,"wrote":true}"#;
         assert_eq!(round_trip::<CameraMountState>(s), s);
         assert!(serde_json::from_str::<CameraRotationDeg>("90").is_err());
         assert_eq!(
             serde_json::from_str::<CameraRotationDeg>("180.0").unwrap(),
             CameraRotationDeg::Deg180
         );
+    }
+
+    #[test]
+    fn camera_mount_verdict_wire_strings() {
+        // Exactly the TS union (boot-config.ts:216-231): config-sync.ts
+        // `cameraMountStatus` keys its wording off these strings.
+        const ALL: [(CameraMountVerdict, &str); 7] = [
+            (CameraMountVerdict::Applied, "applied"),
+            (CameraMountVerdict::PendingReboot, "pending-reboot"),
+            (CameraMountVerdict::Unconfirmed, "unconfirmed"),
+            (CameraMountVerdict::UnknownCamera, "unknown-camera"),
+            (CameraMountVerdict::NoOverlay, "no-overlay"),
+            (CameraMountVerdict::Unsupported, "unsupported"),
+            (CameraMountVerdict::WriteFailed, "write-failed"),
+        ];
+        for (v, s) in ALL {
+            let json = format!("\"{s}\"");
+            assert_eq!(serde_json::to_string(&v).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<CameraMountVerdict>(&json).unwrap(),
+                v
+            );
+        }
+        assert!(serde_json::from_str::<CameraMountVerdict>(r#""pending""#).is_err());
     }
 
     #[test]
