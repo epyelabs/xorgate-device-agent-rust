@@ -1,0 +1,1331 @@
+{
+  "jsSourceFile": "test/commands.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP5; not committed there); claim cases replay the file-backed claimCommand under a temp XORGATE_HOME; ack cases replicate the worker.ts:953-968 literal",
+  "MAX_TTL_MS": 120000,
+  "cases": [
+    {
+      "name": "parses both v1 commands [reboot]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "parses both v1 commands [power_off]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "parses both v1 commands [refresh]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "parses both v1 commands [update]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "parses both v1 commands [read_sms]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [limit 25]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":25}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":25}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [limit 0]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":0}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":1}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [limit 500]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":500}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":50}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [limit 7.8]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":7.8}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":7}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [limit \"20\"]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":\"20\"}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [{}]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [undefined]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [\"garbage\"]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":\"garbage\"}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [null]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":null}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [array]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":[5]}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "read_sms carries a clamped limit; missing/invalid args default to 10 [limit null]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":null}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "ignores args on every other command (contract §1) [reboot]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":5,\"evil\":true}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "ignores args on every other command (contract §1) [power_off]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":5,\"evil\":true}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "ignores args on every other command (contract §1) [refresh]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":5,\"evil\":true}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "ignores args on every other command (contract §1) [update]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":5,\"evil\":true}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "rejects malformed payloads and wrong versions [not json]",
+      "op": "parseCommand",
+      "input": "not json",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed payloads and wrong versions [42]",
+      "op": "parseCommand",
+      "input": "42",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed payloads and wrong versions [null]",
+      "op": "parseCommand",
+      "input": "null",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed payloads and wrong versions [v 2]",
+      "op": "parseCommand",
+      "input": "{\"v\":2,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed payloads and wrong versions [no ts]",
+      "op": "parseCommand",
+      "input": "{\"requestId\":\"r\",\"command\":\"reboot\"}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: rejects an array payload",
+      "op": "parseCommand",
+      "input": "[1]",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: rejects a string payload",
+      "op": "parseCommand",
+      "input": "\"reboot\"",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: rejects v \"1\"",
+      "op": "parseCommand",
+      "input": "{\"v\":\"1\",\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: accepts v 1.0",
+      "op": "parseCommand",
+      "input": "{\"v\":1.0,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "extra: keeps fractional timestamps",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000.5,\"expiresAt\":1750000001000.25}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000.5,\"expiresAt\":1750000001000.25}"
+    },
+    {
+      "name": "extra: unknown keys are dropped",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"extra\":\"x\",\"nested\":{\"a\":1}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "rejects unknown or non-string commands [rm -rf /]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"rm -rf /\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown or non-string commands [restart]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"restart\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown or non-string commands [7]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":7,\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a missing/blank requestId — it is the replay key [empty]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a missing/blank requestId — it is the replay key [undefined]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a missing/blank requestId — it is the replay key [42]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":42,\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a command with no usable timestamps [ts undefined]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a command with no usable timestamps [expiresAt undefined]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a command with no usable timestamps [ts \"now\"]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":\"now\",\"expiresAt\":1750000060000}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a command with no usable timestamps [expiresAt NaN]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":null}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects a command with no usable timestamps [expiresAt Infinity]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":null}",
+      "expectedJson": "null"
+    },
+    {
+      "name": "clamps an over-long TTL to the device's own ceiling [24h]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750086400000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000120000}"
+    },
+    {
+      "name": "clamps an over-long TTL to the device's own ceiling [5s]",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000005000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000005000}"
+    },
+    {
+      "name": "accepts a fresh command and refuses a stale one [T0]",
+      "op": "isExpired",
+      "input": {
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "now": 1750000000000
+      },
+      "expectedJson": "false"
+    },
+    {
+      "name": "accepts a fresh command and refuses a stale one [T0+59s]",
+      "op": "isExpired",
+      "input": {
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "now": 1750000059000
+      },
+      "expectedJson": "false"
+    },
+    {
+      "name": "accepts a fresh command and refuses a stale one [T0+61s]",
+      "op": "isExpired",
+      "input": {
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "now": 1750000061000
+      },
+      "expectedJson": "true"
+    },
+    {
+      "name": "refuses a command that outlived the clamped ceiling",
+      "op": "isExpired",
+      "input": {
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750086400000}",
+        "now": 1750000120001
+      },
+      "expectedJson": "true"
+    },
+    {
+      "name": "extra: exactly at expiresAt is not expired",
+      "op": "isExpired",
+      "input": {
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "now": 1750000060000
+      },
+      "expectedJson": "false"
+    },
+    {
+      "name": "claims once and refuses the redelivery",
+      "op": "claim",
+      "input": {
+        "ledgerText": null,
+        "steps": [
+          {
+            "requestId": "req-1",
+            "now": 1750000000000
+          },
+          {
+            "requestId": "req-1",
+            "now": 1750000001000
+          },
+          {
+            "requestId": "req-2",
+            "now": 1750000001000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"},{\"accepted\":false,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"},{\"accepted\":true,\"executedLength\":2,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000},{\\\"requestId\\\":\\\"req-2\\\",\\\"at\\\":1750000001000}]}\"}]"
+    },
+    {
+      "name": "persists across a restart — the ledger outlives the reboot it guards",
+      "op": "claim",
+      "input": {
+        "ledgerText": null,
+        "steps": [
+          {
+            "requestId": "req-1",
+            "now": 1750000000000
+          },
+          {
+            "requestId": "req-1",
+            "now": 1750000090000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"},{\"accepted\":false,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "survives a corrupt ledger (treated as empty)",
+      "op": "claim",
+      "input": {
+        "ledgerText": "not json",
+        "steps": [
+          {
+            "requestId": "req-1",
+            "now": 1750000000000
+          },
+          {
+            "requestId": "req-1",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"},{\"accepted\":false,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "prunes entries older than the retention window",
+      "op": "claim",
+      "input": {
+        "ledgerText": null,
+        "steps": [
+          {
+            "requestId": "old",
+            "now": 1750000000000
+          },
+          {
+            "requestId": "new",
+            "now": 1750003600001
+          },
+          {
+            "requestId": "old",
+            "now": 1750003600002
+          },
+          {
+            "requestId": "new",
+            "now": 1750003600002
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"old\\\",\\\"at\\\":1750000000000}]}\"},{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"new\\\",\\\"at\\\":1750003600001}]}\"},{\"accepted\":true,\"executedLength\":2,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"new\\\",\\\"at\\\":1750003600001},{\\\"requestId\\\":\\\"old\\\",\\\"at\\\":1750003600002}]}\"},{\"accepted\":false,\"executedLength\":2,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"new\\\",\\\"at\\\":1750003600001},{\\\"requestId\\\":\\\"old\\\",\\\"at\\\":1750003600002}]}\"}]"
+    },
+    {
+      "name": "caps the ledger so a command flood cannot grow it without bound",
+      "op": "claim",
+      "input": {
+        "ledgerText": null,
+        "steps": [
+          {
+            "requestId": "req-0",
+            "now": 1750000000000
+          },
+          {
+            "requestId": "req-1",
+            "now": 1750000000001
+          },
+          {
+            "requestId": "req-2",
+            "now": 1750000000002
+          },
+          {
+            "requestId": "req-3",
+            "now": 1750000000003
+          },
+          {
+            "requestId": "req-4",
+            "now": 1750000000004
+          },
+          {
+            "requestId": "req-5",
+            "now": 1750000000005
+          },
+          {
+            "requestId": "req-6",
+            "now": 1750000000006
+          },
+          {
+            "requestId": "req-7",
+            "now": 1750000000007
+          },
+          {
+            "requestId": "req-8",
+            "now": 1750000000008
+          },
+          {
+            "requestId": "req-9",
+            "now": 1750000000009
+          },
+          {
+            "requestId": "req-10",
+            "now": 1750000000010
+          },
+          {
+            "requestId": "req-11",
+            "now": 1750000000011
+          },
+          {
+            "requestId": "req-12",
+            "now": 1750000000012
+          },
+          {
+            "requestId": "req-13",
+            "now": 1750000000013
+          },
+          {
+            "requestId": "req-14",
+            "now": 1750000000014
+          },
+          {
+            "requestId": "req-15",
+            "now": 1750000000015
+          },
+          {
+            "requestId": "req-16",
+            "now": 1750000000016
+          },
+          {
+            "requestId": "req-17",
+            "now": 1750000000017
+          },
+          {
+            "requestId": "req-18",
+            "now": 1750000000018
+          },
+          {
+            "requestId": "req-19",
+            "now": 1750000000019
+          },
+          {
+            "requestId": "req-20",
+            "now": 1750000000020
+          },
+          {
+            "requestId": "req-21",
+            "now": 1750000000021
+          },
+          {
+            "requestId": "req-22",
+            "now": 1750000000022
+          },
+          {
+            "requestId": "req-23",
+            "now": 1750000000023
+          },
+          {
+            "requestId": "req-24",
+            "now": 1750000000024
+          },
+          {
+            "requestId": "req-25",
+            "now": 1750000000025
+          },
+          {
+            "requestId": "req-26",
+            "now": 1750000000026
+          },
+          {
+            "requestId": "req-27",
+            "now": 1750000000027
+          },
+          {
+            "requestId": "req-28",
+            "now": 1750000000028
+          },
+          {
+            "requestId": "req-29",
+            "now": 1750000000029
+          },
+          {
+            "requestId": "req-30",
+            "now": 1750000000030
+          },
+          {
+            "requestId": "req-31",
+            "now": 1750000000031
+          },
+          {
+            "requestId": "req-32",
+            "now": 1750000000032
+          },
+          {
+            "requestId": "req-33",
+            "now": 1750000000033
+          },
+          {
+            "requestId": "req-34",
+            "now": 1750000000034
+          },
+          {
+            "requestId": "req-35",
+            "now": 1750000000035
+          },
+          {
+            "requestId": "req-36",
+            "now": 1750000000036
+          },
+          {
+            "requestId": "req-37",
+            "now": 1750000000037
+          },
+          {
+            "requestId": "req-38",
+            "now": 1750000000038
+          },
+          {
+            "requestId": "req-39",
+            "now": 1750000000039
+          },
+          {
+            "requestId": "req-40",
+            "now": 1750000000040
+          },
+          {
+            "requestId": "req-41",
+            "now": 1750000000041
+          },
+          {
+            "requestId": "req-42",
+            "now": 1750000000042
+          },
+          {
+            "requestId": "req-43",
+            "now": 1750000000043
+          },
+          {
+            "requestId": "req-44",
+            "now": 1750000000044
+          },
+          {
+            "requestId": "req-45",
+            "now": 1750000000045
+          },
+          {
+            "requestId": "req-46",
+            "now": 1750000000046
+          },
+          {
+            "requestId": "req-47",
+            "now": 1750000000047
+          },
+          {
+            "requestId": "req-48",
+            "now": 1750000000048
+          },
+          {
+            "requestId": "req-49",
+            "now": 1750000000049
+          },
+          {
+            "requestId": "req-50",
+            "now": 1750000000050
+          },
+          {
+            "requestId": "req-51",
+            "now": 1750000000051
+          },
+          {
+            "requestId": "req-52",
+            "now": 1750000000052
+          },
+          {
+            "requestId": "req-53",
+            "now": 1750000000053
+          },
+          {
+            "requestId": "req-54",
+            "now": 1750000000054
+          },
+          {
+            "requestId": "req-55",
+            "now": 1750000000055
+          },
+          {
+            "requestId": "req-56",
+            "now": 1750000000056
+          },
+          {
+            "requestId": "req-57",
+            "now": 1750000000057
+          },
+          {
+            "requestId": "req-58",
+            "now": 1750000000058
+          },
+          {
+            "requestId": "req-59",
+            "now": 1750000000059
+          },
+          {
+            "requestId": "req-60",
+            "now": 1750000000060
+          },
+          {
+            "requestId": "req-61",
+            "now": 1750000000061
+          },
+          {
+            "requestId": "req-62",
+            "now": 1750000000062
+          },
+          {
+            "requestId": "req-63",
+            "now": 1750000000063
+          },
+          {
+            "requestId": "req-64",
+            "now": 1750000000064
+          },
+          {
+            "requestId": "req-65",
+            "now": 1750000000065
+          },
+          {
+            "requestId": "req-66",
+            "now": 1750000000066
+          },
+          {
+            "requestId": "req-67",
+            "now": 1750000000067
+          },
+          {
+            "requestId": "req-68",
+            "now": 1750000000068
+          },
+          {
+            "requestId": "req-69",
+            "now": 1750000000069
+          },
+          {
+            "requestId": "req-70",
+            "now": 1750000000070
+          },
+          {
+            "requestId": "req-71",
+            "now": 1750000000071
+          },
+          {
+            "requestId": "req-72",
+            "now": 1750000000072
+          },
+          {
+            "requestId": "req-73",
+            "now": 1750000000073
+          },
+          {
+            "requestId": "req-74",
+            "now": 1750000000074
+          },
+          {
+            "requestId": "req-75",
+            "now": 1750000000075
+          },
+          {
+            "requestId": "req-76",
+            "now": 1750000000076
+          },
+          {
+            "requestId": "req-77",
+            "now": 1750000000077
+          },
+          {
+            "requestId": "req-78",
+            "now": 1750000000078
+          },
+          {
+            "requestId": "req-79",
+            "now": 1750000000079
+          },
+          {
+            "requestId": "req-80",
+            "now": 1750000000080
+          },
+          {
+            "requestId": "req-81",
+            "now": 1750000000081
+          },
+          {
+            "requestId": "req-82",
+            "now": 1750000000082
+          },
+          {
+            "requestId": "req-83",
+            "now": 1750000000083
+          },
+          {
+            "requestId": "req-84",
+            "now": 1750000000084
+          },
+          {
+            "requestId": "req-85",
+            "now": 1750000000085
+          },
+          {
+            "requestId": "req-86",
+            "now": 1750000000086
+          },
+          {
+            "requestId": "req-87",
+            "now": 1750000000087
+          },
+          {
+            "requestId": "req-88",
+            "now": 1750000000088
+          },
+          {
+            "requestId": "req-89",
+            "now": 1750000000089
+          },
+          {
+            "requestId": "req-90",
+            "now": 1750000000090
+          },
+          {
+            "requestId": "req-91",
+            "now": 1750000000091
+          },
+          {
+            "requestId": "req-92",
+            "now": 1750000000092
+          },
+          {
+            "requestId": "req-93",
+            "now": 1750000000093
+          },
+          {
+            "requestId": "req-94",
+            "now": 1750000000094
+          },
+          {
+            "requestId": "req-95",
+            "now": 1750000000095
+          },
+          {
+            "requestId": "req-96",
+            "now": 1750000000096
+          },
+          {
+            "requestId": "req-97",
+            "now": 1750000000097
+          },
+          {
+            "requestId": "req-98",
+            "now": 1750000000098
+          },
+          {
+            "requestId": "req-99",
+            "now": 1750000000099
+          },
+          {
+            "requestId": "req-100",
+            "now": 1750000000100
+          },
+          {
+            "requestId": "req-101",
+            "now": 1750000000101
+          },
+          {
+            "requestId": "req-102",
+            "now": 1750000000102
+          },
+          {
+            "requestId": "req-103",
+            "now": 1750000000103
+          },
+          {
+            "requestId": "req-104",
+            "now": 1750000000104
+          },
+          {
+            "requestId": "req-105",
+            "now": 1750000000105
+          },
+          {
+            "requestId": "req-106",
+            "now": 1750000000106
+          },
+          {
+            "requestId": "req-107",
+            "now": 1750000000107
+          },
+          {
+            "requestId": "req-108",
+            "now": 1750000000108
+          },
+          {
+            "requestId": "req-109",
+            "now": 1750000000109
+          },
+          {
+            "requestId": "req-110",
+            "now": 1750000000110
+          },
+          {
+            "requestId": "req-111",
+            "now": 1750000000111
+          },
+          {
+            "requestId": "req-112",
+            "now": 1750000000112
+          },
+          {
+            "requestId": "req-113",
+            "now": 1750000000113
+          },
+          {
+            "requestId": "req-114",
+            "now": 1750000000114
+          },
+          {
+            "requestId": "req-115",
+            "now": 1750000000115
+          },
+          {
+            "requestId": "req-116",
+            "now": 1750000000116
+          },
+          {
+            "requestId": "req-117",
+            "now": 1750000000117
+          },
+          {
+            "requestId": "req-118",
+            "now": 1750000000118
+          },
+          {
+            "requestId": "req-119",
+            "now": 1750000000119
+          },
+          {
+            "requestId": "req-120",
+            "now": 1750000000120
+          },
+          {
+            "requestId": "req-121",
+            "now": 1750000000121
+          },
+          {
+            "requestId": "req-122",
+            "now": 1750000000122
+          },
+          {
+            "requestId": "req-123",
+            "now": 1750000000123
+          },
+          {
+            "requestId": "req-124",
+            "now": 1750000000124
+          },
+          {
+            "requestId": "req-125",
+            "now": 1750000000125
+          },
+          {
+            "requestId": "req-126",
+            "now": 1750000000126
+          },
+          {
+            "requestId": "req-127",
+            "now": 1750000000127
+          },
+          {
+            "requestId": "req-128",
+            "now": 1750000000128
+          },
+          {
+            "requestId": "req-129",
+            "now": 1750000000129
+          },
+          {
+            "requestId": "req-130",
+            "now": 1750000000130
+          },
+          {
+            "requestId": "req-131",
+            "now": 1750000000131
+          },
+          {
+            "requestId": "req-132",
+            "now": 1750000000132
+          },
+          {
+            "requestId": "req-133",
+            "now": 1750000000133
+          },
+          {
+            "requestId": "req-134",
+            "now": 1750000000134
+          },
+          {
+            "requestId": "req-135",
+            "now": 1750000000135
+          },
+          {
+            "requestId": "req-136",
+            "now": 1750000000136
+          },
+          {
+            "requestId": "req-137",
+            "now": 1750000000137
+          },
+          {
+            "requestId": "req-138",
+            "now": 1750000000138
+          },
+          {
+            "requestId": "req-139",
+            "now": 1750000000139
+          },
+          {
+            "requestId": "req-140",
+            "now": 1750000000140
+          },
+          {
+            "requestId": "req-141",
+            "now": 1750000000141
+          },
+          {
+            "requestId": "req-142",
+            "now": 1750000000142
+          },
+          {
+            "requestId": "req-143",
+            "now": 1750000000143
+          },
+          {
+            "requestId": "req-144",
+            "now": 1750000000144
+          },
+          {
+            "requestId": "req-145",
+            "now": 1750000000145
+          },
+          {
+            "requestId": "req-146",
+            "now": 1750000000146
+          },
+          {
+            "requestId": "req-147",
+            "now": 1750000000147
+          },
+          {
+            "requestId": "req-148",
+            "now": 1750000000148
+          },
+          {
+            "requestId": "req-149",
+            "now": 1750000000149
+          },
+          {
+            "requestId": "req-149",
+            "now": 1750000000200
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1},{\"accepted\":true,\"executedLength\":2},{\"accepted\":true,\"executedLength\":3},{\"accepted\":true,\"executedLength\":4},{\"accepted\":true,\"executedLength\":5},{\"accepted\":true,\"executedLength\":6},{\"accepted\":true,\"executedLength\":7},{\"accepted\":true,\"executedLength\":8},{\"accepted\":true,\"executedLength\":9},{\"accepted\":true,\"executedLength\":10},{\"accepted\":true,\"executedLength\":11},{\"accepted\":true,\"executedLength\":12},{\"accepted\":true,\"executedLength\":13},{\"accepted\":true,\"executedLength\":14},{\"accepted\":true,\"executedLength\":15},{\"accepted\":true,\"executedLength\":16},{\"accepted\":true,\"executedLength\":17},{\"accepted\":true,\"executedLength\":18},{\"accepted\":true,\"executedLength\":19},{\"accepted\":true,\"executedLength\":20},{\"accepted\":true,\"executedLength\":21},{\"accepted\":true,\"executedLength\":22},{\"accepted\":true,\"executedLength\":23},{\"accepted\":true,\"executedLength\":24},{\"accepted\":true,\"executedLength\":25},{\"accepted\":true,\"executedLength\":26},{\"accepted\":true,\"executedLength\":27},{\"accepted\":true,\"executedLength\":28},{\"accepted\":true,\"executedLength\":29},{\"accepted\":true,\"executedLength\":30},{\"accepted\":true,\"executedLength\":31},{\"accepted\":true,\"executedLength\":32},{\"accepted\":true,\"executedLength\":33},{\"accepted\":true,\"executedLength\":34},{\"accepted\":true,\"executedLength\":35},{\"accepted\":true,\"executedLength\":36},{\"accepted\":true,\"executedLength\":37},{\"accepted\":true,\"executedLength\":38},{\"accepted\":true,\"executedLength\":39},{\"accepted\":true,\"executedLength\":40},{\"accepted\":true,\"executedLength\":41},{\"accepted\":true,\"executedLength\":42},{\"accepted\":true,\"executedLength\":43},{\"accepted\":true,\"executedLength\":44},{\"accepted\":true,\"executedLength\":45},{\"accepted\":true,\"executedLength\":46},{\"accepted\":true,\"executedLength\":47},{\"accepted\":true,\"executedLength\":48},{\"accepted\":true,\"executedLength\":49},{\"accepted\":true,\"executedLength\":50},{\"accepted\":true,\"executedLength\":51},{\"accepted\":true,\"executedLength\":52},{\"accepted\":true,\"executedLength\":53},{\"accepted\":true,\"executedLength\":54},{\"accepted\":true,\"executedLength\":55},{\"accepted\":true,\"executedLength\":56},{\"accepted\":true,\"executedLength\":57},{\"accepted\":true,\"executedLength\":58},{\"accepted\":true,\"executedLength\":59},{\"accepted\":true,\"executedLength\":60},{\"accepted\":true,\"executedLength\":61},{\"accepted\":true,\"executedLength\":62},{\"accepted\":true,\"executedLength\":63},{\"accepted\":true,\"executedLength\":64},{\"accepted\":true,\"executedLength\":65},{\"accepted\":true,\"executedLength\":66},{\"accepted\":true,\"executedLength\":67},{\"accepted\":true,\"executedLength\":68},{\"accepted\":true,\"executedLength\":69},{\"accepted\":true,\"executedLength\":70},{\"accepted\":true,\"executedLength\":71},{\"accepted\":true,\"executedLength\":72},{\"accepted\":true,\"executedLength\":73},{\"accepted\":true,\"executedLength\":74},{\"accepted\":true,\"executedLength\":75},{\"accepted\":true,\"executedLength\":76},{\"accepted\":true,\"executedLength\":77},{\"accepted\":true,\"executedLength\":78},{\"accepted\":true,\"executedLength\":79},{\"accepted\":true,\"executedLength\":80},{\"accepted\":true,\"executedLength\":81},{\"accepted\":true,\"executedLength\":82},{\"accepted\":true,\"executedLength\":83},{\"accepted\":true,\"executedLength\":84},{\"accepted\":true,\"executedLength\":85},{\"accepted\":true,\"executedLength\":86},{\"accepted\":true,\"executedLength\":87},{\"accepted\":true,\"executedLength\":88},{\"accepted\":true,\"executedLength\":89},{\"accepted\":true,\"executedLength\":90},{\"accepted\":true,\"executedLength\":91},{\"accepted\":true,\"executedLength\":92},{\"accepted\":true,\"executedLength\":93},{\"accepted\":true,\"executedLength\":94},{\"accepted\":true,\"executedLength\":95},{\"accepted\":true,\"executedLength\":96},{\"accepted\":true,\"executedLength\":97},{\"accepted\":true,\"executedLength\":98},{\"accepted\":true,\"executedLength\":99},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":true,\"executedLength\":100},{\"accepted\":false,\"executedLength\":100,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-50\\\",\\\"at\\\":1750000000050},{\\\"requestId\\\":\\\"req-51\\\",\\\"at\\\":1750000000051},{\\\"requestId\\\":\\\"req-52\\\",\\\"at\\\":1750000000052},{\\\"requestId\\\":\\\"req-53\\\",\\\"at\\\":1750000000053},{\\\"requestId\\\":\\\"req-54\\\",\\\"at\\\":1750000000054},{\\\"requestId\\\":\\\"req-55\\\",\\\"at\\\":1750000000055},{\\\"requestId\\\":\\\"req-56\\\",\\\"at\\\":1750000000056},{\\\"requestId\\\":\\\"req-57\\\",\\\"at\\\":1750000000057},{\\\"requestId\\\":\\\"req-58\\\",\\\"at\\\":1750000000058},{\\\"requestId\\\":\\\"req-59\\\",\\\"at\\\":1750000000059},{\\\"requestId\\\":\\\"req-60\\\",\\\"at\\\":1750000000060},{\\\"requestId\\\":\\\"req-61\\\",\\\"at\\\":1750000000061},{\\\"requestId\\\":\\\"req-62\\\",\\\"at\\\":1750000000062},{\\\"requestId\\\":\\\"req-63\\\",\\\"at\\\":1750000000063},{\\\"requestId\\\":\\\"req-64\\\",\\\"at\\\":1750000000064},{\\\"requestId\\\":\\\"req-65\\\",\\\"at\\\":1750000000065},{\\\"requestId\\\":\\\"req-66\\\",\\\"at\\\":1750000000066},{\\\"requestId\\\":\\\"req-67\\\",\\\"at\\\":1750000000067},{\\\"requestId\\\":\\\"req-68\\\",\\\"at\\\":1750000000068},{\\\"requestId\\\":\\\"req-69\\\",\\\"at\\\":1750000000069},{\\\"requestId\\\":\\\"req-70\\\",\\\"at\\\":1750000000070},{\\\"requestId\\\":\\\"req-71\\\",\\\"at\\\":1750000000071},{\\\"requestId\\\":\\\"req-72\\\",\\\"at\\\":1750000000072},{\\\"requestId\\\":\\\"req-73\\\",\\\"at\\\":1750000000073},{\\\"requestId\\\":\\\"req-74\\\",\\\"at\\\":1750000000074},{\\\"requestId\\\":\\\"req-75\\\",\\\"at\\\":1750000000075},{\\\"requestId\\\":\\\"req-76\\\",\\\"at\\\":1750000000076},{\\\"requestId\\\":\\\"req-77\\\",\\\"at\\\":1750000000077},{\\\"requestId\\\":\\\"req-78\\\",\\\"at\\\":1750000000078},{\\\"requestId\\\":\\\"req-79\\\",\\\"at\\\":1750000000079},{\\\"requestId\\\":\\\"req-80\\\",\\\"at\\\":1750000000080},{\\\"requestId\\\":\\\"req-81\\\",\\\"at\\\":1750000000081},{\\\"requestId\\\":\\\"req-82\\\",\\\"at\\\":1750000000082},{\\\"requestId\\\":\\\"req-83\\\",\\\"at\\\":1750000000083},{\\\"requestId\\\":\\\"req-84\\\",\\\"at\\\":1750000000084},{\\\"requestId\\\":\\\"req-85\\\",\\\"at\\\":1750000000085},{\\\"requestId\\\":\\\"req-86\\\",\\\"at\\\":1750000000086},{\\\"requestId\\\":\\\"req-87\\\",\\\"at\\\":1750000000087},{\\\"requestId\\\":\\\"req-88\\\",\\\"at\\\":1750000000088},{\\\"requestId\\\":\\\"req-89\\\",\\\"at\\\":1750000000089},{\\\"requestId\\\":\\\"req-90\\\",\\\"at\\\":1750000000090},{\\\"requestId\\\":\\\"req-91\\\",\\\"at\\\":1750000000091},{\\\"requestId\\\":\\\"req-92\\\",\\\"at\\\":1750000000092},{\\\"requestId\\\":\\\"req-93\\\",\\\"at\\\":1750000000093},{\\\"requestId\\\":\\\"req-94\\\",\\\"at\\\":1750000000094},{\\\"requestId\\\":\\\"req-95\\\",\\\"at\\\":1750000000095},{\\\"requestId\\\":\\\"req-96\\\",\\\"at\\\":1750000000096},{\\\"requestId\\\":\\\"req-97\\\",\\\"at\\\":1750000000097},{\\\"requestId\\\":\\\"req-98\\\",\\\"at\\\":1750000000098},{\\\"requestId\\\":\\\"req-99\\\",\\\"at\\\":1750000000099},{\\\"requestId\\\":\\\"req-100\\\",\\\"at\\\":1750000000100},{\\\"requestId\\\":\\\"req-101\\\",\\\"at\\\":1750000000101},{\\\"requestId\\\":\\\"req-102\\\",\\\"at\\\":1750000000102},{\\\"requestId\\\":\\\"req-103\\\",\\\"at\\\":1750000000103},{\\\"requestId\\\":\\\"req-104\\\",\\\"at\\\":1750000000104},{\\\"requestId\\\":\\\"req-105\\\",\\\"at\\\":1750000000105},{\\\"requestId\\\":\\\"req-106\\\",\\\"at\\\":1750000000106},{\\\"requestId\\\":\\\"req-107\\\",\\\"at\\\":1750000000107},{\\\"requestId\\\":\\\"req-108\\\",\\\"at\\\":1750000000108},{\\\"requestId\\\":\\\"req-109\\\",\\\"at\\\":1750000000109},{\\\"requestId\\\":\\\"req-110\\\",\\\"at\\\":1750000000110},{\\\"requestId\\\":\\\"req-111\\\",\\\"at\\\":1750000000111},{\\\"requestId\\\":\\\"req-112\\\",\\\"at\\\":1750000000112},{\\\"requestId\\\":\\\"req-113\\\",\\\"at\\\":1750000000113},{\\\"requestId\\\":\\\"req-114\\\",\\\"at\\\":1750000000114},{\\\"requestId\\\":\\\"req-115\\\",\\\"at\\\":1750000000115},{\\\"requestId\\\":\\\"req-116\\\",\\\"at\\\":1750000000116},{\\\"requestId\\\":\\\"req-117\\\",\\\"at\\\":1750000000117},{\\\"requestId\\\":\\\"req-118\\\",\\\"at\\\":1750000000118},{\\\"requestId\\\":\\\"req-119\\\",\\\"at\\\":1750000000119},{\\\"requestId\\\":\\\"req-120\\\",\\\"at\\\":1750000000120},{\\\"requestId\\\":\\\"req-121\\\",\\\"at\\\":1750000000121},{\\\"requestId\\\":\\\"req-122\\\",\\\"at\\\":1750000000122},{\\\"requestId\\\":\\\"req-123\\\",\\\"at\\\":1750000000123},{\\\"requestId\\\":\\\"req-124\\\",\\\"at\\\":1750000000124},{\\\"requestId\\\":\\\"req-125\\\",\\\"at\\\":1750000000125},{\\\"requestId\\\":\\\"req-126\\\",\\\"at\\\":1750000000126},{\\\"requestId\\\":\\\"req-127\\\",\\\"at\\\":1750000000127},{\\\"requestId\\\":\\\"req-128\\\",\\\"at\\\":1750000000128},{\\\"requestId\\\":\\\"req-129\\\",\\\"at\\\":1750000000129},{\\\"requestId\\\":\\\"req-130\\\",\\\"at\\\":1750000000130},{\\\"requestId\\\":\\\"req-131\\\",\\\"at\\\":1750000000131},{\\\"requestId\\\":\\\"req-132\\\",\\\"at\\\":1750000000132},{\\\"requestId\\\":\\\"req-133\\\",\\\"at\\\":1750000000133},{\\\"requestId\\\":\\\"req-134\\\",\\\"at\\\":1750000000134},{\\\"requestId\\\":\\\"req-135\\\",\\\"at\\\":1750000000135},{\\\"requestId\\\":\\\"req-136\\\",\\\"at\\\":1750000000136},{\\\"requestId\\\":\\\"req-137\\\",\\\"at\\\":1750000000137},{\\\"requestId\\\":\\\"req-138\\\",\\\"at\\\":1750000000138},{\\\"requestId\\\":\\\"req-139\\\",\\\"at\\\":1750000000139},{\\\"requestId\\\":\\\"req-140\\\",\\\"at\\\":1750000000140},{\\\"requestId\\\":\\\"req-141\\\",\\\"at\\\":1750000000141},{\\\"requestId\\\":\\\"req-142\\\",\\\"at\\\":1750000000142},{\\\"requestId\\\":\\\"req-143\\\",\\\"at\\\":1750000000143},{\\\"requestId\\\":\\\"req-144\\\",\\\"at\\\":1750000000144},{\\\"requestId\\\":\\\"req-145\\\",\\\"at\\\":1750000000145},{\\\"requestId\\\":\\\"req-146\\\",\\\"at\\\":1750000000146},{\\\"requestId\\\":\\\"req-147\\\",\\\"at\\\":1750000000147},{\\\"requestId\\\":\\\"req-148\\\",\\\"at\\\":1750000000148},{\\\"requestId\\\":\\\"req-149\\\",\\\"at\\\":1750000000149}]}\"}]"
+    },
+    {
+      "name": "extra: ledger with wrong v is ignored",
+      "op": "claim",
+      "input": {
+        "ledgerText": "{\"v\":2,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000000000}]}",
+        "steps": [
+          {
+            "requestId": "req-1",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "extra: ledger entries are filtered by shape",
+      "op": "claim",
+      "input": {
+        "ledgerText": "{\"v\":1,\"executed\":[{\"requestId\":\"keep\",\"at\":1750000000000},{\"requestId\":5,\"at\":1750000000000},{\"requestId\":\"noat\"},null,\"x\",{\"requestId\":\"keep2\",\"at\":1750000000000,\"extra\":true}]}",
+        "steps": [
+          {
+            "requestId": "x",
+            "now": 1750000000001
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":3,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"keep\\\",\\\"at\\\":1750000000000},{\\\"requestId\\\":\\\"keep2\\\",\\\"at\\\":1750000000000,\\\"extra\\\":true},{\\\"requestId\\\":\\\"x\\\",\\\"at\\\":1750000000001}]}\"}]"
+    },
+    {
+      "name": "extra: executed not an array is ignored",
+      "op": "claim",
+      "input": {
+        "ledgerText": "{\"v\":1,\"executed\":{\"requestId\":\"req-1\",\"at\":1750000000000}}",
+        "steps": [
+          {
+            "requestId": "req-1",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"req-1\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "extra: a duplicate is refused without rewriting the file",
+      "op": "claim",
+      "input": {
+        "ledgerText": "{\"v\":1,\"executed\":[{\"requestId\":\"dup\",\"at\":1749993000000}]}",
+        "steps": [
+          {
+            "requestId": "dup",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":false,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"dup\\\",\\\"at\\\":1749993000000}]}\"}]"
+    },
+    {
+      "name": "extra: exactly 1 h old is pruned, 1 h minus 1 ms is kept",
+      "op": "claim",
+      "input": {
+        "ledgerText": "{\"v\":1,\"executed\":[{\"requestId\":\"edge\",\"at\":1749996400000},{\"requestId\":\"keep\",\"at\":1749996400001}]}",
+        "steps": [
+          {
+            "requestId": "n",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":2,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"keep\\\",\\\"at\\\":1749996400001},{\\\"requestId\\\":\\\"n\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "extra: a future entry is kept",
+      "op": "claim",
+      "input": {
+        "ledgerText": "{\"v\":1,\"executed\":[{\"requestId\":\"future\",\"at\":1750010000000}]}",
+        "steps": [
+          {
+            "requestId": "n",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":2,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"future\\\",\\\"at\\\":1750010000000},{\\\"requestId\\\":\\\"n\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "extra: empty ledger file",
+      "op": "claim",
+      "input": {
+        "ledgerText": "",
+        "steps": [
+          {
+            "requestId": "n",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"n\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "extra: ledger is an array",
+      "op": "claim",
+      "input": {
+        "ledgerText": "[]",
+        "steps": [
+          {
+            "requestId": "n",
+            "now": 1750000000000
+          }
+        ]
+      },
+      "expectedJson": "[{\"accepted\":true,\"executedLength\":1,\"ledgerJson\":\"{\\\"v\\\":1,\\\"executed\\\":[{\\\"requestId\\\":\\\"n\\\",\\\"at\\\":1750000000000}]}\"}]"
+    },
+    {
+      "name": "maps each command to a non-interactive systemctl call [reboot]",
+      "op": "plan",
+      "input": "reboot",
+      "expectedJson": "{\"kind\":\"privileged\",\"calls\":[[\"sudo\",[\"-n\",\"systemctl\",\"reboot\"]]]}"
+    },
+    {
+      "name": "maps each command to a non-interactive systemctl call [power_off]",
+      "op": "plan",
+      "input": "power_off",
+      "expectedJson": "{\"kind\":\"privileged\",\"calls\":[[\"sudo\",[\"-n\",\"systemctl\",\"poweroff\"]]]}"
+    },
+    {
+      "name": "starts the updater unit with the EXACT argv the sudoers grant allows",
+      "op": "plan",
+      "input": "update",
+      "expectedJson": "{\"kind\":\"privileged\",\"calls\":[[\"sudo\",[\"-n\",\"systemctl\",\"start\",\"--no-block\",\"xorgate-updater.service\"]]]}"
+    },
+    {
+      "name": "never routes the in-process read-only commands to sudo [refresh]",
+      "op": "plan",
+      "input": "refresh",
+      "expectedJson": "{\"kind\":\"in-process\",\"result\":{\"failed\":true,\"notFound\":false,\"exitCode\":1,\"stdout\":\"\",\"stderr\":\"refresh is handled in-process, not via executeCommand\"}}"
+    },
+    {
+      "name": "never routes the in-process read-only commands to sudo [read_sms]",
+      "op": "plan",
+      "input": "read_sms",
+      "expectedJson": "{\"kind\":\"in-process\",\"result\":{\"failed\":true,\"notFound\":false,\"exitCode\":1,\"stdout\":\"\",\"stderr\":\"read_sms is handled in-process, not via executeCommand\"}}"
+    },
+    {
+      "name": "surfaces a refused sudo rather than throwing [refused sudo] (worker.ts:1118)",
+      "op": "failureReason",
+      "input": {
+        "stdout": "",
+        "stderr": "sudo: a password is required",
+        "exitCode": 1,
+        "failed": true,
+        "notFound": false
+      },
+      "expectedJson": "\"sudo: a password is required\""
+    },
+    {
+      "name": "surfaces a refused sudo rather than throwing [not found] (worker.ts:1118)",
+      "op": "failureReason",
+      "input": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": null,
+        "failed": true,
+        "notFound": true
+      },
+      "expectedJson": "\"sudo not found\""
+    },
+    {
+      "name": "surfaces a refused sudo rather than throwing [empty stderr] (worker.ts:1118)",
+      "op": "failureReason",
+      "input": {
+        "stdout": "",
+        "stderr": "  \n",
+        "exitCode": 4,
+        "failed": true,
+        "notFound": false
+      },
+      "expectedJson": "\"exit 4\""
+    },
+    {
+      "name": "surfaces a refused sudo rather than throwing [null exit] (worker.ts:1118)",
+      "op": "failureReason",
+      "input": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": null,
+        "failed": true,
+        "notFound": false
+      },
+      "expectedJson": "\"exit null\""
+    },
+    {
+      "name": "surfaces a refused sudo rather than throwing [trimmed] (worker.ts:1118)",
+      "op": "failureReason",
+      "input": {
+        "stdout": "x",
+        "stderr": "\n boom \n",
+        "exitCode": 2,
+        "failed": true,
+        "notFound": false
+      },
+      "expectedJson": "\"boom\""
+    },
+    {
+      "name": "reboot restarts (0), power_off parks (3) — the host reads these [reboot]",
+      "op": "containerExitCode",
+      "input": "reboot",
+      "expectedJson": "0"
+    },
+    {
+      "name": "reboot restarts (0), power_off parks (3) — the host reads these [power_off]",
+      "op": "containerExitCode",
+      "input": "power_off",
+      "expectedJson": "3"
+    },
+    {
+      "name": "reboot restarts (0), power_off parks (3) — the host reads these [table]",
+      "op": "replayExitCodes",
+      "input": null,
+      "expectedJson": "{\"reboot\":0,\"power_off\":3}"
+    },
+    {
+      "name": "extra: command ack byte-shape [accepted reboot] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "status": "accepted",
+        "reason": null
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"accepted\"}"
+    },
+    {
+      "name": "extra: command ack byte-shape [rejected expired] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"power_off\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "status": "rejected",
+        "reason": "expired"
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"power_off\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"expired\"}"
+    },
+    {
+      "name": "extra: command ack byte-shape [rejected duplicate] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "status": "rejected",
+        "reason": "duplicate"
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"update\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"duplicate\"}"
+    },
+    {
+      "name": "extra: command ack byte-shape [rejected rate-limited refresh] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"refresh\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "status": "rejected",
+        "reason": "rate-limited"
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"refresh\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"rate-limited\"}"
+    },
+    {
+      "name": "extra: command ack byte-shape [rejected managed by host image] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"update\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "status": "rejected",
+        "reason": "managed by host image"
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"update\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"managed by host image\"}"
+    },
+    {
+      "name": "extra: command ack byte-shape [accepted read_sms with args] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":3}}",
+        "status": "accepted",
+        "reason": null
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":3},\"status\":\"accepted\"}"
+    },
+    {
+      "name": "extra: command ack byte-shape [failed with reason] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "status": "failed",
+        "reason": "sudo: a password is required"
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"sudo: a password is required\"}"
+    },
+    {
+      "name": "extra: command ack byte-shape [failed ledger] (worker.ts:953-968)",
+      "op": "commandAck",
+      "input": {
+        "deviceId": "dev-1",
+        "nowTs": 1750000000005,
+        "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"reboot\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+        "status": "failed",
+        "reason": "ledger write failed: EACCES"
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"reboot\",\"expiresAt\":1750000060000,\"status\":\"failed\",\"reason\":\"ledger write failed: EACCES\"}"
+    }
+  ]
+}

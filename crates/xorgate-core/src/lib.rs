@@ -23,6 +23,7 @@
 
 pub mod build_info;
 pub mod clock;
+pub mod commands;
 pub mod config_namespaces;
 pub mod hardware_block;
 pub mod network;
@@ -31,6 +32,8 @@ pub mod recording_config;
 pub mod round;
 pub mod settings;
 pub mod settings_migrate;
+pub mod sms;
+pub mod sms_pdu;
 pub mod system;
 pub mod telemetry;
 pub mod topics;
