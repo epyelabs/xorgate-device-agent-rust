@@ -1,0 +1,81 @@
+//! The cloud config namespace registry as the agent knows it — port of
+//! `CONFIG_APPLY_CLASSES` / `CONFIG_NAMESPACE_KEYS` (`src/agent/config-sync.ts:133-153`).
+//! Pinned against the cloud's `config-contract.json` by `tests/config_contract.rs`.
+//! WP4 (config_report) extends this module with the rest of the reported plane.
+
+use serde::{Deserialize, Serialize};
+
+/// `ApplyClass` (`config-sync.ts:84-131`): HOW a namespace reaches the hardware,
+/// so the cloud can say whether "saved" already means "in force".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApplyClass {
+    /// The worker applies it on its own settings poll / cloud message.
+    AgentPoll,
+    /// The sim7600-lte daemon applies it on its ~30 s poll of settings.json.
+    ModemPoll,
+}
+
+impl ApplyClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApplyClass::AgentPoll => "agent-poll",
+            ApplyClass::ModemPoll => "modem-poll",
+        }
+    }
+}
+
+/// `CONFIG_APPLY_CLASSES` (`config-sync.ts:133-151`), in the TS object's
+/// (= wire) order. Must stay identical to the cloud registry.
+pub const CONFIG_APPLY_CLASSES: &[(&str, ApplyClass)] = &[
+    ("gnssAntBias", ApplyClass::ModemPoll),
+    ("imuMount", ApplyClass::AgentPoll),
+    ("recording", ApplyClass::AgentPoll),
+    ("lteRecovery", ApplyClass::ModemPoll),
+    ("timeSync", ApplyClass::AgentPoll),
+    ("cellular", ApplyClass::ModemPoll),
+    // The boot-config reconciler picks it up on every cloud message like the
+    // other agent-applied namespaces; the EDIT is immediate, the effect waits
+    // for the next boot (the agent never reboots by itself).
+    ("cameraMount", ApplyClass::AgentPoll),
+    // Device-simulator scenario: only simulated devices are ever sent it; on
+    // real hardware it is inert.
+    ("simulation", ApplyClass::AgentPoll),
+];
+
+/// `CONFIG_NAMESPACE_KEYS` (`config-sync.ts:153`): `Object.keys(CONFIG_APPLY_CLASSES)`.
+pub const CONFIG_NAMESPACE_KEYS: &[&str] = &[
+    "gnssAntBias",
+    "imuMount",
+    "recording",
+    "lteRecovery",
+    "timeSync",
+    "cellular",
+    "cameraMount",
+    "simulation",
+];
+
+/// Apply class of a namespace key, or None for an unknown key.
+pub fn apply_class_of(namespace: &str) -> Option<ApplyClass> {
+    CONFIG_APPLY_CLASSES
+        .iter()
+        .find(|(k, _)| *k == namespace)
+        .map(|(_, c)| *c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_mirror_the_class_table() {
+        let keys: Vec<&str> = CONFIG_APPLY_CLASSES.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, CONFIG_NAMESPACE_KEYS);
+        assert_eq!(apply_class_of("cellular"), Some(ApplyClass::ModemPoll));
+        assert_eq!(apply_class_of("agent"), None);
+        assert_eq!(
+            serde_json::to_string(&ApplyClass::AgentPoll).unwrap(),
+            r#""agent-poll""#
+        );
+    }
+}

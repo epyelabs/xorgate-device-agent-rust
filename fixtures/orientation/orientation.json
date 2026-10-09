@@ -1,0 +1,492 @@
+{
+  "jsSourceFile": "test/orientation.test.ts + test/imu.test.ts (quatToEuler)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
+  "cases": [
+    {
+      "name": "eulerToQuat is the inverse of quatToEuler [0,0,0]",
+      "op": "eulerToQuat->quatToEuler",
+      "euler": {
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "quat": {
+        "r": 1,
+        "i": 0,
+        "j": 0,
+        "k": 0
+      },
+      "back": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 0
+      },
+      "closeTo": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 0,
+        "digits": 6
+      }
+    },
+    {
+      "name": "eulerToQuat is the inverse of quatToEuler [30,-20,115]",
+      "op": "eulerToQuat->quatToEuler",
+      "euler": {
+        "rollDeg": 30,
+        "pitchDeg": -20,
+        "yawDeg": 115
+      },
+      "quat": {
+        "r": 0.4732019941319674,
+        "i": 0.2784137959332801,
+        "j": 0.12484757730663013,
+        "k": 0.8264252618502269
+      },
+      "back": {
+        "roll": 29.999999999999993,
+        "pitch": -19.99999999999999,
+        "yaw": 114.99999999999997
+      },
+      "closeTo": {
+        "roll": 30,
+        "pitch": -20,
+        "yaw": 115,
+        "digits": 6
+      }
+    },
+    {
+      "name": "eulerToQuat is the inverse of quatToEuler [-90,45,-170]",
+      "op": "eulerToQuat->quatToEuler",
+      "euler": {
+        "rollDeg": -90,
+        "pitchDeg": 45,
+        "yawDeg": -170
+      },
+      "quat": {
+        "r": 0.32650557562197685,
+        "i": 0.2126311099715939,
+        "j": 0.6743797232066278,
+        "k": -0.6272113751262501
+      },
+      "back": {
+        "roll": -90,
+        "pitch": 44.99999999999999,
+        "yaw": -170
+      },
+      "closeTo": {
+        "roll": -90,
+        "pitch": 45,
+        "yaw": -170,
+        "digits": 6
+      }
+    },
+    {
+      "name": "eulerToQuat is the inverse of quatToEuler [179,-89,1]",
+      "op": "eulerToQuat->quatToEuler",
+      "euler": {
+        "rollDeg": 179,
+        "pitchDeg": -89,
+        "yawDeg": 1
+      },
+      "quat": {
+        "r": 0.00010769168699768707,
+        "i": 0.713249509343067,
+        "j": 0.00010769168699773998,
+        "k": 0.7009102041109655
+      },
+      "back": {
+        "roll": 178.99999999999997,
+        "pitch": -88.99999999999974,
+        "yaw": 1.0000000000000064
+      },
+      "closeTo": {
+        "roll": 179,
+        "pitch": -89,
+        "yaw": 1,
+        "digits": 6
+      }
+    },
+    {
+      "name": "produces unit quaternions",
+      "op": "eulerToQuat-unit",
+      "euler": {
+        "rollDeg": 33,
+        "pitchDeg": 12,
+        "yawDeg": -140
+      },
+      "quat": {
+        "r": 0.2982418963712328,
+        "i": 0.1907865409371023,
+        "j": -0.23114647710124864,
+        "k": -0.9062138672354489
+      },
+      "norm2": 0.9999999999999997,
+      "digits": 10
+    },
+    {
+      "name": "q ⊗ q⁻¹ = identity",
+      "op": "multiply-conjugate",
+      "euler": {
+        "rollDeg": 25,
+        "pitchDeg": -40,
+        "yawDeg": 60
+      },
+      "quat": {
+        "r": 0.7574940730146223,
+        "i": 0.34309450611670056,
+        "j": -0.18748370026510408,
+        "k": 0.5228180862930816
+      },
+      "conj": {
+        "r": 0.7574940730146223,
+        "i": -0.34309450611670056,
+        "j": 0.18748370026510408,
+        "k": -0.5228180862930816
+      },
+      "product": {
+        "r": 1.0000000000000002,
+        "i": 0,
+        "j": 0,
+        "k": 0
+      },
+      "digits": 10
+    },
+    {
+      "name": "composes rotations in ZYX order",
+      "op": "compose",
+      "a": {
+        "r": 0.7071067811865476,
+        "i": 0,
+        "j": 0,
+        "k": 0.7071067811865475
+      },
+      "b": {
+        "r": 0.7071067811865476,
+        "i": 0.7071067811865475,
+        "j": 0,
+        "k": 0
+      },
+      "product": {
+        "r": 0.5000000000000001,
+        "i": 0.5,
+        "j": 0.4999999999999999,
+        "k": 0.5
+      },
+      "euler": {
+        "roll": 89.99999999999999,
+        "pitch": 0,
+        "yaw": 89.99999999999999
+      },
+      "closeTo": {
+        "roll": 90,
+        "pitch": 0,
+        "yaw": 90,
+        "digits": 6
+      }
+    },
+    {
+      "name": "no-ops for an identity mount",
+      "op": "applyMountCorrection",
+      "vehicle": {
+        "rollDeg": 10,
+        "pitchDeg": 5,
+        "yawDeg": -30
+      },
+      "mountEuler": {
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "sensor": {
+        "r": 0.9603503907240059,
+        "i": 0.09535242455050641,
+        "j": 0.019436667336159463,
+        "k": -0.2612609005026451
+      },
+      "sensorEuler": {
+        "roll": 10.000000000000004,
+        "pitch": 5.000000000000001,
+        "yaw": -29.999999999999996
+      },
+      "mount": {
+        "enabled": true,
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "corrected": {
+        "r": 0.9603503907240059,
+        "i": 0.09535242455050641,
+        "j": 0.019436667336159463,
+        "k": -0.2612609005026451
+      },
+      "euler": {
+        "roll": 10.000000000000004,
+        "pitch": 5.000000000000001,
+        "yaw": -29.999999999999996
+      },
+      "closeTo": {
+        "roll": 10,
+        "pitch": 5,
+        "yaw": -30,
+        "digits": 6
+      }
+    },
+    {
+      "name": "un-swaps roll and pitch for a sideways (yaw 90°) mount",
+      "op": "applyMountCorrection",
+      "vehicle": {
+        "rollDeg": 15,
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "mountEuler": {
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 90
+      },
+      "sensor": {
+        "r": 0.7010573846499779,
+        "i": 0.09229595564125725,
+        "j": -0.09229595564125724,
+        "k": 0.7010573846499778
+      },
+      "sensorEuler": {
+        "roll": 1.646376251105479e-15,
+        "pitch": -14.999999999999996,
+        "yaw": 89.99999999999999
+      },
+      "mount": {
+        "enabled": true,
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 90
+      },
+      "corrected": {
+        "r": 0.9914448613738103,
+        "i": 0.13052619222005157,
+        "j": 0,
+        "k": 0
+      },
+      "euler": {
+        "roll": 14.999999999999996,
+        "pitch": 0,
+        "yaw": 0
+      },
+      "closeTo": {
+        "roll": 15,
+        "pitch": 0,
+        "yaw": 0,
+        "digits": 6
+      }
+    },
+    {
+      "name": "removes a 180° yaw offset for a backwards mount",
+      "op": "applyMountCorrection",
+      "vehicle": {
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 40
+      },
+      "mountEuler": {
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 180
+      },
+      "sensor": {
+        "r": -0.34202014332566866,
+        "i": 0,
+        "j": 0,
+        "k": 0.9396926207859084
+      },
+      "sensorEuler": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": -140.00000000000003
+      },
+      "mount": {
+        "enabled": true,
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 180
+      },
+      "corrected": {
+        "r": 0.9396926207859084,
+        "i": 0,
+        "j": 0,
+        "k": 0.3420201433256687
+      },
+      "euler": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 40
+      },
+      "closeTo": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 40,
+        "digits": 6
+      }
+    },
+    {
+      "name": "corrects a rolled (90°) mount",
+      "op": "applyMountCorrection",
+      "vehicle": {
+        "rollDeg": 0,
+        "pitchDeg": 12,
+        "yawDeg": 0
+      },
+      "mountEuler": {
+        "rollDeg": 90,
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "sensor": {
+        "r": 0.7032331762534042,
+        "i": 0.7032331762534041,
+        "j": 0.07391278520356671,
+        "k": -0.0739127852035667
+      },
+      "sensorEuler": {
+        "roll": 89.99999999999999,
+        "pitch": 12,
+        "yaw": 0
+      },
+      "mount": {
+        "enabled": true,
+        "rollDeg": 90,
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "corrected": {
+        "r": 0.9945218953682733,
+        "i": 0,
+        "j": 0.10452846326765347,
+        "k": 0
+      },
+      "euler": {
+        "roll": 0,
+        "pitch": 12,
+        "yaw": 0
+      },
+      "closeTo": {
+        "roll": 0,
+        "pitch": 12,
+        "yaw": 0,
+        "digits": 6
+      }
+    },
+    {
+      "name": "corrects a compound mount (rolled and yawed)",
+      "op": "applyMountCorrection",
+      "vehicle": {
+        "rollDeg": 5,
+        "pitchDeg": -8,
+        "yawDeg": 120
+      },
+      "mountEuler": {
+        "rollDeg": 90,
+        "pitchDeg": 0,
+        "yawDeg": 90
+      },
+      "sensor": {
+        "r": -0.22694554771442285,
+        "i": -0.14199716295531178,
+        "j": 0.6405078104384128,
+        "k": 0.7197793195505365
+      },
+      "sensorEuler": {
+        "roll": 81.96983915993981,
+        "pitch": -4.951218255719555,
+        "yaw": -149.30239713144886
+      },
+      "mount": {
+        "enabled": true,
+        "rollDeg": 90,
+        "pitchDeg": 0,
+        "yawDeg": 90
+      },
+      "corrected": {
+        "r": 0.49567220965960723,
+        "i": 0.08210994693561735,
+        "j": 0.002838437823493689,
+        "k": 0.8646149203293421
+      },
+      "euler": {
+        "roll": 5.000000000000005,
+        "pitch": -8.000000000000009,
+        "yaw": 119.99999999999997
+      },
+      "closeTo": {
+        "roll": 5,
+        "pitch": -8,
+        "yaw": 120,
+        "digits": 6
+      }
+    },
+    {
+      "name": "identity quaternion is level",
+      "op": "quatToEuler",
+      "quat": {
+        "r": 1,
+        "i": 0,
+        "j": 0,
+        "k": 0
+      },
+      "euler": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 0
+      },
+      "closeTo": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 0,
+        "digits": 5
+      }
+    },
+    {
+      "name": "90° rotation about Z reads as yaw 90",
+      "op": "quatToEuler",
+      "quat": {
+        "r": 0.7071067811865476,
+        "i": 0,
+        "j": 0,
+        "k": 0.7071067811865476
+      },
+      "euler": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 90.00000000000003
+      },
+      "closeTo": {
+        "roll": 0,
+        "pitch": 0,
+        "yaw": 90,
+        "digits": 3
+      }
+    },
+    {
+      "name": "extra: pitch clamps at ±90 instead of NaN",
+      "op": "quatToEuler",
+      "quat": {
+        "r": 0.7071067811865476,
+        "i": 0,
+        "j": 0.7071067811865477,
+        "k": 0
+      },
+      "euler": {
+        "roll": 180,
+        "pitch": 90,
+        "yaw": 180
+      },
+      "closeTo": {
+        "roll": 180,
+        "pitch": 90,
+        "yaw": 180,
+        "digits": 5
+      }
+    }
+  ]
+}

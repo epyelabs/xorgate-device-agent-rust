@@ -1,0 +1,540 @@
+{
+  "jsSourceFile": "test/recording-settings.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
+  "recordingDefaultsJson": "{\"telemetry\":{\"enabled\":false,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.85,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}",
+  "timeSyncDefaultsJson": "{\"offlineSources\":true,\"stepThresholdSecs\":10,\"maxStepsPerBoot\":4}",
+  "videoPresetsJson": "[{\"name\":\"1080p30-4mbps\",\"width\":1920,\"height\":1080,\"fps\":30,\"bitrateKbps\":4000},{\"name\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000},{\"name\":\"720p30-2mbps\",\"width\":1280,\"height\":720,\"fps\":30,\"bitrateKbps\":2000},{\"name\":\"720p15-2mbps\",\"width\":1280,\"height\":720,\"fps\":15,\"bitrateKbps\":2000},{\"name\":\"720p15-1mbps\",\"width\":1280,\"height\":720,\"fps\":15,\"bitrateKbps\":1000}]",
+  "defaultVideoPreset": "720p15-1mbps",
+  "configApplyClassesJson": "{\"gnssAntBias\":\"modem-poll\",\"imuMount\":\"agent-poll\",\"recording\":\"agent-poll\",\"lteRecovery\":\"modem-poll\",\"timeSync\":\"agent-poll\",\"cellular\":\"modem-poll\",\"cameraMount\":\"agent-poll\",\"simulation\":\"agent-poll\"}",
+  "configNamespaceKeys": [
+    "gnssAntBias",
+    "imuMount",
+    "recording",
+    "lteRecovery",
+    "timeSync",
+    "cellular",
+    "cameraMount",
+    "simulation"
+  ],
+  "cases": [
+    {
+      "name": "accepts a full valid shape",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": {
+          "enabled": true,
+          "rateHz": 10
+        },
+        "video": {
+          "enabled": false,
+          "preset": "1080p15-2mbps",
+          "segmentSeconds": 60
+        },
+        "upload": {
+          "mode": "off"
+        },
+        "retention": {
+          "maxBytes": 5000000,
+          "minFreeBytes": 1000000
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":true,\"rateHz\":10},\"video\":{\"enabled\":false,\"preset\":\"1080p15-2mbps\",\"segmentSeconds\":60},\"upload\":{\"mode\":\"off\"},\"retention\":{\"maxBytes\":5000000,\"minFreeBytes\":1000000}}"
+    },
+    {
+      "name": "clamps rateHz into [1, 20] [50]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": {
+          "rateHz": 50
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"rateHz\":20}}"
+    },
+    {
+      "name": "clamps rateHz into [1, 20] [0.2]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": {
+          "rateHz": 0.2
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"rateHz\":1}}"
+    },
+    {
+      "name": "clamps rateHz into [1, 20] [7.6]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": {
+          "rateHz": 7.6
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"rateHz\":8}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 2 boot staging knobs [valid]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "bootDefer": "always",
+          "bootDeferMaxSecs": 120,
+          "bootDeferMinBudgetMa": 4000,
+          "spawnStaggerSecs": 5
+        }
+      },
+      "expectedJson": "{\"video\":{\"bootDefer\":\"always\",\"bootDeferMaxSecs\":120,\"bootDeferMinBudgetMa\":4000,\"spawnStaggerSecs\":5}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 2 boot staging knobs [zeros survive]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "bootDeferMaxSecs": 0,
+          "spawnStaggerSecs": 0
+        }
+      },
+      "expectedJson": "{\"video\":{\"bootDeferMaxSecs\":0,\"spawnStaggerSecs\":0}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 2 boot staging knobs [clamps + enum rejection]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "bootDefer": "sometimes",
+          "bootDeferMaxSecs": 10000,
+          "bootDeferMinBudgetMa": 99999,
+          "spawnStaggerSecs": 300
+        }
+      },
+      "expectedJson": "{\"video\":{\"bootDeferMaxSecs\":600,\"bootDeferMinBudgetMa\":10000,\"spawnStaggerSecs\":30}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 7 GPS gate knobs [valid]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "gpsGate": "always",
+          "gpsGateMaxSecs": 900
+        }
+      },
+      "expectedJson": "{\"video\":{\"gpsGate\":\"always\",\"gpsGateMaxSecs\":900}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 7 GPS gate knobs [0 = no cap]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "gpsGateMaxSecs": 0
+        }
+      },
+      "expectedJson": "{\"video\":{\"gpsGateMaxSecs\":0}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 7 GPS gate knobs [enum + clamp]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "gpsGate": "maybe",
+          "gpsGateMaxSecs": 99999
+        }
+      },
+      "expectedJson": "{\"video\":{\"gpsGateMaxSecs\":3600}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 7 GPS gate knobs [negative]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "gpsGateMaxSecs": -5
+        }
+      },
+      "expectedJson": "{\"video\":{\"gpsGateMaxSecs\":0}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 7 GPS gate knobs [noProgress 180]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "gpsGateNoProgressSecs": 180
+        }
+      },
+      "expectedJson": "{\"video\":{\"gpsGateNoProgressSecs\":180}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 7 GPS gate knobs [noProgress 0]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "gpsGateNoProgressSecs": 0
+        }
+      },
+      "expectedJson": "{\"video\":{\"gpsGateNoProgressSecs\":0}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 7 GPS gate knobs [noProgress clamp]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "gpsGateNoProgressSecs": 99999
+        }
+      },
+      "expectedJson": "{\"video\":{\"gpsGateNoProgressSecs\":3600}}"
+    },
+    {
+      "name": "resolves boot staging defaults (auto / 90 s / 5000 mA / 4 s stagger / gate auto 600 s)",
+      "op": "resolveRecordingConfig",
+      "input": {
+        "$undefined": true
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":false,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.85,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 3 powerShedding knobs [full]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "enabled": true,
+          "uvSamples": 3,
+          "uvWindowSecs": 30,
+          "railLowVolts": 4.85,
+          "railLowSecs": 15,
+          "escalateDwellSecs": 60,
+          "escalateDutyPct": 70,
+          "restoreSecs": 120,
+          "railRestoreVolts": 4.95,
+          "maxShedsPerHour": 4
+        }
+      },
+      "expectedJson": "{\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"restoreSecs\":120,\"maxShedsPerHour\":4,\"railLowVolts\":4.85,\"railRestoreVolts\":4.95}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 3 powerShedding knobs [clamps]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "uvSamples": 0,
+          "uvWindowSecs": 9999,
+          "railLowVolts": 6,
+          "railLowSecs": 1,
+          "escalateDwellSecs": 0,
+          "restoreSecs": 100000,
+          "railRestoreVolts": 3,
+          "maxShedsPerHour": -5
+        }
+      },
+      "expectedJson": "{\"powerShedding\":{\"uvSamples\":1,\"uvWindowSecs\":300,\"railLowSecs\":3,\"escalateDwellSecs\":5,\"restoreSecs\":3600,\"maxShedsPerHour\":0,\"railLowVolts\":5.2,\"railRestoreVolts\":4}}"
+    },
+    {
+      "name": "accepts and clamps the Phase 3 powerShedding knobs [mistyped leaf]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "enabled": false,
+          "uvSamples": "three"
+        }
+      },
+      "expectedJson": "{\"powerShedding\":{\"enabled\":false}}"
+    },
+    {
+      "name": "accepts and clamps the thermal-arm thresholds (Phase 1) [decimals]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "cpuTempC": 72.5,
+          "cpuTempRestoreC": 64.5,
+          "cpuTempSecs": 20
+        }
+      },
+      "expectedJson": "{\"powerShedding\":{\"cpuTempSecs\":20,\"cpuTempC\":72.5,\"cpuTempRestoreC\":64.5}}"
+    },
+    {
+      "name": "accepts and clamps the thermal-arm thresholds (Phase 1) [clamps]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "cpuTempC": 200,
+          "cpuTempRestoreC": 0,
+          "cpuTempSecs": 9999
+        }
+      },
+      "expectedJson": "{\"powerShedding\":{\"cpuTempSecs\":120,\"cpuTempC\":90,\"cpuTempRestoreC\":40}}"
+    },
+    {
+      "name": "accepts and clamps the thermal-arm thresholds (Phase 1) [mistyped]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "cpuTempC": "hot"
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "resolves powerShedding defaults (on, Q4 starting thresholds)",
+      "op": "resolveRecordingConfig",
+      "input": {
+        "$undefined": true
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":false,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.85,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}"
+    },
+    {
+      "name": "resolves powerShedding defaults [partial overlay]",
+      "op": "resolveRecordingConfig",
+      "input": {
+        "powerShedding": {
+          "railLowVolts": 4.75
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":false,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.75,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}"
+    },
+    {
+      "name": "drops mistyped leaves but keeps valid siblings",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": {
+          "enabled": "yes",
+          "rateHz": 5
+        },
+        "upload": {
+          "mode": "wifi-only"
+        },
+        "retention": {
+          "maxBytes": -1,
+          "minFreeBytes": 1024
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"rateHz\":5},\"retention\":{\"minFreeBytes\":1024}}"
+    },
+    {
+      "name": "returns undefined for junk [undefined]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "$undefined": true
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "returns undefined for junk [string]",
+      "op": "parseRecordingSettings",
+      "input": "on",
+      "expectedJson": null
+    },
+    {
+      "name": "returns undefined for junk [bogus key]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "bogus": true
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "returns undefined for junk [mistyped enabled]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": {
+          "enabled": "x"
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "clamps escalateDutyPct into [50, 100] [10]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "escalateDutyPct": 10
+        }
+      },
+      "expectedJson": "{\"powerShedding\":{\"escalateDutyPct\":50}}"
+    },
+    {
+      "name": "clamps escalateDutyPct into [50, 100] [250]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "powerShedding": {
+          "escalateDutyPct": 250
+        }
+      },
+      "expectedJson": "{\"powerShedding\":{\"escalateDutyPct\":100}}"
+    },
+    {
+      "name": "clamps escalateDutyPct into [50, 100] [default 70]",
+      "op": "resolveRecordingConfig",
+      "input": {
+        "$undefined": true
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":false,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.85,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}"
+    },
+    {
+      "name": "keeps per-camera enables keyed by streamKey, drops junk keys/values",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "cameras": {
+            "cam0": true,
+            "cam1": false,
+            "bad key!": true,
+            "cam2": "off"
+          }
+        }
+      },
+      "expectedJson": "{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}"
+    },
+    {
+      "name": "keeps per-camera enables [absent map = {}]",
+      "op": "resolveRecordingConfig",
+      "input": {
+        "$undefined": true
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":false,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.85,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}"
+    },
+    {
+      "name": "keeps per-camera enables [empty map = undefined]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "cameras": {}
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "keeps per-camera enables [array = undefined]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "cameras": [
+            true
+          ]
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "clamps segmentSeconds into [10, 600] [5]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "segmentSeconds": 5
+        }
+      },
+      "expectedJson": "{\"video\":{\"segmentSeconds\":10}}"
+    },
+    {
+      "name": "clamps segmentSeconds into [10, 600] [10000]",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "segmentSeconds": 10000
+        }
+      },
+      "expectedJson": "{\"video\":{\"segmentSeconds\":600}}"
+    },
+    {
+      "name": "returns pure defaults when nothing is set (recording off)",
+      "op": "resolveRecordingConfig",
+      "input": {
+        "$undefined": true
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":false,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.85,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}"
+    },
+    {
+      "name": "overlays partial settings on defaults",
+      "op": "resolveRecordingConfig",
+      "input": {
+        "telemetry": {
+          "enabled": true
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"enabled\":true,\"rateHz\":1},\"video\":{\"enabled\":false,\"preset\":\"720p15-1mbps\",\"segmentSeconds\":60,\"bootDefer\":\"auto\",\"bootDeferMaxSecs\":90,\"bootDeferMinBudgetMa\":5000,\"gpsGate\":\"auto\",\"gpsGateMaxSecs\":600,\"gpsGateNoProgressSecs\":120,\"spawnStaggerSecs\":4,\"cameras\":{}},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648},\"powerShedding\":{\"enabled\":true,\"uvSamples\":3,\"uvWindowSecs\":30,\"railLowVolts\":4.85,\"railLowSecs\":15,\"escalateDwellSecs\":60,\"escalateDutyPct\":70,\"cpuTempC\":80,\"cpuTempRestoreC\":70,\"cpuTempSecs\":15,\"restoreSecs\":120,\"railRestoreVolts\":4.95,\"maxShedsPerHour\":4}}"
+    },
+    {
+      "name": "extra: top-level array parses to undefined",
+      "op": "parseRecordingSettings",
+      "input": [
+        1
+      ],
+      "expectedJson": null
+    },
+    {
+      "name": "extra: null parses to undefined",
+      "op": "parseRecordingSettings",
+      "input": null,
+      "expectedJson": null
+    },
+    {
+      "name": "extra: nested arrays are ignored like non-objects",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": [
+          true
+        ],
+        "video": "x",
+        "upload": null,
+        "powerShedding": 5,
+        "retention": []
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "extra: retention zero minFreeBytes survives, zero maxBytes drops",
+      "op": "parseRecordingSettings",
+      "input": {
+        "retention": {
+          "maxBytes": 0,
+          "minFreeBytes": 0
+        }
+      },
+      "expectedJson": "{\"retention\":{\"minFreeBytes\":0}}"
+    },
+    {
+      "name": "extra: retention rounds",
+      "op": "parseRecordingSettings",
+      "input": {
+        "retention": {
+          "maxBytes": 1024.5,
+          "minFreeBytes": 2.4
+        }
+      },
+      "expectedJson": "{\"retention\":{\"maxBytes\":1025,\"minFreeBytes\":2}}"
+    },
+    {
+      "name": "extra: empty preset drops",
+      "op": "parseRecordingSettings",
+      "input": {
+        "video": {
+          "preset": ""
+        }
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "extra: Math.round ties toward +inf",
+      "op": "parseRecordingSettings",
+      "input": {
+        "telemetry": {
+          "rateHz": 2.5
+        },
+        "video": {
+          "segmentSeconds": 10.5
+        },
+        "powerShedding": {
+          "uvSamples": 1.5
+        }
+      },
+      "expectedJson": "{\"telemetry\":{\"rateHz\":3},\"video\":{\"segmentSeconds\":11},\"powerShedding\":{\"uvSamples\":2}}"
+    },
+    {
+      "name": "persists and reloads the recording namespace alongside other keys",
+      "op": "loadSettings",
+      "input": "{\"mode\":\"real\",\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10}}}",
+      "expectedJson": "{\"mode\":\"real\",\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10}}}"
+    },
+    {
+      "name": "drops an invalid recording key without losing the rest of the file",
+      "op": "loadSettings",
+      "input": "{\"mode\":\"real\",\"recording\":\"on\"}",
+      "expectedJson": "{\"mode\":\"real\"}"
+    }
+  ]
+}

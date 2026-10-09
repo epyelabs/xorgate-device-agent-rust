@@ -1,0 +1,42 @@
+{
+  "jsSourceFile": "src/agent/telemetry.ts (types) + src/worker.ts publish tick + src/recording/manager.ts status()",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
+  "cases": [
+    {
+      "name": "full payload with all groups, two streams, recording active",
+      "type": "TelemetryPayload",
+      "json": "{\"v\":1,\"deviceId\":\"58b51737-196e-4c29-a6f6-36f6793a5126\",\"ts\":1791511485433,\"seq\":40913,\"metrics\":{\"imu\":{\"quat_r\":{\"value\":0.853},\"quat_i\":{\"value\":-0.162},\"quat_j\":{\"value\":-0.331},\"quat_k\":{\"value\":-0.37},\"euler_roll\":{\"value\":-20.3,\"unit\":\"°\"},\"euler_pitch\":{\"value\":33.1,\"unit\":\"°\"},\"euler_yaw\":{\"value\":-40,\"unit\":\"°\"},\"accel_x\":{\"value\":0.01,\"unit\":\"m/s^2\"},\"accel_y\":{\"value\":0,\"unit\":\"m/s^2\"},\"accel_z\":{\"value\":-0.008,\"unit\":\"m/s^2\"}},\"gps\":{\"fix_quality\":{\"value\":1},\"satellites\":{\"value\":9},\"satellites_in_view\":{\"value\":23},\"sats_heard\":{\"value\":14},\"snr_max\":{\"value\":41,\"unit\":\"dBHz\"},\"sky_state\":{\"value\":0},\"hdop\":{\"value\":0.9},\"lat\":{\"value\":11.244123},\"lon\":{\"value\":125.003456},\"alt\":{\"value\":12.5,\"unit\":\"m\"},\"speed\":{\"value\":42.3,\"unit\":\"km/h\"},\"course\":{\"value\":181.4,\"unit\":\"°\"},\"ttff_s\":{\"value\":31.2,\"unit\":\"s\"}},\"lte\":{\"quality\":{\"value\":18,\"unit\":\"asu\"},\"rssi\":{\"value\":-77,\"unit\":\"dBm\"},\"modem_temp\":{\"value\":41,\"unit\":\"°C\"},\"gnss_health\":{\"value\":0},\"resets_24h\":{\"value\":1}},\"system\":{\"cpu_usage\":{\"value\":5.8,\"unit\":\"%\"},\"ram_usage\":{\"value\":11.2,\"unit\":\"%\"},\"cpu_temp\":{\"value\":52.9,\"unit\":\"°C\"},\"disk_usage\":{\"value\":19.2,\"unit\":\"%\"},\"throttled\":{\"value\":0},\"rail_5v\":{\"value\":4.939,\"unit\":\"V\"},\"psu_max_current\":{\"value\":3000,\"unit\":\"mA\"}}},\"media\":{\"kvs\":{\"value\":true},\"recording\":{\"value\":true},\"streams\":[{\"streamKey\":\"cam0\",\"channelName\":\"58b51737-196e-4c29-a6f6-36f6793a5126-cam0\",\"state\":\"running\",\"recording\":true},{\"streamKey\":\"cam1\",\"channelName\":\"58b51737-196e-4c29-a6f6-36f6793a5126-cam1\",\"state\":\"no-camera\"}]},\"recording\":{\"enabled\":true,\"sessionId\":\"019f95d1-5c3e-7a10-8b2f-9e1d2c3b4a55\",\"backlogBytes\":7340032,\"backlogSegments\":3,\"droppedSegments\":1,\"uploading\":true,\"lastUploadAt\":1791511480000,\"bootDefer\":\"released:budget 5000mA >= 5000mA\"}}"
+    },
+    {
+      "name": "idle payload (no groups, idle media, all-off recording)",
+      "type": "TelemetryPayload",
+      "json": "{\"v\":1,\"deviceId\":\"58b51737-196e-4c29-a6f6-36f6793a5126\",\"ts\":1791511485433,\"seq\":40913,\"metrics\":{},\"media\":{\"kvs\":{\"value\":false},\"recording\":{\"value\":false},\"streams\":[]},\"recording\":{\"enabled\":false,\"sessionId\":null,\"backlogBytes\":0,\"backlogSegments\":0,\"droppedSegments\":0,\"uploading\":false,\"lastUploadAt\":null}}"
+    },
+    {
+      "name": "recording with bootDefer + powerShed + liveBlock",
+      "type": "TelemetryPayload",
+      "json": "{\"v\":1,\"deviceId\":\"58b51737-196e-4c29-a6f6-36f6793a5126\",\"ts\":1791511485433,\"seq\":40913,\"metrics\":{\"system\":{\"cpu_usage\":{\"value\":5.8,\"unit\":\"%\"},\"ram_usage\":{\"value\":11.2,\"unit\":\"%\"},\"cpu_temp\":{\"value\":52.9,\"unit\":\"°C\"},\"disk_usage\":{\"value\":19.2,\"unit\":\"%\"},\"throttled\":{\"value\":0},\"rail_5v\":{\"value\":4.939,\"unit\":\"V\"},\"psu_max_current\":{\"value\":3000,\"unit\":\"mA\"}}},\"media\":{\"kvs\":{\"value\":false},\"recording\":{\"value\":true},\"streams\":[{\"streamKey\":\"cam0\",\"channelName\":\"x-cam0\",\"state\":\"stopped\",\"recording\":true}]},\"recording\":{\"enabled\":true,\"sessionId\":\"019f95d1-5c3e-7a10-8b2f-9e1d2c3b4a55\",\"backlogBytes\":0,\"backlogSegments\":0,\"droppedSegments\":0,\"uploading\":false,\"lastUploadAt\":null,\"bootDefer\":\"deferring\",\"powerShed\":\"parked:no-live\",\"liveBlock\":{\"reason\":\"undervoltage\",\"detail\":\"rail 4.66V < 4.85V for 15s\",\"since\":1791511400000}}}"
+    },
+    {
+      "name": "sim/offline payload without a recording block",
+      "type": "TelemetryPayload",
+      "json": "{\"v\":1,\"deviceId\":\"58b51737-196e-4c29-a6f6-36f6793a5126\",\"ts\":1791511485433,\"seq\":40913,\"metrics\":{\"gps\":{\"fix_quality\":{\"value\":0},\"sats_heard\":{\"value\":0}}},\"media\":{\"kvs\":{\"value\":false},\"recording\":{\"value\":false},\"streams\":[]}}"
+    },
+    {
+      "name": "state.json snapshot (worker.ts initial + latest + recording)",
+      "type": "StateSnapshot",
+      "json": "{\"v\":1,\"writtenBy\":\"0.2.0\",\"deviceId\":\"58b51737-196e-4c29-a6f6-36f6793a5126\",\"mode\":\"real\",\"mediaEnabled\":true,\"rateHz\":1,\"endpoint\":\"a1b2c3-ats.iot.ca-central-1.amazonaws.com\",\"offline\":false,\"pid\":1234,\"startedAt\":1791500000000,\"lastWriteAt\":1791511485450,\"connection\":\"connected\",\"connectionSince\":1791500001000,\"seq\":40913,\"published\":40900,\"publishErrors\":2,\"lastPublishAt\":1791511485433,\"lastError\":\"publish error: timeout\",\"latest\":{\"v\":1,\"deviceId\":\"58b51737-196e-4c29-a6f6-36f6793a5126\",\"ts\":1791511485433,\"seq\":40913,\"metrics\":{\"system\":{\"cpu_usage\":{\"value\":5.8,\"unit\":\"%\"},\"ram_usage\":{\"value\":11.2,\"unit\":\"%\"},\"cpu_temp\":{\"value\":52.9,\"unit\":\"°C\"},\"disk_usage\":{\"value\":19.2,\"unit\":\"%\"},\"throttled\":{\"value\":0},\"rail_5v\":{\"value\":4.939,\"unit\":\"V\"},\"psu_max_current\":{\"value\":3000,\"unit\":\"mA\"}}},\"media\":{\"kvs\":{\"value\":false},\"recording\":{\"value\":false},\"streams\":[]},\"recording\":{\"enabled\":false,\"sessionId\":null,\"backlogBytes\":0,\"backlogSegments\":0,\"droppedSegments\":0,\"uploading\":false,\"lastUploadAt\":null}},\"recentEvents\":[{\"ts\":1791500000000,\"level\":\"info\",\"msg\":\"agent starting (mode=real)\"},{\"ts\":1791500001000,\"level\":\"warn\",\"msg\":\"config applied (rev 3)\"},{\"ts\":1791511485433,\"level\":\"error\",\"msg\":\"publish error: timeout\"}],\"recording\":{\"enabled\":false,\"sessionId\":null,\"backlogBytes\":0,\"backlogSegments\":0,\"droppedSegments\":0,\"uploading\":false,\"lastUploadAt\":null}}"
+    },
+    {
+      "name": "state.json snapshot minimal (no mediaEnabled, nulls, no recording)",
+      "type": "StateSnapshot",
+      "json": "{\"v\":1,\"writtenBy\":\"0.2.0\",\"deviceId\":\"dev\",\"mode\":\"sim\",\"rateHz\":0.5,\"endpoint\":\"\",\"offline\":true,\"pid\":1,\"startedAt\":0,\"lastWriteAt\":0,\"connection\":\"connecting\",\"connectionSince\":0,\"seq\":0,\"published\":0,\"publishErrors\":0,\"lastPublishAt\":null,\"lastError\":null,\"latest\":null,\"recentEvents\":[]}"
+    },
+    {
+      "name": "TelemetryReading (collector output)",
+      "type": "TelemetryReading",
+      "json": "{\"metrics\":{\"lte\":{\"quality\":{\"value\":18,\"unit\":\"asu\"},\"rssi\":{\"value\":-77,\"unit\":\"dBm\"},\"modem_temp\":{\"value\":41,\"unit\":\"°C\"},\"gnss_health\":{\"value\":0},\"resets_24h\":{\"value\":1}}},\"media\":{\"kvs\":{\"value\":false},\"recording\":{\"value\":false},\"streams\":[]}}"
+    }
+  ]
+}

@@ -1,0 +1,190 @@
+{
+  "jsSourceFile": "test/network.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "by hand from the vitest tables (plans/device-agent-js-to-rust/phase-1 WP1); ifaceForIp (1 case) is HAL \u2014 not fixture-able",
+  "cases": [
+    {
+      "name": "hides loopback and virtual devices [lo]",
+      "op": "isVirtualIface",
+      "input": "lo",
+      "expected": true
+    },
+    {
+      "name": "hides loopback and virtual devices [p2p-dev-wlan0]",
+      "op": "isVirtualIface",
+      "input": "p2p-dev-wlan0",
+      "expected": true
+    },
+    {
+      "name": "hides loopback and virtual devices [veth123]",
+      "op": "isVirtualIface",
+      "input": "veth123",
+      "expected": true
+    },
+    {
+      "name": "hides loopback and virtual devices [docker0]",
+      "op": "isVirtualIface",
+      "input": "docker0",
+      "expected": true
+    },
+    {
+      "name": "hides loopback and virtual devices [br-abc]",
+      "op": "isVirtualIface",
+      "input": "br-abc",
+      "expected": true
+    },
+    {
+      "name": "hides loopback and virtual devices [virbr0]",
+      "op": "isVirtualIface",
+      "input": "virbr0",
+      "expected": true
+    },
+    {
+      "name": "hides loopback and virtual devices [tun0]",
+      "op": "isVirtualIface",
+      "input": "tun0",
+      "expected": true
+    },
+    {
+      "name": "hides loopback and virtual devices [tap0]",
+      "op": "isVirtualIface",
+      "input": "tap0",
+      "expected": true
+    },
+    {
+      "name": "keeps real interfaces [eth0]",
+      "op": "isVirtualIface",
+      "input": "eth0",
+      "expected": false
+    },
+    {
+      "name": "keeps real interfaces [eth1]",
+      "op": "isVirtualIface",
+      "input": "eth1",
+      "expected": false
+    },
+    {
+      "name": "keeps real interfaces [usb0]",
+      "op": "isVirtualIface",
+      "input": "usb0",
+      "expected": false
+    },
+    {
+      "name": "keeps real interfaces [wlan0]",
+      "op": "isVirtualIface",
+      "input": "wlan0",
+      "expected": false
+    },
+    {
+      "name": "keeps real interfaces [wlp2s0]",
+      "op": "isVirtualIface",
+      "input": "wlp2s0",
+      "expected": false
+    },
+    {
+      "name": "keeps real interfaces [enp3s0]",
+      "op": "isVirtualIface",
+      "input": "enp3s0",
+      "expected": false
+    },
+    {
+      "name": "orders eth*, usb*, wlan*, then the rest, lexically within a rank",
+      "op": "sortInterfaces",
+      "input": [
+        "wlan0",
+        "usb0",
+        "eth1",
+        "eth0",
+        "ztabc"
+      ],
+      "expected": [
+        "eth0",
+        "eth1",
+        "usb0",
+        "wlan0",
+        "ztabc"
+      ]
+    },
+    {
+      "name": "finds the first wifi device",
+      "op": "parseWifiDevice",
+      "input": "usb0:ethernet\nwlan0:wifi\nlo:loopback\np2p-dev-wlan0:wifi-p2p",
+      "expected": "wlan0"
+    },
+    {
+      "name": "returns null when there is no wifi device",
+      "op": "parseWifiDevice",
+      "input": "eth0:ethernet\nlo:loopback",
+      "expected": null
+    },
+    {
+      "name": "treats connected/connecting as enabled [connected]",
+      "op": "parseDeviceEnabled",
+      "input": [
+        "wlan0:connected",
+        "wlan0"
+      ],
+      "expected": true
+    },
+    {
+      "name": "treats connected/connecting as enabled [connecting]",
+      "op": "parseDeviceEnabled",
+      "input": [
+        "wlan0:connecting",
+        "wlan0"
+      ],
+      "expected": true
+    },
+    {
+      "name": "treats disconnected/unavailable as disabled [wlan0]",
+      "op": "parseDeviceEnabled",
+      "input": [
+        "usb0:connected\nwlan0:disconnected\neth0:unavailable",
+        "wlan0"
+      ],
+      "expected": false
+    },
+    {
+      "name": "treats disconnected/unavailable as disabled [eth0]",
+      "op": "parseDeviceEnabled",
+      "input": [
+        "usb0:connected\nwlan0:disconnected\neth0:unavailable",
+        "eth0"
+      ],
+      "expected": false
+    },
+    {
+      "name": "returns false for an unknown device",
+      "op": "parseDeviceEnabled",
+      "input": [
+        "usb0:connected\nwlan0:disconnected\neth0:unavailable",
+        "wlan9"
+      ],
+      "expected": false
+    },
+    {
+      "name": "extracts the server IP (3rd field) from $SSH_CONNECTION",
+      "op": "sshServerIp",
+      "input": "10.0.0.5 51514 10.0.0.111 22",
+      "expected": "10.0.0.111"
+    },
+    {
+      "name": "returns null when unset or malformed [undefined]",
+      "op": "sshServerIp",
+      "input": null,
+      "expected": null
+    },
+    {
+      "name": "returns null when unset or malformed [empty]",
+      "op": "sshServerIp",
+      "input": "",
+      "expected": null
+    },
+    {
+      "name": "returns null when unset or malformed [only two]",
+      "op": "sshServerIp",
+      "input": "only two",
+      "expected": null
+    }
+  ]
+}

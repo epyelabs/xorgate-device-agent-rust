@@ -1,0 +1,482 @@
+{
+  "jsSourceFile": "test/hardware-block.test.ts (parseHardwareBlock)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
+  "cases": [
+    {
+      "name": "parses a CM4 block and derives defaults [full]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}"
+    },
+    {
+      "name": "parses a CM4 block and derives defaults [no encoder]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}"
+    },
+    {
+      "name": "parses a CM4 block and derives defaults [cm5 default]",
+      "op": "defaultEncoderForPlatform",
+      "input": "rpi-cm5",
+      "expectedJson": "\"sw-h264\""
+    },
+    {
+      "name": "extra: cm4 default",
+      "op": "defaultEncoderForPlatform",
+      "input": "rpi-cm4",
+      "expectedJson": "\"hw-h264\""
+    },
+    {
+      "name": "rejects unknown enums and malformed shapes loudly (null) [platform]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "jetson",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown enums and malformed shapes loudly (null) [encoder]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "av1",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown enums and malformed shapes loudly (null) [v]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 1,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown enums and malformed shapes loudly (null) [statusLed partial]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": {
+          "r": 12
+        },
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown enums and malformed shapes loudly (null) [video entry missing fields]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown enums and malformed shapes loudly (null) [null]",
+      "op": "parseHardwareBlock",
+      "input": null,
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects unknown enums and malformed shapes loudly (null) [string]",
+      "op": "parseHardwareBlock",
+      "input": "nope",
+      "expectedJson": "null"
+    },
+    {
+      "name": "round-trips through save/load and compares structurally [serialised form]",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}"
+    },
+    {
+      "name": "extra: full optional video fields + led + rails + no imu",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm5",
+        "rails": true,
+        "statusLed": {
+          "r": 5,
+          "g": 6,
+          "b": 7
+        },
+        "imu": "",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "maxWidth": 1920,
+            "maxHeight": 1080,
+            "maxFps": 30
+          },
+          {
+            "key": "cam1",
+            "connector": "csi1",
+            "sensor": "imx290",
+            "codec": "h265",
+            "label": "Rear",
+            "maxFps": 15.5
+          }
+        ]
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm5\",\"encoder\":\"sw-h264\",\"rails\":true,\"statusLed\":{\"r\":5,\"g\":6,\"b\":7},\"imu\":null,\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"maxWidth\":1920,\"maxHeight\":1080,\"maxFps\":30},{\"key\":\"cam1\",\"connector\":\"csi1\",\"sensor\":\"imx290\",\"codec\":\"h265\",\"label\":\"Rear\",\"maxFps\":15.5}]}"
+    },
+    {
+      "name": "extra: video not an array is treated as empty",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm5",
+        "video": "x"
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm5\",\"encoder\":\"sw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":null,\"video\":[]}"
+    },
+    {
+      "name": "extra: negative / non-integer led pin rejects",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": {
+          "r": -1,
+          "g": 0,
+          "b": 0
+        },
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: fractional led pin rejects",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": {
+          "r": 1.5,
+          "g": 0,
+          "b": 0
+        },
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: array block rejects",
+      "op": "parseHardwareBlock",
+      "input": [
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        }
+      ],
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: empty strings in video reject",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "",
+            "connector": "csi0",
+            "sensor": "imx290"
+          }
+        ]
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: numeric codec falls back to h264, numeric label dropped",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": 5,
+            "label": 3
+          }
+        ]
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\"}]}"
+    },
+    {
+      "name": "hardwareBlocksEqual [same]",
+      "op": "hardwareBlocksEqual",
+      "input": [
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        },
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        }
+      ],
+      "expectedJson": "true"
+    },
+    {
+      "name": "hardwareBlocksEqual [differs]",
+      "op": "hardwareBlocksEqual",
+      "input": [
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        },
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": true,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        }
+      ],
+      "expectedJson": "false"
+    },
+    {
+      "name": "hardwareBlocksEqual [null null]",
+      "op": "hardwareBlocksEqual",
+      "input": [
+        null,
+        null
+      ],
+      "expectedJson": "true"
+    },
+    {
+      "name": "hardwareBlocksEqual [null vs block]",
+      "op": "hardwareBlocksEqual",
+      "input": [
+        null,
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        }
+      ],
+      "expectedJson": "false"
+    }
+  ]
+}

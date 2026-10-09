@@ -1,0 +1,476 @@
+{
+  "jsSourceFile": "test/config-sync-cellular.test.ts + test/camera-mount.test.ts + test/settings.test.ts + test/orientation.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP1; not committed there)",
+  "cases": [
+    {
+      "name": "keeps a valid apn, including the explicit empty string [apn]",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": "sp.mb.com"
+      },
+      "expectedJson": "{\"apn\":\"sp.mb.com\"}"
+    },
+    {
+      "name": "keeps a valid apn, including the explicit empty string [empty]",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": ""
+      },
+      "expectedJson": "{\"apn\":\"\"}"
+    },
+    {
+      "name": "DROPS an invalid apn instead of repairing it [AT injection]",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": "a\";+CFUN=0"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "DROPS an invalid apn instead of repairing it [space]",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": "a b"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "DROPS an invalid apn instead of repairing it [101 chars]",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "DROPS an invalid apn instead of repairing it [number]",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": 5
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "DROPS an invalid apn instead of repairing it [string value]",
+      "op": "parseCellularSettings",
+      "input": "sp.mb.com",
+      "expectedJson": null
+    },
+    {
+      "name": "extra: 100 chars is the max",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedJson": "{\"apn\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+    },
+    {
+      "name": "extra: extra keys are dropped",
+      "op": "parseCellularSettings",
+      "input": {
+        "apn": "x.y",
+        "other": 1
+      },
+      "expectedJson": "{\"apn\":\"x.y\"}"
+    },
+    {
+      "name": "extra: null",
+      "op": "parseCellularSettings",
+      "input": null,
+      "expectedJson": null
+    },
+    {
+      "name": "keeps valid per-camera rotations and drops nothing else",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          },
+          "cam1": {
+            "rotationDeg": 0
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [0]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 90
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [1]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 270
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [2]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 360
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [3]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": -180
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [4]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": "180"
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [5]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": null
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [6]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": true
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops an impossible rotation rather than rounding it to a legal one [7]",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180.5
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "drops a key that could never name a camera",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam 0": {
+            "rotationDeg": 180
+          },
+          "": {
+            "rotationDeg": 0
+          }
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "maps the cloud's erase marker to undefined [{}]",
+      "op": "parseCameraMountSettings",
+      "input": {},
+      "expectedJson": null
+    },
+    {
+      "name": "maps the cloud's erase marker to undefined [null]",
+      "op": "parseCameraMountSettings",
+      "input": null,
+      "expectedJson": null
+    },
+    {
+      "name": "maps the cloud's erase marker to undefined [string]",
+      "op": "parseCameraMountSettings",
+      "input": "cam0",
+      "expectedJson": null
+    },
+    {
+      "name": "keeps an empty camera map",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {}
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "extra: array value / array entry / missing rotationDeg",
+      "op": "parseCameraMountSettings",
+      "input": {
+        "cameras": {
+          "cam0": [
+            180
+          ],
+          "cam1": {},
+          "cam2": null
+        }
+      },
+      "expectedJson": "{\"cameras\":{}}"
+    },
+    {
+      "name": "extra: top-level array",
+      "op": "parseCameraMountSettings",
+      "input": [
+        {
+          "cameras": {}
+        }
+      ],
+      "expectedJson": null
+    },
+    {
+      "name": "both valid",
+      "op": "parseLteRecoverySettings",
+      "input": {
+        "gpsFixResetPolicy": "veto-deadzone",
+        "deadZoneProfile": "aggressive"
+      },
+      "expectedJson": "{\"gpsFixResetPolicy\":\"veto-deadzone\",\"deadZoneProfile\":\"aggressive\"}"
+    },
+    {
+      "name": "all bad",
+      "op": "parseLteRecoverySettings",
+      "input": {
+        "gpsFixResetPolicy": "sometimes",
+        "deadZoneProfile": 3
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "one good",
+      "op": "parseLteRecoverySettings",
+      "input": {
+        "deadZoneProfile": "conservative",
+        "gpsFixResetPolicy": 1
+      },
+      "expectedJson": "{\"deadZoneProfile\":\"conservative\"}"
+    },
+    {
+      "name": "null",
+      "op": "parseLteRecoverySettings",
+      "input": null,
+      "expectedJson": null
+    },
+    {
+      "name": "string",
+      "op": "parseLteRecoverySettings",
+      "input": "defer",
+      "expectedJson": null
+    },
+    {
+      "name": "valid",
+      "op": "parseTimeSyncSettings",
+      "input": {
+        "offlineSources": false,
+        "stepThresholdSecs": 30,
+        "maxStepsPerBoot": 2
+      },
+      "expectedJson": "{\"offlineSources\":false,\"stepThresholdSecs\":30,\"maxStepsPerBoot\":2}"
+    },
+    {
+      "name": "clamp",
+      "op": "parseTimeSyncSettings",
+      "input": {
+        "offlineSources": "yes",
+        "stepThresholdSecs": 0.4,
+        "maxStepsPerBoot": 999
+      },
+      "expectedJson": "{\"stepThresholdSecs\":2,\"maxStepsPerBoot\":20}"
+    },
+    {
+      "name": "mistyped only",
+      "op": "parseTimeSyncSettings",
+      "input": {
+        "offlineSources": 1
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "rounds",
+      "op": "parseTimeSyncSettings",
+      "input": {
+        "stepThresholdSecs": 10.5,
+        "maxStepsPerBoot": 2.5
+      },
+      "expectedJson": "{\"stepThresholdSecs\":11,\"maxStepsPerBoot\":3}"
+    },
+    {
+      "name": "null",
+      "op": "parseTimeSyncSettings",
+      "input": null,
+      "expectedJson": null
+    },
+    {
+      "name": "contract defaults survive",
+      "op": "parseSimulationSettings",
+      "input": {
+        "scenarioId": "demo-haul-01",
+        "loop": true,
+        "gapSeconds": 30
+      },
+      "expectedJson": "{\"scenarioId\":\"demo-haul-01\",\"loop\":true,\"gapSeconds\":30}"
+    },
+    {
+      "name": "gap bounds",
+      "op": "parseSimulationSettings",
+      "input": {
+        "gapSeconds": -1
+      },
+      "expectedJson": "{\"gapSeconds\":0}"
+    },
+    {
+      "name": "gap bounds high",
+      "op": "parseSimulationSettings",
+      "input": {
+        "gapSeconds": 99999.6
+      },
+      "expectedJson": "{\"gapSeconds\":3600}"
+    },
+    {
+      "name": "bad scenario id dropped, loop mistyped",
+      "op": "parseSimulationSettings",
+      "input": {
+        "scenarioId": "Bad/Id",
+        "loop": "yes",
+        "gapSeconds": 5
+      },
+      "expectedJson": "{\"gapSeconds\":5}"
+    },
+    {
+      "name": "scenario id max length 64",
+      "op": "parseSimulationSettings",
+      "input": {
+        "scenarioId": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expectedJson": "{\"scenarioId\":\"abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"
+    },
+    {
+      "name": "scenario id 65 chars dropped -> undefined",
+      "op": "parseSimulationSettings",
+      "input": {
+        "scenarioId": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "array",
+      "op": "parseSimulationSettings",
+      "input": [],
+      "expectedJson": null
+    },
+    {
+      "name": "accepts a well-formed mount",
+      "op": "parseImuMount",
+      "input": {
+        "enabled": true,
+        "rollDeg": 90,
+        "pitchDeg": 0,
+        "yawDeg": -180
+      },
+      "expectedJson": "{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":-180}"
+    },
+    {
+      "name": "rejects malformed values wholesale [null]",
+      "op": "parseImuMount",
+      "input": null,
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed values wholesale [string]",
+      "op": "parseImuMount",
+      "input": "90",
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed values wholesale [missing angles]",
+      "op": "parseImuMount",
+      "input": {
+        "enabled": true
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed values wholesale [enabled string]",
+      "op": "parseImuMount",
+      "input": {
+        "enabled": "yes",
+        "rollDeg": 0,
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "rejects malformed values wholesale [rollDeg string]",
+      "op": "parseImuMount",
+      "input": {
+        "enabled": true,
+        "rollDeg": "90",
+        "pitchDeg": 0,
+        "yawDeg": 0
+      },
+      "expectedJson": "null"
+    },
+    {
+      "name": "extra: decimals survive, extra keys dropped",
+      "op": "parseImuMount",
+      "input": {
+        "enabled": false,
+        "rollDeg": 1.25,
+        "pitchDeg": -0.5,
+        "yawDeg": 359.9,
+        "extra": 1
+      },
+      "expectedJson": "{\"enabled\":false,\"rollDeg\":1.25,\"pitchDeg\":-0.5,\"yawDeg\":359.9}"
+    },
+    {
+      "name": "extra: array is not a mount",
+      "op": "parseImuMount",
+      "input": [
+        true,
+        0,
+        0,
+        0
+      ],
+      "expectedJson": "null"
+    }
+  ]
+}

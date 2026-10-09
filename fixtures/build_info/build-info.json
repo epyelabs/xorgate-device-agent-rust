@@ -1,0 +1,37 @@
+{
+  "jsSourceFile": "test/build-info.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "by hand from the vitest table (plans/device-agent-js-to-rust/phase-1 WP1); loadBuildInfo fallback + cache (2 cases) read the filesystem — not fixture-able, covered by xorgate-agent::build_info",
+  "cases": [
+    {
+      "name": "formats as '<pkg> (<version>, <channel>)'",
+      "op": "formatBuildInfo",
+      "input": { "version": "a1b2c3d", "channel": "dev", "builtAt": "2026-08-10T00:00:00Z", "packageVersion": "0.2.0" },
+      "expected": "0.2.0 (a1b2c3d, dev)"
+    },
+    {
+      "name": "readManifest: a CI manifest (build-info.ts:62-69)",
+      "op": "parseBuildManifest",
+      "input": { "text": "{\"version\":\"a1b2c3d\",\"channel\":\"dev\",\"builtAt\":\"2026-08-10T00:00:00Z\",\"packageVersion\":\"0.2.0\"}", "packageVersion": "0.0.0" },
+      "expected": { "version": "a1b2c3d", "channel": "dev", "builtAt": "2026-08-10T00:00:00Z", "packageVersion": "0.2.0" }
+    },
+    {
+      "name": "readManifest: missing channel/builtAt/packageVersion fall back (unknown / null / package.json)",
+      "op": "parseBuildManifest",
+      "input": { "text": "{\"version\":\"v0.0.6\"}", "packageVersion": "0.2.0" },
+      "expected": { "version": "v0.0.6", "channel": "unknown", "builtAt": null, "packageVersion": "0.2.0" }
+    },
+    {
+      "name": "readManifest: blank version means no manifest (build-info.ts:63)",
+      "op": "parseBuildManifest",
+      "input": { "text": "{\"version\":\"  \",\"channel\":\"dev\"}", "packageVersion": "0.2.0" },
+      "expected": null
+    },
+    {
+      "name": "readManifest: unparseable / non-object JSON means no manifest (build-info.ts:77-85)",
+      "op": "parseBuildManifest",
+      "input": { "text": "[1]", "packageVersion": "0.2.0" },
+      "expected": null
+    }
+  ]
+}
