@@ -1,0 +1,3224 @@
+{
+  "jsSourceFile": "src/commands/set.ts (setCommand :391-531, setRecordingCommand :109, setCameraEnable :227, setCameraMountCommand :266, setTimeSyncCommand :316, setApnCommand + watch :533-671) over src/daemon/settings.ts loadSettings/saveSettings",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-cli-set.mts in a git-archive scratch copy of 89b5c64, non-root, fake timers (phase-2 WP6; script in evidence/wp6-tools, handed to WP7)",
+  "cases": [
+    {
+      "name": "no args → usage",
+      "input": {
+        "args": [],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "flags only → usage",
+      "input": {
+        "args": [
+          "--no-restart",
+          "--force"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "empty key → usage (set.ts:398 `!key`)",
+      "input": {
+        "args": [
+          "",
+          "on"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "unknown key",
+      "input": {
+        "args": [
+          "nonsense",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown setting 'nonsense' (supported: mode, gps-antenna, gps-fix-reset-policy, deadzone-profile, apn, wifi, recording.*, timeSync.*, cameraMount.*)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "retired media",
+      "input": {
+        "args": [
+          "media",
+          "off"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "'media' was removed: turn cameras off individually instead, e.g. xorgate set recording.video.cameras.cam0 off"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "mode sim --no-restart (fresh)",
+      "input": {
+        "args": [
+          "mode",
+          "sim",
+          "--no-restart"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ mode set to sim (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  --no-restart: applies on the next daemon start"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"sim\"}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "mode real, no pidfile → not running",
+      "input": {
+        "args": [
+          "mode",
+          "real"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ mode set to real (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  daemon not running — applies on next start (xorgate start)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\"}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "mode real, stale pidfile → not running",
+      "input": {
+        "args": [
+          "mode",
+          "real"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": "{\"pid\":2147483000,\"startedAt\":1,\"deviceId\":\"d\"}"
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ mode set to real (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  daemon not running — applies on next start (xorgate start)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\"}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "mode bogus",
+      "input": {
+        "args": [
+          "mode",
+          "bogus"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "mode must be 'sim' or 'real', got 'bogus'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "mode missing value",
+      "input": {
+        "args": [
+          "mode"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "mode must be 'sim' or 'real', got ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "mode appended after existing namespaces",
+      "input": {
+        "args": [
+          "mode",
+          "real",
+          "--no-restart"
+        ],
+        "settings": "{\"recording\":{\"telemetry\":{\"enabled\":true}},\"cellular\":{\"apn\":\"x\"}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ mode set to real (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  --no-restart: applies on the next daemon start"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"enabled\":true}},\"cellular\":{\"apn\":\"x\"},\"mode\":\"real\"}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "mode keeps its slot when present",
+      "input": {
+        "args": [
+          "--force",
+          "mode",
+          "sim",
+          "--no-restart"
+        ],
+        "settings": "{\"mode\":\"real\",\"gnssAntBias\":true}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ mode set to sim (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  --no-restart: applies on the next daemon start"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"sim\",\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "gps-antenna active",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "gps-antenna passive over unknown keys",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "passive"
+        ],
+        "settings": "{\"foo\":1,\"mode\":\"real\",\"gnssAntBias\":\"yes\",\"timeSync\":{\"stepThresholdSecs\":30}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to passive (bias off, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"timeSync\":{\"stepThresholdSecs\":30},\"gnssAntBias\":false}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "gps-antenna sideways",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "sideways"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "gps-antenna must be 'active' or 'passive', got 'sideways'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "gps-antenna missing",
+      "input": {
+        "args": [
+          "gps-antenna"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "gps-antenna must be 'active' or 'passive', got ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "gps-fix-reset-policy veto-deadzone",
+      "input": {
+        "args": [
+          "gps-fix-reset-policy",
+          "veto-deadzone"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS fix reset policy set to veto-deadzone (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon reads it live at its next recovery decision (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "gps-fix-reset-policy defer merges after deadZoneProfile",
+      "input": {
+        "args": [
+          "gps-fix-reset-policy",
+          "defer"
+        ],
+        "settings": "{\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS fix reset policy set to defer (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon reads it live at its next recovery decision (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"lteRecovery\":{\"deadZoneProfile\":\"balanced\",\"gpsFixResetPolicy\":\"defer\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "gps-fix-reset-policy bad",
+      "input": {
+        "args": [
+          "gps-fix-reset-policy",
+          "never"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "gps-fix-reset-policy must be 'defer' or 'veto-deadzone', got 'never'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "deadzone-profile aggressive",
+      "input": {
+        "args": [
+          "deadzone-profile",
+          "aggressive"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ Dead-zone profile set to aggressive (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon reads it live at its next dead-zone nudge (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"lteRecovery\":{\"deadZoneProfile\":\"aggressive\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "deadzone-profile conservative replaces",
+      "input": {
+        "args": [
+          "deadzone-profile",
+          "conservative"
+        ],
+        "settings": "{\"lteRecovery\":{\"gpsFixResetPolicy\":\"defer\",\"deadZoneProfile\":\"aggressive\"}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ Dead-zone profile set to conservative (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon reads it live at its next dead-zone nudge (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"lteRecovery\":{\"gpsFixResetPolicy\":\"defer\",\"deadZoneProfile\":\"conservative\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "deadzone-profile wild",
+      "input": {
+        "args": [
+          "deadzone-profile",
+          "wild"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "deadzone-profile must be 'conservative', 'balanced' or 'aggressive', got 'wild'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.enabled on",
+      "input": {
+        "args": [
+          "recording.telemetry.enabled",
+          "on"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.telemetry.enabled = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"enabled\":true}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.enabled 0",
+      "input": {
+        "args": [
+          "recording.telemetry.enabled",
+          "0"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.telemetry.enabled = false (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"enabled\":false}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.enabled yes",
+      "input": {
+        "args": [
+          "recording.telemetry.enabled",
+          "yes"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.telemetry.enabled must be on|off, got 'yes'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz 10",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          "10"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.telemetry.rateHz = 10 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"rateHz\":10}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz 10.6 rounds",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          "10.6"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.telemetry.rateHz = 11 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"rateHz\":11}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz 999",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          "999"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.telemetry.rateHz must be a number in [1, 20], got '999'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz 0.5",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          "0.5"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.telemetry.rateHz must be a number in [1, 20], got '0.5'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz abc",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          "abc"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.telemetry.rateHz must be a number in [1, 20], got 'abc'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz empty",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          ""
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.telemetry.rateHz must be a number in [1, 20], got ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz -3 (flag-filtered → missing)",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          "-3"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.telemetry.rateHz must be a number in [1, 20], got ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.rateHz 0x10 (hex Number)",
+      "input": {
+        "args": [
+          "recording.telemetry.rateHz",
+          "0x10"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.telemetry.rateHz = 16 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"rateHz\":16}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.enabled off",
+      "input": {
+        "args": [
+          "recording.video.enabled",
+          "off"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.enabled = false (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"enabled\":false}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.segmentSeconds 5 clamps",
+      "input": {
+        "args": [
+          "recording.video.segmentSeconds",
+          "5"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.segmentSeconds = 10 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"segmentSeconds\":10}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.segmentSeconds 9999 clamps",
+      "input": {
+        "args": [
+          "recording.video.segmentSeconds",
+          "9999"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.segmentSeconds = 600 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"segmentSeconds\":600}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.preset valid",
+      "input": {
+        "args": [
+          "recording.video.preset",
+          "720p15-1mbps"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.preset = \"720p15-1mbps\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"preset\":\"720p15-1mbps\"}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.preset bogus",
+      "input": {
+        "args": [
+          "recording.video.preset",
+          "8k120"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.video.preset must be one of: 1080p30-4mbps, 1080p15-2mbps, 720p30-2mbps, 720p15-2mbps, 720p15-1mbps (got '8k120')"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.preset missing",
+      "input": {
+        "args": [
+          "recording.video.preset"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.video.preset must be one of: 1080p30-4mbps, 1080p15-2mbps, 720p30-2mbps, 720p15-2mbps, 720p15-1mbps (got '')"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.bootDefer always",
+      "input": {
+        "args": [
+          "recording.video.bootDefer",
+          "always"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.bootDefer = \"always\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"bootDefer\":\"always\"}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.gpsGate maybe",
+      "input": {
+        "args": [
+          "recording.video.gpsGate",
+          "maybe"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.video.gpsGate must be auto|always|off, got 'maybe'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.gpsGateMaxSecs 99999",
+      "input": {
+        "args": [
+          "recording.video.gpsGateMaxSecs",
+          "99999"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.gpsGateMaxSecs = 3600 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"gpsGateMaxSecs\":3600}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.spawnStaggerSecs 2.5",
+      "input": {
+        "args": [
+          "recording.video.spawnStaggerSecs",
+          "2.5"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.spawnStaggerSecs = 3 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"spawnStaggerSecs\":3}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.cameras.cam0 off",
+      "input": {
+        "args": [
+          "recording.video.cameras.cam0",
+          "off"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.cameras.cam0 = false (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  camera disabled: no capture, no live stream, no recording (live within ~5 s)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.cameras.cam1 on merges",
+      "input": {
+        "args": [
+          "recording.video.cameras.cam1",
+          "on"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"enabled\":true,\"cameras\":{\"cam0\":false}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.cameras.cam1 = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"enabled\":true,\"cameras\":{\"cam0\":false,\"cam1\":true}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.cameras.7 index key orders first",
+      "input": {
+        "args": [
+          "recording.video.cameras.7",
+          "off"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"cam1\":true}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.cameras.7 = false (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  camera disabled: no capture, no live stream, no recording (live within ~5 s)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"7\":false,\"cam0\":false,\"cam1\":true}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.cameras bad key",
+      "input": {
+        "args": [
+          "recording.video.cameras.cam 0",
+          "off"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "'cam 0' is not a valid stream key (see kvs.json channels)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.video.cameras bad value",
+      "input": {
+        "args": [
+          "recording.video.cameras.cam0",
+          "maybe"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording.video.cameras.cam0 must be on|off, got 'maybe'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.upload.mode auto",
+      "input": {
+        "args": [
+          "recording.upload.mode",
+          "auto"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.upload.mode = \"auto\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"upload\":{\"mode\":\"auto\"}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.upload.mode sideways",
+      "input": {
+        "args": [
+          "recording.upload.mode",
+          "sideways"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown or invalid recording setting 'recording.upload.mode' = 'sideways'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.retention.maxBytes 1000000",
+      "input": {
+        "args": [
+          "recording.retention.maxBytes",
+          "1000000"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.retention.maxBytes = 1000000 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"retention\":{\"maxBytes\":1000000}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.retention.maxBytes 1e21",
+      "input": {
+        "args": [
+          "recording.retention.maxBytes",
+          "1e21"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.retention.maxBytes = 1e+21 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"retention\":{\"maxBytes\":1e+21}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.retention.maxBytes 0.000005",
+      "input": {
+        "args": [
+          "recording.retention.maxBytes",
+          "0.000005"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.retention.maxBytes = 0 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"retention\":{\"maxBytes\":0}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.retention.minFreeBytes 0",
+      "input": {
+        "args": [
+          "recording.retention.minFreeBytes",
+          "0"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.retention.minFreeBytes = 0 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"retention\":{\"minFreeBytes\":0}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.powerShedding.railLowVolts 4.123456789",
+      "input": {
+        "args": [
+          "recording.powerShedding.railLowVolts",
+          "4.123456789"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.powerShedding.railLowVolts = 4.123456789 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"powerShedding\":{\"railLowVolts\":4.123456789}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.powerShedding.railLowVolts 3 clamps",
+      "input": {
+        "args": [
+          "recording.powerShedding.railLowVolts",
+          "3"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.powerShedding.railLowVolts = 4 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"powerShedding\":{\"railLowVolts\":4}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.powerShedding.cpuTempC 999 clamps",
+      "input": {
+        "args": [
+          "recording.powerShedding.cpuTempC",
+          "999"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.powerShedding.cpuTempC = 90 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"powerShedding\":{\"cpuTempC\":90}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.powerShedding.enabled on into existing section",
+      "input": {
+        "args": [
+          "recording.powerShedding.enabled",
+          "on"
+        ],
+        "settings": "{\"recording\":{\"powerShedding\":{\"uvSamples\":3},\"telemetry\":{\"rateHz\":5}},\"mode\":\"real\"}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.powerShedding.enabled = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"recording\":{\"telemetry\":{\"rateHz\":5},\"powerShedding\":{\"uvSamples\":3,\"enabled\":true}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.powerShedding.cpuTempSecs merges (TS test)",
+      "input": {
+        "args": [
+          "recording.powerShedding.cpuTempSecs",
+          "15"
+        ],
+        "settings": "{\"recording\":{\"powerShedding\":{\"enabled\":true}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.powerShedding.cpuTempSecs = 15 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"powerShedding\":{\"enabled\":true,\"cpuTempSecs\":15}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.nope.field",
+      "input": {
+        "args": [
+          "recording.nope.field",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown or invalid recording setting 'recording.nope.field' = '1'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry (2 parts)",
+      "input": {
+        "args": [
+          "recording.telemetry",
+          "on"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording keys are dotted paths, e.g. xorgate set recording.telemetry.enabled on"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.a.b.c.d (5 parts)",
+      "input": {
+        "args": [
+          "recording.a.b.c.d",
+          "on"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "recording keys are dotted paths, e.g. xorgate set recording.telemetry.enabled on"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.preset (field of another section)",
+      "input": {
+        "args": [
+          "recording.telemetry.preset",
+          "720p15-1mbps"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown or invalid recording setting 'recording.telemetry.preset' = '720p15-1mbps'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "recording.telemetry.constructor",
+      "input": {
+        "args": [
+          "recording.telemetry.constructor",
+          "x"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown or invalid recording setting 'recording.telemetry.constructor' = 'x'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.stepThresholdSecs 15",
+      "input": {
+        "args": [
+          "timeSync.stepThresholdSecs",
+          "15"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ timeSync.stepThresholdSecs = 15 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's clock stepper reads it live within ~30 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"timeSync\":{\"stepThresholdSecs\":15}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.stepThresholdSecs 1 clamps",
+      "input": {
+        "args": [
+          "timeSync.stepThresholdSecs",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ timeSync.stepThresholdSecs = 2 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's clock stepper reads it live within ~30 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"timeSync\":{\"stepThresholdSecs\":2}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.stepThresholdSecs 1e9 clamps",
+      "input": {
+        "args": [
+          "timeSync.stepThresholdSecs",
+          "1e9"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ timeSync.stepThresholdSecs = 600 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's clock stepper reads it live within ~30 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"timeSync\":{\"stepThresholdSecs\":600}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.stepThresholdSecs abc",
+      "input": {
+        "args": [
+          "timeSync.stepThresholdSecs",
+          "abc"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "timeSync.stepThresholdSecs must be a non-negative number, got 'abc'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.maxStepsPerBoot 2.7",
+      "input": {
+        "args": [
+          "timeSync.maxStepsPerBoot",
+          "2.7"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ timeSync.maxStepsPerBoot = 3 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's clock stepper reads it live within ~30 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"timeSync\":{\"maxStepsPerBoot\":3}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.offlineSources false merges",
+      "input": {
+        "args": [
+          "timeSync.offlineSources",
+          "false"
+        ],
+        "settings": "{\"timeSync\":{\"stepThresholdSecs\":30}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ timeSync.offlineSources = false (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's clock stepper reads it live within ~30 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"timeSync\":{\"stepThresholdSecs\":30,\"offlineSources\":false}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.offlineSources maybe",
+      "input": {
+        "args": [
+          "timeSync.offlineSources",
+          "maybe"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "timeSync.offlineSources must be on|off, got 'maybe'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.bogus",
+      "input": {
+        "args": [
+          "timeSync.bogus",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown timeSync setting 'timeSync.bogus' (supported: offlineSources, stepThresholdSecs, maxStepsPerBoot)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync.a.b",
+      "input": {
+        "args": [
+          "timeSync.a.b",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "timeSync keys are dotted paths, e.g. xorgate set timeSync.offlineSources off"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "timeSync. (empty field)",
+      "input": {
+        "args": [
+          "timeSync.",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "timeSync keys are dotted paths, e.g. xorgate set timeSync.offlineSources off"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount.cam0.rotationDeg 180",
+      "input": {
+        "args": [
+          "cameraMount.cam0.rotationDeg",
+          "180"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ cameraMount.cam0.rotationDeg = 180 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent updates the camera overlay in /boot/firmware/config.txt within ~a minute,"
+          },
+          {
+            "stream": "out",
+            "text": "  then a REBOOT is required before the image changes (the agent never reboots itself)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount.cam1.rotationDeg 0 merges",
+      "input": {
+        "args": [
+          "cameraMount.cam1.rotationDeg",
+          "0"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}},\"gnssAntBias\":true}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ cameraMount.cam1.rotationDeg = 0 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent updates the camera overlay in /boot/firmware/config.txt within ~a minute,"
+          },
+          {
+            "stream": "out",
+            "text": "  then a REBOOT is required before the image changes (the agent never reboots itself)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount.2 index key orders first",
+      "input": {
+        "args": [
+          "cameraMount.2.rotationDeg",
+          "180"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ cameraMount.2.rotationDeg = 180 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent updates the camera overlay in /boot/firmware/config.txt within ~a minute,"
+          },
+          {
+            "stream": "out",
+            "text": "  then a REBOOT is required before the image changes (the agent never reboots itself)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"2\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount 90",
+      "input": {
+        "args": [
+          "cameraMount.cam0.rotationDeg",
+          "90"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "cameraMount.cam0.rotationDeg must be 0 or 180, got '90'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount true",
+      "input": {
+        "args": [
+          "cameraMount.cam0.rotationDeg",
+          "true"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "cameraMount.cam0.rotationDeg must be 0 or 180, got 'true'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount missing value",
+      "input": {
+        "args": [
+          "cameraMount.cam0.rotationDeg"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "cameraMount.cam0.rotationDeg must be 0 or 180, got ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount bad key",
+      "input": {
+        "args": [
+          "cameraMount.cam 0.rotationDeg",
+          "180"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "'cam 0' is not a valid stream key (see kvs.json channels)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount wrong field",
+      "input": {
+        "args": [
+          "cameraMount.cam0.rotation",
+          "180"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "cameraMount keys are dotted paths, e.g. xorgate set cameraMount.cam0.rotationDeg 180"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "cameraMount 2 parts",
+      "input": {
+        "args": [
+          "cameraMount.cam0",
+          "180"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "cameraMount keys are dotted paths, e.g. xorgate set cameraMount.cam0.rotationDeg 180"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "corrupt settings.json is rewritten",
+      "input": {
+        "args": [
+          "timeSync.maxStepsPerBoot",
+          "3"
+        ],
+        "settings": "{not json",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ timeSync.maxStepsPerBoot = 3 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's clock stepper reads it live within ~30 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"timeSync\":{\"maxStepsPerBoot\":3}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "array settings.json is rewritten",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "[1,2]",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "full document keeps parser order",
+      "input": {
+        "args": [
+          "recording.retention.maxBytes",
+          "2000000"
+        ],
+        "settings": "{\"simulation\":{\"scenarioId\":\"city-loop\",\"loop\":true},\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}},\"cellular\":{\"apn\":\"internet\"},\"timeSync\":{\"maxStepsPerBoot\":3,\"offlineSources\":true},\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"},\"recording\":{\"retention\":{\"minFreeBytes\":5},\"telemetry\":{\"rateHz\":5,\"enabled\":true}},\"imuMount\":{\"roll\":0,\"pitch\":0,\"yaw\":90},\"gnssAntBias\":false,\"mode\":\"real\"}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.retention.maxBytes = 2000000 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"gnssAntBias\":false,\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":5},\"retention\":{\"minFreeBytes\":5,\"maxBytes\":2000000}},\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"},\"timeSync\":{\"offlineSources\":true,\"maxStepsPerBoot\":3},\"cellular\":{\"apn\":\"internet\"},\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}},\"simulation\":{\"scenarioId\":\"city-loop\",\"loop\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "imuMount + decimal knobs survive a rewrite",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":1.5,\"yawDeg\":-90},\"recording\":{\"powerShedding\":{\"railLowVolts\":4.75,\"cpuTempC\":82.5}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":1.5,\"yawDeg\":-90},\"recording\":{\"powerShedding\":{\"railLowVolts\":4.75,\"cpuTempC\":82.5}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__ camera enable dropped on load → re-save",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"__proto__\":true,\"cam0\":false,\"constructor\":true}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"constructor\":true}}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__-only camera enables drop the whole video section",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"__proto__\":false}},\"telemetry\":{\"enabled\":true}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"enabled\":true}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__ cameraMount entry dropped on load → re-save",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"__proto__\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0},\"constructor\":{\"rotationDeg\":180}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"cam1\":{\"rotationDeg\":0},\"constructor\":{\"rotationDeg\":180}}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "__proto__-only cameraMount keeps an empty cameras map",
+      "input": {
+        "args": [
+          "gps-antenna",
+          "active"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"__proto__\":{\"rotationDeg\":180}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ GPS antenna set to active (bias on, persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it live within ~a minute (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{}},\"gnssAntBias\":true}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set recording.video.cameras.__proto__ writes an own key",
+      "input": {
+        "args": [
+          "recording.video.cameras.__proto__",
+          "on"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.cameras.__proto__ = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"__proto__\":true}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set cameraMount.__proto__.rotationDeg writes an own key",
+      "input": {
+        "args": [
+          "cameraMount.__proto__.rotationDeg",
+          "180"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ cameraMount.__proto__.rotationDeg = 180 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent updates the camera overlay in /boot/firmware/config.txt within ~a minute,"
+          },
+          {
+            "stream": "out",
+            "text": "  then a REBOOT is required before the image changes (the agent never reboots itself)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"__proto__\":{\"rotationDeg\":180}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set over a stored __proto__ camera drops it",
+      "input": {
+        "args": [
+          "recording.video.cameras.cam1",
+          "on"
+        ],
+        "settings": "{\"recording\":{\"video\":{\"cameras\":{\"__proto__\":true,\"cam0\":false}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.video.cameras.cam1 = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":false,\"cam1\":true}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "set over a stored __proto__ cameraMount drops it",
+      "input": {
+        "args": [
+          "cameraMount.cam1.rotationDeg",
+          "180"
+        ],
+        "settings": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"__proto__\":{\"rotationDeg\":180}}}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ cameraMount.cam1.rotationDeg = 180 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent updates the camera overlay in /boot/firmware/config.txt within ~a minute,"
+          },
+          {
+            "stream": "out",
+            "text": "  then a REBOOT is required before the image changes (the agent never reboots itself)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"cam1\":{\"rotationDeg\":180}}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "flags around the key",
+      "input": {
+        "args": [
+          "--no-restart",
+          "recording.telemetry.rateHz",
+          "--force",
+          "3"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ recording.telemetry.rateHz = 3 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent applies recording changes live within ~5 s (no restart needed)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"recording\":{\"telemetry\":{\"rateHz\":3}}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn missing value",
+      "input": {
+        "args": [
+          "apn"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "usage: xorgate set apn <value>   (or \"\" to leave the modem's stored APN alone)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn invalid chars",
+      "input": {
+        "args": [
+          "apn",
+          "bad apn!"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "apn must be at most 100 letters, digits, dots or hyphens, got 'bad apn!'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn too long",
+      "input": {
+        "args": [
+          "apn",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "apn must be at most 100 letters, digits, dots or hyphens, got 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn clear",
+      "input": {
+        "args": [
+          "apn",
+          ""
+        ],
+        "settings": "{\"cellular\":{\"apn\":\"old\"},\"mode\":\"real\"}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn cleared (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem's stored APN is left untouched — nothing will be written to it"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"cellular\":{\"apn\":\"\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn --no-wait (no telemetry)",
+      "input": {
+        "args": [
+          "apn",
+          "synth.apn",
+          "--no-wait"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"synth.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it with confirm-and-rollback within a few minutes (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"synth.apn\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn appended after other namespaces",
+      "input": {
+        "args": [
+          "apn",
+          "internet",
+          "--no-wait"
+        ],
+        "settings": "{\"mode\":\"real\",\"simulation\":{\"loop\":false}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"internet\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the modem daemon applies it with confirm-and-rollback within a few minutes (journalctl -u sim7600-lte)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"simulation\":{\"loop\":false},\"cellular\":{\"apn\":\"internet\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn already in force",
+      "input": {
+        "args": [
+          "apn",
+          "internet"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"internet\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"internet\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  already in force — the modem's data context holds this APN."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"internet\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn already rejected",
+      "input": {
+        "args": [
+          "apn",
+          "bad.apn"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"rejected\",\"apn_requested\":\"bad.apn\",\"fails\":3}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"bad.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "err",
+            "text": "✗ this exact value has already failed 3 times and is rejected — the daemon will not retry it. Change the value to get another attempt."
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"bad.apn\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn already rejected (no fails)",
+      "input": {
+        "args": [
+          "apn",
+          "bad.apn",
+          "--no-wait"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"rejected\",\"apn_requested\":\"bad.apn\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"bad.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "err",
+            "text": "✗ this exact value has already failed several times and is rejected — the daemon will not retry it. Change the value to get another attempt."
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"bad.apn\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "apn watch: applying then in-force",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"old\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"old\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"applying\",\"apn_requested\":\"new.apn\",\"apn_applied\":\"old\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"applying\",\"apn_requested\":\"new.apn\",\"apn_applied\":\"old\",\"changed_at\":\"x\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"new.apn\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "out",
+            "text": "  applying — confirming with real traffic over the cellular link..."
+          },
+          {
+            "stream": "out",
+            "text": "✓ confirmed: \"new.apn\" is in force (data verified end-to-end)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 12000
+      }
+    },
+    {
+      "name": "apn watch: rolled back",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"old\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"applying\",\"apn_requested\":\"new.apn\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"rolled-back\",\"apn_requested\":\"new.apn\",\"apn_applied\":\"old\",\"last_error\":\"no traffic\",\"fails\":1}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "out",
+            "text": "  applying — confirming with real traffic over the cellular link..."
+          },
+          {
+            "stream": "err",
+            "text": "✗ rolled back: \"new.apn\" passed no traffic (no traffic). The device restored \"old\" and is recovering. Attempt 1/3; the daemon retries the value until it is rejected."
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 6000
+      }
+    },
+    {
+      "name": "apn watch: rolled back, bare",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          null,
+          "{\"csq\":20,\"cellular\":{\"state\":\"rolled-back\",\"apn_requested\":\"new.apn\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "err",
+            "text": "✗ rolled back: \"new.apn\" passed no traffic. The device restored \"the previous APN\" and is recovering. Attempt ?/3; the daemon retries the value until it is rejected."
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 3000
+      }
+    },
+    {
+      "name": "apn watch: rejected",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          null,
+          "{\"csq\":20,\"cellular\":{\"state\":\"rejected\",\"apn_requested\":\"new.apn\",\"fails\":3,\"last_error\":\"nope\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "err",
+            "text": "✗ rejected: \"new.apn\" failed 3 times (nope). Change the value to get another attempt."
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 3000
+      }
+    },
+    {
+      "name": "apn watch: stale verdict for this value is history",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"rolled-back\",\"apn_requested\":\"new.apn\",\"fails\":1}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"rolled-back\",\"apn_requested\":\"new.apn\",\"fails\":1}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"new.apn\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "out",
+            "text": "✓ confirmed: \"new.apn\" is in force (data verified end-to-end)."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 6000
+      }
+    },
+    {
+      "name": "apn watch: old daemon (never any block)",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "err",
+            "text": "✗ the modem daemon is not reporting any APN machinery — it likely predates this feature and will NEVER apply the change. Update the agent (xorgate update)."
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 93000
+      }
+    },
+    {
+      "name": "apn watch: garbage telemetry counts as no block",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          "not json",
+          "[1]",
+          "{\"cellular\":{\"state\":\"weird\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "err",
+            "text": "✗ the modem daemon is not reporting any APN machinery — it likely predates this feature and will NEVER apply the change. Update the agent (xorgate update)."
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 93000
+      }
+    },
+    {
+      "name": "apn watch: no verdict after 8 minutes",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"old\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "out",
+            "text": "  no verdict after 8 minutes — the apply may be deferred (device unregistered?). Watch journalctl -u sim7600-lte, or re-run `xorgate set apn` later."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 480000
+      }
+    },
+    {
+      "name": "apn watch: other value's verdict ignored",
+      "input": {
+        "args": [
+          "apn",
+          "new.apn"
+        ],
+        "settings": null,
+        "lte": [
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"old\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"rolled-back\",\"apn_requested\":\"other\"}}",
+          "{\"csq\":20,\"cellular\":{\"state\":\"in-force\",\"apn_applied\":\"old\",\"changed_at\":\"t2\"}}"
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ apn = \"new.apn\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  waiting for the modem daemon to apply and confirm (cellular will drop briefly; Ctrl-C is safe — the apply continues on its own)..."
+          },
+          {
+            "stream": "out",
+            "text": "  no verdict after 8 minutes — the apply may be deferred (device unregistered?). Watch journalctl -u sim7600-lte, or re-run `xorgate set apn` later."
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"cellular\":{\"apn\":\"new.apn\"}}",
+        "elapsedMs": 480000
+      }
+    }
+  ]
+}

@@ -72,6 +72,18 @@ pub fn scenario_id_re_test(s: &str) -> bool {
     ok(first) && s.chars().count() <= 64 && it.all(|c| ok(c) || c == '-')
 }
 
+/// A camera-map key the TS parsers can never keep: `__proto__` passes
+/// `STREAM_KEY_RE` and `JSON.parse` keeps it as an own property, but both
+/// camera maps are built by plain assignment into an object literal
+/// (`c[key] = value`, `settings.ts:481`; `out[key] = { rotationDeg }`, `:276`),
+/// which runs the `Object.prototype.__proto__` setter instead of defining a
+/// key — a boolean is ignored, an entry object becomes the map's prototype —
+/// so the key never reaches `Object.keys` / `JSON.stringify`. Only these two
+/// maps take untrusted keys; every other namespace reads fixed field names.
+pub fn js_assign_drops_key(key: &str) -> bool {
+    key == "__proto__"
+}
+
 /// `STREAM_KEY_RE.test(s)`.
 pub fn stream_key_re_test(s: &str) -> bool {
     let n = s.chars().count();
@@ -345,7 +357,9 @@ pub fn parse_recording_settings(v: &Value) -> Option<RecordingSettings> {
             let c: IndexMap<String, bool> = cams
                 .iter()
                 .filter_map(|(k, v)| match v {
-                    Value::Bool(b) if stream_key_re_test(k) => Some((k.clone(), *b)),
+                    Value::Bool(b) if stream_key_re_test(k) && !js_assign_drops_key(k) => {
+                        Some((k.clone(), *b))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -601,6 +615,9 @@ pub fn parse_camera_mount_settings(v: &Value) -> Option<CameraMountSettings> {
         let Some(deg) = num(entry.get("rotationDeg")).and_then(CameraRotationDeg::from_f64) else {
             continue;
         };
+        if js_assign_drops_key(key) {
+            continue; // `out[key] = …` sets the prototype (`settings.ts:276`)
+        }
         out.insert(key.clone(), CameraMountEntry { rotation_deg: deg });
     }
     Some(CameraMountSettings {
