@@ -3,8 +3,13 @@
 //!
 //! Phase 0 ships `mqtt` (connect/LWT/resubscribe/backoff/state watch) and
 //! `tls` (mTLS client config from PEM, Amazon Root CA 1 bundled as the
-//! fallback root). The IoT credentials provider and S3 PUT arrive in Phase 2/3.
+//! fallback root). Phase 2 WP5 adds `iot_creds` (role-alias credentials over
+//! mTLS), `sigv4` (pure signer) and `s3` (`ObjectPut` + the S3 PUT transport);
+//! the uploader that consumes them is Phase 3.
 
 pub mod backoff;
+pub mod iot_creds;
 pub mod mqtt;
+pub mod s3;
+pub mod sigv4;
 pub mod tls;

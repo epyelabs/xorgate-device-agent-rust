@@ -1,0 +1,865 @@
+{
+  "jsSourceFile": "src/recording/s3-put.ts (signPut, encodeS3Key) + test/recording-s3.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-wp5.ts in a git-archive scratch copy of the JS repo @ 89b5c64 (phase-2 WP5; script handed to WP7 via phase-2/evidence/wp5.md)",
+  "cases": [
+    {
+      "name": "recording-s3.test.ts: builds a virtual-hosted request with all SigV4 headers",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=6dfea7275448b0dfc9404baa898c58cfd3fbbf14ac69036157bc519b8b1fabd9"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "recording-s3.test.ts: is deterministic … sensitive to the body (other)",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "b3RoZXI=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=3c284d15ff6882a8713362e4b2126afc79b74f2544661c5d6515e319465faef4"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "sidecar json, dev bucket, 20261009T000000Z",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "xorgate-dev-recordings",
+        "key": "media-sessions/v1/a73f7a36-0000-4000-8000-000000000000/cam0/019a0000-0000-7000-8000-000000000000/00000.json",
+        "bodyB64": "eyJ2IjoxLCJzZWdtZW50IjowfQ==",
+        "contentType": "application/json",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1791504000000
+      },
+      "expected": {
+        "host": "xorgate-dev-recordings.s3.us-east-1.amazonaws.com",
+        "path": "/media-sessions/v1/a73f7a36-0000-4000-8000-000000000000/cam0/019a0000-0000-7000-8000-000000000000/00000.json",
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ],
+          [
+            "host",
+            "xorgate-dev-recordings.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "58435b430d9d6e33d6f524fd8e542f52ad3dbacdab9bade58b9a4dd2a56f6238"
+          ],
+          [
+            "x-amz-date",
+            "20261009T000000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "19"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261009/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=69dea5e30087845ecd84fcaed1446d2796f82270c129fc92ad06238dae3a6ec8"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "key with spaces + unicode + emoji",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "media sessions/v1/ünï©ødé/cam 0/😀 x/00000.json",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1791551655000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/media%20sessions/v1/%C3%BCn%C3%AF%C2%A9%C3%B8d%C3%A9/cam%200/%F0%9F%98%80%20x/00000.json",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20261009T131415Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261009/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=9bc3349e048467e80acb55be1b9611514f4b38b6e7c3ae363de7521d4b5c6eff"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "key with + = & ? # % ! ' ( ) * ~ ; , : @ $",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "a+b=c/d&e?f#g%h/!'()*~/;,:@$/x y+z",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/a%2Bb%3Dc/d%26e%3Ff%23g%25h/%21%27%28%29%2A~/%3B%2C%3A%40%24/x%20y%2Bz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=870d6cd468135bf14df5a9f19ecdd69602d5c5da84482abfa6e271b744a73abd"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "key with empty segments, leading slash, dot segments",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "/lead//double/./dot/../up/",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "//lead//double/./dot/../up/",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=cddfef883717ca24953cca5863a8a7b53949caf3c8762a5b343dee63e0f390e3"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "empty body",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "0"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=98c2de89600b5c9ae8bf40d43f0e30eb4fb6fab51dd90f98e2f10f8ffbbf64c0"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "30 MB body (content-length header only in the fixture)",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "media-sessions/v1/dev/cam0/sess/00001.mp4",
+        "bodyFill": {
+          "byte": 90,
+          "len": 31457280
+        },
+        "contentType": "video/mp4",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/media-sessions/v1/dev/cam0/sess/00001.mp4",
+        "headers": [
+          [
+            "content-type",
+            "video/mp4"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "85e48cec359be777e2878c757764deeba7d139e7a3aa9de365a9b16b3a613cd9"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "31457280"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=0d0323a359f35e7ca2ee1c4239dcd99b2c9d74dee7605bf01c28f37edb20ff05"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "realistic long session token",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "ASIAEXAMPLEEXAMPLE12",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQDx+k3l9/abc=FwoGZXIvYXdzEBYaDHhvcmdhdGUtZGV2LWNyZWRzIhEAAAAAAAAAAAAAAAAAAAAAAA=="
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQDx+k3l9/abc=FwoGZXIvYXdzEBYaDHhvcmdhdGUtZGV2LWNyZWRzIhEAAAAAAAAAAAAAAAAAAAAAAA=="
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=ASIAEXAMPLEEXAMPLE12/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=9af357f58b8cd80cb0efec9fc2b50bb40940406d7d8aeac63e444b76607a8a51"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "leap day, ms truncated (2028-02-29T23:59:59.999Z)",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1835481599999
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20280229T235959Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20280229/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=9990317d82c54dab5018190ebcfb6401756f9986870734898ca2cb4dba6c49ec"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "leap day midnight (2024-02-29T00:00:00Z), eu-west-1, dotted bucket",
+      "op": "signPut",
+      "input": {
+        "region": "eu-west-1",
+        "bucket": "my.dotted.bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1709164800000
+      },
+      "expected": {
+        "host": "my.dotted.bucket.s3.eu-west-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my.dotted.bucket.s3.eu-west-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20240229T000000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20240229/eu-west-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=190b060882b3ce07069494e30fb670ee93db077521ca921f651c1a24dda88a9c"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "content-type with surrounding whitespace (trimmed only in the canonical form)",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "  application/json; charset=utf-8 ",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "  application/json; charset=utf-8 "
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=ff24e7c457c790c1c564e19ae7f5d4dbf7d0e8d87964e2d933fbcf7f40020df2"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "non-ascii body bytes",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aMOpbGxvIPCfmIAKAA==",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "b14c30c1923d69670f45d674b4e4ba9dffcf38509500318ecb1ec567c7669eb2"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "13"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=69ae63453a233537f6269dd1d90acc8177e1987a7c769f0b2da02b5395809c86"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "secret with symbols",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "a/b+c=d!e~f",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1784635200000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20260721T120000Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260721/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=78fa4ec80465181cbae4b045e075e6fd3b24a8f5b8bef7f87fa8342c4481e581"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "year-end rollover 2026-12-31T23:59:59Z",
+      "op": "signPut",
+      "input": {
+        "region": "us-east-1",
+        "bucket": "my-bucket",
+        "key": "telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "bodyB64": "aGVsbG8=",
+        "contentType": "application/gzip",
+        "credentials": {
+          "accessKeyId": "AKIDEXAMPLE",
+          "secretAccessKey": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+          "sessionToken": "TOKEN"
+        },
+        "nowMs": 1798761599000
+      },
+      "expected": {
+        "host": "my-bucket.s3.us-east-1.amazonaws.com",
+        "path": "/telemetry/v1/dev/sess/1000-00000.jsonl.gz",
+        "headers": [
+          [
+            "content-type",
+            "application/gzip"
+          ],
+          [
+            "host",
+            "my-bucket.s3.us-east-1.amazonaws.com"
+          ],
+          [
+            "x-amz-content-sha256",
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          ],
+          [
+            "x-amz-date",
+            "20261231T235959Z"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ],
+          [
+            "content-length",
+            "5"
+          ],
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261231/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=061026ee5aa446239d5dfab1dd91041b3bb6fe69f71cab9ee94ad1e35844d283"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "encodeS3Key \"a/b c/d+e*f\"",
+      "op": "encodeS3Key",
+      "input": "a/b c/d+e*f",
+      "expected": "a/b%20c/d%2Be%2Af"
+    },
+    {
+      "name": "encodeS3Key \"\"",
+      "op": "encodeS3Key",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "name": "encodeS3Key \"/\"",
+      "op": "encodeS3Key",
+      "input": "/",
+      "expected": "/"
+    },
+    {
+      "name": "encodeS3Key \"a//b/\"",
+      "op": "encodeS3Key",
+      "input": "a//b/",
+      "expected": "a//b/"
+    },
+    {
+      "name": "encodeS3Key \"!'()*\"",
+      "op": "encodeS3Key",
+      "input": "!'()*",
+      "expected": "%21%27%28%29%2A"
+    },
+    {
+      "name": "encodeS3Key \"-_.~\"",
+      "op": "encodeS3Key",
+      "input": "-_.~",
+      "expected": "-_.~"
+    },
+    {
+      "name": "encodeS3Key \"AZaz09\"",
+      "op": "encodeS3Key",
+      "input": "AZaz09",
+      "expected": "AZaz09"
+    },
+    {
+      "name": "encodeS3Key \"ü/é/😀\"",
+      "op": "encodeS3Key",
+      "input": "ü/é/😀",
+      "expected": "%C3%BC/%C3%A9/%F0%9F%98%80"
+    },
+    {
+      "name": "encodeS3Key \"%\"",
+      "op": "encodeS3Key",
+      "input": "%",
+      "expected": "%25"
+    },
+    {
+      "name": "encodeS3Key \"%25\"",
+      "op": "encodeS3Key",
+      "input": "%25",
+      "expected": "%2525"
+    },
+    {
+      "name": "encodeS3Key \"a b+c=d&e?f#g\"",
+      "op": "encodeS3Key",
+      "input": "a b+c=d&e?f#g",
+      "expected": "a%20b%2Bc%3Dd%26e%3Ff%23g"
+    },
+    {
+      "name": "encodeS3Key \"\\u0001\"",
+      "op": "encodeS3Key",
+      "input": "\u0001",
+      "expected": "%7F%01"
+    },
+    {
+      "name": "encodeS3Key \"  \"",
+      "op": "encodeS3Key",
+      "input": "  ",
+      "expected": "%C2%A0%E2%80%A8"
+    },
+    {
+      "name": "encodeS3Key \"..\"",
+      "op": "encodeS3Key",
+      "input": "..",
+      "expected": ".."
+    },
+    {
+      "name": "encodeS3Key \"./x\"",
+      "op": "encodeS3Key",
+      "input": "./x",
+      "expected": "./x"
+    }
+  ]
+}

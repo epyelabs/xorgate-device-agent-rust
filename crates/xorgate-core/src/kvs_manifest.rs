@@ -104,6 +104,27 @@ pub fn parse_manifest_value(raw: &Value) -> Option<KvsManifest> {
     })
 }
 
+/// The gate of `buildUploadOptions` (`worker.ts:391-398`, after the offline
+/// early return): `bucket = process.env.XORGATE_UPLOAD_BUCKET ||
+/// manifest?.uploadBucket` (an empty env value falls through). `Err` carries
+/// the parenthesised reason of the verbatim log line
+/// `[agent] segment upload disabled (<reason>)`; a missing manifest wins over
+/// a missing bucket even when the env names one.
+pub fn upload_bucket_decision(
+    manifest: Option<&KvsManifest>,
+    env_upload_bucket: Option<&str>,
+) -> Result<String, &'static str> {
+    let bucket = env_upload_bucket
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .or_else(|| manifest.and_then(|m| m.upload_bucket.clone()));
+    match (manifest, bucket) {
+        (None, _) => Err("no kvs.json manifest"),
+        (Some(_), None) => Err("no upload bucket configured"),
+        (Some(_), Some(b)) => Ok(b),
+    }
+}
+
 /// The three outcomes of `persistUploadBucket` (`manifest.ts:99-115`); the
 /// `Apply` arm carries the exact bytes `atomicWriteJson` would write
 /// (`JSON.stringify(o)`, compact, no trailing newline).
@@ -257,6 +278,44 @@ mod tests {
         ] {
             assert_eq!(js_number_to_string(x), s, "{x}");
         }
+    }
+
+    #[test]
+    fn upload_bucket_decision_matches_build_upload_options() {
+        let mut m = parse_manifest_text(
+            r#"{"deviceId":"d","region":"r","credentialEndpoint":"c","roleAlias":"a"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            upload_bucket_decision(None, None),
+            Err("no kvs.json manifest")
+        );
+        assert_eq!(
+            upload_bucket_decision(None, Some("env")),
+            Err("no kvs.json manifest")
+        );
+        assert_eq!(
+            upload_bucket_decision(Some(&m), None),
+            Err("no upload bucket configured")
+        );
+        assert_eq!(
+            upload_bucket_decision(Some(&m), Some("")),
+            Err("no upload bucket configured")
+        );
+        assert_eq!(
+            upload_bucket_decision(Some(&m), Some("env")),
+            Ok("env".into())
+        );
+        m.upload_bucket = Some("file".into());
+        assert_eq!(upload_bucket_decision(Some(&m), None), Ok("file".into()));
+        assert_eq!(
+            upload_bucket_decision(Some(&m), Some("")),
+            Ok("file".into())
+        );
+        assert_eq!(
+            upload_bucket_decision(Some(&m), Some("env")),
+            Ok("env".into())
+        );
     }
 
     #[test]
