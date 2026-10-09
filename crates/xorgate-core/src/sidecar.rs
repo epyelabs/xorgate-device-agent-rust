@@ -26,9 +26,41 @@ use serde_json::Value;
 
 use crate::clock::Clock;
 use crate::round::js_math_round;
-use crate::telemetry::js_num;
 use crate::types::TimeSource;
 use crate::video_capture::posix_join;
+
+/// `#[serde(with = "js_num")]` for this module: WP1's
+/// [`crate::telemetry::JsNumber`] prints integral doubles in [2^53, 1e21)
+/// through ryu's exponent form (`1e+20`), where JS `JSON.stringify` prints
+/// the shortest round-trip digits zero-padded (`100000000000000000000`;
+/// `2**60` → `1152921504606847000`). Local workaround (WP1 bug reported in
+/// the WP6 evidence file, `telemetry.rs:52`); everything else delegates.
+mod js_num {
+    use crate::telemetry::JsNumber;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+        let a = v.abs();
+        if v.is_finite() && v.fract() == 0.0 && (9_007_199_254_740_992.0..1e21).contains(&a) {
+            // `{:e}` = shortest round-trip digits, e.g. `1.152921504606847e18`.
+            let sci = format!("{a:e}");
+            let (mant, exp) = sci.split_once('e').expect("{:e} has an exponent");
+            let digits: String = mant.chars().filter(char::is_ascii_digit).collect();
+            let exp: usize = exp.parse().expect("positive exponent");
+            let int = format!("{digits:0<width$}", width = exp + 1);
+            let n: u128 = int.parse().expect("integer < 1e21");
+            return if *v < 0.0 {
+                s.serialize_i128(-(n as i128))
+            } else {
+                s.serialize_u128(n)
+            };
+        }
+        JsNumber(*v).serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        f64::deserialize(d)
+    }
+}
 
 /// `VideoSessionManifest` (`video-segments.ts:43-60`): per-session capture
 /// metadata, written once at capture-daemon spawn as `session.json`. Key
@@ -141,23 +173,32 @@ pub fn segment_seq(name: &str) -> Option<f64> {
     digits.parse::<f64>().ok()
 }
 
-/// The validation inside `readSessionManifest` (`video-segments.ts:118-128`)
-/// over the parsed JSON: an object with `v === 1`, a string `sessionId` and
-/// a numeric `anchorTs`, else `None`. The TS then returns the raw object AS
-/// IS; this port additionally requires every declared field to be present
-/// and well-typed (see the WP6 evidence file, ambiguity "strict manifest").
+/// The validation inside `readSessionManifest` (`video-segments.ts:121-123`),
+/// exactly: a truthy object (arrays included — `typeof [] === "object"`)
+/// with `v === 1`, a string `sessionId` and a numeric `anchorTs`.
+pub fn is_valid_session_manifest(raw: &Value) -> bool {
+    let field = |k: &str| match raw {
+        Value::Object(o) => o.get(k),
+        _ => None,
+    };
+    matches!(raw, Value::Object(_) | Value::Array(_))
+        && field("v").and_then(Value::as_f64) == Some(1.0)
+        && field("sessionId").is_some_and(Value::is_string)
+        && field("anchorTs").is_some_and(Value::is_number)
+}
+
+/// `readSessionManifest`'s result as a typed manifest: the TS rule
+/// ([`is_valid_session_manifest`]) and then — where the TS returns the raw
+/// object AS IS and lets `buildSidecar` copy `undefined`s through — every
+/// declared field present and well-typed (WP6 evidence, ambiguity "strict
+/// manifest"). `v: 1.0` is accepted like JS's `1.0 === 1`.
 pub fn parse_session_manifest(raw: &Value) -> Option<VideoSessionManifest> {
-    let o = raw.as_object()?;
-    if o.get("v").and_then(Value::as_f64) != Some(1.0) {
+    if !is_valid_session_manifest(raw) {
         return None;
     }
-    if !o.get("sessionId").is_some_and(Value::is_string) {
-        return None;
-    }
-    if !o.get("anchorTs").is_some_and(Value::is_number) {
-        return None;
-    }
-    serde_json::from_value(raw.clone()).ok()
+    let mut obj = raw.clone();
+    obj["v"] = Value::from(1u8);
+    serde_json::from_value(obj).ok()
 }
 
 /// `readSessionManifest` over the file TEXT (`JSON.parse` + the rule above);
@@ -454,12 +495,13 @@ pub struct RecoverPlan {
 /// `active_session_ids` belongs to a previous run — sidecar-backfill all of
 /// its fragments (`includeNewest: true`, so the newest is tagged
 /// `finalized:false` and 0-byte fragments are reaped). Sessions without a
-/// manifest are skipped. `clock_pair` stands in for the TS's default clocks.
+/// manifest are skipped. Each swept session reads its OWN clock pair, as
+/// each TS `sweepSessionDir` call defaults one (`:263`).
 pub fn plan_recover_orphan_sessions(
     video_root: &str,
     sessions: &[SessionListing],
     active_session_ids: &[String],
-    clock_pair: ClockPair,
+    clock: &dyn Clock,
 ) -> RecoverPlan {
     let mut out = RecoverPlan::default();
     for s in sessions {
@@ -478,13 +520,24 @@ pub fn plan_recover_orphan_sessions(
                 include_newest: true,
                 finalized: None,
                 time_source: None,
-                clock_pair,
+                clock_pair: ClockPair::from_clock(clock),
             },
         );
         out.recovered += plan.writes.len();
         out.sweeps.push((dir, plan));
     }
     out
+}
+
+/// The `console.warn` for a reaped 0-byte fragment (`video-segments.ts:301`).
+pub fn dropped_empty_fragment_warning(mp4_path: &str) -> String {
+    format!("[recording] dropped empty fragment {mp4_path}")
+}
+
+/// The `console.error` for a failed sidecar write (`video-segments.ts:325`);
+/// such a fragment is NOT counted in `closed`.
+pub fn sidecar_write_failed_error(mp4_path: &str, message: &str) -> String {
+    format!("[recording] sidecar write failed for {mp4_path}: {message}")
 }
 
 #[cfg(test)]
@@ -510,6 +563,20 @@ mod tests {
             anchor_ts: T0,
             anchor_mono: "500000000000".into(),
         }
+    }
+
+    #[test]
+    fn js_number_printing_above_2_pow_53() {
+        #[derive(Serialize)]
+        struct N(#[serde(with = "super::js_num")] f64);
+        let p = |v: f64| serde_json::to_string(&N(v)).unwrap();
+        assert_eq!(p(1e20), "100000000000000000000");
+        assert_eq!(p(2f64.powi(60)), "1152921504606847000");
+        assert_eq!(p(-2f64.powi(60)), "-1152921504606847000");
+        assert_eq!(p(9_007_199_254_740_992.0), "9007199254740992");
+        assert_eq!(p(1e21), "1e+21");
+        assert_eq!(p(1_750_000_000_000.0), "1750000000000");
+        assert_eq!(p(0.5), "0.5");
     }
 
     #[test]
@@ -540,7 +607,7 @@ mod tests {
         v["v"] = Value::from(2);
         assert_eq!(parse_session_manifest(&v), None);
         v["v"] = Value::from(1.0);
-        assert!(parse_session_manifest(&v).is_some());
+        assert_eq!(parse_session_manifest(&v), Some(m.clone()));
         v["anchorTs"] = Value::from("x");
         assert_eq!(parse_session_manifest(&v), None);
     }
@@ -679,7 +746,7 @@ mod tests {
                 },
             ],
             &["active".to_string()],
-            pair,
+            &crate::clock::FixedClock::new(1_750_000_240_000, 740_000),
         );
         assert_eq!(rec.recovered, 2);
         assert_eq!(rec.sweeps.len(), 1);
