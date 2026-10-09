@@ -42,7 +42,10 @@ pub struct MediaEnabledOutcome {
 
 /// `migrateMediaEnabled` (`settings-migrate.ts:48`) over the raw file text
 /// (`None` = the file could not be read; a corrupt file = `Some("{not json")`).
-pub fn migrate_media_enabled(raw_text: Option<&str>, stream_keys: &[String]) -> MediaEnabledOutcome {
+pub fn migrate_media_enabled(
+    raw_text: Option<&str>,
+    stream_keys: &[String],
+) -> MediaEnabledOutcome {
     let none = MediaEnabledOutcome {
         result: MediaEnabledMigration::None,
         save: None,

@@ -124,7 +124,11 @@ fn assert_close_to(got: &Euler, c: &CloseTo, what: &str) {
         (got.pitch, c.pitch, "pitch"),
         (got.yaw, c.yaw, "yaw"),
     ] {
-        assert!((g - w).abs() < tol, "{what}.{n}: got {g}, expected {w} ({} digits)", c.digits);
+        assert!(
+            (g - w).abs() < tol,
+            "{what}.{n}: got {g}, expected {w} ({} digits)",
+            c.digits
+        );
     }
 }
 
@@ -148,8 +152,14 @@ fn orientation_test_ts() {
                 assert_quat_close(&q, &c.quat.unwrap(), TS_TOL, name);
                 let n2 = q.r * q.r + q.i * q.i + q.j * q.j + q.k * q.k;
                 let digits = c.digits.unwrap();
-                assert!((n2 - 1.0).abs() < 10f64.powi(-digits) / 2.0, "{name}: norm² {n2}");
-                assert!((n2 - c.norm2.unwrap()).abs() < TS_TOL, "{name}: norm² vs TS");
+                assert!(
+                    (n2 - 1.0).abs() < 10f64.powi(-digits) / 2.0,
+                    "{name}: norm² {n2}"
+                );
+                assert!(
+                    (n2 - c.norm2.unwrap()).abs() < TS_TOL,
+                    "{name}: norm² vs TS"
+                );
             }
             "multiply-conjugate" => {
                 let e: Deg = serde_json::from_value(c.euler.clone().unwrap()).unwrap();
@@ -160,7 +170,13 @@ fn orientation_test_ts() {
                 let id = quat_multiply(&q, &conj);
                 assert_quat_close(&id, &c.product.unwrap(), TS_TOL, name);
                 let tol = 10f64.powi(-c.digits.unwrap()) / 2.0;
-                assert!((id.r - 1.0).abs() < tol && id.i.abs() < tol && id.j.abs() < tol && id.k.abs() < tol, "{name}");
+                assert!(
+                    (id.r - 1.0).abs() < tol
+                        && id.i.abs() < tol
+                        && id.j.abs() < tol
+                        && id.k.abs() < tol,
+                    "{name}"
+                );
             }
             "compose" => {
                 let a: Quat = c.a.unwrap().into();
@@ -174,9 +190,15 @@ fn orientation_test_ts() {
             }
             "applyMountCorrection" => {
                 let vehicle = euler_to_quat(&c.vehicle.unwrap().into());
-                let sensor = quat_multiply(&vehicle, &euler_to_quat(&c.mount_euler.unwrap().into()));
+                let sensor =
+                    quat_multiply(&vehicle, &euler_to_quat(&c.mount_euler.unwrap().into()));
                 assert_quat_close(&sensor, &c.sensor.unwrap(), TS_TOL, name);
-                assert_euler_close(&quat_to_euler(&sensor), &c.sensor_euler.unwrap(), TS_TOL, name);
+                assert_euler_close(
+                    &quat_to_euler(&sensor),
+                    &c.sensor_euler.unwrap(),
+                    TS_TOL,
+                    name,
+                );
                 if name.starts_with("un-swaps") {
                     // symptom: swapped
                     assert!(quat_to_euler(&sensor).pitch.abs() > 10.0, "{name}: symptom");

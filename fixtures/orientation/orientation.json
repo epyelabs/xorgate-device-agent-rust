@@ -482,9 +482,9 @@
         "yaw": 180
       },
       "closeTo": {
-        "roll": 0,
+        "roll": 180,
         "pitch": 90,
-        "yaw": 0,
+        "yaw": 180,
         "digits": 5
       }
     }

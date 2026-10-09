@@ -4,7 +4,7 @@
 //! (`parseSettingsObject`, `settings.ts:616`), plus the absent / unreadable /
 //! invalid / ok classification of `readSettingsFile` (`:589-607`) over an
 //! already-performed read, so the Phase 2 HAL wrapper is a thin `readFileSync`
-//! + [`settings_from_read`]. `settingsPath`, `readSettingsFile`'s I/O,
+//! plus [`settings_from_read`]. `settingsPath`, `readSettingsFile`'s I/O,
 //! `loadSettings`' default path and `saveSettings` (`atomicWriteJson`) stay
 //! out of core.
 //!
@@ -57,8 +57,7 @@ pub const STREAM_KEY_RE: &str = "^[A-Za-z0-9_-]{1,32}$";
 /// `APN_RE.test(s)`.
 pub fn apn_re_test(s: &str) -> bool {
     s.chars().count() <= 100
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
 }
 
@@ -76,8 +75,7 @@ pub fn scenario_id_re_test(s: &str) -> bool {
 pub fn stream_key_re_test(s: &str) -> bool {
     let n = s.chars().count();
     (1..=32).contains(&n)
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
@@ -635,8 +633,7 @@ pub fn parse_camera_mount_settings(v: &Value) -> Option<CameraMountSettings> {
         let Value::Object(entry) = entry else {
             continue;
         };
-        let Some(deg) = num(entry.get("rotationDeg")).and_then(CameraRotationDeg::from_f64)
-        else {
+        let Some(deg) = num(entry.get("rotationDeg")).and_then(CameraRotationDeg::from_f64) else {
             continue;
         };
         out.insert(key.clone(), CameraMountEntry { rotation_deg: deg });
@@ -675,9 +672,8 @@ pub fn parse_simulation_settings(v: &Value) -> Option<SimulationSettings> {
             .filter(|s| scenario_id_re_test(s))
             .map(str::to_string),
         loop_: boolean(src.get("loop")),
-        gap_seconds: num(src.get("gapSeconds")).map(|g| {
-            clamp_round(g, SIMULATION_GAP_SECONDS_MIN, SIMULATION_GAP_SECONDS_MAX) as u32
-        }),
+        gap_seconds: num(src.get("gapSeconds"))
+            .map(|g| clamp_round(g, SIMULATION_GAP_SECONDS_MIN, SIMULATION_GAP_SECONDS_MAX) as u32),
     };
     (out != SimulationSettings::default()).then_some(out)
 }
@@ -818,17 +814,27 @@ mod tests {
 
     #[test]
     fn js_key_order_puts_array_indices_first() {
-        let m: IndexMap<String, u8> = [("cam0", 1), ("10", 2), ("2", 3), ("01", 4), ("4294967295", 5)]
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect();
-        let keys: Vec<&str> = js_object_key_order(m).keys().map(String::as_str).collect();
+        let m: IndexMap<String, u8> = [
+            ("cam0", 1),
+            ("10", 2),
+            ("2", 3),
+            ("01", 4),
+            ("4294967295", 5),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let ordered = js_object_key_order(m);
+        let keys: Vec<&str> = ordered.keys().map(String::as_str).collect();
         assert_eq!(keys, ["2", "10", "cam0", "01", "4294967295"]);
     }
 
     #[test]
     fn read_classification() {
-        assert_eq!(settings_from_read(SettingsRead::Absent), Err(SettingsReadFailure::Absent));
+        assert_eq!(
+            settings_from_read(SettingsRead::Absent),
+            Err(SettingsReadFailure::Absent)
+        );
         assert_eq!(
             settings_from_read(SettingsRead::Unreadable),
             Err(SettingsReadFailure::Unreadable)
@@ -837,12 +843,18 @@ mod tests {
             settings_from_read(SettingsRead::Text("not json")),
             Err(SettingsReadFailure::Invalid)
         );
-        assert_eq!(settings_from_read(SettingsRead::Text("[]")), Err(SettingsReadFailure::Invalid));
+        assert_eq!(
+            settings_from_read(SettingsRead::Text("[]")),
+            Err(SettingsReadFailure::Invalid)
+        );
         assert_eq!(
             settings_from_read(SettingsRead::Text("{\"mode\":\"bogus\"}")),
             Ok(AgentSettings::default())
         );
-        assert_eq!(load_settings_from(SettingsRead::Unreadable), AgentSettings::default());
+        assert_eq!(
+            load_settings_from(SettingsRead::Unreadable),
+            AgentSettings::default()
+        );
     }
 
     #[test]

@@ -155,7 +155,10 @@ pub fn quat_conjugate(q: &Quat) -> Quat {
 /// orientation into the vehicle frame, `q_wv = q_ws ⊗ q_vs⁻¹`. Purely a
 /// frame change — the sensor's factory calibration is untouched.
 pub fn apply_mount_correction(q_sensor: &Quat, mount: &ImuMount) -> Quat {
-    quat_multiply(q_sensor, &quat_conjugate(&euler_to_quat(&EulerDeg::from(*mount))))
+    quat_multiply(
+        q_sensor,
+        &quat_conjugate(&euler_to_quat(&EulerDeg::from(*mount))),
+    )
 }
 
 /// `Math.min(a, b)` — NaN-propagating like JS (Rust's `f64::min` drops NaN).

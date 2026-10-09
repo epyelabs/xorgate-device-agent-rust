@@ -27,7 +27,9 @@ fn network_test_ts() {
                 let names: Vec<String> = serde_json::from_value(c.input.clone()).unwrap();
                 serde_json::to_value(sort_interfaces(&names)).unwrap()
             }
-            "parseWifiDevice" => serde_json::to_value(parse_wifi_device(c.input.as_str().unwrap())).unwrap(),
+            "parseWifiDevice" => {
+                serde_json::to_value(parse_wifi_device(c.input.as_str().unwrap())).unwrap()
+            }
             "parseDeviceEnabled" => Value::Bool(parse_device_enabled(
                 c.input[0].as_str().unwrap(),
                 c.input[1].as_str().unwrap(),

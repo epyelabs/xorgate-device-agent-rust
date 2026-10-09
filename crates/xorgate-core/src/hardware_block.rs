@@ -131,7 +131,7 @@ fn pin(v: Option<&Value>) -> Option<f64> {
 }
 
 /// `parseHardwareBlock` (`hardware-config.ts:75`): None (and the caller logs
-/// + falls back to legacy behavior) on ANY unrecognized enum or malformed
+/// and falls back to legacy behavior) on ANY unrecognized enum or malformed
 /// required field — tolerant only about truly optional extras.
 pub fn parse_hardware_block(obj: &Value) -> Option<DeviceHardwareBlock> {
     let Value::Object(o) = obj else {
@@ -211,7 +211,10 @@ pub fn parse_hardware_block(obj: &Value) -> Option<DeviceHardwareBlock> {
 /// `hardwareBlocksEqual` (`hardware-config.ts:159`): structural equality
 /// (`JSON.stringify(a) === JSON.stringify(b)`) — gates the persist + re-render
 /// on cloud redelivery.
-pub fn hardware_blocks_equal(a: Option<&DeviceHardwareBlock>, b: Option<&DeviceHardwareBlock>) -> bool {
+pub fn hardware_blocks_equal(
+    a: Option<&DeviceHardwareBlock>,
+    b: Option<&DeviceHardwareBlock>,
+) -> bool {
     a == b
 }
 
@@ -223,7 +226,10 @@ mod tests {
     fn enums_and_pins() {
         assert_eq!(Platform::parse("jetson"), None);
         assert_eq!(EncoderToken::parse("av1"), None);
-        assert_eq!(default_encoder_for_platform(Platform::RpiCm5), EncoderToken::SwH264);
+        assert_eq!(
+            default_encoder_for_platform(Platform::RpiCm5),
+            EncoderToken::SwH264
+        );
         assert_eq!(pin(Some(&Value::from(12))), Some(12.0));
         assert_eq!(pin(Some(&Value::from(-1))), None);
         assert_eq!(pin(Some(&Value::from(1.5))), None);

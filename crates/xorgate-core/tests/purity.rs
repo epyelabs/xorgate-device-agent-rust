@@ -23,7 +23,16 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 #[test]
 fn cargo_toml_has_no_io_runtime_dependencies() {
     let manifest = std::fs::read_to_string(crate_dir().join("Cargo.toml")).unwrap();
-    for banned in ["tokio", "async-std", "nix", "libc", "gstreamer", "rumqttc", "chrono", "time"] {
+    for banned in [
+        "tokio",
+        "async-std",
+        "nix",
+        "libc",
+        "gstreamer",
+        "rumqttc",
+        "chrono",
+        "time",
+    ] {
         let needle = format!("\n{banned} ");
         let needle_eq = format!("\n{banned}=");
         assert!(

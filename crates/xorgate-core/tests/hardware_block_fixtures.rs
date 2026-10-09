@@ -28,7 +28,12 @@ fn hardware_block_test_ts_parse() {
                 if let Some(b) = &b {
                     // Serialised form re-parses to itself (save/load round trip).
                     let v: Value = serde_json::from_str(&s).unwrap();
-                    assert_eq!(parse_hardware_block(&v).as_ref(), Some(b), "{}: round trip", c.name);
+                    assert_eq!(
+                        parse_hardware_block(&v).as_ref(),
+                        Some(b),
+                        "{}: round trip",
+                        c.name
+                    );
                     let derived: DeviceHardwareBlock = serde_json::from_str(&s).unwrap();
                     assert_eq!(&derived, b, "{}: derive", c.name);
                 }

@@ -87,7 +87,12 @@ fn declares_exactly_the_namespaces_the_worker_applies() {
     // No `agent` namespace: `mode` is reported-only and `mediaEnabled` is not
     // a cloud setting (design Q4).
     let c = contract();
-    let mut keys: Vec<&str> = c["namespaces"].as_object().unwrap().keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = c["namespaces"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort_unstable();
     assert_eq!(
         keys,
@@ -112,12 +117,16 @@ fn simulation_bounds_survive_the_device_parser() {
     let parsed = parse_simulation_settings(&sim["defaults"]).expect("defaults parse");
     assert_eq!(serde_json::to_value(&parsed).unwrap(), sim["defaults"]);
     let gap = &sim["jsonSchema"]["properties"]["gapSeconds"];
-    for v in [gap["minimum"].as_f64().unwrap(), gap["maximum"].as_f64().unwrap()] {
+    for v in [
+        gap["minimum"].as_f64().unwrap(),
+        gap["maximum"].as_f64().unwrap(),
+    ] {
         let got = parse_simulation_settings(&serde_json::json!({ "gapSeconds": v })).unwrap();
-        assert_eq!(
-            serde_json::to_value(&got).unwrap(),
-            serde_json::json!({ "gapSeconds": v })
-        );
+        // `toEqual` compares numerically; serde_json's Value distinguishes
+        // `2.0` from `2`, so compare the single leaf as f64.
+        let out = serde_json::to_value(&got).unwrap();
+        assert_eq!(out.as_object().unwrap().len(), 1, "gapSeconds {v}");
+        assert_eq!(out["gapSeconds"].as_f64(), Some(v), "gapSeconds {v}");
     }
 }
 
@@ -142,7 +151,8 @@ fn time_sync_defaults_match_the_published_defaults() {
 #[test]
 fn the_preset_table_is_the_same_closed_set() {
     let c = contract();
-    let published: Vec<&str> = recording_schema(&c)["properties"]["video"]["properties"]["preset"]["enum"]
+    let published: Vec<&str> = recording_schema(&c)["properties"]["video"]["properties"]["preset"]
+        ["enum"]
         .as_array()
         .unwrap()
         .iter()
@@ -213,9 +223,14 @@ fn time_sync_bounds_survive_the_device_parser_too() {
     let schema = &c["namespaces"]["timeSync"]["jsonSchema"];
     for key in ["stepThresholdSecs", "maxStepsPerBoot"] {
         let node = &schema["properties"][key];
-        for v in [node["minimum"].as_f64().unwrap(), node["maximum"].as_f64().unwrap()] {
+        for v in [
+            node["minimum"].as_f64().unwrap(),
+            node["maximum"].as_f64().unwrap(),
+        ] {
             let got = parse_time_sync_settings(&serde_json::json!({ key: v })).unwrap();
-            assert_eq!(serde_json::to_value(&got).unwrap(), serde_json::json!({ key: v }), "{key} {v}");
+            let out = serde_json::to_value(&got).unwrap();
+            assert_eq!(out.as_object().unwrap().len(), 1, "{key} {v}");
+            assert_eq!(out[key].as_f64(), Some(v), "{key} {v}");
         }
     }
 }
@@ -259,6 +274,9 @@ fn the_agents_apply_classes_match_the_published_ones() {
     assert_eq!(ours, published_sorted);
     // Every published class is one the agent can represent.
     for (_, c) in &published {
-        assert!(serde_json::from_value::<ApplyClass>(Value::String(c.clone())).is_ok(), "{c}");
+        assert!(
+            serde_json::from_value::<ApplyClass>(Value::String(c.clone())).is_ok(),
+            "{c}"
+        );
     }
 }

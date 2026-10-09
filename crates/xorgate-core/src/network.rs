@@ -91,8 +91,8 @@ pub fn ssh_server_ip(ssh_connection: Option<&str>) -> Option<&str> {
         return None;
     }
     // `trim().split(/\s+/)`: an all-whitespace string splits to [""] (length
-    // 1), so it fails the `>= 3` check like the TS.
-    let parts: Vec<&str> = s.trim().split_whitespace().collect();
+    // 1) in JS and to [] here; both fail the `>= 3` check.
+    let parts: Vec<&str> = s.split_whitespace().collect();
     (parts.len() >= 3).then(|| parts[2])
 }
 

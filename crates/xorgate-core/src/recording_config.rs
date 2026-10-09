@@ -151,7 +151,9 @@ pub fn resolve_recording_config(s: Option<&RecordingSettings>) -> ResolvedRecord
             mode: up.and_then(|u| u.mode).unwrap_or(d.upload.mode),
         },
         retention: ResolvedRetention {
-            max_bytes: ret.and_then(|r| r.max_bytes).unwrap_or(d.retention.max_bytes),
+            max_bytes: ret
+                .and_then(|r| r.max_bytes)
+                .unwrap_or(d.retention.max_bytes),
             min_free_bytes: ret
                 .and_then(|r| r.min_free_bytes)
                 .unwrap_or(d.retention.min_free_bytes),
@@ -159,9 +161,15 @@ pub fn resolve_recording_config(s: Option<&RecordingSettings>) -> ResolvedRecord
         power_shedding: ShedConfig {
             enabled: shed.and_then(|p| p.enabled).unwrap_or(dp.enabled),
             uv_samples: shed.and_then(|p| p.uv_samples).unwrap_or(dp.uv_samples),
-            uv_window_secs: shed.and_then(|p| p.uv_window_secs).unwrap_or(dp.uv_window_secs),
-            rail_low_volts: shed.and_then(|p| p.rail_low_volts).unwrap_or(dp.rail_low_volts),
-            rail_low_secs: shed.and_then(|p| p.rail_low_secs).unwrap_or(dp.rail_low_secs),
+            uv_window_secs: shed
+                .and_then(|p| p.uv_window_secs)
+                .unwrap_or(dp.uv_window_secs),
+            rail_low_volts: shed
+                .and_then(|p| p.rail_low_volts)
+                .unwrap_or(dp.rail_low_volts),
+            rail_low_secs: shed
+                .and_then(|p| p.rail_low_secs)
+                .unwrap_or(dp.rail_low_secs),
             escalate_dwell_secs: shed
                 .and_then(|p| p.escalate_dwell_secs)
                 .unwrap_or(dp.escalate_dwell_secs),
@@ -172,7 +180,9 @@ pub fn resolve_recording_config(s: Option<&RecordingSettings>) -> ResolvedRecord
             cpu_temp_restore_c: shed
                 .and_then(|p| p.cpu_temp_restore_c)
                 .unwrap_or(dp.cpu_temp_restore_c),
-            cpu_temp_secs: shed.and_then(|p| p.cpu_temp_secs).unwrap_or(dp.cpu_temp_secs),
+            cpu_temp_secs: shed
+                .and_then(|p| p.cpu_temp_secs)
+                .unwrap_or(dp.cpu_temp_secs),
             restore_secs: shed.and_then(|p| p.restore_secs).unwrap_or(dp.restore_secs),
             rail_restore_volts: shed
                 .and_then(|p| p.rail_restore_volts)

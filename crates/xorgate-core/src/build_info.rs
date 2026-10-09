@@ -33,6 +33,13 @@ pub fn format_build_info(info: &BuildInfo) -> String {
     )
 }
 
+impl BuildInfo {
+    /// Method form of [`format_build_info`] (what the agent's CLI/worker call).
+    pub fn format(&self) -> String {
+        format_build_info(self)
+    }
+}
+
 /// `str` (`build-info.ts:88`): a non-blank string, trimmed.
 fn nonblank(v: Option<&Value>) -> Option<String> {
     v.and_then(Value::as_str)

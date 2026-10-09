@@ -224,8 +224,9 @@ impl Serialize for CameraRotationDeg {
 impl<'de> Deserialize<'de> for CameraRotationDeg {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = f64::deserialize(d)?;
-        CameraRotationDeg::from_f64(v)
-            .ok_or_else(|| serde::de::Error::custom(format!("rotationDeg must be 0 or 180, got {v}")))
+        CameraRotationDeg::from_f64(v).ok_or_else(|| {
+            serde::de::Error::custom(format!("rotationDeg must be 0 or 180, got {v}"))
+        })
     }
 }
 
@@ -609,9 +610,15 @@ mod tests {
             .replace(r#""no_fix_since":null,"#, "");
         assert_eq!(out, expected);
         let t: ModemTelemetry = serde_json::from_str(s).unwrap();
-        assert_eq!(GnssHealth::parse(t.gnss.as_ref().unwrap().health.as_deref().unwrap()), Some(GnssHealth::Acquiring));
+        assert_eq!(
+            GnssHealth::parse(t.gnss.as_ref().unwrap().health.as_deref().unwrap()),
+            Some(GnssHealth::Acquiring)
+        );
         assert_eq!(SimState::parse("not-detected"), Some(SimState::NotDetected));
-        assert_eq!(SimRegistration::parse("not-searching"), Some(SimRegistration::NotSearching));
+        assert_eq!(
+            SimRegistration::parse("not-searching"),
+            Some(SimRegistration::NotSearching)
+        );
         assert_eq!(ApnState::parse("in-force"), Some(ApnState::InForce));
         assert_eq!(ApnState::parse("confused"), None);
     }
@@ -646,8 +653,14 @@ mod tests {
     fn gnss_view_time_source_gps_clock_shapes() {
         let g = r#"{"fix":true,"sky":"no-rf"}"#;
         assert_eq!(round_trip::<GnssView>(g), g);
-        assert_eq!(serde_json::to_string(&TimeSource::Unsynced).unwrap(), r#""unsynced""#);
-        assert_eq!(serde_json::to_string(&SteppedClockSource::Nitz).unwrap(), r#""nitz""#);
+        assert_eq!(
+            serde_json::to_string(&TimeSource::Unsynced).unwrap(),
+            r#""unsynced""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SteppedClockSource::Nitz).unwrap(),
+            r#""nitz""#
+        );
         assert_eq!(TimeSource::from(SteppedClockSource::Gps), TimeSource::Gps);
         let r = r#"{"utcMs":1791511485433,"ageMs":120,"valid":true}"#;
         assert_eq!(round_trip::<GpsClockReading>(r), r);
@@ -659,7 +672,10 @@ mod tests {
         let s = r#"{"at":1791511485433,"cameras":[{"streamKey":"cam0","desiredDeg":180,"inForceDeg":0,"bootDeg":180,"verdict":"pending","detail":"written; reboot to apply"},{"streamKey":"cam1","desiredDeg":0,"inForceDeg":null,"bootDeg":null,"verdict":"write-failed"}],"rebootRequired":true,"wrote":true}"#;
         assert_eq!(round_trip::<CameraMountState>(s), s);
         assert!(serde_json::from_str::<CameraRotationDeg>("90").is_err());
-        assert_eq!(serde_json::from_str::<CameraRotationDeg>("180.0").unwrap(), CameraRotationDeg::Deg180);
+        assert_eq!(
+            serde_json::from_str::<CameraRotationDeg>("180.0").unwrap(),
+            CameraRotationDeg::Deg180
+        );
     }
 
     #[test]

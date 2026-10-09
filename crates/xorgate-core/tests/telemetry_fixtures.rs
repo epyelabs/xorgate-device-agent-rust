@@ -38,14 +38,22 @@ fn payload_shapes() {
                 // The dynamic map lifts to the typed groups and back.
                 let typed = TelemetryMetrics::from_metrics(&p.metrics)
                     .unwrap_or_else(|e| panic!("{}: typed metrics: {e}", c.name));
-                assert_eq!(typed.clone().into_metrics(), p.metrics, "{}: typed ↔ map", c.name);
+                assert_eq!(
+                    typed.clone().into_metrics(),
+                    p.metrics,
+                    "{}: typed ↔ map",
+                    c.name
+                );
                 if c.name.starts_with("full payload") {
                     let gps = typed.gps.as_ref().unwrap();
                     assert_eq!(gps.sats_heard.as_ref().unwrap().value, JsNumber(14.0));
                     assert_eq!(gps.course.as_ref().unwrap().unit.as_deref(), Some("°"));
                     assert!(typed.imu.is_some() && typed.lte.is_some() && typed.system.is_some());
                     let r = p.recording.as_ref().unwrap();
-                    assert_eq!(r.boot_defer.as_deref(), Some("released:budget 5000mA >= 5000mA"));
+                    assert_eq!(
+                        r.boot_defer.as_deref(),
+                        Some("released:budget 5000mA >= 5000mA")
+                    );
                     assert_eq!(p.media.streams[1].recording, None);
                     assert_eq!(p.media.streams[0].recording, Some(true));
                 }
@@ -82,9 +90,15 @@ fn payload_shapes() {
 
 #[test]
 fn enums_print_like_the_ts_unions() {
-    assert_eq!(serde_json::to_string(&RunMode::Replay).unwrap(), r#""replay""#);
+    assert_eq!(
+        serde_json::to_string(&RunMode::Replay).unwrap(),
+        r#""replay""#
+    );
     assert_eq!(RunMode::parse("bogus"), None);
-    assert_eq!(serde_json::to_string(&ConnectionState::Reconnecting).unwrap(), r#""reconnecting""#);
+    assert_eq!(
+        serde_json::to_string(&ConnectionState::Reconnecting).unwrap(),
+        r#""reconnecting""#
+    );
     assert_eq!(ConnectionState::Error.as_str(), "error");
     let e = ActivityEvent {
         ts: 1,

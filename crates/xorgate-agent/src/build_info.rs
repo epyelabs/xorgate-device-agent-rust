@@ -9,7 +9,7 @@
 //! back to the git sha baked by `build.rs` with `channel: "dev-local"` — never
 //! a stale sha from somewhere else, so a bench build cannot masquerade as CI.
 
-pub use xorgate_core::build_info::{format_build_info, parse_build_manifest, BuildInfo};
+pub use xorgate_core::build_info::{parse_build_manifest, BuildInfo};
 
 pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BAKED_SHA: &str = env!("XORGATE_GIT_SHA");
@@ -22,11 +22,6 @@ pub fn fallback() -> BuildInfo {
         built_at: None,
         package_version: PACKAGE_VERSION.to_string(),
     }
-}
-
-/// `0.0.1 (a1b2c3d, dev)` — the TS `formatBuildInfo` form.
-pub fn format(info: &BuildInfo) -> String {
-    format_build_info(info)
 }
 
 /// Where the manifest lives relative to the running executable.
@@ -57,7 +52,7 @@ mod tests {
             PACKAGE_VERSION,
         )
         .unwrap();
-        assert_eq!(format(&b), "0.0.1 (abc1234, dev)");
+        assert_eq!(b.format(), "0.0.1 (abc1234, dev)");
         assert_eq!(b.built_at.as_deref(), Some("2026-10-08T00:00:00Z"));
     }
 

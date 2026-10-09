@@ -121,7 +121,10 @@ fn recording_settings_test_ts() {
         extra["videoPresetsJson"].as_str().unwrap(),
         "VIDEO_PRESETS"
     );
-    assert_eq!(extra["defaultVideoPreset"].as_str().unwrap(), DEFAULT_VIDEO_PRESET);
+    assert_eq!(
+        extra["defaultVideoPreset"].as_str().unwrap(),
+        DEFAULT_VIDEO_PRESET
+    );
     let classes: serde_json::Map<String, Value> = CONFIG_APPLY_CLASSES
         .iter()
         .map(|(k, c)| (k.to_string(), Value::String(c.as_str().to_string())))
@@ -135,7 +138,11 @@ fn recording_settings_test_ts() {
         .iter()
         .map(|k| Value::String(k.to_string()))
         .collect();
-    assert_eq!(Value::Array(keys), extra["configNamespaceKeys"], "CONFIG_NAMESPACE_KEYS");
+    assert_eq!(
+        Value::Array(keys),
+        extra["configNamespaceKeys"],
+        "CONFIG_NAMESPACE_KEYS"
+    );
 }
 
 #[test]
