@@ -123,12 +123,13 @@ async fn main() {
     }
 }
 
-/// `[agent] segment upload disabled (…)` and friends go to stderr.
+/// INFO+ (`[agent] segment upload disabled (…)` and friends) to stderr;
+/// hyper/reqwest debug chatter is dropped.
 fn tracing_subscriber_init() {
     struct Stderr;
     impl tracing::Subscriber for Stderr {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
+        fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+            *m.level() <= tracing::Level::INFO
         }
         fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
             tracing::span::Id::from_u64(1)
