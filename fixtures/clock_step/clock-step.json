@@ -1422,6 +1422,348 @@
           }
         }
       ]
+    },
+    {
+      "name": "[extra] toFixed(1) rounding of a 12250 ms step",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326412250,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326412250
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326412250
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 12250
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +12.3s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 12250,
+                "at": 1785326412250
+              }
+            },
+            "appliedThisTick": [
+              1785326412250
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] toFixed(1) rounding of a -12250 ms step",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326387750,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326387750
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326387750
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": -12250
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock -12.3s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": -12250,
+                "at": 1785326387750
+              }
+            },
+            "appliedThisTick": [
+              1785326387750
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] toFixed(1) rounding of a 10050 ms step",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326410050,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326410050
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326410050
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 10050
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +10.1s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 10050,
+                "at": 1785326410050
+              }
+            },
+            "appliedThisTick": [
+              1785326410050
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] toFixed(1) rounding of a 10150 ms step",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326410150,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326410150
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326410150
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 10150
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +10.2s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 10150,
+                "at": 1785326410150
+              }
+            },
+            "appliedThisTick": [
+              1785326410150
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] toFixed(1) rounding of a 10450 ms step",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326410450,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326410450
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326410450
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 10450
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +10.4s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 10450,
+                "at": 1785326410450
+              }
+            },
+            "appliedThisTick": [
+              1785326410450
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] toFixed(1) rounding of a 10750 ms step",
+      "ticks": [
+        {
+          "input": {
+            "ntpSynced": false,
+            "config": {
+              "offlineSources": true,
+              "stepThresholdSecs": 10,
+              "maxStepsPerBoot": 4
+            },
+            "gps": {
+              "utcMs": 1785326410750,
+              "ageMs": 0,
+              "valid": true
+            },
+            "now": 1785326400000,
+            "mono": 100000,
+            "apply": {
+              "ok": true,
+              "detail": "",
+              "wallAfter": 1785326410750
+            },
+            "modem": null
+          },
+          "expected": {
+            "applied": [
+              1785326410750
+            ],
+            "stepped": [
+              {
+                "source": "gps",
+                "offsetMs": 10750
+              }
+            ],
+            "events": [
+              {
+                "level": "info",
+                "msg": "[clock] stepped system clock +10.8s from gps (NTP unsynced; step 1/4 this boot)"
+              }
+            ],
+            "status": {
+              "armed": true,
+              "steps": 1,
+              "lastStep": {
+                "source": "gps",
+                "offsetMs": 10750,
+                "at": 1785326410750
+              }
+            },
+            "appliedThisTick": [
+              1785326410750
+            ]
+          }
+        }
+      ]
     }
   ],
   "cases": [

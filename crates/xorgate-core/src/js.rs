@@ -1,6 +1,6 @@
 //! ECMAScript number/string/date semantics the WP2 parsers lean on
 //! (`parseInt`, `parseFloat`, `ToInt32`, `String.prototype.trim`, `Date.UTC`,
-//! `Date.prototype.toISOString`). Each helper follows the spec clause the TS
+//! `Date.prototype.toISOString`, `Number.prototype.toFixed`). Each helper follows the spec clause the TS
 //! source relies on, so a port can call `parse_int(field, 10)` where the TS
 //! called `parseInt(field, 10)` and get the same number — including the
 //! lenient prefix parsing (`"08abc"` → 8) and the `NaN` results the
@@ -229,6 +229,39 @@ pub fn to_iso_string(ms: f64) -> String {
     format!("{year}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{milli:03}Z")
 }
 
+/// `Number.prototype.toFixed(digits)` (ES2023 §21.1.3.3) for `digits` 0..=20
+/// and |x| < 1e21 (the only range a device log line formats): `n` is the
+/// integer nearest `x·10^digits` and an exact tie picks the LARGER `n`, after
+/// the sign is split off — i.e. ties round away from zero. Rust's `{:.N}`
+/// rounds the same exact binary value but breaks ties to even, so the two
+/// differ only on exact ties, which are the values `odd / 2^(digits+1)`
+/// (e.g. 12.25 → JS "12.3", Rust "12.2"); those are computed exactly here.
+/// `-0` prints without a sign, as in JS.
+pub fn to_fixed(x: f64, digits: usize) -> String {
+    debug_assert!(digits <= 20);
+    if x.is_nan() {
+        return "NaN".to_string();
+    }
+    let (sign, a) = if x < 0.0 { ("-", -x) } else { ("", x.abs()) };
+    debug_assert!(a < 1e21, "toFixed of {x}: JS switches to exponent form");
+    let scaled = a * f64::powi(2.0, digits as i32 + 1); // exact: a power of two
+    let is_tie =
+        scaled.fract() == 0.0 && scaled < 9_007_199_254_740_992.0 && (scaled as u64) % 2 == 1;
+    if !is_tie {
+        return format!("{sign}{a:.digits$}");
+    }
+    // a = m / 2^(d+1) with m odd ⇒ a·10^d = m·5^d / 2 = k + 1/2; JS takes k + 1.
+    let m = scaled as u128;
+    let n = (m * 5u128.pow(digits as u32)).div_ceil(2);
+    let s = n.to_string();
+    if digits == 0 {
+        return format!("{sign}{s}");
+    }
+    let s = format!("{s:0>width$}", width = digits + 1);
+    let (int, frac) = s.split_at(s.len() - digits);
+    format!("{sign}{int}.{frac}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +366,23 @@ mod tests {
             "-000001-01-01T00:00:00.000Z"
         );
         assert_eq!(to_iso_string(f64::NAN), "Invalid Date");
+    }
+
+    #[test]
+    fn to_fixed_rounds_ties_away_from_zero() {
+        assert_eq!(to_fixed(12.25, 1), "12.3");
+        assert_eq!(to_fixed(-12.25, 1), "-12.3");
+        assert_eq!(to_fixed(12.75, 1), "12.8");
+        assert_eq!(to_fixed(0.25, 1), "0.3");
+        assert_eq!(to_fixed(10.05, 1), "10.1"); // 10.05 is not a tie in binary
+        assert_eq!(to_fixed(10.45, 1), "10.4"); // 10.4499999… in binary
+        assert_eq!(to_fixed(300.0, 1), "300.0");
+        assert_eq!(to_fixed(-0.0, 1), "0.0");
+        assert_eq!(to_fixed(-0.01, 1), "-0.0");
+        assert_eq!(to_fixed(2.5, 0), "3");
+        assert_eq!(to_fixed(0.125, 2), "0.13");
+        assert_eq!(to_fixed(1.005, 2), "1.00"); // 1.00499999… in binary
+        assert_eq!(to_fixed(f64::NAN, 1), "NaN");
     }
 
     #[test]

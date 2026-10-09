@@ -423,7 +423,7 @@ pub fn settle(
         offset_ms: step.offset_ms,
         at: now_after,
     });
-    let secs = format!("{:.1}", step.offset_ms / 1000.0);
+    let secs = js::to_fixed(step.offset_ms / 1000.0, 1);
     events.push(ClockEvent::info(format!(
         "[clock] stepped system clock {}{}s from {} (NTP unsynced; step {}/{} this boot)",
         if step.offset_ms >= 0.0 { "+" } else { "" },

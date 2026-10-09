@@ -1,6 +1,6 @@
 //! Fixture-driven tests for `xorgate_core::clock_step` — `test/clock-step.test.ts`
 //! (20 `it`): `parseCclkUtcMs` 5, `readModemClock` 4, `resolveTimeSyncConfig` 1
-//! as tables (+ extras), and the 9 fixture-able `createClockStepper` cases (+7
+//! as tables (+ extras), and the 9 fixture-able `createClockStepper` cases (+13
 //! extras) replayed tick by tick through `decide` + `settle`. Each recorded
 //! tick carries what the TS harness fed the stepper and the cumulative
 //! `applied` / `stepped` / `events` / `status()` the real TS stepper produced.
@@ -117,7 +117,7 @@ struct SteppedRec {
 fn clock_step_test_ts_stepper_sequences() {
     let f = common::fixture::<Case>("clock_step/clock-step.json");
     let cases: Vec<StepperCase> = serde_json::from_value(f.extra["stepperCases"].clone()).unwrap();
-    assert_eq!(cases.len(), 17);
+    assert_eq!(cases.len(), 23);
     let mut ticks_total = 0;
     for c in &cases {
         let mut state = ClockStepperState::new();
@@ -171,5 +171,5 @@ fn clock_step_test_ts_stepper_sequences() {
             assert_eq!(got, t.expected, "{} — tick {i}", c.name);
         }
     }
-    assert_eq!(ticks_total, 30);
+    assert_eq!(ticks_total, 34);
 }
