@@ -1,0 +1,3506 @@
+{
+  "jsSourceFile": "test/telemetry-scope.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): each it() replayed through a recorder around the real TelemetryScope, every call and its return value dumped as an op script (badCycle expanded to connect/publish/close)",
+  "device": "ca4b1c5d-0000-4000-8000-000000000001",
+  "unscopedTopic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+  "cases": [
+    {
+      "name": "starts on the unscoped topic, which the device policy always permits",
+      "opts": {},
+      "ops": [
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "fallenBack",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "moves to the scoped topic when the cloud names a tenancy",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 1000,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "is silent when the retained message replays the same scope",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 1000,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 2000,
+          "expect": null
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 3000,
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "follows a transfer to a new workspace",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 1000,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-b"
+          },
+          "at": 2000,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-b/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-b"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/orgs/org-1/ws/ws-b/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "never falls back on healthy long-lived connections",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 600000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 602000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 1202000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 1204000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 1804000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 1806000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 2406000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 2408000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 3008000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3010000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 3610000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3612000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 4212000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 4214000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 4814000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 4816000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 5416000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 5418000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 6018000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6020000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 6620000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6622000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 7222000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 7224000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 7824000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 7826000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 8426000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 8428000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 9028000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9030000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 9630000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9632000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 10232000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 10234000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 10834000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 10836000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 11436000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 11438000
+        },
+        {
+          "op": "publish",
+          "n": 600
+        },
+        {
+          "op": "close",
+          "at": 12038000,
+          "expect": null
+        },
+        {
+          "op": "fallenBack",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "never falls back while still on the unscoped topic",
+      "opts": {},
+      "ops": [
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 36300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 37600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 39600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 40900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 42900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 44200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 46200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 47500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 49500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 50800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 52800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 54100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 56100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 57400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 59400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 60700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 62700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 64000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 66000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 67300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 69300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 70600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 72600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 73900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 75900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 77200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 79200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 80500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 82500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 83800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 85800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 87100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 89100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 90400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 92400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 93700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 95700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 97000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 99000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 100300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 102300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 103600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 105600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 106900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 108900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 110200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 112200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 113500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 115500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 116800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 118800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 120100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 122100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 123400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 125400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 126700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 128700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 130000,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "falls back to the unscoped topic once the loop is unmistakable",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 11,
+            "reprobeInMs": 1800000
+          }
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "fallenBack",
+          "expect": true
+        }
+      ]
+    },
+    {
+      "name": "does not fall back for a correctly-ordered transfer with a slow gap",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 300
+        },
+        {
+          "op": "close",
+          "at": 313200,
+          "expect": null
+        },
+        {
+          "op": "fallenBack",
+          "expect": false
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "resets the run when a healthy connection interrupts it",
+      "opts": {
+        "graceMs": 0
+      },
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 126600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 128600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 129900,
+          "expect": null
+        },
+        {
+          "op": "fallenBack",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "ignores short connections until the scoped topic has been offered at all",
+      "opts": {
+        "graceMs": 0
+      },
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 36300
+        },
+        {
+          "op": "close",
+          "at": 37600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 39600
+        },
+        {
+          "op": "close",
+          "at": 40900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 42900
+        },
+        {
+          "op": "close",
+          "at": 44200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 46200
+        },
+        {
+          "op": "close",
+          "at": 47500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 49500
+        },
+        {
+          "op": "close",
+          "at": 50800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 52800
+        },
+        {
+          "op": "close",
+          "at": 54100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 56100
+        },
+        {
+          "op": "close",
+          "at": 57400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 59400
+        },
+        {
+          "op": "close",
+          "at": 60700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 62700
+        },
+        {
+          "op": "close",
+          "at": 64000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 66000
+        },
+        {
+          "op": "close",
+          "at": 67300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 69300
+        },
+        {
+          "op": "close",
+          "at": 70600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 72600
+        },
+        {
+          "op": "close",
+          "at": 73900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 75900
+        },
+        {
+          "op": "close",
+          "at": 77200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 79200
+        },
+        {
+          "op": "close",
+          "at": 80500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 82500
+        },
+        {
+          "op": "close",
+          "at": 83800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 85800
+        },
+        {
+          "op": "close",
+          "at": 87100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 89100
+        },
+        {
+          "op": "close",
+          "at": 90400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 92400
+        },
+        {
+          "op": "close",
+          "at": 93700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 95700
+        },
+        {
+          "op": "close",
+          "at": 97000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 99000
+        },
+        {
+          "op": "close",
+          "at": 100300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 102300
+        },
+        {
+          "op": "close",
+          "at": 103600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 105600
+        },
+        {
+          "op": "close",
+          "at": 106900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 108900
+        },
+        {
+          "op": "close",
+          "at": 110200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 112200
+        },
+        {
+          "op": "close",
+          "at": 113500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 115500
+        },
+        {
+          "op": "close",
+          "at": 116800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 118800
+        },
+        {
+          "op": "close",
+          "at": 120100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 122100
+        },
+        {
+          "op": "close",
+          "at": 123400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 125400
+        },
+        {
+          "op": "close",
+          "at": 126700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 128700
+        },
+        {
+          "op": "close",
+          "at": 130000,
+          "expect": null
+        },
+        {
+          "op": "fallenBack",
+          "expect": false
+        }
+      ]
+    },
+    {
+      "name": "keeps counting through cycles that carry no publish callback",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 2300
+        },
+        {
+          "op": "close",
+          "at": 3600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 4600
+        },
+        {
+          "op": "close",
+          "at": 5900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6900
+        },
+        {
+          "op": "close",
+          "at": 8200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9200
+        },
+        {
+          "op": "close",
+          "at": 10500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 11500
+        },
+        {
+          "op": "close",
+          "at": 12800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13800
+        },
+        {
+          "op": "close",
+          "at": 15100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16100
+        },
+        {
+          "op": "close",
+          "at": 17400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 18400
+        },
+        {
+          "op": "close",
+          "at": 19700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 20700
+        },
+        {
+          "op": "close",
+          "at": 22000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23000
+        },
+        {
+          "op": "close",
+          "at": 24300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 25300
+        },
+        {
+          "op": "close",
+          "at": 26600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 27600
+        },
+        {
+          "op": "close",
+          "at": 28900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29900
+        },
+        {
+          "op": "close",
+          "at": 31200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 32200
+        },
+        {
+          "op": "close",
+          "at": 33500,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 15,
+            "reprobeInMs": 1800000
+          }
+        }
+      ]
+    },
+    {
+      "name": "is not thrown off by a close with no connection behind it",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "close",
+          "at": 2300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 4300
+        },
+        {
+          "op": "close",
+          "at": 5600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "close",
+          "at": 8900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 10900
+        },
+        {
+          "op": "close",
+          "at": 12200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "close",
+          "at": 15500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 17500
+        },
+        {
+          "op": "close",
+          "at": 18800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "close",
+          "at": 22100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 24100
+        },
+        {
+          "op": "close",
+          "at": 25400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "close",
+          "at": 28700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 30700
+        },
+        {
+          "op": "close",
+          "at": 32000,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 10,
+            "reprobeInMs": 1800000
+          }
+        }
+      ]
+    },
+    {
+      "name": "stays down when the retained message replays the scope it fell back from",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 11,
+            "reprobeInMs": 1800000
+          }
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 36300,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 39600,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 42900,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 46200,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 49500,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 52800,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 56100,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 59400,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 62700,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 66000,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "re-arms immediately when a config message carries a DIFFERENT scope",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 11,
+            "reprobeInMs": 1800000
+          }
+        },
+        {
+          "op": "fallenBack",
+          "expect": true
+        },
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-b"
+          },
+          "at": 43000,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-b/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-b"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "fallenBack",
+          "expect": false
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/orgs/org-1/ws/ws-b/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "re-probes on the backoff, so a fixed thing attribute is noticed",
+      "opts": {
+        "reprobeAfterMs": 1800000
+      },
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 11,
+            "reprobeInMs": 1800000
+          }
+        },
+        {
+          "op": "tick",
+          "at": 1776300,
+          "expect": null
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        },
+        {
+          "op": "tick",
+          "at": 1836301,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "reprobe"
+          }
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "a failed probe costs ONE cycle, then backs off further",
+      "opts": {
+        "reprobeAfterMs": 60000,
+        "maxReprobeMs": 240000
+      },
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 11,
+            "reprobeInMs": 60000
+          }
+        },
+        {
+          "op": "connect",
+          "at": 96301
+        },
+        {
+          "op": "tick",
+          "at": 96301,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "reprobe"
+          }
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 97601,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 1,
+            "reprobeInMs": 120000
+          }
+        },
+        {
+          "op": "connect",
+          "at": 219602
+        },
+        {
+          "op": "tick",
+          "at": 219602,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "reprobe"
+          }
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 220902,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 1,
+            "reprobeInMs": 240000
+          }
+        },
+        {
+          "op": "connect",
+          "at": 462903
+        },
+        {
+          "op": "tick",
+          "at": 462903,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "reprobe"
+          }
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 464203,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 1,
+            "reprobeInMs": 240000
+          }
+        },
+        {
+          "op": "connect",
+          "at": 706204
+        },
+        {
+          "op": "tick",
+          "at": 706204,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "reprobe"
+          }
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 707504,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 1,
+            "reprobeInMs": 240000
+          }
+        },
+        {
+          "op": "topic",
+          "expect": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry"
+        }
+      ]
+    },
+    {
+      "name": "measures a mid-connection re-arm from the arming instant, not the connect",
+      "opts": {
+        "reprobeAfterMs": 60000
+      },
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 11,
+            "reprobeInMs": 60000
+          }
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 2400
+        },
+        {
+          "op": "tick",
+          "at": 2433000,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "reprobe"
+          }
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 2434300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 1,
+            "reprobeInMs": 120000
+          }
+        }
+      ]
+    },
+    {
+      "name": "reports the unscoped topic and no fallback block at boot",
+      "opts": {},
+      "ops": [
+        {
+          "op": "report",
+          "expect": {
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scoped": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "reports the tenancy once scoped, still with no fallback block",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "report",
+          "expect": {
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scoped": true,
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reports the fallback, which is the cloud's only sight of it",
+      "opts": {},
+      "ops": [
+        {
+          "op": "applyScope",
+          "scope": {
+            "organizationId": "org-1",
+            "workspaceId": "ws-a"
+          },
+          "at": 0,
+          "expect": {
+            "kind": "scoped",
+            "topic": "xorgate/orgs/org-1/ws/ws-a/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "reason": "cloud"
+          }
+        },
+        {
+          "op": "connect",
+          "at": 0
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 1300,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 3300
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 4600,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 6600
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 7900,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 9900
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 11200,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 13200
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 14500,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 16500
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 17800,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 19800
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 21100,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 23100
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 24400,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 26400
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 27700,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 29700
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 31000,
+          "expect": null
+        },
+        {
+          "op": "connect",
+          "at": 33000
+        },
+        {
+          "op": "publish",
+          "n": 1
+        },
+        {
+          "op": "close",
+          "at": 34300,
+          "expect": {
+            "kind": "fallback",
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scope": {
+              "organizationId": "org-1",
+              "workspaceId": "ws-a"
+            },
+            "cycles": 11,
+            "reprobeInMs": 1800000
+          }
+        },
+        {
+          "op": "report",
+          "expect": {
+            "topic": "xorgate/devices/ca4b1c5d-0000-4000-8000-000000000001/telemetry",
+            "scoped": false,
+            "organizationId": "org-1",
+            "workspaceId": "ws-a",
+            "fallback": {
+              "since": 34300,
+              "count": 1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

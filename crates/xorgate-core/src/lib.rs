@@ -33,6 +33,7 @@ pub mod settings;
 pub mod settings_migrate;
 pub mod system;
 pub mod telemetry;
+pub mod telemetry_scope;
 pub mod topics;
 pub mod types;
 pub mod video_presets;
