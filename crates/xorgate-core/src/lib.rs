@@ -21,33 +21,36 @@
 
 #![forbid(unsafe_code)]
 
+pub mod boot_config;
 pub mod boot_policy;
 pub mod build_info;
 pub mod clock;
+pub mod clock_step;
+pub mod cloud_config;
 pub mod commands;
 pub mod config_namespaces;
+pub mod config_report;
 pub mod hardware_block;
+pub mod imu;
+pub mod js;
 pub mod js_fmt;
 pub mod led;
 pub mod led_state;
+pub mod modem;
 pub mod network;
+pub mod nmea;
 pub mod orientation;
+pub mod power;
 pub mod recording_config;
 pub mod round;
 pub mod settings;
 pub mod settings_migrate;
+pub mod sky_state;
 pub mod sms;
 pub mod sms_pdu;
 pub mod system;
 pub mod telemetry;
+pub mod telemetry_scope;
 pub mod topics;
 pub mod types;
 pub mod video_presets;
-
-pub mod clock_step;
-pub mod imu;
-pub mod js;
-pub mod modem;
-pub mod nmea;
-pub mod power;
-pub mod sky_state;

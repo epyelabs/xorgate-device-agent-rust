@@ -1,0 +1,1418 @@
+{
+  "jsSourceFile": "test/cloud-config.test.ts + test/config-sync-cellular.test.ts + test/camera-mount.test.ts + test/config-sync.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): parse cases = exact JSON.stringify of parseCloudConfig/parseCloudMessage; apply cases = file-state scripts (save/write/unreadable → apply) recording {changed, the raw file bytes after, loadSettings JSON} from the real applyCloudConfig over a tmp settings.json",
+  "cases": [
+    {
+      "name": "parses a v1 config message",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"gnssAntBias\":true,\"ts\":1750000000000}",
+          "expectedJson": "{\"gnssAntBias\":true}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"gnssAntBias\":false}",
+          "expectedJson": "{\"gnssAntBias\":false}"
+        }
+      ]
+    },
+    {
+      "name": "rejects malformed payloads and wrong versions",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "not json",
+          "expectedJson": null
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "42",
+          "expectedJson": null
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "null",
+          "expectedJson": null
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"gnssAntBias\":true}",
+          "expectedJson": null
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":2,\"gnssAntBias\":true}",
+          "expectedJson": null
+        }
+      ]
+    },
+    {
+      "name": "drops known keys with the wrong type",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"gnssAntBias\":\"on\"}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "parses an imuMount object and drops malformed ones",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":180}}",
+          "expectedJson": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":180}}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"imuMount\":{\"enabled\":true,\"rollDeg\":\"90\"}}",
+          "expectedJson": "{\"imuMount\":null}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"imuMount\":\"on\"}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"imuMount\":[1]}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "maps an empty imuMount object to null (the cloud's revert marker)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"imuMount\":{}}",
+          "expectedJson": "{\"imuMount\":null}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "parses a recording namespace (normalized like local settings)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10},\"video\":{\"enabled\":true,\"preset\":\"1080p15-2mbps\",\"segmentSeconds\":60},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648}}}",
+          "expectedJson": "{\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10},\"video\":{\"enabled\":true,\"preset\":\"1080p15-2mbps\",\"segmentSeconds\":60},\"upload\":{\"mode\":\"auto\"},\"retention\":{\"maxBytes\":10737418240,\"minFreeBytes\":2147483648}}}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"recording\":{\"telemetry\":{\"rateHz\":99,\"enabled\":\"yes\"}}}",
+          "expectedJson": "{\"recording\":{\"telemetry\":{\"rateHz\":20}}}"
+        }
+      ]
+    },
+    {
+      "name": "parses an lteRecovery namespace (all-invalid → null, mistyped → ignored)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}",
+          "expectedJson": "{\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"lteRecovery\":{\"gpsFixResetPolicy\":\"bogus\"}}",
+          "expectedJson": "{\"lteRecovery\":null}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"lteRecovery\":[]}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"lteRecovery\":\"defer\"}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "parses uploadBucket and drops empty/mistyped values",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"uploadBucket\":\"core-bucket\"}",
+          "expectedJson": "{\"uploadBucket\":\"core-bucket\"}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"uploadBucket\":\"\"}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"uploadBucket\":42}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "parses a tenant scope, and takes it only when BOTH halves are present",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":{\"organizationId\":\"1d2b4514-7408-4234-af5f-83b9451575ea\",\"workspaceId\":\"c2e2a967-6dbe-464c-b45d-c6ef6087875b\"}}",
+          "expectedJson": "{\"scope\":{\"organizationId\":\"1d2b4514-7408-4234-af5f-83b9451575ea\",\"workspaceId\":\"c2e2a967-6dbe-464c-b45d-c6ef6087875b\"}}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":{\"organizationId\":\"1d2b4514-7408-4234-af5f-83b9451575ea\"}}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":{\"workspaceId\":\"c2e2a967-6dbe-464c-b45d-c6ef6087875b\"}}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":{\"organizationId\":\"1d2b4514-7408-4234-af5f-83b9451575ea\",\"workspaceId\":\"\"}}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":{\"organizationId\":42,\"workspaceId\":\"c2e2a967-6dbe-464c-b45d-c6ef6087875b\"}}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":\"nope\"}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":[\"1d2b4514-7408-4234-af5f-83b9451575ea\",\"c2e2a967-6dbe-464c-b45d-c6ef6087875b\"]}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"scope\":null}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "maps an empty/all-invalid recording object to null (cloud-managed defaults)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"recording\":{}}",
+          "expectedJson": "{\"recording\":null}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"recording\":\"on\"}",
+          "expectedJson": "{}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"recording\":[1]}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "parses a timeSync namespace (clamped numbers; all-invalid → null)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"timeSync\":{\"offlineSources\":true,\"stepThresholdSecs\":1}}",
+          "expectedJson": "{\"timeSync\":{\"offlineSources\":true,\"stepThresholdSecs\":2}}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"timeSync\":{\"offlineSources\":\"yes\"}}",
+          "expectedJson": "{\"timeSync\":null}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"timeSync\":[]}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "parses, clamps and drops like its siblings; empty object clears",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"simulation\":{\"scenarioId\":\"city-2026-09-27\",\"loop\":false,\"gapSeconds\":5000}}",
+          "expectedJson": "{\"simulation\":{\"scenarioId\":\"city-2026-09-27\",\"loop\":false,\"gapSeconds\":3600}}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"simulation\":{\"scenarioId\":\"../etc\",\"loop\":\"yes\"}}",
+          "expectedJson": "{\"simulation\":null}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1,\"simulation\":{}}",
+          "expectedJson": "{\"simulation\":null}"
+        },
+        {
+          "op": "parseCloudConfig",
+          "payload": "{\"v\":1}",
+          "expectedJson": "{}"
+        }
+      ]
+    },
+    {
+      "name": "parses a cellular namespace out of a v1 message",
+      "source": "test/config-sync-cellular.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"cellular\":{\"apn\":\"new.apn\"}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"cellular\":{\"apn\":\"new.apn\"}},\"config\":{\"cellular\":{\"apn\":\"new.apn\"}}}"
+        }
+      ]
+    },
+    {
+      "name": "an all-invalid cellular object parses to null (clear), not to a repaired value",
+      "source": "test/config-sync-cellular.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"cellular\":{\"apn\":\"bad apn\"}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"cellular\":{\"apn\":\"bad apn\"}},\"config\":{\"cellular\":null}}"
+        }
+      ]
+    },
+    {
+      "name": "returns the raw document alongside the normalized config",
+      "source": "test/config-sync.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"rev\":7,\"gnssAntBias\":true,\"recording\":{\"telemetry\":{\"rateHz\":999}}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"rev\":7,\"gnssAntBias\":true,\"recording\":{\"telemetry\":{\"rateHz\":999}}},\"config\":{\"rev\":7,\"gnssAntBias\":true,\"recording\":{\"telemetry\":{\"rateHz\":20}}}}"
+        }
+      ]
+    },
+    {
+      "name": "ignores a non-positive or mistyped rev (treated as absent)",
+      "source": "test/config-sync.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"rev\":0}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"rev\":0},\"config\":{}}"
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"rev\":\"3\"}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"rev\":\"3\"},\"config\":{}}"
+        }
+      ]
+    },
+    {
+      "name": "still rejects a non-v1 payload",
+      "source": "test/config-sync.test.ts",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":2,\"rev\":1}",
+          "expectedJson": null
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "[]",
+          "expectedJson": null
+        }
+      ]
+    },
+    {
+      "name": "[extra] hardware block on the envelope: valid, invalid (null), absent",
+      "source": "src/agent/cloud-config.ts:267-270",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"hardware\":{\"v\":2,\"platform\":\"rpi-cm4\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\"}]}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"hardware\":{\"v\":2,\"platform\":\"rpi-cm4\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\"}]}},\"config\":{\"hardware\":{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\"}]}}}"
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"hardware\":{\"v\":2,\"platform\":\"jetson\"}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"hardware\":{\"v\":2,\"platform\":\"jetson\"}},\"config\":{\"hardware\":null}}"
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"hardware\":\"cm4\"}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"hardware\":\"cm4\"},\"config\":{}}"
+        }
+      ]
+    },
+    {
+      "name": "[extra] raw keeps JSON.parse key order (integer-like keys first at every level)",
+      "source": "src/agent/cloud-config.ts:190",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":0},\"9\":{\"rotationDeg\":180}}},\"x\":{\"b\":1,\"2\":[{\"z\":0,\"1\":1}]}}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"cameraMount\":{\"cameras\":{\"9\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}},\"x\":{\"2\":[{\"1\":1,\"z\":0}],\"b\":1}},\"config\":{\"cameraMount\":{\"cameras\":{\"9\":{\"rotationDeg\":180},\"cam0\":{\"rotationDeg\":0}}}}}"
+        }
+      ]
+    },
+    {
+      "name": "[extra] rev is floored; v compares numerically",
+      "source": "src/agent/cloud-config.ts:195,214",
+      "steps": [
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"rev\":2.9}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"rev\":2.9},\"config\":{\"rev\":2}}"
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"rev\":-3}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"rev\":-3},\"config\":{}}"
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":\"1\"}",
+          "expectedJson": null
+        },
+        {
+          "op": "parseCloudMessage",
+          "payload": "{\"v\":1,\"rev\":1000}",
+          "expectedJson": "{\"raw\":{\"v\":1,\"rev\":1000},\"config\":{\"rev\":1000}}"
+        }
+      ]
+    },
+    {
+      "name": "persists gnssAntBias into settings.json",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": false
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"gnssAntBias\":false}",
+            "loadedJson": "{\"gnssAntBias\":false}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "merges without clobbering other operator settings",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "timeSync": {
+              "offlineSources": false
+            }
+          },
+          "fileAfter": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false},\"gnssAntBias\":true}",
+            "loadedJson": "{\"mode\":\"real\",\"gnssAntBias\":true,\"timeSync\":{\"offlineSources\":false}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "clears imuMount when the cloud sends the revert marker",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "imuMount": {
+              "enabled": true,
+              "rollDeg": 90,
+              "pitchDeg": 0,
+              "yawDeg": 90
+            }
+          },
+          "fileAfter": "{\"mode\":\"real\",\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "imuMount": null
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\"}",
+            "loadedJson": "{\"mode\":\"real\"}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "leaves imuMount alone when the cloud never mentions it",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "imuMount": {
+              "enabled": true,
+              "rollDeg": 90,
+              "pitchDeg": 0,
+              "yawDeg": 90
+            }
+          },
+          "fileAfter": "{\"mode\":\"real\",\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90},\"gnssAntBias\":true}",
+            "loadedJson": "{\"mode\":\"real\",\"gnssAntBias\":true,\"imuMount\":{\"enabled\":true,\"rollDeg\":90,\"pitchDeg\":0,\"yawDeg\":90}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "is a no-op when the revert marker arrives and there is nothing to clear",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real"
+          },
+          "fileAfter": "{\"mode\":\"real\"}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "imuMount": null
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"real\"}",
+            "loadedJson": "{\"mode\":\"real\"}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "is a no-op when the value is unchanged (retained re-delivery)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "gnssAntBias": true
+          },
+          "fileAfter": "{\"gnssAntBias\":true}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {},
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "survives a corrupt settings file (treated as empty)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "write",
+          "text": "not json"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "refuses to overwrite a settings file it cannot read",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "timeSync": {
+              "offlineSources": false
+            }
+          },
+          "fileAfter": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}"
+        },
+        {
+          "op": "unreadable"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "throws": "settings.json exists but cannot be read — refusing to overwrite it (check owner/permissions on <path>)"
+          }
+        },
+        {
+          "op": "readable"
+        },
+        {
+          "op": "apply",
+          "config": {},
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}",
+            "loadedJson": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "persists imuMount and no-ops on an identical re-delivery",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "apply",
+          "config": {
+            "imuMount": {
+              "enabled": true,
+              "rollDeg": 0,
+              "pitchDeg": 0,
+              "yawDeg": 90
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":90}}",
+            "loadedJson": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":90}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "imuMount": {
+              "enabled": true,
+              "rollDeg": 0,
+              "pitchDeg": 0,
+              "yawDeg": 90
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":90}}",
+            "loadedJson": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":90}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "imuMount": {
+              "enabled": true,
+              "rollDeg": 0,
+              "pitchDeg": 0,
+              "yawDeg": 180
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":180}}",
+            "loadedJson": "{\"imuMount\":{\"enabled\":true,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":180}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "replaces the whole recording namespace with the cloud value",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "recording": {
+              "telemetry": {
+                "enabled": true,
+                "rateHz": 20
+              }
+            }
+          },
+          "fileAfter": "{\"mode\":\"real\",\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":20}}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "video": {
+                "enabled": true,
+                "preset": "720p30-2mbps"
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"recording\":{\"video\":{\"enabled\":true,\"preset\":\"720p30-2mbps\"}}}",
+            "loadedJson": "{\"mode\":\"real\",\"recording\":{\"video\":{\"enabled\":true,\"preset\":\"720p30-2mbps\"}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "no-ops on an identical recording re-delivery (retained replay)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "telemetry": {
+                "enabled": true,
+                "rateHz": 10
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10}}}",
+            "loadedJson": "{\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10}}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "telemetry": {
+                "enabled": true,
+                "rateHz": 10
+              }
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10}}}",
+            "loadedJson": "{\"recording\":{\"telemetry\":{\"enabled\":true,\"rateHz\":10}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "recording: null clears the local namespace; absent leaves it alone",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "recording": {
+              "video": {
+                "enabled": true
+              }
+            },
+            "gnssAntBias": true
+          },
+          "fileAfter": "{\"recording\":{\"video\":{\"enabled\":true}},\"gnssAntBias\":true}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"recording\":{\"video\":{\"enabled\":true}},\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true,\"recording\":{\"video\":{\"enabled\":true}}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": null
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": null
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "replaces the lteRecovery namespace with the cloud value (R8 policy conduit)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "lteRecovery": {
+              "deadZoneProfile": "aggressive"
+            }
+          },
+          "fileAfter": "{\"mode\":\"real\",\"lteRecovery\":{\"deadZoneProfile\":\"aggressive\"}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "lteRecovery": {
+              "gpsFixResetPolicy": "veto-deadzone"
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}",
+            "loadedJson": "{\"mode\":\"real\",\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "lteRecovery": {
+              "gpsFixResetPolicy": "veto-deadzone"
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"real\",\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}",
+            "loadedJson": "{\"mode\":\"real\",\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "lteRecovery: null clears the local namespace; absent leaves it alone",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "lteRecovery": {
+              "gpsFixResetPolicy": "veto-deadzone"
+            },
+            "gnssAntBias": true
+          },
+          "fileAfter": "{\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"},\"gnssAntBias\":true}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"},\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true,\"lteRecovery\":{\"gpsFixResetPolicy\":\"veto-deadzone\"}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "lteRecovery": null
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "lteRecovery": null
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "replaces the timeSync namespace with the cloud value (Phase 4 kill-switch conduit)",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real",
+            "timeSync": {
+              "stepThresholdSecs": 30
+            }
+          },
+          "fileAfter": "{\"mode\":\"real\",\"timeSync\":{\"stepThresholdSecs\":30}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "timeSync": {
+              "offlineSources": false
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}",
+            "loadedJson": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "timeSync": {
+              "offlineSources": false
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}",
+            "loadedJson": "{\"mode\":\"real\",\"timeSync\":{\"offlineSources\":false}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "timeSync": null
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\"}",
+            "loadedJson": "{\"mode\":\"real\"}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {},
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"real\"}",
+            "loadedJson": "{\"mode\":\"real\"}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "replaces the whole namespace, clears on null, leaves it alone when absent",
+      "source": "test/cloud-config.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "replay",
+            "simulation": {
+              "scenarioId": "a-1",
+              "gapSeconds": 10
+            }
+          },
+          "fileAfter": "{\"mode\":\"replay\",\"simulation\":{\"scenarioId\":\"a-1\",\"gapSeconds\":10}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "simulation": {
+              "scenarioId": "b-2"
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"replay\",\"simulation\":{\"scenarioId\":\"b-2\"}}",
+            "loadedJson": "{\"mode\":\"replay\",\"simulation\":{\"scenarioId\":\"b-2\"}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "simulation": {
+              "scenarioId": "b-2"
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"replay\",\"simulation\":{\"scenarioId\":\"b-2\"}}",
+            "loadedJson": "{\"mode\":\"replay\",\"simulation\":{\"scenarioId\":\"b-2\"}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "telemetry": {
+                "enabled": true
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"replay\",\"simulation\":{\"scenarioId\":\"b-2\"},\"recording\":{\"telemetry\":{\"enabled\":true}}}",
+            "loadedJson": "{\"mode\":\"replay\",\"recording\":{\"telemetry\":{\"enabled\":true}},\"simulation\":{\"scenarioId\":\"b-2\"}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "simulation": null
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"replay\",\"recording\":{\"telemetry\":{\"enabled\":true}}}",
+            "loadedJson": "{\"mode\":\"replay\",\"recording\":{\"telemetry\":{\"enabled\":true}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "applyCloudConfig sets and clears the local key",
+      "source": "test/config-sync-cellular.test.ts",
+      "steps": [
+        {
+          "op": "write",
+          "text": "{\"mode\":\"real\"}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "cellular": {
+              "apn": "new.apn"
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"cellular\":{\"apn\":\"new.apn\"}}",
+            "loadedJson": "{\"mode\":\"real\",\"cellular\":{\"apn\":\"new.apn\"}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "cellular": null
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\"}",
+            "loadedJson": "{\"mode\":\"real\"}"
+          }
+        },
+        {
+          "op": "write",
+          "text": "{\"cellular\":{\"apn\":\"keep.me\"}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"cellular\":{\"apn\":\"keep.me\"},\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true,\"cellular\":{\"apn\":\"keep.me\"}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "persists a delivered namespace and is a no-op on redelivery",
+      "source": "test/camera-mount.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "gnssAntBias": false
+          },
+          "fileAfter": "{\"gnssAntBias\":false}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "rev": 2,
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"gnssAntBias\":false,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+            "loadedJson": "{\"gnssAntBias\":false,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "rev": 2,
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"gnssAntBias\":false,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}",
+            "loadedJson": "{\"gnssAntBias\":false,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "clears the local key when the cloud reverts the namespace",
+      "source": "test/camera-mount.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                }
+              }
+            }
+          },
+          "fileAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "rev": 3,
+            "cameraMount": null
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{}",
+            "loadedJson": "{}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "leaves the local value alone when the message does not carry the namespace",
+      "source": "test/camera-mount.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                }
+              }
+            }
+          },
+          "fileAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "rev": 3,
+            "gnssAntBias": true
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}},\"gnssAntBias\":true}",
+            "loadedJson": "{\"gnssAntBias\":true,\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180}}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "does not write settings.json for a namespace it cannot parse",
+      "source": "test/camera-mount.test.ts",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "gnssAntBias": false
+          },
+          "fileAfter": "{\"gnssAntBias\":false}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "rev": 3
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"gnssAntBias\":false}",
+            "loadedJson": "{\"gnssAntBias\":false}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] envelope keys (rev, scope, uploadBucket, hardware) never reach settings.json",
+      "source": "src/agent/cloud-config.ts:293-411",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "mode": "real"
+          },
+          "fileAfter": "{\"mode\":\"real\"}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "rev": 9,
+            "gnssAntBias": true,
+            "uploadBucket": "b",
+            "scope": {
+              "organizationId": "o",
+              "workspaceId": "w"
+            },
+            "hardware": {
+              "v": 2,
+              "platform": "rpi-cm5",
+              "encoder": "sw-h264",
+              "rails": true,
+              "statusLed": {
+                "r": 12,
+                "g": 21,
+                "b": 16
+              },
+              "imu": "bno085",
+              "video": []
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"gnssAntBias\":true}",
+            "loadedJson": "{\"mode\":\"real\",\"gnssAntBias\":true}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] new keys append after existing ones in namespace order (JSON.stringify of {...current, ...next})",
+      "source": "src/agent/cloud-config.ts:394-408",
+      "steps": [
+        {
+          "op": "save",
+          "doc": {
+            "simulation": {
+              "scenarioId": "a-1"
+            },
+            "mode": "real"
+          },
+          "fileAfter": "{\"simulation\":{\"scenarioId\":\"a-1\"},\"mode\":\"real\"}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "timeSync": {
+              "offlineSources": false
+            },
+            "gnssAntBias": true,
+            "recording": {
+              "telemetry": {
+                "enabled": true
+              }
+            },
+            "imuMount": {
+              "enabled": false,
+              "rollDeg": 0,
+              "pitchDeg": 0,
+              "yawDeg": 0
+            },
+            "cameraMount": {
+              "cameras": {}
+            },
+            "cellular": {
+              "apn": ""
+            },
+            "lteRecovery": {
+              "deadZoneProfile": "balanced"
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"simulation\":{\"scenarioId\":\"a-1\"},\"gnssAntBias\":true,\"imuMount\":{\"enabled\":false,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":0},\"recording\":{\"telemetry\":{\"enabled\":true}},\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"},\"timeSync\":{\"offlineSources\":false},\"cellular\":{\"apn\":\"\"},\"cameraMount\":{\"cameras\":{}}}",
+            "loadedJson": "{\"mode\":\"real\",\"gnssAntBias\":true,\"imuMount\":{\"enabled\":false,\"rollDeg\":0,\"pitchDeg\":0,\"yawDeg\":0},\"recording\":{\"telemetry\":{\"enabled\":true}},\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"},\"timeSync\":{\"offlineSources\":false},\"cellular\":{\"apn\":\"\"},\"cameraMount\":{\"cameras\":{}},\"simulation\":{\"scenarioId\":\"a-1\"}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] recording.video.cameras same values, different key order → changed (rewritten in cloud order)",
+      "source": "src/agent/cloud-config.ts:333",
+      "steps": [
+        {
+          "op": "write",
+          "text": "{\"recording\":{\"video\":{\"cameras\":{\"cam1\":false,\"cam0\":true}}}}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "video": {
+                "cameras": {
+                  "cam0": true,
+                  "cam1": false
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}",
+            "loadedJson": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "recording": {
+              "video": {
+                "cameras": {
+                  "cam0": true,
+                  "cam1": false
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}",
+            "loadedJson": "{\"recording\":{\"video\":{\"cameras\":{\"cam0\":true,\"cam1\":false}}}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "[extra] cameraMount.cameras same values, different key order → changed",
+      "source": "src/agent/cloud-config.ts:368",
+      "steps": [
+        {
+          "op": "write",
+          "text": "{\"cameraMount\":{\"cameras\":{\"cam1\":{\"rotationDeg\":0},\"cam0\":{\"rotationDeg\":180}}},\"mode\":\"real\"}"
+        },
+        {
+          "op": "apply",
+          "config": {
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                },
+                "cam1": {
+                  "rotationDeg": 0
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": true,
+            "fileAfter": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}",
+            "loadedJson": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}"
+          }
+        },
+        {
+          "op": "apply",
+          "config": {
+            "cameraMount": {
+              "cameras": {
+                "cam0": {
+                  "rotationDeg": 180
+                },
+                "cam1": {
+                  "rotationDeg": 0
+                }
+              }
+            }
+          },
+          "expect": {
+            "changed": false,
+            "fileAfter": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}",
+            "loadedJson": "{\"mode\":\"real\",\"cameraMount\":{\"cameras\":{\"cam0\":{\"rotationDeg\":180},\"cam1\":{\"rotationDeg\":0}}}}"
+          }
+        }
+      ]
+    }
+  ]
+}
