@@ -661,6 +661,8 @@ pub struct StreamStats {
     pub compared: usize,
     /// Files only: absent on BOTH sides (nothing to compare).
     pub absent_both: usize,
+    /// Leaves compared (the larger document of each compared pair).
+    pub leaves: usize,
     pub unpaired_a: usize,
     pub unpaired_b: usize,
     pub tolerated: usize,
@@ -674,6 +676,8 @@ pub struct Report {
     /// What the diff derived from the tape (source, reopens, coverage …),
     /// printed in diff.md so an empty input set is visible.
     pub inputs: BTreeMap<String, String>,
+    /// Hits per tolerance row, every row of the table (0 included).
+    pub hits: Vec<(String, usize)>,
 }
 
 impl Report {
@@ -1029,8 +1033,21 @@ fn flags_pair(cx: &Cx, x: &Msg, y: &Msg, rep: &mut Report) {
     }
 }
 
+fn leaf_count(v: &Value) -> usize {
+    match v {
+        Value::Object(m) => m.values().map(leaf_count).sum(),
+        Value::Array(a) => a.iter().map(leaf_count).sum(),
+        _ => 1,
+    }
+}
+
 /// Recursive compare. Objects compare key ORDER too (wire bytes, serde exactness).
 fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Report) {
+    if path.is_empty() {
+        // Per-kind comparison counts: the leaves of the larger document.
+        let n = a.map_or(0, leaf_count).max(b.map_or(0, leaf_count));
+        out.stats.entry(cx.stream.clone()).or_default().leaves += n;
+    }
     if a == b && num_strict_eq(a, b) {
         return;
     }
@@ -1714,7 +1731,34 @@ pub fn diff(
     pairs: &[(i64, i64)],
     table: &Table,
 ) -> Report {
-    diff_with(a, b, play, &InputFacts::for_play(play), pairs, table)
+    let facts = InputFacts::for_play(play);
+    let mut rep = diff_with(a, b, play, &facts, pairs, table);
+    require_core_kinds(&mut rep, &facts, table);
+    rep
+}
+
+/// A whole run must compare every CORE kind at least once: "0 untolerated"
+/// must never come from an empty comparison (review-wp7). (Unit tests with
+/// partial fixtures call [`diff_with`], which does not require it.)
+pub fn require_core_kinds(rep: &mut Report, facts: &InputFacts, table: &Table) {
+    let sim =
+        facts.mode.as_deref() == Some("sim") && table.decision_row("sim-mode-telemetry").is_some();
+    for k in CORE_KINDS {
+        if *k == "telemetry" && sim {
+            continue;
+        }
+        if rep.stats.get(*k).is_none_or(|st| st.compared == 0) {
+            rep.push(Mismatch {
+                stream: k.to_string(),
+                at: "run".into(),
+                path: "(no comparisons)".into(),
+                a: "0".into(),
+                b: "0".into(),
+                tol: UNTOLERATED.into(),
+            });
+        }
+    }
+    rep.hits = row_hits(rep, table);
 }
 
 /// [`diff`] with the input facts given (tests build them by hand).
@@ -2033,7 +2077,10 @@ pub fn diff_with(
             js_a,
         };
         match (&fa, &fb) {
-            (Some(x), Some(y)) if x == y => {}
+            (Some(x), Some(y)) if x == y => {
+                let v = parse_payload(x);
+                rep.stats.entry(stream.clone()).or_default().leaves += leaf_count(&v);
+            }
             (Some(x), Some(y)) if name == "refresh-modem.flag" => {
                 // `String(now)` (worker.ts:1058): each agent's own wall ms (T1);
                 // the content must still be a bare decimal ms.
@@ -2117,8 +2164,37 @@ pub fn diff_with(
 
     cap_row_hits(&mut rep, table, play, "input-edge");
 
+    // Per-kind comparison counts (review-wp7): every kind is listed.
+    for k in EXPECTED_KINDS {
+        rep.stats.entry(k.to_string()).or_default();
+    }
+    rep.hits = row_hits(&rep, table);
+
     rep
 }
+
+/// Every comparison kind diff.md lists, exercised or not.
+const EXPECTED_KINDS: &[&str] = &[
+    "telemetry",
+    "report",
+    "ack",
+    "status",
+    "sms",
+    "events",
+    "sudo",
+    "mqtt-flags",
+    "state",
+    "pidfile",
+    "file:settings.json",
+    "file:config-sync.json",
+    "file:commands.json",
+    "file:gnss-sky.json",
+    "file:refresh-modem.flag",
+    "file:etc/kvs.json",
+    "file:etc/hardware.json",
+];
+/// Kinds every run must compare at least once.
+const CORE_KINDS: &[&str] = &["telemetry", "report", "events", "state", "mqtt-flags"];
 
 /// A row with `max_hits_per_10min`: above that many distinct ticks per 10 min
 /// of run every hit of the row becomes UNTOLERATED (a systematic shift is a
@@ -2137,6 +2213,7 @@ fn cap_row_hits(rep: &mut Report, table: &Table, play: &PlayInfo, row_id: &str) 
         mismatches,
         stats,
         inputs,
+        ..
     } = rep;
     let ticks: BTreeSet<(&str, &str)> = mismatches
         .iter()
@@ -2693,6 +2770,31 @@ fn diff_sudo(a: &Capture, b: &Capture, table: &Table, rep: &mut Report) {
     }
 }
 
+/// Every row of the table (a rule without rows, else each of its rows) with
+/// the number of mismatches citing it (`<id>` or `<id>/<sub>`), 0 included.
+pub fn row_hits(rep: &Report, table: &Table) -> Vec<(String, usize)> {
+    let mut ids: Vec<String> = Vec::new();
+    for r in &table.rules {
+        if r.rows.is_empty() {
+            if !ids.contains(&r.id) {
+                ids.push(r.id.clone());
+            }
+        } else {
+            ids.extend(r.rows.iter().map(|w| format!("{}/{}", r.id, w.id)));
+        }
+    }
+    ids.into_iter()
+        .map(|id| {
+            let n = rep
+                .mismatches
+                .iter()
+                .filter(|m| m.tol == id || m.tol.starts_with(&format!("{id}/")))
+                .count();
+            (id, n)
+        })
+        .collect()
+}
+
 /// `diff.md`.
 pub fn render(
     rep: &Report,
@@ -2741,18 +2843,29 @@ pub fn render(
         let _ = writeln!(o, "- {k}: {v}");
     }
     let _ = writeln!(o);
-    let _ = writeln!(o, "## Per stream\n");
+    let _ = writeln!(o, "## Comparisons per kind\n");
     let _ = writeln!(
         o,
-        "| stream | compared | absent on both | unpaired A | unpaired B | tolerated | UNTOLERATED |"
+        "| kind | compared | leaves | absent on both | unpaired A | unpaired B | tolerated | UNTOLERATED |"
     );
-    let _ = writeln!(o, "|---|---|---|---|---|---|---|");
+    let _ = writeln!(o, "|---|---|---|---|---|---|---|---|");
     for (s, st) in &rep.stats {
+        let compared = if st.compared == 0 {
+            "**0 — not exercised**".to_string()
+        } else {
+            st.compared.to_string()
+        };
         let _ = writeln!(
             o,
-            "| {s} | {} | {} | {} | {} | {} | {} |",
-            st.compared, st.absent_both, st.unpaired_a, st.unpaired_b, st.tolerated, st.untolerated
+            "| {s} | {compared} | {} | {} | {} | {} | {} | {} |",
+            st.leaves, st.absent_both, st.unpaired_a, st.unpaired_b, st.tolerated, st.untolerated
         );
+    }
+    let _ = writeln!(o, "\n## Hits per tolerance row (every row of the table)\n");
+    let _ = writeln!(o, "| row | hits |");
+    let _ = writeln!(o, "|---|---|");
+    for (id, n) in row_hits(rep, table) {
+        let _ = writeln!(o, "| {id} | {n} |");
     }
     let mut by_tol: BTreeMap<&str, Vec<&Mismatch>> = BTreeMap::new();
     for m in &rep.mismatches {
@@ -2862,6 +2975,46 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Partial fixtures: the comparison without the whole-run core-kind
+    /// requirement (that is tested on its own).
+    fn diff(a: &Capture, b: &Capture, play: &PlayInfo, pairs: &[(i64, i64)], t: &Table) -> Report {
+        diff_with(a, b, play, &InputFacts::for_play(play), pairs, t)
+    }
+
+    #[test]
+    fn a_run_without_comparisons_of_a_core_kind_fails_and_rows_count_hits() {
+        let t = table();
+        let tel = |ts: i64| serde_json::json!({"v":1,"ts":ts,"seq":1,"metrics":{}});
+        let a = cap("js", vec![msg(1, "telemetry", tel(1))]);
+        let b = cap("rust", vec![msg(2, "telemetry", tel(2))]);
+        let rep = super::diff(&a, &b, &PlayInfo::default(), &[], &t);
+        let empty: Vec<&str> = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.path == "(no comparisons)" && m.tol == UNTOLERATED)
+            .map(|m| m.stream.as_str())
+            .collect();
+        assert_eq!(
+            empty,
+            vec!["report", "events", "state"],
+            "{:?}",
+            rep.mismatches
+        );
+        assert_eq!(rep.stats["telemetry"].compared, 1);
+        assert_eq!(rep.stats["telemetry"].leaves, 3);
+        assert_eq!(rep.stats["sms"].compared, 0, "listed even when unexercised");
+        // Every row of the table is listed, with its hit count.
+        assert!(rep.hits.iter().any(|(id, n)| id == "T7/D23" && *n == 0));
+        assert!(
+            rep.hits.iter().any(|(id, n)| id == "T1" && *n == 1),
+            "{:?}",
+            rep.hits
+        );
+        let md = render(&rep, &a, &b, &PlayInfo::default(), &t, Path::new("run"));
+        assert!(md.contains("| sms | **0 — not exercised** |"), "{md}");
+        assert!(md.contains("| T8/input-edge | 0 |"), "{md}");
+    }
 
     fn table() -> Table {
         Table::load(
