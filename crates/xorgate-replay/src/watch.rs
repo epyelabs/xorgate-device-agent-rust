@@ -19,6 +19,7 @@
 //! | APN watch | 30 s, standing | `lte_file` | `config-sync.ts:1486-1503` | `config_plane/sync.rs:433-470` | yes ([`Kind::Apn`]) |
 //! | modem-arrival | 30 s chain, ≤ 20 tries, armed by a report without `sim`/`uplink` | `lte_file` | `:1593-1630` | `sync.rs:537-575` | yes ([`Kind::ModemArrival`]) |
 //! | settings fingerprint | 5 s, standing | `settings.json` (`cli` writes it; a `config` apply rewrites it) | `:1365-1371` | `sync.rs:296-320` | yes ([`Kind::SettingsBoot`]/[`Kind::Settings`]) |
+//! | config report build | 2 s after any trigger (debounce) | lte_file, settings.json | `config-sync.ts:1436-1449` | `sync.rs:375-392` | yes: held from one agent's captured report until the other's ([`REPORT_PAIR_MS`]) |
 //! | telemetry | 1 s | lte_file, exec, NMEA, IMU | `worker.ts:1191` | `mqtt_plane.rs:456` | the hold gate |
 //! | heartbeat | 1 h | (report build) | `:1452-1459` | `sync.rs:396-410` | no: never fires in a rig run |
 //! | camera-mount poll | 60 s | settings.json | `worker.ts:648` | — (Phase 3) | no partner: T6 |
@@ -109,6 +110,8 @@ pub const PAIR_MS: i64 = 2_500;
 pub const CLI_WRITE_MS: i64 = 1_500;
 /// The player's own LTE write (both agents, one after the other).
 pub const LTE_WRITE_MS: i64 = 30;
+/// A config report of one agent waits this long for the other's counterpart.
+pub const REPORT_PAIR_MS: i64 = 3_000;
 /// Never hold one release longer than this (logged as a timeout).
 pub const MAX_HOLD_MS: i64 = 10_000;
 
@@ -265,6 +268,10 @@ pub struct WatchGate {
     holds: Vec<Value>,
     /// Every release of a gated input: `(input, wall)`.
     releases: Vec<(Input, i64)>,
+    /// Capture times of config reports not yet matched by the other agent's.
+    unmatched: [Vec<i64>; 2],
+    /// Releases that waited for a report pair.
+    report_holds: usize,
 }
 
 impl WatchGate {
@@ -300,6 +307,21 @@ impl WatchGate {
     /// `effective` carries `sim` or `uplink` (`watchForModemArrival`,
     /// `config-sync.ts:1622-1629`).
     pub fn on_report(&mut self, idx: usize, now: i64, has_modem: bool) {
+        // Report pairing: a report build reads the LTE file and settings.json
+        // (effective) at each agent's own instant, tens of ms apart; a release
+        // between them splits the pair (CI smoke 9abb559 attempt 2: an LTE
+        // version landed between two reports 37 ms apart →
+        // `effective.sim.checked_at` 15:20:17Z vs 15:20:27Z). Between one
+        // agent's report and the other's counterpart, LTE/settings releases
+        // wait (≤ REPORT_PAIR_MS; an unmatched report — e.g. one agent's
+        // reconnect sees an intermediate rev — just expires).
+        let o = 1 - idx;
+        self.unmatched[o].retain(|q| now - q <= REPORT_PAIR_MS);
+        if self.unmatched[o].is_empty() {
+            self.unmatched[idx].push(now);
+        } else {
+            self.unmatched[o].remove(0);
+        }
         let a = &mut self.agents[idx];
         if has_modem {
             a.modem_seen = true;
@@ -444,6 +466,14 @@ impl WatchGate {
     /// `lookahead` ms, wait?
     pub fn holds(&mut self, input: Input, now: i64, lookahead: i64) -> bool {
         self.advance(now);
+        if self
+            .unmatched
+            .iter()
+            .flatten()
+            .any(|q| now >= *q && now - q <= REPORT_PAIR_MS)
+        {
+            return true;
+        }
         let end = now + lookahead;
         self.regions(input)
             .iter()
@@ -452,6 +482,14 @@ impl WatchGate {
 
     /// A release of `input` happened at `released` (due at `due`).
     pub fn note_release(&mut self, input: Input, due: i64, released: i64, timeout: bool) {
+        if self
+            .unmatched
+            .iter()
+            .flatten()
+            .any(|q| *q <= released && released - q <= REPORT_PAIR_MS + 50 && *q >= due)
+        {
+            self.report_holds += 1;
+        }
         self.releases.push((input, released));
         if released - due > 0 || timeout {
             self.holds.push(json!({
@@ -503,6 +541,7 @@ impl WatchGate {
             "releases": self.releases.iter().map(|(i, w)| json!({"input": i.as_str(), "w": w})).collect::<Vec<_>>(),
             "holds": self.holds,
             "timeouts": timeouts,
+            "report_pair_holds": self.report_holds,
             "ticks": self.ticks,
             "opens": self.agents.iter().map(|a| a.opens.len()).collect::<Vec<_>>(),
             "writes": self.agents.iter().map(|a| a.writes.iter().map(|(i, w)| json!({"input": i.as_str(), "w": w})).collect::<Vec<_>>()).collect::<Vec<_>>(),
@@ -786,6 +825,25 @@ mod tests {
             .filter(|t| t.kind.input() == Input::Settings)
             .count();
         assert_eq!(n, 2);
+    }
+
+    /// Between one agent's config report and the other's, LTE/settings
+    /// releases wait; an unmatched report expires after REPORT_PAIR_MS.
+    #[test]
+    fn report_pair_holds_until_the_counterpart() {
+        let mut g = WatchGate::new();
+        g.on_report(1, 10_000, true);
+        assert!(g.holds(Input::Lte, 10_010, LTE_WRITE_MS));
+        assert!(g.holds(Input::Settings, 10_020, 0));
+        g.on_report(0, 10_037, true);
+        assert!(!g.holds(Input::Lte, 10_040, LTE_WRITE_MS));
+        // A report the other agent never matches (reconnect cadence).
+        g.on_report(0, 20_000, true);
+        assert!(g.holds(Input::Lte, 22_000, LTE_WRITE_MS));
+        assert!(!g.holds(Input::Lte, 23_100, LTE_WRITE_MS));
+        // A later report of B is not paired with the expired one.
+        g.on_report(1, 30_000, true);
+        assert!(g.holds(Input::Lte, 30_100, LTE_WRITE_MS));
     }
 
     #[test]
