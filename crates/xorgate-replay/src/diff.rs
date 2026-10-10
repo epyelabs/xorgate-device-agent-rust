@@ -385,6 +385,28 @@ impl Cx<'_> {
         (moved + 1e-9 >= over).then(|| format!("{id}/host"))
     }
 
+    /// T8 reconnect-cadence for REPORT values: after a cut each agent's
+    /// reconnect triggers a `cloud` report at its own reconnect time (the Rust
+    /// backoff resumes later), so an input that changed BETWEEN the two
+    /// reports' publish times (a tape transition in `(when, when_b]`) is read
+    /// differently. Only for a report pair inside a cut's window.
+    fn report_input_between(&self) -> Option<String> {
+        if self.stream != "report" {
+            return None;
+        }
+        let (a, b) = (self.when?, self.when_b?);
+        let (lo, hi) = (a.min(b), a.max(b));
+        let (rid, row) = self.table.decision_row("reconnect-cadence")?;
+        let pad = row.around_closed_ms.unwrap_or(5000) as i64;
+        let near_cut = self
+            .play
+            .closed_spans
+            .iter()
+            .any(|(cs, ce)| lo <= ce + pad && hi >= cs - pad);
+        let input_between = self.play.transitions.iter().any(|t| *t > lo && *t <= hi);
+        (near_cut && input_between).then(|| format!("{rid}/reconnect-cadence"))
+    }
+
     fn near_wall_step(&self) -> Option<String> {
         let w = self.when?;
         let (rid, _) = self.table.decision_row("O2")?;
@@ -522,6 +544,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             let tol = cx
                 .near_closed()
+                .or_else(|| cx.report_input_between())
                 .or_else(|| cx.near_wall_step())
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
@@ -1061,6 +1084,8 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                 compared += 1;
                 let cx = Cx {
                     at: format!("{at} last"),
+                    when: Some(x.w),
+                    when_b: Some(y.w),
                     ..cx
                 };
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
@@ -1077,7 +1102,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                         if i + 1 == pa.len() { " (last)" } else { "" }
                     ),
                     when: Some(x.w),
-                    when_b: None,
+                    when_b: Some(y.w),
                     deltas: &empty,
                     first_wall: play.start_wall,
                 };
@@ -1722,6 +1747,30 @@ mod tests {
             run(serde_json::json!({"quat_r":{"value":1}})),
             vec![UNTOLERATED.to_string()]
         );
+    }
+
+    #[test]
+    fn report_value_read_between_two_reconnect_reports() {
+        let t = table();
+        let r = |c: &str| serde_json::json!({"v":1,"origin":"cloud","rev":1,"effective":{"sim":{"checked_at":c}}});
+        let a = cap("js", vec![msg(59_000, "config/reported", r("10"))]);
+        let b = cap("rust", vec![msg(62_000, "config/reported", r("20"))]);
+        let tol = |play: &PlayInfo| {
+            diff(&a, &b, play, &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == "effective.sim.checked_at")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        let mut play = PlayInfo {
+            closed_spans: vec![(37_000, 57_000)],
+            transitions: vec![61_900],
+            ..Default::default()
+        };
+        assert_eq!(tol(&play), vec!["T8/reconnect-cadence".to_string()]);
+        play.transitions = vec![70_000]; // no input change between the reports
+        assert_eq!(tol(&play), vec![UNTOLERATED.to_string()]);
     }
 
     #[test]

@@ -124,7 +124,11 @@ pub struct PlayArgs {
     /// Stop the tape after this many seconds.
     #[arg(long)]
     pub max_s: Option<u64>,
-    #[arg(long, default_value_t = 60)]
+    /// Hold inputs from this long before the lead agent's predicted tick.
+    /// 150 ms (was 60): a line released just before the hold must be HANDLED
+    /// by Node before its read; in a loaded VM its event loop / threadpool fs
+    /// read took > 60 ms (fix_quality one sample apart on a 4 ms pair).
+    #[arg(long, default_value_t = 150)]
     pub guard_ms: i64,
     /// Disable the hold gate (debugging only; not parity evidence).
     #[arg(long)]
