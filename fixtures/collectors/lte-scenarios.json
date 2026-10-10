@@ -1,0 +1,891 @@
+{
+  "jsSourceFile": "src/agent/collectors/lte.ts (createLteCollector) + src/hardware/modem.ts (readModemTelemetry)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-lte-scenarios.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP2; LTE_TELEMETRY_FILE scratch file, Date.now/hrtime mocked to wall = baseWallMs + mono)",
+  "cases": [
+    {
+      "name": "maps daemon telemetry to rssi (dBm) + quality (asu) leaves (modem.test.ts:75)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "emits modem_temp (°C) when the daemon reports one (modem.test.ts:84)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"modem_temp\":39}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            },
+            "modem_temp": {
+              "value": 39,
+              "unit": "°C"
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "omits modem_temp when the daemon reports null (modem.test.ts:91)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"modem_temp\":null}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "maps gnss.health + recovery.resets_24h to numeric leaves (modem.test.ts:99)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"gnss\":{\"engine_on\":1,\"has_fix\":0,\"health\":\"degraded\"},\"recovery\":{\"connect_fails\":0,\"resets_24h\":2}}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            },
+            "gnss_health": {
+              "value": 2
+            },
+            "resets_24h": {
+              "value": 2
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "codes gnss health ok by severity (modem.test.ts:111)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"gnss\":{\"health\":\"ok\"}}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            },
+            "gnss_health": {
+              "value": 0
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "codes gnss health acquiring by severity (modem.test.ts:111)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"gnss\":{\"health\":\"acquiring\"}}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            },
+            "gnss_health": {
+              "value": 1
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "codes gnss health degraded by severity (modem.test.ts:111)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"gnss\":{\"health\":\"degraded\"}}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            },
+            "gnss_health": {
+              "value": 2
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "codes gnss health unhealthy by severity (modem.test.ts:111)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"gnss\":{\"health\":\"unhealthy\"}}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            },
+            "gnss_health": {
+              "value": 3
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "omits gnss_health/resets_24h before daemon knowledge or on old daemons (modem.test.ts:126)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"gnss\":{\"health\":null},\"recovery\":{}}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            }
+          },
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "omits the group when the signal is unknown (csq 99) (modem.test.ts:143)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":99,\"rssi_dbm\":null,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "omits the group when the daemon hasn't published (modem.test.ts:149)",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "absent",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": [
+            "[lte] no telemetry yet — is sim7600-lte.service running?"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "warn once while absent/unparseable, re-armed on recovery",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "absent",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": [
+            "[lte] no telemetry yet — is sim7600-lte.service running?"
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{ not json",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            }
+          },
+          "warns": []
+        },
+        {
+          "op": "absent",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": [
+            "[lte] no telemetry yet — is sim7600-lte.service running?"
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":99,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "absent",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": [
+            "[lte] no telemetry yet — is sim7600-lte.service running?"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "non-object JSON documents",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "null",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": [
+            "[lte] no telemetry yet — is sim7600-lte.service running?"
+          ]
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            },
+            "rssi": {
+              "value": -77,
+              "unit": "dBm"
+            }
+          },
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "5",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "\"str\"",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "[]",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "false",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": [
+            "[lte] no telemetry yet — is sim7600-lte.service running?"
+          ]
+        },
+        {
+          "op": "file",
+          "text": "0",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":\"18\",\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":\"x\",\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"modem_temp\":\"39\",\"recovery\":{\"resets_24h\":\"2\"},\"gnss\":{\"health\":\"bogus\"}}",
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            }
+          },
+          "warns": []
+        }
+      ]
+    },
+    {
+      "name": "sample(): ≤1/s re-read, updatedMono only when timestamp|csq changes",
+      "input": {
+        "baseWallMs": 1781000000000
+      },
+      "steps": [
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 18,
+                "unit": "asu"
+              },
+              "rssi": {
+                "value": -77,
+                "unit": "dBm"
+              }
+            },
+            "updatedMonoMs": 0
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 500,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":20,\"rssi_dbm\":-73,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 18,
+                "unit": "asu"
+              },
+              "rssi": {
+                "value": -77,
+                "unit": "dBm"
+              }
+            },
+            "updatedMonoMs": 0
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 500,
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 20,
+                "unit": "asu"
+              },
+              "rssi": {
+                "value": -73,
+                "unit": "dBm"
+              }
+            },
+            "updatedMonoMs": 1000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":20,\"rssi_dbm\":-60,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\",\"modem_temp\":41}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 20,
+                "unit": "asu"
+              },
+              "rssi": {
+                "value": -60,
+                "unit": "dBm"
+              },
+              "modem_temp": {
+                "value": 41,
+                "unit": "°C"
+              }
+            },
+            "updatedMonoMs": 1000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:22:15Z\",\"csq\":20,\"rssi_dbm\":-60,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 20,
+                "unit": "asu"
+              },
+              "rssi": {
+                "value": -60,
+                "unit": "dBm"
+              }
+            },
+            "updatedMonoMs": 3000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":99,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":99,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:22:15Z\",\"csq\":20,\"rssi_dbm\":-60,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 20,
+                "unit": "asu"
+              },
+              "rssi": {
+                "value": -60,
+                "unit": "dBm"
+              }
+            },
+            "updatedMonoMs": 6000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "absent",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 999,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":\"2026-06-13T08:21:45Z\",\"csq\":18,\"rssi_dbm\":-77,\"csq_interval\":30,\"status\":\"connected\",\"iface\":\"usb0\",\"ip\":\"10.164.20.3\"}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1,
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 18,
+                "unit": "asu"
+              },
+              "rssi": {
+                "value": -77,
+                "unit": "dBm"
+              }
+            },
+            "updatedMonoMs": 8000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":5,\"csq\":18}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 18,
+                "unit": "asu"
+              }
+            },
+            "updatedMonoMs": 9000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"csq\":18}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 18,
+                "unit": "asu"
+              }
+            },
+            "updatedMonoMs": 10000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":null,\"csq\":18}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 18,
+                "unit": "asu"
+              }
+            },
+            "updatedMonoMs": 11000
+          },
+          "warns": []
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "warns": []
+        },
+        {
+          "op": "file",
+          "text": "{\"timestamp\":[1,null,\"a\"],\"csq\":18}",
+          "warns": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quality": {
+                "value": 18,
+                "unit": "asu"
+              }
+            },
+            "updatedMonoMs": 12000
+          },
+          "warns": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quality": {
+              "value": 18,
+              "unit": "asu"
+            }
+          },
+          "warns": []
+        }
+      ]
+    }
+  ]
+}

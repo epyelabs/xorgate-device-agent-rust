@@ -16,6 +16,9 @@ pub struct RunResult {
     pub failed: bool,
     /// The binary itself was missing (ENOENT) rather than exiting non-zero.
     pub not_found: bool,
+    /// The spawn itself failed (any errno); `exit_code: None` alone also
+    /// covers a child killed by a signal.
+    pub spawn_failed: bool,
 }
 
 /// Run `cmd args…` to completion with an optional timeout. Never errors.
@@ -50,12 +53,14 @@ pub async fn run(cmd: &str, args: &[&str], timeout: Option<Duration>) -> RunResu
                 exit_code: code,
                 failed: !out.status.success(),
                 not_found: false,
+                spawn_failed: false,
             }
         }
         Err(err) => RunResult {
             stderr: err.to_string(),
             failed: true,
             not_found: err.kind() == std::io::ErrorKind::NotFound,
+            spawn_failed: true,
             ..Default::default()
         },
     }
