@@ -408,7 +408,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "input-edge"
-  what = "FLAG (rig/timing, reviewer to confirm; extends T4 from presence to a ONE-SAMPLE shift): within ±1.5 s of an input transition (GGA quality change, NMEA stream start/stop, GSV-driven sky change, lte_file/exec change, helper spawn/exit), a telemetry value pair may be a one-sample shift — A's value is one of B's neighbouring paired samples AND B's value one of A's — the input reached one agent's read a tick later. Cause: the TS handles NMEA per CHUNK on the event loop (hardware/gps.ts:61-74, fs.ReadStream through the libuv threadpool) and lagged a released line by 0.15–0.4 s in the loaded VM, where Rust's reader thread forwards it at once. Seen 1–2× per 10 min JS-vs-Rust (fix_quality on a 13 ms pair after an NMEA restart; sky_state, whose change is a hold timer measured from GSV ARRIVAL, sky_state.rs / gps.ts), never JS-vs-JS. A value that matches neither neighbour stays UNTOLERATED"
+  what = "NARROWED per review-wp7 (JS-lag only): within ±1.5 s of an NMEA transition (gps group: stream start/stop/stale/resume, GGA quality change) or a GSV satellites-in-view change, a metrics.gps.* value where the JS agent reads Rust's PREVIOUS sample and the JS NEXT sample equals Rust's value — the line reached Node's read a tick later; a Rust value one tick late is NOT covered; at most 2 ticks per 10 min. Cause: the TS handles NMEA per CHUNK on the event loop (hardware/gps.ts:61-74, fs.ReadStream through the libuv threadpool) and lagged a released line by 0.15–0.4 s in the loaded VM, where Rust's reader thread forwards it at once. Seen 1–2× per 10 min JS-vs-Rust (fix_quality on a 13 ms pair after an NMEA restart; sky_state, whose change is a hold timer measured from GSV ARRIVAL, sky_state.rs / gps.ts), never JS-vs-JS. A value that matches neither neighbour stays UNTOLERATED"
   streams = ["telemetry"]
   around_closed_ms = 1500
   # NARROWED (review-wp7): JS-LAG only — the JS value is Rust's PREVIOUS sample
@@ -419,7 +419,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "ttff-arrival"
-  what = "FLAG (rig/measurement, reviewer to confirm): `ttff_s` is the difference of two NMEA line ARRIVAL instants inside each process (first quality-0 GGA → first fix, gps.ts:139-151 / gps_group.rs TtffClock, identical logic). The player writes each line to both ptys at once, but Node handles a pty chunk when its event loop gets to it (fs.ReadStream reads through the libuv threadpool; 0.4–1.5 s tick stalls were seen in the loaded Docker VM) while Rust's reader thread forwards it at once; quantised to 0.1 s (round(t,1)) this flips by one step (149.1 vs 149, JS-vs-Rust; JS-vs-JS identical). Tolerated: ±0.2 s on `metrics.gps.ttff_s.value` only"
+  what = "NARROWED to ±0.1 s (review-wp7). `ttff_s` is the difference of two NMEA line ARRIVAL instants inside each process (first quality-0 GGA → first fix, gps.ts:139-151 / gps_group.rs TtffClock, identical logic). The player writes each line to both ptys at once, but Node handles a pty chunk when its event loop gets to it (fs.ReadStream reads through the libuv threadpool; 0.4–1.5 s tick stalls were seen in the loaded Docker VM) while Rust's reader thread forwards it at once; quantised to 0.1 s (round(t,1)) this flips by one step (149.1 vs 149, JS-vs-Rust; JS-vs-JS identical). Tolerated: ±0.1 s (one quantum) on `metrics.gps.ttff_s.value` only"
   streams = ["telemetry"]
   # NARROWED (review-wp7): one 0.1 s quantum.
   numeric = { "metrics.gps.ttff_s.value" = 0.1 }
