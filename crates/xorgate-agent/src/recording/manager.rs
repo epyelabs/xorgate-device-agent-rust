@@ -344,6 +344,9 @@ enum Msg {
 
 /// One link of the `videoTransition` promise chain (`manager.ts:228`).
 enum Transition {
+    /// Test/driver seam: resolves once every earlier link has run
+    /// (`await manager.videoTransition`).
+    Barrier(tokio::sync::oneshot::Sender<()>),
     StopAndWait(Arc<dyn CaptureApi>),
     SetCameras(Arc<dyn CaptureApi>, Vec<CaptureCamera>),
     Replace {
@@ -640,6 +643,29 @@ impl RecordingManager {
     /// The manager-owned half of `status()` as a `watch` (P9).
     pub fn status_watch(&self) -> watch::Receiver<RecordingSnapshot> {
         self.inner.snapshot.subscribe()
+    }
+
+    /// Wait until every capture handover queued so far has run (`await
+    /// this.videoTransition`). Test/driver seam.
+    #[doc(hidden)]
+    pub async fn settled(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.inner.transitions.send(Transition::Barrier(tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
+    /// One shed-monitor tick now (`shedTick()`), whether or not the 1 s timer
+    /// is armed. Test/driver seam (the fixture drives ticks explicitly).
+    #[doc(hidden)]
+    pub async fn shed_tick_now(&self) {
+        self.inner.clone().shed_tick().await;
+    }
+
+    /// The current `videoKey` dedupe string. Test seam.
+    #[doc(hidden)]
+    pub fn video_key(&self) -> String {
+        lock(&self.inner.state).video_key.clone()
     }
 }
 
@@ -1154,6 +1180,9 @@ async fn transition_task(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Tran
             },
         };
         match t {
+            Transition::Barrier(done) => {
+                let _ = done.send(());
+            }
             Transition::StopAndWait(c) => c.stop_and_wait().await,
             Transition::SetCameras(c, cams) => c.set_cameras(cams).await,
             Transition::Replace {
