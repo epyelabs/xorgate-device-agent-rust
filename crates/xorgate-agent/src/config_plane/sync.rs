@@ -15,14 +15,21 @@
 //! Every public method is total: nothing here returns an error into a caller
 //! (design.md §7 — a broken report path must degrade to "no report yet").
 //!
+//! Publishing while offline is the TS path exactly: since the WP1 follow-up
+//! the client QUEUES a report made while disconnected (mqtt.js offline
+//! queue, `client.js:1068-1096`) and `publish` returns `Ok`; `online()`
+//! (= `ctx.state.is_connected()`, `worker.ts:712`) then reads false, so a
+//! `local` change is not retired and the connect handler's `boot` (upgraded
+//! to `local`) re-sends it (`config-sync.ts:1553-1560`; tests
+//! `watcher_keeps_a_pending_local_change`, the `:944` re-send scenario).
+//!
 //! Deliberate differences (named in `phase-2/evidence/wp3.md`):
-//! - `publish` returns [`PublishFailure`]: `Failed(msg)` is the TS "publish
-//!   threw" path (`config report failed: …`, nothing persisted);
-//!   `NotConnected` is the TS "published into a dead link" path (mqtt.js would
-//!   have queued it; the Rust client drops it — WP1 ambiguity #8): the report
-//!   is treated as not delivered, so a `local` change is NOT retired even if
-//!   `online()` raced to true, and the connect handler's `boot` (upgraded to
-//!   `local`) re-sends it.
+//! - `publish` returns [`PublishFailure`]: `Failed(msg)` is a Rust-only
+//!   transport refusal (request channel full / loop gone; mqtt.js never
+//!   throws — review-wp3 #3, T8): `config report failed: …`, nothing
+//!   persisted. `NotConnected` is no longer produced by the real
+//!   [`MqttHandle`](crate::mqtt_plane::MqttHandle) (the frozen enum keeps
+//!   it); a transport that still returns it is treated as "not delivered".
 //! - `publishReport` re-checks `stopped` after the modem read, so no report is
 //!   published once `stop()` returned (the frozen `ConfigPlane::stop` contract;
 //!   the TS checks only on entry).
@@ -508,6 +515,8 @@ impl ConfigSync {
         // The 32 KB cap is the backend's; advisory only — never drop a report (CF14).
         let delivered = match (opts.publish)(&opts.topic, report.to_wire().into_bytes()) {
             Ok(()) => true,
+            // Unreachable with the real client (offline publishes queue, `Ok`);
+            // kept for the frozen enum and test transports.
             Err(PublishFailure::NotConnected) => false,
             Err(PublishFailure::Failed(msg)) => {
                 drop(core);

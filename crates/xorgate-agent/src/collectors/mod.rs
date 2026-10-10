@@ -226,6 +226,12 @@ impl TelemetrySource for Collectors {
 
 /// Lower a typed group (`GpsGroup`, `ImuGroup`, `LteGroup`) to the wire map,
 /// keeping the struct's field order and its omission rules.
+///
+/// A non-finite leaf serialises to `null`, which the `f64` round trip then
+/// refuses, so the WHOLE group is omitted where the TS would emit
+/// `{"value":null}` (`JSON.stringify(NaN)`). Unreachable today — quat/euler
+/// are clamped, NMEA NaN → `None` (D12), lte checks `isFinite` — and
+/// accepted (review-wp2 #6, divergence row).
 pub fn to_group<T: Serialize>(typed: &T) -> MetricGroup {
     serde_json::to_value(typed)
         .and_then(serde_json::from_value)

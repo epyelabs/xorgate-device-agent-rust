@@ -812,14 +812,28 @@ fn to_last_will(w: Will) -> LastWill {
 }
 
 /// Whether mqtt.js would emit `error` before `close` for this failure: a peer
-/// that closed the socket (rumqttc `ConnectionAborted`) or a broker DISCONNECT
-/// ends the stream without an error; everything else (coded socket errors,
-/// TLS, keepalive / connack timeouts, refused CONNACK) emits one.
+/// that closed the socket (rumqttc `ConnectionAborted`), a peer that sent FIN
+/// WITHOUT TLS close_notify (rustls `UnexpectedEof` on the read, surfaced as
+/// `Deserialization(Io(UnexpectedEof))`; Node 20 + 24 + mqtt.js 5.15.1 see
+/// `close` + `end` and no `error`, `integration-tools/fin-probe.mjs`;
+/// review-wp1-followup #2) or a broker DISCONNECT ends the stream without an
+/// error; everything else (coded socket errors, TLS, keepalive / connack
+/// timeouts, refused CONNACK) emits one.
 pub fn emits_node_error(e: &ConnectionError) -> bool {
     !matches!(
         e,
         ConnectionError::MqttState(StateError::ConnectionAborted)
             | ConnectionError::MqttState(StateError::ServerDisconnect { .. })
+    ) && !is_tls_eof_without_close_notify(e)
+}
+
+/// The established link's read hit EOF without a TLS close_notify.
+fn is_tls_eof_without_close_notify(e: &ConnectionError) -> bool {
+    matches!(
+        e,
+        ConnectionError::MqttState(StateError::Deserialization(
+            rumqttc::v5::mqttbytes::Error::Io(io)
+        )) if io.kind() == std::io::ErrorKind::UnexpectedEof
     )
 }
 
@@ -1151,6 +1165,15 @@ mod tests {
         assert!(emits_node_error(&ConnectionError::Io(
             std::io::Error::from(std::io::ErrorKind::ConnectionRefused)
         )));
+        // FIN without close_notify on the established link: no `error`
+        // (node 20/24 probe); a reset on the same path still is one.
+        let read = |kind| {
+            ConnectionError::MqttState(StateError::Deserialization(
+                rumqttc::v5::mqttbytes::Error::Io(std::io::Error::from(kind)),
+            ))
+        };
+        assert!(!emits_node_error(&read(std::io::ErrorKind::UnexpectedEof)));
+        assert!(emits_node_error(&read(std::io::ErrorKind::ConnectionReset)));
     }
 
     /// review-wp1 #3: mqtt.js's own error texts (`client.js:363,1128`).

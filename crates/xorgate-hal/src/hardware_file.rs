@@ -9,7 +9,7 @@ use std::path::Path;
 
 use xorgate_core::hardware_block::{parse_hardware_block, DeviceHardwareBlock};
 
-use crate::atomic_write::atomic_write_bytes;
+use crate::atomic_write::{atomic_write_bytes_traced, AtomicWriteError};
 use crate::read_lossy::read_text;
 
 /// `JSON.stringify(block)` — the exact bytes `saveHardwareBlock` writes
@@ -22,9 +22,13 @@ pub fn hardware_block_json(block: &DeviceHardwareBlock) -> String {
 
 /// `saveHardwareBlock(path, block)` (`hardware-config.ts:154-156`):
 /// `atomicWriteJson(path, block)`. The error is the caller's to log
-/// (`[agent] hardware block persist failed: …`, `worker.ts:835`).
-pub fn save_hardware_block(path: &Path, block: &DeviceHardwareBlock) -> std::io::Result<()> {
-    atomic_write_bytes(path, hardware_block_json(block).as_bytes())
+/// (`[agent] hardware block persist failed: …`, `worker.ts:835`, with
+/// [`AtomicWriteError::node_message`]).
+pub fn save_hardware_block(
+    path: &Path,
+    block: &DeviceHardwareBlock,
+) -> Result<(), AtomicWriteError> {
+    atomic_write_bytes_traced(path, hardware_block_json(block).as_bytes())
 }
 
 /// What `loadHardwareBlock` found, before its caller logs anything.

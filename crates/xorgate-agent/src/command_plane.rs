@@ -39,7 +39,7 @@ use xorgate_core::commands::{
 };
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::sms::{build_sms_payload, SmsPayloadRequest};
-use xorgate_hal::io::node_fs_message;
+use xorgate_hal::io::{node_fd_message, node_fs_message};
 use xorgate_hal::ledger_file;
 use xorgate_hal::privileged::{PrivilegedArgv, PrivilegedRunner, SudoRunner};
 
@@ -251,14 +251,20 @@ impl Effects {
     }
 
     /// `writeFileSync(join(runtimeHome(), "refresh-modem.flag"), String(now))`
-    /// (`worker.ts:1054-1061`); a failure only warns.
+    /// (`worker.ts:1054-1061`); a failure only warns, with Node's message of
+    /// the failing step: `…, open '<path>'` or the pathless `…, write`
+    /// (review-wp4 #3).
     fn write_refresh_flag(&self, content: &str) {
+        use std::io::Write;
         let path = &self.ctx.paths.refresh_flag;
-        if let Err(e) = std::fs::write(path, content) {
-            warn!(
-                "{}",
-                refresh_flag_failed_log(&node_fs_message(&e, "open", path))
-            );
+        let res = match std::fs::File::create(path) {
+            Ok(mut f) => f
+                .write_all(content.as_bytes())
+                .map_err(|e| node_fd_message(&e, "write")),
+            Err(e) => Err(node_fs_message(&e, "open", path)),
+        };
+        if let Err(msg) = res {
+            warn!("{}", refresh_flag_failed_log(&msg));
         }
     }
 

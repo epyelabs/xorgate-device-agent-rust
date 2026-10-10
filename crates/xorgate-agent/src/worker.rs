@@ -54,7 +54,10 @@ const MAX_KEEPALIVE_SECS: f64 = 65535.0;
 /// with the one warning line to log (amb. #2, review-wp1 #6). The TS accepts
 /// any finite > 0 (`config.ts:217-228`); no provisioned device sets the key
 /// (default 60), and a TS client given a value outside the range would never
-/// have connected cleanly either.
+/// have connected cleanly either. A fractional value (e.g. `7.5`) connects
+/// here (rumqttc sends whole seconds), while mqtt-packet refuses it (`Invalid keepalive`,
+/// `writeToStream.js:130-134`) and the TS reconnect-loops: Rust is more
+/// lenient (review-wp1-followup #8, accepted).
 fn clamp_keepalive(sec: f64) -> (f64, Option<String>) {
     let shown = xorgate_core::js::number_to_string(sec);
     if sec < MIN_KEEPALIVE_SECS {
@@ -478,20 +481,18 @@ async fn run(args: &[String]) -> Result<i32> {
     let mono0 = Instant::now();
     sd_notify(&[sd_notify::NotifyState::Ready]);
 
-    let sig = loop {
+    let (sig, exit_code) = loop {
         tokio::select! {
-            _ = sigterm.recv() => break "SIGTERM",
-            _ = sigint.recv() => break "SIGINT",
+            _ = sigterm.recv() => break ("SIGTERM", 0),
+            _ = sigint.recv() => break ("SIGINT", 0),
             _ = sighup.recv() => crate::shutdown::on_sighup(&ctx),
             ev = events.recv() => match ev {
                 Some(ev) => plane.on_event(ev),
-                None => {
-                    let t = ctx.now_ms();
-                    error!("[agent] mqtt event loop ended unexpectedly");
-                    state.set_error("mqtt event loop ended", t);
-                    state.flush(t, true);
-                    return Ok(1);
-                }
+                // The loop task died (review-wp1 #10a): the normal shutdown, exit 1.
+                None => break (
+                    crate::shutdown::LOOP_ENDED,
+                    crate::shutdown::on_mqtt_loop_ended(&ctx),
+                ),
             },
             // `heartbeat` (`worker.ts:633-638`) + the systemd watchdog: the
             // loop is alive whatever the MQTT state (Phase 0 A7).
@@ -521,9 +522,10 @@ async fn run(args: &[String]) -> Result<i32> {
         plane: &mut plane,
         config: config.as_ref(),
         source: source.as_ref(),
-        link_closes: mqtt_end.is_some(),
+        // A dead loop has no stream left to close (no `disconnected cleanly`).
+        link_closes: mqtt_end.is_some() && exit_code == 0,
     }
-    .run(sig, 0, |budget| async move {
+    .run(sig, exit_code, |budget| async move {
         match mqtt_end {
             Some(end) => end.shutdown(budget).await,
             None => true,

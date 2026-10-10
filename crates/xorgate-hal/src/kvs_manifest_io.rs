@@ -13,7 +13,7 @@ use xorgate_core::kvs_manifest::{
     parse_manifest_text, persist_upload_bucket_decision, KvsManifest, PersistDecision,
 };
 
-use crate::atomic_write::atomic_write_bytes;
+use crate::atomic_write::{atomic_write_bytes_traced, AtomicWriteError};
 
 /// `readFileSync(path, "utf8")`: `None` where it would throw (absent,
 /// unreadable, a directory, …).
@@ -51,13 +51,17 @@ impl PersistOutcome {
 /// `persistUploadBucket(path, bucket)` (`manifest.ts:99-115`). A read failure
 /// is `NoManifest`; a WRITE failure is returned as `Err` exactly where
 /// `atomicWriteJson` throws (the worker's `uploadBucket persist failed: …`
-/// catch, `worker.ts:806-810`, is the caller's — WP3).
-pub fn persist_upload_bucket(path: &Path, bucket: &str) -> std::io::Result<PersistOutcome> {
+/// catch, `worker.ts:806-810`, is the caller's — WP3; it prints
+/// [`AtomicWriteError::node_message`]).
+pub fn persist_upload_bucket(
+    path: &Path,
+    bucket: &str,
+) -> Result<PersistOutcome, AtomicWriteError> {
     match persist_upload_bucket_decision(read_text(path).as_deref(), bucket) {
         PersistDecision::NoManifest => Ok(PersistOutcome::NoManifest),
         PersistDecision::Unchanged => Ok(PersistOutcome::Unchanged),
         PersistDecision::Apply { text } => {
-            atomic_write_bytes(path, text.as_bytes())?;
+            atomic_write_bytes_traced(path, text.as_bytes())?;
             Ok(PersistOutcome::Applied)
         }
     }

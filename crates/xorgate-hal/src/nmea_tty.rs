@@ -14,7 +14,15 @@
 //! - reads are `poll(2)` (250 ms slices) + `read(2)`, so [`NmeaStream::stop`]
 //!   (= `stream.destroy()`) takes effect within one slice and the fd is
 //!   closed by the thread itself (a dead tty never strands a thread blocked
-//!   in `read`).
+//!   in `read`);
+//! - an open that never returns strands its thread, but at most ONE per port
+//!   (review-wp2 #4): while a reader of that port is still inside `open(2)`,
+//!   [`open`] spawns nothing and hands back a silent stream (no data, no
+//!   error, no close — what the stuck one looks like), so the collector's
+//!   30 s watchdog retries; once the stuck open returns, its thread sees the
+//!   watchdog's `stop()` and exits, and the next reopen spawns afresh. Node
+//!   instead queues opens on its 4-slot libuv pool, which then stalls ALL
+//!   fs I/O; a USB-serial tty is `CLOCAL`, so the case is unlikely.
 //!
 //! Event order mirrors Node: data chunks…, then on EOF `close`; on a read or
 //! open error `error` then `close`; after `stop()` a final `close`.
@@ -25,7 +33,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
@@ -62,6 +70,15 @@ pub struct TtyError {
 #[derive(Debug, Clone)]
 pub struct NmeaStream {
     stop: Arc<AtomicBool>,
+    /// Keeps a silent stream's channel open (see [`open`]).
+    _hold: Option<mpsc::UnboundedSender<TtyEvent>>,
+}
+
+/// Ports whose reader thread is still blocked inside `open(2)`.
+static OPENING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn opening() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    OPENING.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl NmeaStream {
@@ -69,6 +86,7 @@ impl NmeaStream {
     pub fn detached() -> Self {
         Self {
             stop: Arc::new(AtomicBool::new(false)),
+            _hold: None,
         }
     }
 
@@ -104,14 +122,24 @@ impl NmeaOpener for TtyOpener {
 /// open failures arrive as `Error` + `Close`, like Node's async open.
 pub fn open(port: &Path) -> (NmeaStream, mpsc::UnboundedReceiver<TtyEvent>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let handle = NmeaStream::detached();
-    let stop = handle.stop.clone();
+    let mut handle = NmeaStream::detached();
     let port: PathBuf = port.to_path_buf();
+    {
+        let mut busy = opening();
+        if busy.contains(&port) {
+            // A previous reader is still stuck in open(2): strand no second thread.
+            handle._hold = Some(tx);
+            return (handle, rx);
+        }
+        busy.push(port.clone());
+    }
+    let stop = handle.stop.clone();
     let spawned = std::thread::Builder::new().name("nmea-tty".into()).spawn({
-        let tx = tx.clone();
+        let (tx, port) = (tx.clone(), port.clone());
         move || reader_thread(&port, &stop, &tx)
     });
     if let Err(e) = spawned {
+        opening().retain(|p| p != &port);
         // Thread exhaustion: report it like any other stream error.
         let _ = tx.send(TtyEvent::Error(TtyError {
             code: None,
@@ -162,6 +190,7 @@ fn reader_thread(port: &Path, stop: &AtomicBool, tx: &mpsc::UnboundedSender<TtyE
         .read(true)
         .custom_flags(libc::O_NOCTTY | libc::O_CLOEXEC)
         .open(port);
+    opening().retain(|p| p != port);
     let mut file = match opened {
         Ok(f) => f,
         Err(e) => {
@@ -290,6 +319,47 @@ mod tests {
             other => panic!("expected close after stop, got {other:?}"),
         }
         drop(w);
+    }
+
+    /// review-wp2 #4: an open that never returns strands one thread, not one
+    /// per watchdog cycle.
+    #[tokio::test]
+    async fn a_stuck_open_strands_at_most_one_thread() {
+        let d = scratch("stuck");
+        let fifo = d.join("nmea.fifo");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // No writer: the first reader blocks in open(2); the watchdog stops it.
+        let (h1, mut rx1) = open(&fifo);
+        h1.stop();
+        // The reopen spawns nothing: a silent stream (no event, channel open).
+        let (_h2, mut rx2) = open(&fifo);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), rx2.recv())
+                .await
+                .is_err(),
+            "silent while the first open is stuck"
+        );
+        // A writer unblocks the stuck open; that thread sees stop() and closes.
+        let w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+        match tokio::time::timeout(Duration::from_secs(5), rx1.recv()).await {
+            Ok(Some(TtyEvent::Close)) => {}
+            other => panic!("expected the stuck reader's close, got {other:?}"),
+        }
+        drop(w);
+        // The next reopen spawns a fresh reader again (a new writer's open
+        // returns once that reader has the FIFO open).
+        let (h3, mut rx3) = open(&fifo);
+        let mut w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+        w.write_all(b"$GPRMC,b\n").unwrap();
+        match tokio::time::timeout(Duration::from_secs(5), rx3.recv()).await {
+            Ok(Some(TtyEvent::Data(b))) => assert_eq!(b, b"$GPRMC,b\n"),
+            other => panic!("expected data, got {other:?}"),
+        }
+        h3.stop();
+        drop(w);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
