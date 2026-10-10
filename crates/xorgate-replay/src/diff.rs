@@ -5,6 +5,7 @@
 //! ```text
 //! <run>/play.json                    run facts: start/end wall, shift, closed spans, transitions
 //! <run>/pairs.ndjson                 {"a":tsA,"b":tsB} telemetry pairs the player saw per hold window
+//! <run>/releases.ndjson              {"w","due","t","k"} every record's ACTUAL release (required)
 //! <run>/<label>/meta.json            {"label","kind","deviceId",…}
 //! <run>/<label>/mqtt.ndjson          {"t","w","topic","retain","qos","payload":"<raw>"} every publish of that agent
 //! <run>/<label>/files.ndjson         {"w","name","text"|null} file snapshots on change (1 s poll)
@@ -77,6 +78,22 @@ pub struct PlayInfo {
     /// gate logged as `skip` at a drift flip (`pairs.ndjson`); loaded by `load_run`.
     #[serde(skip)]
     pub skips: Vec<(String, i64)>,
+    /// Every record the player released, with its ACTUAL release wall ms
+    /// (`releases.ndjson`, review-wp7 R1); loaded by `load_run`. The input
+    /// facts are built from these, never from tape `t` + `start_wall`.
+    #[serde(skip)]
+    pub releases: Vec<Release>,
+}
+
+/// One `releases.ndjson` record: tape record `(t, k)` released at wall `w`
+/// (`due` = when it fell due; the gates only delay).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct Release {
+    pub w: i64,
+    #[serde(default)]
+    pub due: i64,
+    pub t: u64,
+    pub k: String,
 }
 
 impl PlayInfo {
@@ -146,9 +163,10 @@ pub struct NmeaReopen {
 }
 
 /// Input facts the diff derives from the TAPE itself: play.json's
-/// `transitions` is one unclassified list, so the per-input rows read the
-/// tape the player released (tape `t` → wall `start_wall + t`, snapped to the
-/// player's own stamps).
+/// `transitions` is one unclassified list, so the per-input rows classify the
+/// tape's records, each at the wall ms the player ACTUALLY released it
+/// (`releases.ndjson`; review-wp7 R1 — the watch, report-pair and post-cut
+/// holds delay releases by up to ~10 s, so tape `t` + start is no estimate).
 #[derive(Debug, Clone, Default)]
 pub struct InputFacts {
     /// The tape the facts come from; `None` = not read (`tape_error` says why).
@@ -174,6 +192,9 @@ pub struct InputFacts {
     /// Every `rev` the tape's config publishes carry (reconnect-cadence
     /// report count after a cut).
     pub config_revs: BTreeSet<i64>,
+    /// Per record kind: (records released, max ms the actual release lagged
+    /// `start_wall + t`) — diff.md evidence for R1.
+    pub release_lag: BTreeMap<&'static str, (usize, i64)>,
 }
 
 /// `$GPGGA,…` → `GGA`.
@@ -182,14 +203,38 @@ fn nmea_type(line: &str) -> Option<&str> {
     head.get(2..).filter(|t| !t.is_empty())
 }
 
-/// Nearest stamp in `snaps` within `[est + lo, est + hi]`, else `est`.
-fn snap(est: i64, snaps: &[i64], lo: i64, hi: i64) -> i64 {
-    snaps
+/// A state-like record before `PREFILL_MS`: applied before the agents start
+/// (play.rs prefill), never released.
+fn prefilled(r: &TapeRecord) -> bool {
+    r.t < PREFILL_MS
+        && matches!(
+            r.ev,
+            TapeEvent::LteFile { .. }
+                | TapeEvent::Exec { .. }
+                | TapeEvent::I2cdetect { .. }
+                | TapeEvent::Dt { .. }
+        )
+}
+
+/// Per tape record, the wall ms the player ACTUALLY released it
+/// (`releases.ndjson`; review-wp7 R1), `None` = prefilled or never released
+/// (past the run's end / `--max-s`). The player writes one line per release
+/// with the record's `(t, kind)`; records sharing both keep their order
+/// (the pending queue keeps the order of every kind it holds).
+pub fn release_walls(records: &[TapeRecord], releases: &[Release]) -> Vec<Option<i64>> {
+    let mut q: BTreeMap<(u64, &str), std::collections::VecDeque<i64>> = BTreeMap::new();
+    for r in releases {
+        q.entry((r.t, r.k.as_str())).or_default().push_back(r.w);
+    }
+    records
         .iter()
-        .filter(|s| **s - est >= lo && **s - est <= hi)
-        .min_by_key(|s| (**s - est).abs())
-        .copied()
-        .unwrap_or(est)
+        .map(|r| {
+            if prefilled(r) {
+                return None;
+            }
+            q.get_mut(&(r.t, r.ev.kind())).and_then(|d| d.pop_front())
+        })
+        .collect()
 }
 
 impl InputFacts {
@@ -198,6 +243,16 @@ impl InputFacts {
         if play.tape.is_empty() {
             return Self {
                 tape_error: Some("play.json names no tape".into()),
+                ..Self::default()
+            };
+        }
+        if play.releases.is_empty() {
+            return Self {
+                tape_error: Some(
+                    "the run has no releases.ndjson: the input instants are the player's actual \
+                     releases, never tape t + start (review-wp7 R1)"
+                        .into(),
+                ),
                 ..Self::default()
             };
         }
@@ -220,19 +275,25 @@ impl InputFacts {
         }
     }
 
+    /// The facts from the tape's records at the player's ACTUAL release
+    /// instants (`play.releases`); a record without a release is not an input.
     pub fn from_records(records: &[TapeRecord], play: &PlayInfo) -> Self {
         let mut out = Self::default();
-        let est = |t: u64| play.start_wall + t as i64;
-        let released = |t: u64| play.end_wall <= 0 || est(t) <= play.end_wall;
-        let nmea: Vec<(u64, &str)> = records
+        let walls = release_walls(records, &play.releases);
+        let rel: Vec<(&TapeRecord, i64)> = records
             .iter()
-            .filter(|r| released(r.t))
-            .filter_map(|r| match &r.ev {
-                TapeEvent::Nmea { line } => Some((r.t, line.as_str())),
+            .zip(&walls)
+            .filter_map(|(r, w)| Some((r, (*w)?)))
+            .collect();
+        // (tape t, wall, line): the chunk is a TAPE notion (one tty read).
+        let nmea: Vec<(u64, i64, &str)> = rel
+            .iter()
+            .filter_map(|(r, w)| match &r.ev {
+                TapeEvent::Nmea { line } => Some((r.t, *w, line.as_str())),
                 _ => None,
             })
             .collect();
-        for (i, (t, _)) in nmea.iter().enumerate() {
+        for (i, (t, w, _)) in nmea.iter().enumerate() {
             let Some(prev) = i.checked_sub(1).map(|j| nmea[j].0) else {
                 continue;
             };
@@ -241,11 +302,11 @@ impl InputFacts {
             }
             let chunk: Vec<&str> = nmea[i..]
                 .iter()
-                .take_while(|(u, _)| u - t <= CHUNK_MS)
-                .map(|(_, l)| *l)
+                .take_while(|(u, _, _)| u - t <= CHUNK_MS)
+                .map(|(_, _, l)| *l)
                 .collect();
             let mut r = NmeaReopen {
-                w: snap(est(*t), &play.nmea_resumes, -300, 2_000),
+                w: *w,
                 ..NmeaReopen::default()
             };
             for line in chunk {
@@ -268,17 +329,16 @@ impl InputFacts {
             }
             out.reopens.push(r);
         }
-        out.groups = group_transitions(records, play);
-        let wall = |t: u64| snap(est(t), &play.transitions, -300, 2_000);
+        out.groups = group_transitions(&rel);
         let mut in_view: BTreeMap<String, String> = BTreeMap::new();
-        for r in records.iter().filter(|r| released(r.t)) {
+        for &(r, w) in &rel {
             let kind = match &r.ev {
                 TapeEvent::Nmea { line } => {
                     if nmea_type(line) == Some("GSV") {
                         let talker = line.trim().get(1..3).unwrap_or("").to_string();
                         let n = line.split(',').nth(3).unwrap_or("").to_string();
                         if in_view.insert(talker, n.clone()).is_some_and(|o| o != n) {
-                            out.gsv_changes.push(est(r.t));
+                            out.gsv_changes.push(w);
                         }
                     }
                     continue;
@@ -295,22 +355,31 @@ impl InputFacts {
                 }
                 TapeEvent::MqttIn { topic, .. } if topic.ends_with("/command") => "command",
                 TapeEvent::Cli { .. } => "cli",
-                TapeEvent::LteFile { .. } if r.t >= PREFILL_MS => "lte_file",
-                TapeEvent::Exec { .. } if r.t >= PREFILL_MS => "exec",
-                TapeEvent::Dt { .. } if r.t >= PREFILL_MS => "dt",
-                TapeEvent::I2cdetect { .. } if r.t >= PREFILL_MS => "i2cdetect",
+                TapeEvent::LteFile { .. } => "lte_file",
+                TapeEvent::Exec { .. } => "exec",
+                TapeEvent::Dt { .. } => "dt",
+                TapeEvent::I2cdetect { .. } => "i2cdetect",
                 TapeEvent::Conn { .. } => "conn",
                 TapeEvent::ImuSpawn { .. } => "imu_spawn",
                 TapeEvent::ImuExit { .. } => "imu_exit",
                 _ => continue,
             };
-            out.inputs.push((wall(r.t), kind));
+            out.inputs.push((w, kind));
         }
-        out.imu_lines = records
+        out.inputs.sort_by_key(|(w, _)| *w);
+        out.imu_lines = rel
             .iter()
-            .filter(|r| released(r.t) && matches!(r.ev, TapeEvent::Imu { .. }))
-            .map(|r| est(r.t))
+            .filter(|(r, _)| matches!(r.ev, TapeEvent::Imu { .. }))
+            .map(|(_, w)| *w)
             .collect();
+        out.imu_lines.sort();
+        // Evidence: how far the actual releases lag the tape schedule.
+        for (r, w) in &rel {
+            let lag = w - (play.start_wall + r.t as i64);
+            let e = out.release_lag.entry(r.ev.kind()).or_insert((0, 0));
+            e.0 += 1;
+            e.1 = e.1.max(lag);
+        }
         out
     }
 
@@ -344,22 +413,18 @@ impl InputFacts {
     }
 }
 
-/// T4 per-group transitions from the tape (play.rs's release loop, classified).
-/// Tape `t` → wall `start_wall + t`, snapped to the player's own transition
-/// stamps (a gate hold only delays a release).
-fn group_transitions(records: &[TapeRecord], play: &PlayInfo) -> BTreeMap<String, Vec<i64>> {
+/// T4 per-group transitions from the released records (play.rs's release
+/// loop, classified) at their ACTUAL release instants (review-wp7 R1).
+fn group_transitions(rel: &[(&TapeRecord, i64)]) -> BTreeMap<String, Vec<i64>> {
     let mut g: BTreeMap<String, Vec<i64>> = BTreeMap::new();
-    let wall = |t: u64| snap(play.start_wall + t as i64, &play.transitions, -300, 2_000);
-    let released = |t: u64| play.end_wall <= 0 || play.start_wall + t as i64 <= play.end_wall;
     let mut push = |k: &str, w: i64| g.entry(k.to_string()).or_default().push(w);
     // `(tape t, wall)` of the last line of each stream.
     let mut last_nmea: Option<(u64, i64)> = None;
     let mut last_imu: Option<(u64, i64)> = None;
     let mut quality: Option<String> = None;
-    for r in records.iter().filter(|r| released(r.t)) {
+    for &(r, now) in rel {
         match &r.ev {
             TapeEvent::Nmea { line } => {
-                let now = wall(r.t);
                 match last_nmea {
                     Some((lt, lw)) if r.t - lt > LINE_GAP_MS => {
                         push("gps", lw);
@@ -381,7 +446,6 @@ fn group_transitions(records: &[TapeRecord], play: &PlayInfo) -> BTreeMap<String
                 last_nmea = Some((r.t, now));
             }
             TapeEvent::Imu { .. } => {
-                let now = wall(r.t);
                 match last_imu {
                     Some((lt, lw)) if r.t - lt > LINE_GAP_MS => {
                         push("imu", lw);
@@ -392,12 +456,10 @@ fn group_transitions(records: &[TapeRecord], play: &PlayInfo) -> BTreeMap<String
                 }
                 last_imu = Some((r.t, now));
             }
-            TapeEvent::ImuSpawn { .. } | TapeEvent::ImuExit { .. } => push("imu", wall(r.t)),
-            TapeEvent::I2cdetect { .. } if r.t >= PREFILL_MS => push("imu", wall(r.t)),
-            TapeEvent::LteFile { .. } if r.t >= PREFILL_MS => push("lte", wall(r.t)),
-            TapeEvent::Exec { .. } | TapeEvent::Dt { .. } if r.t >= PREFILL_MS => {
-                push("system", wall(r.t))
-            }
+            TapeEvent::ImuSpawn { .. } | TapeEvent::ImuExit { .. } => push("imu", now),
+            TapeEvent::I2cdetect { .. } => push("imu", now),
+            TapeEvent::LteFile { .. } => push("lte", now),
+            TapeEvent::Exec { .. } | TapeEvent::Dt { .. } => push("system", now),
             _ => {}
         }
     }
@@ -1753,6 +1815,18 @@ pub fn diff(
 ) -> Report {
     let facts = InputFacts::for_play(play);
     let mut rep = diff_with(a, b, play, &facts, pairs, table);
+    if play.releases.is_empty() {
+        // R1: no actual release instants → no tape-derived row may apply, and
+        // the run itself is not judgeable.
+        rep.push(Mismatch {
+            stream: "run".into(),
+            at: "run".into(),
+            path: "(releases.ndjson missing)".into(),
+            a: "∅".into(),
+            b: "∅".into(),
+            tol: UNTOLERATED.into(),
+        });
+    }
     require_core_kinds(&mut rep, &facts, table);
     rep
 }
@@ -1800,6 +1874,20 @@ pub fn diff_with(
             (None, None) => "NOT READ: no tape-derived tolerance applies".into(),
         },
     );
+    if !facts.release_lag.is_empty() {
+        rep.inputs.insert(
+            "input instants".into(),
+            format!(
+                "releases.ndjson (actual release per record; max lag behind start + tape t: {})",
+                facts
+                    .release_lag
+                    .iter()
+                    .map(|(k, (n, lag))| format!("{k} {n}× ≤{lag} ms"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
     rep.inputs.insert(
         "nmea reopens (T7/D23)".into(),
         facts.reopens.len().to_string(),
@@ -3171,6 +3259,22 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter_map(|v| Some((v["a"].as_i64()?, v["b"].as_i64()?)))
         .collect();
+    // R1: the input instants are the player's ACTUAL releases. A run without
+    // them (a player older than d1831f4) cannot be judged: fail loudly.
+    let rel_path = run.join("releases.ndjson");
+    let text = std::fs::read_to_string(&rel_path).with_context(|| {
+        format!(
+            "{}: missing — the diff needs the player's actual release instants (review-wp7 R1); \
+             re-run the tape on a player that writes releases.ndjson",
+            rel_path.display()
+        )
+    })?;
+    play.releases = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(serde_json::from_str::<Release>)
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("parsing {}", rel_path.display()))?;
     play.tape = resolve_tape(run, &play.tape);
     let ca = Capture::load(&a.unwrap_or_else(|| run.join("a")))?;
     let cb = Capture::load(&b.unwrap_or_else(|| run.join("b")))?;
@@ -3185,6 +3289,72 @@ mod tests {
     /// requirement (that is tested on its own).
     fn diff(a: &Capture, b: &Capture, play: &PlayInfo, pairs: &[(i64, i64)], t: &Table) -> Report {
         diff_with(a, b, play, &InputFacts::for_play(play), pairs, t)
+    }
+
+    /// `releases.ndjson` for `recs`: every non-prefilled record released at
+    /// `start_wall + t`, except the `(t, wall)` overrides (a gate hold).
+    fn released(play: &PlayInfo, recs: &[TapeRecord], late: &[(u64, i64)]) -> Vec<Release> {
+        recs.iter()
+            .filter(|r| !prefilled(r))
+            .map(|r| {
+                let w = late
+                    .iter()
+                    .find(|(t, _)| *t == r.t)
+                    .map_or(play.start_wall + r.t as i64, |(_, w)| *w);
+                Release {
+                    w,
+                    due: play.start_wall + r.t as i64,
+                    t: r.t,
+                    k: r.ev.kind().into(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn input_facts_use_the_actual_release_not_the_tape_schedule() {
+        let rec = |t: u64, ev: TapeEvent| TapeRecord { t, w: t as i64, ev };
+        let mut play = PlayInfo {
+            start_wall: 100_000,
+            end_wall: 200_000,
+            ..Default::default()
+        };
+        let recs = vec![
+            rec(500, TapeEvent::lte_file(Some(b"a"))),
+            rec(10_000, TapeEvent::lte_file(Some(b"b"))),
+            rec(20_000, TapeEvent::lte_file(Some(b"c"))),
+            rec(
+                30_000,
+                TapeEvent::Cli {
+                    argv: vec!["status".into()],
+                },
+            ),
+        ];
+        // A 10 s watch hold on the first change (far beyond the old −0.3/+2 s
+        // snap window); the second is never released (past the end).
+        play.releases = released(&play, &recs[..2], &[(10_000, 120_000)]);
+        play.releases.push(Release {
+            w: 131_000,
+            due: 130_000,
+            t: 30_000,
+            k: "cli".into(),
+        });
+        let f = InputFacts::from_records(&recs, &play);
+        assert_eq!(f.groups["lte"], vec![120_000]);
+        assert_eq!(f.inputs, vec![(120_000, "lte_file"), (131_000, "cli")]);
+        assert_eq!(f.release_lag["lte_file"], (1, 10_000));
+        // Without releases nothing is an input, and for_play says why.
+        let none = PlayInfo {
+            tape: "x.ndjson".into(),
+            ..play.clone()
+        };
+        let none = PlayInfo {
+            releases: vec![],
+            ..none
+        };
+        let f = InputFacts::for_play(&none);
+        assert!(f.tape.is_none());
+        assert!(f.tape_error.unwrap().contains("releases.ndjson"));
     }
 
     #[test]
@@ -3676,10 +3846,14 @@ mod tests {
             nmea(50_008, "$GPRMC,000040,V,,,,,,,010125,,,N*48"),
             nmea(51_000, "$GPGGA,000041,,,,,0,00,,,M,,,,*67"),
         ];
+        let play = PlayInfo {
+            releases: released(&play, &recs, &[(50_000, 1_050_120)]),
+            ..play
+        };
         let f = InputFacts::from_records(&recs, &play);
         assert_eq!(f.reopens.len(), 1, "{f:?}");
         let r = &f.reopens[0];
-        assert_eq!(r.w, 1_050_120, "snapped to play.json nmeaResumes");
+        assert_eq!(r.w, 1_050_120, "the resumed line's actual release");
         assert_eq!(r.sentences, vec!["GGA".to_string(), "GSV".to_string()]);
         assert!(r.clears_position);
         let fields = d23_fields(r);
@@ -3694,6 +3868,10 @@ mod tests {
         }
         // A shorter gap is not a reopen.
         let short = vec![nmea(1_000, "$GPGGA,1"), nmea(20_000, "$GPGGA,2")];
+        let play = PlayInfo {
+            releases: released(&play, &short, &[]),
+            ..play
+        };
         assert!(InputFacts::from_records(&short, &play).reopens.is_empty());
     }
 
@@ -4073,8 +4251,7 @@ mod tests {
         let play = PlayInfo {
             start_wall: 100_000,
             end_wall: 200_000,
-            // The player's own stamps: the lte change was released 120 ms late.
-            transitions: vec![150_120],
+            // The lte change was released 120 ms late (releases.ndjson).
             ..Default::default()
         };
         let recs = vec![
@@ -4114,8 +4291,16 @@ mod tests {
         ];
         let mut recs = recs;
         recs.sort_by_key(|r| r.t);
+        let play = PlayInfo {
+            releases: released(&play, &recs, &[(50_000, 150_120)]),
+            ..play
+        };
         let f = InputFacts::from_records(&recs, &play);
-        assert_eq!(f.groups["lte"], vec![150_120], "snapped, prefill skipped");
+        assert_eq!(
+            f.groups["lte"],
+            vec![150_120],
+            "actual release, prefill skipped"
+        );
         assert_eq!(f.groups["system"], vec![160_000]);
         assert_eq!(f.groups["imu"], vec![163_000]);
         // first line, quality q0, q1, stop 112000, stale 122000, resume 132000, end stale 142000

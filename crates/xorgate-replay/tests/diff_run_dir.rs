@@ -72,6 +72,14 @@ fn diff_reads_the_tape_beside_the_run_and_final_json() {
             "nmeaResumes":[42_000]})
         .to_string(),
     );
+    // The player's ACTUAL release instants (R1): the input facts come from
+    // these, not from tape t + startWall.
+    let rel = [(2_000, 2_000), (42_000, 42_000), (42_008, 42_008)]
+        .iter()
+        .map(|(t, w)| json!({"w":w,"due":w,"t":t,"k":"nmea"}).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    write(&run.join("releases.ndjson"), &(rel + "\n"));
     let full = json!({"fix_quality":{"value":1},"satellites":{"value":8}});
     let lost = json!({"fix_quality":{"value":0}});
     agent(
@@ -143,5 +151,19 @@ fn diff_reads_the_tape_beside_the_run_and_final_json() {
     );
     assert_eq!(rep["inputs"]["nmea reopens (T7/D23)"], "1");
     assert_eq!(rep["stats"]["file:refresh-modem.flag"]["absent_both"], 1);
+
+    // R1: without releases.ndjson the run is not judgeable — the diff fails
+    // loudly instead of estimating the input instants.
+    std::fs::remove_file(run.join("releases.ndjson")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_xorgate-replay"))
+        .arg("diff")
+        .arg(&run)
+        .arg("--tolerances")
+        .arg(repo().join("tools/replay/tolerances.toml"))
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("releases.ndjson"), "{err}");
     let _ = std::fs::remove_dir_all(&run);
 }

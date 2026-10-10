@@ -197,7 +197,10 @@ the same — common brief rule 6):
 
 Run directory (`<run>/`): `play.json` (start/end wall, shift, closed spans,
 input transitions, wall steps), `pairs.ndjson`, `player.log`,
-`inputs-mqtt.ndjson` (what the player published), and per agent `a/`, `b/`:
+`inputs-mqtt.ndjson` (what the player published), `releases.ndjson` (every
+tape record's ACTUAL release wall ms — `diff` builds every input instant (T4
+windows, the cut residual, report/input-edge rows, D23) from it and refuses a
+run without it), and per agent `a/`, `b/`:
 `meta.json`, `mqtt.ndjson` (every publish, with the publisher's own `qos`
 and `retain`: the capture subscribes `xorgate/#` at QoS 2 with
 Retain-As-Published and retain-handling 2 = no retained replay, so each line is
