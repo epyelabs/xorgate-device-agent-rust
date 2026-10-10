@@ -860,6 +860,10 @@ struct Cx<'a> {
     /// `Some(true)`: A is the js agent and B the rust one; `Some(false)`: the
     /// reverse; `None`: same kinds (the one-directional rows never apply).
     js_a: Option<bool>,
+    /// An ack pair of a `refresh` whose result is the 30 s rate limit on at
+    /// least one side (`reason: "rate-limited"`): the only acks T8/O2 may
+    /// cover (re-review R7).
+    ack_rate_limit: bool,
 }
 
 impl Cx<'_> {
@@ -1089,7 +1093,8 @@ impl Cx<'_> {
                 st == self.stream && crate::tolerances::path_matches(p, path)
             })
         });
-        if !observed {
+        // An ack only as the refresh rate-limit decision (re-review R7).
+        if !observed || (self.stream == "ack" && !self.ack_rate_limit) {
             return None;
         }
         self.play
@@ -2147,6 +2152,7 @@ pub fn diff_with(
             d23: js_ts.and_then(|t| d23_at.get(&t)),
             facts,
             js_a,
+            ack_rate_limit: false,
         };
         flags_pair(&cx, x, y, &mut rep);
         if x.topic != y.topic {
@@ -2181,6 +2187,7 @@ pub fn diff_with(
                 d23: None,
                 facts,
                 js_a,
+                ack_rate_limit: false,
             };
             let wv = w.unwrap_or(m.w);
             let seam = orphans
@@ -2256,6 +2263,12 @@ pub fn diff_with(
         st.compared = xa.len().min(xb.len());
         for i in 0..xa.len().max(xb.len()) {
             let (x, y) = (xa.get(i), xb.get(i));
+            let rate_limited = |m: Option<&&Msg>| {
+                m.is_some_and(|m| {
+                    m.payload["command"] == "refresh" && m.payload["reason"] == "rate-limited"
+                })
+            };
+            let refresh = |m: Option<&&Msg>| m.is_some_and(|m| m.payload["command"] == "refresh");
             let cx = Cx {
                 table,
                 play,
@@ -2269,6 +2282,10 @@ pub fn diff_with(
                 d23: None,
                 facts,
                 js_a,
+                ack_rate_limit: stream == "ack"
+                    && refresh(x)
+                    && refresh(y)
+                    && (rate_limited(x) || rate_limited(y)),
             };
             match (x, y) {
                 (Some(x), Some(y)) => {
@@ -2343,6 +2360,7 @@ pub fn diff_with(
             d23: None,
             facts,
             js_a,
+            ack_rate_limit: false,
         };
         match (&fa, &fb) {
             (Some(x), Some(y)) if x == y => {
@@ -2643,6 +2661,7 @@ fn seq_increments(
             d23: None,
             facts,
             js_a,
+            ack_rate_limit: false,
         };
         // A jump across an outage longer than the offline queue holds (1000
         // payloads ≈ 16.7 min at 1 Hz): Rust dropped the oldest queued ticks
@@ -2720,6 +2739,7 @@ fn diff_reports(
             d23: None,
             facts,
             js_a,
+            ack_rate_limit: false,
         };
         if pa.len() != pb.len() {
             // T5, NARROWED (review-wp7): only where two report triggers
@@ -2832,6 +2852,7 @@ fn diff_reports(
                     d23: None,
                     facts,
                     js_a,
+                    ack_rate_limit: false,
                 };
                 flags_pair(&cx, x, y, rep);
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
@@ -4589,6 +4610,44 @@ mod tests {
         };
         assert_eq!(tol("metrics.lte.rssi.value").as_deref(), Some("T8/O2"));
         assert_eq!(tol("x").as_deref(), Some(UNTOLERATED));
+
+        // R7: of the acks only a refresh's rate-limit decision (status /
+        // reason), never another command's ack or another field.
+        let ack = |cmd: &str, status: &str, reason: Option<&str>, x: i64| {
+            let mut v =
+                serde_json::json!({"v":1,"requestId":"r","command":cmd,"status":status,"x":x});
+            if let Some(r) = reason {
+                v["reason"] = serde_json::json!(r);
+            }
+            v
+        };
+        let run = |x: Value, y: Value| {
+            let a = cap("js", vec![msg(51_000, "command/response", x)]);
+            let b = cap("rust", vec![msg(51_010, "command/response", y)]);
+            let rep = diff(&a, &b, &step, &[], &t);
+            rep.mismatches
+                .iter()
+                .filter(|m| m.stream == "ack")
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect::<Vec<_>>()
+        };
+        let got = run(
+            ack("refresh", "rejected", Some("rate-limited"), 1),
+            ack("refresh", "accepted", None, 2),
+        );
+        assert!(got.contains(&("status".into(), "T8/O2".into())), "{got:?}");
+        assert!(got.contains(&("reason".into(), "T8/O2".into())), "{got:?}");
+        assert!(got.contains(&("x".into(), UNTOLERATED.into())), "{got:?}");
+        let got = run(
+            ack("refresh", "rejected", Some("expired"), 1),
+            ack("refresh", "accepted", None, 1),
+        );
+        assert!(got.iter().all(|(_, t)| t == UNTOLERATED), "{got:?}");
+        let got = run(
+            ack("update", "rejected", Some("rate-limited"), 1),
+            ack("update", "accepted", None, 1),
+        );
+        assert!(got.iter().all(|(_, t)| t == UNTOLERATED), "{got:?}");
 
         // end-snapshot: `latest` = own last telemetry; values may differ
         // across agents, the structure may not.

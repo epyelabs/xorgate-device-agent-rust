@@ -320,10 +320,13 @@ kind = "decisions"
   what = "O2 mono-vs-wall intervals — the five the TS measures on Date.now(): the gps reopen watchdog (30 s), NMEA freshness (10 s), TTFF, the gnss-sky.json 15 s cadence, the refresh 30 s window — PLUS WP2's lte/system `sample()` 1 s cache gates (collectors/lte.ts, system.ts:94-114), all on mono in Rust. Values are identical unless the wall clock steps: tolerated only within a window around a tape `clock` event that shows a wall step"
   matcher = "wall_step_window"
   # NARROWED (review-wp7): only the six mono-derived observables.
+  # NARROWED (re-review R7): of the acks only the refresh 30 s window's
+  # decision — `status`/`reason` of a `refresh` ack that is `rate-limited` on
+  # at least one side.
   observables = [
     "telemetry:metrics.gps", "telemetry:metrics.gps.**",
     "file:gnss-sky.json:timestamp", "file:gnss-sky.json:hold_s",
-    "ack:**",
+    "ack:status", "ack:reason",
     "telemetry:metrics.lte", "telemetry:metrics.lte.**",
     "telemetry:metrics.system", "telemetry:metrics.system.**",
   ]
