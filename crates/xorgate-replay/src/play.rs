@@ -230,6 +230,13 @@ pub struct Gate {
     guard_after: i64,
     /// Pair gap above which the alignment flips (`--flip-gap-ms`).
     flip_gap: i64,
+    /// Arrival (`now`) of each agent's last telemetry publish.
+    seen_at: [Option<i64>; 2],
+    /// Set when a cut ends; cleared once BOTH agents have published again.
+    /// Until then the gate stays on PREDICTED ticks (series 5: Rust, still in
+    /// its backoff 7 s after the restore, read an NMEA burst 5 ms in — GGA
+    /// new, RMC old — because an unobserved agent left the gate open).
+    restored_at: Option<i64>,
     pub pairs: Vec<Value>,
 }
 
@@ -244,8 +251,29 @@ impl Gate {
             guard_before: guard_ms,
             guard_after: 20,
             flip_gap: DEFAULT_FLIP_GAP_MS,
+            seen_at: [None, None],
+            restored_at: None,
             pairs: Vec::new(),
         }
+    }
+
+    /// The broker path was restored at `now`: keep holding on predicted ticks
+    /// until both agents' telemetry arrives again (each reconnects on its own
+    /// cadence: mqtt.js 2 s, Rust 1→60 s backoff).
+    pub fn on_restore(&mut self, now: i64) {
+        self.restored_at = Some(now);
+    }
+
+    /// Is an agent still unobserved since the last restore?
+    fn reconnecting(&mut self) -> bool {
+        let Some(r) = self.restored_at else {
+            return false;
+        };
+        if self.seen_at.iter().all(|s| s.is_some_and(|s| s >= r)) {
+            self.restored_at = None;
+            return false;
+        }
+        true
     }
 
     /// The rig's `--flip-gap-ms`.
@@ -262,6 +290,7 @@ impl Gate {
 
     /// A telemetry publish of agent `idx` with payload `ts` arrived at `now`.
     pub fn on_tick(&mut self, idx: usize, ts: i64, now: i64) {
+        self.seen_at[idx] = Some(now);
         let k = self.track[idx].note(ts);
         let Some(h) = self.hold.as_mut() else { return };
         if k == h.k[idx] {
@@ -309,7 +338,7 @@ impl Gate {
         let (Some(a), Some(b)) = (self.track[0].last_ts, self.track[1].last_ts) else {
             return true;
         };
-        if cut {
+        if cut || self.reconnecting() {
             // Ticks are not observable while the broker path is cut (the
             // agents queue their payloads), so hold on PREDICTED ticks: the
             // lower-envelope estimate extrapolated through the cut (Node's
@@ -1599,6 +1628,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                             if let Ok(mut g) = cut.lock() {
                                 *g = Some(CancellationToken::new());
                             }
+                            if let Ok(mut g) = caps.gate.lock() {
+                                g.on_restore(now);
+                            }
                             plog(format!("conn restored at t={}", r.t));
                         }
                     }
@@ -1822,6 +1854,33 @@ mod tests {
         // No partner observed: still holding until an agent is silent > 2.5 s.
         assert!(!g.is_open(3_400, false));
         assert!(g.is_open(3_600, false));
+    }
+
+    #[test]
+    fn gate_keeps_predicted_holds_until_both_agents_publish_after_a_restore() {
+        let mut g = Gate::new(60);
+        g.on_tick(0, 1_000, 1_000);
+        g.on_tick(1, 1_300, 1_300);
+        // Cut 1500..5000; A (mqtt.js) is back at once, B (backoff) is not.
+        assert!(!g.is_open(1_950, true));
+        g.on_restore(5_000);
+        g.on_tick(0, 5_000, 5_010);
+        // B is unobserved (> 2.5 s silent): without the restore latch the gate
+        // would be open; it holds on B's PREDICTED tick 5300 (+ read) instead.
+        assert!(!g.is_open(5_200, false));
+        assert!(!g.is_open(5_440, false));
+        assert!(g.is_open(5_500, false));
+        // B publishes again (its queue flushes): normal gating resumes.
+        g.on_tick(1, 5_300, 5_600);
+        assert!(g.restored_at.is_some());
+        assert!(g.is_open(5_700, false));
+        assert!(g.restored_at.is_none());
+        // Without a restore an agent silent > 2.5 s leaves the gate open.
+        let mut h = Gate::new(60);
+        h.on_tick(0, 1_000, 1_000);
+        h.on_tick(1, 1_300, 1_300);
+        h.on_tick(0, 5_000, 5_010);
+        assert!(h.is_open(5_200, false));
     }
 
     #[test]
