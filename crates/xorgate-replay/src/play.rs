@@ -1375,6 +1375,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                         .map(|mut g| g.is_open(now, cut_active))
                         .unwrap_or(true)
             };
+            // Consult the hold gate on EVERY pass, also when nothing is due:
+            // it forms a pair hold only when asked near a lead tick, so on a
+            // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
+            // restart: a tick orphaned with no `skip`) ticks went unpaired.
+            let _ = tel_open(now);
             if let Some(&(pi, due_w)) = pending.front() {
                 let ev = &tape.records[pi].ev;
                 let held = watch_holds(ev, now);
@@ -1402,7 +1407,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                         next += 1;
                         break Some((next - 1, now, false));
                     }
-                } else if pending.is_empty() {
+                } else if pending.is_empty() && args.no_gate {
                     wait = left;
                 } else {
                     wait = wait.min(left);
