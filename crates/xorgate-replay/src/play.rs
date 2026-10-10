@@ -57,7 +57,7 @@ use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 
-use crate::diff::{PlayInfo, FILES};
+use crate::diff::PlayInfo;
 use crate::rewrite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -408,6 +408,92 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// Every file either agent can write in Phase 2 scope, as `(key, path
+/// relative to the agent's work dir)`. Home files keep their bare name (the
+/// `final/<name>` layout `diff` already reads); the manifests are `etc/…`.
+/// TS writers (@89b5c64): `daemon/settings.ts:641`, `agent/config-sync.ts:241`,
+/// `agent/commands.ts:213`, `agent/collectors/gps.ts:243` (gnss-sky),
+/// `daemon/state.ts:126`, `daemon/pidfile.ts:98`, `worker.ts:1058`
+/// (refresh-modem.flag), `media/manifest.ts:113` (kvs.json uploadBucket
+/// backfill), `hardware/hardware-config.ts:155` (hardware.json persist).
+/// `etc/pipelines/*` (`media/hardware-reconcile.ts`, `worker.ts:249-256`) is
+/// added per run by [`snapshot_targets`].
+pub const SNAPSHOT_FILES: &[(&str, &str)] = &[
+    ("settings.json", "home/settings.json"),
+    ("config-sync.json", "home/config-sync.json"),
+    ("commands.json", "home/commands.json"),
+    ("gnss-sky.json", "home/gnss-sky.json"),
+    ("state.json", "home/state.json"),
+    ("agent.pid", "home/agent.pid"),
+    ("refresh-modem.flag", "home/refresh-modem.flag"),
+    ("etc/kvs.json", "etc/kvs.json"),
+    ("etc/hardware.json", "etc/hardware.json"),
+];
+
+/// [`SNAPSHOT_FILES`] plus every entry of `etc/pipelines/` (sorted).
+fn snapshot_targets(work: &Path) -> Vec<(String, PathBuf)> {
+    let mut v: Vec<(String, PathBuf)> = SNAPSHOT_FILES
+        .iter()
+        .map(|(k, rel)| (k.to_string(), work.join(rel)))
+        .collect();
+    let mut pipes: Vec<String> = fs::read_dir(work.join("etc/pipelines"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    pipes.sort();
+    for n in pipes {
+        v.push((
+            format!("etc/pipelines/{n}"),
+            work.join("etc/pipelines").join(&n),
+        ));
+    }
+    v
+}
+
+/// Standard base64 (RFC 4648, padded); no extra crate for one call site.
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        for (i, sh) in [18, 12, 6, 0].into_iter().enumerate() {
+            if i <= c.len() {
+                s.push(A[(n >> sh & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    s
+}
+
+/// One file's snapshot: raw bytes (base64) + verbatim text when UTF-8, or
+/// `{"present": false}` when absent.
+fn file_snapshot(path: &Path) -> Value {
+    match fs::read(path) {
+        Ok(b) => json!({
+            "present": true,
+            "len": b.len(),
+            "b64": base64(&b),
+            "text": std::str::from_utf8(&b).ok(),
+        }),
+        Err(_) => json!({"present": false}),
+    }
+}
+
+/// `{"w": wall ms, "files": {key: snapshot}}` over [`snapshot_targets`].
+fn snapshot_all(work: &Path) -> Value {
+    let files: serde_json::Map<String, Value> = snapshot_targets(work)
+        .into_iter()
+        .map(|(k, p)| (k, file_snapshot(&p)))
+        .collect();
+    json!({"w": wall_now_ms(), "files": files})
 }
 
 fn open_pty() -> Result<(File, OwnedFd, PathBuf)> {
@@ -895,9 +981,12 @@ async fn capture_loop(
     }
 }
 
-async fn snapshot_loop(homes: Vec<(PathBuf, PathBuf)>, stop: CancellationToken) {
-    let mut last: BTreeMap<(usize, &str), Option<Vec<u8>>> = BTreeMap::new();
-    let mut files: Vec<File> = homes
+/// Polls every [`snapshot_targets`] file once a second and appends each change
+/// (incl. appear/vanish: `text` null) to `<label>/files.ndjson`. `works` are
+/// `(work dir, capture dir)` per agent.
+async fn snapshot_loop(works: Vec<(PathBuf, PathBuf)>, stop: CancellationToken) {
+    let mut last: BTreeMap<(usize, String), Option<Vec<u8>>> = BTreeMap::new();
+    let mut files: Vec<File> = works
         .iter()
         .map(|(_, dir)| {
             OpenOptions::new()
@@ -908,10 +997,11 @@ async fn snapshot_loop(homes: Vec<(PathBuf, PathBuf)>, stop: CancellationToken) 
         })
         .collect();
     loop {
-        for (i, (home, _)) in homes.iter().enumerate() {
-            for name in FILES {
-                let cur = fs::read(home.join(name)).ok();
-                let prev = last.get(&(i, *name));
+        for (i, (work, _)) in works.iter().enumerate() {
+            for (name, path) in snapshot_targets(work) {
+                let cur = fs::read(&path).ok();
+                let prev = last.get(&(i, name.clone()));
+                // The first poll always logs (absent → `text: null`).
                 if prev != Some(&cur) {
                     let text = cur.as_ref().map(|b| String::from_utf8_lossy(b).to_string());
                     let _ = writeln!(
@@ -1122,11 +1212,19 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     tokio::spawn(snapshot_loop(
         agents
             .iter()
-            .map(|a| (a.home.clone(), a.dir.clone()))
+            .map(|a| (a.work.clone(), a.dir.clone()))
             .collect(),
         snap_stop.clone(),
     ));
     tokio::spawn(host_loop(args.out.clone(), snap_stop.clone()));
+
+    // The seeded state each agent starts from (manifests, home seed).
+    for a in &agents {
+        fs::write(
+            a.dir.join("initial.json"),
+            serde_json::to_vec_pretty(&snapshot_all(&a.work))?,
+        )?;
+    }
 
     // Start both agents together.
     let t0 = tokio::time::Instant::now();
@@ -1394,13 +1492,22 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     }
     let (first, second) = agents.split_at_mut(1);
     tokio::join!(first[0].wait_stopped(), second[0].wait_stopped());
-    // Final file copies.
+    // Final file copies (`final/<key>`, raw bytes) + `final.json`: every
+    // [`snapshot_targets`] file with base64 bytes, or `present: false`.
     for a in &agents {
-        for name in FILES {
-            if let Ok(b) = fs::read(a.home.join(name)) {
-                fs::write(a.dir.join("final").join(name), b)?;
+        for (name, path) in snapshot_targets(&a.work) {
+            if let Ok(b) = fs::read(&path) {
+                let dst = a.dir.join("final").join(&name);
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(dst, b)?;
             }
         }
+        fs::write(
+            a.dir.join("final.json"),
+            serde_json::to_vec_pretty(&snapshot_all(&a.work))?,
+        )?;
         if let Ok(b) = fs::read(a.work.join("sudo.log")) {
             fs::write(a.dir.join("sudo.log"), b)?;
         }
@@ -1581,6 +1688,47 @@ mod tests {
         g.on_tick(1, 2_860, 2_861);
         g.on_tick(0, 3_004, 3_005);
         assert_eq!(g.pairs.last(), Some(&json!({"a": 3_004, "b": 2_860})));
+    }
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        for (i, o) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(i.as_bytes()), o);
+        }
+        assert_eq!(base64(&[0xff, 0xfe, 0x00]), "//4A");
+    }
+
+    #[test]
+    fn snapshot_covers_the_diff_files_and_records_absence() {
+        for name in crate::diff::FILES {
+            assert!(
+                SNAPSHOT_FILES.iter().any(|(k, _)| k == name),
+                "{name} not snapshotted"
+            );
+        }
+        let work = std::env::temp_dir().join(format!("xr-snap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&work);
+        fs::create_dir_all(work.join("home")).unwrap();
+        fs::create_dir_all(work.join("etc/pipelines")).unwrap();
+        fs::write(work.join("etc/kvs.json"), b"{\"channels\":[]}\n").unwrap();
+        fs::write(work.join("etc/pipelines/cam0.gst"), b"x\n").unwrap();
+        let v = snapshot_all(&work);
+        let f = &v["files"];
+        assert_eq!(f["etc/kvs.json"]["present"], true);
+        assert_eq!(f["etc/kvs.json"]["text"], "{\"channels\":[]}\n");
+        assert_eq!(f["etc/kvs.json"]["len"], 16);
+        assert_eq!(f["etc/hardware.json"], json!({"present": false}));
+        assert_eq!(f["refresh-modem.flag"], json!({"present": false}));
+        assert_eq!(f["etc/pipelines/cam0.gst"]["b64"], "eAo=");
+        let _ = fs::remove_dir_all(&work);
     }
 
     #[test]

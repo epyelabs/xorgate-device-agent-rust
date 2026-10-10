@@ -174,9 +174,20 @@ the same — common brief rule 6):
 Run directory (`<run>/`): `play.json` (start/end wall, shift, closed spans,
 input transitions, wall steps), `pairs.ndjson`, `player.log`,
 `inputs-mqtt.ndjson` (what the player published), and per agent `a/`, `b/`:
-`meta.json`, `mqtt.ndjson` (every publish), `files.ndjson` (state.json,
-settings.json, config-sync.json, commands.json, gnss-sky.json, agent.pid on
-change, 1 s poll), `final/`, `sudo.log`, `cli.log`, `stdout.log`, `stderr.log`.
+`meta.json`, `mqtt.ndjson` (every publish), `files.ndjson` (every snapshot
+file on change, 1 s poll; the first poll logs absent files as `text: null`),
+`initial.json` (the seeded files before the agents start), `final/<key>` (raw
+end-of-run copies), `final.json`, `sudo.log`, `cli.log`, `stdout.log`,
+`stderr.log`.
+
+Snapshot files (`play.rs` `SNAPSHOT_FILES`: every file either agent can write
+in Phase 2 scope, from the TS writers). Keys: home files bare —
+`settings.json`, `config-sync.json`, `commands.json`, `gnss-sky.json`,
+`state.json`, `agent.pid`, `refresh-modem.flag`; manifests `etc/kvs.json`
+(uploadBucket backfill), `etc/hardware.json` (persisted cloud block); plus
+every `etc/pipelines/<f>` present. `initial.json` / `final.json` are
+`{"w": wall ms, "files": {key: {"present": true, "len", "b64" (raw bytes),
+"text" (verbatim, null if not UTF-8)} | {"present": false}}}`.
 
 ## The diff (`xorgate-replay diff <run>`)
 
