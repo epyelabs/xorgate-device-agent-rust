@@ -115,7 +115,7 @@ if [ "$FRESH" -eq 1 ]; then
     # Homes on the container's own fs: the bind-mounted Mac dir (virtiofs)
     # emulates ownership and once lost a just-renamed settings.json to `cp`.
     RUNNER=$(cli_for "$kind") "$HERE/cli/e2e-set-run.sh" "/tmp/cli-fresh/$side" >/dev/null 2>&1
-    rm -rf "$OUT/$side.cases"; cp -R "/tmp/cli-fresh/$side" "$OUT/$side.cases"
+    mkdir -p "$OUT"; rm -rf "$OUT/$side.cases"; cp -R "/tmp/cli-fresh/$side" "$OUT/$side.cases"
     mkdir -p "$OUT/$side"
     for d in "/tmp/cli-fresh/$side"/*/; do
       k=$(basename "$d")
