@@ -547,6 +547,9 @@ pub struct Capture {
     /// Every distinct state.json event `(at, level, msg)` seen in snapshots.
     pub events: Vec<(i64, String, String)>,
     pub sudo: Vec<String>,
+    /// The LAST present `agent.pid` snapshot of `files.ndjson` (both agents
+    /// remove the pidfile at exit, so the end has none; re-review R3).
+    pub pid_snapshot: Option<String>,
 }
 
 /// Replace the agent's deviceId by `{id}` (T2).
@@ -665,10 +668,19 @@ impl Capture {
         let finals = load_finals(dir, &id);
         let mut seen = BTreeSet::new();
         let mut events = Vec::new();
-        let snap_texts: Vec<String> = std::fs::read_to_string(dir.join("files.ndjson"))
+        let snaps: Vec<Value> = std::fs::read_to_string(dir.join("files.ndjson"))
             .unwrap_or_default()
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect();
+        let pid_snapshot = snaps
+            .iter()
+            .filter(|v| v["name"] == "agent.pid")
+            .filter_map(|v| v["text"].as_str())
+            .next_back()
+            .map(|t| norm_id(t, &id));
+        let snap_texts: Vec<String> = snaps
+            .iter()
             .filter(|v| v["name"] == "state.json")
             .filter_map(|v| v["text"].as_str().map(str::to_string))
             .chain(finals.get("state.json").cloned().flatten())
@@ -701,6 +713,7 @@ impl Capture {
             finals,
             events,
             sudo,
+            pid_snapshot,
         })
     }
 
@@ -2220,10 +2233,17 @@ pub fn diff_with(
             "agent.pid" => "pidfile".to_string(),
             n => format!("file:{n}"),
         };
-        let (fa, fb) = (
+        let (mut fa, mut fb) = (
             a.finals.get(name).cloned().flatten(),
             b.finals.get(name).cloned().flatten(),
         );
+        let mut at = "end";
+        if name == "agent.pid" && fa.is_none() && fb.is_none() {
+            // R3: both agents remove the pidfile at exit — compare the last
+            // mid-run snapshot instead (one side without any = FAIL).
+            (fa, fb) = (a.pid_snapshot.clone(), b.pid_snapshot.clone());
+            at = "last mid-run snapshot (absent at end on both)";
+        }
         let st = rep.stats.entry(stream.clone()).or_default();
         if fa.is_none() && fb.is_none() {
             st.absent_both += 1;
@@ -2234,7 +2254,7 @@ pub fn diff_with(
             table,
             play,
             stream: stream.clone(),
-            at: "end".into(),
+            at: at.into(),
             when: None,
             when_b: None,
             deltas: &empty,
@@ -3364,6 +3384,52 @@ mod tests {
     }
 
     #[test]
+    fn pidfile_absent_at_end_compares_the_last_mid_run_snapshot() {
+        let t = table();
+        let js = r#"{"pid":24,"startedAt":1,"deviceId":"{id}","mode":"real","rateHz":1,"offline":false,"worker":"/w.js","argv":[],"nodeVersion":"v20"}"#;
+        let rs = r#"{"pid":25,"startedAt":2,"deviceId":"{id}","mode":"real","rateHz":1,"offline":false,"worker":"/xorgate-rs","argv":["run"]}"#;
+        let run = |x: Option<&str>, y: Option<&str>| {
+            let mut a = cap("js", vec![]);
+            let mut b = cap("rust", vec![]);
+            a.finals.insert("agent.pid".into(), None);
+            b.finals.insert("agent.pid".into(), None);
+            a.pid_snapshot = x.map(str::to_string);
+            b.pid_snapshot = y.map(str::to_string);
+            let rep = diff(&a, &b, &PlayInfo::default(), &[], &t);
+            let ms: Vec<(String, String)> = rep
+                .mismatches
+                .iter()
+                .filter(|m| m.stream == "pidfile")
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect();
+            (rep.stats["pidfile"].compared, ms)
+        };
+        // CF4: worker/argv/nodeVersion are the row, pid T2, startedAt T1.
+        let (n, ms) = run(Some(js), Some(rs));
+        assert_eq!(n, 1);
+        assert!(ms.iter().all(|(_, t)| t != UNTOLERATED), "{ms:?}");
+        assert!(
+            ms.iter().any(|(p, t)| p == "worker" && t == "T8/pidfile"),
+            "{ms:?}"
+        );
+        // The shape is compared: a different mode, or a key moved, fails.
+        let moved = rs.replace(r#""mode":"real","rateHz":1"#, r#""rateHz":1,"mode":"real""#);
+        let (_, ms) = run(Some(js), Some(&moved));
+        assert!(
+            ms.iter()
+                .any(|(p, t)| p.contains("key order") && t == UNTOLERATED),
+            "{ms:?}"
+        );
+        // One agent never wrote one: FAIL. Neither: absent on both.
+        let (_, ms) = run(Some(js), None);
+        assert!(
+            ms.iter().any(|(p, t)| p == "(file)" && t == UNTOLERATED),
+            "{ms:?}"
+        );
+        assert_eq!(run(None, None).0, 0);
+    }
+
+    #[test]
     fn lte_apn_track_requires_the_apn_rereport_on_both_sides() {
         let boot = |apn: &str| serde_json::json!({"origin":"boot","effective":{"apn":{"state":"in-force","apn_applied":apn}}});
         let side = |kind: &str, n_ev: usize, apn: &str| {
@@ -3514,6 +3580,7 @@ mod tests {
             finals: BTreeMap::new(),
             events: vec![],
             sudo: vec![],
+            pid_snapshot: None,
         }
     }
 
