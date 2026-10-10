@@ -7,6 +7,7 @@
 //! tool yields `None` and the caller omits the field (agent-anatomy §10.3).
 
 pub mod atomic_write;
+pub mod camera_list;
 pub mod child;
 pub mod config_sync_file;
 pub mod exec;
@@ -14,6 +15,7 @@ pub mod hardware_file;
 pub mod imu_detect;
 pub mod io;
 pub mod kvs_manifest_io;
+pub mod kvs_runtime;
 pub mod ledger_file;
 pub mod modem_file;
 pub mod nmea_tty;
