@@ -651,7 +651,16 @@ fn sky_hold_at_write(a: &mut Value, b: &mut Value, cx: &Cx, rep: &mut Report) {
     let Some((rid, _)) = cx.table.decision_row("sky-file-end") else {
         return;
     };
-    let num = |v: &Value, k: &str| v.get(k).and_then(Value::as_f64);
+    // `timestamp` is an ISO string (gps.ts:247 `new Date().toISOString()`).
+    let num = |v: &Value, k: &str| {
+        v.get(k).and_then(|x| {
+            x.as_f64().or_else(|| {
+                x.as_str()
+                    .and_then(xorgate_core::js::date_parse_ms)
+                    .map(|ms| ms as f64)
+            })
+        })
+    };
     let (Some(ha), Some(hb), Some(ta), Some(tb)) = (
         num(a, "hold_s"),
         num(b, "hold_s"),
@@ -1982,15 +1991,19 @@ mod tests {
         // gnss-sky.json: same state, hold_s apart by the write distance.
         let mut ca = cap("js", vec![]);
         let mut cb = cap("rust", vec![]);
-        let sky = |ts: i64, hold: i64| {
+        let sky = |ts: &str, hold: i64| {
             format!(
-                r#"{{"v":1,"timestamp":{ts},"state":2,"heard":3,"usable":1,"in_view":8,"max_snr":30,"hold_s":{hold}}}"#
+                r#"{{"v":1,"timestamp":"{ts}","state":"clear","heard":3,"usable":1,"in_view":8,"max_snr":30,"hold_s":{hold}}}"#
             )
         };
-        ca.finals
-            .insert("gnss-sky.json".into(), Some(sky(100_000, 183)));
-        cb.finals
-            .insert("gnss-sky.json".into(), Some(sky(101_500, 181)));
+        ca.finals.insert(
+            "gnss-sky.json".into(),
+            Some(sky("2026-10-10T02:41:56.492Z", 183)),
+        );
+        cb.finals.insert(
+            "gnss-sky.json".into(),
+            Some(sky("2026-10-10T02:41:55.840Z", 181)),
+        );
         let tols: Vec<_> = diff(&ca, &cb, &PlayInfo::default(), &[], &t)
             .mismatches
             .into_iter()
@@ -2002,8 +2015,10 @@ mod tests {
             "{tols:?}"
         );
         assert!(!tols.iter().any(|(_, t)| t == UNTOLERATED), "{tols:?}");
-        cb.finals
-            .insert("gnss-sky.json".into(), Some(sky(100_100, 170)));
+        cb.finals.insert(
+            "gnss-sky.json".into(),
+            Some(sky("2026-10-10T02:41:56.400Z", 170)),
+        );
         let rep = diff(&ca, &cb, &PlayInfo::default(), &[], &t);
         assert!(rep.untolerated() > 0);
     }
