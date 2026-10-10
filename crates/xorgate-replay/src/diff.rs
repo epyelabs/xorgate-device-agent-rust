@@ -192,6 +192,9 @@ pub struct InputFacts {
     /// Every `rev` the tape's config publishes carry (reconnect-cadence
     /// report count after a cut).
     pub config_revs: BTreeSet<i64>,
+    /// The tape's `meta.synthetic` tracks (e.g. `lte-apn`: the APN re-report
+    /// path must be exercised).
+    pub synthetic: Vec<String>,
     /// Per record kind: (records released, max ms the actual release lagged
     /// `start_wall + t`) — diff.md evidence for R1.
     pub release_lag: BTreeMap<&'static str, (usize, i64)>,
@@ -260,6 +263,7 @@ impl InputFacts {
             Ok(t) => {
                 let mut f = Self::from_records(&t.records, play);
                 f.tape = Some(play.tape.clone());
+                f.synthetic = t.meta.synthetic.clone();
                 f.mode = t
                     .meta
                     .env
@@ -1827,8 +1831,56 @@ pub fn diff(
             tol: UNTOLERATED.into(),
         });
     }
+    require_apn_rereport(&mut rep, a, b, &facts);
     require_core_kinds(&mut rep, &facts, table);
     rep
+}
+
+/// `info: modem APN state changed — re-reporting` (TS config-sync.ts:1502,
+/// Rust `APN_CHANGED_EVENT`).
+const APN_EVENT: &str = "modem APN state changed — re-reporting";
+
+/// Re-review R2: a tape with the synth `lte-apn` track changes the LTE file's
+/// `cellular` block in a stretch with no other report trigger, so the 30 s APN
+/// watch is the only path to a report. Each side must then log the APN event
+/// AND publish a `boot` report carrying the changed APN (else UNTOLERATED:
+/// "0 = 0" is no evidence); the counts themselves are compared by the events
+/// multiset and the report stream as usual.
+pub fn require_apn_rereport(rep: &mut Report, a: &Capture, b: &Capture, facts: &InputFacts) {
+    if !facts.synthetic.iter().any(|t| t == "lte-apn") {
+        return;
+    }
+    let events = |c: &Capture| c.events.iter().filter(|(_, _, m)| m == APN_EVENT).count();
+    let reports = |c: &Capture| {
+        c.msgs
+            .iter()
+            .filter(|m| m.topic.ends_with("/config/reported"))
+            .filter(|m| {
+                m.payload["origin"] == "boot"
+                    && m.payload["effective"]["apn"]["apn_applied"] == crate::synth::LTE_APN_ALT
+            })
+            .count()
+    };
+    let (ea, eb, ra, rb) = (events(a), events(b), reports(a), reports(b));
+    rep.inputs.insert(
+        "APN re-report (lte-apn track)".into(),
+        format!(
+            "events A {ea} / B {eb}; boot reports with apn_applied {} A {ra} / B {rb}",
+            crate::synth::LTE_APN_ALT
+        ),
+    );
+    for (what, x, y) in [("events", ea, eb), ("report", ra, rb)] {
+        if x == 0 || y == 0 {
+            rep.push(Mismatch {
+                stream: what.into(),
+                at: "run".into(),
+                path: "(APN re-report not exercised: lte-apn track)".into(),
+                a: x.to_string(),
+                b: y.to_string(),
+                tol: UNTOLERATED.into(),
+            });
+        }
+    }
 }
 
 /// A whole run must compare every CORE kind at least once: "0 untolerated"
@@ -3309,6 +3361,49 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn lte_apn_track_requires_the_apn_rereport_on_both_sides() {
+        let boot = |apn: &str| serde_json::json!({"origin":"boot","effective":{"apn":{"state":"in-force","apn_applied":apn}}});
+        let side = |kind: &str, n_ev: usize, apn: &str| {
+            let mut c = cap(kind, vec![msg(1, "config/reported", boot(apn))]);
+            c.events = (0..n_ev)
+                .map(|i| (i as i64, "info".to_string(), APN_EVENT.to_string()))
+                .collect();
+            c
+        };
+        let facts = InputFacts {
+            synthetic: vec!["lte-apn".into()],
+            ..Default::default()
+        };
+        let unt = |a: &Capture, b: &Capture, f: &InputFacts| {
+            let mut rep = Report::default();
+            require_apn_rereport(&mut rep, a, b, f);
+            rep.mismatches
+                .iter()
+                .filter(|m| m.tol == UNTOLERATED)
+                .map(|m| m.stream.clone())
+                .collect::<Vec<_>>()
+        };
+        let alt = crate::synth::LTE_APN_ALT;
+        assert!(unt(&side("js", 1, alt), &side("rust", 1, alt), &facts).is_empty());
+        // 0 = 0 is no evidence: both the event and the report are required.
+        assert_eq!(
+            unt(&side("js", 0, alt), &side("rust", 0, "synth.apn"), &facts),
+            vec!["events", "report"]
+        );
+        assert_eq!(
+            unt(&side("js", 1, alt), &side("rust", 0, alt), &facts),
+            vec!["events"]
+        );
+        // Without the track nothing is required.
+        assert!(unt(
+            &side("js", 0, alt),
+            &side("rust", 0, alt),
+            &InputFacts::default()
+        )
+        .is_empty());
     }
 
     #[test]

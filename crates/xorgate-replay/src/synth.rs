@@ -13,6 +13,12 @@
 //! - `nmea-silence` a 35 s silent gap (C12 reopen watchdog: > 30 s);
 //! - `lte`         a realistic daemon snapshot rewritten every 10 s, with a 15 s
 //!   absent span (group omitted + one warning);
+//! - `lte-apn`     (re-review R2) the `cellular` (APN) block of the `lte` rewrites
+//!   changes for 40 s (t 10 080 .. 50 080: another `apn_applied` +
+//!   `changed_at`) and reverts, in a stretch with no other report trigger, so
+//!   the 30 s APN watch is the ONLY path to a report: each agent must log
+//!   `modem APN state changed — re-reporting` and publish a `boot` report
+//!   once per change (twice);
 //! - `lte-fixtures` every `raw` document of `fixtures/modem/telemetry-tolerance.json`
 //!   for 3 s each;
 //! - `exec`        `vcgencmd get_throttled` (an undervoltage blip) + `pmic_read_adc`;
@@ -80,6 +86,7 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &[
             "nmea",
             "lte",
+            "lte-apn",
             "exec",
             "dt",
             "imu",
@@ -100,6 +107,7 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
             "nmea",
             "nmea-silence",
             "lte",
+            "lte-apn",
             "lte-fixtures",
             "exec",
             "dt",
@@ -286,7 +294,32 @@ fn nmea_burst(t: u64, fix: bool, step: u64) -> Vec<String> {
     out.into_iter().map(|l| format!("{l}\r")).collect()
 }
 
-fn lte_doc(t: u64, csq: i64, ok: bool) -> String {
+/// The daemon's `cellular` block (APN machinery): the steady one, or the
+/// `lte-apn` track's changed one (another applied APN since `changed_at`).
+fn cellular_block(changed_at: Option<u64>) -> String {
+    match changed_at {
+        None => {
+            r#"{"state": "in-force", "apn_applied": "synth.apn", "fails": 0, "changed_at": null}"#
+                .to_string()
+        }
+        Some(c) => format!(
+            r#"{{"state": "in-force", "apn_applied": "{LTE_APN_ALT}", "fails": 0, "changed_at": "{}"}}"#,
+            iso_z(wall_secs(c))
+        ),
+    }
+}
+
+/// `lte-apn`: the APN the `cellular` block carries while changed.
+pub const LTE_APN_ALT: &str = "synth-b.apn";
+/// `lte-apn`: the LTE rewrites (every 10 s from t=80) with the changed block:
+/// k = 1..=4, i.e. t 10 080 .. 40 080, reverted by the k = 5 rewrite at
+/// 50 080 — held 40 s (> 35 s, so the 30 s APN watch sees it on both agents),
+/// inside the first quiet stretch of calibration/full (boot report ≈ 3 s,
+/// the first refresh at 72 s / 180 s): no other report trigger between the
+/// change and the watch tick that sees the revert (≈ 60.5 s + 2 s debounce).
+pub const LTE_APN_CHANGED_K: std::ops::RangeInclusive<i64> = 1..=4;
+
+fn lte_doc(t: u64, csq: i64, ok: bool, cellular: &str) -> String {
     let now = wall_secs(t);
     let (y, mo, d, h, mi, s) = civil_from_epoch(now - 4 * 3600);
     let cclk = format!(
@@ -297,7 +330,7 @@ fn lte_doc(t: u64, csq: i64, ok: bool) -> String {
     // Field order + pretty layout of `write_telemetry` in modem/sim7600-lte.sh;
     // identity values are obviously fake.
     format!(
-        "{{\n  \"timestamp\": \"{ts}\",\n  \"csq\": {csq},\n  \"rssi_dbm\": {rssi},\n  \"csq_interval\": 30,\n  \"status\": \"{status}\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"192.0.2.37\",\n  \"xtra_valid_min\": 8622,\n  \"gnss_ant_bias\": 1,\n  \"modem_temp\": {temp},\n  \"modem_clock\": {{\"cclk\": \"{cclk}\", \"read_at\": {now}, \"reg\": 1}},\n  \"gnss\": {{\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"{fixat}\",\n    \"ttff_s\": 32,\n    \"last_engine_start\": \"{start}\",\n    \"last_engine_restart\": null,\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"ok\"\n  }},\n  \"recovery\": {{\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 0,\n    \"last_reset\": null,\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"{ts}\"\n  }},\n  \"sim\": {{\"present\": 1, \"state\": \"ready\", \"iccid\": \"8900000000000000000\", \"msisdn\": \"+10000000000\", \"carrier\": \"Synth Mobile\", \"act\": \"lte\", \"registration\": \"home\", \"checked_at\": \"{fixat}\"}},\n  \"cellular\": {{\"state\": \"in-force\", \"apn_applied\": \"synth.apn\", \"fails\": 0, \"changed_at\": null}},\n  \"uplink\": {{\n    \"primary\": \"wlan0\",\n    \"modem_only\": 0\n  }}\n}}\n",
+        "{{\n  \"timestamp\": \"{ts}\",\n  \"csq\": {csq},\n  \"rssi_dbm\": {rssi},\n  \"csq_interval\": 30,\n  \"status\": \"{status}\",\n  \"reg\": 1,\n  \"iface\": \"usb0\",\n  \"ip\": \"192.0.2.37\",\n  \"xtra_valid_min\": 8622,\n  \"gnss_ant_bias\": 1,\n  \"modem_temp\": {temp},\n  \"modem_clock\": {{\"cclk\": \"{cclk}\", \"read_at\": {now}, \"reg\": 1}},\n  \"gnss\": {{\n    \"engine_on\": 1,\n    \"has_fix\": 1,\n    \"fix_checked_at\": \"{fixat}\",\n    \"ttff_s\": 32,\n    \"last_engine_start\": \"{start}\",\n    \"last_engine_restart\": null,\n    \"standalone_fallback\": 0,\n    \"no_fix_since\": null,\n    \"wedge_restarts_1h\": 0,\n    \"health\": \"ok\"\n  }},\n  \"recovery\": {{\n    \"connect_fails\": 0,\n    \"radio_cycles_since_ok\": 0,\n    \"resets_24h\": 0,\n    \"last_reset\": null,\n    \"last_gate_skip\": null,\n    \"last_lte_ok\": \"{ts}\"\n  }},\n  \"sim\": {{\"present\": 1, \"state\": \"ready\", \"iccid\": \"8900000000000000000\", \"msisdn\": \"+10000000000\", \"carrier\": \"Synth Mobile\", \"act\": \"lte\", \"registration\": \"home\", \"checked_at\": \"{fixat}\"}},\n  \"cellular\": {cellular},\n  \"uplink\": {{\n    \"primary\": \"wlan0\",\n    \"modem_only\": 0\n  }}\n}}\n",
         ts = iso_z(now),
         status = if ok { "connected" } else { "connecting" },
         temp = 48 + (t / 30_000) % 4,
@@ -444,7 +477,7 @@ fn build_inner(
         recs: Vec::new(),
         dur_ms,
     };
-    let base_owned = ["lte", "lte-fixtures", "exec", "dt", "clock"];
+    let base_owned = ["lte", "lte-apn", "lte-fixtures", "exec", "dt", "clock"];
     let has = |t: &str| tracks.contains(&t) && !(base.is_some() && base_owned.contains(&t));
     let topic = |s: &str| format!("xorgate/devices/{SYNTH_DEVICE_ID}/{s}");
     let pct = |p: u64| dur_ms * p / 100 / 1000 * 1000;
@@ -608,9 +641,13 @@ fn build_inner(
                 continue;
             }
             let csq = 18 + (k % 7);
+            let first_changed = 80 + 10_000 * *LTE_APN_CHANGED_K.start() as u64;
+            let cellular = cellular_block(
+                (has("lte-apn") && LTE_APN_CHANGED_K.contains(&k)).then_some(first_changed),
+            );
             b.push(
                 t,
-                TapeEvent::lte_file(Some(lte_doc(t, csq, true).as_bytes())),
+                TapeEvent::lte_file(Some(lte_doc(t, csq, true, &cellular).as_bytes())),
             );
             t += 10_000;
             k += 1;
@@ -1021,6 +1058,50 @@ mod tests {
         assert!(nmea.first().is_some_and(|t| *t < 2_000));
         assert!(nmea.windows(2).all(|w| w[1] - w[0] < 2_000));
         assert!(nmea.last().is_some_and(|t| *t + 2_000 > 240_000));
+    }
+
+    #[test]
+    fn lte_apn_track_changes_the_cellular_block_in_a_report_quiet_stretch() {
+        for name in ["calibration", "full"] {
+            let tape = build(name, None, &fixtures()).unwrap();
+            assert!(tape.meta.synthetic.contains(&"lte-apn".to_string()));
+            let apn = |r: &TapeRecord| match &r.ev {
+                TapeEvent::LteFile { text: Some(t), .. } => {
+                    let v: Value = serde_json::from_str(t).unwrap();
+                    v["cellular"]["apn_applied"].as_str().map(str::to_string)
+                }
+                _ => None,
+            };
+            let lte: Vec<(u64, String)> = tape
+                .records
+                .iter()
+                .filter_map(|r| Some((r.t, apn(r)?)))
+                .take(7)
+                .collect();
+            let alt: Vec<u64> = lte
+                .iter()
+                .filter(|(_, a)| a == LTE_APN_ALT)
+                .map(|(t, _)| *t)
+                .collect();
+            assert_eq!(alt, vec![10_080, 20_080, 30_080, 40_080], "{name}");
+            assert_eq!(lte[5], (50_080, "synth.apn".to_string()), "reverted");
+            // Held > 35 s, and no other report trigger (config/command
+            // delivery, CLI edit, conn change) from 5 s before the change
+            // until the watch tick that sees the revert (≤ 60 s + 2 s
+            // debounce) + margin.
+            assert!(lte[5].0 - alt[0] > 35_000, "held > 35 s");
+            let triggers: Vec<(u64, &str)> = tape
+                .records
+                .iter()
+                .filter(|r| matches!(r.ev.kind(), "mqtt_in" | "cli" | "conn"))
+                .filter(|r| r.t > 5_000 && r.t < 70_000)
+                .map(|r| (r.t, r.ev.kind()))
+                .collect();
+            assert!(triggers.is_empty(), "{name}: {triggers:?}");
+        }
+        // Not in the other scenarios (smoke stays as committed).
+        let smoke = build("smoke", None, &fixtures()).unwrap();
+        assert!(!smoke.meta.synthetic.contains(&"lte-apn".to_string()));
     }
 
     #[test]
