@@ -26,6 +26,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use xorgate_hal::tape::{TapeEvent, TapeRecord};
+
 use crate::tolerances::Table;
 
 pub const UNTOLERATED: &str = "UNTOLERATED";
@@ -123,6 +125,151 @@ impl PlayInfo {
         let min = vals.iter().cloned().fold(f64::MAX, f64::min);
         Some(max - min)
     }
+}
+
+/// `REOPEN_SILENT_MS` (`gps.ts`): NMEA silence after which an agent reopens its port.
+const REOPEN_SILENT_MS: u64 = 30_000;
+/// Lines released within this many tape ms of a chunk's first line are one
+/// read chunk (the recorder stamps the lines of one tty read alike).
+const CHUNK_MS: u64 = 2;
+
+/// One NMEA resume after a reopen-length silence (T7/D23): the sentences of
+/// the FIRST chunk after the resume — the chunk the TS loses.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NmeaReopen {
+    /// Wall ms the first resumed line was written (play.json `nmeaResumes`).
+    pub w: i64,
+    /// Sentence types (`GGA`, `RMC`, `GSA`, `GSV`, …) of that chunk's lines.
+    pub sentences: Vec<String>,
+    /// The chunk holds a GGA quality 0 or a void RMC (clears the position keys).
+    pub clears_position: bool,
+}
+
+/// Input facts the diff derives from the TAPE itself: play.json's
+/// `transitions` is one unclassified list, so the per-input rows read the
+/// tape the player released (tape `t` → wall `start_wall + t`, snapped to the
+/// player's own stamps).
+#[derive(Debug, Clone, Default)]
+pub struct InputFacts {
+    /// The tape the facts come from; `None` = not read (`tape_error` says why).
+    pub tape: Option<String>,
+    pub tape_error: Option<String>,
+    pub reopens: Vec<NmeaReopen>,
+}
+
+/// `$GPGGA,…` → `GGA`.
+fn nmea_type(line: &str) -> Option<&str> {
+    let head = line.trim().strip_prefix('$')?.split([',', '*']).next()?;
+    head.get(2..).filter(|t| !t.is_empty())
+}
+
+/// Nearest stamp in `snaps` within `[est + lo, est + hi]`, else `est`.
+fn snap(est: i64, snaps: &[i64], lo: i64, hi: i64) -> i64 {
+    snaps
+        .iter()
+        .filter(|s| **s - est >= lo && **s - est <= hi)
+        .min_by_key(|s| (**s - est).abs())
+        .copied()
+        .unwrap_or(est)
+}
+
+impl InputFacts {
+    /// Read `play.tape` (load_run resolves it) and derive the facts.
+    pub fn for_play(play: &PlayInfo) -> Self {
+        if play.tape.is_empty() {
+            return Self {
+                tape_error: Some("play.json names no tape".into()),
+                ..Self::default()
+            };
+        }
+        match xorgate_hal::tape::Tape::read(Path::new(&play.tape)) {
+            Ok(t) => {
+                let mut f = Self::from_records(&t.records, play);
+                f.tape = Some(play.tape.clone());
+                f
+            }
+            Err(e) => Self {
+                tape_error: Some(format!("{}: {e}", play.tape)),
+                ..Self::default()
+            },
+        }
+    }
+
+    pub fn from_records(records: &[TapeRecord], play: &PlayInfo) -> Self {
+        let mut out = Self::default();
+        let est = |t: u64| play.start_wall + t as i64;
+        let released = |t: u64| play.end_wall <= 0 || est(t) <= play.end_wall;
+        let nmea: Vec<(u64, &str)> = records
+            .iter()
+            .filter(|r| released(r.t))
+            .filter_map(|r| match &r.ev {
+                TapeEvent::Nmea { line } => Some((r.t, line.as_str())),
+                _ => None,
+            })
+            .collect();
+        for (i, (t, _)) in nmea.iter().enumerate() {
+            let Some(prev) = i.checked_sub(1).map(|j| nmea[j].0) else {
+                continue;
+            };
+            if t - prev < REOPEN_SILENT_MS {
+                continue;
+            }
+            let chunk: Vec<&str> = nmea[i..]
+                .iter()
+                .take_while(|(u, _)| u - t <= CHUNK_MS)
+                .map(|(_, l)| *l)
+                .collect();
+            let mut r = NmeaReopen {
+                w: snap(est(*t), &play.nmea_resumes, -300, 2_000),
+                ..NmeaReopen::default()
+            };
+            for line in chunk {
+                let Some(ty) = nmea_type(line) else { continue };
+                let f: Vec<&str> = line
+                    .trim()
+                    .split('*')
+                    .next()
+                    .unwrap_or("")
+                    .split(',')
+                    .collect();
+                if (ty == "GGA" && f.get(6).is_some_and(|q| *q == "0"))
+                    || (ty == "RMC" && f.get(2).is_some_and(|s| *s == "V"))
+                {
+                    r.clears_position = true;
+                }
+                if !r.sentences.iter().any(|s| s == ty) {
+                    r.sentences.push(ty.to_string());
+                }
+            }
+            out.reopens.push(r);
+        }
+        out
+    }
+}
+
+/// The metrics.gps fields (`gps.ts` mapLatest) the sentences of a lost
+/// chunk would have set (T7/D23).
+fn d23_fields(r: &NmeaReopen) -> BTreeSet<&'static str> {
+    let mut out = BTreeSet::new();
+    for s in &r.sentences {
+        let f: &[&'static str] = match s.as_str() {
+            "GGA" => &["fix_quality", "satellites", "alt", "lat", "lon", "ttff_s"],
+            "RMC" => &["lat", "lon", "speed", "course"],
+            "GSA" => &["hdop"],
+            "GSV" => &["satellites_in_view", "sats_heard", "snr_max", "sky_state"],
+            _ => &[],
+        };
+        out.extend(f);
+    }
+    if r.clears_position {
+        out.extend(["lat", "lon", "alt", "speed", "course", "hdop"]);
+    }
+    out
+}
+
+/// `metrics.gps.<field>[.…]` → `<field>`.
+fn gps_field(path: &str) -> Option<&str> {
+    path.strip_prefix("metrics.gps.")?.split('.').next()
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -277,6 +424,9 @@ pub struct StreamStats {
 pub struct Report {
     pub stats: BTreeMap<String, StreamStats>,
     pub mismatches: Vec<Mismatch>,
+    /// What the diff derived from the tape (source, reopens, coverage …),
+    /// printed in diff.md so an empty input set is visible.
+    pub inputs: BTreeMap<String, String>,
 }
 
 impl Report {
@@ -332,10 +482,18 @@ struct Cx<'a> {
     /// Paired telemetry only: the neighbouring pairs' payloads
     /// `[prev A, next A, prev B, next B]` (T8 `input-edge`).
     neighbors: [Option<&'a Value>; 4],
+    /// Paired telemetry only: this pair holds the JS side's first tick after
+    /// an NMEA reopen — the gps fields the lost chunk would have set (T7/D23).
+    d23: Option<&'a BTreeSet<&'static str>>,
 }
 
 impl Cx<'_> {
-    fn near_transition(&self) -> Option<String> {
+    fn near_transition(&self, path: &str) -> Option<String> {
+        // T7/D23: at the JS side's first tick after an NMEA reopen the gps
+        // fields are judged by D23 alone (review-wp7 finding 1).
+        if self.d23.is_some() && gps_field(path).is_some() {
+            return None;
+        }
         let w = self.when?;
         let r = self.table.of_kind("presence_window", &self.stream).next()?;
         let window = r.window_ms.unwrap_or(1500) as i64;
@@ -396,9 +554,6 @@ impl Cx<'_> {
     /// value that is exactly the OTHER agent's previous or next sample (one
     /// sample shifted: the input reached one agent's read a tick later).
     fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
-        if let Some(id) = self.nmea_reopen_lag(path, x, y) {
-            return Some(id);
-        }
         let (rid, row) = self.table.decision_row("input-edge")?;
         if !crate::tolerances::stream_matches(&row.streams, &self.stream) {
             return None;
@@ -417,28 +572,17 @@ impl Cx<'_> {
         shifted.then(|| format!("{rid}/input-edge"))
     }
 
-    /// T8 `nmea-reopen-lag`: in the first ticks after NMEA resumes following
-    /// a reopen-length silence, a gps value on ONE side is still its earlier
-    /// reading while its own NEXT sample equals the other side's value.
-    fn nmea_reopen_lag(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
-        let (rid, row) = self.table.decision_row("nmea-reopen-lag")?;
-        if !path.starts_with("metrics.gps.") {
+    /// T7/D23: a gps field the TS's lost first chunk after a reopen would
+    /// have set, at the JS side's first tick after the resume.
+    fn d23(&self, path: &str) -> Option<String> {
+        let field = gps_field(path)?;
+        if !self.d23?.contains(field) {
             return None;
         }
-        let w = self.when?;
-        let win = row.around_closed_ms.unwrap_or(2500) as i64;
-        if !self
-            .play
-            .nmea_resumes
-            .iter()
-            .any(|r| w >= *r && w - r <= win)
-        {
-            return None;
-        }
-        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
-        let [_, na, _, nb] = self.neighbors;
-        (at(na).as_ref() == Some(y) || at(nb).as_ref() == Some(x))
-            .then(|| format!("{rid}/nmea-reopen-lag"))
+        self.table
+            .matcher_rows("nmea_reopen_first_chunk", &self.stream)
+            .into_iter()
+            .next()
     }
 
     /// T8 reconnect-cadence for REPORT values: after a cut each agent's
@@ -599,7 +743,8 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 }
             }
             let tol = cx
-                .near_closed()
+                .d23(path)
+                .or_else(|| cx.near_closed())
                 .or_else(|| cx.input_edge(path, x, y))
                 .or_else(|| cx.report_input_between())
                 .or_else(|| cx.near_wall_step())
@@ -607,6 +752,10 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             out.push(cx.mismatch(path, a, b, tol));
         }
         _ => {
+            if let Some(id) = cx.d23(path) {
+                out.push(cx.mismatch(path, a, b, id));
+                return;
+            }
             // T7/D22: the JS group carries a `null` leaf (a non-finite number),
             // the Rust side omitted the whole group.
             if let (Some(x), None) = (a, b) {
@@ -633,7 +782,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             // Presence (or array length / type) mismatch.
             let tol = cx
-                .near_transition()
+                .near_transition(path)
                 .or_else(|| cx.near_closed())
                 .or_else(|| cx.near_wall_step())
                 .unwrap_or_else(|| UNTOLERATED.into());
@@ -830,7 +979,7 @@ fn lookup<'v>(v: &'v Value, path: &str) -> Option<&'v Value> {
     path.split('.').try_fold(v, |cur, seg| cur.get(seg))
 }
 
-/// Run the whole comparison.
+/// Run the whole comparison; the input facts come from `play.tape`.
 pub fn diff(
     a: &Capture,
     b: &Capture,
@@ -838,7 +987,31 @@ pub fn diff(
     pairs: &[(i64, i64)],
     table: &Table,
 ) -> Report {
+    diff_with(a, b, play, &InputFacts::for_play(play), pairs, table)
+}
+
+/// [`diff`] with the input facts given (tests build them by hand).
+pub fn diff_with(
+    a: &Capture,
+    b: &Capture,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    pairs: &[(i64, i64)],
+    table: &Table,
+) -> Report {
     let mut rep = Report::default();
+    rep.inputs.insert(
+        "tape".into(),
+        match (&facts.tape, &facts.tape_error) {
+            (Some(t), _) => t.clone(),
+            (None, Some(e)) => format!("NOT READ ({e}): no tape-derived tolerance applies"),
+            (None, None) => "NOT READ: no tape-derived tolerance applies".into(),
+        },
+    );
+    rep.inputs.insert(
+        "nmea reopens (T7/D23)".into(),
+        facts.reopens.len().to_string(),
+    );
     let empty = BTreeMap::new();
     let first_wall = play.start_wall;
 
@@ -863,8 +1036,34 @@ pub fn diff(
         st.unpaired_a = ua.len();
         st.unpaired_b = ub.len();
     }
+    // T7/D23: the JS side's first tick at/after each NMEA reopen (from the
+    // tape), with the fields its lost first chunk would have set.
+    let js_side = match (a.meta.kind == "js", b.meta.kind == "js") {
+        (true, false) => Some(0),
+        (false, true) => Some(1),
+        _ => None,
+    };
+    let mut d23_at: BTreeMap<i64, BTreeSet<&'static str>> = BTreeMap::new();
+    if let Some(side) = js_side {
+        let js = if side == 0 { &ta } else { &tb };
+        for r in &facts.reopens {
+            if let Some(t) = js
+                .iter()
+                .filter_map(|m| ts_of(&m.payload))
+                .filter(|t| *t >= r.w)
+                .min()
+            {
+                d23_at.entry(t).or_default().extend(d23_fields(r));
+            }
+        }
+    }
     for (i, (x, y)) in paired.iter().enumerate() {
         let w = ts_of(&x.payload);
+        let js_ts = match js_side {
+            Some(0) => w,
+            Some(_) => ts_of(&y.payload),
+            None => None,
+        };
         let nb = |j: Option<usize>, side: usize| {
             j.and_then(|j| paired.get(j)).map(|p| {
                 if side == 0 {
@@ -889,6 +1088,7 @@ pub fn diff(
             deltas: &bases,
             first_wall,
             neighbors: [nb(prev, 0), nb(next, 0), nb(prev, 1), nb(next, 1)],
+            d23: js_ts.and_then(|t| d23_at.get(&t)),
         };
         if x.topic != y.topic {
             rep.push(cx.mismatch(
@@ -913,6 +1113,7 @@ pub fn diff(
                 deltas: &empty,
                 first_wall,
                 neighbors: [None; 4],
+                d23: None,
             };
             // A QoS 0 tick racing the drop (±1 per span; WP1 follow-up amb. 3).
             let tol = cx
@@ -976,6 +1177,7 @@ pub fn diff(
                 deltas: &empty,
                 first_wall,
                 neighbors: [None; 4],
+                d23: None,
             };
             match (x, y) {
                 (Some(x), Some(y)) => cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep),
@@ -1021,6 +1223,7 @@ pub fn diff(
             deltas: &empty,
             first_wall,
             neighbors: [None; 4],
+            d23: None,
         };
         match (&fa, &fb) {
             (None, None) => {}
@@ -1101,6 +1304,7 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
             deltas: &empty,
             first_wall: play.start_wall,
             neighbors: [None; 4],
+            d23: None,
         };
         // A jump across an outage longer than the offline queue holds (1000
         // payloads ≈ 16.7 min at 1 Hz): Rust dropped the oldest queued ticks
@@ -1167,6 +1371,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
             deltas: &empty,
             first_wall: play.start_wall,
             neighbors: [None; 4],
+            d23: None,
         };
         if pa.len() != pb.len() {
             // T8 reconnect-cadence: around a cut each reconnect's retained
@@ -1225,6 +1430,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                     deltas: &empty,
                     first_wall: play.start_wall,
                     neighbors: [None; 4],
+                    d23: None,
                 };
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
             }
@@ -1521,6 +1727,11 @@ pub fn render(
         unt,
         rep.mismatches.len() - unt
     );
+    let _ = writeln!(o, "## Inputs the diff derived\n");
+    for (k, v) in &rep.inputs {
+        let _ = writeln!(o, "- {k}: {v}");
+    }
+    let _ = writeln!(o);
     let _ = writeln!(o, "## Per stream\n");
     let _ = writeln!(
         o,
@@ -1577,6 +1788,26 @@ pub fn render(
     o
 }
 
+/// The tape play.json names, as found from where the diff runs: the path
+/// itself (inside the rig), `<run>/<name>`, or `tools/replay/.cache/tapes/<name>`
+/// (from the repo root). Unchanged when none exists (the facts report it).
+fn resolve_tape(run: &Path, tape: &str) -> String {
+    if tape.is_empty() || Path::new(tape).exists() {
+        return tape.to_string();
+    }
+    let Some(name) = Path::new(tape).file_name() else {
+        return tape.to_string();
+    };
+    [
+        run.join(name),
+        PathBuf::from("tools/replay/.cache/tapes").join(name),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+    .map(|p| p.display().to_string())
+    .unwrap_or_else(|| tape.to_string())
+}
+
 /// Load a run dir (`play.json`, `pairs.ndjson`, `a/`, `b/`).
 /// A loaded run: both captures, the run facts and the player's pairs.
 pub type Run = (Capture, Capture, PlayInfo, Vec<(i64, i64)>);
@@ -1613,6 +1844,7 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter_map(|v| Some((v["a"].as_i64()?, v["b"].as_i64()?)))
         .collect();
+    play.tape = resolve_tape(run, &play.tape);
     let ca = Capture::load(&a.unwrap_or_else(|| run.join("a")))?;
     let cb = Capture::load(&b.unwrap_or_else(|| run.join("b")))?;
     Ok((ca, cb, play, pairs))
@@ -1945,49 +2177,177 @@ mod tests {
         assert_eq!(run([0, 4, 1], vec![20_700]), vec![UNTOLERATED.to_string()]);
     }
 
+    fn nmea(t: u64, line: &str) -> TapeRecord {
+        TapeRecord {
+            t,
+            w: t as i64,
+            ev: TapeEvent::Nmea { line: line.into() },
+        }
+    }
+
     #[test]
-    fn nmea_reopen_lag_and_sky_hold_at_write() {
-        let t = table();
-        let tel = |ts: i64, seq: i64, q: Option<i64>| {
-            let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
-            if let Some(q) = q {
-                m["metrics"]["gps"] = serde_json::json!({"fix_quality":{"value":q}});
-            }
-            m
-        };
-        let a = cap(
-            "js",
-            vec![
-                msg(50_000, "telemetry", tel(50_000, 1, None)),
-                msg(51_000, "telemetry", tel(51_000, 2, Some(0))),
-                msg(52_000, "telemetry", tel(52_000, 3, Some(1))),
-            ],
-        );
-        let b = cap(
-            "rust",
-            vec![
-                msg(50_010, "telemetry", tel(50_010, 1, None)),
-                msg(51_010, "telemetry", tel(51_010, 2, Some(1))),
-                msg(52_010, "telemetry", tel(52_010, 3, Some(1))),
-            ],
-        );
-        let mut play = PlayInfo {
-            start_wall: 0,
-            end_wall: 100_000,
+    fn d23_facts_from_the_tape_first_chunk_after_a_reopen() {
+        let play = PlayInfo {
+            start_wall: 1_000_000,
+            end_wall: 2_000_000,
+            nmea_resumes: vec![1_050_120],
             ..Default::default()
         };
-        let tol = |play: &PlayInfo| {
-            diff(&a, &b, play, &[], &t)
+        let recs = vec![
+            nmea(
+                10_000,
+                "$GPGGA,000000,4807.038,N,01131.000,E,1,08,0.9,545.4,M,,,,*47",
+            ),
+            // 40 s silence, then GGA (q0) + GSV in ONE chunk, RMC 8 ms later.
+            nmea(50_000, "$GPGGA,000040,,,,,0,00,,,M,,,,*66"),
+            nmea(50_001, "$GPGSV,1,1,01,01,40,083,46*4B"),
+            nmea(50_008, "$GPRMC,000040,V,,,,,,,010125,,,N*48"),
+            nmea(51_000, "$GPGGA,000041,,,,,0,00,,,M,,,,*67"),
+        ];
+        let f = InputFacts::from_records(&recs, &play);
+        assert_eq!(f.reopens.len(), 1, "{f:?}");
+        let r = &f.reopens[0];
+        assert_eq!(r.w, 1_050_120, "snapped to play.json nmeaResumes");
+        assert_eq!(r.sentences, vec!["GGA".to_string(), "GSV".to_string()]);
+        assert!(r.clears_position);
+        let fields = d23_fields(r);
+        for k in [
+            "fix_quality",
+            "satellites",
+            "alt",
+            "satellites_in_view",
+            "hdop",
+        ] {
+            assert!(fields.contains(k), "{k}");
+        }
+        // A shorter gap is not a reopen.
+        let short = vec![nmea(1_000, "$GPGGA,1"), nmea(20_000, "$GPGGA,2")];
+        assert!(InputFacts::from_records(&short, &play).reopens.is_empty());
+    }
+
+    #[test]
+    fn d23_only_js_first_tick_after_reopen_and_only_the_lost_fields() {
+        let t = table();
+        let gps = |q: i64, sats: Option<i64>, alt: Option<f64>| {
+            let mut g = serde_json::json!({"fix_quality":{"value":q}});
+            if let Some(s) = sats {
+                g["satellites"] = serde_json::json!({"value":s});
+            }
+            if let Some(a) = alt {
+                g["alt"] = serde_json::json!({"value":a,"unit":"m"});
+            }
+            g
+        };
+        let tel = |ts: i64, seq: i64, g: Value| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{"gps":g}});
+        // JS lost the GGA: fix_quality 0, no satellites/alt on its first tick.
+        let js = cap(
+            "js",
+            vec![
+                msg(
+                    50_000,
+                    "telemetry",
+                    tel(50_000, 1, gps(1, Some(8), Some(545.4))),
+                ),
+                msg(51_000, "telemetry", tel(51_000, 2, gps(0, None, None))),
+                msg(
+                    52_000,
+                    "telemetry",
+                    tel(52_000, 3, gps(1, Some(8), Some(545.5))),
+                ),
+            ],
+        );
+        let rust = |second: Value| {
+            cap(
+                "rust",
+                vec![
+                    msg(
+                        50_010,
+                        "telemetry",
+                        tel(50_010, 1, gps(1, Some(8), Some(545.4))),
+                    ),
+                    msg(51_010, "telemetry", tel(51_010, 2, second)),
+                    msg(
+                        52_010,
+                        "telemetry",
+                        tel(52_010, 3, gps(1, Some(8), Some(545.5))),
+                    ),
+                ],
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            // An input transition next to the tick: T4 must NOT cover the
+            // gps fields of the D23 tick.
+            transitions: vec![50_700],
+            ..Default::default()
+        };
+        let gga = InputFacts {
+            reopens: vec![NmeaReopen {
+                w: 50_700,
+                sentences: vec!["GGA".into()],
+                clears_position: false,
+            }],
+            ..Default::default()
+        };
+        let tols = |a: &Capture, b: &Capture, facts: &InputFacts| {
+            diff_with(a, b, &play, facts, &[], &t)
                 .mismatches
                 .into_iter()
-                .filter(|m| m.path == "metrics.gps.fix_quality.value")
-                .map(|m| m.tol)
+                .filter(|m| m.path.starts_with("metrics.gps"))
+                .map(|m| (m.path, m.tol))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(tol(&play), vec![UNTOLERATED.to_string()]);
-        play.nmea_resumes = vec![50_700];
-        assert_eq!(tol(&play), vec!["T8/nmea-reopen-lag".to_string()]);
+        let b = rust(gps(1, Some(8), Some(545.5)));
+        let got = tols(&js, &b, &gga);
+        assert!(!got.is_empty());
+        assert!(got.iter().all(|(_, t)| t == "T7/D23"), "{got:?}");
+        // Without the reopen fact: the value difference is UNTOLERATED.
+        let got = tols(&js, &b, &InputFacts::default());
+        assert!(got.iter().any(|(_, t)| t == UNTOLERATED), "{got:?}");
+        // The lost chunk was an RMC: fix_quality / satellites are NOT its
+        // fields → UNTOLERATED (and T4 does not step in).
+        let rmc = InputFacts {
+            reopens: vec![NmeaReopen {
+                w: 50_700,
+                sentences: vec!["RMC".into()],
+                clears_position: false,
+            }],
+            ..Default::default()
+        };
+        let got = tols(&js, &b, &rmc);
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "metrics.gps.fix_quality.value" && t == UNTOLERATED),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "metrics.gps.satellites" && t == UNTOLERATED),
+            "{got:?}"
+        );
+        // Rust-vs-Rust (no JS side): D23 never applies.
+        let mut r2 = js.clone();
+        r2.meta.kind = "rust".into();
+        let got = tols(&r2, &b, &gga);
+        assert!(got.iter().all(|(_, t)| t != "T7/D23"), "{got:?}");
+        // Only the FIRST JS tick after the resume: a difference on the
+        // second tick stays UNTOLERATED.
+        let late = InputFacts {
+            reopens: vec![NmeaReopen {
+                w: 49_000,
+                sentences: vec!["GGA".into()],
+                clears_position: false,
+            }],
+            ..Default::default()
+        };
+        let got = tols(&js, &b, &late);
+        assert!(got.iter().any(|(_, t)| t == UNTOLERATED), "{got:?}");
+    }
 
+    #[test]
+    fn sky_hold_at_write() {
+        let t = table();
         // gnss-sky.json: same state, hold_s apart by the write distance.
         let mut ca = cap("js", vec![]);
         let mut cb = cap("rust", vec![]);
