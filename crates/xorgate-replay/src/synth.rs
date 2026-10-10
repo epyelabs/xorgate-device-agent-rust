@@ -35,7 +35,9 @@
 //!   `v:2` payload, a stale rev 2 doc (rev guard skip), then rev 5 again (a
 //!   redelivery of the applied rev). Without the `config` track and with a
 //!   `conn-drop`, rev 3 is published during the cut, so the agents get it as a
-//!   retained delivery on reconnect;
+//!   retained delivery on reconnect, and rev 4 waits [`RECONNECT_WORST_MS`]
+//!   after the restore so BOTH agents (mqtt.js 2 s; Rust 1→60 s backoff)
+//!   have reconnected and seen rev 3 first (series 5 item 4);
 //! - `commands-sms` one `read_sms` (`args.limit` 5) and one without args;
 //! - `sim-mode`    meta env `MODE=sim`: the player runs both agents in sim mode,
 //!   so `read_sms` takes the fixture sweep (TS `worker.ts:930`
@@ -164,8 +166,13 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
     ("cli", 60, &["cli", "clock"], "one `set` edit"),
     (
         "config-envelope",
-        120,
-        &["config-envelope", "conn-drop", "clock"],
+        240,
+        // `nmea` (the calibration track): with a silent tty the TS gps
+        // watchdog reopens every 30 s and each reopen leaks a blocked libuv
+        // read; after 3 Node's 4-thread pool is exhausted and the JS agent
+        // wedges (wp7-rerun.md series 4/5) — a TS defect, not this scenario's
+        // subject.
+        &["config-envelope", "conn-drop", "clock", "nmea"],
         "hardware/uploadBucket envelope (rev 3 retained across a cut), malformed, stale rev",
     ),
     (
@@ -186,6 +193,12 @@ thread_local! {
 fn w0() -> i64 {
     W0.with(|c| c.get())
 }
+
+/// After a cut ends, the latest any agent can be reconnected: the Rust
+/// backoff's 60 s cap (`xorgate-cloud` backoff.rs; the jitter only SHORTENS a
+/// delay, to `[d/2, d]`) + 5 s for connect, resubscribe and the retained
+/// delivery. mqtt.js retries every 2 s (`mqtt.ts:63`).
+pub const RECONNECT_WORST_MS: u64 = 65_000;
 
 /// Builder: events are pushed in any order and sorted (stably) by `t`.
 struct Builder {
@@ -494,10 +507,11 @@ fn build_inner(
         };
         let e = if standalone && drop {
             // rev 3 while the broker path is cut: the broker holds it and the
-            // agents get it as a retained delivery when they resubscribe.
+            // agents get it as a retained delivery when they resubscribe;
+            // rev 4 only once both have (RECONNECT_WORST_MS).
             cfg(&mut b, drop_at + 5_000, doc3.as_bytes(), true);
             cfg(&mut b, drop_end + 300, doc3.as_bytes(), true);
-            drop_end + 6_000
+            drop_end + RECONNECT_WORST_MS
         } else {
             let e = pct(75) + 400;
             cfg(&mut b, e, doc3.as_bytes(), true);
@@ -967,8 +981,41 @@ mod tests {
             })
             .unwrap()
             .t;
-        let first = &mqtt_ins(&tape, "/config")[0];
+        let cfg = mqtt_ins(&tape, "/config");
+        let first = &cfg[0];
         assert!(first.0 > closed && first.1.contains("\"rev\":3"));
+        // rev 4 only after the worst-case reconnect, and the whole track fits.
+        let restored = tape
+            .records
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.ev,
+                    TapeEvent::Conn {
+                        state: ConnState::Connected
+                    }
+                )
+            })
+            .map(|r| r.t)
+            .max()
+            .unwrap();
+        let rev4 = cfg.iter().find(|c| c.1.contains("\"rev\":4")).unwrap();
+        assert!(
+            rev4.0 >= restored + RECONNECT_WORST_MS,
+            "{} vs {restored}",
+            rev4.0
+        );
+        assert_eq!(cfg.len(), 8, "every envelope record inside the tape");
+        // NMEA flows the whole run (no silent-tty reopen: the TS wedge).
+        let nmea: Vec<u64> = tape
+            .records
+            .iter()
+            .filter(|r| matches!(r.ev, TapeEvent::Nmea { .. }))
+            .map(|r| r.t)
+            .collect();
+        assert!(nmea.first().is_some_and(|t| *t < 2_000));
+        assert!(nmea.windows(2).all(|w| w[1] - w[0] < 2_000));
+        assert!(nmea.last().is_some_and(|t| *t + 2_000 > 240_000));
     }
 
     #[test]
