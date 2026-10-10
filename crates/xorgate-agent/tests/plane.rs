@@ -7,7 +7,8 @@
 //! - the scope fallback loop (`telemetry-scope.test.ts` badCycle) driven
 //!   through connect / tick / close, with the event wording dumped by tsx from
 //!   the real `TelemetryScope` + `noteScopeChange` (`fixtures/agent_plane/scope-plane.json`);
-//! - the shutdown ORDER (`worker.ts:1291-1325`);
+//! - the shutdown ORDER (`worker.ts:1291-1325`), also when the MQTT loop
+//!   task dies (review-wp1 #10a: the same path, exit 1);
 //! - `publish_acked` (PUBACK, timeout) and the tick's publish callback (the
 //!   offline queue itself is the client's: `xorgate-cloud/tests/mqtt_offline.rs`);
 //! - `read error: …` and the error/close path.
@@ -22,7 +23,7 @@ use serde::Deserialize;
 use xorgate_agent::ctx::{AgentCtx, NoopHooks, ReportRequester, TelemetrySource};
 use xorgate_agent::mqtt_plane::{AckOutcome, MqttHandle, MqttPlane, PublishTick};
 use xorgate_agent::scope::ScopeHandle;
-use xorgate_agent::shutdown::Shutdown;
+use xorgate_agent::shutdown::{on_mqtt_loop_ended, Shutdown, LOOP_ENDED};
 use xorgate_cloud::mqtt::{ConnectionState as LinkState, Message, MqttEvent, QoS};
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::telemetry_scope::TenantScope;
@@ -339,6 +340,51 @@ async fn shutdown_order() {
     // The publish loop is stopped by the token: no tick after shutdown.
     settle(5000).await;
     assert!(r.take_timeline().is_empty());
+}
+
+/// review-wp1 #10a: the MQTT loop task ended on its own (a panic). The
+/// worker runs `on_mqtt_loop_ended` and then the NORMAL shutdown with exit 1
+/// and `link_closes: false` (`worker.rs`): pidfile removed, an
+/// `online:false` attempt, no `close` (the stream is already gone), within
+/// the 2 s budget.
+#[tokio::test(start_paused = true)]
+async fn loop_task_end_runs_the_shutdown_path_with_exit_1() {
+    let mut r = rig("loop-ended", "dev-l");
+    std::fs::write(&r.ctx.paths.pid, "{}").unwrap();
+    r.connect();
+    r.take_timeline();
+    let ctx = r.ctx.clone();
+    let source: Arc<dyn TelemetrySource> = r.source.clone();
+    let code = on_mqtt_loop_ended(&ctx);
+    assert_eq!(ctx.state.snapshot().last_error.as_deref(), Some(LOOP_ENDED));
+    let started = tokio::time::Instant::now();
+    let code = Shutdown {
+        ctx: &ctx,
+        mqtt: &r.mqtt,
+        plane: &mut r.plane,
+        config: r.config.as_ref(),
+        source: source.as_ref(),
+        link_closes: false,
+    }
+    .run(LOOP_ENDED, code, |_| async { true })
+    .await;
+    assert_eq!(code, 1);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(!r.ctx.paths.pid.exists(), "pidfile removed");
+    let tl = r.take_timeline();
+    assert!(
+        tl.contains(&"publish status online:false".to_string()),
+        "{tl:?}"
+    );
+    assert!(
+        !tl.contains(&"hooks.notify_connectivity false".to_string()),
+        "{tl:?}"
+    );
+    assert_eq!(
+        state_events(&r.ctx).last().unwrap(),
+        "shutting down (mqtt event loop ended)"
+    );
+    assert!(r.ctx.shutting_down());
 }
 
 /// Shutting down while the link is down: no `online:false`, no `close`.

@@ -478,20 +478,18 @@ async fn run(args: &[String]) -> Result<i32> {
     let mono0 = Instant::now();
     sd_notify(&[sd_notify::NotifyState::Ready]);
 
-    let sig = loop {
+    let (sig, exit_code) = loop {
         tokio::select! {
-            _ = sigterm.recv() => break "SIGTERM",
-            _ = sigint.recv() => break "SIGINT",
+            _ = sigterm.recv() => break ("SIGTERM", 0),
+            _ = sigint.recv() => break ("SIGINT", 0),
             _ = sighup.recv() => crate::shutdown::on_sighup(&ctx),
             ev = events.recv() => match ev {
                 Some(ev) => plane.on_event(ev),
-                None => {
-                    let t = ctx.now_ms();
-                    error!("[agent] mqtt event loop ended unexpectedly");
-                    state.set_error("mqtt event loop ended", t);
-                    state.flush(t, true);
-                    return Ok(1);
-                }
+                // The loop task died (review-wp1 #10a): the normal shutdown, exit 1.
+                None => break (
+                    crate::shutdown::LOOP_ENDED,
+                    crate::shutdown::on_mqtt_loop_ended(&ctx),
+                ),
             },
             // `heartbeat` (`worker.ts:633-638`) + the systemd watchdog: the
             // loop is alive whatever the MQTT state (Phase 0 A7).
@@ -521,9 +519,10 @@ async fn run(args: &[String]) -> Result<i32> {
         plane: &mut plane,
         config: config.as_ref(),
         source: source.as_ref(),
-        link_closes: mqtt_end.is_some(),
+        // A dead loop has no stream left to close (no `disconnected cleanly`).
+        link_closes: mqtt_end.is_some() && exit_code == 0,
     }
-    .run(sig, 0, |budget| async move {
+    .run(sig, exit_code, |budget| async move {
         match mqtt_end {
             Some(end) => end.shutdown(budget).await,
             None => true,
