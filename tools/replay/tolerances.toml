@@ -76,9 +76,13 @@ window_ms = 1500
 #   gps    ← NMEA first line, stop (gap > 2 s), stale (+10 s), resume, GGA quality change, end (+10 s)
 #   imu    ← imu_spawn / imu_exit, IMU line stream start/stop (gap > 2 s), i2cdetect
 #   lte    ← lte_file changes
-#   system ← exec / dt changes
+#   system ← per FIELD (re-review R6): metrics.system.throttled ← `vcgencmd
+#            get_throttled`, .rail_5v ← `vcgencmd pmic_read_adc`,
+#            .psu_max_current ← dt; the host-read fields (cpu/ram/disk/cpu_temp)
+#            and the whole system group: only the first 5 s
 # Never mqtt_in / cli / conn. Any other path: only the first 5 s. diff.md prints
-# each group's window coverage (% of the run).
+# each group's (system: each field's) window coverage (% of the run).
+# All instants are the player's ACTUAL releases (releases.ndjson, re-review R1).
 
 [[rule]]
 id = "T5"
@@ -316,10 +320,13 @@ kind = "decisions"
   what = "O2 mono-vs-wall intervals — the five the TS measures on Date.now(): the gps reopen watchdog (30 s), NMEA freshness (10 s), TTFF, the gnss-sky.json 15 s cadence, the refresh 30 s window — PLUS WP2's lte/system `sample()` 1 s cache gates (collectors/lte.ts, system.ts:94-114), all on mono in Rust. Values are identical unless the wall clock steps: tolerated only within a window around a tape `clock` event that shows a wall step"
   matcher = "wall_step_window"
   # NARROWED (review-wp7): only the six mono-derived observables.
+  # NARROWED (re-review R7): of the acks only the refresh 30 s window's
+  # decision — `status`/`reason` of a `refresh` ack that is `rate-limited` on
+  # at least one side.
   observables = [
     "telemetry:metrics.gps", "telemetry:metrics.gps.**",
     "file:gnss-sky.json:timestamp", "file:gnss-sky.json:hold_s",
-    "ack:**",
+    "ack:status", "ack:reason",
     "telemetry:metrics.lte", "telemetry:metrics.lte.**",
     "telemetry:metrics.system", "telemetry:metrics.system.**",
   ]
@@ -402,7 +409,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "rig-cut-ungated"
-  what = "RIG limitation, NARROWED per review-wp7 finding 4: while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the fallback pairing keeps the pre-cut offset. Inside a closed span (extended until BOTH agents publish again) ±5 s the diff therefore RE-PAIRS the telemetry with the alignment (current partner, or one tick earlier/later) that differs least, then compares STRICTLY: no presence tolerance, no gps/lte/system value tolerance. The only residual: a VALUE inside the span whose group's input the tape released BETWEEN the two agents' reads (the gate cannot hold releases while an agent's ticks are unobserved — still the case until BOTH reconnect): metrics.imu.* ← an IMU line (−1 s), metrics.lte.* ← an LTE-file change, metrics.system.* ← an exec/dt change, and for lte/system ONLY a field that change moved (one side's value is the other side's value at the adjacent tick: one agent read the old version, the other the new; a field equal in both versions never matches); never gps (continuous NMEA, aligned by the re-pair). A re-pair run may orphan at most 2 ticks (judged as this row; listed with the moves in diff.md); otherwise ONE unpaired tick per side and span is reconnect-cadence. Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
+  what = "RIG limitation, NARROWED per review-wp7 finding 4: while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the fallback pairing keeps the pre-cut offset. Inside a closed span (extended until BOTH agents publish again) ±5 s the diff therefore RE-PAIRS the telemetry with the alignment (current partner, or one tick earlier/later) chosen by TIMING, never by content (re-review R4): the fewest input bursts released between the two reads (releases.ndjson), then the nearest ts — then compares STRICTLY: no presence tolerance, no gps/lte/system value tolerance. The only residual: a VALUE inside the span whose group's input the tape released BETWEEN the two agents' reads (the gate cannot hold releases while an agent's ticks are unobserved — still the case until BOTH reconnect): metrics.imu.* ← an IMU line (−1 s), metrics.lte.* ← an LTE-file change, metrics.system.* ← an exec/dt change, and for lte/system ONLY a field that change moved, as an old/new split on BOTH sides in one direction (re-review R4: A_k = B_k−1 and B_k = A_k+1, or the mirror; a field equal in both versions, or frozen on one side, never matches); never gps (continuous NMEA, aligned by the re-pair). A re-pair run may orphan at most 2 ticks (judged as this row; listed with the moves in diff.md); otherwise ONE unpaired tick per side and span is reconnect-cadence. Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
   streams = ["telemetry", "status"]
   around_closed_ms = 5000
 
@@ -483,8 +490,10 @@ kind = "decisions"
 
   [[rule.row]]
   id = "tick-drift"
-  what = "FLAG (rig, reviewer to confirm; A2): Node's setInterval re-arms after each callback and drifts a few ms per tick, tokio's interval keeps its phase, so the two agents' tick phases slide past each other; when the pair gap exceeds the rig's flip gap (`--flip-gap-ms`, 500 ms since series 5 = the nearest alignment; was 800) the hold gate flips roles and logs ONE lead tick as `skip` (pairs.ndjson). That tick's message is unpaired (within ±400 ms of the logged tick) and not value-compared; the values of every paired tick still are"
+  what = "FLAG (rig, reviewer to confirm; A2): Node's setInterval re-arms after each callback and drifts a few ms per tick, tokio's interval keeps its phase, so the two agents' tick phases slide past each other; when the pair gap exceeds the rig's flip gap (`--flip-gap-ms`, 500 ms since series 5 = the nearest alignment; was 800) the hold gate flips roles and logs ONE lead tick as `skip` (pairs.ndjson). That tick's message is unpaired (within ±400 ms of the logged tick) and not value-compared; the values of every paired tick still are. CAPPED (re-review R5): at most ceil(run_s × |P_A − P_B| / 1000) + 1 such ticks per run, from each side's own mean tick period P (the phases slide |ΔP| ms per tick; one flip per 1000 ms of slide), else every hit is UNTOLERATED — JS-vs-JS (15 runs, series 4/5): |ΔP| ≤ 1.13 ms → cap 2 per 260 s, 0 skips observed (the pre-hysteresis 195214Z flapping, 25 skips, would fail). CADENCE (re-review R5): each agent re-arms its 1 s tick from the fire time (Node setInterval; tokio MissedTickBehavior::Delay past its 5 ms grace), so its mean period is 1000 ms + its wake-up lateness — measured in the rig: JS 1003.4–1007.4 ms, Rust 1001.7–1005.0 ms; |ΔP| JS-vs-JS ≤ 1.13 ms, JS-vs-Rust ≤ 3.12 ms (33 runs). Each mean must lie in period_ms and |ΔP| ≤ max_period_delta_ms; a 1 % period error (10 ms) fails both. A |ΔP| ≥ 0.5 ms inside the bounds is listed as this row"
   streams = ["telemetry"]
+  period_ms = [999.5, 1010.0]
+  max_period_delta_ms = 4.0
 
   [[rule.row]]
   id = "fs-error-text"

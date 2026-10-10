@@ -197,7 +197,10 @@ the same — common brief rule 6):
 
 Run directory (`<run>/`): `play.json` (start/end wall, shift, closed spans,
 input transitions, wall steps), `pairs.ndjson`, `player.log`,
-`inputs-mqtt.ndjson` (what the player published), and per agent `a/`, `b/`:
+`inputs-mqtt.ndjson` (what the player published), `releases.ndjson` (every
+tape record's ACTUAL release wall ms — `diff` builds every input instant (T4
+windows, the cut residual, report/input-edge rows, D23) from it and refuses a
+run without it), and per agent `a/`, `b/`:
 `meta.json`, `mqtt.ndjson` (every publish, with the publisher's own `qos`
 and `retain`: the capture subscribes `xorgate/#` at QoS 2 with
 Retain-As-Published and retain-handling 2 = no retained replay, so each line is
@@ -243,8 +246,9 @@ a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
 
 ## Limits of the rig (know these when reading a diff)
 
-- ONE run at a time per Docker host (fixed compose project, fixed rig
-  deviceIds), on a QUIET Docker VM: `cpu_usage`/`ram_usage` are the VM's live
+- ONE run at a time per Docker host (fixed rig deviceIds; the compose project
+  is per run — `xorgate-replay-<ts>-<a>-<b>` or `$COMPOSE_PROJECT_NAME` — so
+  `run-rig.sh`'s cleanup only removes its own containers), on a QUIET Docker VM: `cpu_usage`/`ram_usage` are the VM's live
   values (T3), and concurrent cargo builds in the same VM swing them by far
   more than T3 allows and perturb the agents' tick latency.
 

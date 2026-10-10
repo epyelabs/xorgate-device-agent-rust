@@ -1866,6 +1866,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         calibration,
         host: Vec::new(),
         skips: Vec::new(),
+        releases: Vec::new(),
         nmea_resumes,
     };
     fs::write(

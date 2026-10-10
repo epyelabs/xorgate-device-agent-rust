@@ -85,6 +85,68 @@ fn spawns(dir: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+/// The case's PATH (`bin/`: the `i2cdetect` / `python3` shims), python dir,
+/// home and the helper's FIFO under `dir`.
+fn rig(
+    dir: &Path,
+    input: &Value,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let bin = dir.join("bin");
+    let py = dir.join("python");
+    let home = dir.join("home");
+    for d in [&bin, &py, &home] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let fifo = dir.join("imu.fifo");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+    let d = dir.display();
+    if let Some(i2c) = input["i2c"].as_object() {
+        std::fs::write(dir.join("i2c.out"), i2c["stdout"].as_str().unwrap()).unwrap();
+        std::fs::write(
+            dir.join("i2c.err"),
+            i2c.get("stderr").and_then(Value::as_str).unwrap_or(""),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("i2c.code"),
+            i2c.get("code")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                .to_string(),
+        )
+        .unwrap();
+        shim(
+            &bin.join("i2cdetect"),
+            &format!(
+                "#!/bin/sh\n/bin/cat \"{d}/i2c.out\"\n/bin/cat \"{d}/i2c.err\" >&2\nexit $(/bin/cat \"{d}/i2c.code\")\n"
+            ),
+        );
+    }
+    if input["python"].as_bool().unwrap() {
+        shim(
+            &bin.join("python3"),
+            &[
+                "#!/bin/sh".to_string(),
+                format!("D=\"{d}\""),
+                r#"printf "%s\n" "$*" >> "$D/argv.log""#.into(),
+                r#"n=$(/bin/cat "$D/spawn.count" 2>/dev/null || echo 0); echo $((n+1)) > "$D/spawn.count""#.into(),
+                r#"while IFS= read -r l; do case "$l" in E:*) printf "%s\n" "${l#E:}" >&2;; *) printf "%s\n" "$l";; esac; done < "$D/imu.fifo""#.into(),
+                r#"c=$(/bin/cat "$D/exit.code" 2>/dev/null || echo 0)"#.into(),
+                r#"[ "$c" = K ] && kill -KILL $$"#.into(),
+                r#"exit "$c""#.into(),
+                String::new(),
+            ]
+            .join("\n"),
+        );
+    }
+    (bin, py, home, fifo)
+}
+
 #[tokio::test]
 async fn imu_scenarios_match_the_ts_collector() {
     let fx: Value = serde_json::from_slice(
@@ -107,54 +169,7 @@ async fn imu_scenarios_match_the_ts_collector() {
         let name = case["name"].as_str().unwrap();
         let input = &case["input"];
         let dir = scratch(&format!("imu-{ci}"));
-        let bin = dir.join("bin");
-        let py = dir.join("python");
-        let home = dir.join("home");
-        for d in [&bin, &py, &home] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        let fifo = dir.join("imu.fifo");
-        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
-        let d = dir.display();
-        if let Some(i2c) = input["i2c"].as_object() {
-            std::fs::write(dir.join("i2c.out"), i2c["stdout"].as_str().unwrap()).unwrap();
-            std::fs::write(
-                dir.join("i2c.err"),
-                i2c.get("stderr").and_then(Value::as_str).unwrap_or(""),
-            )
-            .unwrap();
-            std::fs::write(
-                dir.join("i2c.code"),
-                i2c.get("code")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0)
-                    .to_string(),
-            )
-            .unwrap();
-            shim(
-                &bin.join("i2cdetect"),
-                &format!(
-                    "#!/bin/sh\n/bin/cat \"{d}/i2c.out\"\n/bin/cat \"{d}/i2c.err\" >&2\nexit $(/bin/cat \"{d}/i2c.code\")\n"
-                ),
-            );
-        }
-        if input["python"].as_bool().unwrap() {
-            shim(
-                &bin.join("python3"),
-                &[
-                    "#!/bin/sh".to_string(),
-                    format!("D=\"{d}\""),
-                    r#"printf "%s\n" "$*" >> "$D/argv.log""#.into(),
-                    r#"n=$(/bin/cat "$D/spawn.count" 2>/dev/null || echo 0); echo $((n+1)) > "$D/spawn.count""#.into(),
-                    r#"while IFS= read -r l; do case "$l" in E:*) printf "%s\n" "${l#E:}" >&2;; *) printf "%s\n" "$l";; esac; done < "$D/imu.fifo""#.into(),
-                    r#"c=$(/bin/cat "$D/exit.code" 2>/dev/null || echo 0)"#.into(),
-                    r#"[ "$c" = K ] && kill -KILL $$"#.into(),
-                    r#"exit "$c""#.into(),
-                    String::new(),
-                ]
-                .join("\n"),
-            );
-        }
+        let (bin, py, home, fifo) = rig(&dir, input);
         std::env::set_var("PATH", &bin);
 
         let mut ctx = test_ctx(&home, "dev-wp2", Arc::new(NoopHooks), null_tape());
@@ -295,6 +310,66 @@ async fn imu_scenarios_match_the_ts_collector() {
         assert_eq!(c.helper_pid(), None, "[{name}] no helper handle left");
         c.stop();
     }
+
+    // SHUTDOWN while the helper streams (orchestrator close-out b): the TS
+    // logs nothing there (the process exits, execa's cleanup kills the
+    // helper), so `stop()` must not turn the helper's death into
+    // `[imu] reader stream ended; will re-detect` (nor the park line).
+    let case = cases
+        .iter()
+        .find(|c| c["input"]["python"] == true && c["input"]["spawnCount"].as_u64() >= Some(1))
+        .expect("a streaming case");
+    let dir = scratch("imu-shutdown");
+    let (bin, py, home, fifo) = rig(&dir, &case["input"]);
+    std::env::set_var("PATH", &bin);
+    let mut ctx = test_ctx(&home, "dev-wp2", Arc::new(NoopHooks), null_tape());
+    let mut paths = (*ctx.paths).clone();
+    paths.python_dir = py.clone();
+    ctx.paths = Arc::new(paths);
+    let c = ImuCollector::new(&ctx, Arc::new(RealImuIo::default()));
+    let logs_from = logs.lock().unwrap().len();
+    let _ = c.read().await;
+    for _ in 0..500 {
+        if spawns(&dir) >= 1 {
+            break;
+        }
+        sleep(10).await;
+    }
+    let f = fifo.clone();
+    let mut w = tokio::task::spawn_blocking(move || {
+        std::fs::OpenOptions::new().write(true).open(f).unwrap()
+    })
+    .await
+    .unwrap();
+    sleep(50).await;
+    w.write_all(b"{\"type\": \"sample\", \"quat\": {\"r\": 1.0, \"i\": 0.0, \"j\": 0.0, \"k\": 0.0}, \"linaccel\": {\"x\": 0.0, \"y\": 0.0, \"z\": 9.8}}\n")
+        .unwrap();
+    w.flush().unwrap();
+    sleep(200).await;
+    assert!(c.sample().await.is_some(), "the helper streams");
+    assert!(c.helper_pid().is_some());
+    c.stop();
+    for _ in 0..200 {
+        if c.helper_pid().is_none() {
+            break;
+        }
+        sleep(10).await;
+    }
+    sleep(200).await;
+    drop(w);
+    let after: Vec<(String, String)> = logs.lock().unwrap()[logs_from..].to_vec();
+    assert!(
+        !after
+            .iter()
+            .any(|(_, m)| m.contains("reader stream ended") || m.contains("reader exited")),
+        "{after:?}"
+    );
+    assert_eq!(
+        c.helper_pid(),
+        None,
+        "the stopped helper's handle is dropped"
+    );
+
     match saved_path {
         Some(p) => std::env::set_var("PATH", p),
         None => std::env::remove_var("PATH"),

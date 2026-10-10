@@ -15,7 +15,9 @@
 //! 5. when the helper exits: had samples → `[imu] reader stream ended; will
 //!    re-detect` and a full reset (next tick re-detects); never sampled →
 //!    `[imu] reader exited before any sample (exit N); IMU disabled. …` and
-//!    the collector stays parked until the agent restarts.
+//!    the collector stays parked until the agent restarts. Neither line when
+//!    the exit follows `stop()` / the agent's cancellation: at shutdown the TS
+//!    process just exits (execa's cleanup kills the helper) and logs nothing.
 //!
 //! The euler mount correction re-reads `settings.json` `imuMount` per mapped
 //! tick (`imu.ts:90`), so a cloud config change applies live.
@@ -92,6 +94,9 @@ struct State {
     latest_mono: Option<Instant>,
     ever_sampled: bool,
     warned: bool,
+    /// `stop()` was called (agent shutdown): the helper's death that follows
+    /// is ours, not a reader failure — the TS logs nothing there.
+    stopping: bool,
 }
 
 impl State {
@@ -119,7 +124,8 @@ impl ImuCollector {
     /// in the TS). A no-op once the helper has exited: the handle is dropped
     /// on that path, and `ChildHandle` never signals a reaped pid anyway.
     pub fn stop(&self) {
-        let st = self.shared.lock();
+        let mut st = self.shared.lock();
+        st.stopping = true;
         if let Some(h) = &st.stream {
             h.signal_group(nix::libc::SIGTERM);
         }
@@ -217,6 +223,13 @@ impl Shared {
                 ChildEvent::Done(done) => {
                     self.ctx.tape.imu_exit(done.exit_code);
                     let mut st = self.lock();
+                    if st.stopping || self.ctx.cancel.is_cancelled() {
+                        // Shutdown: the TS process exits and execa's cleanup
+                        // takes the helper down without a log line (CF: no
+                        // `[imu] reader stream ended` at stop). No re-detect.
+                        st.stream = None;
+                        break;
+                    }
                     match on_reader_exit(st.ever_sampled) {
                         ReaderExit::Redetect => {
                             warn!("{READER_ENDED}");
