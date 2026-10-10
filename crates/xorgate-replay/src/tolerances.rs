@@ -118,6 +118,13 @@ pub struct Row {
     /// Largest allowed |A − B| of a measured duration (T8 `sms-duration`).
     #[serde(default)]
     pub max_delta_ms: Option<u64>,
+    /// `[lo, hi]` ms: each agent's mean telemetry tick period (T8
+    /// `tick-drift`, re-review R5).
+    #[serde(default)]
+    pub period_ms: Vec<f64>,
+    /// Largest allowed |A − B| of the two mean tick periods (ms).
+    #[serde(default)]
+    pub max_period_delta_ms: Option<f64>,
 }
 
 const KINDS: &[&str] = &[

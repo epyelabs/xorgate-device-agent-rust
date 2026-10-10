@@ -2204,6 +2204,11 @@ pub fn diff_with(
         }
     }
 
+    // ---- telemetry cadence + the tick-drift cap (re-review R5)
+    if !sim {
+        diff_cadence(&ta, &tb, play, table, &mut rep);
+    }
+
     // ---- T2: seq increments per agent
     seq_increments(&ta, "A", play, facts, table, &mut rep);
     seq_increments(&tb, "B", play, facts, table, &mut rep);
@@ -2410,6 +2415,7 @@ pub fn diff_with(
 
 /// Every comparison kind diff.md lists, exercised or not.
 const EXPECTED_KINDS: &[&str] = &[
+    "cadence",
     "telemetry",
     "report",
     "ack",
@@ -2464,6 +2470,103 @@ fn cap_row_hits(rep: &mut Report, table: &Table, play: &PlayInfo, row_id: &str) 
         for m in mismatches.iter_mut().filter(|m| m.tol == id) {
             m.tol = UNTOLERATED.into();
             let st = stats.entry(m.stream.clone()).or_default();
+            st.tolerated = st.tolerated.saturating_sub(1);
+            st.untolerated += 1;
+        }
+    }
+}
+
+/// Ticks needed before a side's mean period is judged.
+const CADENCE_MIN_TICKS: usize = 30;
+
+/// One side's mean telemetry tick period (ms) over its consecutive `ts`
+/// deltas within 500..=1500 ms (a reconnect flush or a stall is not a
+/// period), with the number of deltas.
+fn tick_period(ms: &[&Msg]) -> Option<(f64, usize)> {
+    let mut ts: Vec<i64> = ms.iter().filter_map(|m| ts_of(&m.payload)).collect();
+    ts.sort();
+    ts.dedup();
+    let d: Vec<i64> = ts
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|d| (500..=1500).contains(d))
+        .collect();
+    (d.len() >= CADENCE_MIN_TICKS).then(|| (d.iter().sum::<i64>() as f64 / d.len() as f64, d.len()))
+}
+
+/// Re-review R5. Telemetry cadence: both agents re-arm their 1 s tick from
+/// the fire time (Node `setInterval`, tokio `MissedTickBehavior::Delay` past
+/// its 5 ms grace), so each mean period is the interval + that runtime's
+/// wake-up lateness. Each side's mean must lie in the row's `period_ms`, and
+/// the two may differ by at most `max_period_delta_ms` (a 1 % period error,
+/// 10 ms, fails both). The tick-drift CAP follows from the same numbers: the
+/// two phases slide `run_s × |ΔP|` ms apart, and the gate flips (one logged
+/// `skip`) once per 1000 ms of slide, so at most
+/// `ceil(run_s × |ΔP| / 1000) + 1` tick-drift ticks — above it every
+/// tick-drift hit is UNTOLERATED.
+fn diff_cadence(ta: &[&Msg], tb: &[&Msg], play: &PlayInfo, table: &Table, rep: &mut Report) {
+    let Some((rid, row)) = table.decision_row("tick-drift") else {
+        return;
+    };
+    let id = format!("{rid}/tick-drift");
+    let (Some((pa, na)), Some((pb, nb))) = (tick_period(ta), tick_period(tb)) else {
+        rep.inputs.insert(
+            "telemetry cadence".into(),
+            "NOT COMPARED (fewer than 30 tick periods on a side)".into(),
+        );
+        rep.stats.entry("cadence".into()).or_default();
+        return;
+    };
+    let (lo, hi) = match row.period_ms.as_slice() {
+        [lo, hi] => (*lo, *hi),
+        _ => (f64::NEG_INFINITY, f64::INFINITY),
+    };
+    let max_d = row.max_period_delta_ms.unwrap_or(f64::INFINITY);
+    let delta = (pa - pb).abs();
+    let run_s = ((play.end_wall - play.start_wall).max(0) as f64 / 1000.0).max(1.0);
+    let cap = (run_s * delta / 1000.0).ceil() as usize + 1;
+    let hits: BTreeSet<&str> = rep
+        .mismatches
+        .iter()
+        .filter(|m| m.tol == id && m.stream == "telemetry")
+        .map(|m| m.at.as_str())
+        .collect();
+    let n = hits.len();
+    rep.inputs.insert(
+        "telemetry cadence".into(),
+        format!(
+            "mean tick period A {pa:.2} ms ({na}) / B {pb:.2} ms ({nb}), |Δ| {delta:.2} ms \
+             (each in [{lo}, {hi}], |Δ| ≤ {max_d}); tick-drift ticks {n} (cap {cap} = \
+             ceil({run_s:.0} s × {delta:.2} / 1000) + 1)"
+        ),
+    );
+    let st = rep.stats.entry("cadence".into()).or_default();
+    st.compared = 1;
+    st.leaves = 2;
+    let mut push = |path: &str, a: f64, b: f64, ok: bool| {
+        rep.push(Mismatch {
+            stream: "cadence".into(),
+            at: "run".into(),
+            path: path.into(),
+            a: format!("{a:.2}"),
+            b: format!("{b:.2}"),
+            tol: if ok { id.clone() } else { UNTOLERATED.into() },
+        });
+    };
+    let in_range = |p: f64| p >= lo && p <= hi;
+    if !in_range(pa) || !in_range(pb) || delta > max_d {
+        push("mean tick period (ms)", pa, pb, false);
+    } else if delta >= 0.5 {
+        push("mean tick period (ms)", pa, pb, true);
+    }
+    if n > cap {
+        for m in rep
+            .mismatches
+            .iter_mut()
+            .filter(|m| m.tol == id && m.stream == "telemetry")
+        {
+            m.tol = UNTOLERATED.into();
+            let st = rep.stats.entry(m.stream.clone()).or_default();
             st.tolerated = st.tolerated.saturating_sub(1);
             st.untolerated += 1;
         }
@@ -3428,6 +3531,65 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn cadence_compares_mean_tick_periods_and_caps_tick_drift() {
+        let t = table();
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 260_000,
+            ..Default::default()
+        };
+        let side = |period: f64| -> Vec<Msg> {
+            (0..250)
+                .map(|k| {
+                    let ts = 1_000 + (k as f64 * period).round() as i64;
+                    msg(ts, "telemetry", serde_json::json!({"ts": ts}))
+                })
+                .collect()
+        };
+        let run = |pa: f64, pb: f64, drift_hits: usize| {
+            let (a, b) = (side(pa), side(pb));
+            let (ra, rb): (Vec<&Msg>, Vec<&Msg>) = (a.iter().collect(), b.iter().collect());
+            let mut rep = Report::default();
+            for k in 0..drift_hits {
+                rep.push(Mismatch {
+                    stream: "telemetry".into(),
+                    at: format!("unpaired A ts {k}"),
+                    path: "(message)".into(),
+                    a: "true".into(),
+                    b: "∅".into(),
+                    tol: "T8/tick-drift".into(),
+                });
+            }
+            diff_cadence(&ra, &rb, &play, &t, &mut rep);
+            rep
+        };
+        let unt = |r: &Report| r.untolerated();
+        // JS 1006 vs Rust 1004 (the rig's measured lateness): listed as the
+        // row, not a failure; 1 skip within the cap (ceil(260×2/1000)+1 = 2).
+        let r = run(1006.0, 1004.0, 1);
+        assert_eq!(unt(&r), 0, "{:?}", r.mismatches);
+        assert!(r
+            .mismatches
+            .iter()
+            .any(|m| m.stream == "cadence" && m.tol == "T8/tick-drift"));
+        assert_eq!(r.stats["cadence"].compared, 1);
+        assert!(
+            r.inputs["telemetry cadence"].contains("cap 2"),
+            "{:?}",
+            r.inputs
+        );
+        // A 1 % Rust period error (slow or fast) fails.
+        assert_eq!(unt(&run(1006.0, 1014.0, 0)), 1);
+        assert_eq!(unt(&run(1006.0, 994.0, 0)), 1);
+        // Equal periods: no row; more skips than the slide allows: every
+        // tick-drift hit UNTOLERATED.
+        let r = run(1005.0, 1005.0, 0);
+        assert!(r.mismatches.is_empty(), "{:?}", r.mismatches);
+        let r = run(1005.0, 1005.0, 3);
+        assert_eq!(unt(&r), 3, "{:?}", r.inputs);
     }
 
     #[test]
