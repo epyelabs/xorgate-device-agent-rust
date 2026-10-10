@@ -35,7 +35,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::clock::WallMs;
+use crate::clock::{Clock, WallMs};
 use crate::commands::{
     claim, container_exit_code, failure_reason, is_expired, plan, refresh_plan,
     refresh_rate_limited, AckStatus, CommandPlan, DeviceCommand, DeviceCommandName, Ledger,
@@ -506,13 +506,14 @@ pub fn execution_outcome(command: DeviceCommandName, res: &RunResult) -> Vec<Eff
 
 /// O4: the real-mode sweep until the Phase 4 SMS reader exists. Shaped like
 /// the reader's own `finish({status:"error", error})` (`sms-modem.ts:507-521`):
-/// empty storage, nothing skipped, not partial, no messages, finished `now`.
-pub fn sms_reader_unavailable_sweep(now: WallMs) -> SmsSweep {
+/// empty storage, nothing skipped, not partial, no messages, finished `now`,
+/// lasting `duration_ms` (see [`sms_sweep`]).
+pub fn sms_reader_unavailable_sweep(now: WallMs, duration_ms: i64) -> SmsSweep {
     SmsSweep {
         status: SmsReadStatus::Error,
         error: Some(SMS_READER_UNAVAILABLE.to_string()),
         finished_at: now,
-        duration_ms: 0,
+        duration_ms,
         storage: StorageCounts::new(),
         skipped: 0,
         partial: false,
@@ -520,11 +521,24 @@ pub fn sms_reader_unavailable_sweep(now: WallMs) -> SmsSweep {
     }
 }
 
-/// The sweep `runSmsRead` gets (`worker.ts:929-930`) at time `now`.
-pub fn sms_sweep(source: SmsSource, now: WallMs) -> SmsSweep {
+/// The sweep `runSmsRead` gets (`worker.ts:929-930`).
+///
+/// `Reader` (real mode) is timed like `SmsReader.runSweep`
+/// (`sms-modem.ts:504-519`): `start = now()` when the attempt begins,
+/// `end = now()` in `finish`, `finishedAt: end`, `durationMs: end - start` —
+/// integer ms, here on the monotonic clock (agent-anatomy invariant 2) so a
+/// wall step cannot make it negative. `Fixture` (`sim` / `replay`) is
+/// `fixtureSmsSweep(Date.now())`, which is NOT timed in the TS: its
+/// `durationMs` is the literal `0` (`sms-modem.ts:686`), kept here.
+pub fn sms_sweep(source: SmsSource, clock: &dyn Clock) -> SmsSweep {
     match source {
-        SmsSource::Reader => sms_reader_unavailable_sweep(now),
-        SmsSource::Fixture => fixture_sms_sweep(now),
+        SmsSource::Reader => {
+            let start = clock.mono_ms();
+            let finished_at = clock.wall_ms();
+            let end = clock.mono_ms();
+            sms_reader_unavailable_sweep(finished_at, end.saturating_sub(start) as i64)
+        }
+        SmsSource::Fixture => fixture_sms_sweep(clock.wall_ms()),
     }
 }
 
@@ -537,6 +551,45 @@ mod tests {
 
     fn cmd(json: &str) -> DeviceCommand {
         parse_command(json.as_bytes()).unwrap()
+    }
+
+    /// Every `mono_ms()` read advances mono by `step` (a sweep that takes time).
+    struct TickingClock {
+        wall: WallMs,
+        mono: std::cell::Cell<u64>,
+        step: u64,
+    }
+
+    impl Clock for TickingClock {
+        fn wall_ms(&self) -> WallMs {
+            self.wall + self.mono.get() as i64
+        }
+        fn mono_ms(&self) -> u64 {
+            let m = self.mono.get();
+            self.mono.set(m + self.step);
+            m
+        }
+    }
+
+    #[test]
+    fn real_mode_sms_sweep_measures_its_span_fixture_stays_zero() {
+        let c = TickingClock {
+            wall: T0,
+            mono: std::cell::Cell::new(100),
+            step: 3,
+        };
+        let s = sms_sweep(SmsSource::Reader, &c);
+        assert_eq!(s.duration_ms, 3, "end - start on the mono clock");
+        assert_eq!(s.finished_at, T0 + 103, "finishedAt = the wall at finish");
+        assert_eq!(s.status, SmsReadStatus::Error);
+        assert_eq!(s.error.as_deref(), Some(SMS_READER_UNAVAILABLE));
+        // A clock that does not move: 0, never negative.
+        let f = crate::clock::FixedClock::new(T0, 7);
+        assert_eq!(sms_sweep(SmsSource::Reader, &f).duration_ms, 0);
+        // sim/replay: fixtureSmsSweep's literal 0 (sms-modem.ts:686), untimed.
+        let s = sms_sweep(SmsSource::Fixture, &c);
+        assert_eq!(s.duration_ms, 0);
+        assert_eq!(s.status, SmsReadStatus::Ok);
     }
 
     #[test]

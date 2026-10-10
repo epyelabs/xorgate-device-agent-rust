@@ -287,7 +287,7 @@ impl Effects {
     /// in the client, `xorgate_cloud::mqtt`, WP1 follow-up — no retry here;
     /// the `NotConnected` arm below is unreachable since then).
     fn run_sms_read(&self, source: SmsSource, request_id: &str, limit: u32) {
-        let sweep = sms_sweep(source, self.ctx.now_ms());
+        let sweep = sms_sweep(source, &*self.ctx.clock);
         let payload = build_sms_payload(
             &sweep,
             &SmsPayloadRequest {

@@ -114,7 +114,8 @@ impl Sim<'_> {
                     request_id,
                     limit,
                 } => {
-                    let sweep = sms_sweep(source, step.at);
+                    let sweep =
+                        sms_sweep(source, &xorgate_core::clock::FixedClock::new(step.at, 0));
                     let p = build_sms_payload(
                         &sweep,
                         &SmsPayloadRequest {
@@ -196,7 +197,7 @@ fn handle_command_message_trace_matches_worker_ts() {
 fn decision_serialisation_cases() {
     // One case per new public shape the agent consumes: the O4 sweep and its
     // payload/line (the `…/sms` bytes the cloud stores).
-    let sweep = sms_reader_unavailable_sweep(1_750_000_001_000);
+    let sweep = sms_reader_unavailable_sweep(1_750_000_001_000, 0);
     assert_eq!(
         serde_json::to_string(&sweep).unwrap(),
         r#"{"status":"error","error":"sms reader not available in this build","finishedAt":1750000001000,"durationMs":0,"storage":{},"skipped":0,"partial":false,"messages":[]}"#
