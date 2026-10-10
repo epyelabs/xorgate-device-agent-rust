@@ -183,6 +183,11 @@ pub struct InputFacts {
     /// Wall ms (`start_wall + t`) of every IMU line the tape released
     /// (T8 `rig-cut-ungated` IMU residual).
     pub imu_lines: Vec<i64>,
+    /// Wall ms (sorted) of every released record that feeds a telemetry value
+    /// read at a tick — NMEA, LTE file, exec, dt, i2cdetect, IMU helper
+    /// spawn/exit (not the continuous IMU sample lines): the re-pair's timing
+    /// (re-review R4).
+    pub read_inputs: Vec<i64>,
     /// Wall ms where a GSV talker's satellites-in-view changed (T8 `input-edge`).
     pub gsv_changes: Vec<i64>,
     /// `(wall ms, kind)` of the released non-line inputs: `config`, `command`,
@@ -377,6 +382,23 @@ impl InputFacts {
             .map(|(_, w)| *w)
             .collect();
         out.imu_lines.sort();
+        out.read_inputs = rel
+            .iter()
+            .filter(|(r, _)| {
+                matches!(
+                    r.ev,
+                    TapeEvent::Nmea { .. }
+                        | TapeEvent::LteFile { .. }
+                        | TapeEvent::Exec { .. }
+                        | TapeEvent::Dt { .. }
+                        | TapeEvent::I2cdetect { .. }
+                        | TapeEvent::ImuSpawn { .. }
+                        | TapeEvent::ImuExit { .. }
+                )
+            })
+            .map(|(_, w)| *w)
+            .collect();
+        out.read_inputs.sort();
         // Evidence: how far the actual releases lag the tape schedule.
         for (r, w) in &rel {
             let lag = w - (play.start_wall + r.t as i64);
@@ -856,10 +878,10 @@ impl Cx<'_> {
     ///
     /// lte/system are further RESTRICTED to the fields that input event
     /// changed: one agent read the old version and the other the new one, so
-    /// one side's value must be the other side's value at the ADJACENT tick
-    /// (A_k = B_k±1 or B_k = A_k±1 at this path). A field the change did not
-    /// move (equal in both versions) can never satisfy that and stays
-    /// UNTOLERATED.
+    /// each side's value must be the other side's value at the ADJACENT tick,
+    /// in one direction (A_k = B_k−1 and B_k = A_k+1, or B_k = A_k−1 and
+    /// A_k = B_k+1, at this path). A field the change did not move (equal in
+    /// both versions) can never satisfy that and stays UNTOLERATED.
     fn cut_input(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let group = path.strip_prefix("metrics.")?.split('.').next()?;
         if !matches!(group, "imu" | "lte" | "system") {
@@ -890,11 +912,14 @@ impl Cx<'_> {
             return None;
         }
         if group != "imu" {
+            // A real old/new split holds on BOTH sides, in one direction
+            // (re-review R4): A read the old version (A_k = B_k−1) and B the
+            // new one (B_k = A_k+1), or the reverse. A value frozen on one
+            // side can satisfy one half once, never both.
             let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
             let [pa, na, pb, nb] = self.neighbors;
-            let moved = [(pb, x), (nb, x), (pa, y), (na, y)]
-                .iter()
-                .any(|(n, v)| at(*n).as_ref() == Some(*v));
+            let is = |n: Option<&Value>, v: &Value| at(n).as_ref() == Some(v);
+            let moved = (is(pb, x) && is(na, y)) || (is(nb, x) && is(pa, y));
             if !moved {
                 return None;
             }
@@ -1583,21 +1608,26 @@ fn pair_telemetry<'a>(
     (out, ua, ub)
 }
 
-/// Leaf differences between two documents that no exclusion covers (the
-/// re-pair score).
-fn leaf_diffs(table: &Table, path: &str, a: Option<&Value>, b: Option<&Value>) -> usize {
-    if a == b || table.excluded("telemetry", path).is_some() {
-        return 0;
+/// Releases closer than this are one input burst (an NMEA second's lines).
+const BURST_GAP_MS: i64 = 50;
+
+/// `(first, last)` wall ms of each burst of `walls` (sorted).
+fn bursts(walls: &[i64]) -> Vec<(i64, i64)> {
+    let mut out: Vec<(i64, i64)> = Vec::new();
+    for &w in walls {
+        match out.last_mut() {
+            Some(b) if w - b.1 <= BURST_GAP_MS => b.1 = w,
+            _ => out.push((w, w)),
+        }
     }
-    match (a, b) {
-        (Some(Value::Object(x)), Some(Value::Object(y))) => x
-            .keys()
-            .chain(y.keys().filter(|k| !x.contains_key(*k)))
-            .map(|k| leaf_diffs(table, &join(path, k), x.get(k), y.get(k)))
-            .sum(),
-        _ if table.is_delta("telemetry", path).is_some() => 0,
-        _ => 1,
-    }
+    out
+}
+
+/// Input bursts with a release in `(lo, hi]` (the reads at `lo` and `hi`
+/// saw different input states when > 0).
+fn bursts_between(bursts: &[(i64, i64)], lo: i64, hi: i64) -> usize {
+    let first = bursts.partition_point(|b| b.1 <= lo);
+    bursts[first..].iter().take_while(|b| b.0 <= hi).count()
 }
 
 type Pairs<'a> = Vec<(&'a Msg, &'a Msg)>;
@@ -1607,16 +1637,28 @@ type Shifts = Vec<((i64, i64), usize, usize, usize)>;
 type Orphans = Vec<(&'static str, i64)>;
 /// At most this many ticks a re-pair run may orphan (one seam per side).
 const REPAIR_MAX_ORPHANS: usize = 2;
-/// An orphaned tick costs this many leaf differences in the re-pair score.
-const REPAIR_ORPHAN_COST: u64 = 3;
+/// The re-pair score of one input burst between a pair's two reads.
+const REPAIR_BURST: u64 = 1_000_000;
+/// An orphaned tick costs HALF a burst: a seam (≤ REPAIR_MAX_ORPHANS) is
+/// cheaper than pairing even one tick across an input burst, so where both
+/// alignments exist the re-pair takes the one whose reads saw the same input
+/// (201356Z/195843Z: after the restore, NMEA bursts landed between the B
+/// tick and the A tick of the gate's alignment for 5-6 ticks while the other
+/// alignment had none between). Still far above any |ts| term (≤ ~3000).
+const REPAIR_ORPHAN_COST: u64 = REPAIR_BURST / 2;
 
 /// T8 `rig-cut-ungated` (review-wp7 finding 4): inside each closed span
 /// (± the row's pad) the hold gate could not pair ticks, so the diff's
 /// fallback pairing (pre-cut offset) may sit one tick off. Every contiguous
 /// run of pairs there — fallback pairs, and player pairs from the cut's start
 /// on — is re-paired tick by tick with the current partner or the B tick one
-/// before / after it (never one another pair holds, B order kept), minimising
-/// the leaf differences (ties keep the current one). Ticks left without a
+/// before / after it (never one another pair holds, B order kept), chosen by
+/// TIMING, never by content (re-review R4): first the fewest input bursts
+/// the player released between the two reads (`releases.ndjson`: NMEA, LTE
+/// file, exec, dt, IMU helper spawn/exit, i2cdetect — IMU sample lines are
+/// continuous and left out), then the nearest `ts` (the gate's alignment),
+/// ties keep the current partner. A stale or wrong Rust payload therefore
+/// stays paired with its timing partner and shows. Ticks left without a
 /// partner become unpaired (judged as unpaired messages).
 fn repair_cuts<'a>(
     paired: Pairs<'a>,
@@ -1624,8 +1666,10 @@ fn repair_cuts<'a>(
     mut ub: Vec<&'a Msg>,
     pairs: &[(i64, i64)],
     play: &PlayInfo,
+    facts: &InputFacts,
     table: &Table,
 ) -> (Pairs<'a>, Vec<&'a Msg>, Vec<&'a Msg>, Shifts, Orphans) {
+    let bursts = bursts(&facts.read_inputs);
     let mut shifts = Vec::new();
     let mut orphans = Vec::new();
     let Some((_, row)) = table.decision_row("rig-cut-ungated") else {
@@ -1673,9 +1717,9 @@ fn repair_cuts<'a>(
                 .filter_map(|(_, p)| pos(p.1))
                 .collect();
             // Per tick: the current partner j0, or j0 ± 1 (never a B another
-            // pair holds), B order kept strictly increasing; minimise the leaf
-            // differences (a move costs 1/1000
-            // of a difference so ties keep the current partner).
+            // pair holds), B order kept strictly increasing; minimise the
+            // input bursts between the two reads, then |ts gap| (a move costs
+            // half a ms so ties keep the current partner).
             let opts = |i: usize| -> Vec<Option<usize>> {
                 let mut v: Vec<Option<usize>> = vec![None];
                 if let Some(j0) = pos(out[i].1) {
@@ -1692,20 +1736,23 @@ fn repair_cuts<'a>(
             };
             let cost = |i: usize, o: Option<usize>| -> u64 {
                 match o {
-                    None => REPAIR_ORPHAN_COST * 1_000,
+                    None => REPAIR_ORPHAN_COST,
                     Some(j) => {
-                        let d =
-                            leaf_diffs(table, "", Some(&out[i].0.payload), Some(&bs[j].payload));
+                        let (Some(x), Some(y)) = (ts_of(&out[i].0.payload), ts_of(&bs[j].payload))
+                        else {
+                            return REPAIR_ORPHAN_COST;
+                        };
+                        let n = bursts_between(&bursts, x.min(y), x.max(y)) as u64;
                         let moved = pos(out[i].1) != Some(j);
-                        d as u64 * 1_000 + u64::from(moved)
+                        n * REPAIR_BURST + x.abs_diff(y) * 2 + u64::from(moved)
                     }
                 }
             };
             // State: (last chosen B index, ticks orphaned so far) → (cost,
             // choices). A tick is orphaned when it loses its partner (A) or is
             // skipped over (B); at most REPAIR_MAX_ORPHANS per run, each worth
-            // REPAIR_ORPHAN_COST leaf differences — a re-pair may close a seam,
-            // never drop content wholesale.
+            // REPAIR_ORPHAN_COST — a re-pair may close a seam, never drop
+            // ticks wholesale.
             type Dp = BTreeMap<(Option<usize>, usize), (u64, Vec<Option<usize>>)>;
             let mut states: Dp = BTreeMap::from([((None, 0), (0, Vec::new()))]);
             for &i in &run {
@@ -1722,7 +1769,7 @@ fn repair_cuts<'a>(
                         if orph > REPAIR_MAX_ORPHANS {
                             continue;
                         }
-                        let nc = c + cost(i, o) + skipped as u64 * REPAIR_ORPHAN_COST * 1_000;
+                        let nc = c + cost(i, o) + skipped as u64 * REPAIR_ORPHAN_COST;
                         let key = (o.or(*last), orph);
                         if next.get(&key).is_none_or(|(bc, _)| nc < *bc) {
                             let mut v = ch.clone();
@@ -2000,7 +2047,7 @@ pub fn diff_with(
     let extended = play.with_reconnects(&ta, &tb);
     let play = &extended;
     let (paired, ua, ub) = pair_telemetry(&ta, &tb, pairs);
-    let (paired, ua, ub, shifts, orphans) = repair_cuts(paired, ua, ub, pairs, play, table);
+    let (paired, ua, ub, shifts, orphans) = repair_cuts(paired, ua, ub, pairs, play, facts, table);
     for (k, (span, moved, n, orphaned)) in shifts.iter().enumerate() {
         rep.inputs.insert(
             format!("rig-cut re-pair {k}"),
@@ -4538,11 +4585,20 @@ mod tests {
     /// the cut its ticks sit 650 ms EARLY, so the ts fallback pairs A_k with
     /// B's tick k+1 — the review's A_k = B_{k+1} rows.
     fn cut_run(tweak: impl Fn(i64, &mut Value)) -> (Capture, Capture, Vec<(i64, i64)>) {
+        cut_run_ab(|_, _| {}, tweak)
+    }
+
+    fn cut_run_ab(
+        tweak_a: impl Fn(i64, &mut Value),
+        tweak: impl Fn(i64, &mut Value),
+    ) -> (Capture, Capture, Vec<(i64, i64)>) {
         let mut am = Vec::new();
         let mut bm = Vec::new();
         let mut pairs = Vec::new();
         for k in 40..=70 {
-            am.push(msg(k * 1000, "telemetry", cut_tel(k * 1000, k, 0.0, false)));
+            let mut pa = cut_tel(k * 1000, k, 0.0, false);
+            tweak_a(k, &mut pa);
+            am.push(msg(k * 1000, "telemetry", pa));
             let tb = if (50..=60).contains(&k) {
                 k * 1000 - 650
             } else {
@@ -4556,6 +4612,26 @@ mod tests {
             }
         }
         (cap("js", am), cap("rust", bm), pairs)
+    }
+
+    /// The player's input bursts for [`cut_run`] (one NMEA second each),
+    /// never between a pair's two reads — as the gate releases them: inside
+    /// the cut (B at k s − 650) at k s − 800, so B_{k+1} (k s + 350) reads a
+    /// newer state; outside it (B at k s + 300) at k s + 500.
+    fn cut_facts() -> InputFacts {
+        InputFacts {
+            read_inputs: (40..=71)
+                .flat_map(|k| {
+                    let at = if (50..=60).contains(&k) {
+                        k * 1000 - 800
+                    } else {
+                        k * 1000 + 500
+                    };
+                    (0..5).map(move |i| at + i * 8)
+                })
+                .collect(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -4579,7 +4655,7 @@ mod tests {
         };
         // Pure alignment: after the re-pair nothing differs.
         let (a, b, pairs) = cut_run(|_, _| {});
-        let (u, rep) = unt(&a, &b, &pairs, &InputFacts::default());
+        let (u, rep) = unt(&a, &b, &pairs, &cut_facts());
         assert!(u.is_empty(), "{u:?}");
         assert!(
             rep.inputs
@@ -4599,7 +4675,7 @@ mod tests {
                 p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(-1);
             }
         });
-        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        let (u, _) = unt(&a, &b, &pairs, &cut_facts());
         assert!(
             u.iter().any(|(_, p, _)| p == "metrics.lte.rssi.value"),
             "{u:?}"
@@ -4610,7 +4686,7 @@ mod tests {
                 p["metrics"]["lte"]["quality"] = serde_json::json!({"value":1});
             }
         });
-        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        let (u, _) = unt(&a, &b, &pairs, &cut_facts());
         assert!(
             u.iter().any(|(_, p, _)| p == "metrics.lte.quality"),
             "{u:?}"
@@ -4622,14 +4698,14 @@ mod tests {
                 p["metrics"]["imu"]["ax"]["value"] = serde_json::json!(0.5);
             }
         });
-        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        let (u, _) = unt(&a, &b, &pairs, &cut_facts());
         assert!(
             u.iter().any(|(_, p, _)| p == "metrics.imu.ax.value"),
             "{u:?}"
         );
         let f = InputFacts {
             imu_lines: vec![54_600],
-            ..Default::default()
+            ..cut_facts()
         };
         let (u, rep) = unt(&a, &b, &pairs, &f);
         assert!(u.is_empty(), "{u:?}");
@@ -4639,16 +4715,21 @@ mod tests {
             .any(|m| m.path == "metrics.imu.ax.value" && m.tol == "T8/rig-cut-ungated"));
         // An lte value inside the cut: only with an LTE-file change released
         // between the two reads (A 55 000, B 54 350 after the re-pair), and
-        // only a field that change moved: B read the OLD version (= A's
-        // previous sample, 54).
-        let (a, b, pairs) = cut_run(|k, p| {
-            if k == 55 {
-                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(54);
+        // only a field that change moved, as a real old/new split on BOTH
+        // sides: A read the new version at 55 (B's next sample), B the old
+        // one (A's previous sample).
+        let step = |from: i64| {
+            move |k: i64, p: &mut Value| {
+                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(i64::from(k >= from));
             }
-        });
-        let at = |w: i64| InputFacts {
-            inputs: vec![(w, "lte_file")],
-            ..Default::default()
+        };
+        let (a, b, pairs) = cut_run_ab(step(55), step(56));
+        let at = |w: i64| {
+            let mut f = cut_facts();
+            f.inputs = vec![(w, "lte_file")];
+            f.read_inputs.push(w);
+            f.read_inputs.sort();
+            f
         };
         let (u, rep) = unt(&a, &b, &pairs, &at(54_700));
         assert!(u.is_empty(), "{u:?}");
@@ -4673,6 +4754,31 @@ mod tests {
             u.iter().any(|(_, p, _)| p == "metrics.lte.rssi.value"),
             "{u:?}"
         );
+        // R4 (two-sided): a value FROZEN on B from the change on matches A's
+        // previous sample at the first tick, but B's next sample is not A's
+        // value — not a split, UNTOLERATED.
+        let (a, b, pairs) = cut_run_ab(step(55), step(99));
+        let (u, _) = unt(&a, &b, &pairs, &at(54_700));
+        assert!(
+            u.iter()
+                .any(|(w, p, _)| p == "metrics.lte.rssi.value" && w.starts_with("ts A 55000")),
+            "{u:?}"
+        );
+        // R4 (timing, not content): B one tick STALE through the cut (B_k
+        // carries k−1). A content-minimising re-pair would pair A_k with
+        // B_{k+1} and hide it; the timing re-pair keeps A_k ↔ B_k (no input
+        // burst between their reads) and every stale tick shows.
+        let (a, b, pairs) = cut_run(|k, p| {
+            if (50..=60).contains(&k) {
+                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(k - 1);
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &cut_facts());
+        let stale = u
+            .iter()
+            .filter(|(_, p, _)| p == "metrics.lte.rssi.value")
+            .count();
+        assert!(stale >= 10, "{u:?}");
     }
 
     fn final_dir(tag: &str, kind: &str, files: &[(&str, Option<&str>)]) -> PathBuf {
