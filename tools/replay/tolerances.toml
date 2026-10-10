@@ -308,6 +308,12 @@ kind = "decisions"
   matcher = "wall_step_window"
 
   [[rule.row]]
+  id = "sim-mode-telemetry"
+  what = "O7 (orchestrator 2026-10-10, wp7-fix-cov sms-sim scenario): with MODE=sim on the tape (meta.env.MODE) each agent's telemetry is its own simulator — the TS generator vs the Rust empty SimSource (O7: sim runs with collectors off) — so the telemetry stream is NOT compared for that tape (diff.md says so; telemetry compared = 0). Every other stream (sms, acks, reports, status, events, files) is compared as usual"
+  streams = ["telemetry"]
+  matcher = "sim_mode"
+
+  [[rule.row]]
   id = "O3"
   what = "`update` sudo argv names xorgate-updater-rs.service"
   streams = ["sudo"]

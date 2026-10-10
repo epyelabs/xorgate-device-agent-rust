@@ -8,12 +8,14 @@
 //! <run>/<label>/meta.json            {"label","kind","deviceId",…}
 //! <run>/<label>/mqtt.ndjson          {"t","w","topic","retain","qos","payload":"<raw>"} every publish of that agent
 //! <run>/<label>/files.ndjson         {"w","name","text"|null} file snapshots on change (1 s poll)
-//! <run>/<label>/final/<name>         the files at the end
+//! <run>/<label>/final.json          every snapshotted file at the end: {"files":{key:{"present","b64",…}}}
+//! <run>/<label>/final/<name>         the files at the end (legacy captures: only these)
 //! <run>/<label>/sudo.log             "<epoch ms> <argv…>" per sudo shim call
 //! ```
 //!
 //! Streams compared: telemetry (paired by `ts`), report (quiet periods), ack,
-//! status, sms (in order), files at end, state.json at end, the state.json
+//! status, sms (in order), each publish's QoS + retain (pairwise and against
+//! Appendix A), every end file (presence, JSON, byte layout), state.json at end, the state.json
 //! `recentEvents` msg multiset, the sudo argv sequence, the pidfile shape.
 //! Every mismatch is listed with both values and the tolerance id that covers
 //! it, or `UNTOLERATED`.
@@ -162,6 +164,8 @@ pub struct InputFacts {
     pub tape: Option<String>,
     pub tape_error: Option<String>,
     pub reopens: Vec<NmeaReopen>,
+    /// The tape's `meta.env.MODE` (`sim` → telemetry not comparable, O7).
+    pub mode: Option<String>,
     /// T4: wall ms of the input transitions per telemetry GROUP (gps ← NMEA
     /// start/stop/stale/resume + GGA quality; imu ← helper spawn/exit, line
     /// gaps, i2cdetect; lte ← LTE-file changes; system ← exec/dt changes).
@@ -201,6 +205,12 @@ impl InputFacts {
             Ok(t) => {
                 let mut f = Self::from_records(&t.records, play);
                 f.tape = Some(play.tape.clone());
+                f.mode = t
+                    .meta
+                    .env
+                    .get("MODE")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 f
             }
             Err(e) => Self {
@@ -407,6 +417,8 @@ struct RawMsg {
     topic: String,
     #[serde(default)]
     retain: bool,
+    #[serde(default)]
+    qos: Option<u8>,
     payload: String,
 }
 
@@ -415,9 +427,12 @@ pub struct Msg {
     pub w: i64,
     /// Topic with the agent's deviceId replaced by `{id}`.
     pub topic: String,
-    /// Kept for reports (a retained publish from an agent would be a bug).
-    #[allow(dead_code)]
+    /// The publisher's retain bit (the capture subscribes with
+    /// Retain-As-Published and no retained replay).
     pub retain: bool,
+    /// The publisher's QoS (the capture subscribes at QoS 2); `None` in old
+    /// captures.
+    pub qos: Option<u8>,
     pub payload: Value,
 }
 
@@ -444,6 +459,84 @@ fn parse_payload(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
 }
 
+/// The end-of-run files: `final.json` (every key the player snapshots, raw
+/// bytes as base64, `{"present":false}` when absent) when the capture has
+/// one, else the legacy `final/<name>` copies of [`FILES`].
+fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
+    let text = |b: &[u8]| norm_id(&String::from_utf8_lossy(b), id);
+    let mut finals = BTreeMap::new();
+    let snap: Option<Value> = std::fs::read(dir.join("final.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(files) = snap.as_ref().and_then(|v| v["files"].as_object()) {
+        for (k, f) in files {
+            let bytes = (f["present"] == true)
+                .then(|| {
+                    f["b64"]
+                        .as_str()
+                        .and_then(xorgate_hal::tape::b64_decode)
+                        .or_else(|| f["text"].as_str().map(|t| t.as_bytes().to_vec()))
+                })
+                .flatten();
+            finals.insert(k.clone(), bytes.map(|b| text(&b)));
+        }
+        return finals;
+    }
+    for name in FILES {
+        let p = dir.join("final").join(name);
+        finals.insert(name.to_string(), std::fs::read(&p).ok().map(|b| text(&b)));
+    }
+    finals
+}
+
+/// The whitespace/indent skeleton of a JSON text: every string (keys too) is
+/// `s`, every other scalar `v`; structure and whitespace kept verbatim.
+fn json_skeleton(text: &str) -> String {
+    let delim = |c: char| matches!(c, '{' | '}' | '[' | ']' | ',' | ':' | '"') || c.is_whitespace();
+    let mut out = String::with_capacity(text.len() / 4);
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '"' {
+            while let Some(d) = it.next() {
+                if d == '\\' {
+                    it.next();
+                } else if d == '"' {
+                    break;
+                }
+            }
+            out.push('s');
+        } else if delim(c) {
+            out.push(c);
+        } else {
+            while it.peek().is_some_and(|d| !delim(*d)) {
+                it.next();
+            }
+            out.push('v');
+        }
+    }
+    out
+}
+
+/// The writer's layout style of a JSON text, for documents whose shapes
+/// differ (so their skeletons cannot be equal): multi-line or not, the
+/// indent unit, `": "` vs `":"`, `", "` inline, trailing newline.
+fn json_style(text: &str) -> String {
+    let sk = json_skeleton(text);
+    let indent = sk
+        .lines()
+        .skip(1)
+        .map(|l| l.len() - l.trim_start().len())
+        .find(|n| *n > 0)
+        .unwrap_or(0);
+    format!(
+        "multiline={} indent={indent} colon_space={} comma_space={} trailing_nl={}",
+        sk.contains('\n'),
+        sk.contains(": "),
+        sk.contains(", "),
+        text.ends_with('\n')
+    )
+}
+
 impl Capture {
     pub fn load(dir: &Path) -> Result<Self> {
         let meta: AgentMeta = serde_json::from_slice(
@@ -461,20 +554,12 @@ impl Capture {
                     w: m.w,
                     topic: norm_id(&m.topic, &id),
                     retain: m.retain,
+                    qos: m.qos,
                     payload: parse_payload(&norm_id(&m.payload, &id)),
                 });
             }
         }
-        let mut finals = BTreeMap::new();
-        for name in FILES {
-            let p = dir.join("final").join(name);
-            finals.insert(
-                name.to_string(),
-                std::fs::read(&p)
-                    .ok()
-                    .map(|b| norm_id(&String::from_utf8_lossy(&b), &id)),
-            );
-        }
+        let finals = load_finals(dir, &id);
         let mut seen = BTreeSet::new();
         let mut events = Vec::new();
         let snap_texts: Vec<String> = std::fs::read_to_string(dir.join("files.ndjson"))
@@ -534,6 +619,8 @@ pub struct Mismatch {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct StreamStats {
     pub compared: usize,
+    /// Files only: absent on BOTH sides (nothing to compare).
+    pub absent_both: usize,
     pub unpaired_a: usize,
     pub unpaired_b: usize,
     pub tolerated: usize,
@@ -772,6 +859,68 @@ fn join(path: &str, seg: &str) -> String {
         seg.to_string()
     } else {
         format!("{path}.{seg}")
+    }
+}
+
+/// Appendix A publish flags `(QoS, retain)` by topic suffix (TS worker.ts:
+/// telemetry/status QoS 0, report/ack/sms QoS 1; nothing retained).
+fn contract_flags(topic: &str) -> Option<(&'static str, u8, bool)> {
+    [
+        ("/telemetry", "telemetry", 0, false),
+        ("/status", "status", 0, false),
+        ("/config/reported", "report", 1, false),
+        ("/command/response", "ack", 1, false),
+        ("/sms", "sms", 1, false),
+    ]
+    .into_iter()
+    .find(|(suf, ..)| topic.ends_with(suf))
+    .map(|(_, s, q, r)| (s, q, r))
+}
+
+/// Every publish of one capture against the Appendix A flags.
+fn flags_contract(c: &Capture, side: &str, rep: &mut Report) {
+    for m in &c.msgs {
+        let Some((stream, q, r)) = contract_flags(&m.topic) else {
+            continue;
+        };
+        rep.stats.entry("mqtt-flags".into()).or_default().compared += 1;
+        let mut bad = |path: &str, got: String, want: String| {
+            rep.push(Mismatch {
+                stream: stream.into(),
+                at: format!("{side} w {}", m.w),
+                path: path.into(),
+                a: if side == "A" {
+                    got.clone()
+                } else {
+                    want.clone()
+                },
+                b: if side == "B" { got } else { want },
+                tol: UNTOLERATED.into(),
+            })
+        };
+        if let Some(got) = m.qos.filter(|g| *g != q) {
+            bad("(qos contract)", got.to_string(), q.to_string());
+        }
+        if m.retain != r {
+            bad("(retain contract)", m.retain.to_string(), r.to_string());
+        }
+    }
+}
+
+/// One paired publish: both agents' QoS and retain must be equal.
+fn flags_pair(cx: &Cx, x: &Msg, y: &Msg, rep: &mut Report) {
+    rep.stats.entry("mqtt-flags".into()).or_default().compared += 1;
+    if x.qos != y.qos {
+        let q = |m: &Msg| m.qos.map_or(Value::Null, Value::from);
+        rep.push(cx.mismatch("(qos)", Some(&q(x)), Some(&q(y)), UNTOLERATED.into()));
+    }
+    if x.retain != y.retain {
+        rep.push(cx.mismatch(
+            "(retain)",
+            Some(&Value::Bool(x.retain)),
+            Some(&Value::Bool(y.retain)),
+            UNTOLERATED.into(),
+        ));
     }
 }
 
@@ -1340,15 +1489,28 @@ pub fn diff_with(
     let first_wall = play.start_wall;
 
     // ---- telemetry
+    flags_contract(a, "A", &mut rep);
+    flags_contract(b, "B", &mut rep);
+    // T8/sim-mode-telemetry (O7): with MODE=sim on the tape each agent's
+    // telemetry is its own simulator (TS generator vs Rust empty SimSource),
+    // so the telemetry stream is not compared at all; everything else is.
+    let sim =
+        facts.mode.as_deref() == Some("sim") && table.decision_row("sim-mode-telemetry").is_some();
+    if sim {
+        rep.inputs.insert(
+            "telemetry".into(),
+            "NOT COMPARED: tape MODE=sim (T8/sim-mode-telemetry, O7)".into(),
+        );
+    }
     let ta: Vec<&Msg> = a
         .msgs
         .iter()
-        .filter(|m| m.topic.ends_with("/telemetry"))
+        .filter(|m| !sim && m.topic.ends_with("/telemetry"))
         .collect();
     let tb: Vec<&Msg> = b
         .msgs
         .iter()
-        .filter(|m| m.topic.ends_with("/telemetry"))
+        .filter(|m| !sim && m.topic.ends_with("/telemetry"))
         .collect();
     let extended = play.with_reconnects(&ta, &tb);
     let play = &extended;
@@ -1425,6 +1587,7 @@ pub fn diff_with(
             d23: js_ts.and_then(|t| d23_at.get(&t)),
             facts,
         };
+        flags_pair(&cx, x, y, &mut rep);
         if x.topic != y.topic {
             rep.push(cx.mismatch(
                 "(topic)",
@@ -1517,7 +1680,10 @@ pub fn diff_with(
                 facts,
             };
             match (x, y) {
-                (Some(x), Some(y)) => cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep),
+                (Some(x), Some(y)) => {
+                    flags_pair(&cx, x, y, &mut rep);
+                    cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep)
+                }
                 _ => {
                     // A status message around a cut connection (online/LWT
                     // timing) is cadence; anything else is a real difference.
@@ -1538,18 +1704,26 @@ pub fn diff_with(
         }
     }
 
-    // ---- files at end
-    for name in FILES {
-        let stream = match *name {
+    // ---- files at end: every key either capture has (final.json: the
+    // player's full set incl. refresh-modem.flag, etc/kvs.json,
+    // etc/hardware.json, etc/pipelines/*), present on one side only = FAIL.
+    let names: BTreeSet<&String> = a.finals.keys().chain(b.finals.keys()).collect();
+    for name in names {
+        let stream = match name.as_str() {
             "state.json" => "state".to_string(),
             "agent.pid" => "pidfile".to_string(),
             n => format!("file:{n}"),
         };
         let (fa, fb) = (
-            a.finals.get(*name).cloned().flatten(),
-            b.finals.get(*name).cloned().flatten(),
+            a.finals.get(name).cloned().flatten(),
+            b.finals.get(name).cloned().flatten(),
         );
-        rep.stats.entry(stream.clone()).or_default().compared += 1;
+        let st = rep.stats.entry(stream.clone()).or_default();
+        if fa.is_none() && fb.is_none() {
+            st.absent_both += 1;
+            continue;
+        }
+        st.compared += 1;
         let cx = Cx {
             table,
             play,
@@ -1564,12 +1738,28 @@ pub fn diff_with(
             facts,
         };
         match (&fa, &fb) {
-            (None, None) => {}
             (Some(x), Some(y)) if x == y => {}
+            (Some(x), Some(y)) if name == "refresh-modem.flag" => {
+                // `String(now)` (worker.ts:1058): each agent's own wall ms (T1);
+                // the content must still be a bare decimal ms.
+                let ms = |t: &str| !t.is_empty() && t.bytes().all(|c| c.is_ascii_digit());
+                let tol = if ms(x) && ms(y) {
+                    "T1".to_string()
+                } else {
+                    UNTOLERATED.into()
+                };
+                rep.push(cx.mismatch(
+                    "(content)",
+                    Some(&Value::String(x.clone())),
+                    Some(&Value::String(y.clone())),
+                    tol,
+                ));
+            }
             (Some(x), Some(y)) => {
                 let (vx, vy) = (parse_payload(x), parse_payload(y));
+                let json = !vx.is_string() && !vy.is_string();
                 let (mut vx, mut vy) = (vx, vy);
-                if *name == "state.json" {
+                if name == "state.json" {
                     // recentEvents are compared as the `events` multiset.
                     for v in [&mut vx, &mut vy] {
                         if let Some(o) = v.as_object_mut() {
@@ -1577,14 +1767,35 @@ pub fn diff_with(
                         }
                     }
                 }
-                if *name == "gnss-sky.json" {
+                if name == "gnss-sky.json" {
                     sky_hold_at_write(&mut vx, &mut vy, &cx, &mut rep);
                 }
                 let before = rep.mismatches.len();
                 cmp(&cx, "", Some(&vx), Some(&vy), &mut rep);
-                if rep.mismatches.len() == before && *name == "settings.json" {
-                    // Same JSON, different bytes (whitespace) — a FAIL: the
-                    // writer is byte-exact (atomicWriteJson layout).
+                if !json {
+                    continue;
+                }
+                // Byte layout (review-wp7 finding 9): equal shapes must have
+                // the same whitespace/indent skeleton; differing shapes the
+                // same writer style.
+                let (kx, ky) = (json_skeleton(x), json_skeleton(y));
+                let shape = |k: &str| k.split_whitespace().collect::<String>();
+                let layout = if shape(&kx) == shape(&ky) {
+                    (kx != ky).then(|| (kx.clone(), ky.clone()))
+                } else {
+                    let (sx, sy) = (json_style(x), json_style(y));
+                    (sx != sy).then_some((sx, sy))
+                };
+                if let Some((lx, ly)) = layout {
+                    rep.push(cx.mismatch(
+                        "(layout)",
+                        Some(&Value::String(lx)),
+                        Some(&Value::String(ly)),
+                        UNTOLERATED.into(),
+                    ));
+                } else if rep.mismatches.len() == before && name == "settings.json" {
+                    // Same JSON, same skeleton, different bytes (escapes) — a
+                    // FAIL: the writer is byte-exact (atomicWriteJson).
                     rep.push(cx.mismatch(
                         "(bytes)",
                         Some(&Value::String(x.clone())),
@@ -1766,6 +1977,7 @@ fn diff_reports(
                     when_b: Some(y.w),
                     ..cx
                 };
+                flags_pair(&cx, x, y, rep);
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
             }
         } else {
@@ -1787,6 +1999,7 @@ fn diff_reports(
                     d23: None,
                     facts,
                 };
+                flags_pair(&cx, x, y, rep);
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
             }
         }
@@ -2097,14 +2310,14 @@ pub fn render(
     let _ = writeln!(o, "## Per stream\n");
     let _ = writeln!(
         o,
-        "| stream | compared | unpaired A | unpaired B | tolerated | UNTOLERATED |"
+        "| stream | compared | absent on both | unpaired A | unpaired B | tolerated | UNTOLERATED |"
     );
-    let _ = writeln!(o, "|---|---|---|---|---|---|");
+    let _ = writeln!(o, "|---|---|---|---|---|---|---|");
     for (s, st) in &rep.stats {
         let _ = writeln!(
             o,
-            "| {s} | {} | {} | {} | {} | {} |",
-            st.compared, st.unpaired_a, st.unpaired_b, st.tolerated, st.untolerated
+            "| {s} | {} | {} | {} | {} | {} | {} |",
+            st.compared, st.absent_both, st.unpaired_a, st.unpaired_b, st.tolerated, st.untolerated
         );
     }
     let mut by_tol: BTreeMap<&str, Vec<&Mismatch>> = BTreeMap::new();
@@ -2228,6 +2441,7 @@ mod tests {
             w,
             topic: format!("xorgate/devices/{{id}}/{topic}"),
             retain: false,
+            qos: None,
             payload,
         }
     }
@@ -3022,6 +3236,214 @@ mod tests {
             .mismatches
             .iter()
             .any(|m| m.path == "metrics.imu.ax.value" && m.tol == "T8/rig-cut-ungated"));
+    }
+
+    fn final_dir(tag: &str, kind: &str, files: &[(&str, Option<&str>)]) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("xr-{}-{tag}-{kind}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("meta.json"),
+            format!(r#"{{"label":"{kind}","kind":"{kind}","deviceId":"dev-{kind}"}}"#),
+        )
+        .unwrap();
+        let mut m = serde_json::Map::new();
+        for (k, v) in files {
+            m.insert(
+                k.to_string(),
+                match v {
+                    Some(t) => serde_json::json!({"present":true,"len":t.len(),
+                        "b64":xorgate_hal::tape::b64_encode(t.as_bytes()),"text":t}),
+                    None => serde_json::json!({"present":false}),
+                },
+            );
+        }
+        std::fs::write(
+            d.join("final.json"),
+            serde_json::to_vec(&serde_json::json!({"w":1,"files":m})).unwrap(),
+        )
+        .unwrap();
+        d
+    }
+
+    #[test]
+    fn files_from_final_json_presence_layout_and_flag() {
+        let t = table();
+        let pretty = "{\n  \"channels\": [],\n  \"uploadBucket\": \"b\"\n}\n";
+        let compact = "{\"channels\":[],\"uploadBucket\":\"b\"}";
+        let a = Capture::load(&final_dir(
+            "f",
+            "js",
+            &[
+                ("etc/kvs.json", Some(pretty)),
+                ("etc/hardware.json", Some(pretty)),
+                ("config-sync.json", Some("{\n  \"savedAt\": 1\n}\n")),
+                ("refresh-modem.flag", Some("1791599514639")),
+                ("etc/pipelines/cam0.gst", None),
+                ("commands.json", Some("{\"a\":1}")),
+            ],
+        ))
+        .unwrap();
+        let b = Capture::load(&final_dir(
+            "f",
+            "rust",
+            &[
+                ("etc/kvs.json", None),
+                ("etc/hardware.json", Some(compact)),
+                ("config-sync.json", Some("{\n  \"savedAt\": 2\n}\n")),
+                ("refresh-modem.flag", Some("1791599514001")),
+                ("etc/pipelines/cam0.gst", None),
+                ("commands.json", Some("{\"a\":1}")),
+            ],
+        ))
+        .unwrap();
+        let rep = diff_with(
+            &a,
+            &b,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        let got = |stream: &str, path: &str| {
+            rep.mismatches
+                .iter()
+                .find(|m| m.stream == stream && m.path == path)
+                .map(|m| m.tol.clone())
+        };
+        // One agent wrote kvs.json, the other did not: FAIL, not skipped.
+        assert_eq!(
+            got("file:etc/kvs.json", "(file)").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // Same JSON, different layout: FAIL.
+        assert_eq!(
+            got("file:etc/hardware.json", "(layout)").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // A T1 value with the same layout: no layout row.
+        assert_eq!(
+            got("file:config-sync.json", "savedAt").as_deref(),
+            Some("T1")
+        );
+        assert_eq!(got("file:config-sync.json", "(layout)"), None);
+        assert_eq!(
+            got("file:refresh-modem.flag", "(content)").as_deref(),
+            Some("T1")
+        );
+        assert_eq!(rep.stats["file:etc/pipelines/cam0.gst"].absent_both, 1);
+        assert_eq!(rep.stats["file:etc/pipelines/cam0.gst"].compared, 0);
+        assert_eq!(rep.stats["file:commands.json"].compared, 1);
+        // A flag that is not bare decimal ms: FAIL.
+        let b2 = Capture::load(&final_dir(
+            "g",
+            "rust",
+            &[("refresh-modem.flag", Some("1791599514001\n"))],
+        ))
+        .unwrap();
+        let rep = diff_with(
+            &a,
+            &b2,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.stream == "file:refresh-modem.flag" && m.tol == UNTOLERATED));
+        assert_eq!(json_skeleton(pretty), "{\n  s: [],\n  s: s\n}\n");
+    }
+
+    #[test]
+    fn mqtt_qos_and_retain_per_publish_and_contract() {
+        let t = table();
+        let with = |mut m: Msg, q: u8, r: bool| {
+            m.qos = Some(q);
+            m.retain = r;
+            m
+        };
+        let a = cap(
+            "js",
+            vec![
+                with(
+                    msg(10_000, "telemetry", tel(10_000, 1, 1.0, None)),
+                    0,
+                    false,
+                ),
+                with(
+                    msg(20_000, "config/reported", serde_json::json!({"rev":1})),
+                    1,
+                    false,
+                ),
+            ],
+        );
+        let b = cap(
+            "rust",
+            vec![
+                with(
+                    msg(10_010, "telemetry", tel(10_010, 1, 1.0, None)),
+                    1,
+                    false,
+                ),
+                with(
+                    msg(20_010, "config/reported", serde_json::json!({"rev":1})),
+                    1,
+                    true,
+                ),
+            ],
+        );
+        let rep = diff_with(
+            &a,
+            &b,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        let has = |stream: &str, path: &str| {
+            rep.mismatches
+                .iter()
+                .any(|m| m.stream == stream && m.path == path && m.tol == UNTOLERATED)
+        };
+        assert!(has("telemetry", "(qos)"));
+        assert!(has("telemetry", "(qos contract)"));
+        assert!(has("report", "(retain)"));
+        assert!(has("report", "(retain contract)"));
+        assert!(!has("report", "(qos)"));
+        // 4 publishes against the contract + 2 pairs.
+        assert_eq!(rep.stats["mqtt-flags"].compared, 6);
+    }
+
+    #[test]
+    fn sim_mode_tape_leaves_telemetry_uncompared() {
+        let t = table();
+        let a = cap(
+            "js",
+            vec![msg(10_000, "telemetry", tel(10_000, 1, 1.0, Some(1.0)))],
+        );
+        let b = cap(
+            "rust",
+            vec![msg(10_010, "telemetry", tel(10_010, 1, 50.0, None))],
+        );
+        let facts = InputFacts {
+            mode: Some("sim".into()),
+            ..Default::default()
+        };
+        let rep = diff_with(&a, &b, &PlayInfo::default(), &facts, &[], &t);
+        assert!(!rep.mismatches.iter().any(|m| m.stream == "telemetry"));
+        assert_eq!(rep.stats["telemetry"].compared, 0);
+        assert!(rep.inputs["telemetry"].starts_with("NOT COMPARED"));
+        let rep = diff_with(
+            &a,
+            &b,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        assert!(rep.untolerated() > 0);
     }
 
     #[test]
