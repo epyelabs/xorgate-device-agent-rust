@@ -62,10 +62,16 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc
 # (settings.json fingerprint = readSettingsHash for WP3).
 
 # Release profile per plan README §7: fat LTO, one codegen unit, stripped
-# symbols but line tables kept for backtraces. `panic = "abort"` is deliberately
-# NOT set until Phase 2 (panics must stay visible early).
+# symbols but line tables kept for backtraces. `panic = "abort"` set at the
+# Phase 2 gate (decision O10: zero `panicked` lines across the whole gate,
+# evidence phase-2/evidence/gate.md C13). The default panic hook still prints
+# the message to stderr (journal) before the abort; systemd `Restart=always`
+# brings the agent back. Consequence: `AgentCtx::spawn`'s panic net
+# (`ctx.rs`, the TS `unhandledRejection` analogue) only runs in test/dev
+# builds — a release subsystem panic now restarts the process instead.
 [profile.release]
 lto = "fat"
 codegen-units = 1
 strip = true
 debug = "line-tables-only"
+panic = "abort"
