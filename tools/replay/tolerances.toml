@@ -70,9 +70,15 @@ streams = ["telemetry"]
 startup_ms = 5000
 # ±1 tick (1000 ms at 1 Hz) + 500 ms for the phase offset between the agents.
 window_ms = 1500
-# Transitions: lte_file change/absence, i2cdetect, imu_spawn/imu_exit, exec
-# change, conn, mqtt_in, cli, NMEA stream start/stop (gap > 2 s) and GGA
-# fix-quality changes; plus gaps > 2 s in the IMU line stream.
+# Per GROUP (review-wp7 finding 3; the old single list covered 65-94 % of the
+# run): a presence difference under `metrics.<group>` is T4/<group> only within
+# ±window of THAT group's input transitions, derived by the diff from the tape:
+#   gps    ← NMEA first line, stop (gap > 2 s), stale (+10 s), resume, GGA quality change, end (+10 s)
+#   imu    ← imu_spawn / imu_exit, IMU line stream start/stop (gap > 2 s), i2cdetect
+#   lte    ← lte_file changes
+#   system ← exec / dt changes
+# Never mqtt_in / cli / conn. Any other path: only the first 5 s. diff.md prints
+# each group's window coverage (% of the run).
 
 [[rule]]
 id = "T5"
@@ -98,11 +104,38 @@ paths = [
   "**.clockStepperArmed",
   "effective.cameraMount", "effective.cameraMount.**",
 ]
-# state.json `recentEvents` msg prefixes owned by Phase 3/4.
-# `[clock]` = the offline clock stepper (clock-step.ts:232 etc., wired at
-# worker.ts:536-554), re-deferred to Phase 4 by CF20; its report hint
-# `clockStepperArmed` is already a T6 path above. FLAG: reviewer to confirm.
-event_prefixes = ["hardware:", "camera mount", "camera-mount", "led", "LED", "recording", "media", "[media", "upload", "[clock]"]
+# state.json `recentEvents` msg prefixes owned by Phase 3/4 — EXACT texts of
+# the TS emitters (review-wp7 finding 2: the old bare `upload` hid the Phase 2
+# `uploadBucket backfilled:` / `uploadBucket persist failed:`, worker.ts:800/806).
+# ONE-DIRECTIONAL: tolerated only when the JS side has the event and the Rust
+# side has none of it (Rust emitting one of these before Phase 3/4 is a bug).
+#   hardware: …            worker.ts:140 (hardware reconciler log)
+#   camera mount: …        worker.ts:181 (boot-config reconciler, cam-sensor-level-rotate)
+#   [clock] …              clock-step.ts:232-307 (offline clock stepper, CF20 → Phase 4)
+#   recording manager      recording/manager.ts:300/306/473/558/607/696/774/782,
+#                          boot-policy.ts:800/830/906 (power shed), video-capture.ts (video capture …)
+#   uploader               recording/uploader.ts:148/202/204
+# The LED renderer and the media supervisor journal no events.
+event_prefixes = [
+  "hardware: ",
+  "camera mount: ",
+  "[clock] ",
+  "recording: ",
+  "camera(s) disabled by settings: ",
+  "recording.video.enabled is on but no bridged camera is available ",
+  "power shed → ",
+  "power shed restore → ",
+  "power shedding disarmed — restoring full operation",
+  "power shedding disabled by settings — restoring full operation",
+  "telemetry recording started (",
+  "telemetry recording stopped (",
+  "video capture ",
+  "video boot-defer ",
+  "video gps gate armed (",
+  "upload: skipping unrecognized segment ",
+  "upload paused (offline)",
+  "upload failed, retrying in ",
+]
 # Report details produced ONLY by those hints: latchDetail (config-sync.ts:1007-1024)
 # returns "in force, but …" from bootDefer/powerShed (recording) and
 # `clockStepperArmed === false` (timeSync: "in force, but the clock stepper stood
@@ -111,12 +144,21 @@ event_prefixes = ["hardware:", "camera mount", "camera-mount", "led", "LED", "re
 # and the other starts with the latch prefix — every other detail is compared.
 latch_detail_paths = ["status.*.detail"]
 latch_detail_prefix = "in force, but "
+# NARROWED (review-wp7): only the exact latchDetail texts, and only JS present /
+# Rust absent. recording: "in force, but " + `; `-joined parts below;
+# timeSync: the one exact text.
+latch_detail_parts = [
+  "video is held by the boot power staging gate and starts when it releases",
+  "video is held by the GPS/LTE gate and starts when it releases",
+  "load shedding is active (*)",
+]
+latch_detail_exact = ["in force, but the clock stepper stood down for this boot (NTP is synchronized)"]
 # sudo argv owned by Phase 3/4 (camera-mount helper, set-clock helper).
 sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
 
 [[rule]]
 id = "T7"
-title = "Phase 1 accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20)"
+title = "accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20, D22, D23)"
 basis = "phase file T7; accepted-divergences.md"
 kind = "import"
 source = "phase-1/evidence/accepted-divergences.md"
@@ -256,6 +298,13 @@ source = "phase-1/evidence/accepted-divergences.md"
   matcher = "null_leaf_group"
   pinned_by = "review-wp2 #6 (documented only; accepted-divergences.md D22)"
 
+  [[rule.row]]
+  id = "D23"
+  what = "TS drops the FIRST NMEA chunk after a watchdog reopen (REOPEN_SILENT_MS silence): hardware/gps.ts:79 `stream.destroy()` leaves the old fs.ReadStream's in-flight libuv read on the old fd, that zombie read wins the first chunk after NMEA resumes and the destroyed stream discards it; the new stream starts at the second chunk. Rust (xorgate-hal nmea_tty.rs, 250 ms poll slice re-checks stop) drops the old fd and keeps the chunk — Rust matches the input. Matched ONLY: the JS side (A or B with kind js, the other rust); ONLY the first JS telemetry tick at/after each resume (from the tape); ONLY the metrics.gps fields the swallowed sentences set (GGA → fix_quality/satellites/alt/lat/lon/ttff_s; RMC → lat/lon/speed/course; GSA → hdop; GSV → satellites_in_view/sats_heard/snr_max/sky_state; a GGA quality 0 / void RMC also clears lat/lon/alt/speed/course/hdop) of the sentences in that first chunk. T4 does not apply to those gps fields at that tick. Accepted by the orchestrator 2026-10-10 (review-wp7 finding 1, resolution a)"
+  streams = ["telemetry"]
+  matcher = "nmea_reopen_first_chunk"
+  pinned_by = "review-wp7 finding 1 (Node 20 experiment 3/3; accepted-divergences.md D23)"
+
 [[rule]]
 id = "T8"
 title = "Phase 2 orchestrator decisions"
@@ -266,6 +315,20 @@ kind = "decisions"
   id = "O2"
   what = "O2 mono-vs-wall intervals — the five the TS measures on Date.now(): the gps reopen watchdog (30 s), NMEA freshness (10 s), TTFF, the gnss-sky.json 15 s cadence, the refresh 30 s window — PLUS WP2's lte/system `sample()` 1 s cache gates (collectors/lte.ts, system.ts:94-114), all on mono in Rust. Values are identical unless the wall clock steps: tolerated only within a window around a tape `clock` event that shows a wall step"
   matcher = "wall_step_window"
+  # NARROWED (review-wp7): only the six mono-derived observables.
+  observables = [
+    "telemetry:metrics.gps", "telemetry:metrics.gps.**",
+    "file:gnss-sky.json:timestamp", "file:gnss-sky.json:hold_s",
+    "ack:**",
+    "telemetry:metrics.lte", "telemetry:metrics.lte.**",
+    "telemetry:metrics.system", "telemetry:metrics.system.**",
+  ]
+
+  [[rule.row]]
+  id = "sim-mode-telemetry"
+  what = "O7 (orchestrator 2026-10-10, wp7-fix-cov sms-sim scenario): with MODE=sim on the tape (meta.env.MODE) each agent's telemetry is its own simulator — the TS generator vs the Rust empty SimSource (O7: sim runs with collectors off) — so the telemetry stream is NOT compared for that tape (diff.md says so; telemetry compared = 0). Every other stream (sms, acks, reports, status, events, files) is compared as usual"
+  streams = ["telemetry"]
+  matcher = "sim_mode"
 
   [[rule.row]]
   id = "O3"
@@ -295,7 +358,10 @@ kind = "decisions"
   id = "build"
   what = "the agent's own build identity in the report (README §6, Q7: each agent reports its own build)"
   streams = ["report"]
-  paths = ["effective.agent.build", "effective.agent.build.**"]
+  # NARROWED (review-wp7): the key set and order of `build` are compared; only
+  # the four leaf VALUES are each agent's own.
+  paths = ["effective.agent.build.version", "effective.agent.build.channel", "effective.agent.build.builtAt", "effective.agent.build.packageVersion"]
+  values_only = true
 
   [[rule.row]]
   id = "set-wifi"
@@ -329,7 +395,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "rig-cut-ungated"
-  what = "RIG limitation (FLAG, reviewer to confirm): while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the VALUES of telemetry/status stamped inside a closed span (extended until BOTH agents publish again) ±5 s may differ by one input sample; they are not value-compared. Message presence and counts still are (see reconnect-cadence / offline-queue-bound). Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
+  what = "RIG limitation, NARROWED per review-wp7 finding 4: while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the fallback pairing keeps the pre-cut offset. Inside a closed span (extended until BOTH agents publish again) ±5 s the diff therefore RE-PAIRS the telemetry with the alignment (current partner, or one tick earlier/later) that differs least, then compares STRICTLY: no presence tolerance, no gps/lte/system value tolerance. The only residual: a VALUE inside the span whose group's input the tape released BETWEEN the two agents' reads (the gate cannot hold releases while an agent's ticks are unobserved — still the case until BOTH reconnect): metrics.imu.* ← an IMU line (−1 s), metrics.lte.* ← an LTE-file change, metrics.system.* ← an exec/dt change; never gps (continuous NMEA, aligned by the re-pair). A re-pair run may orphan at most 2 ticks (judged as this row; listed with the moves in diff.md); otherwise ONE unpaired tick per side and span is reconnect-cadence. Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
   streams = ["telemetry", "status"]
   around_closed_ms = 5000
 
@@ -342,21 +408,21 @@ kind = "decisions"
 
   [[rule.row]]
   id = "input-edge"
-  what = "FLAG (rig/timing, reviewer to confirm; extends T4 from presence to a ONE-SAMPLE shift): within ±1.5 s of an input transition (GGA quality change, NMEA stream start/stop, GSV-driven sky change, lte_file/exec change, helper spawn/exit), a telemetry value pair may be a one-sample shift — A's value is one of B's neighbouring paired samples AND B's value one of A's — the input reached one agent's read a tick later. Cause: the TS handles NMEA per CHUNK on the event loop (hardware/gps.ts:61-74, fs.ReadStream through the libuv threadpool) and lagged a released line by 0.15–0.4 s in the loaded VM, where Rust's reader thread forwards it at once. Seen 1–2× per 10 min JS-vs-Rust (fix_quality on a 13 ms pair after an NMEA restart; sky_state, whose change is a hold timer measured from GSV ARRIVAL, sky_state.rs / gps.ts), never JS-vs-JS. A value that matches neither neighbour stays UNTOLERATED"
+  what = "NARROWED per review-wp7 (JS-lag only): within ±1.5 s of an NMEA transition (gps group: stream start/stop/stale/resume, GGA quality change) or a GSV satellites-in-view change, a metrics.gps.* value where the JS agent reads Rust's PREVIOUS sample and the JS NEXT sample equals Rust's value — the line reached Node's read a tick later; a Rust value one tick late is NOT covered; at most 2 ticks per 10 min. Cause: the TS handles NMEA per CHUNK on the event loop (hardware/gps.ts:61-74, fs.ReadStream through the libuv threadpool) and lagged a released line by 0.15–0.4 s in the loaded VM, where Rust's reader thread forwards it at once. Seen 1–2× per 10 min JS-vs-Rust (fix_quality on a 13 ms pair after an NMEA restart; sky_state, whose change is a hold timer measured from GSV ARRIVAL, sky_state.rs / gps.ts), never JS-vs-JS. A value that matches neither neighbour stays UNTOLERATED"
   streams = ["telemetry"]
   around_closed_ms = 1500
-
-  [[rule.row]]
-  id = "nmea-reopen-lag"
-  what = "FLAG — OPEN QUESTION for the reviewer (systematic, root cause not proven): in the first 2.5 s after NMEA resumes following a silence ≥ 30 s (REOPEN_SILENT_MS: both agents logged `[gps] NMEA silent too long — reopening the port` and reopened), the JS agent reports fix_quality 0 for ONE tick where Rust reports 1 (3/3 full-tape runs, tape t≈516 s; the q1 GGA was released 370 ms before the pair's reads), and has 1 on its next tick. Suspected TS I/O behaviour on a tty reopen: hardware/gps.ts:48-74 destroy()s the ReadStream while a libuv threadpool read() is blocked on the old fd, and handles NMEA per chunk; Rust (O1 reader thread) does not lag. Matched only for metrics.gps.* when one side's NEXT sample equals the other's value. If the reviewer rejects it, it is a WP2/Phase-4 question, not a rig fix"
-  streams = ["telemetry"]
-  around_closed_ms = 2500
+  # NARROWED (review-wp7): JS-LAG only — the JS value is Rust's PREVIOUS sample
+  # and the JS NEXT sample is Rust's value (a Rust value one tick late fails);
+  # only metrics.gps.* within ±1.5 s of an NMEA transition (gps group) or a GSV
+  # satellites-in-view change; at most 2 ticks per 10 min, else all UNTOLERATED.
+  max_hits_per_10min = 2
 
   [[rule.row]]
   id = "ttff-arrival"
-  what = "FLAG (rig/measurement, reviewer to confirm): `ttff_s` is the difference of two NMEA line ARRIVAL instants inside each process (first quality-0 GGA → first fix, gps.ts:139-151 / gps_group.rs TtffClock, identical logic). The player writes each line to both ptys at once, but Node handles a pty chunk when its event loop gets to it (fs.ReadStream reads through the libuv threadpool; 0.4–1.5 s tick stalls were seen in the loaded Docker VM) while Rust's reader thread forwards it at once; quantised to 0.1 s (round(t,1)) this flips by one step (149.1 vs 149, JS-vs-Rust; JS-vs-JS identical). Tolerated: ±0.2 s on `metrics.gps.ttff_s.value` only"
+  what = "NARROWED to ±0.1 s (review-wp7). `ttff_s` is the difference of two NMEA line ARRIVAL instants inside each process (first quality-0 GGA → first fix, gps.ts:139-151 / gps_group.rs TtffClock, identical logic). The player writes each line to both ptys at once, but Node handles a pty chunk when its event loop gets to it (fs.ReadStream reads through the libuv threadpool; 0.4–1.5 s tick stalls were seen in the loaded Docker VM) while Rust's reader thread forwards it at once; quantised to 0.1 s (round(t,1)) this flips by one step (149.1 vs 149, JS-vs-Rust; JS-vs-JS identical). Tolerated: ±0.1 s (one quantum) on `metrics.gps.ttff_s.value` only"
   streams = ["telemetry"]
-  numeric = { "metrics.gps.ttff_s.value" = 0.2 }
+  # NARROWED (review-wp7): one 0.1 s quantum.
+  numeric = { "metrics.gps.ttff_s.value" = 0.1 }
 
   [[rule.row]]
   id = "sky-file-end"
@@ -367,7 +433,11 @@ kind = "decisions"
   id = "end-snapshot"
   what = "RIG: state.json `latest` at the end — both agents get SIGTERM together, but their last ticks before it are up to one tick apart (different phases), so the final payload's values may be one sample apart; `seq` there is T2, `ts` T1. Every published payload is compared in the telemetry stream"
   streams = ["state"]
-  paths = ["latest", "latest.**"]
+  # NARROWED (review-wp7): no path exclusion. Each side's `latest` must EQUAL its
+  # own last published telemetry payload (else UNTOLERATED); across agents the
+  # key structure of `latest` is compared under the telemetry rules (T4/T6 …)
+  # and only the VALUES are this row.
+  matcher = "end_snapshot"
 
   [[rule.row]]
   id = "mqtt-error-text"
@@ -384,7 +454,14 @@ kind = "decisions"
   matcher = "reconnect_cadence"
   around_closed_ms = 5000
   event_exact = ["warn: reconnecting…", "warn: connection closed"]
-  event_prefixes = ["info: connected to ", "error: <transport error>"]
+  # NARROWED (review-wp7): `connected to …` is NOT here — each agent must log it
+  # exactly #closed spans + 1 times; `reconnecting…` / `connection closed` only
+  # with the Rust count ≤ the JS count; the transport-error class either way;
+  # an unpaired telemetry tick at most ONE per side and span; the report COUNT
+  # of a period overlapping a span only as modelled (|Δ| ≤ spans it overlaps,
+  # every extra report origin `cloud` with a rev the tape published); a report
+  # VALUE only on a path an LTE-file change between the two reports feeds.
+  event_prefixes = ["error: <transport error>"]
   count_paths = ["published", "publishErrors"]
 
   [[rule.row]]

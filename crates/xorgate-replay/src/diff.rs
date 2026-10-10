@@ -8,12 +8,14 @@
 //! <run>/<label>/meta.json            {"label","kind","deviceId",…}
 //! <run>/<label>/mqtt.ndjson          {"t","w","topic","retain","qos","payload":"<raw>"} every publish of that agent
 //! <run>/<label>/files.ndjson         {"w","name","text"|null} file snapshots on change (1 s poll)
-//! <run>/<label>/final/<name>         the files at the end
+//! <run>/<label>/final.json          every snapshotted file at the end: {"files":{key:{"present","b64",…}}}
+//! <run>/<label>/final/<name>         the files at the end (legacy captures: only these)
 //! <run>/<label>/sudo.log             "<epoch ms> <argv…>" per sudo shim call
 //! ```
 //!
 //! Streams compared: telemetry (paired by `ts`), report (quiet periods), ack,
-//! status, sms (in order), files at end, state.json at end, the state.json
+//! status, sms (in order), each publish's QoS + retain (pairwise and against
+//! Appendix A), every end file (presence, JSON, byte layout), state.json at end, the state.json
 //! `recentEvents` msg multiset, the sudo argv sequence, the pidfile shape.
 //! Every mismatch is listed with both values and the tolerance id that covers
 //! it, or `UNTOLERATED`.
@@ -25,6 +27,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use xorgate_hal::tape::{TapeEvent, TapeRecord};
 
 use crate::tolerances::Table;
 
@@ -62,7 +66,7 @@ pub struct PlayInfo {
     #[serde(default)]
     pub calibration: bool,
     /// Wall ms where NMEA resumed after a silence ≥ REOPEN_SILENT_MS (both
-    /// agents have reopened their port by then; T8 `nmea-reopen-lag`).
+    /// agents have reopened their port by then; T7/D23).
     #[serde(default)]
     pub nmea_resumes: Vec<i64>,
     /// Host reference samples `(wall ms, series → value)` from the player's
@@ -106,23 +110,333 @@ impl PlayInfo {
         out
     }
 
-    /// Range (max − min) of the host series `name` over `[from − pad, to + pad]`
-    /// wall ms; `None` without at least two samples in the window.
-    pub fn host_swing(&self, name: &str, from: i64, to: i64, pad: i64) -> Option<f64> {
-        let (lo, hi) = (from.min(to) - pad, from.max(to) + pad);
-        let vals: Vec<f64> = self
-            .host
+    /// The host series `name` at wall `w` (nearest sample within `within` ms).
+    pub fn host_at(&self, name: &str, w: i64, within: i64) -> Option<f64> {
+        self.host
             .iter()
-            .filter(|(w, _)| *w >= lo && *w <= hi)
-            .filter_map(|(_, m)| m.get(name).copied())
-            .collect();
-        if vals.len() < 2 {
-            return None;
-        }
-        let max = vals.iter().cloned().fold(f64::MIN, f64::max);
-        let min = vals.iter().cloned().fold(f64::MAX, f64::min);
-        Some(max - min)
+            .filter(|(t, m)| (t - w).abs() <= within && m.contains_key(name))
+            .min_by_key(|(t, _)| (t - w).abs())
+            .map(|(_, m)| m[name])
     }
+}
+
+/// `REOPEN_SILENT_MS` (`gps.ts`): NMEA silence after which an agent reopens its port.
+const REOPEN_SILENT_MS: u64 = 30_000;
+/// play.rs `PREFILL_MS`: state-like records before this are applied before
+/// the agents start (not transitions).
+const PREFILL_MS: u64 = 1_000;
+/// `NMEA_STALE_MS` (`gps.ts:15`): a gps group older than this is dropped.
+const NMEA_STALE_MS: i64 = 10_000;
+/// play.rs: an NMEA / IMU line stream with a gap above this stopped.
+const LINE_GAP_MS: u64 = 2_000;
+/// Lines released within this many tape ms of a chunk's first line are one
+/// read chunk (the recorder stamps the lines of one tty read alike).
+const CHUNK_MS: u64 = 2;
+
+/// One NMEA resume after a reopen-length silence (T7/D23): the sentences of
+/// the FIRST chunk after the resume — the chunk the TS loses.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NmeaReopen {
+    /// Wall ms the first resumed line was written (play.json `nmeaResumes`).
+    pub w: i64,
+    /// Sentence types (`GGA`, `RMC`, `GSA`, `GSV`, …) of that chunk's lines.
+    pub sentences: Vec<String>,
+    /// The chunk holds a GGA quality 0 or a void RMC (clears the position keys).
+    pub clears_position: bool,
+}
+
+/// Input facts the diff derives from the TAPE itself: play.json's
+/// `transitions` is one unclassified list, so the per-input rows read the
+/// tape the player released (tape `t` → wall `start_wall + t`, snapped to the
+/// player's own stamps).
+#[derive(Debug, Clone, Default)]
+pub struct InputFacts {
+    /// The tape the facts come from; `None` = not read (`tape_error` says why).
+    pub tape: Option<String>,
+    pub tape_error: Option<String>,
+    pub reopens: Vec<NmeaReopen>,
+    /// The tape's `meta.env.MODE` (`sim` → telemetry not comparable, O7).
+    pub mode: Option<String>,
+    /// T4: wall ms of the input transitions per telemetry GROUP (gps ← NMEA
+    /// start/stop/stale/resume + GGA quality; imu ← helper spawn/exit, line
+    /// gaps, i2cdetect; lte ← LTE-file changes; system ← exec/dt changes).
+    /// Never mqtt_in / cli / conn.
+    pub groups: BTreeMap<String, Vec<i64>>,
+    /// Wall ms (`start_wall + t`) of every IMU line the tape released
+    /// (T8 `rig-cut-ungated` IMU residual).
+    pub imu_lines: Vec<i64>,
+    /// Wall ms where a GSV talker's satellites-in-view changed (T8 `input-edge`).
+    pub gsv_changes: Vec<i64>,
+    /// `(wall ms, kind)` of the released non-line inputs: `config`, `command`,
+    /// `cli`, `lte_file`, `exec`, `dt`, `i2cdetect`, `conn`, `imu_spawn`,
+    /// `imu_exit` (T5 triggers, reconnect-cadence report values).
+    pub inputs: Vec<(i64, &'static str)>,
+    /// Every `rev` the tape's config publishes carry (reconnect-cadence
+    /// report count after a cut).
+    pub config_revs: BTreeSet<i64>,
+}
+
+/// `$GPGGA,…` → `GGA`.
+fn nmea_type(line: &str) -> Option<&str> {
+    let head = line.trim().strip_prefix('$')?.split([',', '*']).next()?;
+    head.get(2..).filter(|t| !t.is_empty())
+}
+
+/// Nearest stamp in `snaps` within `[est + lo, est + hi]`, else `est`.
+fn snap(est: i64, snaps: &[i64], lo: i64, hi: i64) -> i64 {
+    snaps
+        .iter()
+        .filter(|s| **s - est >= lo && **s - est <= hi)
+        .min_by_key(|s| (**s - est).abs())
+        .copied()
+        .unwrap_or(est)
+}
+
+impl InputFacts {
+    /// Read `play.tape` (load_run resolves it) and derive the facts.
+    pub fn for_play(play: &PlayInfo) -> Self {
+        if play.tape.is_empty() {
+            return Self {
+                tape_error: Some("play.json names no tape".into()),
+                ..Self::default()
+            };
+        }
+        match xorgate_hal::tape::Tape::read(Path::new(&play.tape)) {
+            Ok(t) => {
+                let mut f = Self::from_records(&t.records, play);
+                f.tape = Some(play.tape.clone());
+                f.mode = t
+                    .meta
+                    .env
+                    .get("MODE")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                f
+            }
+            Err(e) => Self {
+                tape_error: Some(format!("{}: {e}", play.tape)),
+                ..Self::default()
+            },
+        }
+    }
+
+    pub fn from_records(records: &[TapeRecord], play: &PlayInfo) -> Self {
+        let mut out = Self::default();
+        let est = |t: u64| play.start_wall + t as i64;
+        let released = |t: u64| play.end_wall <= 0 || est(t) <= play.end_wall;
+        let nmea: Vec<(u64, &str)> = records
+            .iter()
+            .filter(|r| released(r.t))
+            .filter_map(|r| match &r.ev {
+                TapeEvent::Nmea { line } => Some((r.t, line.as_str())),
+                _ => None,
+            })
+            .collect();
+        for (i, (t, _)) in nmea.iter().enumerate() {
+            let Some(prev) = i.checked_sub(1).map(|j| nmea[j].0) else {
+                continue;
+            };
+            if t - prev < REOPEN_SILENT_MS {
+                continue;
+            }
+            let chunk: Vec<&str> = nmea[i..]
+                .iter()
+                .take_while(|(u, _)| u - t <= CHUNK_MS)
+                .map(|(_, l)| *l)
+                .collect();
+            let mut r = NmeaReopen {
+                w: snap(est(*t), &play.nmea_resumes, -300, 2_000),
+                ..NmeaReopen::default()
+            };
+            for line in chunk {
+                let Some(ty) = nmea_type(line) else { continue };
+                let f: Vec<&str> = line
+                    .trim()
+                    .split('*')
+                    .next()
+                    .unwrap_or("")
+                    .split(',')
+                    .collect();
+                if (ty == "GGA" && f.get(6).is_some_and(|q| *q == "0"))
+                    || (ty == "RMC" && f.get(2).is_some_and(|s| *s == "V"))
+                {
+                    r.clears_position = true;
+                }
+                if !r.sentences.iter().any(|s| s == ty) {
+                    r.sentences.push(ty.to_string());
+                }
+            }
+            out.reopens.push(r);
+        }
+        out.groups = group_transitions(records, play);
+        let wall = |t: u64| snap(est(t), &play.transitions, -300, 2_000);
+        let mut in_view: BTreeMap<String, String> = BTreeMap::new();
+        for r in records.iter().filter(|r| released(r.t)) {
+            let kind = match &r.ev {
+                TapeEvent::Nmea { line } => {
+                    if nmea_type(line) == Some("GSV") {
+                        let talker = line.trim().get(1..3).unwrap_or("").to_string();
+                        let n = line.split(',').nth(3).unwrap_or("").to_string();
+                        if in_view.insert(talker, n.clone()).is_some_and(|o| o != n) {
+                            out.gsv_changes.push(est(r.t));
+                        }
+                    }
+                    continue;
+                }
+                TapeEvent::MqttIn { topic, .. } if topic.ends_with("/config") => {
+                    if let Some(rev) =
+                        r.ev.mqtt_payload()
+                            .and_then(|p| serde_json::from_slice::<Value>(&p).ok())
+                            .and_then(|v| v["rev"].as_i64())
+                    {
+                        out.config_revs.insert(rev);
+                    }
+                    "config"
+                }
+                TapeEvent::MqttIn { topic, .. } if topic.ends_with("/command") => "command",
+                TapeEvent::Cli { .. } => "cli",
+                TapeEvent::LteFile { .. } if r.t >= PREFILL_MS => "lte_file",
+                TapeEvent::Exec { .. } if r.t >= PREFILL_MS => "exec",
+                TapeEvent::Dt { .. } if r.t >= PREFILL_MS => "dt",
+                TapeEvent::I2cdetect { .. } if r.t >= PREFILL_MS => "i2cdetect",
+                TapeEvent::Conn { .. } => "conn",
+                TapeEvent::ImuSpawn { .. } => "imu_spawn",
+                TapeEvent::ImuExit { .. } => "imu_exit",
+                _ => continue,
+            };
+            out.inputs.push((wall(r.t), kind));
+        }
+        out.imu_lines = records
+            .iter()
+            .filter(|r| released(r.t) && matches!(r.ev, TapeEvent::Imu { .. }))
+            .map(|r| est(r.t))
+            .collect();
+        out
+    }
+
+    /// Per group, the share (%) of the comparable run time (after the T4
+    /// startup window) that lies within ±`window` of a transition.
+    pub fn coverage(&self, play: &PlayInfo, startup: i64, window: i64) -> BTreeMap<String, f64> {
+        let (lo, hi) = (play.start_wall + startup, play.end_wall);
+        let mut out = BTreeMap::new();
+        for g in ["gps", "imu", "lte", "system"] {
+            let mut iv: Vec<(i64, i64)> = self
+                .groups
+                .get(g)
+                .into_iter()
+                .flatten()
+                .map(|t| ((t - window).max(lo), (t + window).min(hi)))
+                .filter(|(a, b)| a < b)
+                .collect();
+            iv.sort();
+            let (mut covered, mut end) = (0i64, i64::MIN);
+            for (a, b) in iv {
+                let a = a.max(end);
+                if b > a {
+                    covered += b - a;
+                    end = b;
+                }
+            }
+            let span = (hi - lo).max(1);
+            out.insert(g.to_string(), covered as f64 * 100.0 / span as f64);
+        }
+        out
+    }
+}
+
+/// T4 per-group transitions from the tape (play.rs's release loop, classified).
+/// Tape `t` → wall `start_wall + t`, snapped to the player's own transition
+/// stamps (a gate hold only delays a release).
+fn group_transitions(records: &[TapeRecord], play: &PlayInfo) -> BTreeMap<String, Vec<i64>> {
+    let mut g: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    let wall = |t: u64| snap(play.start_wall + t as i64, &play.transitions, -300, 2_000);
+    let released = |t: u64| play.end_wall <= 0 || play.start_wall + t as i64 <= play.end_wall;
+    let mut push = |k: &str, w: i64| g.entry(k.to_string()).or_default().push(w);
+    // `(tape t, wall)` of the last line of each stream.
+    let mut last_nmea: Option<(u64, i64)> = None;
+    let mut last_imu: Option<(u64, i64)> = None;
+    let mut quality: Option<String> = None;
+    for r in records.iter().filter(|r| released(r.t)) {
+        match &r.ev {
+            TapeEvent::Nmea { line } => {
+                let now = wall(r.t);
+                match last_nmea {
+                    Some((lt, lw)) if r.t - lt > LINE_GAP_MS => {
+                        push("gps", lw);
+                        if r.t - lt > NMEA_STALE_MS as u64 {
+                            push("gps", lw + NMEA_STALE_MS);
+                        }
+                        push("gps", now);
+                    }
+                    None => push("gps", now),
+                    _ => {}
+                }
+                if nmea_type(line) == Some("GGA") {
+                    let q = line.split(',').nth(6).map(str::to_string);
+                    if q.is_some() && q != quality {
+                        push("gps", now);
+                        quality = q;
+                    }
+                }
+                last_nmea = Some((r.t, now));
+            }
+            TapeEvent::Imu { .. } => {
+                let now = wall(r.t);
+                match last_imu {
+                    Some((lt, lw)) if r.t - lt > LINE_GAP_MS => {
+                        push("imu", lw);
+                        push("imu", now);
+                    }
+                    None => push("imu", now),
+                    _ => {}
+                }
+                last_imu = Some((r.t, now));
+            }
+            TapeEvent::ImuSpawn { .. } | TapeEvent::ImuExit { .. } => push("imu", wall(r.t)),
+            TapeEvent::I2cdetect { .. } if r.t >= PREFILL_MS => push("imu", wall(r.t)),
+            TapeEvent::LteFile { .. } if r.t >= PREFILL_MS => push("lte", wall(r.t)),
+            TapeEvent::Exec { .. } | TapeEvent::Dt { .. } if r.t >= PREFILL_MS => {
+                push("system", wall(r.t))
+            }
+            _ => {}
+        }
+    }
+    if let Some((_, lw)) = last_nmea {
+        push("gps", lw + NMEA_STALE_MS);
+    }
+    if let Some((_, lw)) = last_imu {
+        push("imu", lw);
+    }
+    for v in g.values_mut() {
+        v.sort();
+        v.dedup();
+    }
+    g
+}
+
+/// The metrics.gps fields (`gps.ts` mapLatest) the sentences of a lost
+/// chunk would have set (T7/D23).
+fn d23_fields(r: &NmeaReopen) -> BTreeSet<&'static str> {
+    let mut out = BTreeSet::new();
+    for s in &r.sentences {
+        let f: &[&'static str] = match s.as_str() {
+            "GGA" => &["fix_quality", "satellites", "alt", "lat", "lon", "ttff_s"],
+            "RMC" => &["lat", "lon", "speed", "course"],
+            "GSA" => &["hdop"],
+            "GSV" => &["satellites_in_view", "sats_heard", "snr_max", "sky_state"],
+            _ => &[],
+        };
+        out.extend(f);
+    }
+    if r.clears_position {
+        out.extend(["lat", "lon", "alt", "speed", "course", "hdop"]);
+    }
+    out
+}
+
+/// `metrics.gps.<field>[.…]` → `<field>`.
+fn gps_field(path: &str) -> Option<&str> {
+    path.strip_prefix("metrics.gps.")?.split('.').next()
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -140,6 +454,8 @@ struct RawMsg {
     topic: String,
     #[serde(default)]
     retain: bool,
+    #[serde(default)]
+    qos: Option<u8>,
     payload: String,
 }
 
@@ -148,9 +464,12 @@ pub struct Msg {
     pub w: i64,
     /// Topic with the agent's deviceId replaced by `{id}`.
     pub topic: String,
-    /// Kept for reports (a retained publish from an agent would be a bug).
-    #[allow(dead_code)]
+    /// The publisher's retain bit (the capture subscribes with
+    /// Retain-As-Published and no retained replay).
     pub retain: bool,
+    /// The publisher's QoS (the capture subscribes at QoS 2); `None` in old
+    /// captures.
+    pub qos: Option<u8>,
     pub payload: Value,
 }
 
@@ -177,6 +496,84 @@ fn parse_payload(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
 }
 
+/// The end-of-run files: `final.json` (every key the player snapshots, raw
+/// bytes as base64, `{"present":false}` when absent) when the capture has
+/// one, else the legacy `final/<name>` copies of [`FILES`].
+fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
+    let text = |b: &[u8]| norm_id(&String::from_utf8_lossy(b), id);
+    let mut finals = BTreeMap::new();
+    let snap: Option<Value> = std::fs::read(dir.join("final.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(files) = snap.as_ref().and_then(|v| v["files"].as_object()) {
+        for (k, f) in files {
+            let bytes = (f["present"] == true)
+                .then(|| {
+                    f["b64"]
+                        .as_str()
+                        .and_then(xorgate_hal::tape::b64_decode)
+                        .or_else(|| f["text"].as_str().map(|t| t.as_bytes().to_vec()))
+                })
+                .flatten();
+            finals.insert(k.clone(), bytes.map(|b| text(&b)));
+        }
+        return finals;
+    }
+    for name in FILES {
+        let p = dir.join("final").join(name);
+        finals.insert(name.to_string(), std::fs::read(&p).ok().map(|b| text(&b)));
+    }
+    finals
+}
+
+/// The whitespace/indent skeleton of a JSON text: every string (keys too) is
+/// `s`, every other scalar `v`; structure and whitespace kept verbatim.
+fn json_skeleton(text: &str) -> String {
+    let delim = |c: char| matches!(c, '{' | '}' | '[' | ']' | ',' | ':' | '"') || c.is_whitespace();
+    let mut out = String::with_capacity(text.len() / 4);
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '"' {
+            while let Some(d) = it.next() {
+                if d == '\\' {
+                    it.next();
+                } else if d == '"' {
+                    break;
+                }
+            }
+            out.push('s');
+        } else if delim(c) {
+            out.push(c);
+        } else {
+            while it.peek().is_some_and(|d| !delim(*d)) {
+                it.next();
+            }
+            out.push('v');
+        }
+    }
+    out
+}
+
+/// The writer's layout style of a JSON text, for documents whose shapes
+/// differ (so their skeletons cannot be equal): multi-line or not, the
+/// indent unit, `": "` vs `":"`, `", "` inline, trailing newline.
+fn json_style(text: &str) -> String {
+    let sk = json_skeleton(text);
+    let indent = sk
+        .lines()
+        .skip(1)
+        .map(|l| l.len() - l.trim_start().len())
+        .find(|n| *n > 0)
+        .unwrap_or(0);
+    format!(
+        "multiline={} indent={indent} colon_space={} comma_space={} trailing_nl={}",
+        sk.contains('\n'),
+        sk.contains(": "),
+        sk.contains(", "),
+        text.ends_with('\n')
+    )
+}
+
 impl Capture {
     pub fn load(dir: &Path) -> Result<Self> {
         let meta: AgentMeta = serde_json::from_slice(
@@ -194,20 +591,12 @@ impl Capture {
                     w: m.w,
                     topic: norm_id(&m.topic, &id),
                     retain: m.retain,
+                    qos: m.qos,
                     payload: parse_payload(&norm_id(&m.payload, &id)),
                 });
             }
         }
-        let mut finals = BTreeMap::new();
-        for name in FILES {
-            let p = dir.join("final").join(name);
-            finals.insert(
-                name.to_string(),
-                std::fs::read(&p)
-                    .ok()
-                    .map(|b| norm_id(&String::from_utf8_lossy(&b), &id)),
-            );
-        }
+        let finals = load_finals(dir, &id);
         let mut seen = BTreeSet::new();
         let mut events = Vec::new();
         let snap_texts: Vec<String> = std::fs::read_to_string(dir.join("files.ndjson"))
@@ -223,7 +612,10 @@ impl Capture {
                 continue;
             };
             for e in v["recentEvents"].as_array().into_iter().flatten() {
-                let at = e["at"].as_i64().unwrap_or(0);
+                // ActivityEvent `{ts, level, msg}` (telemetry.ts); `at` kept for
+                // older captures. Keyed by it, so a repeated text is counted
+                // once per occurrence, not once per run.
+                let at = e["ts"].as_i64().or_else(|| e["at"].as_i64()).unwrap_or(0);
                 let level = e["level"].as_str().unwrap_or("").to_string();
                 let msg = norm_id(e["msg"].as_str().unwrap_or(""), &id);
                 if seen.insert((at, level.clone(), msg.clone())) {
@@ -267,6 +659,10 @@ pub struct Mismatch {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct StreamStats {
     pub compared: usize,
+    /// Files only: absent on BOTH sides (nothing to compare).
+    pub absent_both: usize,
+    /// Leaves compared (the larger document of each compared pair).
+    pub leaves: usize,
     pub unpaired_a: usize,
     pub unpaired_b: usize,
     pub tolerated: usize,
@@ -277,6 +673,11 @@ pub struct StreamStats {
 pub struct Report {
     pub stats: BTreeMap<String, StreamStats>,
     pub mismatches: Vec<Mismatch>,
+    /// What the diff derived from the tape (source, reopens, coverage …),
+    /// printed in diff.md so an empty input set is visible.
+    pub inputs: BTreeMap<String, String>,
+    /// Hits per tolerance row, every row of the table (0 included).
+    pub hits: Vec<(String, usize)>,
 }
 
 impl Report {
@@ -332,30 +733,74 @@ struct Cx<'a> {
     /// Paired telemetry only: the neighbouring pairs' payloads
     /// `[prev A, next A, prev B, next B]` (T8 `input-edge`).
     neighbors: [Option<&'a Value>; 4],
+    /// Paired telemetry only: this pair holds the JS side's first tick after
+    /// an NMEA reopen — the gps fields the lost chunk would have set (T7/D23).
+    d23: Option<&'a BTreeSet<&'static str>>,
+    facts: &'a InputFacts,
+    /// `Some(true)`: A is the js agent and B the rust one; `Some(false)`: the
+    /// reverse; `None`: same kinds (the one-directional rows never apply).
+    js_a: Option<bool>,
 }
 
 impl Cx<'_> {
-    fn near_transition(&self) -> Option<String> {
+    fn near_transition(&self, path: &str) -> Option<String> {
+        // T7/D23: at the JS side's first tick after an NMEA reopen the gps
+        // fields are judged by D23 alone (review-wp7 finding 1).
+        if self.d23.is_some() && gps_field(path).is_some() {
+            return None;
+        }
         let w = self.when?;
         let r = self.table.of_kind("presence_window", &self.stream).next()?;
         let window = r.window_ms.unwrap_or(1500) as i64;
         let startup = r.startup_ms.unwrap_or(5000) as i64;
-        if w - self.first_wall <= startup
-            || self
-                .play
-                .transitions
-                .iter()
-                .any(|t| (w - t).abs() <= window)
-        {
+        if w - self.first_wall <= startup {
             return Some(r.id.clone());
         }
-        None
+        // Only the transitions of the group the path belongs to
+        // (`metrics.<group>[.…]`); any other path has only the startup window.
+        let group = path.strip_prefix("metrics.")?.split('.').next()?;
+        self.facts
+            .groups
+            .get(group)?
+            .iter()
+            .any(|t| (w - t).abs() <= window)
+            .then(|| format!("{}/{group}", r.id))
     }
 
-    /// VALUES stamped around a closed span (rig: the hold gate cannot pair
-    /// ticks while publishes are queued) — T8 `rig-cut-ungated`.
-    fn near_closed(&self) -> Option<String> {
-        self.near_closed_as("rig-cut-ungated")
+    /// T8 `rig-cut-ungated`, narrowed: inside a closed span (after the
+    /// re-pair) a VALUE may differ only when the tape released an input of
+    /// that value's group BETWEEN the two agents' reads (the gate cannot hold
+    /// releases while an agent's ticks are unobserved): imu ← an IMU line
+    /// (−1 s: the helper's sample is read at the next tick), lte ← an LTE-file
+    /// change, system ← an exec/dt change. Never gps (NMEA flows every second;
+    /// the re-pair aligns it) and never a presence difference.
+    fn cut_input(&self, path: &str) -> Option<String> {
+        let group = path.strip_prefix("metrics.")?.split('.').next()?;
+        if !matches!(group, "imu" | "lte" | "system") {
+            return None;
+        }
+        let id = self.near_closed_as("rig-cut-ungated")?;
+        let (a, b) = (self.when?, self.when_b?);
+        let (lo, hi) = (a.min(b), a.max(b));
+        let between = |w: i64| w > lo && w <= hi;
+        let released = match group {
+            "imu" => self
+                .facts
+                .imu_lines
+                .iter()
+                .any(|w| *w >= lo - 1_000 && *w <= hi),
+            "lte" => self
+                .facts
+                .inputs
+                .iter()
+                .any(|(w, k)| *k == "lte_file" && between(*w)),
+            _ => self
+                .facts
+                .inputs
+                .iter()
+                .any(|(w, k)| matches!(*k, "exec" | "dt") && between(*w)),
+        };
+        released.then_some(id)
     }
 
     /// `when` inside a closed span (extended to both agents' reconnect) padded
@@ -378,75 +823,79 @@ impl Cx<'_> {
     /// only if the host's own reference reading (sampled by the player every
     /// 50 ms) swung by at least as much between the two agents' `ts` (±250 ms
     /// for the read-to-stamp latency).
-    fn host_attributed(&self, path: &str, over: f64) -> Option<String> {
+    fn host_attributed(&self, path: &str, p: f64, q: f64, tol: f64) -> Option<String> {
         let (id, series) = self.table.host_reference(&self.stream, path)?;
         let (a, b) = (self.when?, self.when_b?);
-        let moved = if series == "cpu" {
+        // NARROWED (review-wp7): the HOST's own difference between the two
+        // agents' instants must explain the agents' difference with the same
+        // sign, within the agents' tolerance: |(A−B) − (host(tsA) − host(tsB))| ≤ tol.
+        let hd = if series == "cpu" {
             // Each agent's cpu_usage is the busy share since its previous tick
-            // (1 s at RATE_HZ=1) ending at its read (≈ `ts`): compare the
-            // host's own busy share over the two windows.
-            (self.play.host_cpu(a, 1000)? - self.play.host_cpu(b, 1000)?).abs()
+            // (1 s at RATE_HZ=1) ending at its read (≈ `ts`).
+            self.play.host_cpu(a, 1000)? - self.play.host_cpu(b, 1000)?
         } else {
-            self.play.host_swing(&series, a, b, 250)?
+            self.play.host_at(&series, a, 250)? - self.play.host_at(&series, b, 250)?
         };
-        (moved + 1e-9 >= over).then(|| format!("{id}/host"))
+        let d = p - q;
+        (d.signum() == hd.signum() && hd != 0.0 && (d - hd).abs() <= tol + 1e-9)
+            .then(|| format!("{id}/host"))
     }
 
-    /// T8 `input-edge`: within the row's window of an input transition, a
-    /// value that is exactly the OTHER agent's previous or next sample (one
-    /// sample shifted: the input reached one agent's read a tick later).
+    /// T8 `input-edge`, NARROWED (review-wp7): JS-LAG only — within the
+    /// row's window of an NMEA transition (gps group) or a GSV
+    /// satellites-in-view change, a metrics.gps value where the JS side reads
+    /// Rust's PREVIOUS sample and the JS NEXT sample is Rust's value (Node
+    /// handles a pty chunk late). A Rust value one tick late is not covered.
     fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
-        if let Some(id) = self.nmea_reopen_lag(path, x, y) {
-            return Some(id);
-        }
         let (rid, row) = self.table.decision_row("input-edge")?;
-        if !crate::tolerances::stream_matches(&row.streams, &self.stream) {
+        if !crate::tolerances::stream_matches(&row.streams, &self.stream)
+            || !path.starts_with("metrics.gps.")
+        {
             return None;
         }
         let w = self.when?;
         let win = row.around_closed_ms.unwrap_or(1500) as i64;
-        if !self.play.transitions.iter().any(|t| (w - t).abs() <= win) {
+        let near = self
+            .facts
+            .groups
+            .get("gps")
+            .into_iter()
+            .flatten()
+            .chain(&self.facts.gsv_changes)
+            .any(|t| (w - t).abs() <= win);
+        if !near {
             return None;
         }
         let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
         let [pa, na, pb, nb] = self.neighbors;
-        // Both sides must be explained: A's value is one of B's neighbouring
-        // samples AND B's value one of A's (a step seen a tick apart).
-        let shifted = (at(pb).as_ref() == Some(x) || at(nb).as_ref() == Some(x))
-            && (at(pa).as_ref() == Some(y) || at(na).as_ref() == Some(y));
-        shifted.then(|| format!("{rid}/input-edge"))
+        let lag = match self.js_a? {
+            true => at(pb).as_ref() == Some(x) && at(na).as_ref() == Some(y),
+            false => at(pa).as_ref() == Some(y) && at(nb).as_ref() == Some(x),
+        };
+        lag.then(|| format!("{rid}/input-edge"))
     }
 
-    /// T8 `nmea-reopen-lag`: in the first ticks after NMEA resumes following
-    /// a reopen-length silence, a gps value on ONE side is still its earlier
-    /// reading while its own NEXT sample equals the other side's value.
-    fn nmea_reopen_lag(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
-        let (rid, row) = self.table.decision_row("nmea-reopen-lag")?;
-        if !path.starts_with("metrics.gps.") {
+    /// T7/D23: a gps field the TS's lost first chunk after a reopen would
+    /// have set, at the JS side's first tick after the resume.
+    fn d23(&self, path: &str) -> Option<String> {
+        let field = gps_field(path)?;
+        if !self.d23?.contains(field) {
             return None;
         }
-        let w = self.when?;
-        let win = row.around_closed_ms.unwrap_or(2500) as i64;
-        if !self
-            .play
-            .nmea_resumes
-            .iter()
-            .any(|r| w >= *r && w - r <= win)
-        {
-            return None;
-        }
-        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
-        let [_, na, _, nb] = self.neighbors;
-        (at(na).as_ref() == Some(y) || at(nb).as_ref() == Some(x))
-            .then(|| format!("{rid}/nmea-reopen-lag"))
+        self.table
+            .matcher_rows("nmea_reopen_first_chunk", &self.stream)
+            .into_iter()
+            .next()
     }
 
     /// T8 reconnect-cadence for REPORT values: after a cut each agent's
     /// reconnect triggers a `cloud` report at its own reconnect time (the Rust
     /// backoff resumes later), so an input that changed BETWEEN the two
-    /// reports' publish times (a tape transition in `(when, when_b]`) is read
-    /// differently. Only for a report pair inside a cut's window.
-    fn report_input_between(&self) -> Option<String> {
+    /// reports' publish times is read differently. NARROWED (review-wp7):
+    /// only a report pair inside a cut's window, and only the paths that
+    /// input feeds (an LTE-file change → effective.sim / uplink / apn,
+    /// status.cellular).
+    fn report_input_between(&self, path: &str) -> Option<String> {
         if self.stream != "report" {
             return None;
         }
@@ -459,13 +908,38 @@ impl Cx<'_> {
             .closed_spans
             .iter()
             .any(|(cs, ce)| lo <= ce + pad && hi >= cs - pad);
-        let input_between = self.play.transitions.iter().any(|t| *t > lo && *t <= hi);
+        let fed = |kind: &str| match kind {
+            "lte_file" => [
+                "effective.sim",
+                "effective.uplink",
+                "effective.apn",
+                "status.cellular",
+            ]
+            .iter()
+            .any(|p| path == *p || path.starts_with(&format!("{p}."))),
+            _ => false,
+        };
+        let input_between = self
+            .facts
+            .inputs
+            .iter()
+            .any(|(t, k)| *t > lo && *t <= hi && fed(k));
         (near_cut && input_between).then(|| format!("{rid}/reconnect-cadence"))
     }
 
-    fn near_wall_step(&self) -> Option<String> {
+    /// T8/O2, NARROWED (review-wp7): only the row's `observables` (the six
+    /// mono-derived ones) within ±(step + 15 s) of a wall step.
+    fn near_wall_step(&self, path: &str) -> Option<String> {
         let w = self.when?;
-        let (rid, _) = self.table.decision_row("O2")?;
+        let (rid, row) = self.table.decision_row("O2")?;
+        let observed = row.observables.iter().any(|o| {
+            o.rsplit_once(':').is_some_and(|(st, p)| {
+                st == self.stream && crate::tolerances::path_matches(p, path)
+            })
+        });
+        if !observed {
+            return None;
+        }
         self.play
             .wall_steps
             .iter()
@@ -497,14 +971,95 @@ fn join(path: &str, seg: &str) -> String {
     }
 }
 
+/// Appendix A publish flags `(QoS, retain)` by topic suffix (TS worker.ts:
+/// telemetry/status QoS 0, report/ack/sms QoS 1; nothing retained).
+fn contract_flags(topic: &str) -> Option<(&'static str, u8, bool)> {
+    [
+        ("/telemetry", "telemetry", 0, false),
+        ("/status", "status", 0, false),
+        ("/config/reported", "report", 1, false),
+        ("/command/response", "ack", 1, false),
+        ("/sms", "sms", 1, false),
+    ]
+    .into_iter()
+    .find(|(suf, ..)| topic.ends_with(suf))
+    .map(|(_, s, q, r)| (s, q, r))
+}
+
+/// Every publish of one capture against the Appendix A flags.
+fn flags_contract(c: &Capture, side: &str, rep: &mut Report) {
+    for m in &c.msgs {
+        let Some((stream, q, r)) = contract_flags(&m.topic) else {
+            continue;
+        };
+        rep.stats.entry("mqtt-flags".into()).or_default().compared += 1;
+        let mut bad = |path: &str, got: String, want: String| {
+            rep.push(Mismatch {
+                stream: stream.into(),
+                at: format!("{side} w {}", m.w),
+                path: path.into(),
+                a: if side == "A" {
+                    got.clone()
+                } else {
+                    want.clone()
+                },
+                b: if side == "B" { got } else { want },
+                tol: UNTOLERATED.into(),
+            })
+        };
+        if let Some(got) = m.qos.filter(|g| *g != q) {
+            bad("(qos contract)", got.to_string(), q.to_string());
+        }
+        if m.retain != r {
+            bad("(retain contract)", m.retain.to_string(), r.to_string());
+        }
+    }
+}
+
+/// One paired publish: both agents' QoS and retain must be equal.
+fn flags_pair(cx: &Cx, x: &Msg, y: &Msg, rep: &mut Report) {
+    rep.stats.entry("mqtt-flags".into()).or_default().compared += 1;
+    if x.qos != y.qos {
+        let q = |m: &Msg| m.qos.map_or(Value::Null, Value::from);
+        rep.push(cx.mismatch("(qos)", Some(&q(x)), Some(&q(y)), UNTOLERATED.into()));
+    }
+    if x.retain != y.retain {
+        rep.push(cx.mismatch(
+            "(retain)",
+            Some(&Value::Bool(x.retain)),
+            Some(&Value::Bool(y.retain)),
+            UNTOLERATED.into(),
+        ));
+    }
+}
+
+fn leaf_count(v: &Value) -> usize {
+    match v {
+        Value::Object(m) => m.values().map(leaf_count).sum(),
+        Value::Array(a) => a.iter().map(leaf_count).sum(),
+        _ => 1,
+    }
+}
+
 /// Recursive compare. Objects compare key ORDER too (wire bytes, serde exactness).
 fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Report) {
+    if path.is_empty() {
+        // Per-kind comparison counts: the leaves of the larger document.
+        let n = a.map_or(0, leaf_count).max(b.map_or(0, leaf_count));
+        out.stats.entry(cx.stream.clone()).or_default().leaves += n;
+    }
     if a == b && num_strict_eq(a, b) {
         return;
     }
     if let Some(id) = cx.table.excluded(&cx.stream, path) {
-        out.push(cx.mismatch(path, a, b, id));
-        return;
+        let values_only = id
+            .split_once('/')
+            .and_then(|(_, row)| cx.table.decision_row(row))
+            .is_some_and(|(_, r)| r.values_only);
+        if !values_only || (a.is_some() && b.is_some()) {
+            out.push(cx.mismatch(path, a, b, id));
+            return;
+        }
     }
     match (a, b) {
         (Some(Value::Object(x)), Some(Value::Object(y))) => {
@@ -547,7 +1102,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             {
                 let t = if (p - q).abs() <= tol + 1e-9 {
                     id
-                } else if let Some(h) = cx.host_attributed(path, (p - q).abs() - tol) {
+                } else if let Some(h) = cx.host_attributed(path, p, q, tol) {
                     h
                 } else {
                     UNTOLERATED.into()
@@ -599,14 +1154,19 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 }
             }
             let tol = cx
-                .near_closed()
+                .d23(path)
+                .or_else(|| cx.cut_input(path))
                 .or_else(|| cx.input_edge(path, x, y))
-                .or_else(|| cx.report_input_between())
-                .or_else(|| cx.near_wall_step())
+                .or_else(|| cx.report_input_between(path))
+                .or_else(|| cx.near_wall_step(path))
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
         }
         _ => {
+            if let Some(id) = cx.d23(path) {
+                out.push(cx.mismatch(path, a, b, id));
+                return;
+            }
             // T7/D22: the JS group carries a `null` leaf (a non-finite number),
             // the Rust side omitted the whole group.
             if let (Some(x), None) = (a, b) {
@@ -616,16 +1176,19 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                     return;
                 }
             }
-            // T6: a hint-only latch detail present on one side.
-            let present = a.or(b).and_then(Value::as_str);
-            if let (true, Some(text)) = (a.is_none() || b.is_none(), present) {
+            // T6, NARROWED (review-wp7): a hint-only latch detail present on
+            // the JS side and absent on the Rust side, with exactly the TS text.
+            let js_only = match cx.js_a {
+                Some(true) => a.and_then(Value::as_str).filter(|_| b.is_none()),
+                Some(false) => b.and_then(Value::as_str).filter(|_| a.is_none()),
+                None => None,
+            };
+            if let Some(text) = js_only {
                 if let Some(r) = cx.table.of_kind("phase_owned", &cx.stream).find(|r| {
                     r.latch_detail_paths
                         .iter()
                         .any(|p| crate::tolerances::path_matches(p, path))
-                        && r.latch_detail_prefix
-                            .as_deref()
-                            .is_some_and(|pre| text.starts_with(pre))
+                        && latch_text(r, text)
                 }) {
                     out.push(cx.mismatch(path, a, b, r.id.clone()));
                     return;
@@ -633,12 +1196,127 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             // Presence (or array length / type) mismatch.
             let tol = cx
-                .near_transition()
-                .or_else(|| cx.near_closed())
-                .or_else(|| cx.near_wall_step())
+                .near_transition(path)
+                .or_else(|| cx.near_wall_step(path))
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
         }
+    }
+}
+
+/// A latchDetail text (config-sync.ts:1007-1024) only a Phase 3/4 hint
+/// produces: an exact one, or the prefix + `; `-joined known parts.
+fn latch_text(r: &crate::tolerances::Rule, text: &str) -> bool {
+    if r.latch_detail_exact.iter().any(|e| e == text) {
+        return true;
+    }
+    let Some(rest) = r
+        .latch_detail_prefix
+        .as_deref()
+        .and_then(|p| text.strip_prefix(p))
+    else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest.split("; ").all(|part| {
+            r.latch_detail_parts
+                .iter()
+                .any(|known| match known.strip_suffix("*)") {
+                    Some(head) => {
+                        part.starts_with(head) && part.ends_with(')') && part.len() > head.len() + 1
+                    }
+                    None => part == known,
+                })
+        })
+}
+
+/// Scalars → `true` (not `null`: that would read as a D22 non-finite leaf),
+/// structure (keys, order, array lengths) kept.
+fn mask_scalars(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, x)| (k.clone(), mask_scalars(x)))
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(mask_scalars).collect()),
+        _ => Value::Bool(true),
+    }
+}
+
+/// T8 `end-snapshot`, NARROWED (review-wp7): state.json `latest` must EQUAL
+/// each agent's own last published telemetry payload; across the agents
+/// only its key structure is compared (under the telemetry rules, unless the
+/// telemetry is not comparable at all — sim mode), and a VALUE difference is
+/// this row. Removes `latest` from both documents afterwards.
+fn end_snapshot(
+    vx: &mut Value,
+    vy: &mut Value,
+    a: &Capture,
+    b: &Capture,
+    cx: &Cx,
+    structure: bool,
+    rep: &mut Report,
+) {
+    let take = |v: &mut Value| v.as_object_mut().and_then(|o| o.remove("latest"));
+    let (la, lb) = (take(vx), take(vy));
+    for (side, l, c) in [("A", &la, a), ("B", &lb, b)] {
+        let last = c
+            .msgs
+            .iter()
+            .filter(|m| m.topic.ends_with("/telemetry"))
+            .max_by_key(|m| m.w)
+            .map(|m| &m.payload);
+        if let (Some(l), Some(last)) = (l, last) {
+            if l != last {
+                rep.push(Mismatch {
+                    stream: "state".into(),
+                    at: format!("end {side}"),
+                    path: "latest (≠ its own last telemetry)".into(),
+                    a: if side == "A" {
+                        show(Some(l))
+                    } else {
+                        show(Some(last))
+                    },
+                    b: if side == "B" {
+                        show(Some(l))
+                    } else {
+                        show(Some(last))
+                    },
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+    }
+    match (&la, &lb) {
+        (Some(x), Some(y)) => {
+            if structure {
+                let tcx = Cx {
+                    stream: "telemetry".into(),
+                    at: "state.json latest (structure)".into(),
+                    when: ts_of(x),
+                    when_b: ts_of(y),
+                    ..*cx
+                };
+                cmp(
+                    &tcx,
+                    "",
+                    Some(&mask_scalars(x)),
+                    Some(&mask_scalars(y)),
+                    rep,
+                );
+            }
+            if x != y {
+                let id = cx
+                    .table
+                    .decision_row("end-snapshot")
+                    .map(|(r, _)| format!("{r}/end-snapshot"))
+                    .unwrap_or_else(|| UNTOLERATED.into());
+                rep.push(cx.mismatch("latest (values)", Some(x), Some(y), id));
+            }
+        }
+        (None, None) => {}
+        _ => rep.push(cx.mismatch("latest", la.as_ref(), lb.as_ref(), UNTOLERATED.into())),
     }
 }
 
@@ -806,6 +1484,208 @@ fn pair_telemetry<'a>(
     (out, ua, ub)
 }
 
+/// Leaf differences between two documents that no exclusion covers (the
+/// re-pair score).
+fn leaf_diffs(table: &Table, path: &str, a: Option<&Value>, b: Option<&Value>) -> usize {
+    if a == b || table.excluded("telemetry", path).is_some() {
+        return 0;
+    }
+    match (a, b) {
+        (Some(Value::Object(x)), Some(Value::Object(y))) => x
+            .keys()
+            .chain(y.keys().filter(|k| !x.contains_key(*k)))
+            .map(|k| leaf_diffs(table, &join(path, k), x.get(k), y.get(k)))
+            .sum(),
+        _ if table.is_delta("telemetry", path).is_some() => 0,
+        _ => 1,
+    }
+}
+
+type Pairs<'a> = Vec<(&'a Msg, &'a Msg)>;
+/// `((span start, end), ticks moved, pairs in the run, ticks orphaned)` per run.
+type Shifts = Vec<((i64, i64), usize, usize, usize)>;
+/// `(side "A"|"B", ts)` of a tick the re-pair left without a partner.
+type Orphans = Vec<(&'static str, i64)>;
+/// At most this many ticks a re-pair run may orphan (one seam per side).
+const REPAIR_MAX_ORPHANS: usize = 2;
+/// An orphaned tick costs this many leaf differences in the re-pair score.
+const REPAIR_ORPHAN_COST: u64 = 3;
+
+/// T8 `rig-cut-ungated` (review-wp7 finding 4): inside each closed span
+/// (± the row's pad) the hold gate could not pair ticks, so the diff's
+/// fallback pairing (pre-cut offset) may sit one tick off. Every contiguous
+/// run of pairs there — fallback pairs, and player pairs from the cut's start
+/// on — is re-paired tick by tick with the current partner or the B tick one
+/// before / after it (never one another pair holds, B order kept), minimising
+/// the leaf differences (ties keep the current one). Ticks left without a
+/// partner become unpaired (judged as unpaired messages).
+fn repair_cuts<'a>(
+    paired: Pairs<'a>,
+    mut ua: Vec<&'a Msg>,
+    mut ub: Vec<&'a Msg>,
+    pairs: &[(i64, i64)],
+    play: &PlayInfo,
+    table: &Table,
+) -> (Pairs<'a>, Vec<&'a Msg>, Vec<&'a Msg>, Shifts, Orphans) {
+    let mut shifts = Vec::new();
+    let mut orphans = Vec::new();
+    let Some((_, row)) = table.decision_row("rig-cut-ungated") else {
+        return (paired, ua, ub, shifts, orphans);
+    };
+    let pad = row.around_closed_ms.unwrap_or(5000) as i64;
+    let player: BTreeSet<(i64, i64)> = pairs.iter().copied().collect();
+    let is_player = |p: &(&Msg, &Msg)| matches!((ts_of(&p.0.payload), ts_of(&p.1.payload)), (Some(x), Some(y)) if player.contains(&(x, y)));
+    // Every B message in ts order (paired or not).
+    let mut bs: Vec<&'a Msg> = paired
+        .iter()
+        .map(|p| p.1)
+        .chain(ub.iter().copied())
+        .collect();
+    bs.sort_by_key(|m| ts_of(&m.payload));
+    let pos = |m: &Msg| bs.iter().position(|x| std::ptr::eq(*x, m));
+    let mut out = paired;
+    out.sort_by_key(|(x, _)| ts_of(&x.payload));
+    for &(s, e) in &play.closed_spans {
+        let inside =
+            |p: &(&Msg, &Msg)| ts_of(&p.0.payload).is_some_and(|w| w >= s - pad && w <= e + pad);
+        // Contiguous runs (A ts order) of fallback pairs inside the window.
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        for (i, p) in out.iter().enumerate() {
+            // Player pairs before the cut are gated and stay; from the cut on
+            // (through the reconnect + pad) the gate's pairs are as unreliable
+            // as the fallback's (publishes were queued, then flushed).
+            let movable = !is_player(p) || ts_of(&p.0.payload).is_some_and(|w| w >= s);
+            if inside(p) && movable {
+                cur.push(i);
+            } else if !cur.is_empty() {
+                runs.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            runs.push(cur);
+        }
+        let mut dropped: BTreeSet<usize> = BTreeSet::new();
+        for run in runs {
+            let taken: BTreeSet<usize> = out
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !run.contains(i) && !dropped.contains(i))
+                .filter_map(|(_, p)| pos(p.1))
+                .collect();
+            // Per tick: the current partner j0, or j0 ± 1 (never a B another
+            // pair holds), B order kept strictly increasing; minimise the leaf
+            // differences (a move costs 1/1000
+            // of a difference so ties keep the current partner).
+            let opts = |i: usize| -> Vec<Option<usize>> {
+                let mut v: Vec<Option<usize>> = vec![None];
+                if let Some(j0) = pos(out[i].1) {
+                    for j in [j0.checked_sub(1), Some(j0), Some(j0 + 1)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if j < bs.len() && !taken.contains(&j) {
+                            v.push(Some(j));
+                        }
+                    }
+                }
+                v
+            };
+            let cost = |i: usize, o: Option<usize>| -> u64 {
+                match o {
+                    None => REPAIR_ORPHAN_COST * 1_000,
+                    Some(j) => {
+                        let d =
+                            leaf_diffs(table, "", Some(&out[i].0.payload), Some(&bs[j].payload));
+                        let moved = pos(out[i].1) != Some(j);
+                        d as u64 * 1_000 + u64::from(moved)
+                    }
+                }
+            };
+            // State: (last chosen B index, ticks orphaned so far) → (cost,
+            // choices). A tick is orphaned when it loses its partner (A) or is
+            // skipped over (B); at most REPAIR_MAX_ORPHANS per run, each worth
+            // REPAIR_ORPHAN_COST leaf differences — a re-pair may close a seam,
+            // never drop content wholesale.
+            type Dp = BTreeMap<(Option<usize>, usize), (u64, Vec<Option<usize>>)>;
+            let mut states: Dp = BTreeMap::from([((None, 0), (0, Vec::new()))]);
+            for &i in &run {
+                let mut next: Dp = BTreeMap::new();
+                for ((last, orphans), (c, ch)) in &states {
+                    for o in opts(i) {
+                        let skipped = match (o, last) {
+                            (Some(j), Some(l)) if j <= *l => continue,
+                            (Some(j), Some(l)) => (l + 1..j).filter(|k| !taken.contains(k)).count(),
+                            (None, _) => 1,
+                            _ => 0,
+                        };
+                        let orph = orphans + skipped;
+                        if orph > REPAIR_MAX_ORPHANS {
+                            continue;
+                        }
+                        let nc = c + cost(i, o) + skipped as u64 * REPAIR_ORPHAN_COST * 1_000;
+                        let key = (o.or(*last), orph);
+                        if next.get(&key).is_none_or(|(bc, _)| nc < *bc) {
+                            let mut v = ch.clone();
+                            v.push(o);
+                            next.insert(key, (nc, v));
+                        }
+                    }
+                }
+                states = next;
+            }
+            let Some((_, choice)) = states.into_values().min_by_key(|(c, _)| *c) else {
+                continue;
+            };
+            let best: Vec<(usize, Option<&'a Msg>)> = run
+                .iter()
+                .zip(&choice)
+                .map(|(&i, o)| (i, o.map(|j| bs[j])))
+                .collect();
+            let moved = best
+                .iter()
+                .filter(|(i, b)| !b.is_some_and(|b| std::ptr::eq(b, out[*i].1)))
+                .count();
+            if moved == 0 {
+                continue;
+            }
+            let old_b: Vec<&'a Msg> = run.iter().map(|&i| out[i].1).collect();
+            let new_b: Vec<&'a Msg> = best.iter().filter_map(|(_, b)| *b).collect();
+            let mut orphaned = 0;
+            for b in old_b {
+                if !new_b.iter().any(|y| std::ptr::eq(*y, b)) {
+                    ub.push(b);
+                    orphans.push(("B", ts_of(&b.payload).unwrap_or(b.w)));
+                    orphaned += 1;
+                }
+            }
+            ub.retain(|m| !new_b.iter().any(|y| std::ptr::eq(*y, *m)));
+            for (i, b) in &best {
+                match b {
+                    Some(b) => out[*i].1 = b,
+                    None => {
+                        let m = out[*i].0;
+                        ua.push(m);
+                        orphans.push(("A", ts_of(&m.payload).unwrap_or(m.w)));
+                        orphaned += 1;
+                    }
+                }
+            }
+            dropped.extend(best.iter().filter(|(_, b)| b.is_none()).map(|(i, _)| *i));
+            shifts.push(((s, e), moved, run.len(), orphaned));
+        }
+        let mut i = 0;
+        out.retain(|_| {
+            i += 1;
+            !dropped.contains(&(i - 1))
+        });
+    }
+    out.sort_by_key(|(x, _)| ts_of(&x.payload));
+    ua.sort_by_key(|m| ts_of(&m.payload));
+    ub.sort_by_key(|m| ts_of(&m.payload));
+    (out, ua, ub, shifts, orphans)
+}
+
 fn first_values(
     msgs: &[(&Msg, &Msg)],
     table: &Table,
@@ -830,7 +1710,20 @@ fn lookup<'v>(v: &'v Value, path: &str) -> Option<&'v Value> {
     path.split('.').try_fold(v, |cur, seg| cur.get(seg))
 }
 
-/// Run the whole comparison.
+/// Which side is the js agent when the other is rust (one-directional rows).
+fn js_a_of(a: &Capture, b: &Capture) -> Option<bool> {
+    match (a.meta.kind.as_str(), b.meta.kind.as_str()) {
+        ("js", "rust") => Some(true),
+        ("rust", "js") => Some(false),
+        _ => None,
+    }
+}
+
+/// The TS config-report debounce (config-sync.ts): two triggers closer than
+/// this are one report on one agent and two on the other (T5).
+const DEBOUNCE_MS: i64 = 2_000;
+
+/// Run the whole comparison; the input facts come from `play.tape`.
 pub fn diff(
     a: &Capture,
     b: &Capture,
@@ -838,24 +1731,112 @@ pub fn diff(
     pairs: &[(i64, i64)],
     table: &Table,
 ) -> Report {
+    let facts = InputFacts::for_play(play);
+    let mut rep = diff_with(a, b, play, &facts, pairs, table);
+    require_core_kinds(&mut rep, &facts, table);
+    rep
+}
+
+/// A whole run must compare every CORE kind at least once: "0 untolerated"
+/// must never come from an empty comparison (review-wp7). (Unit tests with
+/// partial fixtures call [`diff_with`], which does not require it.)
+pub fn require_core_kinds(rep: &mut Report, facts: &InputFacts, table: &Table) {
+    let sim =
+        facts.mode.as_deref() == Some("sim") && table.decision_row("sim-mode-telemetry").is_some();
+    for k in CORE_KINDS {
+        if *k == "telemetry" && sim {
+            continue;
+        }
+        if rep.stats.get(*k).is_none_or(|st| st.compared == 0) {
+            rep.push(Mismatch {
+                stream: k.to_string(),
+                at: "run".into(),
+                path: "(no comparisons)".into(),
+                a: "0".into(),
+                b: "0".into(),
+                tol: UNTOLERATED.into(),
+            });
+        }
+    }
+    rep.hits = row_hits(rep, table);
+}
+
+/// [`diff`] with the input facts given (tests build them by hand).
+pub fn diff_with(
+    a: &Capture,
+    b: &Capture,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    pairs: &[(i64, i64)],
+    table: &Table,
+) -> Report {
     let mut rep = Report::default();
+    let js_a = js_a_of(a, b);
+    rep.inputs.insert(
+        "tape".into(),
+        match (&facts.tape, &facts.tape_error) {
+            (Some(t), _) => t.clone(),
+            (None, Some(e)) => format!("NOT READ ({e}): no tape-derived tolerance applies"),
+            (None, None) => "NOT READ: no tape-derived tolerance applies".into(),
+        },
+    );
+    rep.inputs.insert(
+        "nmea reopens (T7/D23)".into(),
+        facts.reopens.len().to_string(),
+    );
+    if let Some(r) = table.of_kind("presence_window", "telemetry").next() {
+        let (startup, window) = (
+            r.startup_ms.unwrap_or(5000) as i64,
+            r.window_ms.unwrap_or(1500) as i64,
+        );
+        for (g, pct) in facts.coverage(play, startup, window) {
+            let n = facts.groups.get(&g).map_or(0, Vec::len);
+            rep.inputs.insert(
+                format!("{} window coverage {g}", r.id),
+                format!("{pct:.1} % of the run ({n} transitions, ±{window} ms)"),
+            );
+        }
+    }
     let empty = BTreeMap::new();
     let first_wall = play.start_wall;
 
     // ---- telemetry
+    flags_contract(a, "A", &mut rep);
+    flags_contract(b, "B", &mut rep);
+    // T8/sim-mode-telemetry (O7): with MODE=sim on the tape each agent's
+    // telemetry is its own simulator (TS generator vs Rust empty SimSource),
+    // so the telemetry stream is not compared at all; everything else is.
+    let sim =
+        facts.mode.as_deref() == Some("sim") && table.decision_row("sim-mode-telemetry").is_some();
+    if sim {
+        rep.inputs.insert(
+            "telemetry".into(),
+            "NOT COMPARED: tape MODE=sim (T8/sim-mode-telemetry, O7)".into(),
+        );
+    }
     let ta: Vec<&Msg> = a
         .msgs
         .iter()
-        .filter(|m| m.topic.ends_with("/telemetry"))
+        .filter(|m| !sim && m.topic.ends_with("/telemetry"))
         .collect();
     let tb: Vec<&Msg> = b
         .msgs
         .iter()
-        .filter(|m| m.topic.ends_with("/telemetry"))
+        .filter(|m| !sim && m.topic.ends_with("/telemetry"))
         .collect();
     let extended = play.with_reconnects(&ta, &tb);
     let play = &extended;
     let (paired, ua, ub) = pair_telemetry(&ta, &tb, pairs);
+    let (paired, ua, ub, shifts, orphans) = repair_cuts(paired, ua, ub, pairs, play, table);
+    for (k, (span, moved, n, orphaned)) in shifts.iter().enumerate() {
+        rep.inputs.insert(
+            format!("rig-cut re-pair {k}"),
+            format!(
+                "span [{}..{}]: {moved} of {n} pairs moved by ±1 tick, {orphaned} tick(s) orphaned",
+                span.0, span.1
+            ),
+        );
+    }
     let bases = first_values(&paired, table, "telemetry");
     {
         let st = rep.stats.entry("telemetry".into()).or_default();
@@ -863,8 +1844,34 @@ pub fn diff(
         st.unpaired_a = ua.len();
         st.unpaired_b = ub.len();
     }
+    // T7/D23: the JS side's first tick at/after each NMEA reopen (from the
+    // tape), with the fields its lost first chunk would have set.
+    let js_side = match (a.meta.kind == "js", b.meta.kind == "js") {
+        (true, false) => Some(0),
+        (false, true) => Some(1),
+        _ => None,
+    };
+    let mut d23_at: BTreeMap<i64, BTreeSet<&'static str>> = BTreeMap::new();
+    if let Some(side) = js_side {
+        let js = if side == 0 { &ta } else { &tb };
+        for r in &facts.reopens {
+            if let Some(t) = js
+                .iter()
+                .filter_map(|m| ts_of(&m.payload))
+                .filter(|t| *t >= r.w)
+                .min()
+            {
+                d23_at.entry(t).or_default().extend(d23_fields(r));
+            }
+        }
+    }
     for (i, (x, y)) in paired.iter().enumerate() {
         let w = ts_of(&x.payload);
+        let js_ts = match js_side {
+            Some(0) => w,
+            Some(_) => ts_of(&y.payload),
+            None => None,
+        };
         let nb = |j: Option<usize>, side: usize| {
             j.and_then(|j| paired.get(j)).map(|p| {
                 if side == 0 {
@@ -889,7 +1896,11 @@ pub fn diff(
             deltas: &bases,
             first_wall,
             neighbors: [nb(prev, 0), nb(next, 0), nb(prev, 1), nb(next, 1)],
+            d23: js_ts.and_then(|t| d23_at.get(&t)),
+            facts,
+            js_a,
         };
+        flags_pair(&cx, x, y, &mut rep);
         if x.topic != y.topic {
             rep.push(cx.mismatch(
                 "(topic)",
@@ -900,6 +1911,12 @@ pub fn diff(
         }
         cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep);
     }
+    // Unpaired ticks: a re-pair seam (rig-cut-ungated, bounded by the
+    // re-pair), ONE QoS 0 tick racing each drop per side and span
+    // (reconnect-cadence; WP1 follow-up amb. 3), the run's first/last tick,
+    // ONE lead tick per logged gate skip (tick-drift).
+    let mut cadence_used: BTreeSet<(&str, usize)> = BTreeSet::new();
+    let mut skips_used: BTreeSet<usize> = BTreeSet::new();
     for (side, list) in [("A", &ua), ("B", &ub)] {
         for m in list.iter() {
             let w = ts_of(&m.payload);
@@ -913,24 +1930,44 @@ pub fn diff(
                 deltas: &empty,
                 first_wall,
                 neighbors: [None; 4],
+                d23: None,
+                facts,
+                js_a,
             };
-            // A QoS 0 tick racing the drop (±1 per span; WP1 follow-up amb. 3).
-            let tol = cx
-                .near_closed_as("reconnect-cadence")
+            let wv = w.unwrap_or(m.w);
+            let seam = orphans
+                .iter()
+                .any(|(s, t)| *s == side && *t == wv)
+                .then(|| {
+                    table
+                        .decision_row("rig-cut-ungated")
+                        .map(|(r, _)| format!("{r}/rig-cut-ungated"))
+                })
+                .flatten();
+            let tol = seam
+                .or_else(|| {
+                    let id = cx.near_closed_as("reconnect-cadence")?;
+                    let (_, row) = table.decision_row("reconnect-cadence")?;
+                    let pad = row.around_closed_ms.unwrap_or(5000) as i64;
+                    let k = play
+                        .closed_spans
+                        .iter()
+                        .position(|(a, b)| wv >= a - pad && wv <= b + pad)?;
+                    cadence_used.insert((side, k)).then_some(id)
+                })
                 .or_else(|| {
                     // The first/last tick of a run may have no partner.
-                    let w = w.unwrap_or(m.w);
-                    (w - first_wall <= 5_000 || play.end_wall - w <= 3_000)
+                    (wv - first_wall <= 5_000 || play.end_wall - wv <= 3_000)
                         .then(|| "T4".to_string())
                 })
                 .or_else(|| {
                     // A lead tick the hold gate skipped at a drift flip.
-                    let w = w.unwrap_or(m.w);
                     let (rid, _) = table.decision_row("tick-drift")?;
-                    play.skips
+                    let k = play
+                        .skips
                         .iter()
-                        .any(|(s, t)| s.eq_ignore_ascii_case(side) && (w - t).abs() <= 400)
-                        .then(|| format!("{rid}/tick-drift"))
+                        .position(|(s, t)| s.eq_ignore_ascii_case(side) && (wv - t).abs() <= 400)?;
+                    skips_used.insert(k).then(|| format!("{rid}/tick-drift"))
                 })
                 .unwrap_or_else(|| UNTOLERATED.into());
             let (pa, pb) = if side == "A" {
@@ -948,11 +1985,11 @@ pub fn diff(
     }
 
     // ---- T2: seq increments per agent
-    seq_increments(&ta, "A", play, table, &mut rep);
-    seq_increments(&tb, "B", play, table, &mut rep);
+    seq_increments(&ta, "A", play, facts, table, &mut rep);
+    seq_increments(&tb, "B", play, facts, table, &mut rep);
 
     // ---- reports: quiet periods
-    diff_reports(a, b, play, table, &mut rep);
+    diff_reports(a, b, play, facts, table, &mut rep);
 
     // ---- in-order streams
     for (suffix, stream) in [
@@ -976,9 +2013,15 @@ pub fn diff(
                 deltas: &empty,
                 first_wall,
                 neighbors: [None; 4],
+                d23: None,
+                facts,
+                js_a,
             };
             match (x, y) {
-                (Some(x), Some(y)) => cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep),
+                (Some(x), Some(y)) => {
+                    flags_pair(&cx, x, y, &mut rep);
+                    cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep)
+                }
                 _ => {
                     // A status message around a cut connection (online/LWT
                     // timing) is cadence; anything else is a real difference.
@@ -999,18 +2042,26 @@ pub fn diff(
         }
     }
 
-    // ---- files at end
-    for name in FILES {
-        let stream = match *name {
+    // ---- files at end: every key either capture has (final.json: the
+    // player's full set incl. refresh-modem.flag, etc/kvs.json,
+    // etc/hardware.json, etc/pipelines/*), present on one side only = FAIL.
+    let names: BTreeSet<&String> = a.finals.keys().chain(b.finals.keys()).collect();
+    for name in names {
+        let stream = match name.as_str() {
             "state.json" => "state".to_string(),
             "agent.pid" => "pidfile".to_string(),
             n => format!("file:{n}"),
         };
         let (fa, fb) = (
-            a.finals.get(*name).cloned().flatten(),
-            b.finals.get(*name).cloned().flatten(),
+            a.finals.get(name).cloned().flatten(),
+            b.finals.get(name).cloned().flatten(),
         );
-        rep.stats.entry(stream.clone()).or_default().compared += 1;
+        let st = rep.stats.entry(stream.clone()).or_default();
+        if fa.is_none() && fb.is_none() {
+            st.absent_both += 1;
+            continue;
+        }
+        st.compared += 1;
         let cx = Cx {
             table,
             play,
@@ -1021,29 +2072,73 @@ pub fn diff(
             deltas: &empty,
             first_wall,
             neighbors: [None; 4],
+            d23: None,
+            facts,
+            js_a,
         };
         match (&fa, &fb) {
-            (None, None) => {}
-            (Some(x), Some(y)) if x == y => {}
+            (Some(x), Some(y)) if x == y => {
+                let v = parse_payload(x);
+                rep.stats.entry(stream.clone()).or_default().leaves += leaf_count(&v);
+            }
+            (Some(x), Some(y)) if name == "refresh-modem.flag" => {
+                // `String(now)` (worker.ts:1058): each agent's own wall ms (T1);
+                // the content must still be a bare decimal ms.
+                let ms = |t: &str| !t.is_empty() && t.bytes().all(|c| c.is_ascii_digit());
+                let tol = if ms(x) && ms(y) {
+                    "T1".to_string()
+                } else {
+                    UNTOLERATED.into()
+                };
+                rep.push(cx.mismatch(
+                    "(content)",
+                    Some(&Value::String(x.clone())),
+                    Some(&Value::String(y.clone())),
+                    tol,
+                ));
+            }
             (Some(x), Some(y)) => {
                 let (vx, vy) = (parse_payload(x), parse_payload(y));
+                let json = !vx.is_string() && !vy.is_string();
                 let (mut vx, mut vy) = (vx, vy);
-                if *name == "state.json" {
+                if name == "state.json" {
                     // recentEvents are compared as the `events` multiset.
                     for v in [&mut vx, &mut vy] {
                         if let Some(o) = v.as_object_mut() {
                             o.remove("recentEvents");
                         }
                     }
+                    end_snapshot(&mut vx, &mut vy, a, b, &cx, !sim, &mut rep);
                 }
-                if *name == "gnss-sky.json" {
+                if name == "gnss-sky.json" {
                     sky_hold_at_write(&mut vx, &mut vy, &cx, &mut rep);
                 }
                 let before = rep.mismatches.len();
                 cmp(&cx, "", Some(&vx), Some(&vy), &mut rep);
-                if rep.mismatches.len() == before && *name == "settings.json" {
-                    // Same JSON, different bytes (whitespace) — a FAIL: the
-                    // writer is byte-exact (atomicWriteJson layout).
+                if !json {
+                    continue;
+                }
+                // Byte layout (review-wp7 finding 9): equal shapes must have
+                // the same whitespace/indent skeleton; differing shapes the
+                // same writer style.
+                let (kx, ky) = (json_skeleton(x), json_skeleton(y));
+                let shape = |k: &str| k.split_whitespace().collect::<String>();
+                let layout = if shape(&kx) == shape(&ky) {
+                    (kx != ky).then(|| (kx.clone(), ky.clone()))
+                } else {
+                    let (sx, sy) = (json_style(x), json_style(y));
+                    (sx != sy).then_some((sx, sy))
+                };
+                if let Some((lx, ly)) = layout {
+                    rep.push(cx.mismatch(
+                        "(layout)",
+                        Some(&Value::String(lx)),
+                        Some(&Value::String(ly)),
+                        UNTOLERATED.into(),
+                    ));
+                } else if rep.mismatches.len() == before && name == "settings.json" {
+                    // Same JSON, same skeleton, different bytes (escapes) — a
+                    // FAIL: the writer is byte-exact (atomicWriteJson).
                     rep.push(cx.mismatch(
                         "(bytes)",
                         Some(&Value::String(x.clone())),
@@ -1067,13 +2162,91 @@ pub fn diff(
     // ---- sudo argv sequence
     diff_sudo(a, b, table, &mut rep);
 
+    cap_row_hits(&mut rep, table, play, "input-edge");
+
+    // Per-kind comparison counts (review-wp7): every kind is listed.
+    for k in EXPECTED_KINDS {
+        rep.stats.entry(k.to_string()).or_default();
+    }
+    rep.hits = row_hits(&rep, table);
+
     rep
+}
+
+/// Every comparison kind diff.md lists, exercised or not.
+const EXPECTED_KINDS: &[&str] = &[
+    "telemetry",
+    "report",
+    "ack",
+    "status",
+    "sms",
+    "events",
+    "sudo",
+    "mqtt-flags",
+    "state",
+    "pidfile",
+    "file:settings.json",
+    "file:config-sync.json",
+    "file:commands.json",
+    "file:gnss-sky.json",
+    "file:refresh-modem.flag",
+    "file:etc/kvs.json",
+    "file:etc/hardware.json",
+];
+/// Kinds every run must compare at least once.
+const CORE_KINDS: &[&str] = &["telemetry", "report", "events", "state", "mqtt-flags"];
+
+/// A row with `max_hits_per_10min`: above that many distinct ticks per 10 min
+/// of run every hit of the row becomes UNTOLERATED (a systematic shift is a
+/// bug, not timing); the count is printed either way.
+fn cap_row_hits(rep: &mut Report, table: &Table, play: &PlayInfo, row_id: &str) {
+    let Some((rid, row)) = table.decision_row(row_id) else {
+        return;
+    };
+    let Some(per) = row.max_hits_per_10min else {
+        return;
+    };
+    let id = format!("{rid}/{row_id}");
+    let dur = (play.end_wall - play.start_wall).max(0);
+    let allowed = per * ((dur + 599_999) / 600_000).max(1) as usize;
+    let Report {
+        mismatches,
+        stats,
+        inputs,
+        ..
+    } = rep;
+    let ticks: BTreeSet<(&str, &str)> = mismatches
+        .iter()
+        .filter(|m| m.tol == id)
+        .map(|m| (m.stream.as_str(), m.at.as_str()))
+        .collect();
+    let n = ticks.len();
+    inputs.insert(
+        format!("{id} ticks"),
+        format!("{n} (cap {allowed} for this run)"),
+    );
+    if n > allowed {
+        for m in mismatches.iter_mut().filter(|m| m.tol == id) {
+            m.tol = UNTOLERATED.into();
+            let st = stats.entry(m.stream.clone()).or_default();
+            st.tolerated = st.tolerated.saturating_sub(1);
+            st.untolerated += 1;
+        }
+    }
 }
 
 /// T2 "seq compared as deltas": within each agent, consecutive telemetry
 /// (by `ts`) must advance `seq` by exactly 1; a jump is tolerated only around
 /// a closed span (T8 `cadence`: Rust skips publishing while disconnected).
-fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep: &mut Report) {
+fn seq_increments(
+    msgs: &[&Msg],
+    side: &str,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
+    let js_a = None;
     let mut v: Vec<(i64, i64)> = msgs
         .iter()
         .filter_map(|m| Some((ts_of(&m.payload)?, m.payload.get("seq")?.as_i64()?)))
@@ -1101,6 +2274,9 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
             deltas: &empty,
             first_wall: play.start_wall,
             neighbors: [None; 4],
+            d23: None,
+            facts,
+            js_a,
         };
         // A jump across an outage longer than the offline queue holds (1000
         // payloads ≈ 16.7 min at 1 Hz): Rust dropped the oldest queued ticks
@@ -1136,7 +2312,15 @@ fn quiet_periods(a: &[&Msg], b: &[&Msg], quiet_ms: i64) -> Vec<(i64, i64)> {
     out
 }
 
-fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &mut Report) {
+fn diff_reports(
+    a: &Capture,
+    b: &Capture,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
+    let js_a = js_a_of(a, b);
     let ra = a.stream("config/reported");
     let rb = b.stream("config/reported");
     let r5 = table.of_kind("report_count", "report").next();
@@ -1167,31 +2351,84 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
             deltas: &empty,
             first_wall: play.start_wall,
             neighbors: [None; 4],
+            d23: None,
+            facts,
+            js_a,
         };
         if pa.len() != pb.len() {
-            // T8 reconnect-cadence: around a cut each reconnect's retained
-            // redelivery triggers a `cloud` report, and mqtt.js reconnects
-            // sooner (2 s) than the Rust backoff, so it can see an
-            // intermediate retained rev the Rust agent never sees. The count
-            // of a period overlapping the (extended) span may differ; the
-            // following quiet period's last report still binds both.
-            let near_cut = table
+            // T5, NARROWED (review-wp7): only where two report triggers
+            // (config / command / cli / LTE-file inputs on the tape) fall
+            // within the 2 s debounce of each other inside the period.
+            let mut trig: Vec<i64> = facts
+                .inputs
+                .iter()
+                .filter(|(t, k)| {
+                    matches!(*k, "config" | "command" | "cli" | "lte_file")
+                        && *t >= s - DEBOUNCE_MS
+                        && *t <= e
+                })
+                .map(|(t, _)| *t)
+                .collect();
+            trig.sort();
+            let straddle = trig.windows(2).any(|w| w[1] - w[0] <= DEBOUNCE_MS);
+            // T8 reconnect-cadence, "report count after a cut" (modelled, not
+            // T5): each reconnect's retained redelivery triggers a `cloud`
+            // report, and mqtt.js reconnecting sooner (2 s) can see an
+            // intermediate retained rev the Rust agent never sees (calibration
+            // period 3: JS saw rev 1 then rev 2). So in a period overlapping a
+            // (extended) span: |Δ| ≤ the spans it overlaps, and every report
+            // the longer side has beyond the shorter's (by origin + rev) is
+            // origin `cloud` with a rev the tape's config publishes carry.
+            let after_cut = table
                 .decision_row("reconnect-cadence")
                 .and_then(|(rid, row)| {
                     let pad = row.around_closed_ms.unwrap_or(5000) as i64;
-                    play.closed_spans
+                    let spans = play
+                        .closed_spans
                         .iter()
-                        .any(|(cs, ce)| s <= ce + pad && e >= cs - pad)
-                        .then(|| format!("{rid}/reconnect-cadence"))
+                        .filter(|(cs, ce)| s <= ce + pad && e >= cs - pad)
+                        .count();
+                    let key = |m: &&Msg| {
+                        (
+                            m.payload["origin"].as_str().unwrap_or("").to_string(),
+                            m.payload["rev"].as_i64(),
+                        )
+                    };
+                    let (long, short) = if pa.len() > pb.len() {
+                        (&pa, &pb)
+                    } else {
+                        (&pb, &pa)
+                    };
+                    let mut rest: Vec<(String, Option<i64>)> = short.iter().map(key).collect();
+                    let extra: Vec<(String, Option<i64>)> = long
+                        .iter()
+                        .map(key)
+                        .filter(|k| match rest.iter().position(|r| r == k) {
+                            Some(i) => {
+                                rest.remove(i);
+                                false
+                            }
+                            None => true,
+                        })
+                        .collect();
+                    let ok = spans > 0
+                        && pa.len().abs_diff(pb.len()) <= spans
+                        && extra.iter().all(|(o, r)| {
+                            o == "cloud" && r.is_some_and(|r| facts.config_revs.contains(&r))
+                        });
+                    ok.then(|| format!("{rid}/reconnect-cadence"))
                 });
-            let tol =
-                if pa.len().abs_diff(pb.len()) <= max_delta && !pa.is_empty() && !pb.is_empty() {
-                    t5.clone()
-                } else if let Some(id) = near_cut {
-                    id
-                } else {
-                    UNTOLERATED.into()
-                };
+            let tol = if straddle
+                && pa.len().abs_diff(pb.len()) <= max_delta
+                && !pa.is_empty()
+                && !pb.is_empty()
+            {
+                t5.clone()
+            } else if let Some(id) = after_cut {
+                id
+            } else {
+                UNTOLERATED.into()
+            };
             rep.push(cx.mismatch(
                 "(count)",
                 Some(&Value::from(pa.len())),
@@ -1207,6 +2444,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                     when_b: Some(y.w),
                     ..cx
                 };
+                flags_pair(&cx, x, y, rep);
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
             }
         } else {
@@ -1225,7 +2463,11 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                     deltas: &empty,
                     first_wall: play.start_wall,
                     neighbors: [None; 4],
+                    d23: None,
+                    facts,
+                    js_a,
                 };
+                flags_pair(&cx, x, y, rep);
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
             }
         }
@@ -1343,7 +2585,50 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
     let t6 = table.of_kind("phase_owned", "events").next();
     let cadence = table.decision_row("reconnect-cadence");
     let had_cut = !play.closed_spans.is_empty();
-    rep.stats.entry("events".into()).or_default().compared = keys.len();
+    let js_a = js_a_of(a, b);
+    // Each agent connects once at start and once after every cut: a
+    // different number of `connected to` is a reconnect loop or a lost
+    // reconnect (review-wp7: `connected to` = #spans + 1 on both sides).
+    let connects = |c: &BTreeMap<String, (usize, Option<String>)>| -> usize {
+        c.iter()
+            .filter(|(k, _)| k.starts_with("info: connected to "))
+            .map(|(_, (n, _))| n)
+            .sum()
+    };
+    let want = play.closed_spans.len() + 1;
+    // (Skipped when neither capture journaled any event: a hand-built fixture.)
+    let journaled = !(a.events.is_empty() && b.events.is_empty());
+    for (side, n) in [("A", connects(&ca)), ("B", connects(&cb))]
+        .into_iter()
+        .filter(|_| journaled)
+    {
+        rep.stats.entry("events".into()).or_default().compared += 1;
+        if n != want {
+            rep.push(Mismatch {
+                stream: "events".into(),
+                at: format!("{side} count"),
+                path: "info: connected to … (count = closed spans + 1)".into(),
+                a: if side == "A" {
+                    n.to_string()
+                } else {
+                    want.to_string()
+                },
+                b: if side == "B" {
+                    n.to_string()
+                } else {
+                    want.to_string()
+                },
+                tol: UNTOLERATED.into(),
+            });
+        }
+    }
+    // `(count A, count B)` → the JS side has it and the Rust side does not.
+    let js_only = |x: usize, y: usize| match (a.meta.kind.as_str(), b.meta.kind.as_str()) {
+        ("js", "rust") => x > 0 && y == 0,
+        ("rust", "js") => y > 0 && x == 0,
+        _ => false,
+    };
+    rep.stats.entry("events".into()).or_default().compared += keys.len();
     for k in keys {
         let (x, hx) = ca.get(k).cloned().unwrap_or((0, None));
         let (y, hy) = cb.get(k).cloned().unwrap_or((0, None));
@@ -1375,19 +2660,26 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
         });
         let tol = if let Some((rid, _)) = rust_only {
             format!("{rid}/rust-only-events")
-        } else if let Some(r) =
-            t6.filter(|r| r.event_prefixes.iter().any(|p| msg.starts_with(p.as_str())))
-        {
+        } else if let Some(r) = t6.filter(|r| {
+            // Phase 3/4 texts: JS has it, Rust has none of it (one-directional).
+            js_only(x, y) && r.event_prefixes.iter().any(|p| msg.starts_with(p.as_str()))
+        }) {
             r.id.clone()
-        } else if let Some((rid, row)) = cadence.as_ref().filter(|(_, row)| {
+        } else if let Some((rid, _)) = cadence.as_ref().filter(|(_, row)| {
+            // NARROWED (review-wp7), only in a run with a closed span:
+            // `reconnecting…` / `connection closed` — the Rust agent at most
+            // as many as mqtt.js (its backoff is slower, never faster);
+            // the transport-error class — either way (detection differs).
             had_cut
-                && (row.event_exact.iter().any(|e| e == k)
+                && ((row.event_exact.iter().any(|e| e == k)
+                    && match js_a {
+                        Some(true) => y <= x,
+                        Some(false) => x <= y,
+                        None => true,
+                    })
                     || row.event_prefixes.iter().any(|p| k.starts_with(p.as_str())))
         }) {
-            let _ = row;
             format!("{rid}/reconnect-cadence")
-        } else if k.contains("<transport error>") && x > 0 && y > 0 {
-            norm.unwrap_or_else(|| UNTOLERATED.into())
         } else {
             UNTOLERATED.into()
         };
@@ -1478,6 +2770,31 @@ fn diff_sudo(a: &Capture, b: &Capture, table: &Table, rep: &mut Report) {
     }
 }
 
+/// Every row of the table (a rule without rows, else each of its rows) with
+/// the number of mismatches citing it (`<id>` or `<id>/<sub>`), 0 included.
+pub fn row_hits(rep: &Report, table: &Table) -> Vec<(String, usize)> {
+    let mut ids: Vec<String> = Vec::new();
+    for r in &table.rules {
+        if r.rows.is_empty() {
+            if !ids.contains(&r.id) {
+                ids.push(r.id.clone());
+            }
+        } else {
+            ids.extend(r.rows.iter().map(|w| format!("{}/{}", r.id, w.id)));
+        }
+    }
+    ids.into_iter()
+        .map(|id| {
+            let n = rep
+                .mismatches
+                .iter()
+                .filter(|m| m.tol == id || m.tol.starts_with(&format!("{id}/")))
+                .count();
+            (id, n)
+        })
+        .collect()
+}
+
 /// `diff.md`.
 pub fn render(
     rep: &Report,
@@ -1521,18 +2838,34 @@ pub fn render(
         unt,
         rep.mismatches.len() - unt
     );
-    let _ = writeln!(o, "## Per stream\n");
+    let _ = writeln!(o, "## Inputs the diff derived\n");
+    for (k, v) in &rep.inputs {
+        let _ = writeln!(o, "- {k}: {v}");
+    }
+    let _ = writeln!(o);
+    let _ = writeln!(o, "## Comparisons per kind\n");
     let _ = writeln!(
         o,
-        "| stream | compared | unpaired A | unpaired B | tolerated | UNTOLERATED |"
+        "| kind | compared | leaves | absent on both | unpaired A | unpaired B | tolerated | UNTOLERATED |"
     );
-    let _ = writeln!(o, "|---|---|---|---|---|---|");
+    let _ = writeln!(o, "|---|---|---|---|---|---|---|---|");
     for (s, st) in &rep.stats {
+        let compared = if st.compared == 0 {
+            "**0 — not exercised**".to_string()
+        } else {
+            st.compared.to_string()
+        };
         let _ = writeln!(
             o,
-            "| {s} | {} | {} | {} | {} | {} |",
-            st.compared, st.unpaired_a, st.unpaired_b, st.tolerated, st.untolerated
+            "| {s} | {compared} | {} | {} | {} | {} | {} | {} |",
+            st.leaves, st.absent_both, st.unpaired_a, st.unpaired_b, st.tolerated, st.untolerated
         );
+    }
+    let _ = writeln!(o, "\n## Hits per tolerance row (every row of the table)\n");
+    let _ = writeln!(o, "| row | hits |");
+    let _ = writeln!(o, "|---|---|");
+    for (id, n) in row_hits(rep, table) {
+        let _ = writeln!(o, "| {id} | {n} |");
     }
     let mut by_tol: BTreeMap<&str, Vec<&Mismatch>> = BTreeMap::new();
     for m in &rep.mismatches {
@@ -1577,6 +2910,26 @@ pub fn render(
     o
 }
 
+/// The tape play.json names, as found from where the diff runs: the path
+/// itself (inside the rig), `<run>/<name>`, or `tools/replay/.cache/tapes/<name>`
+/// (from the repo root). Unchanged when none exists (the facts report it).
+fn resolve_tape(run: &Path, tape: &str) -> String {
+    if tape.is_empty() || Path::new(tape).exists() {
+        return tape.to_string();
+    }
+    let Some(name) = Path::new(tape).file_name() else {
+        return tape.to_string();
+    };
+    [
+        run.join(name),
+        PathBuf::from("tools/replay/.cache/tapes").join(name),
+    ]
+    .into_iter()
+    .find(|p| p.exists())
+    .map(|p| p.display().to_string())
+    .unwrap_or_else(|| tape.to_string())
+}
+
 /// Load a run dir (`play.json`, `pairs.ndjson`, `a/`, `b/`).
 /// A loaded run: both captures, the run facts and the player's pairs.
 pub type Run = (Capture, Capture, PlayInfo, Vec<(i64, i64)>);
@@ -1613,6 +2966,7 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter_map(|v| Some((v["a"].as_i64()?, v["b"].as_i64()?)))
         .collect();
+    play.tape = resolve_tape(run, &play.tape);
     let ca = Capture::load(&a.unwrap_or_else(|| run.join("a")))?;
     let cb = Capture::load(&b.unwrap_or_else(|| run.join("b")))?;
     Ok((ca, cb, play, pairs))
@@ -1621,6 +2975,46 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Partial fixtures: the comparison without the whole-run core-kind
+    /// requirement (that is tested on its own).
+    fn diff(a: &Capture, b: &Capture, play: &PlayInfo, pairs: &[(i64, i64)], t: &Table) -> Report {
+        diff_with(a, b, play, &InputFacts::for_play(play), pairs, t)
+    }
+
+    #[test]
+    fn a_run_without_comparisons_of_a_core_kind_fails_and_rows_count_hits() {
+        let t = table();
+        let tel = |ts: i64| serde_json::json!({"v":1,"ts":ts,"seq":1,"metrics":{}});
+        let a = cap("js", vec![msg(1, "telemetry", tel(1))]);
+        let b = cap("rust", vec![msg(2, "telemetry", tel(2))]);
+        let rep = super::diff(&a, &b, &PlayInfo::default(), &[], &t);
+        let empty: Vec<&str> = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.path == "(no comparisons)" && m.tol == UNTOLERATED)
+            .map(|m| m.stream.as_str())
+            .collect();
+        assert_eq!(
+            empty,
+            vec!["report", "events", "state"],
+            "{:?}",
+            rep.mismatches
+        );
+        assert_eq!(rep.stats["telemetry"].compared, 1);
+        assert_eq!(rep.stats["telemetry"].leaves, 3);
+        assert_eq!(rep.stats["sms"].compared, 0, "listed even when unexercised");
+        // Every row of the table is listed, with its hit count.
+        assert!(rep.hits.iter().any(|(id, n)| id == "T7/D23" && *n == 0));
+        assert!(
+            rep.hits.iter().any(|(id, n)| id == "T1" && *n == 1),
+            "{:?}",
+            rep.hits
+        );
+        let md = render(&rep, &a, &b, &PlayInfo::default(), &t, Path::new("run"));
+        assert!(md.contains("| sms | **0 — not exercised** |"), "{md}");
+        assert!(md.contains("| T8/input-edge | 0 |"), "{md}");
+    }
 
     fn table() -> Table {
         Table::load(
@@ -1634,6 +3028,7 @@ mod tests {
             w,
             topic: format!("xorgate/devices/{{id}}/{topic}"),
             retain: false,
+            qos: None,
             payload,
         }
     }
@@ -1704,7 +3099,7 @@ mod tests {
         let tel = |ts: i64, seq: i64| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
         // A (JS) resumes 1 s after the cut; B (Rust, backoff) 8 s after and,
         // past the 1000-payload offline queue, dropped the oldest ticks.
-        let run = |span_end: i64| {
+        let run = |span_end: i64, extra: bool| {
             let mut play = PlayInfo {
                 start_wall: 0,
                 end_wall: span_end + 100_000,
@@ -1719,9 +3114,11 @@ mod tests {
                     msg(31_000, "telemetry", tel(31_000, 30)),
                     msg(49_000, "telemetry", tel(49_000, 31)),
                     msg(span_end + 1_000, "telemetry", tel(span_end + 1_000, 32)),
-                    msg(span_end + 6_000, "telemetry", tel(span_end + 6_000, 33)),
-                    msg(span_end + 8_000, "telemetry", tel(span_end + 8_000, 34)),
-                ],
+                    msg(span_end + 8_000, "telemetry", tel(span_end + 8_000, 33)),
+                ]
+                .into_iter()
+                .chain(extra.then(|| msg(span_end + 6_000, "telemetry", tel(span_end + 6_000, 40))))
+                .collect(),
             );
             let b = cap(
                 "rust",
@@ -1744,7 +3141,7 @@ mod tests {
         };
         // A 20 s outage must flush every tick now (WP1 follow-up parity): the
         // seq jump is a FAIL; the reconnect tail and the gate skip are not.
-        let short = run(70_000);
+        let short = run(70_000, false);
         assert_eq!(
             tol_of(&short, "seq (increment)"),
             vec![UNTOLERATED.to_string()]
@@ -1756,8 +3153,17 @@ mod tests {
             "{msgs:?}"
         );
         assert!(!msgs.contains(&UNTOLERATED.to_string()), "{msgs:?}");
+        // ONE racing tick per side and span: a second unpaired tick there is
+        // not cadence (it hid a missing flush).
+        let two = run(70_000, true);
+        let msgs = tol_of(&two, "(message)");
+        assert_eq!(
+            msgs.iter().filter(|t| *t == UNTOLERATED).count(),
+            1,
+            "{msgs:?}"
+        );
         // Past the queue bound (span ≥ 1000 s) the jump is the bound.
-        let long = run(1_100_000);
+        let long = run(1_100_000, false);
         assert_eq!(
             tol_of(&long, "seq (increment)"),
             vec!["T8/offline-queue-bound".to_string()]
@@ -1796,41 +3202,80 @@ mod tests {
             ),
             vec![UNTOLERATED.to_string()]
         );
+        // Rust carrying the latch text (and JS not) is a bug.
+        assert_eq!(run(None, Some(latch)), vec![UNTOLERATED.to_string()]);
+        // Only the exact TS texts: a made-up "in force, but …" fails.
+        assert_eq!(
+            run(Some("in force, but something else"), None),
+            vec![UNTOLERATED.to_string()]
+        );
+        // recording: the prefix + `; `-joined known parts.
+        let rec = "in force, but video is held by the GPS/LTE gate and starts when it releases; \
+                   load shedding is active (bridge-only)";
+        assert_eq!(run(Some(rec), None), vec!["T6".to_string()]);
+        assert_eq!(
+            run(Some("in force, but load shedding is active ()"), None),
+            vec![UNTOLERATED.to_string()]
+        );
     }
 
     #[test]
     fn report_count_around_a_cut_is_reconnect_cadence() {
         let t = table();
-        let r = |rev: i64| serde_json::json!({"v":1,"origin":"cloud","rev":rev});
+        let r = |rev: i64, origin: &str| serde_json::json!({"v":1,"origin":origin,"rev":rev});
+        // JS reconnected sooner and saw the intermediate retained rev 1.
         let a = cap(
             "js",
             vec![
-                msg(10_000, "config/reported", r(1)),
-                msg(14_000, "config/reported", r(2)),
+                msg(10_000, "config/reported", r(1, "cloud")),
+                msg(14_000, "config/reported", r(2, "cloud")),
             ],
         );
-        let b = cap("rust", vec![msg(40_000, "config/reported", r(2))]);
-        let count_tol = |play: &PlayInfo| {
-            diff(&a, &b, play, &[], &t)
+        let b = cap("rust", vec![msg(15_000, "config/reported", r(2, "cloud"))]);
+        let count_tol = |a: &Capture, play: &PlayInfo, revs: &[i64]| {
+            let f = InputFacts {
+                config_revs: revs.iter().copied().collect(),
+                ..Default::default()
+            };
+            diff_with(a, &b, play, &f, &[], &t)
                 .mismatches
                 .into_iter()
                 .filter(|m| m.path == "(count)")
                 .map(|m| m.tol)
                 .collect::<Vec<_>>()
         };
-        assert!(count_tol(&PlayInfo::default())
-            .iter()
-            .all(|x| x == UNTOLERATED));
+        let unt = vec![UNTOLERATED.to_string()];
         let cut = PlayInfo {
             closed_spans: vec![(5_000, 12_000)],
             ..Default::default()
         };
-        let tols = count_tol(&cut);
+        // No cut, no debounce straddle: a real difference (no T5 by default).
+        assert_eq!(count_tol(&a, &PlayInfo::default(), &[1, 2]), unt);
         assert_eq!(
-            tols.first().map(String::as_str),
-            Some("T8/reconnect-cadence"),
-            "{tols:?}"
+            count_tol(&a, &cut, &[1, 2]),
+            vec!["T8/reconnect-cadence".to_string()]
         );
+        // The extra report's rev was never published by the tape.
+        assert_eq!(count_tol(&a, &cut, &[2]), unt);
+        // The extra report is not a `cloud` one (a wrong trigger).
+        let a2 = cap(
+            "js",
+            vec![
+                msg(10_000, "config/reported", r(2, "boot")),
+                msg(14_000, "config/reported", r(2, "cloud")),
+            ],
+        );
+        assert_eq!(count_tol(&a2, &cut, &[1, 2]), unt);
+        // More extras than spans.
+        let a3 = cap(
+            "js",
+            vec![
+                msg(9_000, "config/reported", r(1, "cloud")),
+                msg(10_000, "config/reported", r(1, "cloud")),
+                msg(14_000, "config/reported", r(2, "cloud")),
+            ],
+        );
+        assert_eq!(count_tol(&a3, &cut, &[1, 2]), unt);
     }
 
     #[test]
@@ -1872,122 +3317,304 @@ mod tests {
     #[test]
     fn report_value_read_between_two_reconnect_reports() {
         let t = table();
-        let r = |c: &str| serde_json::json!({"v":1,"origin":"cloud","rev":1,"effective":{"sim":{"checked_at":c}}});
+        let r = |c: &str| {
+            serde_json::json!({"v":1,"origin":"cloud","rev":1,
+            "effective":{"sim":{"checked_at":c},"timeSync":{"x":c}}})
+        };
         let a = cap("js", vec![msg(59_000, "config/reported", r("10"))]);
         let b = cap("rust", vec![msg(62_000, "config/reported", r("20"))]);
-        let tol = |play: &PlayInfo| {
-            diff(&a, &b, play, &[], &t)
+        let play = PlayInfo {
+            closed_spans: vec![(37_000, 57_000)],
+            ..Default::default()
+        };
+        let tol = |inputs: Vec<(i64, &'static str)>, path: &str| {
+            let f = InputFacts {
+                inputs,
+                ..Default::default()
+            };
+            diff_with(&a, &b, &play, &f, &[], &t)
                 .mismatches
                 .into_iter()
-                .filter(|m| m.path == "effective.sim.checked_at")
+                .filter(|m| m.path == path)
                 .map(|m| m.tol)
                 .collect::<Vec<_>>()
         };
-        let mut play = PlayInfo {
-            closed_spans: vec![(37_000, 57_000)],
-            transitions: vec![61_900],
-            ..Default::default()
-        };
-        assert_eq!(tol(&play), vec!["T8/reconnect-cadence".to_string()]);
-        play.transitions = vec![70_000]; // no input change between the reports
-        assert_eq!(tol(&play), vec![UNTOLERATED.to_string()]);
+        let sim = "effective.sim.checked_at";
+        // The LTE file changed between the two reports: the sim path it feeds.
+        assert_eq!(
+            tol(vec![(61_900, "lte_file")], sim),
+            vec!["T8/reconnect-cadence".to_string()]
+        );
+        // ... but not a path the LTE file does not feed.
+        assert_eq!(
+            tol(vec![(61_900, "lte_file")], "effective.timeSync.x"),
+            vec![UNTOLERATED.to_string()]
+        );
+        // Another input kind between them, or none: a real difference.
+        assert_eq!(
+            tol(vec![(61_900, "config")], sim),
+            vec![UNTOLERATED.to_string()]
+        );
+        assert_eq!(
+            tol(vec![(70_000, "lte_file")], sim),
+            vec![UNTOLERATED.to_string()]
+        );
     }
 
     #[test]
-    fn input_edge_only_for_a_one_sample_shift_near_a_transition() {
+    fn input_edge_js_lag_only_near_nmea_and_capped() {
         let t = table();
         let tel = |ts: i64, seq: i64, q: i64| {
             serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
                 "metrics":{"gps":{"fix_quality":{"value":q}}}})
         };
-        let run = |bq: [i64; 3], transitions: Vec<i64>| {
-            let a = cap(
-                "js",
-                vec![
-                    msg(20_000, "telemetry", tel(20_000, 1, 0)),
-                    msg(21_000, "telemetry", tel(21_000, 2, 0)),
-                    msg(22_000, "telemetry", tel(22_000, 3, 1)),
-                ],
-            );
-            let b = cap(
-                "rust",
-                (0..3)
-                    .map(|k| {
-                        msg(
-                            20_010 + k * 1000,
-                            "telemetry",
-                            tel(20_010 + k * 1000, k + 1, bq[k as usize]),
-                        )
+        let side = |kind: &str, vals: &[i64], off: i64| {
+            cap(
+                kind,
+                vals.iter()
+                    .enumerate()
+                    .map(|(k, v)| {
+                        let ts = 20_000 + off + k as i64 * 1000;
+                        msg(ts, "telemetry", tel(ts, k as i64 + 1, *v))
                     })
                     .collect(),
-            );
-            let play = PlayInfo {
-                start_wall: 0,
-                end_wall: 100_000,
-                transitions,
-                ..Default::default()
-            };
-            diff(&a, &b, &play, &[], &t)
-                .mismatches
-                .into_iter()
-                .filter(|m| m.path == "metrics.gps.fix_quality.value")
-                .map(|m| m.tol)
-                .collect::<Vec<_>>()
+            )
         };
-        // B sees the fix one tick early, next to a transition: shifted sample.
-        assert_eq!(
-            run([0, 1, 1], vec![20_700]),
-            vec!["T8/input-edge".to_string()]
-        );
-        // Same shift far from any transition: a real difference.
-        assert_eq!(run([0, 1, 1], vec![]), vec![UNTOLERATED.to_string()]);
-        // A value neither neighbour had: a real difference.
-        assert_eq!(run([0, 4, 1], vec![20_700]), vec![UNTOLERATED.to_string()]);
-    }
-
-    #[test]
-    fn nmea_reopen_lag_and_sky_hold_at_write() {
-        let t = table();
-        let tel = |ts: i64, seq: i64, q: Option<i64>| {
-            let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
-            if let Some(q) = q {
-                m["metrics"]["gps"] = serde_json::json!({"fix_quality":{"value":q}});
-            }
-            m
-        };
-        let a = cap(
-            "js",
-            vec![
-                msg(50_000, "telemetry", tel(50_000, 1, None)),
-                msg(51_000, "telemetry", tel(51_000, 2, Some(0))),
-                msg(52_000, "telemetry", tel(52_000, 3, Some(1))),
-            ],
-        );
-        let b = cap(
-            "rust",
-            vec![
-                msg(50_010, "telemetry", tel(50_010, 1, None)),
-                msg(51_010, "telemetry", tel(51_010, 2, Some(1))),
-                msg(52_010, "telemetry", tel(52_010, 3, Some(1))),
-            ],
-        );
-        let mut play = PlayInfo {
+        let play = PlayInfo {
             start_wall: 0,
             end_wall: 100_000,
             ..Default::default()
         };
-        let tol = |play: &PlayInfo| {
-            diff(&a, &b, play, &[], &t)
+        let gps_at = |w: Vec<i64>| {
+            let mut f = InputFacts::default();
+            f.groups.insert("gps".into(), w);
+            f
+        };
+        let run = |a: &Capture, b: &Capture, f: &InputFacts| {
+            diff_with(a, b, &play, f, &[], &t)
                 .mismatches
                 .into_iter()
                 .filter(|m| m.path == "metrics.gps.fix_quality.value")
                 .map(|m| m.tol)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(tol(&play), vec![UNTOLERATED.to_string()]);
-        play.nmea_resumes = vec![50_700];
-        assert_eq!(tol(&play), vec!["T8/nmea-reopen-lag".to_string()]);
+        let near = gps_at(vec![20_700]);
+        let edge = vec!["T8/input-edge".to_string()];
+        let unt = vec![UNTOLERATED.to_string()];
+        // JS (A) one tick late: JS = Rust's previous, JS next = Rust's.
+        let (js, rs) = (side("js", &[0, 0, 1], 0), side("rust", &[0, 1, 1], 10));
+        assert_eq!(run(&js, &rs, &near), edge);
+        // The same with JS as B.
+        assert_eq!(
+            run(
+                &side("rust", &[0, 1, 1], 0),
+                &side("js", &[0, 0, 1], 10),
+                &near
+            ),
+            edge
+        );
+        // RUST one tick late: not covered.
+        assert_eq!(
+            run(
+                &side("js", &[0, 1, 1], 0),
+                &side("rust", &[0, 0, 1], 10),
+                &near
+            ),
+            unt
+        );
+        // Far from an NMEA transition, or next to a non-NMEA one: not covered.
+        assert_eq!(run(&js, &rs, &InputFacts::default()), unt);
+        let mut lte = InputFacts::default();
+        lte.groups.insert("lte".into(), vec![20_700]);
+        assert_eq!(run(&js, &rs, &lte), unt);
+        // A GSV in-view change counts as an NMEA transition.
+        let gsv = InputFacts {
+            gsv_changes: vec![21_400],
+            ..Default::default()
+        };
+        assert_eq!(run(&js, &rs, &gsv), edge);
+        // A value neither neighbour had: a real difference.
+        assert_eq!(run(&js, &side("rust", &[0, 4, 1], 10), &near), unt);
+        // More than 2 ticks in a (≤ 10 min) run: every hit is UNTOLERATED.
+        let js3 = side("js", &[0, 0, 1, 1, 2, 2, 3], 0);
+        let rs3 = side("rust", &[0, 1, 1, 2, 2, 3, 3], 10);
+        let many = gps_at(vec![21_000, 23_000, 25_000]);
+        let got = run(&js3, &rs3, &many);
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got.iter().all(|t| t == UNTOLERATED), "{got:?}");
+    }
 
+    fn nmea(t: u64, line: &str) -> TapeRecord {
+        TapeRecord {
+            t,
+            w: t as i64,
+            ev: TapeEvent::Nmea { line: line.into() },
+        }
+    }
+
+    #[test]
+    fn d23_facts_from_the_tape_first_chunk_after_a_reopen() {
+        let play = PlayInfo {
+            start_wall: 1_000_000,
+            end_wall: 2_000_000,
+            nmea_resumes: vec![1_050_120],
+            ..Default::default()
+        };
+        let recs = vec![
+            nmea(
+                10_000,
+                "$GPGGA,000000,4807.038,N,01131.000,E,1,08,0.9,545.4,M,,,,*47",
+            ),
+            // 40 s silence, then GGA (q0) + GSV in ONE chunk, RMC 8 ms later.
+            nmea(50_000, "$GPGGA,000040,,,,,0,00,,,M,,,,*66"),
+            nmea(50_001, "$GPGSV,1,1,01,01,40,083,46*4B"),
+            nmea(50_008, "$GPRMC,000040,V,,,,,,,010125,,,N*48"),
+            nmea(51_000, "$GPGGA,000041,,,,,0,00,,,M,,,,*67"),
+        ];
+        let f = InputFacts::from_records(&recs, &play);
+        assert_eq!(f.reopens.len(), 1, "{f:?}");
+        let r = &f.reopens[0];
+        assert_eq!(r.w, 1_050_120, "snapped to play.json nmeaResumes");
+        assert_eq!(r.sentences, vec!["GGA".to_string(), "GSV".to_string()]);
+        assert!(r.clears_position);
+        let fields = d23_fields(r);
+        for k in [
+            "fix_quality",
+            "satellites",
+            "alt",
+            "satellites_in_view",
+            "hdop",
+        ] {
+            assert!(fields.contains(k), "{k}");
+        }
+        // A shorter gap is not a reopen.
+        let short = vec![nmea(1_000, "$GPGGA,1"), nmea(20_000, "$GPGGA,2")];
+        assert!(InputFacts::from_records(&short, &play).reopens.is_empty());
+    }
+
+    #[test]
+    fn d23_only_js_first_tick_after_reopen_and_only_the_lost_fields() {
+        let t = table();
+        let gps = |q: i64, sats: Option<i64>, alt: Option<f64>| {
+            let mut g = serde_json::json!({"fix_quality":{"value":q}});
+            if let Some(s) = sats {
+                g["satellites"] = serde_json::json!({"value":s});
+            }
+            if let Some(a) = alt {
+                g["alt"] = serde_json::json!({"value":a,"unit":"m"});
+            }
+            g
+        };
+        let tel = |ts: i64, seq: i64, g: Value| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{"gps":g}});
+        // JS lost the GGA: fix_quality 0, no satellites/alt on its first tick.
+        let js = cap(
+            "js",
+            vec![
+                msg(
+                    50_000,
+                    "telemetry",
+                    tel(50_000, 1, gps(1, Some(8), Some(545.4))),
+                ),
+                msg(51_000, "telemetry", tel(51_000, 2, gps(0, None, None))),
+                msg(
+                    52_000,
+                    "telemetry",
+                    tel(52_000, 3, gps(1, Some(8), Some(545.5))),
+                ),
+            ],
+        );
+        let rust = |second: Value| {
+            cap(
+                "rust",
+                vec![
+                    msg(
+                        50_010,
+                        "telemetry",
+                        tel(50_010, 1, gps(1, Some(8), Some(545.4))),
+                    ),
+                    msg(51_010, "telemetry", tel(51_010, 2, second)),
+                    msg(
+                        52_010,
+                        "telemetry",
+                        tel(52_010, 3, gps(1, Some(8), Some(545.5))),
+                    ),
+                ],
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            // An input transition next to the tick: T4 must NOT cover the
+            // gps fields of the D23 tick.
+            transitions: vec![50_700],
+            ..Default::default()
+        };
+        let gga = InputFacts {
+            reopens: vec![NmeaReopen {
+                w: 50_700,
+                sentences: vec!["GGA".into()],
+                clears_position: false,
+            }],
+            ..Default::default()
+        };
+        let tols = |a: &Capture, b: &Capture, facts: &InputFacts| {
+            diff_with(a, b, &play, facts, &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("metrics.gps"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let b = rust(gps(1, Some(8), Some(545.5)));
+        let got = tols(&js, &b, &gga);
+        assert!(!got.is_empty());
+        assert!(got.iter().all(|(_, t)| t == "T7/D23"), "{got:?}");
+        // Without the reopen fact: the value difference is UNTOLERATED.
+        let got = tols(&js, &b, &InputFacts::default());
+        assert!(got.iter().any(|(_, t)| t == UNTOLERATED), "{got:?}");
+        // The lost chunk was an RMC: fix_quality / satellites are NOT its
+        // fields → UNTOLERATED (and T4 does not step in).
+        let rmc = InputFacts {
+            reopens: vec![NmeaReopen {
+                w: 50_700,
+                sentences: vec!["RMC".into()],
+                clears_position: false,
+            }],
+            ..Default::default()
+        };
+        let got = tols(&js, &b, &rmc);
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "metrics.gps.fix_quality.value" && t == UNTOLERATED),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "metrics.gps.satellites" && t == UNTOLERATED),
+            "{got:?}"
+        );
+        // Rust-vs-Rust (no JS side): D23 never applies.
+        let mut r2 = js.clone();
+        r2.meta.kind = "rust".into();
+        let got = tols(&r2, &b, &gga);
+        assert!(got.iter().all(|(_, t)| t != "T7/D23"), "{got:?}");
+        // Only the FIRST JS tick after the resume: a difference on the
+        // second tick stays UNTOLERATED.
+        let late = InputFacts {
+            reopens: vec![NmeaReopen {
+                w: 49_000,
+                sentences: vec!["GGA".into()],
+                clears_position: false,
+            }],
+            ..Default::default()
+        };
+        let got = tols(&js, &b, &late);
+        assert!(got.iter().any(|(_, t)| t == UNTOLERATED), "{got:?}");
+    }
+
+    #[test]
+    fn sky_hold_at_write() {
+        let t = table();
         // gnss-sky.json: same state, hold_s apart by the write distance.
         let mut ca = cap("js", vec![]);
         let mut cb = cap("rust", vec![]);
@@ -2077,6 +3704,634 @@ mod tests {
     }
 
     #[test]
+    fn should_narrowings_host_sign_build_o2_end_snapshot() {
+        let t = table();
+        // T3/host: the host's own difference must explain A − B WITH its sign.
+        let ram = |ts: i64, v: f64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":1,
+                "metrics":{"system":{"ram_usage":{"value":v,"unit":"%"}}}})
+        };
+        let host = |w: i64, v: f64| (w, BTreeMap::from([("ram".to_string(), v)]));
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            host: vec![host(10_000, 20.0), host(10_200, 25.5)],
+            ..Default::default()
+        };
+        let tol_ram = |bv: f64| {
+            let a = cap("js", vec![msg(10_000, "telemetry", ram(10_000, 20.0))]);
+            let b = cap("rust", vec![msg(10_200, "telemetry", ram(10_200, bv))]);
+            diff(&a, &b, &play, &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.path == "metrics.system.ram_usage.value")
+                .map(|m| m.tol)
+        };
+        assert_eq!(tol_ram(25.0).as_deref(), Some("T3/host"));
+        // The host rose 5.5 points, Rust reports 5 points LOWER: a formula bug.
+        assert_eq!(tol_ram(15.0).as_deref(), Some(UNTOLERATED));
+
+        // build: the four leaf values are each agent's own; the key set is not.
+        let rep_b = |build: Value| serde_json::json!({"v":1,"origin":"boot","rev":1,"effective":{"agent":{"build":build}}});
+        let build_tols = |bb: Value| {
+            let a = cap(
+                "js",
+                vec![msg(
+                    1_000,
+                    "config/reported",
+                    rep_b(
+                        serde_json::json!({"version":"0.2.0","channel":"local","builtAt":null,"packageVersion":"0.2.0"}),
+                    ),
+                )],
+            );
+            let b = cap("rust", vec![msg(1_000, "config/reported", rep_b(bb))]);
+            diff(&a, &b, &PlayInfo::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("effective.agent.build"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let got = build_tols(
+            serde_json::json!({"version":"unknown","channel":"dev-local","builtAt":null,"packageVersion":"0.0.1"}),
+        );
+        assert!(
+            got.iter().all(|(_, t)| t == "T8/build") && got.len() == 3,
+            "{got:?}"
+        );
+        let got = build_tols(
+            serde_json::json!({"version":"unknown","channel":"dev-local","builtAt":null}),
+        );
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "effective.agent.build.packageVersion" && t == UNTOLERATED),
+            "{got:?}"
+        );
+
+        // O2: only the mono-derived observables near a wall step.
+        let step = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            wall_steps: vec![(50_000, 5_000)],
+            ..Default::default()
+        };
+        let lte = |ts: i64, v: i64| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":1,"metrics":{"lte":{"rssi":{"value":v}}}});
+        let a = cap(
+            "js",
+            vec![
+                msg(51_000, "telemetry", lte(51_000, 1)),
+                msg(
+                    51_000,
+                    "config/reported",
+                    serde_json::json!({"rev":1,"x":1}),
+                ),
+            ],
+        );
+        let b = cap(
+            "rust",
+            vec![
+                msg(51_010, "telemetry", lte(51_010, 2)),
+                msg(
+                    51_010,
+                    "config/reported",
+                    serde_json::json!({"rev":1,"x":2}),
+                ),
+            ],
+        );
+        let rep = diff(&a, &b, &step, &[], &t);
+        let tol = |p: &str| {
+            rep.mismatches
+                .iter()
+                .find(|m| m.path == p)
+                .map(|m| m.tol.clone())
+        };
+        assert_eq!(tol("metrics.lte.rssi.value").as_deref(), Some("T8/O2"));
+        assert_eq!(tol("x").as_deref(), Some(UNTOLERATED));
+
+        // end-snapshot: `latest` = own last telemetry; values may differ
+        // across agents, the structure may not.
+        let tel_l = |ts: i64, v: i64, gps: bool| {
+            let mut m = lte(ts, v);
+            if gps {
+                m["metrics"]["gps"] = serde_json::json!({"fix_quality":{"value":1}});
+            }
+            m
+        };
+        let state = |latest: &Value| Some(format!(r#"{{"v":1,"latest":{latest}}}"#));
+        let run = |la: Value, lb: Value, lb_own: Value| {
+            let mut a = cap("js", vec![msg(90_000, "telemetry", la.clone())]);
+            let mut b = cap("rust", vec![msg(90_010, "telemetry", lb_own)]);
+            a.finals.insert("state.json".into(), state(&la));
+            b.finals.insert("state.json".into(), state(&lb));
+            diff(&a, &b, &PlayInfo::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.at.contains("latest") || m.path.starts_with("latest"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let got = run(
+            tel_l(90_000, 1, true),
+            tel_l(90_010, 2, true),
+            tel_l(90_010, 2, true),
+        );
+        assert_eq!(
+            got,
+            vec![("latest (values)".to_string(), "T8/end-snapshot".to_string())]
+        );
+        let got = run(
+            tel_l(90_000, 1, true),
+            tel_l(90_010, 2, true),
+            tel_l(90_010, 3, true),
+        );
+        assert!(
+            got.iter()
+                .any(|(p, t)| p.starts_with("latest (≠") && t == UNTOLERATED),
+            "{got:?}"
+        );
+        let got = run(
+            tel_l(90_000, 1, true),
+            tel_l(90_010, 2, false),
+            tel_l(90_010, 2, false),
+        );
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "metrics.gps" && t == UNTOLERATED),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn t4_windows_are_per_group_from_the_tape() {
+        let rec = |t: u64, ev: TapeEvent| TapeRecord { t, w: t as i64, ev };
+        let nmea = |t: u64, l: &str| rec(t, TapeEvent::Nmea { line: l.into() });
+        let play = PlayInfo {
+            start_wall: 100_000,
+            end_wall: 200_000,
+            // The player's own stamps: the lte change was released 120 ms late.
+            transitions: vec![150_120],
+            ..Default::default()
+        };
+        let recs = vec![
+            // Prefilled (t < 1000): not a transition.
+            rec(500, TapeEvent::lte_file(Some(b"a"))),
+            nmea(10_000, "$GPGGA,1,,,,,0,00,,,M"),
+            nmea(11_000, "$GPGGA,2,,,,,0,00,,,M"),
+            nmea(12_000, "$GPGGA,3,,,,,1,08,,,M"),
+            rec(50_000, TapeEvent::lte_file(Some(b"b"))),
+            rec(
+                60_000,
+                TapeEvent::Exec {
+                    argv: vec!["vcgencmd".into()],
+                    stdout: "x".into(),
+                    code: Some(0),
+                },
+            ),
+            rec(
+                61_000,
+                TapeEvent::MqttIn {
+                    topic: "t/config".into(),
+                    payload: Some("{}".into()),
+                    payload_b64: None,
+                    retain: true,
+                    qos: 1,
+                },
+            ),
+            rec(
+                62_000,
+                TapeEvent::Cli {
+                    argv: vec!["status".into()],
+                },
+            ),
+            rec(63_000, TapeEvent::ImuSpawn { argv: vec![] }),
+            // NMEA resumes after 20 s: stop, stale, resume.
+            nmea(32_000, "$GPGGA,4,,,,,1,08,,,M"),
+        ];
+        let mut recs = recs;
+        recs.sort_by_key(|r| r.t);
+        let f = InputFacts::from_records(&recs, &play);
+        assert_eq!(f.groups["lte"], vec![150_120], "snapped, prefill skipped");
+        assert_eq!(f.groups["system"], vec![160_000]);
+        assert_eq!(f.groups["imu"], vec![163_000]);
+        // first line, quality q0, q1, stop 112000, stale 122000, resume 132000, end stale 142000
+        assert_eq!(
+            f.groups["gps"],
+            vec![110_000, 112_000, 122_000, 132_000, 142_000]
+        );
+        // mqtt_in / cli add nothing anywhere.
+        assert!(!f
+            .groups
+            .values()
+            .flatten()
+            .any(|w| *w == 161_000 || *w == 162_000));
+        let cov = f.coverage(&play, 5_000, 1_500);
+        assert!(
+            (cov["lte"] - 3_000.0 * 100.0 / 95_000.0).abs() < 1e-6,
+            "{cov:?}"
+        );
+
+        // A presence difference in the LTE group is tolerated only near an
+        // lte transition — not near a gps one, and never for another group.
+        let t = table();
+        let tel = |ts: i64, seq: i64, lte: bool| {
+            let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{"gps":{"fix_quality":{"value":1}}}});
+            if lte {
+                m["metrics"]["lte"] = serde_json::json!({"rssi":{"value":-70}});
+            }
+            m
+        };
+        let a = cap("js", vec![msg(150_000, "telemetry", tel(150_000, 1, true))]);
+        let b = cap(
+            "rust",
+            vec![msg(150_010, "telemetry", tel(150_010, 1, false))],
+        );
+        let play2 = PlayInfo {
+            start_wall: 0,
+            end_wall: 300_000,
+            ..Default::default()
+        };
+        let tol = |facts: &InputFacts| {
+            diff_with(&a, &b, &play2, facts, &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.path == "metrics.lte")
+                .map(|m| m.tol)
+        };
+        let mut g = InputFacts::default();
+        g.groups.insert("gps".into(), vec![150_000]);
+        assert_eq!(tol(&g).as_deref(), Some(UNTOLERATED));
+        g.groups.insert("lte".into(), vec![149_000]);
+        assert_eq!(tol(&g).as_deref(), Some("T4/lte"));
+        // The summary carries the coverage per group.
+        let rep = diff_with(&a, &b, &play2, &g, &[], &t);
+        assert!(
+            rep.inputs.contains_key("T4 window coverage lte"),
+            "{:?}",
+            rep.inputs
+        );
+        assert!(rep.inputs["tape"].starts_with("NOT READ"));
+    }
+
+    /// A tick `k` carrying lte rssi `k` (+ optional imu ax / extra lte field).
+    fn cut_tel(ts: i64, k: i64, imu: f64, extra: bool) -> Value {
+        let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":k,
+            "metrics":{"lte":{"rssi":{"value":k}},"imu":{"ax":{"value":imu}}}});
+        if extra {
+            m["metrics"]["lte"]["quality"] = serde_json::json!({"value":1});
+        }
+        m
+    }
+
+    /// A ticks at k s (value k); B on player pairs at k s + 300 ms, but inside
+    /// the cut its ticks sit 650 ms EARLY, so the ts fallback pairs A_k with
+    /// B's tick k+1 — the review's A_k = B_{k+1} rows.
+    fn cut_run(tweak: impl Fn(i64, &mut Value)) -> (Capture, Capture, Vec<(i64, i64)>) {
+        let mut am = Vec::new();
+        let mut bm = Vec::new();
+        let mut pairs = Vec::new();
+        for k in 40..=70 {
+            am.push(msg(k * 1000, "telemetry", cut_tel(k * 1000, k, 0.0, false)));
+            let tb = if (50..=60).contains(&k) {
+                k * 1000 - 650
+            } else {
+                k * 1000 + 300
+            };
+            let mut p = cut_tel(tb, k, 0.0, false);
+            tweak(k, &mut p);
+            bm.push(msg(tb, "telemetry", p));
+            if !(50..=60).contains(&k) {
+                pairs.push((k * 1000, tb));
+            }
+        }
+        (cap("js", am), cap("rust", bm), pairs)
+    }
+
+    #[test]
+    fn rig_cut_repairs_fallback_pairs_then_compares_strictly() {
+        let t = table();
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            closed_spans: vec![(50_000, 60_000)],
+            ..Default::default()
+        };
+        let unt = |a: &Capture, b: &Capture, pairs: &[(i64, i64)], f: &InputFacts| {
+            let rep = diff_with(a, b, &play, f, pairs, &t);
+            let u: Vec<(String, String, String)> = rep
+                .mismatches
+                .iter()
+                .filter(|m| m.tol == UNTOLERATED)
+                .map(|m| (m.at.clone(), m.path.clone(), m.tol.clone()))
+                .collect();
+            (u, rep)
+        };
+        // Pure alignment: after the re-pair nothing differs.
+        let (a, b, pairs) = cut_run(|_, _| {});
+        let (u, rep) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(u.is_empty(), "{u:?}");
+        assert!(
+            rep.inputs
+                .get("rig-cut re-pair 0")
+                .is_some_and(|v| v.contains(": 10 of 16 ")),
+            "{:?}",
+            rep.inputs
+        );
+        assert!(!rep
+            .mismatches
+            .iter()
+            .any(|m| m.path.starts_with("metrics.lte")));
+        // A real lte value difference inside the cut: UNTOLERATED (no
+        // blanket value tolerance any more).
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(-1);
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.lte.rssi.value"),
+            "{u:?}"
+        );
+        // A presence difference inside the cut: UNTOLERATED.
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["lte"]["quality"] = serde_json::json!({"value":1});
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.lte.quality"),
+            "{u:?}"
+        );
+        // An IMU value inside the cut: tolerated only when the tape released
+        // an IMU line between the two ticks.
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["imu"]["ax"]["value"] = serde_json::json!(0.5);
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.imu.ax.value"),
+            "{u:?}"
+        );
+        let f = InputFacts {
+            imu_lines: vec![54_600],
+            ..Default::default()
+        };
+        let (u, rep) = unt(&a, &b, &pairs, &f);
+        assert!(u.is_empty(), "{u:?}");
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "metrics.imu.ax.value" && m.tol == "T8/rig-cut-ungated"));
+        // An lte value inside the cut: only with an LTE-file change released
+        // between the two reads (A 55 000, B 54 350 after the re-pair).
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(-1);
+            }
+        });
+        let at = |w: i64| InputFacts {
+            inputs: vec![(w, "lte_file")],
+            ..Default::default()
+        };
+        let (u, _) = unt(&a, &b, &pairs, &at(54_700));
+        assert!(u.is_empty(), "{u:?}");
+        let (u, _) = unt(&a, &b, &pairs, &at(56_200));
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.lte.rssi.value"),
+            "{u:?}"
+        );
+    }
+
+    fn final_dir(tag: &str, kind: &str, files: &[(&str, Option<&str>)]) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("xr-{}-{tag}-{kind}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("meta.json"),
+            format!(r#"{{"label":"{kind}","kind":"{kind}","deviceId":"dev-{kind}"}}"#),
+        )
+        .unwrap();
+        let mut m = serde_json::Map::new();
+        for (k, v) in files {
+            m.insert(
+                k.to_string(),
+                match v {
+                    Some(t) => serde_json::json!({"present":true,"len":t.len(),
+                        "b64":xorgate_hal::tape::b64_encode(t.as_bytes()),"text":t}),
+                    None => serde_json::json!({"present":false}),
+                },
+            );
+        }
+        std::fs::write(
+            d.join("final.json"),
+            serde_json::to_vec(&serde_json::json!({"w":1,"files":m})).unwrap(),
+        )
+        .unwrap();
+        d
+    }
+
+    #[test]
+    fn files_from_final_json_presence_layout_and_flag() {
+        let t = table();
+        let pretty = "{\n  \"channels\": [],\n  \"uploadBucket\": \"b\"\n}\n";
+        let compact = "{\"channels\":[],\"uploadBucket\":\"b\"}";
+        let a = Capture::load(&final_dir(
+            "f",
+            "js",
+            &[
+                ("etc/kvs.json", Some(pretty)),
+                ("etc/hardware.json", Some(pretty)),
+                ("config-sync.json", Some("{\n  \"savedAt\": 1\n}\n")),
+                ("refresh-modem.flag", Some("1791599514639")),
+                ("etc/pipelines/cam0.gst", None),
+                ("commands.json", Some("{\"a\":1}")),
+            ],
+        ))
+        .unwrap();
+        let b = Capture::load(&final_dir(
+            "f",
+            "rust",
+            &[
+                ("etc/kvs.json", None),
+                ("etc/hardware.json", Some(compact)),
+                ("config-sync.json", Some("{\n  \"savedAt\": 2\n}\n")),
+                ("refresh-modem.flag", Some("1791599514001")),
+                ("etc/pipelines/cam0.gst", None),
+                ("commands.json", Some("{\"a\":1}")),
+            ],
+        ))
+        .unwrap();
+        let rep = diff_with(
+            &a,
+            &b,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        let got = |stream: &str, path: &str| {
+            rep.mismatches
+                .iter()
+                .find(|m| m.stream == stream && m.path == path)
+                .map(|m| m.tol.clone())
+        };
+        // One agent wrote kvs.json, the other did not: FAIL, not skipped.
+        assert_eq!(
+            got("file:etc/kvs.json", "(file)").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // Same JSON, different layout: FAIL.
+        assert_eq!(
+            got("file:etc/hardware.json", "(layout)").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // A T1 value with the same layout: no layout row.
+        assert_eq!(
+            got("file:config-sync.json", "savedAt").as_deref(),
+            Some("T1")
+        );
+        assert_eq!(got("file:config-sync.json", "(layout)"), None);
+        assert_eq!(
+            got("file:refresh-modem.flag", "(content)").as_deref(),
+            Some("T1")
+        );
+        assert_eq!(rep.stats["file:etc/pipelines/cam0.gst"].absent_both, 1);
+        assert_eq!(rep.stats["file:etc/pipelines/cam0.gst"].compared, 0);
+        assert_eq!(rep.stats["file:commands.json"].compared, 1);
+        // A flag that is not bare decimal ms: FAIL.
+        let b2 = Capture::load(&final_dir(
+            "g",
+            "rust",
+            &[("refresh-modem.flag", Some("1791599514001\n"))],
+        ))
+        .unwrap();
+        let rep = diff_with(
+            &a,
+            &b2,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.stream == "file:refresh-modem.flag" && m.tol == UNTOLERATED));
+        assert_eq!(json_skeleton(pretty), "{\n  s: [],\n  s: s\n}\n");
+    }
+
+    #[test]
+    fn events_count_each_occurrence_by_ts() {
+        let ev = |ts: i64, m: &str| serde_json::json!({"ts":ts,"level":"warn","msg":m});
+        let st = serde_json::json!({"v":1,"recentEvents":[ev(1,"reconnecting…"), ev(2,"reconnecting…")]});
+        let d = final_dir("ev", "js", &[("state.json", Some(&st.to_string()))]);
+        // A snapshot repeating the same ring does not double count.
+        std::fs::write(
+            d.join("files.ndjson"),
+            format!(
+                "{}\n",
+                serde_json::json!({"w":1,"name":"state.json","text":st.to_string()})
+            ),
+        )
+        .unwrap();
+        let c = Capture::load(&d).unwrap();
+        assert_eq!(c.events.len(), 2, "{:?}", c.events);
+    }
+
+    #[test]
+    fn mqtt_qos_and_retain_per_publish_and_contract() {
+        let t = table();
+        let with = |mut m: Msg, q: u8, r: bool| {
+            m.qos = Some(q);
+            m.retain = r;
+            m
+        };
+        let a = cap(
+            "js",
+            vec![
+                with(
+                    msg(10_000, "telemetry", tel(10_000, 1, 1.0, None)),
+                    0,
+                    false,
+                ),
+                with(
+                    msg(20_000, "config/reported", serde_json::json!({"rev":1})),
+                    1,
+                    false,
+                ),
+            ],
+        );
+        let b = cap(
+            "rust",
+            vec![
+                with(
+                    msg(10_010, "telemetry", tel(10_010, 1, 1.0, None)),
+                    1,
+                    false,
+                ),
+                with(
+                    msg(20_010, "config/reported", serde_json::json!({"rev":1})),
+                    1,
+                    true,
+                ),
+            ],
+        );
+        let rep = diff_with(
+            &a,
+            &b,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        let has = |stream: &str, path: &str| {
+            rep.mismatches
+                .iter()
+                .any(|m| m.stream == stream && m.path == path && m.tol == UNTOLERATED)
+        };
+        assert!(has("telemetry", "(qos)"));
+        assert!(has("telemetry", "(qos contract)"));
+        assert!(has("report", "(retain)"));
+        assert!(has("report", "(retain contract)"));
+        assert!(!has("report", "(qos)"));
+        // 4 publishes against the contract + 2 pairs.
+        assert_eq!(rep.stats["mqtt-flags"].compared, 6);
+    }
+
+    #[test]
+    fn sim_mode_tape_leaves_telemetry_uncompared() {
+        let t = table();
+        let a = cap(
+            "js",
+            vec![msg(10_000, "telemetry", tel(10_000, 1, 1.0, Some(1.0)))],
+        );
+        let b = cap(
+            "rust",
+            vec![msg(10_010, "telemetry", tel(10_010, 1, 50.0, None))],
+        );
+        let facts = InputFacts {
+            mode: Some("sim".into()),
+            ..Default::default()
+        };
+        let rep = diff_with(&a, &b, &PlayInfo::default(), &facts, &[], &t);
+        assert!(!rep.mismatches.iter().any(|m| m.stream == "telemetry"));
+        assert_eq!(rep.stats["telemetry"].compared, 0);
+        assert!(rep.inputs["telemetry"].starts_with("NOT COMPARED"));
+        let rep = diff_with(
+            &a,
+            &b,
+            &PlayInfo::default(),
+            &InputFacts::default(),
+            &[],
+            &t,
+        );
+        assert!(rep.untolerated() > 0);
+    }
+
+    #[test]
     fn identical_runs_pass_and_tolerances_are_cited() {
         let t = table();
         let play = PlayInfo {
@@ -2103,7 +4358,9 @@ mod tests {
                 msg(30_200, "telemetry", tel(30_200, 125, 10.0, Some(14.6))),
             ],
         );
-        let rep = diff(&a, &b, &play, &[], &t);
+        let mut facts = InputFacts::default();
+        facts.groups.insert("gps".into(), vec![20_000]);
+        let rep = diff_with(&a, &b, &play, &facts, &[], &t);
         let tols: Vec<(&str, &str)> = rep
             .mismatches
             .iter()
@@ -2120,7 +4377,7 @@ mod tests {
             "{tols:?}"
         );
         // gps absent at a transition → T4; a value change far from one → FAIL.
-        assert!(tols.contains(&("metrics.gps", "T4")), "{tols:?}");
+        assert!(tols.contains(&("metrics.gps", "T4/gps")), "{tols:?}");
         assert!(
             tols.contains(&("metrics.gps.lat.value", UNTOLERATED)),
             "{tols:?}"
@@ -2190,13 +4447,30 @@ mod tests {
         let mut b = cap("rust", vec![r(1_100, "cloud"), r(60_100, "local")]);
         a.sudo = vec!["-n systemctl start --no-block xorgate-updater.service".into()];
         b.sudo = vec!["-n systemctl start --no-block xorgate-updater-rs.service".into()];
-        let rep = diff(&a, &b, &play, &[], &t);
+        // Two triggers 1.6 s apart inside the period straddle the debounce.
+        let facts = InputFacts {
+            inputs: vec![(900, "config"), (2_500, "cli")],
+            ..Default::default()
+        };
+        let rep = diff_with(&a, &b, &play, &facts, &[], &t);
         let tols: Vec<(&str, &str, &str)> = rep
             .mismatches
             .iter()
             .map(|m| (m.stream.as_str(), m.path.as_str(), m.tol.as_str()))
             .collect();
         assert!(tols.contains(&("report", "(count)", "T5")), "{tols:?}");
+        // Triggers 3 s apart (or none): the count difference is real.
+        for inputs in [vec![(500, "config"), (3_500, "cli")], vec![]] {
+            let f = InputFacts {
+                inputs,
+                ..Default::default()
+            };
+            let rep = diff_with(&a, &b, &play, &f, &[], &t);
+            assert!(rep
+                .mismatches
+                .iter()
+                .any(|m| m.path == "(count)" && m.tol == UNTOLERATED));
+        }
         assert!(tols.contains(&("sudo", "(argv)", "T8/O3")), "{tols:?}");
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
@@ -2231,6 +4505,75 @@ mod tests {
     }
 
     #[test]
+    fn t6_events_exact_phase_prefixes_js_only() {
+        let t = table();
+        let ev = |l: &str, m: &str| (1, l.to_string(), m.to_string());
+        let tol_of = |a: &Capture, b: &Capture, key: &str| {
+            diff(a, b, &PlayInfo::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.stream == "events" && m.path == key)
+                .map(|m| m.tol)
+        };
+        let mut js = cap("js", vec![]);
+        let rust = cap("rust", vec![]);
+        // Phase 2 uploadBucket events are NOT phase-owned (worker.ts:800/806).
+        js.events = vec![
+            ev("info", "uploadBucket backfilled: my-bucket"),
+            ev("warn", "uploadBucket persist failed: EACCES"),
+            ev("info", "upload paused (offline)"),
+            ev(
+                "info",
+                "[clock] NTP synchronized — offline clock stepping stood down for this boot",
+            ),
+            ev("info", "hardware: cam0 ok"),
+            ev("info", "hardware block updated: cm5/v4l2"),
+        ];
+        for (k, want) in [
+            ("info: uploadBucket backfilled: my-bucket", UNTOLERATED),
+            ("warn: uploadBucket persist failed: EACCES", UNTOLERATED),
+            ("info: upload paused (offline)", "T6"),
+            (
+                "info: [clock] NTP synchronized — offline clock stepping stood down for this boot",
+                "T6",
+            ),
+            ("info: hardware: cam0 ok", "T6"),
+            ("info: hardware block updated: cm5/v4l2", UNTOLERATED),
+        ] {
+            assert_eq!(tol_of(&js, &rust, k).as_deref(), Some(want), "{k}");
+        }
+        // Rust emitting a Phase 3/4 event is a bug: never tolerated.
+        let mut r2 = cap("rust", vec![]);
+        r2.events = vec![ev("info", "[clock] tick failed: x")];
+        assert_eq!(
+            tol_of(&cap("js", vec![]), &r2, "info: [clock] tick failed: x").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // Both have it, counts differ: not "absent on Rust" → UNTOLERATED.
+        let mut j3 = cap("js", vec![]);
+        j3.events = vec![
+            ev("info", "hardware: a"),
+            (2, "info".into(), "hardware: a".into()),
+        ];
+        let mut r3 = cap("rust", vec![]);
+        r3.events = vec![ev("info", "hardware: a")];
+        assert_eq!(
+            tol_of(&j3, &r3, "info: hardware: a").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // B = js, A = rust: the direction follows the kinds, not the labels.
+        assert_eq!(
+            tol_of(&rust, &js, "info: hardware: cam0 ok").as_deref(),
+            Some("T6")
+        );
+        // JS vs JS: never tolerated by T6.
+        assert_eq!(
+            tol_of(&js, &cap("js", vec![]), "info: hardware: cam0 ok").as_deref(),
+            Some(UNTOLERATED)
+        );
+    }
+
+    #[test]
     fn events_wp1_rows_error_text_cadence_task_prefix() {
         let t = table();
         let mut a = cap("js", vec![]);
@@ -2240,8 +4583,12 @@ mod tests {
             (2, "warn".into(), "reconnecting…".into()),
             (3, "warn".into(), "reconnecting…".into()),
             (4, "error".into(), "unhandledRejection: boom".into()),
+            (0, "info".into(), "connected to broker".into()),
+            (11, "info".into(), "connected to broker".into()),
         ];
         b.events = vec![
+            (0, "info".into(), "connected to broker".into()),
+            (12, "info".into(), "connected to broker".into()),
             (
                 1,
                 "error".into(),
@@ -2286,6 +4633,33 @@ mod tests {
             "{tols:?}"
         );
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
+        // Rust reconnecting MORE often than mqtt.js: not the backoff.
+        let (mut a2, mut b2) = (b.clone(), a.clone());
+        a2.meta.kind = "js".into();
+        b2.meta.kind = "rust".into();
+        let rep = diff(&a2, &b2, &play, &[], &t);
+        assert!(has(&tols_of(&rep), "warn: reconnecting…", UNTOLERATED));
+        // A transport-error COUNT difference only in a run with a cut.
+        let mut b3 = b.clone();
+        b3.events
+            .push((5, "error".into(), "I/O: broken pipe".into()));
+        let rep = diff(&a, &b3, &PlayInfo::default(), &[], &t);
+        assert!(has(&tols_of(&rep), "error: <transport error>", UNTOLERATED));
+        let rep = diff(&a, &b3, &play, &[], &t);
+        assert!(has(
+            &tols_of(&rep),
+            "error: <transport error>",
+            "T8/reconnect-cadence"
+        ));
+        // `connected to` must be #closed spans + 1 on each side.
+        let mut a4 = a.clone();
+        a4.events
+            .push((13, "info".into(), "connected to broker".into()));
+        let rep = diff(&a4, &b, &play, &[], &t);
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.at == "A count" && m.tol == UNTOLERATED));
     }
 
     #[test]
