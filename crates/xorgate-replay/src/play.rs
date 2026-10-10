@@ -925,6 +925,22 @@ fn mqtt_options(args: &PlayArgs, id: &str) -> Result<rumqttc::v5::MqttOptions> {
     Ok(o)
 }
 
+/// The capture subscription. It records each publish's OWN QoS and retain bit
+/// (review-wp7 SHOULD 8): granted QoS 2 so the delivered QoS is the
+/// publisher's (min(pub, sub)); Retain-As-Published so a live retained publish
+/// keeps `retain: true` (without it the broker clears the bit on forwarding);
+/// no retained replay on subscribe, so every captured line is a live publish
+/// (a stale retained message of an earlier run, or a capture reconnect, never
+/// shows up as a publish).
+fn capture_filter() -> rumqttc::v5::mqttbytes::v5::Filter {
+    use rumqttc::v5::mqttbytes::v5::{Filter, RetainForwardRule};
+    let mut f = Filter::new("xorgate/#", rumqttc::v5::mqttbytes::QoS::ExactlyOnce);
+    f.nolocal = false;
+    f.preserve_retain = true;
+    f.retain_forward_rule = RetainForwardRule::Never;
+    f
+}
+
 async fn capture_loop(
     mut el: rumqttc::v5::EventLoop,
     client: rumqttc::v5::AsyncClient,
@@ -935,9 +951,7 @@ async fn capture_loop(
     loop {
         match el.poll().await {
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                let _ = client
-                    .subscribe("xorgate/#", rumqttc::v5::mqttbytes::QoS::AtLeastOnce)
-                    .await;
+                let _ = client.subscribe_many([capture_filter()]).await;
             }
             Ok(Event::Incoming(Packet::Publish(p))) => {
                 let now = wall_now_ms();
@@ -1688,6 +1702,16 @@ mod tests {
         g.on_tick(1, 2_860, 2_861);
         g.on_tick(0, 3_004, 3_005);
         assert_eq!(g.pairs.last(), Some(&json!({"a": 3_004, "b": 2_860})));
+    }
+
+    #[test]
+    fn capture_keeps_publish_qos_and_retain() {
+        use rumqttc::v5::mqttbytes::v5::RetainForwardRule;
+        let f = capture_filter();
+        assert_eq!(f.qos, rumqttc::v5::mqttbytes::QoS::ExactlyOnce);
+        assert!(f.preserve_retain);
+        assert!(!f.nolocal);
+        assert!(matches!(f.retain_forward_rule, RetainForwardRule::Never));
     }
 
     #[test]

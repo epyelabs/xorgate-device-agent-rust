@@ -174,7 +174,10 @@ the same — common brief rule 6):
 Run directory (`<run>/`): `play.json` (start/end wall, shift, closed spans,
 input transitions, wall steps), `pairs.ndjson`, `player.log`,
 `inputs-mqtt.ndjson` (what the player published), and per agent `a/`, `b/`:
-`meta.json`, `mqtt.ndjson` (every publish), `files.ndjson` (every snapshot
+`meta.json`, `mqtt.ndjson` (every publish, with the publisher's own `qos`
+and `retain`: the capture subscribes `xorgate/#` at QoS 2 with
+Retain-As-Published and retain-handling 2 = no retained replay, so each line is
+a live publish), `files.ndjson` (every snapshot
 file on change, 1 s poll; the first poll logs absent files as `text: null`),
 `initial.json` (the seeded files before the agents start), `final/<key>` (raw
 end-of-run copies), `final.json`, `sudo.log`, `cli.log`, `stdout.log`,
