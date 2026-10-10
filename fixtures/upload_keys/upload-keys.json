@@ -1,0 +1,574 @@
+{
+  "jsSourceFile": "src/recording/telemetry-source.ts + src/recording/video-source.ts (s3KeyFor)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-3/evidence/wp3-tools/dump-upload-keys.mts via tools/replay/js/run-tsx.sh (scratch git-archive copy @ 89b5c64)",
+  "cases": [
+    {
+      "name": "telemetry \"0198aaaa-0000-7000-8000-000000000001/seg-1753000000000-00003.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "0198aaaa-0000-7000-8000-000000000001/seg-1753000000000-00003.jsonl.gz"
+      },
+      "expected": "telemetry/v1/dev-1/0198aaaa-0000-7000-8000-000000000001/1753000000000-00003.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz"
+      },
+      "expected": "telemetry/v1/dev-1/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"0198aaaa-0000-7000-8000-000000000001/seg-1000-0001.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-0001.jsonl.gz"
+      },
+      "expected": "telemetry/v1/dev-1/0198aaaa-0000-7000-8000-000000000001/1000-0001.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"0198aaaa-0000-7000-8000-000000000001/seg-1753000000000-123456.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "0198aaaa-0000-7000-8000-000000000001/seg-1753000000000-123456.jsonl.gz"
+      },
+      "expected": "telemetry/v1/dev-1/0198aaaa-0000-7000-8000-000000000001/1753000000000-123456.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"0198aaaa-0000-7000-8000-000000000001/seg-01-00002.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "0198aaaa-0000-7000-8000-000000000001/seg-01-00002.jsonl.gz"
+      },
+      "expected": "telemetry/v1/dev-1/0198aaaa-0000-7000-8000-000000000001/01-00002.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"0198AAAA-0000-7000-8000-000000000001/seg-1-00002.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "0198AAAA-0000-7000-8000-000000000001/seg-1-00002.jsonl.gz"
+      },
+      "expected": "telemetry/v1/dev-1/0198AAAA-0000-7000-8000-000000000001/1-00002.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"any session/seg-1-2.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "any session/seg-1-2.jsonl.gz"
+      },
+      "expected": "telemetry/v1/dev-1/any session/1-2.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"sess/whatever.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/whatever.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"no-slash\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "no-slash"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"/seg-1-2.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "/seg-1-2.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": ""
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"/\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "/"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"a/seg-1-2.jsonl.gz/extra\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "a/seg-1-2.jsonl.gz/extra"
+      },
+      "expected": "telemetry/v1/dev-1/a/1-2.jsonl.gz"
+    },
+    {
+      "name": "telemetry \"sess/seg-1-2.jsonl.gz.tmp\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-2.jsonl.gz.tmp"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg--2.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg--2.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1-.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-١-2.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-١-2.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1-2.jsonl.gz\\n\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-2.jsonl.gz\n"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/SEG-1-2.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/SEG-1-2.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1-2.jsonl\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-2.jsonl"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1-2.JSONL.GZ\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-2.JSONL.GZ"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1-2xjsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-2xjsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1-2.jsonlxgz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-2.jsonlxgz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1-2-3.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1-2-3.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/seg-1.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/seg-1.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "telemetry \"sess/ seg-1-2.jsonl.gz\"",
+      "op": "telemetry",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "sess/ seg-1-2.jsonl.gz"
+      },
+      "expected": null
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": "media-sessions/v1/dev-1/cam0/0198aaaa-0000-7000-8000-000000000001/00000.mp4",
+        "sidecarKey": "media-sessions/v1/dev-1/cam0/0198aaaa-0000-7000-8000-000000000001/00000.json"
+      }
+    },
+    {
+      "name": "video \"cam1/0198aaaa-0000-7000-8000-000000000001/00042.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam1/0198aaaa-0000-7000-8000-000000000001/00042.mp4"
+      },
+      "expected": {
+        "key": "media-sessions/v1/dev-1/cam1/0198aaaa-0000-7000-8000-000000000001/00042.mp4",
+        "sidecarKey": "media-sessions/v1/dev-1/cam1/0198aaaa-0000-7000-8000-000000000001/00042.json"
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/123456.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/123456.mp4"
+      },
+      "expected": {
+        "key": "media-sessions/v1/dev-1/cam0/0198aaaa-0000-7000-8000-000000000001/123456.mp4",
+        "sidecarKey": "media-sessions/v1/dev-1/cam0/0198aaaa-0000-7000-8000-000000000001/123456.json"
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/0000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/0000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198AAAA-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198AAAA-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa000070008000000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa000070008000000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-00000000000g/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-00000000000g/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/00000.json\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/00000.json"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"bad key/0198aaaa-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "bad key/0198aaaa-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam-0_A/0198aaaa-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam-0_A/0198aaaa-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": "media-sessions/v1/dev-1/cam-0_A/0198aaaa-0000-7000-8000-000000000001/00000.mp4",
+        "sidecarKey": "media-sessions/v1/dev-1/cam-0_A/0198aaaa-0000-7000-8000-000000000001/00000.json"
+      }
+    },
+    {
+      "name": "video \"cam.0/0198aaaa-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam.0/0198aaaa-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/00000.mp4/x\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/00000.mp4/x"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"/0198aaaa-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "/0198aaaa-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0//00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0//00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/evil.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/evil.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/00000.MP4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/00000.MP4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/00000.mp4\\n\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/00000.mp4\n"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001\\n/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001\n/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0\\n/0198aaaa-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0\n/0198aaaa-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/٠٠٠٠٠.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/٠٠٠٠٠.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cåm/0198aaaa-0000-7000-8000-000000000001/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cåm/0198aaaa-0000-7000-8000-000000000001/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/00000xmp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/00000xmp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/0198aaaa-0000-7000-8000-000000000001/.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/0198aaaa-0000-7000-8000-000000000001/.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"cam0/not-a-uuid/00000.mp4\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "cam0/not-a-uuid/00000.mp4"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"no-slashes\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": "no-slashes"
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    },
+    {
+      "name": "video \"\"",
+      "op": "video",
+      "input": {
+        "deviceId": "dev-1",
+        "name": ""
+      },
+      "expected": {
+        "key": null,
+        "sidecarKey": null
+      }
+    }
+  ]
+}

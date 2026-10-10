@@ -1,0 +1,1177 @@
+{
+  "jsSourceFile": "src/recording/uploader.ts (Uploader drain/scheduleRetry/pause/stop) + src/recording/telemetry-source.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-3/evidence/wp3-tools/dump-upload-step.mts via tools/replay/js/run-tsx.sh (scratch git-archive copy @ 89b5c64; setTimeout patched to fire on demand)",
+  "sessionId": "0198aaaa-0000-7000-8000-000000000001",
+  "cases": [
+    {
+      "name": "default backoff 2 s doubling to the 5 min cap, then success",
+      "op": "drain",
+      "input": {
+        "name": "default backoff 2 s doubling to the 5 min cap, then success",
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 4s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 8s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 16s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 32s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 64s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 128s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 256s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 300s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 300s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 300s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 300s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 2000,
+            "state": "fired"
+          },
+          {
+            "ms": 4000,
+            "state": "fired"
+          },
+          {
+            "ms": 8000,
+            "state": "fired"
+          },
+          {
+            "ms": 16000,
+            "state": "fired"
+          },
+          {
+            "ms": 32000,
+            "state": "fired"
+          },
+          {
+            "ms": 64000,
+            "state": "fired"
+          },
+          {
+            "ms": 128000,
+            "state": "fired"
+          },
+          {
+            "ms": 256000,
+            "state": "fired"
+          },
+          {
+            "ms": 300000,
+            "state": "fired"
+          },
+          {
+            "ms": 300000,
+            "state": "fired"
+          },
+          {
+            "ms": 300000,
+            "state": "fired"
+          },
+          {
+            "ms": 300000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "retry seconds rounding: min 1500 max 10000",
+      "op": "drain",
+      "input": {
+        "name": "retry seconds rounding: min 1500 max 10000",
+        "backoffMinMs": 1500,
+        "backoffMaxMs": 10000,
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 3s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 6s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 10s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 10s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 1500,
+            "state": "fired"
+          },
+          {
+            "ms": 3000,
+            "state": "fired"
+          },
+          {
+            "ms": 6000,
+            "state": "fired"
+          },
+          {
+            "ms": 10000,
+            "state": "fired"
+          },
+          {
+            "ms": 10000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "retry seconds rounding: min 500 (0.5 s rounds up)",
+      "op": "drain",
+      "input": {
+        "name": "retry seconds rounding: min 500 (0.5 s rounds up)",
+        "backoffMinMs": 500,
+        "backoffMaxMs": 100000,
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 1s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 1s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 500,
+            "state": "fired"
+          },
+          {
+            "ms": 1000,
+            "state": "fired"
+          },
+          {
+            "ms": 2000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "retry seconds rounding: min 2500",
+      "op": "drain",
+      "input": {
+        "name": "retry seconds rounding: min 2500",
+        "backoffMinMs": 2500,
+        "backoffMaxMs": 100000,
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 3s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 5s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 10s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 2500,
+            "state": "fired"
+          },
+          {
+            "ms": 5000,
+            "state": "fired"
+          },
+          {
+            "ms": 10000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "test knobs 20/100 ms round to 0 s",
+      "op": "drain",
+      "input": {
+        "name": "test knobs 20/100 ms round to 0 s",
+        "backoffMinMs": 20,
+        "backoffMaxMs": 100,
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 0s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 0s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 0s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 0s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 20,
+            "state": "fired"
+          },
+          {
+            "ms": 40,
+            "state": "fired"
+          },
+          {
+            "ms": 80,
+            "state": "fired"
+          },
+          {
+            "ms": 100,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "success resets the backoff",
+      "op": "drain",
+      "input": {
+        "name": "success resets the backoff",
+        "segments": [
+          "seg-1000-00000.jsonl.gz",
+          "seg-1000-00001.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          "ok",
+          {
+            "fail": "boom"
+          },
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 4s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 2000,
+            "state": "fired"
+          },
+          {
+            "ms": 4000,
+            "state": "fired"
+          },
+          {
+            "ms": 2000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00001.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00001.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          },
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00001.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00001.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "failure after going offline is a pause, no retry timer",
+      "op": "drain",
+      "input": {
+        "name": "failure after going offline is a pause, no retry timer",
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "failOffline": "The operation was aborted"
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "info",
+            "msg": "upload paused (offline)"
+          }
+        ],
+        "timers": [],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"failOffline\":\"The operation was aborted\"}"
+          }
+        ],
+        "statuses": [
+          true,
+          false
+        ],
+        "uploaded": [],
+        "left": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "lastUploadAtSet": false
+      }
+    },
+    {
+      "name": "failure after stop() is a pause, no retry timer",
+      "op": "drain",
+      "input": {
+        "name": "failure after stop() is a pause, no retry timer",
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "failStop": "The operation was aborted"
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "info",
+            "msg": "upload paused (offline)"
+          }
+        ],
+        "timers": [],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"failStop\":\"The operation was aborted\"}"
+          }
+        ],
+        "statuses": [
+          true,
+          false
+        ],
+        "uploaded": [],
+        "left": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "lastUploadAtSet": false
+      }
+    },
+    {
+      "name": "mode flipped off mid-PUT while online still logs a retry",
+      "op": "drain",
+      "input": {
+        "name": "mode flipped off mid-PUT while online still logs a retry",
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "failModeOff": "boom"
+          }
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 2000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"failModeOff\":\"boom\"}"
+          }
+        ],
+        "statuses": [
+          true,
+          false
+        ],
+        "uploaded": [],
+        "left": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "lastUploadAtSet": false
+      }
+    },
+    {
+      "name": "empty error message",
+      "op": "drain",
+      "input": {
+        "name": "empty error message",
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": ""
+          },
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: "
+          }
+        ],
+        "timers": [
+          {
+            "ms": 2000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "unrecognized name is skipped with one warning, queue continues",
+      "op": "drain",
+      "input": {
+        "name": "unrecognized name is skipped with one warning, queue continues",
+        "segments": [
+          "weird.jsonl.gz",
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload: skipping unrecognized segment 0198aaaa-0000-7000-8000-000000000001/weird.jsonl.gz"
+          }
+        ],
+        "timers": [],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [
+          "weird.jsonl.gz"
+        ],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "pause() resets the backoff for the reconnect",
+      "op": "drain",
+      "input": {
+        "name": "pause() resets the backoff for the reconnect",
+        "segments": [
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          {
+            "fail": "boom"
+          },
+          "ok"
+        ],
+        "pauseAfterFailures": 2
+      },
+      "expected": {
+        "events": [
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 4s: boom"
+          },
+          {
+            "level": "warn",
+            "msg": "upload failed, retrying in 2s: boom"
+          }
+        ],
+        "timers": [
+          {
+            "ms": 2000,
+            "state": "fired"
+          },
+          {
+            "ms": 4000,
+            "state": "cleared"
+          },
+          {
+            "ms": 2000,
+            "state": "fired"
+          }
+        ],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "{\"fail\":\"boom\"}"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    },
+    {
+      "name": "three segments drain oldest-first",
+      "op": "drain",
+      "input": {
+        "name": "three segments drain oldest-first",
+        "segments": [
+          "seg-2000-00000.jsonl.gz",
+          "seg-1000-00001.jsonl.gz",
+          "seg-1000-00000.jsonl.gz"
+        ],
+        "script": [
+          "ok",
+          "ok",
+          "ok"
+        ]
+      },
+      "expected": {
+        "events": [],
+        "timers": [],
+        "puts": [
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00001.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          },
+          {
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/2000-00000.jsonl.gz",
+            "contentType": "application/gzip",
+            "outcome": "ok"
+          }
+        ],
+        "statuses": [
+          true,
+          false,
+          true,
+          false,
+          true,
+          false
+        ],
+        "uploaded": [
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00000.jsonl.gz"
+          },
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-1000-00001.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/1000-00001.jsonl.gz"
+          },
+          {
+            "name": "0198aaaa-0000-7000-8000-000000000001/seg-2000-00000.jsonl.gz",
+            "key": "telemetry/v1/d/0198aaaa-0000-7000-8000-000000000001/2000-00000.jsonl.gz"
+          }
+        ],
+        "left": [],
+        "lastUploadAtSet": true
+      }
+    }
+  ]
+}
