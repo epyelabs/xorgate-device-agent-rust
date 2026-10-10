@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use xorgate_cloud::iot_creds::{IotCredentialsOptions, IotCredentialsProvider};
 use xorgate_cloud::s3::{https_client, put_signed};
-use xorgate_cloud::sigv4::{sign_put, SigningCredentials, SignedRequest};
+use xorgate_cloud::sigv4::{sign_put, SignedRequest, SigningCredentials};
 
 fn signed(body: &[u8]) -> SignedRequest {
     sign_put(
@@ -74,7 +74,10 @@ async fn server_close_without_a_response_is_socket_hang_up() {
         read_request(&mut s).await;
         let _ = s.shutdown().await;
     });
-    assert_eq!(put_to(&format!("http://127.0.0.1:{port}")).await, "socket hang up");
+    assert_eq!(
+        put_to(&format!("http://127.0.0.1:{port}")).await,
+        "socket hang up"
+    );
 }
 
 #[tokio::test]
@@ -87,7 +90,10 @@ async fn reset_after_the_request_is_read_econnreset() {
         s.set_zero_linger().unwrap();
         drop(s); // RST
     });
-    assert_eq!(put_to(&format!("http://127.0.0.1:{port}")).await, "read ECONNRESET");
+    assert_eq!(
+        put_to(&format!("http://127.0.0.1:{port}")).await,
+        "read ECONNRESET"
+    );
 }
 
 #[tokio::test]
@@ -124,7 +130,10 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 }
 
 fn tls(name: &str) -> String {
-    format!("{}/../../fixtures/s3/tls/{name}", env!("CARGO_MANIFEST_DIR"))
+    format!(
+        "{}/../../fixtures/s3/tls/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    )
 }
 
 async fn creds_err(cert: &std::path::Path, key: &std::path::Path) -> String {

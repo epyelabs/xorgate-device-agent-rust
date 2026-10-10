@@ -23,7 +23,9 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::watch;
 
-use crate::s3::{error_chain, js_slice_utf16, node_transport_error, run_idle, Activity, Interrupted};
+use crate::s3::{
+    error_chain, js_slice_utf16, node_transport_error, run_idle, Activity, Interrupted,
+};
 use crate::sigv4::SigningCredentials;
 
 /// `DEFAULT_SKEW_MS` (`iot-creds.ts:41`).

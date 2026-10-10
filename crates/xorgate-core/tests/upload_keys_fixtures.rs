@@ -42,7 +42,12 @@ fn upload_keys_fixture() {
                 let got = video_s3_key(&c.input.device_id, &c.input.name);
                 assert_eq!(got.as_deref(), c.expected["key"].as_str(), "{}", c.name);
                 let side = got.as_deref().map(mp4_to_json);
-                assert_eq!(side.as_deref(), c.expected["sidecarKey"].as_str(), "{}", c.name);
+                assert_eq!(
+                    side.as_deref(),
+                    c.expected["sidecarKey"].as_str(),
+                    "{}",
+                    c.name
+                );
             }
             other => panic!("unknown op {other}"),
         }

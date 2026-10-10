@@ -66,7 +66,11 @@ pub fn on_failure(stopped: bool, online: bool) -> FailureStep {
 }
 
 /// The event `on_failure` emits: `(level, msg)`.
-pub fn failure_event(step: &FailureStep, backoff_ms: u64, message: &str) -> (ActivityLevel, String) {
+pub fn failure_event(
+    step: &FailureStep,
+    backoff_ms: u64,
+    message: &str,
+) -> (ActivityLevel, String) {
     match step {
         FailureStep::Paused => (ActivityLevel::Info, UPLOAD_PAUSED_EVENT.to_string()),
         FailureStep::Retry => (ActivityLevel::Warn, retry_event(backoff_ms, message)),
@@ -84,7 +88,12 @@ pub struct RetryPlan {
 
 /// `scheduleRetry()`: `None` when a timer is already armed or the uploader
 /// is stopped; otherwise the delay and the doubled (capped) backoff.
-pub fn plan_retry(timer_armed: bool, stopped: bool, backoff_ms: u64, max_ms: u64) -> Option<RetryPlan> {
+pub fn plan_retry(
+    timer_armed: bool,
+    stopped: bool,
+    backoff_ms: u64,
+    max_ms: u64,
+) -> Option<RetryPlan> {
     if timer_armed || stopped {
         return None;
     }
@@ -103,7 +112,10 @@ mod tests {
         assert_eq!(retry_event(500, "x"), "upload failed, retrying in 1s: x");
         assert_eq!(retry_event(1_499, "x"), "upload failed, retrying in 1s: x");
         assert_eq!(retry_event(20, ""), "upload failed, retrying in 0s: ");
-        assert_eq!(retry_event(300_000, "boom"), "upload failed, retrying in 300s: boom");
+        assert_eq!(
+            retry_event(300_000, "boom"),
+            "upload failed, retrying in 300s: boom"
+        );
     }
 
     #[test]

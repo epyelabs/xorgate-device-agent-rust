@@ -53,7 +53,9 @@ pub fn telemetry_s3_key(device_id: &str, seg_name: &str) -> Option<String> {
     let session = parts.next().filter(|s| !s.is_empty())?;
     let name = parts.next().filter(|s| !s.is_empty())?;
     let (ts, seq) = telemetry_segment_parts(name)?;
-    Some(format!("telemetry/v1/{device_id}/{session}/{ts}-{seq}.jsonl.gz"))
+    Some(format!(
+        "telemetry/v1/{device_id}/{session}/{ts}-{seq}.jsonl.gz"
+    ))
 }
 
 /// `UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/`
@@ -128,7 +130,11 @@ pub fn json_to_mp4(s: &str) -> String {
 /// MAGNITUDE (`Math.abs(now - mtimeMs)` — a future mtime from a wrong clock
 /// must not make the husk immortal). `manifest_mtime_ms = None` (no manifest)
 /// keeps `manifestAge = Infinity` → reap.
-pub fn should_reap_drained_session(active: bool, now_ms: f64, manifest_mtime_ms: Option<f64>) -> bool {
+pub fn should_reap_drained_session(
+    active: bool,
+    now_ms: f64,
+    manifest_mtime_ms: Option<f64>,
+) -> bool {
     if active {
         return false;
     }
@@ -153,7 +159,11 @@ pub fn js_string_cmp(a: &str, b: &str) -> Ordering {
 pub fn video_listing_cmp(a_mtime_ms: f64, a_name: &str, b_mtime_ms: f64, b_name: &str) -> Ordering {
     let d = a_mtime_ms - b_mtime_ms;
     if d != 0.0 && !d.is_nan() {
-        return if d < 0.0 { Ordering::Less } else { Ordering::Greater };
+        return if d < 0.0 {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
     }
     if js_string_cmp(a_name, b_name) == Ordering::Less {
         Ordering::Less
@@ -174,7 +184,10 @@ mod tests {
 
     #[test]
     fn regex_edges() {
-        assert_eq!(telemetry_segment_parts("seg-1-2.jsonl.gz"), Some(("1", "2")));
+        assert_eq!(
+            telemetry_segment_parts("seg-1-2.jsonl.gz"),
+            Some(("1", "2"))
+        );
         assert_eq!(telemetry_segment_parts("seg-1-2-3.jsonl.gz"), None);
         assert!(is_fragment_name("00000.mp4"));
         assert!(!is_fragment_name("0000.mp4"));
@@ -188,9 +201,21 @@ mod tests {
     fn reap_rule_uses_the_age_magnitude() {
         assert!(should_reap_drained_session(false, 1e12, None));
         assert!(!should_reap_drained_session(true, 1e12, None));
-        assert!(should_reap_drained_session(false, 0.0, Some(REAP_MIN_AGE_MS)));
-        assert!(!should_reap_drained_session(false, 0.0, Some(REAP_MIN_AGE_MS - 1.0)));
-        assert!(should_reap_drained_session(false, 0.0, Some(-REAP_MIN_AGE_MS)));
+        assert!(should_reap_drained_session(
+            false,
+            0.0,
+            Some(REAP_MIN_AGE_MS)
+        ));
+        assert!(!should_reap_drained_session(
+            false,
+            0.0,
+            Some(REAP_MIN_AGE_MS - 1.0)
+        ));
+        assert!(should_reap_drained_session(
+            false,
+            0.0,
+            Some(-REAP_MIN_AGE_MS)
+        ));
     }
 
     #[test]

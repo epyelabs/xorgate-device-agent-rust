@@ -115,8 +115,15 @@ fn uploader_drain_fixture() {
             }
         };
         drain(
-            &mut online, &mut auto, &mut stopped, &mut backoff, &mut armed, &mut timers,
-            &mut events, &mut segs, &mut failures,
+            &mut online,
+            &mut auto,
+            &mut stopped,
+            &mut backoff,
+            &mut armed,
+            &mut timers,
+            &mut events,
+            &mut segs,
+            &mut failures,
         );
         for _ in 0..100 {
             if pause_after == Some(failures) && !paused {
@@ -126,16 +133,30 @@ fn uploader_drain_fixture() {
                     timers[t].1 = "cleared";
                 }
                 drain(
-                    &mut online, &mut auto, &mut stopped, &mut backoff, &mut armed, &mut timers,
-                    &mut events, &mut segs, &mut failures,
+                    &mut online,
+                    &mut auto,
+                    &mut stopped,
+                    &mut backoff,
+                    &mut armed,
+                    &mut timers,
+                    &mut events,
+                    &mut segs,
+                    &mut failures,
                 );
                 continue;
             }
             let Some(t) = armed.take() else { break };
             timers[t].1 = "fired";
             drain(
-                &mut online, &mut auto, &mut stopped, &mut backoff, &mut armed, &mut timers,
-                &mut events, &mut segs, &mut failures,
+                &mut online,
+                &mut auto,
+                &mut stopped,
+                &mut backoff,
+                &mut armed,
+                &mut timers,
+                &mut events,
+                &mut segs,
+                &mut failures,
             );
         }
 
@@ -155,7 +176,12 @@ fn uploader_drain_fixture() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|t| (t["ms"].as_u64().unwrap(), t["state"].as_str().unwrap().to_string()))
+            .map(|t| {
+                (
+                    t["ms"].as_u64().unwrap(),
+                    t["state"].as_str().unwrap().to_string(),
+                )
+            })
             .collect();
         let got_timers: Vec<(u64, String)> =
             timers.iter().map(|(ms, s)| (*ms, s.to_string())).collect();

@@ -541,12 +541,13 @@ fn node_wording(e: &(dyn std::error::Error + 'static), host: Option<&str>) -> Op
         };
     }
     if texts.iter().any(|t| t == "tls handshake eof")
-        || ios
-            .iter()
-            .any(|io| io.kind() == std::io::ErrorKind::UnexpectedEof && io.to_string() == "tls handshake eof")
+        || ios.iter().any(|io| {
+            io.kind() == std::io::ErrorKind::UnexpectedEof && io.to_string() == "tls handshake eof"
+        })
     {
         return Some(
-            "Client network socket disconnected before secure TLS connection was established".into(),
+            "Client network socket disconnected before secure TLS connection was established"
+                .into(),
         );
     }
 
@@ -628,7 +629,10 @@ mod tests {
             Some("Client network socket disconnected before secure TLS connection was established")
         );
         let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
-        assert_eq!(node_wording(&reset, None).as_deref(), Some("read ECONNRESET"));
+        assert_eq!(
+            node_wording(&reset, None).as_deref(),
+            Some("read ECONNRESET")
+        );
     }
 
     #[tokio::test(start_paused = true)]
