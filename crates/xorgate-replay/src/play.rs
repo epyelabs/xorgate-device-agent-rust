@@ -156,6 +156,11 @@ pub const DEVICE_B: &str = "00000000-0000-4000-8000-00000000000b";
 const INTERVAL_MS: i64 = 1000;
 /// Default `--flip-gap-ms`: half the tick interval, the nearest alignment.
 pub const DEFAULT_FLIP_GAP_MS: i64 = 500;
+/// Hysteresis on the flip: an alignment is given up only past flip gap +
+/// this, so the new one starts ≥ 2·this inside the band. Without it a gap
+/// hovering at 500 (JS-vs-JS, stagger 300) flipped back and forth every few
+/// ticks (195214Z: 25 skips, 23 untolerated gps rows on torn pairs).
+const FLIP_HYST_MS: i64 = 50;
 /// A hold whose pair was not observed in full ends after this long.
 const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
@@ -409,7 +414,7 @@ impl Gate {
             let (l, g) = (ea.min(eb), ea.max(eb));
             let start = l - self.guard_before;
             let end = (la.max(lb) + CUT_READ_MS).min(start + INTERVAL_MS - CUT_MIN_OPEN_MS);
-            if g - l <= self.flip_gap && now >= start && now <= end {
+            if g - l <= self.flip_gap + FLIP_HYST_MS && now >= start && now <= end {
                 return true;
             }
         }
@@ -475,7 +480,7 @@ impl Gate {
                 continue;
             };
             let d_mid = n[y] - tx;
-            if (0..=self.flip_gap).contains(&d_mid) && d_mid < (n[x] - n[y]).abs() {
+            if (0..=self.flip_gap + FLIP_HYST_MS).contains(&d_mid) && d_mid < (n[x] - n[y]).abs() {
                 let mut hk = k;
                 hk[x] = kx;
                 let mut ts = [None, None];
@@ -493,7 +498,7 @@ impl Gate {
         if now < n[lead] - self.guard_before {
             return true;
         }
-        if n[lag] - n[lead] > self.flip_gap {
+        if n[lag] - n[lead] > self.flip_gap + FLIP_HYST_MS {
             // Flip: this lead tick has no partner that will see the same inputs.
             self.pairs.push(
                 json!({"skip": if lead == 0 { "a" } else { "b" }, "k": k[lead], "tick": n[lead]}),
@@ -1453,6 +1458,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let mut wall_steps: Vec<(i64, i64)> = Vec::new();
     let mut prev_tw: Option<(u64, i64)> = None;
     let mut released = 0usize;
+    // Evidence: when each record was actually released (vs the tape's due
+    // time) — the only record of the hold gate's effect on line inputs.
+    let mut releases = std::io::BufWriter::new(File::create(args.out.join("releases.ndjson"))?);
     let cutoff = args.max_s.map(|s| s * 1000).unwrap_or(u64::MAX);
 
     // Release order = tape order, except that a record the WATCH gate holds
@@ -1575,6 +1583,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         }
         prev_tw = Some((r.t, r.w));
         released += 1;
+        let _ = writeln!(
+            releases,
+            "{}",
+            json!({"w": now, "due": due_w, "t": r.t, "k": r.ev.kind()})
+        );
         match &r.ev {
             TapeEvent::Nmea { line } => {
                 let line = rewrite::shift_nmea_line(line, shift_s);
@@ -2096,10 +2109,10 @@ mod tests {
         let mut g = Gate::new(60).with_flip_gap(800);
         assert!(!run(&mut g));
         assert!(g.pairs.is_empty());
-        // 500 exactly is not past the gap (either alignment is 500 ms).
+        // Inside the hysteresis band (500 < 530 ≤ 550) the alignment is kept.
         let mut g = Gate::new(60);
         g.on_tick(0, 1_000, 1_000);
-        g.on_tick(1, 1_500, 1_500);
+        g.on_tick(1, 1_530, 1_530);
         g.paired_k = [Some(0), Some(0)];
         assert!(!g.is_open(1_945, false));
         assert!(g.pairs.is_empty());
