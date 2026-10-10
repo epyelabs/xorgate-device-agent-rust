@@ -369,7 +369,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "rig-cut-ungated"
-  what = "RIG limitation (FLAG, reviewer to confirm): while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the VALUES of telemetry/status stamped inside a closed span (extended until BOTH agents publish again) ±5 s may differ by one input sample; they are not value-compared. Message presence and counts still are (see reconnect-cadence / offline-queue-bound). Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
+  what = "RIG limitation, NARROWED per review-wp7 finding 4: while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the fallback pairing keeps the pre-cut offset. Inside a closed span (extended until BOTH agents publish again) ±5 s the diff therefore RE-PAIRS the telemetry with the alignment (current partner, or one tick earlier/later) that differs least, then compares STRICTLY: no presence tolerance, no gps/lte/system value tolerance. The only residual: a metrics.imu.* VALUE inside the span, and only when the tape released an IMU line between the two agents' ticks (−1 s); the re-pair shift per span is listed in diff.md. Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
   streams = ["telemetry", "status"]
   around_closed_ms = 5000
 

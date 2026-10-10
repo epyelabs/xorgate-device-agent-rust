@@ -167,6 +167,9 @@ pub struct InputFacts {
     /// gaps, i2cdetect; lte ← LTE-file changes; system ← exec/dt changes).
     /// Never mqtt_in / cli / conn.
     pub groups: BTreeMap<String, Vec<i64>>,
+    /// Wall ms (`start_wall + t`) of every IMU line the tape released
+    /// (T8 `rig-cut-ungated` IMU residual).
+    pub imu_lines: Vec<i64>,
 }
 
 /// `$GPGGA,…` → `GGA`.
@@ -256,6 +259,11 @@ impl InputFacts {
             out.reopens.push(r);
         }
         out.groups = group_transitions(records, play);
+        out.imu_lines = records
+            .iter()
+            .filter(|r| released(r.t) && matches!(r.ev, TapeEvent::Imu { .. }))
+            .map(|r| est(r.t))
+            .collect();
         out
     }
 
@@ -625,10 +633,21 @@ impl Cx<'_> {
             .then(|| format!("{}/{group}", r.id))
     }
 
-    /// VALUES stamped around a closed span (rig: the hold gate cannot pair
-    /// ticks while publishes are queued) — T8 `rig-cut-ungated`.
-    fn near_closed(&self) -> Option<String> {
-        self.near_closed_as("rig-cut-ungated")
+    /// T8 `rig-cut-ungated`, narrowed: inside a closed span (after the
+    /// re-pair) only an IMU VALUE may differ, and only when the tape released
+    /// an IMU line between the two agents' ticks (−1 s).
+    fn cut_imu(&self, path: &str) -> Option<String> {
+        if !path.starts_with("metrics.imu.") {
+            return None;
+        }
+        let id = self.near_closed_as("rig-cut-ungated")?;
+        let (a, b) = (self.when?, self.when_b?);
+        let (lo, hi) = (a.min(b) - 1_000, a.max(b));
+        self.facts
+            .imu_lines
+            .iter()
+            .any(|w| *w >= lo && *w <= hi)
+            .then_some(id)
     }
 
     /// `when` inside a closed span (extended to both agents' reconnect) padded
@@ -859,7 +878,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             let tol = cx
                 .d23(path)
-                .or_else(|| cx.near_closed())
+                .or_else(|| cx.cut_imu(path))
                 .or_else(|| cx.input_edge(path, x, y))
                 .or_else(|| cx.report_input_between())
                 .or_else(|| cx.near_wall_step())
@@ -898,7 +917,6 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             // Presence (or array length / type) mismatch.
             let tol = cx
                 .near_transition(path)
-                .or_else(|| cx.near_closed())
                 .or_else(|| cx.near_wall_step())
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
@@ -1070,6 +1088,184 @@ fn pair_telemetry<'a>(
     (out, ua, ub)
 }
 
+/// Leaf differences between two documents that no exclusion covers (the
+/// re-pair score).
+fn leaf_diffs(table: &Table, path: &str, a: Option<&Value>, b: Option<&Value>) -> usize {
+    if a == b || table.excluded("telemetry", path).is_some() {
+        return 0;
+    }
+    match (a, b) {
+        (Some(Value::Object(x)), Some(Value::Object(y))) => x
+            .keys()
+            .chain(y.keys().filter(|k| !x.contains_key(*k)))
+            .map(|k| leaf_diffs(table, &join(path, k), x.get(k), y.get(k)))
+            .sum(),
+        _ if table.is_delta("telemetry", path).is_some() => 0,
+        _ => 1,
+    }
+}
+
+type Pairs<'a> = Vec<(&'a Msg, &'a Msg)>;
+/// `((span start, end), ticks moved, fallback pairs in the run)` per run.
+type Shifts = Vec<((i64, i64), usize, usize)>;
+
+/// T8 `rig-cut-ungated` (review-wp7 finding 4): inside each closed span
+/// (± the row's pad) the hold gate could not pair ticks, so the diff's
+/// fallback pairing (pre-cut offset) may sit one tick off. Every contiguous
+/// run of pairs there — fallback pairs, and player pairs from the cut's start
+/// on — is re-paired tick by tick with the current partner or the B tick one
+/// before / after it (never one another pair holds, B order kept), minimising
+/// the leaf differences (ties keep the current one). Ticks left without a
+/// partner become unpaired (judged as unpaired messages).
+fn repair_cuts<'a>(
+    paired: Pairs<'a>,
+    mut ua: Vec<&'a Msg>,
+    mut ub: Vec<&'a Msg>,
+    pairs: &[(i64, i64)],
+    play: &PlayInfo,
+    table: &Table,
+) -> (Pairs<'a>, Vec<&'a Msg>, Vec<&'a Msg>, Shifts) {
+    let mut shifts = Vec::new();
+    let Some((_, row)) = table.decision_row("rig-cut-ungated") else {
+        return (paired, ua, ub, shifts);
+    };
+    let pad = row.around_closed_ms.unwrap_or(5000) as i64;
+    let player: BTreeSet<(i64, i64)> = pairs.iter().copied().collect();
+    let is_player = |p: &(&Msg, &Msg)| matches!((ts_of(&p.0.payload), ts_of(&p.1.payload)), (Some(x), Some(y)) if player.contains(&(x, y)));
+    // Every B message in ts order (paired or not).
+    let mut bs: Vec<&'a Msg> = paired
+        .iter()
+        .map(|p| p.1)
+        .chain(ub.iter().copied())
+        .collect();
+    bs.sort_by_key(|m| ts_of(&m.payload));
+    let pos = |m: &Msg| bs.iter().position(|x| std::ptr::eq(*x, m));
+    let mut out = paired;
+    out.sort_by_key(|(x, _)| ts_of(&x.payload));
+    for &(s, e) in &play.closed_spans {
+        let inside =
+            |p: &(&Msg, &Msg)| ts_of(&p.0.payload).is_some_and(|w| w >= s - pad && w <= e + pad);
+        // Contiguous runs (A ts order) of fallback pairs inside the window.
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        for (i, p) in out.iter().enumerate() {
+            // Player pairs before the cut are gated and stay; from the cut on
+            // (through the reconnect + pad) the gate's pairs are as unreliable
+            // as the fallback's (publishes were queued, then flushed).
+            let movable = !is_player(p) || ts_of(&p.0.payload).is_some_and(|w| w >= s);
+            if inside(p) && movable {
+                cur.push(i);
+            } else if !cur.is_empty() {
+                runs.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            runs.push(cur);
+        }
+        let mut dropped: BTreeSet<usize> = BTreeSet::new();
+        for run in runs {
+            let taken: BTreeSet<usize> = out
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !run.contains(i) && !dropped.contains(i))
+                .filter_map(|(_, p)| pos(p.1))
+                .collect();
+            // Per tick: the current partner j0, or j0 ± 1 (never a B another
+            // pair holds), B order kept strictly increasing; minimise the leaf
+            // differences (an unpartnered tick costs 10, a move costs 1/1000
+            // of a difference so ties keep the current partner).
+            let opts = |i: usize| -> Vec<Option<usize>> {
+                let mut v: Vec<Option<usize>> = vec![None];
+                if let Some(j0) = pos(out[i].1) {
+                    for j in [j0.checked_sub(1), Some(j0), Some(j0 + 1)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if j < bs.len() && !taken.contains(&j) {
+                            v.push(Some(j));
+                        }
+                    }
+                }
+                v
+            };
+            let cost = |i: usize, o: Option<usize>| -> u64 {
+                match o {
+                    None => 10_000,
+                    Some(j) => {
+                        let d =
+                            leaf_diffs(table, "", Some(&out[i].0.payload), Some(&bs[j].payload));
+                        let moved = pos(out[i].1) != Some(j);
+                        d as u64 * 1_000 + u64::from(moved)
+                    }
+                }
+            };
+            // State: the last chosen B index → (cost, choices so far).
+            type Dp = BTreeMap<Option<usize>, (u64, Vec<Option<usize>>)>;
+            let mut states: Dp = BTreeMap::from([(None, (0, Vec::new()))]);
+            for &i in &run {
+                let mut next: Dp = BTreeMap::new();
+                for (last, (c, ch)) in &states {
+                    for o in opts(i) {
+                        if let (Some(j), Some(l)) = (o, last) {
+                            if j <= *l {
+                                continue;
+                            }
+                        }
+                        let key = o.or(*last);
+                        let nc = c + cost(i, o);
+                        if next.get(&key).is_none_or(|(bc, _)| nc < *bc) {
+                            let mut v = ch.clone();
+                            v.push(o);
+                            next.insert(key, (nc, v));
+                        }
+                    }
+                }
+                states = next;
+            }
+            let Some((_, choice)) = states.into_values().min_by_key(|(c, _)| *c) else {
+                continue;
+            };
+            let best: Vec<(usize, Option<&'a Msg>)> = run
+                .iter()
+                .zip(&choice)
+                .map(|(&i, o)| (i, o.map(|j| bs[j])))
+                .collect();
+            let moved = best
+                .iter()
+                .filter(|(i, b)| !b.is_some_and(|b| std::ptr::eq(b, out[*i].1)))
+                .count();
+            if moved == 0 {
+                continue;
+            }
+            let old_b: Vec<&'a Msg> = run.iter().map(|&i| out[i].1).collect();
+            let new_b: Vec<&'a Msg> = best.iter().filter_map(|(_, b)| *b).collect();
+            for b in old_b {
+                if !new_b.iter().any(|y| std::ptr::eq(*y, b)) {
+                    ub.push(b);
+                }
+            }
+            ub.retain(|m| !new_b.iter().any(|y| std::ptr::eq(*y, *m)));
+            for (i, b) in &best {
+                match b {
+                    Some(b) => out[*i].1 = b,
+                    None => ua.push(out[*i].0),
+                }
+            }
+            dropped.extend(best.iter().filter(|(_, b)| b.is_none()).map(|(i, _)| *i));
+            shifts.push(((s, e), moved, run.len()));
+        }
+        let mut i = 0;
+        out.retain(|_| {
+            i += 1;
+            !dropped.contains(&(i - 1))
+        });
+    }
+    out.sort_by_key(|(x, _)| ts_of(&x.payload));
+    ua.sort_by_key(|m| ts_of(&m.payload));
+    ub.sort_by_key(|m| ts_of(&m.payload));
+    (out, ua, ub, shifts)
+}
+
 fn first_values(
     msgs: &[(&Msg, &Msg)],
     table: &Table,
@@ -1157,6 +1353,16 @@ pub fn diff_with(
     let extended = play.with_reconnects(&ta, &tb);
     let play = &extended;
     let (paired, ua, ub) = pair_telemetry(&ta, &tb, pairs);
+    let (paired, ua, ub, shifts) = repair_cuts(paired, ua, ub, pairs, play, table);
+    for (k, (span, moved, n)) in shifts.iter().enumerate() {
+        rep.inputs.insert(
+            format!("rig-cut re-pair {k}"),
+            format!(
+                "span [{}..{}]: {moved} of {n} fallback pairs moved by ±1 tick",
+                span.0, span.1
+            ),
+        );
+    }
     let bases = first_values(&paired, table, "telemetry");
     {
         let st = rep.stats.entry("telemetry".into()).or_default();
@@ -2701,6 +2907,121 @@ mod tests {
             rep.inputs
         );
         assert!(rep.inputs["tape"].starts_with("NOT READ"));
+    }
+
+    /// A tick `k` carrying lte rssi `k` (+ optional imu ax / extra lte field).
+    fn cut_tel(ts: i64, k: i64, imu: f64, extra: bool) -> Value {
+        let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":k,
+            "metrics":{"lte":{"rssi":{"value":k}},"imu":{"ax":{"value":imu}}}});
+        if extra {
+            m["metrics"]["lte"]["quality"] = serde_json::json!({"value":1});
+        }
+        m
+    }
+
+    /// A ticks at k s (value k); B on player pairs at k s + 300 ms, but inside
+    /// the cut its ticks sit 650 ms EARLY, so the ts fallback pairs A_k with
+    /// B's tick k+1 — the review's A_k = B_{k+1} rows.
+    fn cut_run(tweak: impl Fn(i64, &mut Value)) -> (Capture, Capture, Vec<(i64, i64)>) {
+        let mut am = Vec::new();
+        let mut bm = Vec::new();
+        let mut pairs = Vec::new();
+        for k in 40..=70 {
+            am.push(msg(k * 1000, "telemetry", cut_tel(k * 1000, k, 0.0, false)));
+            let tb = if (50..=60).contains(&k) {
+                k * 1000 - 650
+            } else {
+                k * 1000 + 300
+            };
+            let mut p = cut_tel(tb, k, 0.0, false);
+            tweak(k, &mut p);
+            bm.push(msg(tb, "telemetry", p));
+            if !(50..=60).contains(&k) {
+                pairs.push((k * 1000, tb));
+            }
+        }
+        (cap("js", am), cap("rust", bm), pairs)
+    }
+
+    #[test]
+    fn rig_cut_repairs_fallback_pairs_then_compares_strictly() {
+        let t = table();
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            closed_spans: vec![(50_000, 60_000)],
+            ..Default::default()
+        };
+        let unt = |a: &Capture, b: &Capture, pairs: &[(i64, i64)], f: &InputFacts| {
+            let rep = diff_with(a, b, &play, f, pairs, &t);
+            let u: Vec<(String, String, String)> = rep
+                .mismatches
+                .iter()
+                .filter(|m| m.tol == UNTOLERATED)
+                .map(|m| (m.at.clone(), m.path.clone(), m.tol.clone()))
+                .collect();
+            (u, rep)
+        };
+        // Pure alignment: after the re-pair nothing differs.
+        let (a, b, pairs) = cut_run(|_, _| {});
+        let (u, rep) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(u.is_empty(), "{u:?}");
+        assert!(
+            rep.inputs
+                .get("rig-cut re-pair 0")
+                .is_some_and(|v| v.contains(": 10 of 16 ")),
+            "{:?}",
+            rep.inputs
+        );
+        assert!(!rep
+            .mismatches
+            .iter()
+            .any(|m| m.path.starts_with("metrics.lte")));
+        // A real lte value difference inside the cut: UNTOLERATED (no
+        // blanket value tolerance any more).
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(-1);
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.lte.rssi.value"),
+            "{u:?}"
+        );
+        // A presence difference inside the cut: UNTOLERATED.
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["lte"]["quality"] = serde_json::json!({"value":1});
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.lte.quality"),
+            "{u:?}"
+        );
+        // An IMU value inside the cut: tolerated only when the tape released
+        // an IMU line between the two ticks.
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["imu"]["ax"]["value"] = serde_json::json!(0.5);
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &InputFacts::default());
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.imu.ax.value"),
+            "{u:?}"
+        );
+        let f = InputFacts {
+            imu_lines: vec![54_600],
+            ..Default::default()
+        };
+        let (u, rep) = unt(&a, &b, &pairs, &f);
+        assert!(u.is_empty(), "{u:?}");
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "metrics.imu.ax.value" && m.tol == "T8/rig-cut-ungated"));
     }
 
     #[test]
