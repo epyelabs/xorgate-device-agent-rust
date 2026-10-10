@@ -26,7 +26,21 @@
 //!   a duplicate requestId;
 //! - `commands-sudo` update + reboot (sudo shim argv; O3 differs by design);
 //! - `cli`         `set timeSync.stepThresholdSecs 15`;
-//! - `clock`       every 10 s.
+//! - `clock`       every 10 s;
+//! - `config-envelope` (review-wp7 fix 5; additive, after every older track's
+//!   config) envelope + rev-guard paths: rev 3 retained with a valid `hardware`
+//!   block + `uploadBucket` (kvs.json backfill, hardware.json persist), rev 4
+//!   with the SAME envelope (unchanged / equal-block no-ops, the redelivery
+//!   semantics), rev 5 with an INVALID `hardware` block, a non-JSON payload, a
+//!   `v:2` payload, a stale rev 2 doc (rev guard skip), then rev 5 again (a
+//!   redelivery of the applied rev). Without the `config` track and with a
+//!   `conn-drop`, rev 3 is published during the cut, so the agents get it as a
+//!   retained delivery on reconnect;
+//! - `commands-sms` one `read_sms` (`args.limit` 5) and one without args;
+//! - `sim-mode`    meta env `MODE=sim`: the player runs both agents in sim mode,
+//!   so `read_sms` takes the fixture sweep (TS `worker.ts:930`
+//!   `config.mode === "real" ? reader : fixtureSmsSweep`; Rust
+//!   `command_flow.rs` `SmsSource::Fixture` when mode ≠ real).
 
 use std::path::Path;
 
@@ -72,6 +86,8 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
             "commands",
             "cli",
             "clock",
+            "config-envelope",
+            "commands-sms",
         ],
         "the C3a calibration tape: everything except sudo commands",
     ),
@@ -92,6 +108,8 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
             "commands-sudo",
             "cli",
             "clock",
+            "config-envelope",
+            "commands-sms",
         ],
         "10 min, every track",
     ),
@@ -144,6 +162,18 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         "refresh / rate-limit / expired / duplicate",
     ),
     ("cli", 60, &["cli", "clock"], "one `set` edit"),
+    (
+        "config-envelope",
+        120,
+        &["config-envelope", "conn-drop", "clock"],
+        "hardware/uploadBucket envelope (rev 3 retained across a cut), malformed, stale rev",
+    ),
+    (
+        "sms-sim",
+        60,
+        &["sim-mode", "commands-sms", "clock"],
+        "read_sms in MODE=sim: the fixture sweep on …/sms (telemetry is O7 sim)",
+    ),
 ];
 
 thread_local! {
@@ -324,6 +354,31 @@ fn config_doc(rev: i64, step: u32, enabled_mount: bool) -> String {
     .to_string()
 }
 
+/// The valid hardware block the `config-envelope` track delivers: the legacy
+/// CM5 wiring (sw encoder, rails, IMU kept, no LED, no cameras), so nothing the
+/// rig feeds changes meaning (`hardware-config.ts` `parseHardwareBlock`).
+pub fn synth_hardware_block() -> Value {
+    json!({
+        "v": 2, "platform": "rpi-cm5", "encoder": "sw-h264", "rails": true,
+        "statusLed": null, "imu": "bno085", "video": [],
+    })
+}
+
+/// The bucket the `config-envelope` track backfills into kvs.json.
+pub const SYNTH_UPLOAD_BUCKET: &str = "xorgate-synth-uploads";
+
+/// [`config_doc`] with extra envelope keys merged in at the end.
+fn config_doc_with(rev: i64, step: u32, enabled_mount: bool, extra: Value) -> String {
+    let mut v: Value = serde_json::from_str(&config_doc(rev, step, enabled_mount))
+        .expect("config_doc is JSON");
+    if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+        for (k, x) in e {
+            o.insert(k.clone(), x.clone());
+        }
+    }
+    v.to_string()
+}
+
 fn command(id: &str, cmd: &str, t: u64, ttl_ms: i64) -> String {
     let ts = w0() + t as i64;
     json!({"v": 1, "requestId": id, "command": cmd, "ts": ts, "expiresAt": ts + ttl_ms}).to_string()
@@ -422,6 +477,39 @@ fn build_inner(
             rev2_at,
             TapeEvent::mqtt_in(&topic("config"), doc2.as_bytes(), false, 1),
         );
+    }
+
+    // ---- config-envelope (additive; see the module doc)
+    if has("config-envelope") {
+        let standalone = !has("config");
+        let env_ok = json!({"uploadBucket": SYNTH_UPLOAD_BUCKET, "hardware": synth_hardware_block()});
+        let mut bad_hw = synth_hardware_block();
+        bad_hw["encoder"] = json!("hw-h265"); // unknown enum → parse null
+        let env_bad = json!({"uploadBucket": SYNTH_UPLOAD_BUCKET, "hardware": bad_hw});
+        let doc3 = config_doc_with(3, 13, true, env_ok.clone());
+        let doc5 = config_doc_with(5, 14, true, env_bad);
+        let cfg = |b: &mut Builder, t: u64, doc: &[u8], retain: bool| {
+            b.push(t, TapeEvent::mqtt_in(&topic("config"), doc, retain, 1));
+        };
+        let e = if standalone && drop {
+            // rev 3 while the broker path is cut: the broker holds it and the
+            // agents get it as a retained delivery when they resubscribe.
+            cfg(&mut b, drop_at + 5_000, doc3.as_bytes(), true);
+            cfg(&mut b, drop_end + 300, doc3.as_bytes(), true);
+            drop_end + 6_000
+        } else {
+            let e = pct(75) + 400;
+            cfg(&mut b, e, doc3.as_bytes(), true);
+            e + 6_000
+        };
+        // Same envelope, new rev: uploadBucket "unchanged", equal block.
+        cfg(&mut b, e, config_doc_with(4, 14, true, env_ok).as_bytes(), false);
+        cfg(&mut b, e + 6_000, doc5.as_bytes(), false);
+        cfg(&mut b, e + 12_000, br#"{"v":1,"rev":6,"timeSync":{"#, false);
+        cfg(&mut b, e + 15_000, br#"{"v":2,"rev":7}"#, false);
+        // Stale: would revert imuMount + the step if applied.
+        cfg(&mut b, e + 18_000, config_doc(2, 11, false).as_bytes(), false);
+        cfg(&mut b, e + 21_000, doc5.as_bytes(), true);
     }
 
     // ---- dt
@@ -686,6 +774,27 @@ fn build_inner(
         );
     }
 
+    // ---- commands-sms: read_sms with and without args.limit
+    if has("commands-sms") {
+        let at = pct(45) + 200;
+        let mut c: Value = serde_json::from_str(&command("synth-sms-1", "read_sms", at, 60_000))?;
+        c["args"] = json!({"limit": 5});
+        b.push(
+            at,
+            TapeEvent::mqtt_in(&topic("command"), c.to_string().as_bytes(), false, 1),
+        );
+        let t2 = at + 6_000;
+        b.push(
+            t2,
+            TapeEvent::mqtt_in(
+                &topic("command"),
+                command("synth-sms-2", "read_sms", t2, 60_000).as_bytes(),
+                false,
+                1,
+            ),
+        );
+    }
+
     // ---- cli
     if has("cli") {
         b.push(
@@ -737,8 +846,9 @@ fn build_inner(
         .filter(|t| base.is_none() || !base_owned.contains(t))
         .map(|t| t.to_string())
         .collect();
+    let mode = if has("sim-mode") { "sim" } else { "real" };
     meta.env = TapeMeta::redacted_env(&|k| match k {
-        "MODE" => Some("real".into()),
+        "MODE" => Some(mode.into()),
         _ => None,
     });
     let _ = desc;
