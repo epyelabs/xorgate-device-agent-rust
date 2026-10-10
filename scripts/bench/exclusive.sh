@@ -14,15 +14,16 @@
 #   4. exclusive input profile (runtime 99-exclusive.conf) + runtime tape drop-in
 #      98-tape.conf (XORGATE_RS_TAPE=/var/lib/xorgate-rs/tapes/<ts>.ndjson.gz);
 #   5. daemon-reload + restart xorgate-agent-rs.
+#   From step 3 until the window is open an EXIT/INT/TERM trap restores the JS agent.
 #   Order inside the window (phase file): C4 → C5 → C6 → C7 → C12 bench half →
 #   tape ≥ 10 min → `exclusive.sh tape-off` (closes the tape) → C14 → C8 → C7
 #   reboot LAST. The reboot ends the window: JS starts itself, /run drop-ins vanish.
 #
 #   scripts/bench/exclusive.sh tape-off [--dry-run]  # remove 98-tape.conf + restart Rust (closes the tape)
 #
-# end: removes both runtime drop-ins, re-asserts the shared profile, restarts
-#   Rust only if anything changed or it is not active, starts the JS agent if
-#   inactive, waits for all three units active, re-checks the C15 sha256s and
+# end: stops Rust, starts + verifies the JS agent FIRST (so no later failure can
+#   leave PROD down), removes both runtime drop-ins, re-asserts the shared
+#   profile, restarts Rust, waits for all three units active, re-checks the C15 sha256s and
 #   lists files under /var/lib/xorgate modified while the JS agent was stopped
 #   (= touched by someone else). Leaves Rust running on dev.
 # Never touches sim7600-lte, /etc/xorgate/agent.env or /var/lib/xorgate contents.
@@ -39,6 +40,21 @@ log "exclusive $VERB on $BENCH$([ $DRY = 1 ] && echo ' (DRY RUN)')"
 [ "$(id -u)" -eq 0 ] || { echo "must run as root"; exit 1; }
 WIN_ROOT=$RS_HOME/evidence
 latest_window() { ls -1d "$WIN_ROOT"/window-* 2>/dev/null | tail -n1; }
+# Start the PROD JS agent and verify it is active. Never aborts the script
+# (set -e safe): returns 1 after ~30 s of retries so the caller can shout.
+start_js_verified() {
+  if [ "$DRY" = 1 ]; then echo "  [dry-run] would: systemctl start $JS_UNIT (+ verify active)"; return 0; fi
+  local i
+  for i in 1 2 3; do
+    systemctl start "$JS_UNIT" || true
+    for _ in $(seq 1 10); do
+      [ "$(systemctl is-active "$JS_UNIT" || true)" = active ] && { echo "  = $JS_UNIT active"; return 0; }
+      sleep 1
+    done
+  done
+  echo "!!!! $JS_UNIT FAILED TO START — the PROD agent is DOWN; fix by hand: sudo systemctl start $JS_UNIT" >&2
+  return 1
+}
 
 case "$VERB" in
 status)
@@ -81,6 +97,21 @@ PY
     chown -R pi:pi "$WIN"
   fi
   echo "== 3. stop $JS_UNIT (never disable)"
+  # From here until the window is fully open, ANY exit (error, signal) must give
+  # the PROD JS agent back: stop Rust (it may already hold the exclusive inputs),
+  # drop the runtime drop-ins, start + verify JS.
+  begin_abort() {
+    local rc=$?
+    trap - EXIT INT TERM
+    echo "!! exclusive begin aborted (rc=$rc) — restoring the PROD JS agent" >&2
+    systemctl stop "$UNIT" 2>/dev/null || true
+    rm -f "$EXCLUSIVE_DROPIN" "$TAPE_DROPIN" "$EXCLUSIVE_ENV" 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    start_js_verified || true
+    echo "!! run scripts/bench/exclusive.sh end to re-apply the shared profile and restart Rust" >&2
+    exit "$rc"
+  }
+  [ "$DRY" = 1 ] || trap begin_abort EXIT INT TERM
   act systemctl stop $JS_UNIT
   if [ "$DRY" != 1 ]; then
     for _ in $(seq 1 30); do [ "$(systemctl is-active $JS_UNIT || true)" = active ] || break; sleep 1; done
@@ -98,6 +129,7 @@ CONF
   echo "== 5. reload + restart $UNIT"
   reload_restart_rs
   units_report
+  [ "$DRY" = 1 ] || trap - EXIT INT TERM
   echo "== window OPEN at $TS — tape $RS_HOME/tapes/$TS.ndjson.gz. On ANY abort: scripts/bench/exclusive.sh end"
   echo "   CLI steps (C6) must carry the tape path so their \`cli\` events reach the side file"
   echo "   $RS_HOME/tapes/$TS.ndjson.gz.cli.ndjson (WP6 A6), e.g.:"
@@ -109,24 +141,32 @@ tape-off)
   ls -l $RS_HOME/tapes/ 2>/dev/null | tail -n 3 | sed 's/^/  /' || true
   ;;
 end)
-  echo "== 1. runtime drop-ins"
+  # ORDER MATTERS (review-wp7 fix 6): the PROD JS agent must be running again
+  # before ANY step that can fail under set -e. Rust is stopped first because in
+  # the exclusive profile it may hold the NMEA tty / I2C bus the JS agent needs.
+  echo "== 1. stop $UNIT (frees the exclusive inputs)"
+  act systemctl stop $UNIT || true
+  echo "== 2. JS agent (start + verify BEFORE anything that can fail)"
+  JS_OK=1
+  if [ "$(systemctl is-active $JS_UNIT || true)" != active ]; then
+    start_js_verified || JS_OK=0
+    [ "$JS_OK" = 1 ] && note "$JS_UNIT started"
+  else
+    echo "  = $JS_UNIT active"
+  fi
+  echo "== 3. runtime drop-ins"
   remove_if_present "$EXCLUSIVE_DROPIN" || true
   remove_if_present "$TAPE_DROPIN" || true
-  echo "== 2. shared profile"
+  echo "== 4. shared profile + restart $UNIT"
   profile_shared
-  if [ ${#CHANGED[@]} -gt 0 ] || [ "$(systemctl is-active $UNIT || true)" != active ]; then
-    echo "== 3. reload + restart $UNIT"; reload_restart_rs
-  else
-    echo "== 3. $UNIT unchanged and active — no restart"
-  fi
-  echo "== 4. JS agent"
-  if [ "$(systemctl is-active $JS_UNIT || true)" != active ]; then act systemctl start $JS_UNIT; note "$JS_UNIT started"; else echo "  = $JS_UNIT active"; fi
+  reload_restart_rs
   if [ "$DRY" != 1 ]; then
     for _ in $(seq 1 30); do
       ok=1; for u in $JS_UNIT $UNIT $MODEM_UNIT; do [ "$(systemctl is-active $u || true)" = active ] || ok=0; done
       [ $ok = 1 ] && break; sleep 1
     done
   fi
+  [ "$JS_OK" = 1 ] || echo "!!!! $JS_UNIT is NOT active — see above" >&2
   units_report
   echo "== 5. C15"
   c15_check
