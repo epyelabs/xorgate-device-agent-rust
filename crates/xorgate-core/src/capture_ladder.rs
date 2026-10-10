@@ -322,7 +322,7 @@ pub fn stderr_log_line(stream_key: &str, line: &str) -> Option<String> {
 /// The names `reapShmSegments` unlinks (`video-capture.ts:873-891`): only
 /// the dead child's OWN `shmpipe.<pid>.` prefix — never another process's
 /// segments (the JS agent's live on the same tmpfs). No pid → nothing.
-pub fn shm_names_to_reap<'a>(names: &'a [String], pid: Option<u32>) -> Vec<&'a str> {
+pub fn shm_names_to_reap(names: &[String], pid: Option<u32>) -> Vec<&str> {
     let Some(pid) = pid else {
         return Vec::new();
     };
