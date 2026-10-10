@@ -1,6 +1,10 @@
 //! `xorgate-replay inspect` — what is on a tape: header, duration, per-kind
 //! counts, connection spans, wall-clock steps (from the `clock` samples and the
 //! per-record `w` vs `t`), the inbound topics, and whether the tape was cut.
+//! `events:` breaks every input kind down into what it exercises (sentence
+//! types and GGA quality, IMU line types, helper exit codes, LTE present/absent,
+//! exec argv, config validity/envelope/rev order, command names, expired and
+//! duplicate commands, cli edits), so a reviewer sees what a run drove.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -23,6 +27,155 @@ pub struct Summary {
     pub nmea_gaps_over_5s: Vec<(u64, u64)>,
     pub truncated: bool,
     pub out_of_order: usize,
+    /// Per-kind input events (`<kind>:<what>` → count), see [`event_keys`].
+    pub events: BTreeMap<String, usize>,
+}
+
+/// Rev bookkeeping across a tape's config docs (for `config:rev-not-newer`).
+#[derive(Default)]
+struct EventState {
+    max_rev: i64,
+    request_ids: std::collections::BTreeSet<String>,
+}
+
+/// The `events:` keys one record contributes. Config categories follow the
+/// TS handler order (`worker.ts:781-860`): malformed (not JSON / not an
+/// object / `v` ≠ 1), the envelope (`uploadBucket`, `hardware` valid/invalid
+/// via the ported `parseHardwareBlock`), then the rev guard: a positive rev
+/// not above every rev seen before on the tape (a stale doc or a retained
+/// redelivery of the applied one).
+fn event_keys(r: &xorgate_hal::tape::TapeRecord, st: &mut EventState) -> Vec<String> {
+    use serde_json::Value;
+    let mut k = Vec::new();
+    match &r.ev {
+        TapeEvent::Nmea { line } => {
+            let body = line.trim_start_matches('$');
+            let ty: String = body.chars().skip(2).take(3).collect();
+            if ty.len() == 3 {
+                k.push(format!("nmea:{ty}"));
+            }
+            if ty == "GGA" {
+                let q = body.split(',').nth(6).unwrap_or("");
+                k.push(format!(
+                    "nmea:GGA quality={}",
+                    if q.is_empty() { "-" } else { q }
+                ));
+            }
+        }
+        TapeEvent::Imu { line } => {
+            let ty = serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|v| v["type"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "non-json".into());
+            k.push(format!("imu:{ty}"));
+        }
+        TapeEvent::ImuSpawn { .. } => k.push("imu_spawn".into()),
+        TapeEvent::ImuExit { code } => k.push(format!(
+            "imu_exit:code={}",
+            code.map_or("signal".to_string(), |c| c.to_string())
+        )),
+        TapeEvent::I2cdetect { not_found, .. } => k.push(
+            if *not_found {
+                "i2cdetect:notFound"
+            } else {
+                "i2cdetect:ran"
+            }
+            .into(),
+        ),
+        TapeEvent::LteFile { absent, .. } => k.push(
+            if *absent {
+                "lte_file:absent"
+            } else {
+                "lte_file:present"
+            }
+            .into(),
+        ),
+        TapeEvent::Exec { argv, code, .. } => {
+            let head: Vec<&str> = argv.iter().take(2).map(String::as_str).collect();
+            let c = match code {
+                Some(0) => String::new(),
+                Some(c) => format!(" exit={c}"),
+                None => " notFound".into(),
+            };
+            k.push(format!("exec:{}{c}", head.join(" ")));
+        }
+        TapeEvent::Dt { absent, .. } => {
+            k.push(if *absent { "dt:absent" } else { "dt:present" }.into())
+        }
+        TapeEvent::MqttIn { topic, retain, .. } => {
+            let payload = r.ev.mqtt_payload().unwrap_or_default();
+            let v = serde_json::from_slice::<Value>(&payload).ok();
+            if topic.ends_with("/config") {
+                if *retain {
+                    k.push("config:retain".into());
+                }
+                match v.filter(|v| v.is_object() && v["v"] == 1) {
+                    None => k.push("config:malformed".into()),
+                    Some(v) => {
+                        k.push("config:valid".into());
+                        if v["uploadBucket"].as_str().is_some_and(|b| !b.is_empty()) {
+                            k.push("config:+uploadBucket".into());
+                        }
+                        if v["hardware"].is_object() {
+                            let ok =
+                                xorgate_core::hardware_block::parse_hardware_block(&v["hardware"])
+                                    .is_some();
+                            k.push(
+                                if ok {
+                                    "config:+hardware valid"
+                                } else {
+                                    "config:+hardware INVALID"
+                                }
+                                .into(),
+                            );
+                        }
+                        match v["rev"].as_f64().filter(|r| r.is_finite() && *r > 0.0) {
+                            None => k.push("config:no-rev".into()),
+                            Some(rev) => {
+                                let rev = rev.floor() as i64;
+                                if rev <= st.max_rev {
+                                    k.push("config:rev-not-newer".into());
+                                }
+                                st.max_rev = st.max_rev.max(rev);
+                            }
+                        }
+                    }
+                }
+            } else if topic.ends_with("/command") {
+                match v.filter(|v| v.is_object()) {
+                    None => k.push("command:malformed".into()),
+                    Some(v) => {
+                        let name = v["command"].as_str().unwrap_or("?");
+                        k.push(format!("command:{name}"));
+                        if v["expiresAt"].as_f64().is_some_and(|e| (r.w as f64) > e) {
+                            k.push("command:expired".into());
+                        }
+                        if let Some(id) = v["requestId"].as_str() {
+                            if !st.request_ids.insert(id.to_string()) {
+                                k.push("command:duplicate requestId".into());
+                            }
+                        }
+                    }
+                }
+            } else {
+                let tail = topic.rsplit('/').next().unwrap_or(topic);
+                k.push(format!("mqtt_in:{tail}"));
+            }
+        }
+        TapeEvent::Conn { state } => k.push(format!(
+            "conn:{}",
+            match state {
+                ConnState::Closed => "closed",
+                ConnState::Connected => "connected",
+            }
+        )),
+        TapeEvent::Cli { argv } => {
+            let head: Vec<&str> = argv.iter().take(2).map(String::as_str).collect();
+            k.push(format!("cli:{}", head.join(" ")));
+        }
+        _ => {}
+    }
+    k
 }
 
 pub fn summarize(tape: &Tape) -> Summary {
@@ -35,8 +188,12 @@ pub fn summarize(tape: &Tape) -> Summary {
     let mut closed_from: Option<u64> = None;
     let mut prev: Option<(u64, i64)> = None;
     let mut last_nmea: Option<u64> = None;
+    let mut est = EventState::default();
     for r in &tape.records {
         *s.counts.entry(r.ev.kind().to_string()).or_default() += 1;
+        for key in event_keys(r, &mut est) {
+            *s.events.entry(key).or_default() += 1;
+        }
         if let Some((pt, pw)) = prev {
             if r.t < pt {
                 s.out_of_order += 1;
@@ -136,6 +293,12 @@ pub fn render(tape: &Tape, s: &Summary) -> String {
     for (k, n) in &s.counts {
         let _ = writeln!(o, "  {k:<10} {n}");
     }
+    if !s.events.is_empty() {
+        let _ = writeln!(o, "events (input side):");
+        for (k, n) in &s.events {
+            let _ = writeln!(o, "  {k:<36} {n}");
+        }
+    }
     if !s.topics.is_empty() {
         let _ = writeln!(o, "mqtt_in topics:");
         for (k, n) in &s.topics {
@@ -188,6 +351,28 @@ pub fn dump(tape: &Tape, kinds: &[String]) -> String {
 mod tests {
     use super::*;
     use xorgate_hal::tape::{TapeMeta, TapeRecord};
+
+    #[test]
+    fn events_show_what_the_calibration_tape_exercises() {
+        let fx = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let tape = crate::synth::build("calibration", None, &fx).unwrap();
+        let s = summarize(&tape);
+        let e = |k: &str| s.events.get(k).copied().unwrap_or(0);
+        assert_eq!(e("config:malformed"), 2);
+        assert_eq!(e("config:+hardware valid"), 2);
+        assert_eq!(e("config:+hardware INVALID"), 2);
+        assert_eq!(e("config:+uploadBucket"), 4);
+        // rev 1 redelivery after the cut, stale rev 2, rev 5 again
+        assert_eq!(e("config:rev-not-newer"), 3);
+        assert_eq!(e("command:read_sms"), 2);
+        assert_eq!(e("command:expired"), 1);
+        assert_eq!(e("command:duplicate requestId"), 1);
+        assert_eq!(e("conn:closed"), 1);
+        assert_eq!(e("imu_exit:code=4"), 1);
+        assert!(e("lte_file:absent") >= 1 && e("nmea:GGA quality=0") >= 1);
+        assert!(e("cli:set timeSync.stepThresholdSecs") == 1);
+        assert!(render(&tape, &s).contains("events (input side):"));
+    }
 
     #[test]
     fn spans_steps_and_counts() {

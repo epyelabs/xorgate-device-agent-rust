@@ -91,7 +91,14 @@ copies the side file along; during the window the CLI must be run with the
 same `XORGATE_RS_TAPE` (`exclusive.sh begin` prints the command line).
 
 `xorgate-replay inspect <tape> [--dump [--kind nmea]…]` prints the header,
-per-kind counts, closed spans, NMEA gaps, wall steps and truncation.
+per-kind counts, closed spans, NMEA gaps, wall steps and truncation, and
+`events (input side):` — what the tape exercises, per kind: NMEA sentence
+types + GGA quality, IMU line types, helper exit codes, i2cdetect, LTE
+present/absent, exec argv (+ non-zero exit), `config:` valid / malformed /
+retain / `+uploadBucket` / `+hardware valid|INVALID` / `rev-not-newer` (stale
+or redelivered rev, by tape order), `command:<name>` / expired / duplicate
+requestId, conn, cli. Run it on `<run>/b/agent-tape.ndjson.gz` too to see what
+the Rust agent actually received.
 
 ## Synthetic tapes
 
