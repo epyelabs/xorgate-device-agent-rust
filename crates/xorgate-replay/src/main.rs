@@ -16,6 +16,7 @@ mod record;
 mod rewrite;
 mod synth;
 mod tolerances;
+mod watch;
 
 use std::path::PathBuf;
 

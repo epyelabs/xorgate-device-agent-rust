@@ -60,6 +60,7 @@ use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 
 use crate::diff::PlayInfo;
 use crate::rewrite;
+use crate::watch::{self, WatchGate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AgentKind {
@@ -922,6 +923,8 @@ struct Captures {
     files: [Mutex<File>; 2],
     inputs: Mutex<File>,
     gate: Mutex<Gate>,
+    /// Periodic-watch holds (`watch.rs`).
+    watch: Arc<Mutex<WatchGate>>,
     start_wall: i64,
 }
 
@@ -989,6 +992,19 @@ async fn capture_loop(
                 if let Ok(mut f) = file.lock() {
                     let _ = writeln!(f, "{line}");
                 }
+                if !inbound {
+                    if let Ok(mut w) = caps.watch.lock() {
+                        w.on_publish(idx, now);
+                        if topic.ends_with("/config/reported") {
+                            let eff = serde_json::from_str::<Value>(&payload)
+                                .ok()
+                                .map(|v| v["effective"].clone())
+                                .unwrap_or(Value::Null);
+                            let has_modem = eff.get("sim").is_some() || eff.get("uplink").is_some();
+                            w.on_report(idx, now, has_modem);
+                        }
+                    }
+                }
                 if topic.ends_with("/telemetry") {
                     if let Some(ts) = serde_json::from_str::<Value>(&payload)
                         .ok()
@@ -1011,6 +1027,8 @@ async fn capture_loop(
 /// `(work dir, capture dir)` per agent.
 async fn snapshot_loop(works: Vec<(PathBuf, PathBuf)>, stop: CancellationToken) {
     let mut last: BTreeMap<(usize, String), Option<Vec<u8>>> = BTreeMap::new();
+    type Stat = Option<(u64, u64, i64, i64)>;
+    let mut stats: BTreeMap<(usize, String), Stat> = BTreeMap::new();
     let mut files: Vec<File> = works
         .iter()
         .map(|(_, dir)| {
@@ -1024,6 +1042,16 @@ async fn snapshot_loop(works: Vec<(PathBuf, PathBuf)>, stop: CancellationToken) 
     loop {
         for (i, (work, _)) in works.iter().enumerate() {
             for (name, path) in snapshot_targets(work) {
+                // Stat first and read only on a change: an `open` here would
+                // look like an agent's read to the watch gate's inotify.
+                let st = fs::metadata(&path).ok().map(|m| {
+                    use std::os::unix::fs::MetadataExt;
+                    (m.ino(), m.len(), m.mtime(), m.mtime_nsec())
+                });
+                if stats.get(&(i, name.clone())) == Some(&st) {
+                    continue;
+                }
+                stats.insert((i, name.clone()), st);
                 let cur = fs::read(&path).ok();
                 let prev = last.get(&(i, name.clone()));
                 // The first poll always logs (absent → `text: null`).
@@ -1171,6 +1199,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         ],
         inputs: Mutex::new(File::create(args.out.join("inputs-mqtt.ndjson"))?),
         gate: Mutex::new(Gate::new(args.guard_ms)),
+        watch: Arc::new(Mutex::new(WatchGate::new())),
         start_wall,
     });
     let (cap_client, cap_el) =
@@ -1251,12 +1280,29 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         )?;
     }
 
+    // The watch gate's eyes: every open/replace of each agent's
+    // settings.json and LTE file (`watch.rs`, `<label>/reads.ndjson`).
+    let watch_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[cfg(target_os = "linux")]
+    watch::observe(
+        agents
+            .iter()
+            .map(|a| (a.home.clone(), a.state.clone(), a.dir.join("reads.ndjson")))
+            .collect(),
+        caps.watch.clone(),
+        watch_stop.clone(),
+    )
+    .context("inotify on the agents' settings/LTE dirs")?;
+
     // Start both agents together.
     let t0 = tokio::time::Instant::now();
     let play_start_wall = wall_now_ms();
     for (i, a) in agents.iter_mut().enumerate() {
         if i == 1 && args.stagger_ms > 0 {
             tokio::time::sleep(Duration::from_millis(args.stagger_ms)).await;
+        }
+        if let Ok(mut w) = caps.watch.lock() {
+            w.on_spawn(i, wall_now_ms());
         }
         a.start(&args)?;
     }
@@ -1290,16 +1336,41 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         tokio::time::sleep_until(due).await;
         if !args.no_gate {
             let cut_active = closed_since.is_some();
+            let gated = watch::gated(&r.ev);
+            let due_w = wall_now_ms();
+            let mut timeout = false;
             loop {
+                let now = wall_now_ms();
                 let open = caps
                     .gate
                     .lock()
-                    .map(|mut g| g.is_open(wall_now_ms(), cut_active))
+                    .map(|mut g| g.is_open(now, cut_active))
                     .unwrap_or(true);
-                if open {
+                // Also off both agents' periodic-watch ticks of this input.
+                let held = open
+                    && gated.is_some_and(|(input, look)| {
+                        caps.watch
+                            .lock()
+                            .map(|mut w| w.holds(input, now, look))
+                            .unwrap_or(false)
+                    });
+                if held && now - due_w > watch::MAX_HOLD_MS {
+                    timeout = true;
+                    plog(format!(
+                        "watch gate: hold timeout at t={} ({:?})",
+                        r.t, gated
+                    ));
+                    break;
+                }
+                if open && !held {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            if let Some((input, _)) = gated {
+                if let Ok(mut w) = caps.watch.lock() {
+                    w.note_release(input, due_w, wall_now_ms(), timeout);
+                }
             }
         }
         let now = wall_now_ms();
@@ -1512,6 +1583,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
 
     let end_wall = wall_now_ms();
     snap_stop.cancel();
+    watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let watch_report = caps
+        .watch
+        .lock()
+        .map(|mut w| w.report(end_wall))
+        .unwrap_or(Value::Null);
+    fs::write(
+        args.out.join("watch.json"),
+        serde_json::to_vec_pretty(&watch_report)?,
+    )?;
     for a in agents.iter() {
         a.signal_term();
     }
