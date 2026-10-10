@@ -8,6 +8,7 @@
 
 pub mod atomic_write;
 pub mod boot_id;
+pub mod boot_sources;
 pub mod camera_list;
 pub mod child;
 pub mod config_sync_file;

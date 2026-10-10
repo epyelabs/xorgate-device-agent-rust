@@ -914,7 +914,10 @@ pub struct ShedVerdict {
 
 /// `LoadShedPolicy` (`boot-policy.ts:871-943`): buffers pushed power samples,
 /// evaluates the ladder on the manager's shed tick, never latches. Every
-/// timestamp is the caller's MONOTONIC `mono_ms` (the TS `monoMs` option).
+/// timestamp is `clock.mono_ms()` of the injected clock (the TS `monoMs`
+/// option, default `monotonicMs`) — the SAME `&dyn Clock` the boot-defer
+/// policy reads, so both policies share one monotonic source (Phase 3 P8,
+/// review-wp3 #5 / CF37). The wall clock is never read here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadShedPolicy {
     samples: Vec<PowerSample>,
@@ -926,17 +929,17 @@ const MAX_BUFFERED_SAMPLES: usize = 4000;
 
 impl LoadShedPolicy {
     /// `new LoadShedPolicy()` (`boot-policy.ts:876-879`).
-    pub fn new(mono_ms: MonoMs) -> Self {
+    pub fn new(clock: &dyn Clock) -> Self {
         Self {
             samples: Vec::new(),
-            state: initial_shed_state(mono_ms as i64),
+            state: initial_shed_state(clock.mono_ms() as i64),
         }
     }
 
     /// `push` (`boot-policy.ts:882-894`): record one reading (~1 Hz).
-    pub fn push(&mut self, reading: &PowerSampleReading, mono_ms: MonoMs) {
+    pub fn push(&mut self, reading: &PowerSampleReading, clock: &dyn Clock) {
         self.samples
-            .push(PowerSample::from_reading(reading, mono_ms as i64));
+            .push(PowerSample::from_reading(reading, clock.mono_ms() as i64));
         if self.samples.len() > MAX_BUFFERED_SAMPLES {
             let excess = self.samples.len() - MAX_BUFFERED_SAMPLES;
             self.samples.drain(..excess);
@@ -944,11 +947,13 @@ impl LoadShedPolicy {
     }
 
     /// `evaluate` (`boot-policy.ts:897-929`): evaluate the ladder for this tick.
-    pub fn evaluate(&mut self, cfg: &ShedConfig, mono_ms: MonoMs) -> ShedVerdict {
+    pub fn evaluate(&mut self, cfg: &ShedConfig, clock: &dyn Clock) -> ShedVerdict {
+        let mono_ms = clock.mono_ms();
         let now_ms = mono_ms as i64;
         if !cfg.enabled {
             let was_active = self.state.level > ShedLevel::Full || self.state.parked;
-            self.reset(mono_ms);
+            // `this.reset()` reads `this.now()` again (a second clock read).
+            self.reset(clock);
             return ShedVerdict {
                 level: ShedLevel::Full,
                 parked: false,
@@ -987,9 +992,9 @@ impl LoadShedPolicy {
     }
 
     /// `reset` (`boot-policy.ts:932-935`): forget everything (settings change).
-    pub fn reset(&mut self, mono_ms: MonoMs) {
+    pub fn reset(&mut self, clock: &dyn Clock) {
         self.samples.clear();
-        self.state = initial_shed_state(mono_ms as i64);
+        self.state = initial_shed_state(clock.mono_ms() as i64);
     }
 
     /// `statusString` (`boot-policy.ts:938-942`): `None` at full operation,

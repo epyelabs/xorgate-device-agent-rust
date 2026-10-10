@@ -55,6 +55,7 @@ pub mod pipeline_builder;
 pub mod power;
 pub mod recorder_gate;
 pub mod recording_config;
+pub mod recording_flow;
 pub mod round;
 pub mod segments;
 pub mod session;
