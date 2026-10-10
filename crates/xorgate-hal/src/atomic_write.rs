@@ -39,6 +39,8 @@ pub(crate) fn temp_path_for(path: &Path) -> (PathBuf, PathBuf) {
         .unwrap_or_default();
     let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!(".{base}.tmp.{}.{n}", std::process::id()));
+    // node `path.join('.', x)` normalises away the leading `./`.
+    let tmp = tmp.strip_prefix(".").map(Path::to_path_buf).unwrap_or(tmp);
     (dir, tmp)
 }
 
@@ -173,6 +175,22 @@ pub fn fsync_dir(dir: &Path) {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn temp_name_matches_node_path_join() {
+        let pid = std::process::id();
+        for (target, dir, prefix) in [
+            ("/h/state.json", "/h", "/h/.state.json.tmp."),
+            ("state.json", ".", ".state.json.tmp."),
+            ("./state.json", ".", ".state.json.tmp."),
+            ("rel/state.json", "rel", "rel/.state.json.tmp."),
+        ] {
+            let (d, t) = temp_path_for(Path::new(target));
+            assert_eq!(d, Path::new(dir), "{target}");
+            let t = t.to_string_lossy().into_owned();
+            assert!(t.starts_with(&format!("{prefix}{pid}.")), "{target}: {t}");
+        }
+    }
 
     #[test]
     fn writes_compact_json_atomically_with_0600() {

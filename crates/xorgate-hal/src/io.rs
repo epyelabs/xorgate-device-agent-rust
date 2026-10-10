@@ -161,6 +161,7 @@ fn errno_name(errno: i32) -> Option<(&'static str, &'static str)> {
         libc::ELOOP => ("ELOOP", "too many symbolic links encountered"),
         libc::EXDEV => ("EXDEV", "cross-device link not permitted"),
         libc::EBADF => ("EBADF", "bad file descriptor"),
+        libc::EINVAL => ("EINVAL", "invalid argument"),
         libc::ENOTEMPTY => ("ENOTEMPTY", "directory not empty"),
         _ => return None,
     })
@@ -181,6 +182,11 @@ mod tests {
         assert_eq!(
             node_fs_message(&e, "open", Path::new("/x")),
             "EACCES: permission denied, open '/x'"
+        );
+        let e = io::Error::from_raw_os_error(libc::EINVAL);
+        assert_eq!(
+            node_fd_message(&e, "fsync"),
+            "EINVAL: invalid argument, fsync"
         );
     }
 
