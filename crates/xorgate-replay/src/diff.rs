@@ -774,7 +774,14 @@ impl Cx<'_> {
     /// (−1 s: the helper's sample is read at the next tick), lte ← an LTE-file
     /// change, system ← an exec/dt change. Never gps (NMEA flows every second;
     /// the re-pair aligns it) and never a presence difference.
-    fn cut_input(&self, path: &str) -> Option<String> {
+    ///
+    /// lte/system are further RESTRICTED to the fields that input event
+    /// changed: one agent read the old version and the other the new one, so
+    /// one side's value must be the other side's value at the ADJACENT tick
+    /// (A_k = B_k±1 or B_k = A_k±1 at this path). A field the change did not
+    /// move (equal in both versions) can never satisfy that and stays
+    /// UNTOLERATED.
+    fn cut_input(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let group = path.strip_prefix("metrics.")?.split('.').next()?;
         if !matches!(group, "imu" | "lte" | "system") {
             return None;
@@ -800,7 +807,20 @@ impl Cx<'_> {
                 .iter()
                 .any(|(w, k)| matches!(*k, "exec" | "dt") && between(*w)),
         };
-        released.then_some(id)
+        if !released {
+            return None;
+        }
+        if group != "imu" {
+            let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
+            let [pa, na, pb, nb] = self.neighbors;
+            let moved = [(pb, x), (nb, x), (pa, y), (na, y)]
+                .iter()
+                .any(|(n, v)| at(*n).as_ref() == Some(*v));
+            if !moved {
+                return None;
+            }
+        }
+        Some(id)
     }
 
     /// `when` inside a closed span (extended to both agents' reconnect) padded
@@ -1155,7 +1175,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             let tol = cx
                 .d23(path)
-                .or_else(|| cx.cut_input(path))
+                .or_else(|| cx.cut_input(path, x, y))
                 .or_else(|| cx.input_edge(path, x, y))
                 .or_else(|| cx.report_input_between(path))
                 .or_else(|| cx.near_wall_step(path))
@@ -4086,19 +4106,37 @@ mod tests {
             .iter()
             .any(|m| m.path == "metrics.imu.ax.value" && m.tol == "T8/rig-cut-ungated"));
         // An lte value inside the cut: only with an LTE-file change released
-        // between the two reads (A 55 000, B 54 350 after the re-pair).
+        // between the two reads (A 55 000, B 54 350 after the re-pair), and
+        // only a field that change moved: B read the OLD version (= A's
+        // previous sample, 54).
         let (a, b, pairs) = cut_run(|k, p| {
             if k == 55 {
-                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(-1);
+                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(54);
             }
         });
         let at = |w: i64| InputFacts {
             inputs: vec![(w, "lte_file")],
             ..Default::default()
         };
-        let (u, _) = unt(&a, &b, &pairs, &at(54_700));
+        let (u, rep) = unt(&a, &b, &pairs, &at(54_700));
         assert!(u.is_empty(), "{u:?}");
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "metrics.lte.rssi.value" && m.tol == "T8/rig-cut-ungated"));
         let (u, _) = unt(&a, &b, &pairs, &at(56_200));
+        assert!(
+            u.iter().any(|(_, p, _)| p == "metrics.lte.rssi.value"),
+            "{u:?}"
+        );
+        // A value neither version carried (no adjacent sample has it): the
+        // change did not produce it, so UNTOLERATED even with the release.
+        let (a, b, pairs) = cut_run(|k, p| {
+            if k == 55 {
+                p["metrics"]["lte"]["rssi"]["value"] = serde_json::json!(-1);
+            }
+        });
+        let (u, _) = unt(&a, &b, &pairs, &at(54_700));
         assert!(
             u.iter().any(|(_, p, _)| p == "metrics.lte.rssi.value"),
             "{u:?}"
