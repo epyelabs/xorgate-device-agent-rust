@@ -173,8 +173,9 @@ the same — common brief rule 6):
   pair are observed (timeout 2 s); a pair whose first tick is already
   observed is held for its natural partner. Inputs are delayed by less than one pair gap and
   never reordered. Pairs go to `pairs.ndjson`; the diff compares exactly those
-  ticks. When the gap exceeds 800 ms the roles flip and the one lead tick in
-  between is logged as `skip`. While the broker path is cut (payloads are
+  ticks. When the gap exceeds the flip gap (`--flip-gap-ms`, default 500 ms =
+  always the nearest alignment; 800 before series 5) the roles flip and the
+  one lead tick in between is logged as `skip`. While the broker path is cut (payloads are
   queued, ticks unobservable) the gate holds on PREDICTED ticks (the
   envelope extrapolated through the cut); no gating while an agent has been
   silent > 2.5 s outside a cut. Values stamped in a cut ±5 s are still

@@ -37,8 +37,9 @@
 //! been observed. Inputs are delayed by at most one pair gap (< 1 s), their
 //! order is preserved, and each pair is written to `pairs.ndjson` so the diff
 //! compares exactly the ticks that saw the same inputs. When the drifting gap
-//! exceeds 800 ms the roles flip and the one lead tick in between is recorded
-//! as a `skip` (it has no partner that saw the same inputs).
+//! exceeds the flip gap (`--flip-gap-ms`, 500 ms = the nearest alignment; was
+//! 800) the roles flip and the one lead tick in between is recorded as a
+//! `skip` (it has no partner that saw the same inputs).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -143,12 +144,18 @@ pub struct PlayArgs {
     /// phases apart so the hold gate is exercised like JS vs Rust).
     #[arg(long, default_value_t = 0)]
     pub stagger_ms: u64,
+    /// Pair gap above which the hold gate flips the alignment (skips one lead
+    /// tick). 500 = always the nearest alignment (series 5: at 800 a 772 ms
+    /// pair outlived a 5 s sky_state dwell between its two reads).
+    #[arg(long, default_value_t = DEFAULT_FLIP_GAP_MS)]
+    pub flip_gap_ms: i64,
 }
 
 pub const DEVICE_A: &str = "00000000-0000-4000-8000-00000000000a";
 pub const DEVICE_B: &str = "00000000-0000-4000-8000-00000000000b";
 const INTERVAL_MS: i64 = 1000;
-const FLIP_GAP_MS: i64 = 800;
+/// Default `--flip-gap-ms`: half the tick interval, the nearest alignment.
+pub const DEFAULT_FLIP_GAP_MS: i64 = 500;
 /// A hold whose pair was not observed in full ends after this long.
 const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
@@ -221,6 +228,8 @@ pub struct Gate {
     paired_k: [Option<i64>; 2],
     guard_before: i64,
     guard_after: i64,
+    /// Pair gap above which the alignment flips (`--flip-gap-ms`).
+    flip_gap: i64,
     pub pairs: Vec<Value>,
 }
 
@@ -234,8 +243,15 @@ impl Gate {
             paired_k: [None, None],
             guard_before: guard_ms,
             guard_after: 20,
+            flip_gap: DEFAULT_FLIP_GAP_MS,
             pairs: Vec::new(),
         }
+    }
+
+    /// The rig's `--flip-gap-ms`.
+    pub fn with_flip_gap(mut self, ms: i64) -> Self {
+        self.flip_gap = ms;
+        self
     }
 
     /// Have both agents published telemetry at least once (booted,
@@ -279,7 +295,7 @@ impl Gate {
         let (lead, lag) = (n0.min(n1), n0.max(n1));
         for k in 0..3 {
             let (l, g) = (lead + k * INTERVAL_MS, lag + k * INTERVAL_MS);
-            if g - l <= FLIP_GAP_MS && now >= l - self.guard_before && now <= g + CUT_READ_MS {
+            if g - l <= self.flip_gap && now >= l - self.guard_before && now <= g + CUT_READ_MS {
                 return true;
             }
         }
@@ -299,7 +315,7 @@ impl Gate {
             // lower-envelope estimate extrapolated through the cut (Node's
             // drift is a few ms per tick). Inputs wait from the lead tick −
             // guard until the lag tick + CUT_READ_MS (its read); in a flip
-            // region (gap > FLIP_GAP_MS) nothing is held.
+            // region (gap > flip gap) nothing is held.
             self.hold = None;
             return !self.predicted_pair_window(now);
         }
@@ -345,7 +361,7 @@ impl Gate {
                 continue;
             };
             let d_mid = n[y] - tx;
-            if (0..=FLIP_GAP_MS).contains(&d_mid) && d_mid < (n[x] - n[y]).abs() {
+            if (0..=self.flip_gap).contains(&d_mid) && d_mid < (n[x] - n[y]).abs() {
                 let mut hk = k;
                 hk[x] = kx;
                 let mut ts = [None, None];
@@ -363,7 +379,7 @@ impl Gate {
         if now < n[lead] - self.guard_before {
             return true;
         }
-        if n[lag] - n[lead] > FLIP_GAP_MS {
+        if n[lag] - n[lead] > self.flip_gap {
             // Flip: this lead tick has no partner that will see the same inputs.
             self.pairs.push(
                 json!({"skip": if lead == 0 { "a" } else { "b" }, "k": k[lead], "tick": n[lead]}),
@@ -1198,7 +1214,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             ),
         ],
         inputs: Mutex::new(File::create(args.out.join("inputs-mqtt.ndjson"))?),
-        gate: Mutex::new(Gate::new(args.guard_ms)),
+        gate: Mutex::new(Gate::new(args.guard_ms).with_flip_gap(args.flip_gap_ms)),
         watch: Arc::new(Mutex::new(WatchGate::new())),
         start_wall,
     });
@@ -1848,6 +1864,40 @@ mod tests {
         g.on_tick(1, 2_860, 2_861);
         g.on_tick(0, 3_004, 3_005);
         assert_eq!(g.pairs.last(), Some(&json!({"a": 3_004, "b": 2_860})));
+    }
+
+    #[test]
+    fn gate_flip_gap_is_a_rig_parameter_defaulting_to_the_nearest_alignment() {
+        // A ticks at …000, B at …620: the 620 ms alignment (A k, B k) vs the
+        // 380 ms one (B k, A k+1).
+        let run = |g: &mut Gate| {
+            g.on_tick(0, 1_000, 1_000);
+            g.on_tick(1, 1_620, 1_620);
+            g.paired_k = [Some(0), Some(0)];
+            g.is_open(1_945, false)
+        };
+        // Default 500: 620 > 500 → A's tick 1 (2000) is given up and B 2620
+        // pairs with A 3000 (380 ms apart).
+        let mut g = Gate::new(60);
+        assert_eq!(g.flip_gap, DEFAULT_FLIP_GAP_MS);
+        assert_eq!(DEFAULT_FLIP_GAP_MS, 500);
+        assert!(run(&mut g));
+        assert_eq!(g.pairs, vec![json!({"skip": "a", "k": 1, "tick": 2_000})]);
+        assert!(!g.is_open(2_570, false), "B 2620 leads now");
+        g.on_tick(1, 2_620, 2_621);
+        g.on_tick(0, 3_000, 3_001);
+        assert_eq!(g.pairs.last(), Some(&json!({"a": 3_000, "b": 2_620})));
+        // The old 800: the 620 ms alignment is kept (no skip, A leads).
+        let mut g = Gate::new(60).with_flip_gap(800);
+        assert!(!run(&mut g));
+        assert!(g.pairs.is_empty());
+        // 500 exactly is not past the gap (either alignment is 500 ms).
+        let mut g = Gate::new(60);
+        g.on_tick(0, 1_000, 1_000);
+        g.on_tick(1, 1_500, 1_500);
+        g.paired_k = [Some(0), Some(0)];
+        assert!(!g.is_open(1_945, false));
+        assert!(g.pairs.is_empty());
     }
 
     #[test]
