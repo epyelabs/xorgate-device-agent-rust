@@ -1009,9 +1009,26 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
             first_wall: play.start_wall,
         };
         if pa.len() != pb.len() {
+            // T8 reconnect-cadence: around a cut each reconnect's retained
+            // redelivery triggers a `cloud` report, and mqtt.js reconnects
+            // sooner (2 s) than the Rust backoff, so it can see an
+            // intermediate retained rev the Rust agent never sees. The count
+            // of a period overlapping the (extended) span may differ; the
+            // following quiet period's last report still binds both.
+            let near_cut = table
+                .decision_row("reconnect-cadence")
+                .and_then(|(rid, row)| {
+                    let pad = row.around_closed_ms.unwrap_or(5000) as i64;
+                    play.closed_spans
+                        .iter()
+                        .any(|(cs, ce)| s <= ce + pad && e >= cs - pad)
+                        .then(|| format!("{rid}/reconnect-cadence"))
+                });
             let tol =
                 if pa.len().abs_diff(pb.len()) <= max_delta && !pa.is_empty() && !pb.is_empty() {
                     t5.clone()
+                } else if let Some(id) = near_cut {
+                    id
                 } else {
                     UNTOLERATED.into()
                 };
