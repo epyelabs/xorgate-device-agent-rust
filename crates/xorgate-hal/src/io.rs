@@ -8,7 +8,9 @@
 //!   agent obtains it through [`open_file_tape`], the one function WP7 fills.
 //! - [`node_fs_message`] — the `err.message` Node prints for a failed fs call
 //!   (`ENOENT: no such file or directory, open '/x'`), for the TS strings that
-//!   embed it (`failed to read creds (…)`, `ledger write failed: …`, …).
+//!   embed it (`failed to read creds (…)`, `ledger write failed: …`, …);
+//!   [`node_fd_message`] / [`node_rename_message`] are its fd-call and
+//!   `rename` shapes.
 
 use std::io;
 use std::path::Path;
@@ -121,6 +123,25 @@ pub fn node_fs_message(err: &io::Error, syscall: &str, path: &Path) -> String {
     format!("{code}: {desc}, {syscall} '{}'", path.display())
 }
 
+/// Node's `err.message` for a syscall on an fd, which names no path
+/// (`writeSync`, `fsyncSync`): `ENOSPC: no space left on device, write`.
+pub fn node_fd_message(err: &io::Error, syscall: &str) -> String {
+    match err.raw_os_error().and_then(errno_name) {
+        Some((code, desc)) => format!("{code}: {desc}, {syscall}"),
+        None => format!("{err}, {syscall}"),
+    }
+}
+
+/// Node's `err.message` for a failed `renameSync(from, to)`:
+/// `EISDIR: illegal operation on a directory, rename '<from>' -> '<to>'`.
+pub fn node_rename_message(err: &io::Error, from: &Path, to: &Path) -> String {
+    format!(
+        "{} -> '{}'",
+        node_fs_message(err, "rename", from),
+        to.display()
+    )
+}
+
 /// errno → (Node code, libuv description) for the errors a file read/write
 /// on a device can plausibly hit.
 fn errno_name(errno: i32) -> Option<(&'static str, &'static str)> {
@@ -139,6 +160,8 @@ fn errno_name(errno: i32) -> Option<(&'static str, &'static str)> {
         libc::ENAMETOOLONG => ("ENAMETOOLONG", "name too long"),
         libc::ELOOP => ("ELOOP", "too many symbolic links encountered"),
         libc::EXDEV => ("EXDEV", "cross-device link not permitted"),
+        libc::EBADF => ("EBADF", "bad file descriptor"),
+        libc::ENOTEMPTY => ("ENOTEMPTY", "directory not empty"),
         _ => return None,
     })
 }

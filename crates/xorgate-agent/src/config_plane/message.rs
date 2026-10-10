@@ -25,9 +25,8 @@ use xorgate_core::cloud_config::{merge, parse_cloud_message, CloudConfig};
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::hardware_block::hardware_blocks_equal;
 use xorgate_core::telemetry::ActivityLevel;
-use xorgate_hal::atomic_write::atomic_write_bytes;
+use xorgate_hal::atomic_write::atomic_write_bytes_traced;
 use xorgate_hal::hardware_file::save_hardware_block;
-use xorgate_hal::io::node_fs_message;
 use xorgate_hal::kvs_manifest_io::{persist_upload_bucket, PersistOutcome};
 use xorgate_hal::settings_io::read_settings_file;
 
@@ -64,7 +63,8 @@ pub fn apply_cloud_config(config: &CloudConfig, path: &Path) -> Result<bool, Str
     let Some(doc) = out.document_json() else {
         return Ok(false);
     };
-    atomic_write_bytes(path, doc.as_bytes()).map_err(|e| node_fs_message(&e, "open", path))?;
+    // Node's `err.message`: the TEMP path for `open`, both paths for `rename`.
+    atomic_write_bytes_traced(path, doc.as_bytes()).map_err(|e| e.node_message())?;
     Ok(true)
 }
 
@@ -106,7 +106,7 @@ impl MessageHandler {
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        let msg = node_fs_message(&e, "open", path);
+                        let msg = e.node_message();
                         error!("[agent] uploadBucket persist failed {msg}");
                         ctx.state.note(
                             ActivityLevel::Warn,
@@ -137,7 +137,7 @@ impl MessageHandler {
                 if let Err(e) = save_hardware_block(&ctx.paths.hardware, block) {
                     warn!(
                         "[agent] hardware block persist failed: {}",
-                        node_fs_message(&e, "open", &ctx.paths.hardware)
+                        e.node_message()
                     );
                 }
                 let (platform, encoder) = (block.platform.as_str(), block.encoder.as_str());
