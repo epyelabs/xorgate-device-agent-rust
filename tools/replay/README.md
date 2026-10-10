@@ -91,7 +91,14 @@ copies the side file along; during the window the CLI must be run with the
 same `XORGATE_RS_TAPE` (`exclusive.sh begin` prints the command line).
 
 `xorgate-replay inspect <tape> [--dump [--kind nmea]…]` prints the header,
-per-kind counts, closed spans, NMEA gaps, wall steps and truncation.
+per-kind counts, closed spans, NMEA gaps, wall steps and truncation, and
+`events (input side):` — what the tape exercises, per kind: NMEA sentence
+types + GGA quality, IMU line types, helper exit codes, i2cdetect, LTE
+present/absent, exec argv (+ non-zero exit), `config:` valid / malformed /
+retain / `+uploadBucket` / `+hardware valid|INVALID` / `rev-not-newer` (stale
+or redelivered rev, by tape order), `command:<name>` / expired / duplicate
+requestId, conn, cli. Run it on `<run>/b/agent-tape.ndjson.gz` too to see what
+the Rust agent actually received.
 
 ## Synthetic tapes
 
@@ -104,7 +111,23 @@ raw docs, BNO085 Q-point IMU samples, real `pmic_read_adc` layout). Scenarios:
 `nmea-fix`, `nmea-nofix`, `nmea-silence` (35 s gap → C12 reopen), `lte-seq`
 (15 s absent span), `lte-fixtures`, `imu` (helper exit code 4 + respawn),
 `config` (rev 1 → rev 2 + retained redelivery after a 20 s cut), `commands`
-(refresh, rate-limited refresh, expired, duplicate requestId), `cli`.
+(refresh, rate-limited refresh, expired, duplicate requestId), `cli`,
+`config-envelope` (rev 3 with a valid `hardware` block + `uploadBucket`
+published DURING a cut, so it arrives as a retained delivery; then the same
+envelope at rev 4, an invalid `hardware` block at rev 5, a non-JSON payload, a
+`v:2` payload, a stale rev 2, rev 5 again), `sms-sim` (meta env `MODE=sim`:
+the player starts both agents in sim mode, so `read_sms` answers from the
+fixture sweep; telemetry is the O7 sim source, not comparable).
+
+`calibration` and `full` also carry the `config-envelope` track (all live, from
+75 % of the run, after every older config record) and `commands-sms` (two
+`read_sms` at 45 %; real mode, so the sweep is the O4 reader-unavailable
+error). These tracks are APPENDED: every record of the older tracks is
+unchanged (only `meta.synthetic` lists the extra tracks), so earlier runs stay
+comparable record for record.
+
+The player takes `MODE` from the tape meta `env.MODE` (`sim`/`replay`/`real`,
+default `real`).
 
 ## The rig (`xorgate-replay play`)
 
@@ -174,9 +197,23 @@ the same — common brief rule 6):
 Run directory (`<run>/`): `play.json` (start/end wall, shift, closed spans,
 input transitions, wall steps), `pairs.ndjson`, `player.log`,
 `inputs-mqtt.ndjson` (what the player published), and per agent `a/`, `b/`:
-`meta.json`, `mqtt.ndjson` (every publish), `files.ndjson` (state.json,
-settings.json, config-sync.json, commands.json, gnss-sky.json, agent.pid on
-change, 1 s poll), `final/`, `sudo.log`, `cli.log`, `stdout.log`, `stderr.log`.
+`meta.json`, `mqtt.ndjson` (every publish, with the publisher's own `qos`
+and `retain`: the capture subscribes `xorgate/#` at QoS 2 with
+Retain-As-Published and retain-handling 2 = no retained replay, so each line is
+a live publish), `files.ndjson` (every snapshot
+file on change, 1 s poll; the first poll logs absent files as `text: null`),
+`initial.json` (the seeded files before the agents start), `final/<key>` (raw
+end-of-run copies), `final.json`, `sudo.log`, `cli.log`, `stdout.log`,
+`stderr.log`.
+
+Snapshot files (`play.rs` `SNAPSHOT_FILES`: every file either agent can write
+in Phase 2 scope, from the TS writers). Keys: home files bare —
+`settings.json`, `config-sync.json`, `commands.json`, `gnss-sky.json`,
+`state.json`, `agent.pid`, `refresh-modem.flag`; manifests `etc/kvs.json`
+(uploadBucket backfill), `etc/hardware.json` (persisted cloud block); plus
+every `etc/pipelines/<f>` present. `initial.json` / `final.json` are
+`{"w": wall ms, "files": {key: {"present": true, "len", "b64" (raw bytes),
+"text" (verbatim, null if not UTF-8)} | {"present": false}}}`.
 
 ## The diff (`xorgate-replay diff <run>`)
 
