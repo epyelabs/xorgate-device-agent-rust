@@ -369,8 +369,8 @@ pub const SYNTH_UPLOAD_BUCKET: &str = "xorgate-synth-uploads";
 
 /// [`config_doc`] with extra envelope keys merged in at the end.
 fn config_doc_with(rev: i64, step: u32, enabled_mount: bool, extra: Value) -> String {
-    let mut v: Value = serde_json::from_str(&config_doc(rev, step, enabled_mount))
-        .expect("config_doc is JSON");
+    let mut v: Value =
+        serde_json::from_str(&config_doc(rev, step, enabled_mount)).expect("config_doc is JSON");
     if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
         for (k, x) in e {
             o.insert(k.clone(), x.clone());
@@ -482,7 +482,8 @@ fn build_inner(
     // ---- config-envelope (additive; see the module doc)
     if has("config-envelope") {
         let standalone = !has("config");
-        let env_ok = json!({"uploadBucket": SYNTH_UPLOAD_BUCKET, "hardware": synth_hardware_block()});
+        let env_ok =
+            json!({"uploadBucket": SYNTH_UPLOAD_BUCKET, "hardware": synth_hardware_block()});
         let mut bad_hw = synth_hardware_block();
         bad_hw["encoder"] = json!("hw-h265"); // unknown enum → parse null
         let env_bad = json!({"uploadBucket": SYNTH_UPLOAD_BUCKET, "hardware": bad_hw});
@@ -503,12 +504,22 @@ fn build_inner(
             e + 6_000
         };
         // Same envelope, new rev: uploadBucket "unchanged", equal block.
-        cfg(&mut b, e, config_doc_with(4, 14, true, env_ok).as_bytes(), false);
+        cfg(
+            &mut b,
+            e,
+            config_doc_with(4, 14, true, env_ok).as_bytes(),
+            false,
+        );
         cfg(&mut b, e + 6_000, doc5.as_bytes(), false);
         cfg(&mut b, e + 12_000, br#"{"v":1,"rev":6,"timeSync":{"#, false);
         cfg(&mut b, e + 15_000, br#"{"v":2,"rev":7}"#, false);
         // Stale: would revert imuMount + the step if applied.
-        cfg(&mut b, e + 18_000, config_doc(2, 11, false).as_bytes(), false);
+        cfg(
+            &mut b,
+            e + 18_000,
+            config_doc(2, 11, false).as_bytes(),
+            false,
+        );
         cfg(&mut b, e + 21_000, doc5.as_bytes(), true);
     }
 
@@ -879,6 +890,99 @@ mod tests {
             assert_eq!(tape.meta.source.as_deref(), Some(&*format!("synth:{name}")));
         }
         assert!(build("nope", None, &fixtures()).is_err());
+    }
+
+    /// `(t, payload)` of every config / command `mqtt_in` record.
+    fn mqtt_ins(tape: &Tape, suffix: &str) -> Vec<(u64, String, bool)> {
+        tape.records
+            .iter()
+            .filter_map(|r| match &r.ev {
+                TapeEvent::MqttIn { topic, retain, .. } if topic.ends_with(suffix) => Some((
+                    r.t,
+                    String::from_utf8_lossy(&r.ev.mqtt_payload().unwrap_or_default()).to_string(),
+                    *retain,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn config_envelope_track_drives_every_order_path() {
+        for name in ["calibration", "full", "config-envelope"] {
+            let tape = build(name, None, &fixtures()).unwrap();
+            let cfg = mqtt_ins(&tape, "/config");
+            let json = |p: &str| serde_json::from_str::<Value>(p).ok();
+            let revs: Vec<Option<i64>> = cfg
+                .iter()
+                .map(|(_, p, _)| json(p).and_then(|v| v["rev"].as_i64()))
+                .collect();
+            // valid hardware + uploadBucket, retained
+            assert!(
+                cfg.iter().any(|(_, p, r)| *r
+                    && json(p).is_some_and(|v| v["hardware"] == synth_hardware_block()
+                        && v["uploadBucket"] == SYNTH_UPLOAD_BUCKET)),
+                "{name}"
+            );
+            // invalid hardware (unknown encoder)
+            assert!(cfg.iter().any(|(_, p, _)| json(p)
+                .is_some_and(|v| v["hardware"]["encoder"] == "hw-h265")), "{name}");
+            // malformed: not JSON, and v != 1
+            assert!(cfg.iter().any(|(_, p, _)| json(p).is_none()), "{name}");
+            assert!(
+                cfg.iter()
+                    .any(|(_, p, _)| json(p).is_some_and(|v| v["v"] == 2)),
+                "{name}"
+            );
+            // a stale rev after a newer one
+            let max_before_last_2 = revs
+                .iter()
+                .rposition(|r| *r == Some(2))
+                .map(|i| revs[..i].iter().flatten().max().copied().unwrap_or(0));
+            assert!(max_before_last_2.is_some_and(|m| m > 2), "{name}: {revs:?}");
+            // every new-track record lands after the older config track's last one
+            if name != "config-envelope" {
+                let old = [config_doc(1, 10, false), config_doc(2, 12, true)];
+                let last_old = cfg.iter().filter(|c| old.contains(&c.1)).map(|c| c.0).max();
+                let first_new = cfg
+                    .iter()
+                    .filter(|c| !old.contains(&c.1))
+                    .map(|c| c.0)
+                    .min();
+                assert!(first_new > last_old, "{name}");
+            }
+        }
+        // standalone: rev 3 published during the cut (retained delivery on reconnect)
+        let tape = build("config-envelope", None, &fixtures()).unwrap();
+        let closed = tape
+            .records
+            .iter()
+            .find(|r| {
+                matches!(
+                    r.ev,
+                    TapeEvent::Conn {
+                        state: ConnState::Closed
+                    }
+                )
+            })
+            .unwrap()
+            .t;
+        let first = &mqtt_ins(&tape, "/config")[0];
+        assert!(first.0 > closed && first.1.contains("\"rev\":3"));
+    }
+
+    #[test]
+    fn sms_tracks_send_read_sms_and_sim_mode_sets_the_env() {
+        for name in ["calibration", "full", "sms-sim"] {
+            let tape = build(name, None, &fixtures()).unwrap();
+            let cmds = mqtt_ins(&tape, "/command");
+            let sms: Vec<&(u64, String, bool)> =
+                cmds.iter().filter(|c| c.1.contains("read_sms")).collect();
+            assert_eq!(sms.len(), 2, "{name}");
+            assert!(sms[0].1.contains(r#""args":{"limit":5}"#), "{name}");
+            let mode = tape.meta.env.get("MODE").and_then(Value::as_str);
+            assert_eq!(mode, Some(if name == "sms-sim" { "sim" } else { "real" }));
+        }
     }
 
     #[test]

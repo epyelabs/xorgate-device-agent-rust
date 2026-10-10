@@ -24,7 +24,8 @@
 //!   thing to the agents without freezing the capture client or needing the
 //!   docker socket in the rig — see the README);
 //! - KVS_MANIFEST `{"channels":[]}`, HARDWARE_MANIFEST from the tape meta,
-//!   KVS_PIPELINE_DIR / XORGATE_HOME scratch, `TZ=UTC`, `MODE=real`.
+//!   KVS_PIPELINE_DIR / XORGATE_HOME scratch, `TZ=UTC`, `MODE` from the tape
+//!   meta `env.MODE` (default `real`).
 //!
 //! Input timing — the hold gate. Both agents tick at 1 Hz with their OWN phase
 //! (and Node's `setInterval` drifts ~1 ms/tick). An input landing between the
@@ -521,6 +522,16 @@ fn open_pty() -> Result<(File, OwnedFd, PathBuf)> {
     Ok((File::from(pty.master), pty.slave, path))
 }
 
+/// The agents' `MODE`: the tape meta's `env.MODE` when it is a TS run mode
+/// (`sim` / `replay` / `real`; `synth sms-sim` sets `sim`), else `real`.
+fn tape_mode(tape: &Tape) -> &'static str {
+    match tape.meta.env.get("MODE").and_then(Value::as_str) {
+        Some("sim") => "sim",
+        Some("replay") => "replay",
+        _ => "real",
+    }
+}
+
 impl Agent {
     fn prepare(
         label: &'static str,
@@ -592,7 +603,7 @@ impl Agent {
             ("PATH", path_env),
             ("HOME", work.display().to_string()),
             ("TZ", "UTC".into()),
-            ("MODE", "real".into()),
+            ("MODE", tape_mode(tape).into()),
             ("RATE_HZ", "1".into()),
             ("DEVICE_ID", device_id.into()),
             ("IOT_DATA_ENDPOINT", args.endpoint.clone()),

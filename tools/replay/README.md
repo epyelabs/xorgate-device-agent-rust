@@ -104,7 +104,23 @@ raw docs, BNO085 Q-point IMU samples, real `pmic_read_adc` layout). Scenarios:
 `nmea-fix`, `nmea-nofix`, `nmea-silence` (35 s gap → C12 reopen), `lte-seq`
 (15 s absent span), `lte-fixtures`, `imu` (helper exit code 4 + respawn),
 `config` (rev 1 → rev 2 + retained redelivery after a 20 s cut), `commands`
-(refresh, rate-limited refresh, expired, duplicate requestId), `cli`.
+(refresh, rate-limited refresh, expired, duplicate requestId), `cli`,
+`config-envelope` (rev 3 with a valid `hardware` block + `uploadBucket`
+published DURING a cut, so it arrives as a retained delivery; then the same
+envelope at rev 4, an invalid `hardware` block at rev 5, a non-JSON payload, a
+`v:2` payload, a stale rev 2, rev 5 again), `sms-sim` (meta env `MODE=sim`:
+the player starts both agents in sim mode, so `read_sms` answers from the
+fixture sweep; telemetry is the O7 sim source, not comparable).
+
+`calibration` and `full` also carry the `config-envelope` track (all live, from
+75 % of the run, after every older config record) and `commands-sms` (two
+`read_sms` at 45 %; real mode, so the sweep is the O4 reader-unavailable
+error). These tracks are APPENDED: every record of the older tracks is
+unchanged (only `meta.synthetic` lists the extra tracks), so earlier runs stay
+comparable record for record.
+
+The player takes `MODE` from the tape meta `env.MODE` (`sim`/`replay`/`real`,
+default `real`).
 
 ## The rig (`xorgate-replay play`)
 
