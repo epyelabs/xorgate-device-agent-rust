@@ -107,6 +107,24 @@ pub fn should_rotate(
 /// One filesystem effect the I/O layer executes, in order. Lines are handed
 /// over WITHOUT the trailing `\n` the writer appends (`segments.ts:171`,
 /// `Buffer.from(json + "\n")`); byte accounting here already counts it.
+///
+/// **Executor contract (review-wp6 S2, CF35).** The TS mutates its fields
+/// and does the fd I/O interleaved, so a throw leaves it half-way through a
+/// method (`segments.ts:116-121`, `:156-191`); the core instead advances its
+/// whole state before handing the ops over. The executor therefore:
+/// 1. runs the ops of ONE call strictly in order and STOPS at the first op
+///    that fails (later ops of that call never run — exactly as the throw
+///    unwinds `writeLine` before `open`);
+/// 2. reports the failure with [`SegmentWriterCore::op_failed`]`(ops, i,
+///    failure)`, which rewinds what the core advanced for `ops[i..]` so its
+///    state equals the TS's at the throw; then
+/// 3. surfaces the error to its caller (the recorder's `tick failed` line).
+///
+/// The canonical case: a gzip that fails on a full disk inside the `Close`
+/// of a `write_line` leaves the segment closed (plain file on disk, temp gz
+/// possibly too), `Open`/`Append` never run, `segSeq` not consumed, and the
+/// NEXT call opens a fresh segment — the TS behaviour. A `Close` is
+/// executed as [`GZIP_FINALIZE_STEPS`] in that order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentOp {
     /// `open()` (`segments.ts:156-167`): `mkdir -p dir`, create `path` (mode
@@ -138,6 +156,18 @@ pub struct SegmentWriterCore {
     opened_at_mono: MonoMs,
     seg_seq: u32,
     last_time_source: Option<TimeSource>,
+    /// Which public method produced the last op batch — tells
+    /// [`Self::op_failed`] whether an `Append` was `writeLine`'s sample
+    /// (counted in `sampleLines`) or `noteTimeSource`'s header re-emit.
+    last_call: LastCall,
+}
+
+/// The public method behind the last op batch (S2 bookkeeping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LastCall {
+    WriteLine,
+    NoteTimeSource,
+    Rotate,
 }
 
 impl SegmentWriterCore {
@@ -155,6 +185,7 @@ impl SegmentWriterCore {
             opened_at_mono: 0,
             seg_seq: 0,
             last_time_source: None,
+            last_call: LastCall::Rotate,
         }
     }
 
@@ -175,6 +206,7 @@ impl SegmentWriterCore {
         mono: MonoMs,
         header: &dyn Fn() -> SegmentHeader,
     ) -> Vec<SegmentOp> {
+        self.last_call = LastCall::WriteLine;
         let mut ops = Vec::new();
         if self.path.is_some() && self.should_rotate(mono) {
             ops.extend(self.rotate());
@@ -197,6 +229,7 @@ impl SegmentWriterCore {
         ts: TimeSource,
         header: &dyn Fn() -> SegmentHeader,
     ) -> Vec<SegmentOp> {
+        self.last_call = LastCall::NoteTimeSource;
         if self.path.is_none() || self.last_time_source == Some(ts) {
             self.last_time_source = Some(ts);
             return Vec::new();
@@ -211,6 +244,7 @@ impl SegmentWriterCore {
     /// `maybeRotate()` (`segments.ts:141-143`): age/size check without a
     /// write — an idle recorder still closes segments on time.
     pub fn maybe_rotate(&mut self, mono: MonoMs) -> Vec<SegmentOp> {
+        self.last_call = LastCall::Rotate;
         if self.path.is_some() && self.should_rotate(mono) {
             self.rotate()
         } else {
@@ -221,6 +255,7 @@ impl SegmentWriterCore {
     /// `finalize()` (`segments.ts:146-148`): close + gzip the active segment
     /// (shutdown / recording-off path). Safe to re-call.
     pub fn finalize(&mut self) -> Vec<SegmentOp> {
+        self.last_call = LastCall::Rotate;
         if self.path.is_some() {
             self.rotate()
         } else {
@@ -273,6 +308,145 @@ impl SegmentWriterCore {
         vec![SegmentOp::Close { plain, gz }]
     }
 }
+
+impl SegmentWriterCore {
+    /// The S2 rewind (CF35): the executor ran `ops[..index]`, then
+    /// `ops[index]` failed with `failure`; nothing after it ran. Restores the
+    /// state the TS has when the same step throws (`segments.ts:116-191`):
+    ///
+    /// | failed step | TS state at the throw | rewind here |
+    /// |---|---|---|
+    /// | `Close` (fsync/close/unlink/`gzipFinalize`, `:179-189`) | `fd`/`path` null; a following `open` never ran | if an `Open` follows in `ops`: `path = None`, `segSeq` given back |
+    /// | `Open`, `mkdirSync` (`:157`) | untouched | `path = None`, `segSeq` given back |
+    /// | `Open`, `openSync` (`:161`) | `path` set, `segSeq` consumed, `fd` null | `path = None` (TS keeps a stale `activePath()`; tolerated, see evidence wp2) |
+    /// | `Open`, header `writeSync` (`:166`) | fd OPEN, `bytes = 0`, `sampleLines = 0` | `bytes = 0`, `sampleLines = 0` (executor keeps the handle) |
+    /// | `Append` (`:172`) | `bytes` not counted; `writeLine`'s `sampleLines++` not run | `bytes -= len + 1`; `sampleLines -= 1` for `writeLine`'s sample |
+    ///
+    /// `lastTimeSource` is not rewound: while no segment is open it is only
+    /// ever overwritten (`noteTimeSource` with `fd === null`, `open`), so the
+    /// TS and the core cannot be told apart by any later call.
+    pub fn op_failed(&mut self, ops: &[SegmentOp], index: usize, failure: OpFailure) {
+        let Some(op) = ops.get(index) else {
+            return;
+        };
+        let opened_later = ops[index + 1..]
+            .iter()
+            .any(|o| matches!(o, SegmentOp::Open { .. }));
+        match (op, failure) {
+            (SegmentOp::Close { .. }, _) => {
+                if opened_later {
+                    self.path = None;
+                    self.seg_seq = self.seg_seq.saturating_sub(1);
+                }
+            }
+            (SegmentOp::Open { .. }, OpFailure::OpenMkdir) => {
+                self.path = None;
+                self.seg_seq = self.seg_seq.saturating_sub(1);
+            }
+            (SegmentOp::Open { .. }, OpFailure::OpenCreate) => {
+                self.path = None;
+            }
+            (SegmentOp::Open { .. }, _) => {
+                // OpenHeader: the file exists and the fd stays open, but the
+                // header never counted and the sample never ran.
+                self.bytes = 0;
+                self.sample_lines = 0;
+            }
+            (SegmentOp::Append { line, .. }, _) => {
+                self.bytes = self.bytes.saturating_sub(line.len() as u64 + 1);
+                let is_sample = self.last_call == LastCall::WriteLine && index + 1 == ops.len();
+                if is_sample {
+                    self.sample_lines = self.sample_lines.saturating_sub(1);
+                }
+            }
+        }
+    }
+}
+
+/// Which part of a [`SegmentOp`] failed (S2): the executor names the step,
+/// because the TS state at a throw depends on it (see
+/// [`SegmentWriterCore::op_failed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpFailure {
+    /// `Open`: `mkdirSync(dir, {recursive})` threw — nothing created.
+    OpenMkdir,
+    /// `Open`: `openSync(path, "w", 0o600)` threw — no fd.
+    OpenCreate,
+    /// `Open`: the header `writeSync` threw — the file exists, fd open.
+    OpenHeader,
+    /// `Append`: `writeSync` threw.
+    Append,
+    /// `Close`: any step of the plain close or of [`GZIP_FINALIZE_STEPS`].
+    Close,
+}
+
+/// `${gzPath}.tmp.${process.pid}` (`segments.ts:201`) — the temp name the
+/// orphan sweep's `.gz.tmp.` rule ([`orphan_entry_action`]) removes at the
+/// next boot (review-wp6 S3, CF36).
+pub fn gz_temp_path(gz: &str, pid: u32) -> String {
+    format!("{gz}.tmp.{pid}")
+}
+
+/// One step of `rotate()` + `gzipFinalize()` (`segments.ts:176-213`), in
+/// the order of [`GZIP_FINALIZE_STEPS`] (review-wp6 S3, CF36).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GzipFinalizeStep {
+    /// `fsyncSync(fd)` of the plain segment (`:179`).
+    FsyncPlain,
+    /// `closeSync(fd)` (`:180`); from here `fd`/`path` are null.
+    ClosePlain,
+    /// Header-only segment: `unlinkSync(plain)` and stop (`:185-188`).
+    UnlinkHeaderOnly,
+    /// `readFileSync(plain)` — skipped when the orphan sweep passes `content` (`:199`).
+    ReadPlain,
+    /// `openSync(gz_temp_path(gz, pid), "w", 0o600)` (`:202`).
+    OpenTemp,
+    /// `writeSync(fd, gzipSync(data))` (`:204`) — flate2 level 6, mtime 0, OS 3 (P6).
+    WriteGzip,
+    /// `fsyncSync(fd)` (`:205`).
+    FsyncTemp,
+    /// `closeSync(fd)` (`:207`, in `finally`: also after a failed write/fsync;
+    /// the temp is NOT unlinked — the next boot's sweep removes it).
+    CloseTemp,
+    /// `renameSync(tmp, gzPath)` (`:209`).
+    RenameTemp,
+    /// `fsyncDir(dirname(plain))` (`:210`, best effort — never fails the step list).
+    FsyncDir,
+    /// `unlinkSync(plain)` (`:211`).
+    UnlinkPlain,
+    /// `onSegmentClosed(gzPath)` (`:190`) — only after every step above.
+    NotifyClosed,
+}
+
+/// The ordered step list a `Close { gz: Some(_) }` executes; a `Close { gz:
+/// None }` runs `FsyncPlain, ClosePlain, UnlinkHeaderOnly`. A failure at any
+/// step stops the list there ([`OpFailure::Close`]).
+pub const GZIP_FINALIZE_STEPS: [GzipFinalizeStep; 11] = [
+    GzipFinalizeStep::FsyncPlain,
+    GzipFinalizeStep::ClosePlain,
+    GzipFinalizeStep::ReadPlain,
+    GzipFinalizeStep::OpenTemp,
+    GzipFinalizeStep::WriteGzip,
+    GzipFinalizeStep::FsyncTemp,
+    GzipFinalizeStep::CloseTemp,
+    GzipFinalizeStep::RenameTemp,
+    GzipFinalizeStep::FsyncDir,
+    GzipFinalizeStep::UnlinkPlain,
+    GzipFinalizeStep::NotifyClosed,
+];
+
+/// The steps the orphan sweep's `gzipFinalize(path, whole)` runs
+/// (`segments.ts:262`): no plain fd, no read (the torn-line-trimmed bytes
+/// are passed in), no `onSegmentClosed`.
+pub const ORPHAN_GZIP_STEPS: [GzipFinalizeStep; 7] = [
+    GzipFinalizeStep::OpenTemp,
+    GzipFinalizeStep::WriteGzip,
+    GzipFinalizeStep::FsyncTemp,
+    GzipFinalizeStep::CloseTemp,
+    GzipFinalizeStep::RenameTemp,
+    GzipFinalizeStep::FsyncDir,
+    GzipFinalizeStep::UnlinkPlain,
+];
 
 /// What the orphan sweep does with one directory entry
 /// (`finalizeOrphanSegments`, `segments.ts:241-251`).

@@ -7,12 +7,16 @@
 //! tool yields `None` and the caller omits the field (agent-anatomy §10.3).
 
 pub mod atomic_write;
+pub mod boot_id;
 pub mod camera_list;
 pub mod child;
 pub mod config_sync_file;
+pub mod counters_file;
+pub mod disk_scan;
 pub mod exec;
 pub mod fragment_stat;
 pub mod fs_watch;
+pub mod gzip_finalize;
 pub mod hardware_file;
 pub mod imu_detect;
 pub mod io;
@@ -23,6 +27,7 @@ pub mod modem_file;
 pub mod nmea_tty;
 pub mod privileged;
 pub mod read_lossy;
+pub mod segment_io;
 pub mod settings_io;
 pub mod shm_reaper;
 pub mod system;

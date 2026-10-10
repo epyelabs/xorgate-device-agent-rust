@@ -3,5 +3,8 @@
 //! owns them. Module list: append-only, alphabetical (shared file).
 
 pub mod capture;
+pub mod disk;
 pub mod sources;
+pub mod telemetry;
+pub mod time_source;
 pub mod uploader;
