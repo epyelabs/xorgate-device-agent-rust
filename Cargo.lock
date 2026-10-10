@@ -2361,6 +2361,7 @@ dependencies = [
  "clap",
  "gstreamer",
  "indexmap",
+ "libc",
  "nix",
  "rumqttc",
  "rustls",
