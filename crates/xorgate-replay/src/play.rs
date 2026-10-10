@@ -166,6 +166,13 @@ const REOPEN_SILENT_MS: i64 = 30_000;
 /// Cut mode: how long after the lag agent's predicted tick its read is
 /// assumed done (the JS `ts` is stamped after `await source.read()`).
 const CUT_READ_MS: i64 = 150;
+/// Cut mode: the per-tick drift a track's own history may predict (Node's
+/// `setInterval` re-arms after each callback: 6-7 ms/tick measured in series
+/// 5; tokio keeps its phase), and the most it may add in total.
+const CUT_DRIFT_MAX_PER_TICK_MS: i64 = 20;
+const CUT_DRIFT_MAX_MS: i64 = 300;
+/// Cut mode: a predicted hold leaves at least this much of each second open.
+const CUT_MIN_OPEN_MS: i64 = 200;
 const PREFILL_MS: u64 = 1000;
 
 // ------------------------------------------------------------------ gate
@@ -183,6 +190,8 @@ struct TickTrack {
     k: i64,
     last_ts: Option<i64>,
     bases: std::collections::VecDeque<i64>,
+    /// The tick index of each entry of `bases`.
+    base_ks: std::collections::VecDeque<i64>,
 }
 
 impl TickTrack {
@@ -196,8 +205,10 @@ impl TickTrack {
         }
         self.last_ts = Some(ts);
         self.bases.push_back(ts - self.k * INTERVAL_MS);
+        self.base_ks.push_back(self.k);
         if self.bases.len() > Self::WINDOW {
             self.bases.pop_front();
+            self.base_ks.pop_front();
         }
         self.k
     }
@@ -205,6 +216,34 @@ impl TickTrack {
     /// Estimated tick time of tick index `k`.
     fn tick_at(&self, k: i64) -> Option<i64> {
         self.bases.iter().min().map(|b| b + k * INTERVAL_MS)
+    }
+
+    /// Phase drift per tick (ms, ≥ 0): the lower envelope of the newer half
+    /// of the window minus that of the older half, over their index distance.
+    fn drift_per_tick(&self) -> i64 {
+        let n = self.bases.len();
+        if n < 4 {
+            return 0;
+        }
+        let h = n / 2;
+        let min_of = |r: std::ops::Range<usize>| r.map(|i| self.bases[i]).min().unwrap_or(0);
+        let mid = |r: std::ops::Range<usize>| {
+            let len = r.len() as i64;
+            r.map(|i| self.base_ks[i]).sum::<i64>() / len.max(1)
+        };
+        let dk = (mid(h..n) - mid(0..h)).max(1);
+        ((min_of(h..n) - min_of(0..h)) / dk).clamp(0, CUT_DRIFT_MAX_PER_TICK_MS)
+    }
+
+    /// `(early, late)` estimate of tick `k`: early = the lower envelope (the
+    /// hold's start); late = the NEWEST base (its read latency included) plus
+    /// the measured drift over the ticks since the last observed one (the
+    /// hold's end) — a cut extrapolates ~20 s, and Node drifts ~7 ms/tick.
+    fn span_at(&self, k: i64) -> Option<(i64, i64)> {
+        let early = self.tick_at(k)?;
+        let last = *self.bases.back()?;
+        let drift = (self.drift_per_tick() * (k - self.k).max(0)).min(CUT_DRIFT_MAX_MS);
+        Some((early, (last + k * INTERVAL_MS + drift).max(early)))
     }
 }
 
@@ -304,27 +343,41 @@ impl Gate {
         }
     }
 
-    /// Is `now` between the predicted ticks of a pair (cut mode)?
+    /// Is `now` between the predicted ticks of a pair (cut mode)? From the
+    /// lead's early estimate − guard to the later late estimate + its read
+    /// (series 5: the lower envelope alone, extrapolated through a 20 s cut,
+    /// ran ~180 ms behind the drifting JS tick, so NMEA was released right at
+    /// its read: 2, 0, 2, 0 new samples per tick against the Rust agent's 1).
     fn predicted_pair_window(&self, now: i64) -> bool {
-        let next = |t: &TickTrack| -> Option<i64> {
+        let first_k = |t: &TickTrack| -> Option<i64> {
             let base = *t.bases.iter().min()?;
-            let from = now - self.guard_before - CUT_READ_MS - INTERVAL_MS;
-            let k = (from - base).div_euclid(INTERVAL_MS) + 1;
-            Some(base + k * INTERVAL_MS)
+            let from = now - self.guard_before - CUT_READ_MS - INTERVAL_MS - CUT_DRIFT_MAX_MS;
+            Some((from - base).div_euclid(INTERVAL_MS) + 1)
         };
-        let (Some(mut n0), Some(mut n1)) = (next(&self.track[0]), next(&self.track[1])) else {
+        let (Some(mut k0), Some(mut k1)) = (first_k(&self.track[0]), first_k(&self.track[1]))
+        else {
+            return false;
+        };
+        let (Some((n0, _)), Some((n1, _))) = (self.track[0].span_at(k0), self.track[1].span_at(k1))
+        else {
             return false;
         };
         // Pair each tick with the other's nearest one.
         if n1 - n0 > INTERVAL_MS / 2 {
-            n1 -= INTERVAL_MS;
+            k1 -= 1;
         } else if n0 - n1 > INTERVAL_MS / 2 {
-            n0 -= INTERVAL_MS;
+            k0 -= 1;
         }
-        let (lead, lag) = (n0.min(n1), n0.max(n1));
-        for k in 0..3 {
-            let (l, g) = (lead + k * INTERVAL_MS, lag + k * INTERVAL_MS);
-            if g - l <= self.flip_gap && now >= l - self.guard_before && now <= g + CUT_READ_MS {
+        for j in 0..4 {
+            let (Some((ea, la)), Some((eb, lb))) =
+                (self.track[0].span_at(k0 + j), self.track[1].span_at(k1 + j))
+            else {
+                return false;
+            };
+            let (l, g) = (ea.min(eb), ea.max(eb));
+            let start = l - self.guard_before;
+            let end = (la.max(lb) + CUT_READ_MS).min(start + INTERVAL_MS - CUT_MIN_OPEN_MS);
+            if g - l <= self.flip_gap && now >= start && now <= end {
                 return true;
             }
         }
@@ -1881,6 +1934,37 @@ mod tests {
         h.on_tick(1, 1_300, 1_300);
         h.on_tick(0, 5_000, 5_010);
         assert!(h.is_open(5_200, false));
+    }
+
+    #[test]
+    fn cut_window_follows_a_drifting_tick() {
+        // A drifts 7 ms/tick (Node), B keeps its phase (tokio).
+        let mut g = Gate::new(60);
+        for i in 0..8 {
+            g.on_tick(0, 1_100 + i * 1_007, 0);
+            g.on_tick(1, 1_750 + i * 1_000, 0);
+        }
+        assert_eq!(g.track[0].drift_per_tick(), 7);
+        assert_eq!(g.track[1].drift_per_tick(), 0);
+        // 20 ticks into a cut A really ticks at 1100 + 27·1007 = 28289; the
+        // lower envelope says 28100 (+150 read = 28250: open before A reads).
+        // Pair B 27750 ↔ A 28289: held from 27600 through A's read.
+        assert!(g.is_open(27_590, true));
+        assert!(!g.is_open(27_700, true));
+        assert!(!g.is_open(28_300, true));
+        assert!(!g.is_open(28_420, true));
+        assert!(g.is_open(28_500, true));
+        // Never more than 1000 − CUT_MIN_OPEN_MS of a second held.
+        let mut h = Gate::new(60);
+        for i in 0..8 {
+            h.on_tick(0, 1_000 + i * 1_020, 0);
+            h.on_tick(1, 1_400 + i * 1_000, 0);
+        }
+        let held = (40_000..41_000)
+            .step_by(10)
+            .filter(|t| !h.is_open(*t, true))
+            .count();
+        assert!(held <= 80, "{held}");
     }
 
     #[test]
