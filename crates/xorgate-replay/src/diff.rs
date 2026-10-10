@@ -1522,7 +1522,9 @@ mod tests {
             "EACCES: permission denied, open '/h/.settings.json.tmp.<pid>.<n>'"
         );
         assert_eq!(
-            normalise_fs_error("EXDEV: cross-device link not permitted, rename '/h/.k.tmp.7.3' -> '/h/k'"),
+            normalise_fs_error(
+                "EXDEV: cross-device link not permitted, rename '/h/.k.tmp.7.3' -> '/h/k'"
+            ),
             "EXDEV: cross-device link not permitted, rename '/h/.k.tmp.<pid>.<n>' -> '/h/k'"
         );
         assert_eq!(normalise_fs_error("unexpected token"), "unexpected token");
@@ -1690,7 +1692,8 @@ mod tests {
     fn d22_null_leaf_group_vs_omitted_group() {
         let t = table();
         let tel = |imu: Option<Value>| {
-            let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":10_000,"seq":1,"metrics":{}});
+            let mut m =
+                serde_json::json!({"v":1,"deviceId":"{id}","ts":10_000,"seq":1,"metrics":{}});
             if let Some(i) = imu {
                 m["metrics"]["imu"] = i;
             }
@@ -1699,7 +1702,11 @@ mod tests {
         let run = |imu: Value| {
             let a = cap("js", vec![msg(10_000, "telemetry", tel(Some(imu)))]);
             let b = cap("rust", vec![msg(10_000, "telemetry", tel(None))]);
-            let play = PlayInfo { start_wall: -100_000, end_wall: 100_000, ..Default::default() };
+            let play = PlayInfo {
+                start_wall: -100_000,
+                end_wall: 100_000,
+                ..Default::default()
+            };
             diff(&a, &b, &play, &[], &t)
                 .mismatches
                 .into_iter()
@@ -1707,8 +1714,14 @@ mod tests {
                 .map(|m| m.tol)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(run(serde_json::json!({"quat_r":{"value":null}})), vec!["T7/D22".to_string()]);
-        assert_eq!(run(serde_json::json!({"quat_r":{"value":1}})), vec![UNTOLERATED.to_string()]);
+        assert_eq!(
+            run(serde_json::json!({"quat_r":{"value":null}})),
+            vec!["T7/D22".to_string()]
+        );
+        assert_eq!(
+            run(serde_json::json!({"quat_r":{"value":1}})),
+            vec![UNTOLERATED.to_string()]
+        );
     }
 
     #[test]

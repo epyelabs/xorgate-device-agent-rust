@@ -90,6 +90,9 @@ pub struct Row {
     /// Counter paths allowed to differ by 1 + the number of closed spans.
     #[serde(default)]
     pub count_paths: Vec<String>,
+    /// Decision-row numeric tolerances (path → ±).
+    #[serde(default)]
+    pub numeric: BTreeMap<String, f64>,
     /// Only spans at least this long qualify.
     #[serde(default)]
     pub min_span_ms: Option<u64>,
@@ -173,10 +176,23 @@ impl Table {
         None
     }
 
-    /// Numeric tolerance for `path` on `stream` (T3).
+    /// Numeric tolerance for `path` on `stream` (T3, then T8 decision rows).
     pub fn numeric(&self, stream: &str, path: &str) -> Option<(String, f64)> {
         self.of_kind("numeric", stream)
             .find_map(|r| r.tolerance.get(path).map(|t| (r.id.clone(), *t)))
+            .or_else(|| {
+                self.rules
+                    .iter()
+                    .filter(|r| r.kind == "decisions")
+                    .find_map(|r| {
+                        r.rows.iter().find_map(|row| {
+                            (stream_matches(&row.streams, stream))
+                                .then(|| row.numeric.get(path))
+                                .flatten()
+                                .map(|t| (format!("{}/{}", r.id, row.id), *t))
+                        })
+                    })
+            })
     }
 
     /// `(rule id, host series name)` when `path` has a host reference (T3).
@@ -320,5 +336,14 @@ mod tests {
         assert!(
             Table::parse("version = 1\n[[rule]]\nid='T1'\ntitle='x'\nkind='exclude'\n").is_err()
         );
+        assert_eq!(
+            t.numeric("telemetry", "metrics.gps.ttff_s.value"),
+            Some(("T8/ttff-arrival".to_string(), 0.2))
+        );
+        assert_eq!(
+            t.numeric("file:gnss-sky.json", "hold_s"),
+            Some(("T8/sky-file-end".to_string(), 1.0))
+        );
+        assert_eq!(t.numeric("telemetry", "metrics.gps.lat.value"), None);
     }
 }

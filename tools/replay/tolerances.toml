@@ -341,6 +341,18 @@ kind = "decisions"
   min_span_ms = 1000000
 
   [[rule.row]]
+  id = "ttff-arrival"
+  what = "FLAG (rig/measurement, reviewer to confirm): `ttff_s` is the difference of two NMEA line ARRIVAL instants inside each process (first quality-0 GGA → first fix, gps.ts:139-151 / gps_group.rs TtffClock, identical logic). The player writes each line to both ptys at once, but Node handles a pty chunk when its event loop gets to it (fs.ReadStream reads through the libuv threadpool; 0.4–1.5 s tick stalls were seen in the loaded Docker VM) while Rust's reader thread forwards it at once; quantised to 0.1 s (round(t,1)) this flips by one step (149.1 vs 149, JS-vs-Rust; JS-vs-JS identical). Tolerated: ±0.2 s on `metrics.gps.ttff_s.value` only"
+  streams = ["telemetry"]
+  numeric = { "metrics.gps.ttff_s.value" = 0.2 }
+
+  [[rule.row]]
+  id = "sky-file-end"
+  what = "RIG: gnss-sky.json at the end is each agent's LAST 15 s write (gps.ts:232-258 SKY_PUBLISH_MS); the two cadences run on each agent's own phase (≤1 tick apart), so `hold_s` (whole seconds the state has held, at the write) may differ by 1. Every other key of the file is compared"
+  streams = ["file:gnss-sky.json"]
+  numeric = { "hold_s" = 1.0 }
+
+  [[rule.row]]
   id = "end-snapshot"
   what = "RIG: state.json `latest` at the end — both agents get SIGTERM together, but their last ticks before it are up to one tick apart (different phases), so the final payload's values may be one sample apart; `seq` there is T2, `ts` T1. Every published payload is compared in the telemetry stream"
   streams = ["state"]

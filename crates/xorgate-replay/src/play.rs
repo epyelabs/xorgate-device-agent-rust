@@ -146,6 +146,8 @@ const FLIP_GAP_MS: i64 = 800;
 /// A hold whose pair was not observed in full ends after this long.
 const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
+/// `NMEA_STALE_MS` (`gps.ts:15`): a gps group older than this is dropped.
+const NMEA_STALE_MS: i64 = 10_000;
 /// Cut mode: how long after the lag agent's predicted tick its read is
 /// assumed done (the JS `ts` is stamped after `await source.read()`).
 const CUT_READ_MS: i64 = 150;
@@ -1185,6 +1187,12 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 if let Some((lt, lw)) = last_nmea {
                     if r.t - lt > 2_000 {
                         transitions.push(lw);
+                        // The gps group goes stale NMEA_STALE_MS after the
+                        // last line (gps.ts:15, gps_group.rs): the input
+                        // transition's effect, at each agent's own tick.
+                        if r.t - lt > NMEA_STALE_MS as u64 {
+                            transitions.push(lw + NMEA_STALE_MS);
+                        }
                         transitions.push(now);
                     }
                 } else {
@@ -1408,6 +1416,10 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let mut pf = File::create(args.out.join("pairs.ndjson"))?;
     for p in &pairs {
         writeln!(pf, "{p}")?;
+    }
+    if let Some((_, lw)) = last_nmea {
+        // NMEA ends with the tape: the gps group goes stale 10 s later.
+        transitions.push(lw + NMEA_STALE_MS);
     }
     transitions.sort();
     transitions.dedup();
