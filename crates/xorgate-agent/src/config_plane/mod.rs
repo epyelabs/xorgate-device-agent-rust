@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
-use xorgate_cloud::s3::{build_upload_options, UploadEnv};
+use xorgate_cloud::s3::{build_upload_options, UploadEnv, UploadOptions};
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::settings::AgentSettings;
 use xorgate_core::settings_migrate::{migrate_media_enabled, MediaEnabledMigration};
@@ -80,28 +80,43 @@ pub fn boot(ctx: &AgentCtx) {
     }
 }
 
-/// The `buildUploadOptions()` call the TS makes while constructing the
-/// RecordingManager (`worker.ts:439`, body `:389-413`; CF33): offline → no
-/// log; otherwise the manifest read and, when the manifest or the bucket is
-/// missing, `[agent] segment upload disabled (…)` verbatim (logged inside
-/// `xorgate_cloud::s3::build_upload_options`). Phase 2 builds the uploader
-/// but does not consume it (the recorder is Phase 3).
-pub fn boot_upload_options(ctx: &AgentCtx) {
-    let cfg = &ctx.env.config;
+/// `buildUploadOptions()` (`worker.ts:389-413`; CF33 / CF39): offline → no
+/// log; otherwise the manifest is (re-)read and, when the manifest or the
+/// bucket is missing, `[agent] segment upload disabled (…)` is logged
+/// verbatim (inside `xorgate_cloud::s3::build_upload_options`). Called once
+/// at boot (`worker.ts:439`, the RecordingManager's `upload`) and again on
+/// every uploadBucket re-arm (`worker.ts:801`, `recording.setUpload(…)`) —
+/// never cached, so a re-arm sees the persisted bucket.
+pub fn boot_upload_options(ctx: &AgentCtx) -> Option<UploadOptions> {
+    upload_options_builder(ctx)()
+}
+
+/// The re-armable `buildUploadOptions` closure (holds only the env, the
+/// manifest path and the state handle — no `AgentCtx`, so no cycle through
+/// `ctx.hooks`).
+pub fn upload_options_builder(
+    ctx: &AgentCtx,
+) -> Arc<dyn Fn() -> Option<UploadOptions> + Send + Sync> {
+    let env = ctx.env.clone();
     let state = ctx.state.clone();
     let kvs = ctx.paths.kvs_manifest.clone();
-    let _upload = build_upload_options(
-        &UploadEnv {
-            offline: cfg.offline,
-            env_upload_bucket: ctx.env.upload_bucket_override.as_deref(),
-            thing_name: &cfg.device_id,
-            cert_path: Path::new(&cfg.cert_path),
-            key_path: Path::new(&cfg.key_path),
-        },
-        move || load_manifest(&kvs),
-        // `isOnline: () => store.snapshot().connection === "connected"`.
-        Arc::new(move || state.is_connected()),
-    );
+    Arc::new(move || {
+        let cfg = &env.config;
+        let state = state.clone();
+        let kvs = kvs.clone();
+        build_upload_options(
+            &UploadEnv {
+                offline: cfg.offline,
+                env_upload_bucket: env.upload_bucket_override.as_deref(),
+                thing_name: &cfg.device_id,
+                cert_path: Path::new(&cfg.cert_path),
+                key_path: Path::new(&cfg.key_path),
+            },
+            move || load_manifest(&kvs),
+            // `isOnline: () => store.snapshot().connection === "connected"`.
+            Arc::new(move || state.is_connected()),
+        )
+    })
 }
 
 /// The `ConfigSync` options the worker builds (`worker.ts:700-737`).

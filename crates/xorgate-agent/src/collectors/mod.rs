@@ -10,9 +10,10 @@
 //! | `system` | [`system::SystemCollector`] — /proc, /sys, statvfs, vcgencmd, device tree | `collectors/system.ts` |
 //!
 //! Read order is imu → gps → lte → system (`index.ts:125-129`); a group whose
-//! read is empty is omitted. `media` is the idle block: the KVS media
-//! supervisor (`index.ts:134-135`) is Phase 3 (the worker overlays it through
-//! `PhaseHooks::overlay_media`).
+//! read is empty is omitted. `media` is the KVS media supervisor's block when
+//! media is enabled (`index.ts:134-135`; Phase 3: built by the worker, handed
+//! in through [`start_with_media`]), else the idle block; the worker overlays
+//! the capture state through `PhaseHooks::overlay_media`.
 //!
 //! Each collector self-gates (absent hardware → `{}` + at most one warning),
 //! so real mode enables all of them; the hardware block only gates the IMU
@@ -33,7 +34,7 @@ use xorgate_core::telemetry::{MetricGroup, Metrics, TelemetryMedia, TelemetryRea
 use xorgate_core::types::{GnssView, GpsClockReading, PowerSampleReading};
 use xorgate_hal::nmea_tty::{NmeaOpener, TtyOpener};
 
-use crate::ctx::{AgentCtx, BoxFut, GroupSample, TelemetrySource};
+use crate::ctx::{AgentCtx, BoxFut, GroupSample, MediaControl, TelemetrySource};
 
 /// One telemetry group's source (`Collector`, `index.ts:19-30`).
 pub trait Collector: Send + Sync + 'static {
@@ -98,13 +99,27 @@ pub struct Collectors {
     imu: Option<Arc<imu::ImuCollector>>,
     gps: Option<Arc<gps::GpsCollector>>,
     system: Option<Arc<system::SystemCollector>>,
+    /// The KVS media supervisor (`index.ts:131-135`): `Some` only when media
+    /// is enabled; `None` → the idle `media` block.
+    media: Option<Arc<dyn MediaControl>>,
 }
 
 /// `createCollector(…)` for `MODE=real` (`worker.ts:279-292`). Frozen
-/// signature (WP1 "Interfaces for wave B").
+/// signature (WP1 "Interfaces for wave B"): no media supervisor.
 pub async fn start(ctx: &AgentCtx) -> Arc<dyn TelemetrySource> {
+    start_with_media(ctx, None).await
+}
+
+/// [`start`] with the media supervisor the worker built when
+/// `config.media.enabled` (`createCollector(caps, config.media)`, Phase 3).
+pub async fn start_with_media(
+    ctx: &AgentCtx,
+    media: Option<Arc<dyn MediaControl>>,
+) -> Arc<dyn TelemetrySource> {
     let caps = IoCapabilities::from_hardware(ctx.hardware.borrow().as_ref());
-    Arc::new(Collectors::new(ctx, caps, Backends::default()).await)
+    let mut c = Collectors::new(ctx, caps, Backends::default()).await;
+    c.media = media;
+    Arc::new(c)
 }
 
 impl Collectors {
@@ -142,6 +157,7 @@ impl Collectors {
             imu,
             gps,
             system,
+            media: None,
         }
     }
 
@@ -153,7 +169,8 @@ impl Collectors {
 
 impl TelemetrySource for Collectors {
     /// `read()` (`index.ts:138-150`): every collector in order, empty groups
-    /// omitted; `media` is the idle block (no supervisor before Phase 3).
+    /// omitted; `media` from the supervisor (`media.read()` — its first call
+    /// starts the masters), else the idle block.
     fn read(&self) -> BoxFut<'_, Result<TelemetryReading, String>> {
         Box::pin(async move {
             let mut metrics = Metrics::new();
@@ -165,7 +182,10 @@ impl TelemetrySource for Collectors {
             }
             Ok(TelemetryReading {
                 metrics,
-                media: TelemetryMedia::idle(),
+                media: match &self.media {
+                    Some(m) => m.read(),
+                    None => TelemetryMedia::idle(),
+                },
             })
         })
     }
@@ -215,6 +235,10 @@ impl TelemetrySource for Collectors {
     /// `cleanup`) and closes the tty; here the same happens explicitly: the
     /// helper gets SIGTERM and the NMEA reader thread closes the port.
     fn stop(&self) {
+        // `media?.stop()` — SIGINT every master so it deregisters cleanly.
+        if let Some(m) = &self.media {
+            m.stop();
+        }
         if let Some(imu) = &self.imu {
             imu.stop();
         }

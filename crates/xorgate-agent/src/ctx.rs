@@ -221,6 +221,24 @@ pub trait TelemetrySource: Send + Sync + 'static {
     fn stop(&self);
 }
 
+/// The KVS media supervisor as the collectors and the recording spine use it
+/// (`MediaSupervisor`, `collectors/media.ts`; WP5's `media::MediaSupervisor`).
+/// Phase 3 addition. `set_shed` is called ONLY from the recording manager's
+/// live choke point (invariant 6).
+pub trait MediaControl: Send + Sync + 'static {
+    /// `media.read()`: the `media` block; the FIRST call starts the masters
+    /// (lazy start from the publish tick, TS parity).
+    fn read(&self) -> TelemetryMedia;
+    /// `media.stop()` (shutdown: SIGINT every master).
+    fn stop(&self);
+    /// `restartChannel(key)` — bounce a master onto a respawned capture's socket.
+    fn restart_channel(&self, key: &str);
+    /// `setShed(shed)` — park/release every live master.
+    fn set_shed(&self, shed: bool);
+    /// `setDisabledStreams(keys)` — hold down disabled cameras' masters.
+    fn set_disabled_streams(&self, keys: &[String]);
+}
+
 /// The config plane (WP3): `ConfigSync` + `handleConfigMessage`. Every method
 /// is non-blocking — an implementation pushes onto a LOSSLESS (unbounded)
 /// queue drained by its own task, which handles config messages strictly in

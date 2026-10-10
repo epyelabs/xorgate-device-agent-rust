@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 use xorgate_cloud::mqtt::{MqttClient, MqttConfig, MqttEvent, QoS, Will};
+use xorgate_core::clock::Clock;
 use xorgate_core::hardware_block::{parse_hardware_block, DeviceHardwareBlock};
 use xorgate_core::telemetry::{
     ActivityEvent, ActivityLevel, ConnectionState, JsNumber, RunMode, StateSnapshot, StatusPayload,
@@ -32,11 +33,12 @@ use xorgate_hal::io::{null_tape, open_file_tape, TapeStart};
 use xorgate_hal::read_lossy::{read_text, FileText};
 
 use crate::ctx::{
-    AgentClock, AgentCtx, BoxFut, CommandPlaneDeps, ConfigPlaneDeps, GroupSample, NoopHooks,
-    ReportRequester, TelemetrySource,
+    AgentClock, AgentCtx, BoxFut, CommandPlaneDeps, ConfigPlaneDeps, GroupSample, MediaControl,
+    NoopHooks, ReportRequester, TelemetrySource,
 };
 use crate::env::{AgentEnv, Creds};
 use crate::mqtt_plane::{MqttHandle, MqttPlane, OfflineTransport, RealTransport};
+use crate::recording::{policy_sources, RecordingHooks, RecordingManager, RecordingManagerOpts};
 use crate::scope::ScopeHandle;
 use crate::shutdown::Shutdown;
 use crate::state::StateHandle;
@@ -184,6 +186,74 @@ impl TelemetrySource for SimSource {
         None
     }
     fn stop(&self) {}
+}
+
+/// `new RecordingManager({...})` (`worker.ts:439-501`).
+fn build_recording_manager(
+    ctx: &AgentCtx,
+    source: Arc<dyn TelemetrySource>,
+    media: Option<Arc<dyn MediaControl>>,
+    upload: Option<xorgate_cloud::s3::UploadOptions>,
+) -> RecordingManager {
+    let cfg = &ctx.env.config;
+    let real = cfg.mode == RunMode::Real;
+    let (m1, m2, m3) = (media.clone(), media.clone(), media);
+    let video = crate::recording::VideoOpts {
+        media_enabled: cfg.media.enabled,
+        cameras: policy_sources::cameras_fn(ctx),
+        encoder: policy_sources::encoder_fn(ctx),
+        // `source.restartMediaChannel?.(streamKey)`: bounce the master onto the new socket.
+        on_capture_spawned: Arc::new(move |key: &str| {
+            if let Some(m) = &m1 {
+                m.restart_channel(key);
+            }
+        }),
+        // `source.setLiveShed?.(shed)` — reached ONLY through the manager's choke point.
+        set_live_shed: Some(Arc::new(move |shed: bool| {
+            if let Some(m) = &m2 {
+                m.set_shed(shed);
+            }
+        })),
+        // `source.setDisabledStreams?.(streamKeys)`.
+        set_disabled_cameras: Some(Arc::new(move |keys: &[String]| {
+            if let Some(m) = &m3 {
+                m.set_disabled_streams(keys);
+            }
+        })),
+    };
+    let (state, clock) = (ctx.state.clone(), ctx.clock.clone());
+    let on_status = Arc::new(move |s: &xorgate_core::telemetry::RecordingStatus| {
+        // `store.setRecording(status); store.flush(Date.now())`.
+        state.set_recording(s.clone());
+        state.flush(clock.wall_ms(), false);
+    });
+    let (state, clock) = (ctx.state.clone(), ctx.clock.clone());
+    let on_event = Arc::new(move |level: ActivityLevel, msg: &str| {
+        // `console.log(`[agent] ${msg}`)` — log level does not follow `level`.
+        info!("[agent] {msg}");
+        state.note(level, msg, clock.wall_ms());
+    });
+    RecordingManager::new(RecordingManagerOpts {
+        device_id: cfg.device_id.clone(),
+        root: ctx.paths.home.join("recordings"),
+        shm_dir: ctx.paths.home.join("shm"),
+        settings_path: ctx.paths.settings.clone(),
+        // WP1-REBASE: WP2's TimeSourceHandle (60 s cache, timedatectl probe).
+        time_source: Arc::new(crate::recording::pending::Inert),
+        upload,
+        video: Some(video),
+        sample_groups: policy_sources::sample_groups_fn(source.clone()),
+        power_sample: policy_sources::power_sample_fn(source.clone(), real),
+        boot_sources: policy_sources::boot_sources(ctx, source),
+        on_status,
+        on_event,
+        clock: ctx.clock.clone(),
+        // WP1-REBASE: the WP2–WP4 components.
+        backend: Arc::new(crate::recording::pending::Inert),
+        poll_ms: None,
+        shed_sample_ms: None,
+        time_probe_timeout_ms: None,
+    })
 }
 
 /// The home files a replay instance starts from (settings.json,
@@ -390,9 +460,26 @@ async fn run(args: &[String]) -> Result<i32> {
         }
     }
 
+    // The KVS media supervisor (`createMediaCollector(config.media)` inside
+    // `createCollector`, `collectors/index.ts:133-135`): real mode with media
+    // enabled only. WP1-REBASE: WP5's `media::MediaSupervisor` (+ the stream
+    // guard closure of `worker.ts:205-218`) is built here.
+    let media: Option<Arc<dyn MediaControl>> = None;
+
+    // The Phase 3 hooks, installed before any subsystem clones the ctx. The
+    // manager itself is built after the boot reconciles (`worker.ts:439`).
+    let hooks = Arc::new(RecordingHooks::new(
+        media.clone(),
+        // WP1-REBASE: `reconcileHardwareNow` (`worker.ts:133-150`, WP5).
+        None,
+        config_plane::upload_options_builder(&ctx),
+        ctx.clock.clone(),
+    ));
+    ctx.hooks = hooks.clone();
+
     // `source` (`worker.ts:270-326`): real collectors, or the empty sim source (O7).
     let source: Arc<dyn TelemetrySource> = match cfg.mode {
-        RunMode::Real => collectors::start(&ctx).await,
+        RunMode::Real => collectors::start_with_media(&ctx, media.clone()).await,
         _ => Arc::new(SimSource),
     };
 
@@ -419,15 +506,21 @@ async fn run(args: &[String]) -> Result<i32> {
     }
     state.flush(now0, true);
 
-    // Phase 3/4 boot steps (O5), each a PhaseHooks no-op at its TS place:
-    // `await reconcileHardwareNow()` (`:427`), `await reconcileCameraMountNow()`
-    // (`:432`), the RecordingManager — whose construction calls
-    // buildUploadOptions() (`:439`, CF33 → WP3) — and `await recording.start()`
-    // (`:529`). The clock stepper (`:536-570`) and the LED manager (`:609`) are
-    // Phase 4 constructors with no Phase 2 call site.
+    // Boot steps at their TS places: `await reconcileHardwareNow()` (`:427`),
+    // `await reconcileCameraMountNow()` (`:432`, Phase 4 no-op), the
+    // RecordingManager — whose construction consumes buildUploadOptions()
+    // (`:439`, CF33) — and `await recording.start()` (`:529`), awaited before
+    // the first capture spawn. The clock stepper (`:536-570`) and the LED
+    // manager (`:609`) are Phase 4.
     ctx.hooks.reconcile_hardware_boot().await;
     ctx.hooks.reconcile_camera_mount_boot().await;
-    config_plane::boot_upload_options(&ctx);
+    let upload = config_plane::boot_upload_options(&ctx);
+    hooks.install(build_recording_manager(
+        &ctx,
+        source.clone(),
+        media.clone(),
+        upload,
+    ));
     ctx.hooks.recording_start().await;
 
     // MQTT (`worker.ts:664`), scope (`:684`), config plane (`:700-746`), commands.
