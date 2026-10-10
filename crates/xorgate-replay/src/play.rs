@@ -173,6 +173,13 @@ const CUT_DRIFT_MAX_PER_TICK_MS: i64 = 20;
 const CUT_DRIFT_MAX_MS: i64 = 300;
 /// Cut mode: a predicted hold leaves at least this much of each second open.
 const CUT_MIN_OPEN_MS: i64 = 200;
+/// After a restore, barrier inputs (cli / mqtt_in / lte_file / conn) wait
+/// until BOTH agents publish again + this settle (their retained config
+/// delivery applied and reported) …
+const POST_CUT_SETTLE_MS: i64 = 3_000;
+/// … but never longer than the worst-case reconnect (Rust backoff cap 60 s)
+/// + 15 s after the restore.
+const POST_CUT_MAX_MS: i64 = 75_000;
 const PREFILL_MS: u64 = 1000;
 
 // ------------------------------------------------------------------ gate
@@ -276,6 +283,8 @@ pub struct Gate {
     /// its backoff 7 s after the restore, read an NMEA burst 5 ms in — GGA
     /// new, RMC old — because an unobserved agent left the gate open).
     restored_at: Option<i64>,
+    /// When both agents had published again after the last restore.
+    back_at: Option<i64>,
     pub pairs: Vec<Value>,
 }
 
@@ -292,6 +301,7 @@ impl Gate {
             flip_gap: DEFAULT_FLIP_GAP_MS,
             seen_at: [None, None],
             restored_at: None,
+            back_at: None,
             pairs: Vec::new(),
         }
     }
@@ -308,11 +318,33 @@ impl Gate {
         let Some(r) = self.restored_at else {
             return false;
         };
-        if self.seen_at.iter().all(|s| s.is_some_and(|s| s >= r)) {
-            self.restored_at = None;
-            return false;
+        if let [Some(a), Some(b)] = self.seen_at {
+            if a >= r && b >= r {
+                self.restored_at = None;
+                self.back_at = Some(a.max(b));
+                return false;
+            }
         }
         true
+    }
+
+    /// Must a barrier input (cli / mqtt_in / lte_file / conn) still wait
+    /// after a restore? Until both agents publish again + POST_CUT_SETTLE_MS
+    /// (≤ POST_CUT_MAX_MS after the restore). Series 5 calibration 193432Z:
+    /// the Rust agent, 30 s into its backoff, reconnected 50 ms after the
+    /// tape's CLI edit, and its retained rev 2 delivery overwrote the edit
+    /// before its 5 s settings watch saw it; mqtt.js (2 s) had applied rev 2
+    /// 23 s earlier and reported the edit `local`.
+    pub fn post_cut_hold(&mut self, now: i64) -> bool {
+        if let Some(r) = self.restored_at {
+            if now - r >= POST_CUT_MAX_MS {
+                return false;
+            }
+            if self.reconnecting() {
+                return true;
+            }
+        }
+        self.back_at.is_some_and(|b| now < b + POST_CUT_SETTLE_MS)
     }
 
     /// The rig's `--flip-gap-ms`.
@@ -1448,6 +1480,15 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 .unwrap_or(false)
         })
     };
+    // Barrier inputs wait out both agents' reconnect after a cut.
+    let post_cut = |now: i64| {
+        !args.no_gate
+            && caps
+                .gate
+                .lock()
+                .map(|mut g| g.post_cut_hold(now))
+                .unwrap_or(false)
+    };
     let mut pending: std::collections::VecDeque<(usize, i64)> = Default::default();
     let mut next = 0usize;
     let n_rec = tape.records.len();
@@ -1482,7 +1523,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 let ev = &tape.records[pi].ev;
                 let held = watch_holds(ev, now);
                 let timeout = held && now - due_w > watch::MAX_HOLD_MS;
-                if (!held || timeout) && tel_open(now) {
+                if (!held || timeout) && !post_cut(now) && tel_open(now) {
                     pending.pop_front();
                     break Some((pi, due_w, timeout));
                 }
@@ -1495,7 +1536,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 if left.is_zero() {
                     if !args.no_gate
                         && barrier(&r.ev)
-                        && (!pending.is_empty() || watch_holds(&r.ev, now))
+                        && (!pending.is_empty() || watch_holds(&r.ev, now) || post_cut(now))
                     {
                         pending.push_back((next, now));
                         next += 1;
@@ -1934,6 +1975,27 @@ mod tests {
         h.on_tick(1, 1_300, 1_300);
         h.on_tick(0, 5_000, 5_010);
         assert!(h.is_open(5_200, false));
+    }
+
+    #[test]
+    fn barrier_inputs_wait_until_both_agents_are_back_after_a_restore() {
+        let mut g = Gate::new(60);
+        g.on_tick(0, 1_000, 1_000);
+        g.on_tick(1, 1_300, 1_300);
+        assert!(!g.post_cut_hold(2_000), "no cut yet");
+        g.on_restore(10_000);
+        g.on_tick(0, 10_000, 10_100); // JS back at once
+        assert!(g.post_cut_hold(20_000), "Rust still in its backoff");
+        g.on_tick(1, 9_300, 40_000); // Rust flushes its queue at 40 s
+        assert!(g.post_cut_hold(42_000), "settle");
+        assert!(!g.post_cut_hold(43_001));
+        // An agent that never returns: released POST_CUT_MAX_MS after the restore.
+        let mut h = Gate::new(60);
+        h.on_tick(0, 1_000, 1_000);
+        h.on_tick(1, 1_300, 1_300);
+        h.on_restore(10_000);
+        assert!(h.post_cut_hold(10_000 + POST_CUT_MAX_MS - 1));
+        assert!(!h.post_cut_hold(10_000 + POST_CUT_MAX_MS));
     }
 
     #[test]
