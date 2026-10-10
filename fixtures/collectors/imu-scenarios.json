@@ -1,0 +1,955 @@
+{
+  "jsSourceFile": "src/agent/collectors/imu.ts (createImuCollector) + src/hardware/imu.ts (detectImu, streamImuData) + src/lib/exec.ts (run, runStream)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx dump-imu-scenarios.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP2; PATH = i2cdetect/python3 shims, XORGATE_MOCK=0, Date.now/hrtime mocked to wall = baseWallMs + mono)",
+  "cases": [
+    {
+      "name": "detect 0x4a → stream → group; unparsed line keeps latest + updatedMono (CF18); exit after samples → re-detect; exit before any → parked",
+      "input": {
+        "i2c": {
+          "stdout": "     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n00:          -- -- -- -- -- -- -- -- -- -- -- -- --\n10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n40: -- -- -- -- -- -- -- -- -- -- 4a -- -- -- -- --\n50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n60: -- -- -- -- -- -- -- -- -- -- -- 6b -- -- -- --\n70: -- -- -- -- -- -- -- --\n"
+        },
+        "python": true,
+        "baseWallMs": 1781000000000,
+        "helperArgs": [
+          "--address 0x4a",
+          "--address 0x4a",
+          "--address 0x4a"
+        ],
+        "helperScript": "<python>/bno085_read.py",
+        "spawnCount": 3
+      },
+      "steps": [
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "waitSpawn",
+          "n": 1,
+          "logs": [
+            {
+              "level": "log",
+              "msg": "[imu] BNO085 detected at 0x4a — streaming"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "{\"type\": \"ready\", \"address\": \"0x4a\"}",
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "advance",
+          "ms": 100,
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "{\"type\": \"sample\", \"quat\": {\"r\": 0.9238795, \"i\": 0.0, \"j\": 0.0, \"k\": 0.3826834}, \"linaccel\": {\"x\": 0.01234, \"y\": -0.5678, \"z\": 9.80665}}",
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quat_r": {
+              "value": 0.9239
+            },
+            "quat_i": {
+              "value": 0
+            },
+            "quat_j": {
+              "value": 0
+            },
+            "quat_k": {
+              "value": 0.3827
+            },
+            "euler_roll": {
+              "value": 0,
+              "unit": "°"
+            },
+            "euler_pitch": {
+              "value": 0,
+              "unit": "°"
+            },
+            "euler_yaw": {
+              "value": 45,
+              "unit": "°"
+            },
+            "accel_x": {
+              "value": 0.012,
+              "unit": "m/s^2"
+            },
+            "accel_y": {
+              "value": -0.568,
+              "unit": "m/s^2"
+            },
+            "accel_z": {
+              "value": 9.807,
+              "unit": "m/s^2"
+            }
+          },
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quat_r": {
+                "value": 0.9239
+              },
+              "quat_i": {
+                "value": 0
+              },
+              "quat_j": {
+                "value": 0
+              },
+              "quat_k": {
+                "value": 0.3827
+              },
+              "euler_roll": {
+                "value": 0,
+                "unit": "°"
+              },
+              "euler_pitch": {
+                "value": 0,
+                "unit": "°"
+              },
+              "euler_yaw": {
+                "value": 45,
+                "unit": "°"
+              },
+              "accel_x": {
+                "value": 0.012,
+                "unit": "m/s^2"
+              },
+              "accel_y": {
+                "value": -0.568,
+                "unit": "m/s^2"
+              },
+              "accel_z": {
+                "value": 9.807,
+                "unit": "m/s^2"
+              }
+            },
+            "updatedMonoMs": 100
+          },
+          "logs": []
+        },
+        {
+          "op": "advance",
+          "ms": 100,
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "{\"type\": \"sample\", \"quat\": {\"r\": 0.9",
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "not json at all",
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "{\"type\":\"other\"}",
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quat_r": {
+              "value": 0.9239
+            },
+            "quat_i": {
+              "value": 0
+            },
+            "quat_j": {
+              "value": 0
+            },
+            "quat_k": {
+              "value": 0.3827
+            },
+            "euler_roll": {
+              "value": 0,
+              "unit": "°"
+            },
+            "euler_pitch": {
+              "value": 0,
+              "unit": "°"
+            },
+            "euler_yaw": {
+              "value": 45,
+              "unit": "°"
+            },
+            "accel_x": {
+              "value": 0.012,
+              "unit": "m/s^2"
+            },
+            "accel_y": {
+              "value": -0.568,
+              "unit": "m/s^2"
+            },
+            "accel_z": {
+              "value": 9.807,
+              "unit": "m/s^2"
+            }
+          },
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quat_r": {
+                "value": 0.9239
+              },
+              "quat_i": {
+                "value": 0
+              },
+              "quat_j": {
+                "value": 0
+              },
+              "quat_k": {
+                "value": 0.3827
+              },
+              "euler_roll": {
+                "value": 0,
+                "unit": "°"
+              },
+              "euler_pitch": {
+                "value": 0,
+                "unit": "°"
+              },
+              "euler_yaw": {
+                "value": 45,
+                "unit": "°"
+              },
+              "accel_x": {
+                "value": 0.012,
+                "unit": "m/s^2"
+              },
+              "accel_y": {
+                "value": -0.568,
+                "unit": "m/s^2"
+              },
+              "accel_z": {
+                "value": 9.807,
+                "unit": "m/s^2"
+              }
+            },
+            "updatedMonoMs": 100
+          },
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "{\"type\": \"error\", \"error\": \"I2C NACK at 0x4a\"}",
+          "logs": [
+            {
+              "level": "error",
+              "msg": "[imu] I2C NACK at 0x4a"
+            }
+          ]
+        },
+        {
+          "op": "line",
+          "text": "E:Traceback (most recent call last):",
+          "logs": [
+            {
+              "level": "error",
+              "msg": "[imu] Traceback (most recent call last):"
+            }
+          ]
+        },
+        {
+          "op": "line",
+          "text": "E:   \t",
+          "logs": []
+        },
+        {
+          "op": "advance",
+          "ms": 100,
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "{\"type\": \"sample\", \"quat\": {\"r\": 0.7071068, \"i\": 0.7071068, \"j\": 0.0, \"k\": 0.0}, \"linaccel\": {\"x\": 1.0005, \"y\": 0.0, \"z\": -0.0004}}",
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quat_r": {
+              "value": 0.7071
+            },
+            "quat_i": {
+              "value": 0.7071
+            },
+            "quat_j": {
+              "value": 0
+            },
+            "quat_k": {
+              "value": 0
+            },
+            "euler_roll": {
+              "value": 90,
+              "unit": "°"
+            },
+            "euler_pitch": {
+              "value": 0,
+              "unit": "°"
+            },
+            "euler_yaw": {
+              "value": 0,
+              "unit": "°"
+            },
+            "accel_x": {
+              "value": 1.001,
+              "unit": "m/s^2"
+            },
+            "accel_y": {
+              "value": 0,
+              "unit": "m/s^2"
+            },
+            "accel_z": {
+              "value": 0,
+              "unit": "m/s^2"
+            }
+          },
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quat_r": {
+                "value": 0.7071
+              },
+              "quat_i": {
+                "value": 0.7071
+              },
+              "quat_j": {
+                "value": 0
+              },
+              "quat_k": {
+                "value": 0
+              },
+              "euler_roll": {
+                "value": 90,
+                "unit": "°"
+              },
+              "euler_pitch": {
+                "value": 0,
+                "unit": "°"
+              },
+              "euler_yaw": {
+                "value": 0,
+                "unit": "°"
+              },
+              "accel_x": {
+                "value": 1.001,
+                "unit": "m/s^2"
+              },
+              "accel_y": {
+                "value": 0,
+                "unit": "m/s^2"
+              },
+              "accel_z": {
+                "value": 0,
+                "unit": "m/s^2"
+              }
+            },
+            "updatedMonoMs": 300
+          },
+          "logs": []
+        },
+        {
+          "op": "settings",
+          "json": {
+            "imuMount": {
+              "enabled": true,
+              "rollDeg": 0,
+              "pitchDeg": 0,
+              "yawDeg": 90
+            }
+          },
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quat_r": {
+              "value": 0.7071
+            },
+            "quat_i": {
+              "value": 0.7071
+            },
+            "quat_j": {
+              "value": 0
+            },
+            "quat_k": {
+              "value": 0
+            },
+            "euler_roll": {
+              "value": 180,
+              "unit": "°"
+            },
+            "euler_pitch": {
+              "value": 90,
+              "unit": "°"
+            },
+            "euler_yaw": {
+              "value": 180,
+              "unit": "°"
+            },
+            "accel_x": {
+              "value": 1.001,
+              "unit": "m/s^2"
+            },
+            "accel_y": {
+              "value": 0,
+              "unit": "m/s^2"
+            },
+            "accel_z": {
+              "value": 0,
+              "unit": "m/s^2"
+            }
+          },
+          "logs": []
+        },
+        {
+          "op": "settings",
+          "json": null,
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quat_r": {
+              "value": 0.7071
+            },
+            "quat_i": {
+              "value": 0.7071
+            },
+            "quat_j": {
+              "value": 0
+            },
+            "quat_k": {
+              "value": 0
+            },
+            "euler_roll": {
+              "value": 90,
+              "unit": "°"
+            },
+            "euler_pitch": {
+              "value": 0,
+              "unit": "°"
+            },
+            "euler_yaw": {
+              "value": 0,
+              "unit": "°"
+            },
+            "accel_x": {
+              "value": 1.001,
+              "unit": "m/s^2"
+            },
+            "accel_y": {
+              "value": 0,
+              "unit": "m/s^2"
+            },
+            "accel_z": {
+              "value": 0,
+              "unit": "m/s^2"
+            }
+          },
+          "logs": []
+        },
+        {
+          "op": "exit",
+          "code": "0",
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "[imu] reader stream ended; will re-detect"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": [
+            {
+              "level": "log",
+              "msg": "[imu] BNO085 detected at 0x4a — streaming"
+            }
+          ]
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "waitSpawn",
+          "n": 2,
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "advance",
+          "ms": 100,
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "{\"type\": \"sample\", \"quat\": {\"r\": 0.5, \"i\": 0.5, \"j\": 0.5, \"k\": 0.5}, \"linaccel\": {\"x\": 0.12345, \"y\": 0.23456, \"z\": 0.34567}}",
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": {
+            "fields": {
+              "quat_r": {
+                "value": 0.5
+              },
+              "quat_i": {
+                "value": 0.5
+              },
+              "quat_j": {
+                "value": 0.5
+              },
+              "quat_k": {
+                "value": 0.5
+              },
+              "euler_roll": {
+                "value": 90,
+                "unit": "°"
+              },
+              "euler_pitch": {
+                "value": 0,
+                "unit": "°"
+              },
+              "euler_yaw": {
+                "value": 90,
+                "unit": "°"
+              },
+              "accel_x": {
+                "value": 0.123,
+                "unit": "m/s^2"
+              },
+              "accel_y": {
+                "value": 0.235,
+                "unit": "m/s^2"
+              },
+              "accel_z": {
+                "value": 0.346,
+                "unit": "m/s^2"
+              }
+            },
+            "updatedMonoMs": 400
+          },
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {
+            "quat_r": {
+              "value": 0.5
+            },
+            "quat_i": {
+              "value": 0.5
+            },
+            "quat_j": {
+              "value": 0.5
+            },
+            "quat_k": {
+              "value": 0.5
+            },
+            "euler_roll": {
+              "value": 90,
+              "unit": "°"
+            },
+            "euler_pitch": {
+              "value": 0,
+              "unit": "°"
+            },
+            "euler_yaw": {
+              "value": 90,
+              "unit": "°"
+            },
+            "accel_x": {
+              "value": 0.123,
+              "unit": "m/s^2"
+            },
+            "accel_y": {
+              "value": 0.235,
+              "unit": "m/s^2"
+            },
+            "accel_z": {
+              "value": 0.346,
+              "unit": "m/s^2"
+            }
+          },
+          "logs": []
+        },
+        {
+          "op": "exit",
+          "code": "K",
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "[imu] reader stream ended; will re-detect"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": [
+            {
+              "level": "log",
+              "msg": "[imu] BNO085 detected at 0x4a — streaming"
+            }
+          ]
+        },
+        {
+          "op": "waitSpawn",
+          "n": 3,
+          "logs": []
+        },
+        {
+          "op": "line",
+          "text": "E:ModuleNotFoundError: No module named 'adafruit_bno08x'",
+          "logs": [
+            {
+              "level": "error",
+              "msg": "[imu] ModuleNotFoundError: No module named 'adafruit_bno08x'"
+            }
+          ]
+        },
+        {
+          "op": "exit",
+          "code": "2",
+          "logs": [
+            {
+              "level": "error",
+              "msg": "[imu] reader exited before any sample (exit 2); IMU disabled. Check: i2cdetect -y 1, python3 + adafruit-circuitpython-bno08x, and python/bno085_read.py."
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        }
+      ],
+      "logsAfterLastStep": []
+    },
+    {
+      "name": "sample() alone kicks detection; exit before any sample by signal → (exit ?) parked",
+      "input": {
+        "i2c": {
+          "stdout": "     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n00:          -- -- -- -- -- -- -- -- -- -- -- -- --\n10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n40: -- -- -- -- -- -- -- -- -- -- -- 4b -- -- -- --\n50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n70: -- -- -- -- -- -- -- --\n"
+        },
+        "python": true,
+        "baseWallMs": 1781000000000,
+        "helperArgs": [
+          "--address 0x4b"
+        ],
+        "helperScript": "<python>/bno085_read.py",
+        "spawnCount": 1
+      },
+      "steps": [
+        {
+          "op": "sample",
+          "result": null,
+          "logs": []
+        },
+        {
+          "op": "waitSpawn",
+          "n": 1,
+          "logs": [
+            {
+              "level": "log",
+              "msg": "[imu] BNO085 detected at 0x4b — streaming"
+            }
+          ]
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "logs": []
+        },
+        {
+          "op": "exit",
+          "code": "K",
+          "logs": [
+            {
+              "level": "error",
+              "msg": "[imu] reader exited before any sample (exit ?); IMU disabled. Check: i2cdetect -y 1, python3 + adafruit-circuitpython-bno08x, and python/bno085_read.py."
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "logs": []
+        }
+      ],
+      "logsAfterLastStep": []
+    },
+    {
+      "name": "no BNO085 on the bus → one warning, inert, never re-detected",
+      "input": {
+        "i2c": {
+          "stdout": "     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n00:          -- -- -- -- -- -- -- -- -- -- -- -- --\n10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n60: -- -- -- -- -- -- -- -- -- -- -- 6b -- -- -- --\n70: -- -- -- -- -- -- -- --\n"
+        },
+        "python": true,
+        "baseWallMs": 1781000000000,
+        "helperArgs": [],
+        "helperScript": null,
+        "spawnCount": 0
+      },
+      "steps": [
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "[imu] BNO085 not detected on I2C bus 1 (0x4a/0x4b)"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": []
+        },
+        {
+          "op": "sample",
+          "result": null,
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": []
+        }
+      ],
+      "logsAfterLastStep": []
+    },
+    {
+      "name": "i2cdetect missing → one warning, inert",
+      "input": {
+        "i2c": null,
+        "python": true,
+        "baseWallMs": 1781000000000,
+        "helperArgs": [],
+        "helperScript": null,
+        "spawnCount": 0
+      },
+      "steps": [
+        {
+          "op": "read",
+          "result": {},
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "[imu] i2cdetect not found — install i2c-tools."
+            }
+          ]
+        },
+        {
+          "op": "settle",
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": []
+        }
+      ],
+      "logsAfterLastStep": []
+    },
+    {
+      "name": "i2cdetect fails with stderr → the trimmed stderr is the reason",
+      "input": {
+        "i2c": {
+          "stdout": "",
+          "stderr": "Error: Could not open file `/dev/i2c-1' or `/dev/i2c/1': Permission denied\n",
+          "code": 1
+        },
+        "python": true,
+        "baseWallMs": 1781000000000,
+        "helperArgs": [],
+        "helperScript": null,
+        "spawnCount": 0
+      },
+      "steps": [
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "[imu] Error: Could not open file `/dev/i2c-1' or `/dev/i2c/1': Permission denied"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        }
+      ],
+      "logsAfterLastStep": []
+    },
+    {
+      "name": "i2cdetect fails silently → generic reason",
+      "input": {
+        "i2c": {
+          "stdout": "",
+          "stderr": "  \n",
+          "code": 2
+        },
+        "python": true,
+        "baseWallMs": 1781000000000,
+        "helperArgs": [],
+        "helperScript": null,
+        "spawnCount": 0
+      },
+      "steps": [
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "[imu] i2cdetect failed on bus 1"
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        }
+      ],
+      "logsAfterLastStep": []
+    },
+    {
+      "name": "python3 missing → reader exited before any sample (exit ?), parked",
+      "input": {
+        "i2c": {
+          "stdout": "     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n00:          -- -- -- -- -- -- -- -- -- -- -- -- --\n10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n40: -- -- -- -- -- -- -- -- -- -- 4a -- -- -- -- --\n50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n60: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --\n70: -- -- -- -- -- -- -- --\n"
+        },
+        "python": false,
+        "baseWallMs": 1781000000000,
+        "helperArgs": [],
+        "helperScript": null,
+        "spawnCount": 0
+      },
+      "steps": [
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": [
+            {
+              "level": "log",
+              "msg": "[imu] BNO085 detected at 0x4a — streaming"
+            },
+            {
+              "level": "error",
+              "msg": "[imu] reader exited before any sample (exit ?); IMU disabled. Check: i2cdetect -y 1, python3 + adafruit-circuitpython-bno08x, and python/bno085_read.py."
+            }
+          ]
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        },
+        {
+          "op": "settle",
+          "logs": []
+        },
+        {
+          "op": "read",
+          "result": {},
+          "logs": []
+        }
+      ],
+      "logsAfterLastStep": []
+    }
+  ]
+}
