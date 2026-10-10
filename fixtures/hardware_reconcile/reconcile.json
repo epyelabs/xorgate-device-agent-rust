@@ -1,0 +1,1030 @@
+{
+  "jsSourceFile": "src/media/hardware-reconcile.ts (reconcileHardware :77-182) + test/hardware-block.test.ts › reconcileHardware (4 async it()s, CF26)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-3/evidence/wp5-tools/dump-hardware-reconcile.mts via tools/replay/js/run-tsx.sh",
+  "cases": [
+    {
+      "name": "renders the trio for a matched camera and reports changed streams",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/soc/i2c0mux/i2c@0/imx290@1a)\n    Modes: whatever\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: pipelines rendered (hw-h264, /base/soc/i2c0mux/i2c@0/imx290@1a)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "rendered"
+              ]
+            ],
+            "changedStreams": [
+              "cam0"
+            ],
+            "cameras": [
+              {
+                "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/soc/i2c0mux/i2c@0/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/soc/i2c0mux/i2c@0/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        },
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/soc/i2c0mux/i2c@0/imx290@1a)\n    Modes: whatever\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [],
+            "statuses": [
+              [
+                "cam0",
+                "ok"
+              ]
+            ],
+            "changedStreams": [],
+            "cameras": [
+              {
+                "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/soc/i2c0mux/i2c@0/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/soc/i2c0mux/i2c@0/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "re-renders a recognized render on encoder change, but never a custom pipeline",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": {
+            "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+          },
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/soc/i2c0mux/i2c@0/imx290@1a)\n    Modes: whatever\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: pipelines rendered (hw-h264, /base/soc/i2c0mux/i2c@0/imx290@1a)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "rendered"
+              ]
+            ],
+            "changedStreams": [
+              "cam0"
+            ],
+            "cameras": [
+              {
+                "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/soc/i2c0mux/i2c@0/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/soc/i2c0mux/i2c@0/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        },
+        {
+          "pre": {
+            "cam0.gst": "videotestsrc ! my custom thing ! appsink\n"
+          },
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/soc/i2c0mux/i2c@0/imx290@1a)\n    Modes: whatever\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: .gst is not a recognized render (operator-customized?) — leaving it alone"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "custom"
+              ]
+            ],
+            "changedStreams": [],
+            "cameras": [
+              {
+                "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/soc/i2c0mux/i2c@0/imx290@1a\n",
+              "cam0.gst": "videotestsrc ! my custom thing ! appsink\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/soc/i2c0mux/i2c@0/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "reports no-camera when the connector is empty, touching nothing",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/soc/i2c0mux/i2c@0/imx290@1a)\n    Modes: whatever\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: pipelines rendered (hw-h264, /base/soc/i2c0mux/i2c@0/imx290@1a)"
+              ],
+              [
+                "warn",
+                "cam1: no camera enumerated on csi1 (expected imx290) — stream held down until one appears (check the ribbon + overlays, reboot after install)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "rendered"
+              ],
+              [
+                "cam1",
+                "no-camera"
+              ]
+            ],
+            "changedStreams": [
+              "cam0"
+            ],
+            "cameras": [
+              {
+                "cameraName": "/base/soc/i2c0mux/i2c@0/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/soc/i2c0mux/i2c@0/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/soc/i2c0mux/i2c@0/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "touches nothing when enumeration is unavailable",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "",
+            "stderr": "",
+            "exitCode": null,
+            "failed": true,
+            "notFound": true
+          },
+          "expected": {
+            "logs": [
+              [
+                "warn",
+                "camera enumeration unavailable (rpicam-hello missing or libcamera broken) — leaving pipelines untouched"
+              ]
+            ],
+            "statuses": [],
+            "changedStreams": [],
+            "cameras": null,
+            "files": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "bench CM5 two-camera block, JS socket root (= /etc/xorgate/pipelines renders)",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm5",
+          "encoder": "sw-h264",
+          "rails": true,
+          "statusLed": {
+            "r": 12,
+            "g": 21,
+            "b": 16
+          },
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)"
+              ],
+              [
+                "info",
+                "cam1: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "rendered"
+              ],
+              [
+                "cam1",
+                "rendered"
+              ]
+            ],
+            "changedStreams": [
+              "cam0",
+              "cam1"
+            ],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.camera": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a\n",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        },
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [],
+            "statuses": [
+              [
+                "cam0",
+                "ok"
+              ],
+              [
+                "cam1",
+                "ok"
+              ]
+            ],
+            "changedStreams": [],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.camera": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a\n",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "bench CM5 two-camera block, Rust socket root (/var/lib/xorgate-rs/etc/pipelines, D4)",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm5",
+          "encoder": "sw-h264",
+          "rails": true,
+          "statusLed": {
+            "r": 12,
+            "g": 21,
+            "b": 16
+          },
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate-rs/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)"
+              ],
+              [
+                "info",
+                "cam1: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "rendered"
+              ],
+              [
+                "cam1",
+                "rendered"
+              ]
+            ],
+            "changedStreams": [
+              "cam0",
+              "cam1"
+            ],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.camera": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a\n",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        },
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [],
+            "statuses": [
+              [
+                "cam0",
+                "ok"
+              ],
+              [
+                "cam1",
+                "ok"
+              ]
+            ],
+            "changedStreams": [],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.camera": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a\n",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        },
+        {
+          "pre": {
+            "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+          },
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: .gst is not a recognized render (operator-customized?) — leaving it alone"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "custom"
+              ],
+              [
+                "cam1",
+                "ok"
+              ]
+            ],
+            "changedStreams": [],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.camera": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a\n",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "sensor mismatch is used anyway (warned); an unmapped enumerated path is warned",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm5",
+          "encoder": "sw-h264",
+          "rails": true,
+          "statusLed": {
+            "r": 12,
+            "g": 21,
+            "b": 16
+          },
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx477",
+              "codec": "h264"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate-rs/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n2 : imx477 [4056x3040 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@99999/imx477@1a)\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "warn",
+                "enumerated camera(s) on unrecognized path(s): /base/axi/pcie@1000120000/rp1/i2c@99999/imx477@1a"
+              ],
+              [
+                "info",
+                "cam0: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)"
+              ],
+              [
+                "warn",
+                "cam1: model expects imx477 on csi1, enumerated imx290 — using it anyway"
+              ],
+              [
+                "info",
+                "cam1: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "rendered"
+              ],
+              [
+                "cam1",
+                "rendered"
+              ]
+            ],
+            "changedStreams": [
+              "cam0",
+              "cam1"
+            ],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@99999/imx477@1a",
+                "sensor": "imx477",
+                "connector": null
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam0.gst.direct": "libcamerasrc name=cam0 camera-name=/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.camera": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a\n",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "zero cameras (No cameras available!, exit 255) is a real empty result: all no-camera, dir created",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm5",
+          "encoder": "sw-h264",
+          "rails": true,
+          "statusLed": {
+            "r": 12,
+            "g": 21,
+            "b": 16
+          },
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate-rs/shm",
+        "dir": "made/pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "",
+            "stderr": "ERROR: *** No cameras available! ***\n",
+            "exitCode": 255,
+            "failed": true,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "warn",
+                "cam0: no camera enumerated on csi0 (expected imx290) — stream held down until one appears (check the ribbon + overlays, reboot after install)"
+              ],
+              [
+                "warn",
+                "cam1: no camera enumerated on csi1 (expected imx290) — stream held down until one appears (check the ribbon + overlays, reboot after install)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "no-camera"
+              ],
+              [
+                "cam1",
+                "no-camera"
+              ]
+            ],
+            "changedStreams": [],
+            "cameras": [],
+            "files": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "an error without a recognizable listing cannot enumerate: dir not created",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm5",
+          "encoder": "sw-h264",
+          "rails": true,
+          "statusLed": {
+            "r": 12,
+            "g": 21,
+            "b": 16
+          },
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate-rs/shm",
+        "dir": "never/pipelines"
+      },
+      "passes": [
+        {
+          "pre": null,
+          "listing": {
+            "stdout": "",
+            "stderr": "ERROR: libcamera pipeline handler failed\n",
+            "exitCode": 1,
+            "failed": true,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "warn",
+                "camera enumeration unavailable (rpicam-hello missing or libcamera broken) — leaving pipelines untouched"
+              ]
+            ],
+            "statuses": [],
+            "changedStreams": [],
+            "cameras": null,
+            "files": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "custom .gst.direct left alone; stale .camera ground-truthed; trim-equal .gst not rewritten",
+      "input": {
+        "block": {
+          "v": 2,
+          "platform": "rpi-cm5",
+          "encoder": "sw-h264",
+          "rails": true,
+          "statusLed": {
+            "r": 12,
+            "g": 21,
+            "b": 16
+          },
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264"
+            },
+            {
+              "key": "cam1",
+              "connector": "csi1",
+              "sensor": "imx290",
+              "codec": "h264"
+            }
+          ]
+        },
+        "sockRoot": "/var/lib/xorgate-rs/shm",
+        "dir": "pipelines"
+      },
+      "passes": [
+        {
+          "pre": {
+            "cam0.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video  \n\n",
+            "cam0.camera": "/old/path/imx290@1a\n",
+            "cam0.gst.direct": "libcamerasrc ! my direct ! appsink\n",
+            "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+          },
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [
+              [
+                "info",
+                "cam0: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)"
+              ],
+              [
+                "info",
+                "cam1: pipelines rendered (sw-h264, /base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)"
+              ]
+            ],
+            "statuses": [
+              [
+                "cam0",
+                "rendered"
+              ],
+              [
+                "cam1",
+                "rendered"
+              ]
+            ],
+            "changedStreams": [
+              "cam1"
+            ],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video  \n\n",
+              "cam0.gst.direct": "libcamerasrc ! my direct ! appsink\n",
+              "cam1.camera": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a\n",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+            }
+          }
+        },
+        {
+          "pre": {
+            "cam1.camera": "  /base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a  "
+          },
+          "listing": {
+            "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n",
+            "stderr": "",
+            "exitCode": 0,
+            "failed": false,
+            "notFound": false
+          },
+          "expected": {
+            "logs": [],
+            "statuses": [
+              [
+                "cam0",
+                "ok"
+              ],
+              [
+                "cam1",
+                "ok"
+              ]
+            ],
+            "changedStreams": [],
+            "cameras": [
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi0"
+              },
+              {
+                "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+                "sensor": "imx290",
+                "connector": "csi1"
+              }
+            ],
+            "files": {
+              "cam0.camera": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a\n",
+              "cam0.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam0.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video  \n\n",
+              "cam0.gst.direct": "libcamerasrc ! my direct ! appsink\n",
+              "cam1.camera": "  /base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a  ",
+              "cam1.gst": "shmsrc socket-path=/var/lib/xorgate-rs/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+              "cam1.gst.direct": "libcamerasrc name=cam1 camera-name=/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

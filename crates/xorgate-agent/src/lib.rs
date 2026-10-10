@@ -13,6 +13,7 @@ pub mod config_plane;
 pub mod ctx;
 pub mod env;
 pub mod logging;
+pub mod media;
 pub mod mqtt_plane;
 pub mod pidfile;
 pub mod scope;
