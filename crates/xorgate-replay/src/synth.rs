@@ -171,8 +171,13 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         // watchdog reopens every 30 s and each reopen leaks a blocked libuv
         // read; after 3 Node's 4-thread pool is exhausted and the JS agent
         // wedges (wp7-rerun.md series 4/5) — a TS defect, not this scenario's
-        // subject.
-        &["config-envelope", "conn-drop", "clock", "nmea"],
+        // subject. `lte` (the calibration track): without the daemon's LTE
+        // file `gnssAntBias` (modem-poll) stays `adjusted`, so each agent
+        // re-reports on its OWN 40 s settle chain (config-sync.ts:1639-1650,
+        // sync.rs:592) anchored on its post-cut report — 7 s apart after the
+        // Rust backoff — and a chain tick merging with a tape delivery on
+        // one agent only splits the report count (series 5, 175133Z).
+        &["config-envelope", "conn-drop", "clock", "nmea", "lte"],
         "hardware/uploadBucket envelope (rev 3 retained across a cut), malformed, stale rev",
     ),
     (
