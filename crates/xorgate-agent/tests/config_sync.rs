@@ -831,11 +831,13 @@ fn every_fixture_scenario_has_a_test() {
     }
 }
 
-// --- WP1 ambiguity #8: a QoS 1 report into a dead link stays pending ----------------
+// --- a transport that refuses with NotConnected: the report stays pending ----------
 
-/// The Rust client does not queue offline (`PublishFailure::NotConnected`):
-/// the local change must stay pending — even when `online()` already reads
-/// true — and the next connect's `boot` request (upgraded to `local`) re-sends it.
+/// The real client queues offline publishes (`Ok`, WP1 follow-up), so
+/// `NotConnected` comes only from a test transport now; the defensive arm
+/// still treats it as not delivered: the local change stays pending — even
+/// when `online()` already reads true — and the next connect's `boot`
+/// request (upgraded to `local`) re-sends it.
 #[tokio::test(start_paused = true)]
 async fn not_connected_keeps_the_local_change_pending() {
     let (h, cap) = (Home::new("nc"), Arc::new(Cap::default()));
