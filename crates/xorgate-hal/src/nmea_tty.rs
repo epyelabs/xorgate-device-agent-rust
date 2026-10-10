@@ -342,7 +342,7 @@ mod tests {
             "silent while the first open is stuck"
         );
         // A writer unblocks the stuck open; that thread sees stop() and closes.
-        let mut w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+        let w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
         match tokio::time::timeout(Duration::from_secs(5), rx1.recv()).await {
             Ok(Some(TtyEvent::Close)) => {}
             other => panic!("expected the stuck reader's close, got {other:?}"),
