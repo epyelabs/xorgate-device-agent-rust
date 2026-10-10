@@ -414,7 +414,12 @@ impl InputFacts {
     pub fn coverage(&self, play: &PlayInfo, startup: i64, window: i64) -> BTreeMap<String, f64> {
         let (lo, hi) = (play.start_wall + startup, play.end_wall);
         let mut out = BTreeMap::new();
-        for g in ["gps", "imu", "lte", "system"] {
+        // gps/imu/lte always listed; the system group per field (R6).
+        let keys: BTreeSet<&str> = ["gps", "imu", "lte"]
+            .into_iter()
+            .chain(self.groups.keys().map(String::as_str))
+            .collect();
+        for g in keys {
             let mut iv: Vec<(i64, i64)> = self
                 .groups
                 .get(g)
@@ -436,6 +441,18 @@ impl InputFacts {
             out.insert(g.to_string(), covered as f64 * 100.0 / span as f64);
         }
         out
+    }
+}
+
+/// The metrics.system field a tape `exec` feeds (TS `system.ts` /
+/// `xorgate-core/src/system.rs`): `vcgencmd get_throttled` → `throttled`,
+/// `vcgencmd pmic_read_adc` → `rail_5v`; any other command feeds no known
+/// field (its transitions then cover nothing).
+fn exec_field(argv: &[String]) -> String {
+    match argv.get(1).map(String::as_str) {
+        Some("get_throttled") => "throttled".into(),
+        Some("pmic_read_adc") => "rail_5v".into(),
+        _ => format!("(exec {})", argv.join(" ")),
     }
 }
 
@@ -485,7 +502,9 @@ fn group_transitions(rel: &[(&TapeRecord, i64)]) -> BTreeMap<String, Vec<i64>> {
             TapeEvent::ImuSpawn { .. } | TapeEvent::ImuExit { .. } => push("imu", now),
             TapeEvent::I2cdetect { .. } => push("imu", now),
             TapeEvent::LteFile { .. } => push("lte", now),
-            TapeEvent::Exec { .. } | TapeEvent::Dt { .. } => push("system", now),
+            // R6: per FIELD — each input feeds one metrics.system field.
+            TapeEvent::Exec { argv, .. } => push(&format!("system.{}", exec_field(argv)), now),
+            TapeEvent::Dt { .. } => push("system.psu_max_current", now),
             _ => {}
         }
     }
@@ -859,13 +878,22 @@ impl Cx<'_> {
         }
         // Only the transitions of the group the path belongs to
         // (`metrics.<group>[.…]`); any other path has only the startup window.
-        let group = path.strip_prefix("metrics.")?.split('.').next()?;
+        // The system group is per FIELD (re-review R6): `metrics.system.<f>`
+        // only near the input that feeds `<f>` (exec → throttled / rail_5v,
+        // dt → psu_max_current); host-read fields (cpu/ram/disk/cpu_temp) and
+        // the whole group have only the startup window.
+        let mut segs = path.strip_prefix("metrics.")?.split('.');
+        let group = segs.next()?;
+        let key = match group {
+            "system" => format!("system.{}", segs.next()?),
+            g => g.to_string(),
+        };
         self.facts
             .groups
-            .get(group)?
+            .get(&key)?
             .iter()
             .any(|t| (w - t).abs() <= window)
-            .then(|| format!("{}/{group}", r.id))
+            .then(|| format!("{}/{key}", r.id))
     }
 
     /// T8 `rig-cut-ungated`, narrowed: inside a closed span (after the
@@ -4635,11 +4663,12 @@ mod tests {
             rec(
                 60_000,
                 TapeEvent::Exec {
-                    argv: vec!["vcgencmd".into()],
+                    argv: vec!["vcgencmd".into(), "get_throttled".into()],
                     stdout: "x".into(),
                     code: Some(0),
                 },
             ),
+            rec(65_000, TapeEvent::dt(Some(&[0, 0, 0x0b, 0xb8]))),
             rec(
                 61_000,
                 TapeEvent::MqttIn {
@@ -4672,7 +4701,10 @@ mod tests {
             vec![150_120],
             "actual release, prefill skipped"
         );
-        assert_eq!(f.groups["system"], vec![160_000]);
+        // R6: per field — get_throttled → throttled, dt → psu_max_current.
+        assert_eq!(f.groups["system.throttled"], vec![160_000]);
+        assert_eq!(f.groups["system.psu_max_current"], vec![165_000]);
+        assert!(!f.groups.contains_key("system"));
         assert_eq!(f.groups["imu"], vec![163_000]);
         // first line, quality q0, q1, stop 112000, stale 122000, resume 132000, end stale 142000
         assert_eq!(
@@ -4723,6 +4755,26 @@ mod tests {
         assert_eq!(tol(&g).as_deref(), Some(UNTOLERATED));
         g.groups.insert("lte".into(), vec![149_000]);
         assert_eq!(tol(&g).as_deref(), Some("T4/lte"));
+        // R6: a system field's presence only near the input feeding THAT
+        // field; host-read fields (cpu_temp) never.
+        let sys = |field: &str| {
+            let mut x = tel(150_000, 1, true);
+            x["metrics"]["system"] = serde_json::json!({"cpu_usage":{"value":1}});
+            let mut y = x.clone();
+            y["metrics"]["system"][field] = serde_json::json!({"value":1});
+            let a = cap("js", vec![msg(150_000, "telemetry", x)]);
+            let b = cap("rust", vec![msg(150_010, "telemetry", y)]);
+            let mut f = InputFacts::default();
+            f.groups.insert("system.throttled".into(), vec![149_500]);
+            diff_with(&a, &b, &play2, &f, &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.path == format!("metrics.system.{field}"))
+                .map(|m| m.tol)
+        };
+        assert_eq!(sys("throttled").as_deref(), Some("T4/system.throttled"));
+        assert_eq!(sys("rail_5v").as_deref(), Some(UNTOLERATED));
+        assert_eq!(sys("cpu_temp").as_deref(), Some(UNTOLERATED));
         // The summary carries the coverage per group.
         let rep = diff_with(&a, &b, &play2, &g, &[], &t);
         assert!(

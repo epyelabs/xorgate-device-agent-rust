@@ -76,9 +76,13 @@ window_ms = 1500
 #   gps    ← NMEA first line, stop (gap > 2 s), stale (+10 s), resume, GGA quality change, end (+10 s)
 #   imu    ← imu_spawn / imu_exit, IMU line stream start/stop (gap > 2 s), i2cdetect
 #   lte    ← lte_file changes
-#   system ← exec / dt changes
+#   system ← per FIELD (re-review R6): metrics.system.throttled ← `vcgencmd
+#            get_throttled`, .rail_5v ← `vcgencmd pmic_read_adc`,
+#            .psu_max_current ← dt; the host-read fields (cpu/ram/disk/cpu_temp)
+#            and the whole system group: only the first 5 s
 # Never mqtt_in / cli / conn. Any other path: only the first 5 s. diff.md prints
-# each group's window coverage (% of the run).
+# each group's (system: each field's) window coverage (% of the run).
+# All instants are the player's ACTUAL releases (releases.ndjson, re-review R1).
 
 [[rule]]
 id = "T5"
