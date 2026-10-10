@@ -98,11 +98,38 @@ paths = [
   "**.clockStepperArmed",
   "effective.cameraMount", "effective.cameraMount.**",
 ]
-# state.json `recentEvents` msg prefixes owned by Phase 3/4.
-# `[clock]` = the offline clock stepper (clock-step.ts:232 etc., wired at
-# worker.ts:536-554), re-deferred to Phase 4 by CF20; its report hint
-# `clockStepperArmed` is already a T6 path above. FLAG: reviewer to confirm.
-event_prefixes = ["hardware:", "camera mount", "camera-mount", "led", "LED", "recording", "media", "[media", "upload", "[clock]"]
+# state.json `recentEvents` msg prefixes owned by Phase 3/4 — EXACT texts of
+# the TS emitters (review-wp7 finding 2: the old bare `upload` hid the Phase 2
+# `uploadBucket backfilled:` / `uploadBucket persist failed:`, worker.ts:800/806).
+# ONE-DIRECTIONAL: tolerated only when the JS side has the event and the Rust
+# side has none of it (Rust emitting one of these before Phase 3/4 is a bug).
+#   hardware: …            worker.ts:140 (hardware reconciler log)
+#   camera mount: …        worker.ts:181 (boot-config reconciler, cam-sensor-level-rotate)
+#   [clock] …              clock-step.ts:232-307 (offline clock stepper, CF20 → Phase 4)
+#   recording manager      recording/manager.ts:300/306/473/558/607/696/774/782,
+#                          boot-policy.ts:800/830/906 (power shed), video-capture.ts (video capture …)
+#   uploader               recording/uploader.ts:148/202/204
+# The LED renderer and the media supervisor journal no events.
+event_prefixes = [
+  "hardware: ",
+  "camera mount: ",
+  "[clock] ",
+  "recording: ",
+  "camera(s) disabled by settings: ",
+  "recording.video.enabled is on but no bridged camera is available ",
+  "power shed → ",
+  "power shed restore → ",
+  "power shedding disarmed — restoring full operation",
+  "power shedding disabled by settings — restoring full operation",
+  "telemetry recording started (",
+  "telemetry recording stopped (",
+  "video capture ",
+  "video boot-defer ",
+  "video gps gate armed (",
+  "upload: skipping unrecognized segment ",
+  "upload paused (offline)",
+  "upload failed, retrying in ",
+]
 # Report details produced ONLY by those hints: latchDetail (config-sync.ts:1007-1024)
 # returns "in force, but …" from bootDefer/powerShed (recording) and
 # `clockStepperArmed === false` (timeSync: "in force, but the clock stepper stood

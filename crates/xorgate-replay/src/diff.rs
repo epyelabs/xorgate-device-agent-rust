@@ -64,7 +64,7 @@ pub struct PlayInfo {
     #[serde(default)]
     pub calibration: bool,
     /// Wall ms where NMEA resumed after a silence ≥ REOPEN_SILENT_MS (both
-    /// agents have reopened their port by then; T8 `nmea-reopen-lag`).
+    /// agents have reopened their port by then; T7/D23).
     #[serde(default)]
     pub nmea_resumes: Vec<i64>,
     /// Host reference samples `(wall ms, series → value)` from the player's
@@ -1549,6 +1549,12 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
     let t6 = table.of_kind("phase_owned", "events").next();
     let cadence = table.decision_row("reconnect-cadence");
     let had_cut = !play.closed_spans.is_empty();
+    // `(count A, count B)` → the JS side has it and the Rust side does not.
+    let js_only = |x: usize, y: usize| match (a.meta.kind.as_str(), b.meta.kind.as_str()) {
+        ("js", "rust") => x > 0 && y == 0,
+        ("rust", "js") => y > 0 && x == 0,
+        _ => false,
+    };
     rep.stats.entry("events".into()).or_default().compared = keys.len();
     for k in keys {
         let (x, hx) = ca.get(k).cloned().unwrap_or((0, None));
@@ -1581,9 +1587,10 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
         });
         let tol = if let Some((rid, _)) = rust_only {
             format!("{rid}/rust-only-events")
-        } else if let Some(r) =
-            t6.filter(|r| r.event_prefixes.iter().any(|p| msg.starts_with(p.as_str())))
-        {
+        } else if let Some(r) = t6.filter(|r| {
+            // Phase 3/4 texts: JS has it, Rust has none of it (one-directional).
+            js_only(x, y) && r.event_prefixes.iter().any(|p| msg.starts_with(p.as_str()))
+        }) {
             r.id.clone()
         } else if let Some((rid, row)) = cadence.as_ref().filter(|(_, row)| {
             had_cut
@@ -2587,6 +2594,75 @@ mod tests {
         assert!(
             tols.contains(&("warn: something new", UNTOLERATED)),
             "{tols:?}"
+        );
+    }
+
+    #[test]
+    fn t6_events_exact_phase_prefixes_js_only() {
+        let t = table();
+        let ev = |l: &str, m: &str| (1, l.to_string(), m.to_string());
+        let tol_of = |a: &Capture, b: &Capture, key: &str| {
+            diff(a, b, &PlayInfo::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.stream == "events" && m.path == key)
+                .map(|m| m.tol)
+        };
+        let mut js = cap("js", vec![]);
+        let rust = cap("rust", vec![]);
+        // Phase 2 uploadBucket events are NOT phase-owned (worker.ts:800/806).
+        js.events = vec![
+            ev("info", "uploadBucket backfilled: my-bucket"),
+            ev("warn", "uploadBucket persist failed: EACCES"),
+            ev("info", "upload paused (offline)"),
+            ev(
+                "info",
+                "[clock] NTP synchronized — offline clock stepping stood down for this boot",
+            ),
+            ev("info", "hardware: cam0 ok"),
+            ev("info", "hardware block updated: cm5/v4l2"),
+        ];
+        for (k, want) in [
+            ("info: uploadBucket backfilled: my-bucket", UNTOLERATED),
+            ("warn: uploadBucket persist failed: EACCES", UNTOLERATED),
+            ("info: upload paused (offline)", "T6"),
+            (
+                "info: [clock] NTP synchronized — offline clock stepping stood down for this boot",
+                "T6",
+            ),
+            ("info: hardware: cam0 ok", "T6"),
+            ("info: hardware block updated: cm5/v4l2", UNTOLERATED),
+        ] {
+            assert_eq!(tol_of(&js, &rust, k).as_deref(), Some(want), "{k}");
+        }
+        // Rust emitting a Phase 3/4 event is a bug: never tolerated.
+        let mut r2 = cap("rust", vec![]);
+        r2.events = vec![ev("info", "[clock] tick failed: x")];
+        assert_eq!(
+            tol_of(&cap("js", vec![]), &r2, "info: [clock] tick failed: x").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // Both have it, counts differ: not "absent on Rust" → UNTOLERATED.
+        let mut j3 = cap("js", vec![]);
+        j3.events = vec![
+            ev("info", "hardware: a"),
+            (2, "info".into(), "hardware: a".into()),
+        ];
+        let mut r3 = cap("rust", vec![]);
+        r3.events = vec![ev("info", "hardware: a")];
+        assert_eq!(
+            tol_of(&j3, &r3, "info: hardware: a").as_deref(),
+            Some(UNTOLERATED)
+        );
+        // B = js, A = rust: the direction follows the kinds, not the labels.
+        assert_eq!(
+            tol_of(&rust, &js, "info: hardware: cam0 ok").as_deref(),
+            Some("T6")
+        );
+        // JS vs JS: never tolerated by T6.
+        assert_eq!(
+            tol_of(&js, &cap("js", vec![]), "info: hardware: cam0 ok").as_deref(),
+            Some(UNTOLERATED)
         );
     }
 
