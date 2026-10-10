@@ -467,10 +467,9 @@ pub fn main(_args: &[String]) -> i32 {
         home,
         build: crate::build_info::load().format(),
     };
-    // EPIPE (`status | head -1`): exit 1, not a `println!` panic (review-wp6 #12).
-    if super::logs::write_lines(render(&st, now, &ctx)).is_err() {
-        return 1;
-    }
+    // EPIPE (`status | head -1`): `console.log` swallows it and the exit code
+    // stays the state's (`status.ts:32` sets it first) — integration review #1.
+    let _ = super::logs::write_lines(render(&st, now, &ctx));
     if matches!(st, DaemonStatus::Running { .. }) {
         0
     } else {

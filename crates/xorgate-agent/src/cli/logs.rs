@@ -107,11 +107,11 @@ pub fn main(args: &[String]) -> i32 {
         return exec_journal(n, follow);
     }
 
-    // A closed stdout (`logs | head -1`) ends the run with exit 1, as Node's
-    // unhandled EPIPE does, instead of a `println!` panic (review-wp6 #12).
-    if write_lines(read_log_tail(n, &path)).is_err() {
-        return 1;
-    }
+    // A closed stdout (`logs | head -1`): Node's `console.log` swallows the
+    // EPIPE (`kWriteToConsole`), so the tail stops writing and the run ends
+    // with its normal code (integration review #1). `-f` then dies on its
+    // first `process.stdout.write` (exit 1), which `follow_file` mirrors.
+    let _ = write_lines(read_log_tail(n, &path));
     if !follow {
         return 0;
     }
@@ -119,7 +119,8 @@ pub fn main(args: &[String]) -> i32 {
 }
 
 /// One `console.log` per line on a locked stdout; the first write or flush
-/// error (EPIPE) is returned instead of panicking like `println!`.
+/// error (EPIPE) stops the writing and is returned instead of panicking like
+/// `println!`. Callers mirroring `console.log` ignore it, as Node does.
 pub(crate) fn write_lines(lines: impl IntoIterator<Item = String>) -> std::io::Result<()> {
     let mut out = std::io::stdout().lock();
     for line in lines {
