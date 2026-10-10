@@ -1325,52 +1325,101 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let mut released = 0usize;
     let cutoff = args.max_s.map(|s| s * 1000).unwrap_or(u64::MAX);
 
-    for (i, r) in tape.records.iter().enumerate() {
-        if prefilled[i] {
-            continue;
-        }
-        if r.t > cutoff {
-            break;
-        }
-        let due = t0 + Duration::from_millis((r.t as f64 / args.speed) as u64);
-        tokio::time::sleep_until(due).await;
-        if !args.no_gate {
-            let cut_active = closed_since.is_some();
-            let gated = watch::gated(&r.ev);
-            let due_w = wall_now_ms();
-            let mut timeout = false;
-            loop {
-                let now = wall_now_ms();
-                let open = caps
-                    .gate
-                    .lock()
-                    .map(|mut g| g.is_open(now, cut_active))
-                    .unwrap_or(true);
-                // Also off both agents' periodic-watch ticks of this input.
-                let held = open
-                    && gated.is_some_and(|(input, look)| {
-                        caps.watch
-                            .lock()
-                            .map(|mut w| w.holds(input, now, look))
-                            .unwrap_or(false)
-                    });
-                if held && now - due_w > watch::MAX_HOLD_MS {
-                    timeout = true;
-                    plog(format!(
-                        "watch gate: hold timeout at t={} ({:?})",
-                        r.t, gated
-                    ));
-                    break;
-                }
-                if open && !held {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+    // Release order = tape order, except that a record the WATCH gate holds
+    // (lte_file / cli / config, `watch.rs`) waits in `pending` together with
+    // every later record that must keep its order relative to it (cli,
+    // mqtt_in, conn, lte_file), while the line-like inputs (NMEA, IMU, exec,
+    // i2cdetect, dt, imu spawn/exit) keep their own timing: holding those too
+    // bunched NMEA bursts behind a ~1-2 s watch hold (calibration 140727Z: a
+    // burst released after Rust's read and before JS's while Rust was still
+    // reconnecting). Every release still passes the telemetry hold gate.
+    let barrier = |ev: &TapeEvent| {
+        matches!(
+            ev,
+            TapeEvent::LteFile { .. }
+                | TapeEvent::Cli { .. }
+                | TapeEvent::MqttIn { .. }
+                | TapeEvent::Conn { .. }
+        )
+    };
+    let watch_holds = |ev: &TapeEvent, now: i64| {
+        watch::gated(ev).is_some_and(|(input, look)| {
+            caps.watch
+                .lock()
+                .map(|mut w| w.holds(input, now, look))
+                .unwrap_or(false)
+        })
+    };
+    let mut pending: std::collections::VecDeque<(usize, i64)> = Default::default();
+    let mut next = 0usize;
+    let n_rec = tape.records.len();
+    loop {
+        // (record index, wall ms it fell due, released by a hold timeout)
+        let picked: Option<(usize, i64, bool)> = loop {
+            while next < n_rec && prefilled[next] {
+                next += 1;
             }
-            if let Some((input, _)) = gated {
-                if let Ok(mut w) = caps.watch.lock() {
-                    w.note_release(input, due_w, wall_now_ms(), timeout);
+            if next < n_rec && tape.records[next].t > cutoff {
+                next = n_rec;
+            }
+            if next >= n_rec && pending.is_empty() {
+                break None;
+            }
+            let now = wall_now_ms();
+            let cut_active = closed_since.is_some();
+            let tel_open = |now: i64| {
+                args.no_gate
+                    || caps
+                        .gate
+                        .lock()
+                        .map(|mut g| g.is_open(now, cut_active))
+                        .unwrap_or(true)
+            };
+            if let Some(&(pi, due_w)) = pending.front() {
+                let ev = &tape.records[pi].ev;
+                let held = watch_holds(ev, now);
+                let timeout = held && now - due_w > watch::MAX_HOLD_MS;
+                if (!held || timeout) && tel_open(now) {
+                    pending.pop_front();
+                    break Some((pi, due_w, timeout));
                 }
+            }
+            let mut wait = Duration::from_millis(5);
+            if next < n_rec {
+                let r = &tape.records[next];
+                let due = t0 + Duration::from_millis((r.t as f64 / args.speed) as u64);
+                let left = due.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    if !args.no_gate
+                        && barrier(&r.ev)
+                        && (!pending.is_empty() || watch_holds(&r.ev, now))
+                    {
+                        pending.push_back((next, now));
+                        next += 1;
+                        continue;
+                    }
+                    if tel_open(now) {
+                        next += 1;
+                        break Some((next - 1, now, false));
+                    }
+                } else if pending.is_empty() {
+                    wait = left;
+                } else {
+                    wait = wait.min(left);
+                }
+            }
+            tokio::time::sleep(wait).await;
+        };
+        let Some((i, due_w, timeout)) = picked else {
+            break;
+        };
+        let r = &tape.records[i];
+        if timeout {
+            plog(format!("watch gate: hold timeout at t={}", r.t));
+        }
+        if let Some((input, _)) = watch::gated(&r.ev) {
+            if let Ok(mut w) = caps.watch.lock() {
+                w.note_release(input, due_w, wall_now_ms(), timeout);
             }
         }
         let now = wall_now_ms();
