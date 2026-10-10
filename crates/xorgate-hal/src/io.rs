@@ -18,6 +18,9 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+/// Phase 3 record types (P16); serde + writer live in [`crate::tape`].
+pub use crate::tape::{ChildExitRec, ChildSpawnRec, FsOp, S3PutRec, ROLE_CAPTURE, ROLE_KVS};
+
 /// The record/replay sink. Default methods are no-ops so a sink implements
 /// only what it records; [`NullTape`] implements nothing.
 ///
@@ -36,6 +39,13 @@ use serde_json::{Map, Value};
 /// | [`cli`](Self::cli) | `cli` | WP6 `xorgate-rs set …` |
 /// | [`clock`](Self::clock) | `clock` | WP1 spine, every 10 s while a tape is open |
 /// | [`proc_read`](Self::proc_read) | `proc` | optional, Rust-only replay of `/proc`/`/sys` |
+/// | [`child_spawn`](Self::child_spawn) | `child_spawn` | Phase 3 WP4 capture / WP5 KVS supervisor, right after spawn |
+/// | [`child_line`](Self::child_line) | `child_line` | WP4 / WP5 drain, EVERY line (the writer filters capture lines, counts KVS lines per 10 s) |
+/// | [`child_signal`](Self::child_signal) | `child_signal` | WP4 / WP5, every agent-sent signal |
+/// | [`child_exit`](Self::child_exit) | `child_exit` | WP4 / WP5 waiter (`external` = not agent-sent) |
+/// | [`fs_out`](Self::fs_out) | `fs_out` | WP2 recorder/disk, WP4 sweep, WP3 uploader (`rel` under the home) |
+/// | [`s3_put`](Self::s3_put) | `s3_put` | WP3 uploader, when a PUT settles |
+/// | [`shm`](Self::shm) | `shm` | WP4, every 60 s + at each capture child exit |
 pub trait TapeSink: Send + Sync + 'static {
     /// True when a tape is being written (lets a caller skip building an
     /// expensive argument; never needed for correctness).
@@ -68,6 +78,22 @@ pub trait TapeSink: Send + Sync + 'static {
     fn clock(&self, _wall_ms: i64, _mono_ms: u64) {}
     /// Optional Rust-only replay of a `/proc` / `/sys` read.
     fn proc_read(&self, _path: &str, _text: &str) {}
+    /// A capture (`role:"capture"`) or KVS (`role:"kvs"`) child was spawned:
+    /// key, argv, env (the writer keeps the contract keys only), pid, nice.
+    fn child_spawn(&self, _r: &ChildSpawnRec) {}
+    /// One drained child line (`fd` 1 = stdout, 2 = stderr). Report every
+    /// line; the writer applies the phase-file filter.
+    fn child_line(&self, _role: &str, _key: &str, _fd: u8, _line: &str) {}
+    /// The agent sent signal `sig` to the child `pid`.
+    fn child_signal(&self, _role: &str, _key: &str, _pid: u32, _sig: i32) {}
+    /// A child exited: code, signal, `external` (not agent-sent).
+    fn child_exit(&self, _r: &ChildExitRec) {}
+    /// An output file operation; `rel` is relative to the agent home.
+    fn fs_out(&self, _rel: &str, _op: FsOp, _size: u64) {}
+    /// One settled S3 PUT: key, content type, size, sha256, status | error.
+    fn s3_put(&self, _r: &S3PutRec) {}
+    /// The `/dev/shm/shmpipe.*` names present now.
+    fn shm(&self, _names: &[String]) {}
     /// Flush and close (graceful shutdown). Idempotent.
     fn close(&self) {}
 }
@@ -194,6 +220,13 @@ mod tests {
         assert!(!t.enabled());
         t.nmea("$GPGGA");
         t.mqtt_in("a", b"b", true, 1);
+        t.child_spawn(&ChildSpawnRec::default());
+        t.child_line(ROLE_CAPTURE, "cam0", 2, "New clock: GstSystemClock");
+        t.child_signal(ROLE_KVS, "cam0", 1, 2);
+        t.child_exit(&ChildExitRec::default());
+        t.fs_out("recordings/x", FsOp::Create, 0);
+        t.s3_put(&S3PutRec::default());
+        t.shm(&[]);
         t.close();
         // /proc refuses file creation even to root.
         assert!(

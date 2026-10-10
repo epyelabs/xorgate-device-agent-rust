@@ -23,7 +23,7 @@
 //! A tape must never hurt the agent: the first write error logs one warning and
 //! disables the tape for the rest of the run. Nothing here panics on I/O.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -166,6 +166,118 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+// ------------------------------------------------- Phase 3 record types (P16)
+
+/// `role` of a capture child (`gst-launch-1.0`, WP4).
+pub const ROLE_CAPTURE: &str = "capture";
+/// `role` of a KVS master (`xorgate-kvs-webrtc`, WP5).
+pub const ROLE_KVS: &str = "kvs";
+
+/// The master's contract env keys (`ts:src/hardware/kvs-webrtc.ts:94-106`):
+/// the only env keys a `child_spawn` record keeps. Values are paths, ids and
+/// levels — no secret is part of the contract (the cert/key are passed by
+/// PATH). Anything else the caller hands over is dropped by the writer.
+pub const CHILD_ENV_KEYS: &[&str] = &[
+    "AWS_DEFAULT_REGION",
+    "AWS_IOT_CORE_CREDENTIAL_ENDPOINT",
+    "AWS_IOT_CORE_CERT",
+    "AWS_IOT_CORE_PRIVATE_KEY",
+    "AWS_IOT_CORE_ROLE_ALIAS",
+    "AWS_IOT_CORE_THING_NAME",
+    "AWS_KVS_CACERT_PATH",
+    "AWS_KVS_LOG_LEVEL",
+    "LD_LIBRARY_PATH",
+    "KVS_GST_PIPELINE",
+    "KVS_IDLE_TEARDOWN_SECS",
+];
+
+/// Capture stdout/stderr lines the tape keeps (phase file §Record/replay:
+/// "capture: only `New clock:`/`Got EOS`/`ERROR` lines"); a line is kept when
+/// it CONTAINS one of these.
+pub const CAPTURE_LINE_MARKERS: &[&str] = &["New clock:", "Got EOS", "ERROR"];
+
+/// KVS master lines are not taped one by one: the writer counts them per
+/// `(key, fd)` and writes one `child_line {count}` per window of this length.
+pub const KVS_LINE_WINDOW_MS: u64 = 10_000;
+
+/// `child_spawn`: a capture / KVS child was spawned (recorded after spawn).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ChildSpawnRec {
+    /// [`ROLE_CAPTURE`] or [`ROLE_KVS`].
+    pub role: String,
+    /// Camera / channel key (`cam0`, …).
+    pub key: String,
+    /// Full argv, program first, exactly as spawned.
+    pub argv: Vec<String>,
+    /// Env the agent set for the child, [`CHILD_ENV_KEYS`] only (the writer
+    /// filters; sorted by key). Empty for capture children.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// OS pid (`0` = the spawn failed before a process existed).
+    pub pid: u32,
+    /// The `nice` value applied (`None` = not reniced).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nice: Option<i32>,
+}
+
+/// `child_exit`: the waiter saw a capture / KVS child exit.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ChildExitRec {
+    pub role: String,
+    pub key: String,
+    pub pid: u32,
+    /// Exit code (`None` = killed by a signal / spawn error).
+    pub code: Option<i32>,
+    /// Terminating signal number, if any.
+    pub signal: Option<i32>,
+    /// True when the exit was NOT caused by an agent-sent signal (crash,
+    /// EOF, external kill): the player re-enacts these at tape time.
+    #[serde(default)]
+    pub external: bool,
+}
+
+/// `fs_out` operation (`create`/`close`/`sidecar`/`delete`/`gz`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsOp {
+    Create,
+    Close,
+    Sidecar,
+    Delete,
+    Gz,
+}
+
+impl FsOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FsOp::Create => "create",
+            FsOp::Close => "close",
+            FsOp::Sidecar => "sidecar",
+            FsOp::Delete => "delete",
+            FsOp::Gz => "gz",
+        }
+    }
+}
+
+/// `s3_put`: one uploader PUT (recorded when it settles).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct S3PutRec {
+    /// Object key (no bucket).
+    pub key: String,
+    #[serde(rename = "contentType")]
+    pub content_type: String,
+    /// Body bytes.
+    pub size: u64,
+    /// Lowercase hex sha256 of the body.
+    pub sha256: String,
+    /// HTTP status when a response arrived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// The error text the uploader logged, when the PUT failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// One input event. `k` is the kind; see the table in the module doc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "snake_case")]
@@ -232,6 +344,34 @@ pub enum TapeEvent {
     Clock { wall: i64, mono: u64 },
     /// Optional Rust-only replay of a `/proc`/`/sys` read.
     Proc { path: String, text: String },
+    /// A capture / KVS child was spawned.
+    ChildSpawn(ChildSpawnRec),
+    /// A kept capture line (`line`), or a KVS line count for one
+    /// [`KVS_LINE_WINDOW_MS`] window (`count`). `fd` 1 = stdout, 2 = stderr.
+    ChildLine {
+        role: String,
+        key: String,
+        fd: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<u64>,
+    },
+    /// The agent sent `sig` to a child.
+    ChildSignal {
+        role: String,
+        key: String,
+        pid: u32,
+        sig: i32,
+    },
+    /// A capture / KVS child exited.
+    ChildExit(ChildExitRec),
+    /// An output file operation under the agent home (`rel` is relative).
+    FsOut { rel: String, op: FsOp, size: u64 },
+    /// One uploader PUT.
+    S3Put(S3PutRec),
+    /// `/dev/shm/shmpipe.*` names present (every 60 s + at child exit).
+    Shm { names: Vec<String> },
 }
 
 impl TapeEvent {
@@ -251,6 +391,13 @@ impl TapeEvent {
             TapeEvent::Cli { .. } => "cli",
             TapeEvent::Clock { .. } => "clock",
             TapeEvent::Proc { .. } => "proc",
+            TapeEvent::ChildSpawn(_) => "child_spawn",
+            TapeEvent::ChildLine { .. } => "child_line",
+            TapeEvent::ChildSignal { .. } => "child_signal",
+            TapeEvent::ChildExit(_) => "child_exit",
+            TapeEvent::FsOut { .. } => "fs_out",
+            TapeEvent::S3Put(_) => "s3_put",
+            TapeEvent::Shm { .. } => "shm",
         }
     }
 
@@ -487,6 +634,8 @@ struct WriterState<W: Write> {
     dt_done: bool,
     last_flush_t: u64,
     records: u64,
+    /// KVS line counts per `(key, fd)`: `(window start t, count)`.
+    kvs_lines: BTreeMap<(String, u8), (u64, u64)>,
 }
 
 /// Tape writer over any `Write`. Thread-safe; every method is infallible from
@@ -510,6 +659,7 @@ impl<W: Write + Send> TapeWriter<W> {
                 dt_done: false,
                 last_flush_t: 0,
                 records: 0,
+                kvs_lines: BTreeMap::new(),
             }),
             clock,
         })
@@ -664,6 +814,8 @@ impl<W: Write + Send> TapeWriter<W> {
     /// forces a flush.
     pub fn clock_sample(&self, wall: i64, mono: u64) {
         if let Ok(mut st) = self.state.lock() {
+            let (t, _, _) = self.clock.now();
+            self.flush_kvs_lines(&mut st, None, t);
             self.write_locked(&mut st, TapeEvent::Clock { wall, mono }, true);
         }
     }
@@ -675,8 +827,123 @@ impl<W: Write + Send> TapeWriter<W> {
         });
     }
 
+    /// Report a spawned child; env is filtered to [`CHILD_ENV_KEYS`].
+    pub fn child_spawn(&self, r: &ChildSpawnRec) {
+        let mut rec = r.clone();
+        rec.env.retain(|k, _| CHILD_ENV_KEYS.contains(&k.as_str()));
+        if let Ok(mut st) = self.state.lock() {
+            self.write_locked(&mut st, TapeEvent::ChildSpawn(rec), true);
+        }
+    }
+
+    /// Report EVERY drained child line. Capture lines are kept only when they
+    /// carry a [`CAPTURE_LINE_MARKERS`] marker; KVS lines are counted per
+    /// `(key, fd)` and written as one `count` record per window; other roles
+    /// are kept verbatim.
+    pub fn child_line(&self, role: &str, key: &str, fd: u8, line: &str) {
+        let Ok(mut st) = self.state.lock() else {
+            return;
+        };
+        if role == ROLE_KVS {
+            let (t, _, _) = self.clock.now();
+            let slot = st.kvs_lines.entry((key.to_string(), fd)).or_insert((t, 0));
+            slot.1 += 1;
+            if t.saturating_sub(slot.0) >= KVS_LINE_WINDOW_MS {
+                self.flush_kvs_lines(&mut st, Some(key), t);
+            }
+            return;
+        }
+        if role == ROLE_CAPTURE && !CAPTURE_LINE_MARKERS.iter().any(|m| line.contains(m)) {
+            return;
+        }
+        let ev = TapeEvent::ChildLine {
+            role: role.to_string(),
+            key: key.to_string(),
+            fd,
+            line: Some(line.to_string()),
+            count: None,
+        };
+        self.write_locked(&mut st, ev, false);
+    }
+
+    /// Write the pending KVS line counts (all keys, or only `key`) whose
+    /// window has run `KVS_LINE_WINDOW_MS`, or every pending one when
+    /// `now == u64::MAX` (child exit / close).
+    fn flush_kvs_lines(&self, st: &mut WriterState<W>, key: Option<&str>, now: u64) {
+        let due: Vec<(String, u8)> = st
+            .kvs_lines
+            .iter()
+            .filter(|((k, _), (start, n))| {
+                *n > 0
+                    && key.is_none_or(|want| want == k)
+                    && (now == u64::MAX || now.saturating_sub(*start) >= KVS_LINE_WINDOW_MS)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in due {
+            let Some((_, n)) = st.kvs_lines.remove(&k) else {
+                continue;
+            };
+            let ev = TapeEvent::ChildLine {
+                role: ROLE_KVS.to_string(),
+                key: k.0,
+                fd: k.1,
+                line: None,
+                count: Some(n),
+            };
+            self.write_locked(st, ev, false);
+        }
+    }
+
+    /// The agent sent `sig` to a child.
+    pub fn child_signal(&self, role: &str, key: &str, pid: u32, sig: i32) {
+        if let Ok(mut st) = self.state.lock() {
+            let ev = TapeEvent::ChildSignal {
+                role: role.to_string(),
+                key: key.to_string(),
+                pid,
+                sig,
+            };
+            self.write_locked(&mut st, ev, true);
+        }
+    }
+
+    /// A child exited; its pending KVS line counts are written first.
+    pub fn child_exit(&self, r: &ChildExitRec) {
+        if let Ok(mut st) = self.state.lock() {
+            if r.role == ROLE_KVS {
+                self.flush_kvs_lines(&mut st, Some(&r.key), u64::MAX);
+            }
+            self.write_locked(&mut st, TapeEvent::ChildExit(r.clone()), true);
+        }
+    }
+
+    /// An output file operation under the agent home.
+    pub fn fs_out(&self, rel: &str, op: FsOp, size: u64) {
+        self.record(TapeEvent::FsOut {
+            rel: rel.to_string(),
+            op,
+            size,
+        });
+    }
+
+    /// One settled uploader PUT.
+    pub fn s3_put(&self, r: &S3PutRec) {
+        self.record(TapeEvent::S3Put(r.clone()));
+    }
+
+    /// The `/dev/shm/shmpipe.*` names present now.
+    pub fn shm(&self, names: &[String]) {
+        self.record(TapeEvent::Shm {
+            names: names.to_vec(),
+        });
+    }
+
     /// Stop writing and hand back the sink (flushed). `None` if it failed.
     pub fn into_inner(self) -> Option<W> {
+        if let Ok(mut st) = self.state.lock() {
+            self.flush_kvs_lines(&mut st, None, u64::MAX);
+        }
         let mut st = self.state.into_inner().ok()?;
         let mut out = st.out.take()?;
         out.flush().ok()?;
@@ -686,6 +953,7 @@ impl<W: Write + Send> TapeWriter<W> {
     /// Stop writing; later calls are no-ops. Returns the sink for finishing.
     pub fn take(&self) -> Option<W> {
         let mut st = self.state.lock().ok()?;
+        self.flush_kvs_lines(&mut st, None, u64::MAX);
         let mut out = st.out.take()?;
         let _ = out.flush();
         Some(out)
@@ -809,6 +1077,27 @@ impl crate::io::TapeSink for FileTape {
     }
     fn proc_read(&self, path: &str, text: &str) {
         self.inner.proc_read(path, text);
+    }
+    fn child_spawn(&self, r: &ChildSpawnRec) {
+        self.inner.child_spawn(r);
+    }
+    fn child_line(&self, role: &str, key: &str, fd: u8, line: &str) {
+        self.inner.child_line(role, key, fd, line);
+    }
+    fn child_signal(&self, role: &str, key: &str, pid: u32, sig: i32) {
+        self.inner.child_signal(role, key, pid, sig);
+    }
+    fn child_exit(&self, r: &ChildExitRec) {
+        self.inner.child_exit(r);
+    }
+    fn fs_out(&self, rel: &str, op: FsOp, size: u64) {
+        self.inner.fs_out(rel, op, size);
+    }
+    fn s3_put(&self, r: &S3PutRec) {
+        self.inner.s3_put(r);
+    }
+    fn shm(&self, names: &[String]) {
+        self.inner.shm(names);
     }
     fn close(&self) {
         if let Err(e) = FileTape::close(self) {
@@ -1362,6 +1651,218 @@ mod tests {
                 wall: 1_760_000_002_500,
                 mono: 3_500
             }
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn phase3_kinds_line_shape_writer_filters_and_gz_round_trip() {
+        use crate::io::TapeSink;
+        // Exact line shapes (the rig's diff and the JS-side drivers key on them).
+        let spawn = ChildSpawnRec {
+            role: ROLE_KVS.into(),
+            key: "cam0".into(),
+            argv: vec![
+                "xorgate-kvs-webrtc".into(),
+                "cam0".into(),
+                "video-only".into(),
+                "testsrc".into(),
+            ],
+            env: [
+                ("AWS_KVS_LOG_LEVEL".to_string(), "3".to_string()),
+                ("AWS_DEFAULT_REGION".to_string(), "ca-central-1".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            pid: 4242,
+            nice: None,
+        };
+        let line = |ev: TapeEvent| serde_json::to_string(&TapeRecord { t: 1, w: 2, ev }).unwrap();
+        assert_eq!(
+            line(TapeEvent::ChildSpawn(spawn.clone())),
+            r#"{"t":1,"w":2,"k":"child_spawn","role":"kvs","key":"cam0","argv":["xorgate-kvs-webrtc","cam0","video-only","testsrc"],"env":{"AWS_DEFAULT_REGION":"ca-central-1","AWS_KVS_LOG_LEVEL":"3"},"pid":4242}"#
+        );
+        assert_eq!(
+            line(TapeEvent::ChildExit(ChildExitRec {
+                role: ROLE_CAPTURE.into(),
+                key: "cam1".into(),
+                pid: 7,
+                code: None,
+                signal: Some(9),
+                external: true,
+            })),
+            r#"{"t":1,"w":2,"k":"child_exit","role":"capture","key":"cam1","pid":7,"code":null,"signal":9,"external":true}"#
+        );
+        assert_eq!(
+            line(TapeEvent::FsOut {
+                rel: "recordings/video/cam0/s/00000.json".into(),
+                op: FsOp::Sidecar,
+                size: 312,
+            }),
+            r#"{"t":1,"w":2,"k":"fs_out","rel":"recordings/video/cam0/s/00000.json","op":"sidecar","size":312}"#
+        );
+        assert_eq!(
+            line(TapeEvent::S3Put(S3PutRec {
+                key: "media-sessions/v1/d/cam0/s/00000.json".into(),
+                content_type: "application/json".into(),
+                size: 312,
+                sha256: "ab".into(),
+                status: Some(200),
+                error: None,
+            })),
+            r#"{"t":1,"w":2,"k":"s3_put","key":"media-sessions/v1/d/cam0/s/00000.json","contentType":"application/json","size":312,"sha256":"ab","status":200}"#
+        );
+
+        // Every new kind round-trips through serde.
+        let evs = vec![
+            TapeEvent::ChildSpawn(spawn.clone()),
+            TapeEvent::ChildSpawn(ChildSpawnRec {
+                role: ROLE_CAPTURE.into(),
+                key: "cam0".into(),
+                argv: vec!["gst-launch-1.0".into(), "-e".into()],
+                env: BTreeMap::new(),
+                pid: 9,
+                nice: Some(10),
+            }),
+            TapeEvent::ChildLine {
+                role: ROLE_CAPTURE.into(),
+                key: "cam0".into(),
+                fd: 1,
+                line: Some("New clock: GstSystemClock".into()),
+                count: None,
+            },
+            TapeEvent::ChildLine {
+                role: ROLE_KVS.into(),
+                key: "cam0".into(),
+                fd: 2,
+                line: None,
+                count: Some(3),
+            },
+            TapeEvent::ChildSignal {
+                role: ROLE_CAPTURE.into(),
+                key: "cam0".into(),
+                pid: 9,
+                sig: 2,
+            },
+            TapeEvent::ChildExit(ChildExitRec {
+                role: ROLE_KVS.into(),
+                key: "cam0".into(),
+                pid: 4242,
+                code: Some(0),
+                signal: None,
+                external: false,
+            }),
+            TapeEvent::FsOut {
+                rel: "recordings/telemetry/s/x.jsonl.gz".into(),
+                op: FsOp::Gz,
+                size: 10,
+            },
+            TapeEvent::S3Put(S3PutRec {
+                key: "k".into(),
+                content_type: "video/mp4".into(),
+                size: 1,
+                sha256: "00".into(),
+                status: None,
+                error: Some("fetch failed".into()),
+            }),
+            TapeEvent::Shm {
+                names: vec!["shmpipe.123.0".into()],
+            },
+        ];
+        for ev in evs {
+            let rec = TapeRecord { t: 3, w: 4, ev };
+            let s = serde_json::to_string(&rec).unwrap();
+            let back: TapeRecord = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, rec, "{s}");
+            assert!(s.contains(&format!("\"k\":\"{}\"", rec.ev.kind())), "{s}");
+        }
+        for op in [
+            FsOp::Create,
+            FsOp::Close,
+            FsOp::Sidecar,
+            FsOp::Delete,
+            FsOp::Gz,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&op).unwrap(),
+                format!("\"{}\"", op.as_str())
+            );
+        }
+
+        // Through the sink on a gz file: env filtered, capture lines filtered,
+        // KVS lines counted per window, reader returns the records.
+        let dir = std::env::temp_dir().join(format!("xorgate-tape-p3-{}", std::process::id()));
+        let path = dir.join("t.ndjson.gz");
+        let (clock, t) = manual(1_760_000_000_000);
+        let meta = TapeMeta::new("dev", "test", 1_760_000_000_000);
+        {
+            let tape = FileTape::create_with_clock(&path, &meta, clock).unwrap();
+            let sink: &dyn TapeSink = &tape;
+            let mut noisy = spawn.clone();
+            noisy.env.insert("HOME".into(), "/root".into());
+            noisy.env.insert("AWS_SECRET_ACCESS_KEY".into(), "s".into());
+            sink.child_spawn(&noisy);
+            sink.child_line(ROLE_CAPTURE, "cam0", 1, "Setting pipeline to PLAYING ...");
+            sink.child_line(ROLE_CAPTURE, "cam0", 1, "New clock: GstSystemClock");
+            sink.child_line(ROLE_KVS, "cam0", 1, "a");
+            t.store(4_000, Ordering::SeqCst);
+            sink.child_line(ROLE_KVS, "cam0", 1, "b");
+            t.store(10_000, Ordering::SeqCst);
+            sink.child_line(ROLE_KVS, "cam0", 1, "c"); // window full → count 3
+            sink.child_line(ROLE_KVS, "cam0", 1, "d"); // pending
+            sink.child_signal(ROLE_KVS, "cam0", 4242, 2);
+            sink.child_exit(&ChildExitRec {
+                role: ROLE_KVS.into(),
+                key: "cam0".into(),
+                pid: 4242,
+                code: Some(0),
+                signal: None,
+                external: false,
+            }); // flushes count 1 first
+            sink.fs_out("recordings/video/cam0/s/00000.mp4", FsOp::Create, 0);
+            sink.s3_put(&S3PutRec {
+                key: "k".into(),
+                content_type: "video/mp4".into(),
+                size: 5,
+                sha256: "00".into(),
+                status: Some(200),
+                error: None,
+            });
+            sink.shm(&["shmpipe.4242.0".to_string()]);
+            sink.close();
+        }
+        let read = Tape::read(&path).unwrap();
+        let kinds: Vec<_> = read.records.iter().map(|r| r.ev.kind()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "child_spawn",
+                "child_line",
+                "child_line",
+                "child_signal",
+                "child_line",
+                "child_exit",
+                "fs_out",
+                "s3_put",
+                "shm"
+            ]
+        );
+        assert_eq!(read.records[0].ev, TapeEvent::ChildSpawn(spawn));
+        let counts: Vec<_> = read
+            .records
+            .iter()
+            .filter_map(|r| match &r.ev {
+                TapeEvent::ChildLine { line, count, .. } => Some((line.clone(), *count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            counts,
+            [
+                (Some("New clock: GstSystemClock".to_string()), None),
+                (None, Some(3)),
+                (None, Some(1)),
+            ]
         );
         std::fs::remove_dir_all(&dir).ok();
     }

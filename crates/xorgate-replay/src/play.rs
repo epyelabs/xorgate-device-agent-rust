@@ -1776,6 +1776,15 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 }
             }
             TapeEvent::Clock { .. } | TapeEvent::Proc { .. } => {}
+            // Phase 3 output/child kinds: compared by the diff, not replayed
+            // as inputs (the external-exit re-enactment lands with the rig).
+            TapeEvent::ChildSpawn(_)
+            | TapeEvent::ChildLine { .. }
+            | TapeEvent::ChildSignal { .. }
+            | TapeEvent::ChildExit(_)
+            | TapeEvent::FsOut { .. }
+            | TapeEvent::S3Put(_)
+            | TapeEvent::Shm { .. } => {}
         }
     }
     if let Some(s) = closed_since.take() {
