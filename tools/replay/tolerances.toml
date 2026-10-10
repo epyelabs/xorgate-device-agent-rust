@@ -70,9 +70,15 @@ streams = ["telemetry"]
 startup_ms = 5000
 # ±1 tick (1000 ms at 1 Hz) + 500 ms for the phase offset between the agents.
 window_ms = 1500
-# Transitions: lte_file change/absence, i2cdetect, imu_spawn/imu_exit, exec
-# change, conn, mqtt_in, cli, NMEA stream start/stop (gap > 2 s) and GGA
-# fix-quality changes; plus gaps > 2 s in the IMU line stream.
+# Per GROUP (review-wp7 finding 3; the old single list covered 65-94 % of the
+# run): a presence difference under `metrics.<group>` is T4/<group> only within
+# ±window of THAT group's input transitions, derived by the diff from the tape:
+#   gps    ← NMEA first line, stop (gap > 2 s), stale (+10 s), resume, GGA quality change, end (+10 s)
+#   imu    ← imu_spawn / imu_exit, IMU line stream start/stop (gap > 2 s), i2cdetect
+#   lte    ← lte_file changes
+#   system ← exec / dt changes
+# Never mqtt_in / cli / conn. Any other path: only the first 5 s. diff.md prints
+# each group's window coverage (% of the run).
 
 [[rule]]
 id = "T5"

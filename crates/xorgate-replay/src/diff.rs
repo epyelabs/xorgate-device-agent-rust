@@ -129,6 +129,13 @@ impl PlayInfo {
 
 /// `REOPEN_SILENT_MS` (`gps.ts`): NMEA silence after which an agent reopens its port.
 const REOPEN_SILENT_MS: u64 = 30_000;
+/// play.rs `PREFILL_MS`: state-like records before this are applied before
+/// the agents start (not transitions).
+const PREFILL_MS: u64 = 1_000;
+/// `NMEA_STALE_MS` (`gps.ts:15`): a gps group older than this is dropped.
+const NMEA_STALE_MS: i64 = 10_000;
+/// play.rs: an NMEA / IMU line stream with a gap above this stopped.
+const LINE_GAP_MS: u64 = 2_000;
 /// Lines released within this many tape ms of a chunk's first line are one
 /// read chunk (the recorder stamps the lines of one tty read alike).
 const CHUNK_MS: u64 = 2;
@@ -155,6 +162,11 @@ pub struct InputFacts {
     pub tape: Option<String>,
     pub tape_error: Option<String>,
     pub reopens: Vec<NmeaReopen>,
+    /// T4: wall ms of the input transitions per telemetry GROUP (gps ← NMEA
+    /// start/stop/stale/resume + GGA quality; imu ← helper spawn/exit, line
+    /// gaps, i2cdetect; lte ← LTE-file changes; system ← exec/dt changes).
+    /// Never mqtt_in / cli / conn.
+    pub groups: BTreeMap<String, Vec<i64>>,
 }
 
 /// `$GPGGA,…` → `GGA`.
@@ -243,8 +255,108 @@ impl InputFacts {
             }
             out.reopens.push(r);
         }
+        out.groups = group_transitions(records, play);
         out
     }
+
+    /// Per group, the share (%) of the comparable run time (after the T4
+    /// startup window) that lies within ±`window` of a transition.
+    pub fn coverage(&self, play: &PlayInfo, startup: i64, window: i64) -> BTreeMap<String, f64> {
+        let (lo, hi) = (play.start_wall + startup, play.end_wall);
+        let mut out = BTreeMap::new();
+        for g in ["gps", "imu", "lte", "system"] {
+            let mut iv: Vec<(i64, i64)> = self
+                .groups
+                .get(g)
+                .into_iter()
+                .flatten()
+                .map(|t| ((t - window).max(lo), (t + window).min(hi)))
+                .filter(|(a, b)| a < b)
+                .collect();
+            iv.sort();
+            let (mut covered, mut end) = (0i64, i64::MIN);
+            for (a, b) in iv {
+                let a = a.max(end);
+                if b > a {
+                    covered += b - a;
+                    end = b;
+                }
+            }
+            let span = (hi - lo).max(1);
+            out.insert(g.to_string(), covered as f64 * 100.0 / span as f64);
+        }
+        out
+    }
+}
+
+/// T4 per-group transitions from the tape (play.rs's release loop, classified).
+/// Tape `t` → wall `start_wall + t`, snapped to the player's own transition
+/// stamps (a gate hold only delays a release).
+fn group_transitions(records: &[TapeRecord], play: &PlayInfo) -> BTreeMap<String, Vec<i64>> {
+    let mut g: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    let wall = |t: u64| snap(play.start_wall + t as i64, &play.transitions, -300, 2_000);
+    let released = |t: u64| play.end_wall <= 0 || play.start_wall + t as i64 <= play.end_wall;
+    let mut push = |k: &str, w: i64| g.entry(k.to_string()).or_default().push(w);
+    // `(tape t, wall)` of the last line of each stream.
+    let mut last_nmea: Option<(u64, i64)> = None;
+    let mut last_imu: Option<(u64, i64)> = None;
+    let mut quality: Option<String> = None;
+    for r in records.iter().filter(|r| released(r.t)) {
+        match &r.ev {
+            TapeEvent::Nmea { line } => {
+                let now = wall(r.t);
+                match last_nmea {
+                    Some((lt, lw)) if r.t - lt > LINE_GAP_MS => {
+                        push("gps", lw);
+                        if r.t - lt > NMEA_STALE_MS as u64 {
+                            push("gps", lw + NMEA_STALE_MS);
+                        }
+                        push("gps", now);
+                    }
+                    None => push("gps", now),
+                    _ => {}
+                }
+                if nmea_type(line) == Some("GGA") {
+                    let q = line.split(',').nth(6).map(str::to_string);
+                    if q.is_some() && q != quality {
+                        push("gps", now);
+                        quality = q;
+                    }
+                }
+                last_nmea = Some((r.t, now));
+            }
+            TapeEvent::Imu { .. } => {
+                let now = wall(r.t);
+                match last_imu {
+                    Some((lt, lw)) if r.t - lt > LINE_GAP_MS => {
+                        push("imu", lw);
+                        push("imu", now);
+                    }
+                    None => push("imu", now),
+                    _ => {}
+                }
+                last_imu = Some((r.t, now));
+            }
+            TapeEvent::ImuSpawn { .. } | TapeEvent::ImuExit { .. } => push("imu", wall(r.t)),
+            TapeEvent::I2cdetect { .. } if r.t >= PREFILL_MS => push("imu", wall(r.t)),
+            TapeEvent::LteFile { .. } if r.t >= PREFILL_MS => push("lte", wall(r.t)),
+            TapeEvent::Exec { .. } | TapeEvent::Dt { .. } if r.t >= PREFILL_MS => {
+                push("system", wall(r.t))
+            }
+            _ => {}
+        }
+    }
+    if let Some((_, lw)) = last_nmea {
+        push("gps", lw + NMEA_STALE_MS);
+    }
+    if let Some((_, lw)) = last_imu {
+        push("imu", lw);
+    }
+    for v in g.values_mut() {
+        v.sort();
+        v.dedup();
+    }
+    g
 }
 
 /// The metrics.gps fields (`gps.ts` mapLatest) the sentences of a lost
@@ -485,6 +597,7 @@ struct Cx<'a> {
     /// Paired telemetry only: this pair holds the JS side's first tick after
     /// an NMEA reopen — the gps fields the lost chunk would have set (T7/D23).
     d23: Option<&'a BTreeSet<&'static str>>,
+    facts: &'a InputFacts,
 }
 
 impl Cx<'_> {
@@ -498,16 +611,18 @@ impl Cx<'_> {
         let r = self.table.of_kind("presence_window", &self.stream).next()?;
         let window = r.window_ms.unwrap_or(1500) as i64;
         let startup = r.startup_ms.unwrap_or(5000) as i64;
-        if w - self.first_wall <= startup
-            || self
-                .play
-                .transitions
-                .iter()
-                .any(|t| (w - t).abs() <= window)
-        {
+        if w - self.first_wall <= startup {
             return Some(r.id.clone());
         }
-        None
+        // Only the transitions of the group the path belongs to
+        // (`metrics.<group>[.…]`); any other path has only the startup window.
+        let group = path.strip_prefix("metrics.")?.split('.').next()?;
+        self.facts
+            .groups
+            .get(group)?
+            .iter()
+            .any(|t| (w - t).abs() <= window)
+            .then(|| format!("{}/{group}", r.id))
     }
 
     /// VALUES stamped around a closed span (rig: the hold gate cannot pair
@@ -1012,6 +1127,19 @@ pub fn diff_with(
         "nmea reopens (T7/D23)".into(),
         facts.reopens.len().to_string(),
     );
+    if let Some(r) = table.of_kind("presence_window", "telemetry").next() {
+        let (startup, window) = (
+            r.startup_ms.unwrap_or(5000) as i64,
+            r.window_ms.unwrap_or(1500) as i64,
+        );
+        for (g, pct) in facts.coverage(play, startup, window) {
+            let n = facts.groups.get(&g).map_or(0, Vec::len);
+            rep.inputs.insert(
+                format!("{} window coverage {g}", r.id),
+                format!("{pct:.1} % of the run ({n} transitions, ±{window} ms)"),
+            );
+        }
+    }
     let empty = BTreeMap::new();
     let first_wall = play.start_wall;
 
@@ -1089,6 +1217,7 @@ pub fn diff_with(
             first_wall,
             neighbors: [nb(prev, 0), nb(next, 0), nb(prev, 1), nb(next, 1)],
             d23: js_ts.and_then(|t| d23_at.get(&t)),
+            facts,
         };
         if x.topic != y.topic {
             rep.push(cx.mismatch(
@@ -1114,6 +1243,7 @@ pub fn diff_with(
                 first_wall,
                 neighbors: [None; 4],
                 d23: None,
+                facts,
             };
             // A QoS 0 tick racing the drop (±1 per span; WP1 follow-up amb. 3).
             let tol = cx
@@ -1149,11 +1279,11 @@ pub fn diff_with(
     }
 
     // ---- T2: seq increments per agent
-    seq_increments(&ta, "A", play, table, &mut rep);
-    seq_increments(&tb, "B", play, table, &mut rep);
+    seq_increments(&ta, "A", play, facts, table, &mut rep);
+    seq_increments(&tb, "B", play, facts, table, &mut rep);
 
     // ---- reports: quiet periods
-    diff_reports(a, b, play, table, &mut rep);
+    diff_reports(a, b, play, facts, table, &mut rep);
 
     // ---- in-order streams
     for (suffix, stream) in [
@@ -1178,6 +1308,7 @@ pub fn diff_with(
                 first_wall,
                 neighbors: [None; 4],
                 d23: None,
+                facts,
             };
             match (x, y) {
                 (Some(x), Some(y)) => cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep),
@@ -1224,6 +1355,7 @@ pub fn diff_with(
             first_wall,
             neighbors: [None; 4],
             d23: None,
+            facts,
         };
         match (&fa, &fb) {
             (None, None) => {}
@@ -1276,7 +1408,14 @@ pub fn diff_with(
 /// T2 "seq compared as deltas": within each agent, consecutive telemetry
 /// (by `ts`) must advance `seq` by exactly 1; a jump is tolerated only around
 /// a closed span (T8 `cadence`: Rust skips publishing while disconnected).
-fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep: &mut Report) {
+fn seq_increments(
+    msgs: &[&Msg],
+    side: &str,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
     let mut v: Vec<(i64, i64)> = msgs
         .iter()
         .filter_map(|m| Some((ts_of(&m.payload)?, m.payload.get("seq")?.as_i64()?)))
@@ -1305,6 +1444,7 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
             first_wall: play.start_wall,
             neighbors: [None; 4],
             d23: None,
+            facts,
         };
         // A jump across an outage longer than the offline queue holds (1000
         // payloads ≈ 16.7 min at 1 Hz): Rust dropped the oldest queued ticks
@@ -1340,7 +1480,14 @@ fn quiet_periods(a: &[&Msg], b: &[&Msg], quiet_ms: i64) -> Vec<(i64, i64)> {
     out
 }
 
-fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &mut Report) {
+fn diff_reports(
+    a: &Capture,
+    b: &Capture,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
     let ra = a.stream("config/reported");
     let rb = b.stream("config/reported");
     let r5 = table.of_kind("report_count", "report").next();
@@ -1372,6 +1519,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
             first_wall: play.start_wall,
             neighbors: [None; 4],
             d23: None,
+            facts,
         };
         if pa.len() != pb.len() {
             // T8 reconnect-cadence: around a cut each reconnect's retained
@@ -1431,6 +1579,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                     first_wall: play.start_wall,
                     neighbors: [None; 4],
                     d23: None,
+                    facts,
                 };
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
             }
@@ -2444,6 +2593,117 @@ mod tests {
     }
 
     #[test]
+    fn t4_windows_are_per_group_from_the_tape() {
+        let rec = |t: u64, ev: TapeEvent| TapeRecord { t, w: t as i64, ev };
+        let nmea = |t: u64, l: &str| rec(t, TapeEvent::Nmea { line: l.into() });
+        let play = PlayInfo {
+            start_wall: 100_000,
+            end_wall: 200_000,
+            // The player's own stamps: the lte change was released 120 ms late.
+            transitions: vec![150_120],
+            ..Default::default()
+        };
+        let recs = vec![
+            // Prefilled (t < 1000): not a transition.
+            rec(500, TapeEvent::lte_file(Some(b"a"))),
+            nmea(10_000, "$GPGGA,1,,,,,0,00,,,M"),
+            nmea(11_000, "$GPGGA,2,,,,,0,00,,,M"),
+            nmea(12_000, "$GPGGA,3,,,,,1,08,,,M"),
+            rec(50_000, TapeEvent::lte_file(Some(b"b"))),
+            rec(
+                60_000,
+                TapeEvent::Exec {
+                    argv: vec!["vcgencmd".into()],
+                    stdout: "x".into(),
+                    code: Some(0),
+                },
+            ),
+            rec(
+                61_000,
+                TapeEvent::MqttIn {
+                    topic: "t/config".into(),
+                    payload: Some("{}".into()),
+                    payload_b64: None,
+                    retain: true,
+                    qos: 1,
+                },
+            ),
+            rec(
+                62_000,
+                TapeEvent::Cli {
+                    argv: vec!["status".into()],
+                },
+            ),
+            rec(63_000, TapeEvent::ImuSpawn { argv: vec![] }),
+            // NMEA resumes after 20 s: stop, stale, resume.
+            nmea(32_000, "$GPGGA,4,,,,,1,08,,,M"),
+        ];
+        let mut recs = recs;
+        recs.sort_by_key(|r| r.t);
+        let f = InputFacts::from_records(&recs, &play);
+        assert_eq!(f.groups["lte"], vec![150_120], "snapped, prefill skipped");
+        assert_eq!(f.groups["system"], vec![160_000]);
+        assert_eq!(f.groups["imu"], vec![163_000]);
+        // first line, quality q0, q1, stop 112000, stale 122000, resume 132000, end stale 142000
+        assert_eq!(
+            f.groups["gps"],
+            vec![110_000, 112_000, 122_000, 132_000, 142_000]
+        );
+        // mqtt_in / cli add nothing anywhere.
+        assert!(!f
+            .groups
+            .values()
+            .flatten()
+            .any(|w| *w == 161_000 || *w == 162_000));
+        let cov = f.coverage(&play, 5_000, 1_500);
+        assert!(
+            (cov["lte"] - 3_000.0 * 100.0 / 95_000.0).abs() < 1e-6,
+            "{cov:?}"
+        );
+
+        // A presence difference in the LTE group is tolerated only near an
+        // lte transition — not near a gps one, and never for another group.
+        let t = table();
+        let tel = |ts: i64, seq: i64, lte: bool| {
+            let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{"gps":{"fix_quality":{"value":1}}}});
+            if lte {
+                m["metrics"]["lte"] = serde_json::json!({"rssi":{"value":-70}});
+            }
+            m
+        };
+        let a = cap("js", vec![msg(150_000, "telemetry", tel(150_000, 1, true))]);
+        let b = cap(
+            "rust",
+            vec![msg(150_010, "telemetry", tel(150_010, 1, false))],
+        );
+        let play2 = PlayInfo {
+            start_wall: 0,
+            end_wall: 300_000,
+            ..Default::default()
+        };
+        let tol = |facts: &InputFacts| {
+            diff_with(&a, &b, &play2, facts, &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.path == "metrics.lte")
+                .map(|m| m.tol)
+        };
+        let mut g = InputFacts::default();
+        g.groups.insert("gps".into(), vec![150_000]);
+        assert_eq!(tol(&g).as_deref(), Some(UNTOLERATED));
+        g.groups.insert("lte".into(), vec![149_000]);
+        assert_eq!(tol(&g).as_deref(), Some("T4/lte"));
+        // The summary carries the coverage per group.
+        let rep = diff_with(&a, &b, &play2, &g, &[], &t);
+        assert!(
+            rep.inputs.contains_key("T4 window coverage lte"),
+            "{:?}",
+            rep.inputs
+        );
+        assert!(rep.inputs["tape"].starts_with("NOT READ"));
+    }
+
+    #[test]
     fn identical_runs_pass_and_tolerances_are_cited() {
         let t = table();
         let play = PlayInfo {
@@ -2470,7 +2730,9 @@ mod tests {
                 msg(30_200, "telemetry", tel(30_200, 125, 10.0, Some(14.6))),
             ],
         );
-        let rep = diff(&a, &b, &play, &[], &t);
+        let mut facts = InputFacts::default();
+        facts.groups.insert("gps".into(), vec![20_000]);
+        let rep = diff_with(&a, &b, &play, &facts, &[], &t);
         let tols: Vec<(&str, &str)> = rep
             .mismatches
             .iter()
@@ -2487,7 +2749,7 @@ mod tests {
             "{tols:?}"
         );
         // gps absent at a transition → T4; a value change far from one → FAIL.
-        assert!(tols.contains(&("metrics.gps", "T4")), "{tols:?}");
+        assert!(tols.contains(&("metrics.gps", "T4/gps")), "{tols:?}");
         assert!(
             tols.contains(&("metrics.gps.lat.value", UNTOLERATED)),
             "{tols:?}"
