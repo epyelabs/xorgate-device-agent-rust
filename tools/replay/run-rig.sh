@@ -10,6 +10,10 @@
 #                      plans/…/phase-2/evidence/replay-<UTC ts>/)
 #   --no-build         skip build-bins.sh (use the binaries in .cache/bin)
 #
+# Compose project: per run, `xorgate-replay-<ts>-<a>-<b>` (override with
+# COMPOSE_PROJECT_NAME); the cleanup tears down ONLY that project, never another
+# run's (or another agent's) broker.
+#
 # Steps: gen-certs.sh → js-build.sh → build-bins.sh → mosquitto up → `play`
 # (real time; the tape's length + settle) → `diff` → copy → compose down.
 # Exit code = the diff's (non-zero on any UNTOLERATED mismatch).
@@ -39,6 +43,8 @@ done
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 RUN="run-$TS-$A-$B"
 [ -n "$OUT" ] || OUT="$EVIDENCE_ROOT/replay-$TS"
+PROJECT="${COMPOSE_PROJECT_NAME:-xorgate-replay-$(printf '%s' "$TS-$A-$B" | tr '[:upper:]' '[:lower:]')}"
+dc() { docker compose -p "$PROJECT" "$@"; }
 
 "$HERE/gen-certs.sh"
 "$HERE/js-build.sh"
@@ -51,15 +57,16 @@ export RIG_TAPES="$HERE/.cache/tapes" RIG_RUNS="$HERE/.cache/runs"
 
 cd "$HERE"
 # shellcheck disable=SC2329  # invoked by the EXIT trap
-cleanup() { docker compose down --remove-orphans >/dev/null 2>&1 || true; }
+cleanup() { dc down --remove-orphans >/dev/null 2>&1 || true; }
 trap 'rc=$?; cleanup; exit $rc' EXIT
-docker compose build --quiet rig
-docker compose up -d mosquitto
+echo ">> compose project $PROJECT"
+dc build --quiet rig
+dc up -d mosquitto
 echo ">> play $(basename "$TAPE") A=$A B=$B → .cache/runs/$RUN (real time)"
-docker compose run --rm -T rig play --tape "/rig/tapes/$(basename "$TAPE")" --out "/rig/out/$RUN" \
+dc run --rm -T rig play --tape "/rig/tapes/$(basename "$TAPE")" --out "/rig/out/$RUN" \
   --a "$A" --b "$B" --js-dir "/rig/cache/js-89b5c64" --rs-bin /rig/cache/bin/xorgate-rs ${EXTRA[@]+"${EXTRA[@]}"}
 set +e
-docker compose run --rm -T rig diff "/rig/out/$RUN" --tolerances /rig/tools/tolerances.toml
+dc run --rm -T rig diff "/rig/out/$RUN" --tolerances /rig/tools/tolerances.toml
 RC=$?
 set -e
 mkdir -p "$OUT"

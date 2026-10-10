@@ -4,6 +4,9 @@
 # capture client talk to. The agents reach the broker through the player's
 # proxy on `broker:8883` (= 127.0.0.1 inside the rig) so a tape `conn closed`
 # span can cut them without touching the capture client.
+# Default project name only: run-rig.sh passes a per-run `-p xorgate-replay-<run>`
+# (or $COMPOSE_PROJECT_NAME) so its `down --remove-orphans` never touches
+# another run's broker.
 name: xorgate-replay
 services:
   mosquitto:

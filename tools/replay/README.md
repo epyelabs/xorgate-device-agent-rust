@@ -246,8 +246,9 @@ a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
 
 ## Limits of the rig (know these when reading a diff)
 
-- ONE run at a time per Docker host (fixed compose project, fixed rig
-  deviceIds), on a QUIET Docker VM: `cpu_usage`/`ram_usage` are the VM's live
+- ONE run at a time per Docker host (fixed rig deviceIds; the compose project
+  is per run — `xorgate-replay-<ts>-<a>-<b>` or `$COMPOSE_PROJECT_NAME` — so
+  `run-rig.sh`'s cleanup only removes its own containers), on a QUIET Docker VM: `cpu_usage`/`ram_usage` are the VM's live
   values (T3), and concurrent cargo builds in the same VM swing them by far
   more than T3 allows and perturb the agents' tick latency.
 
