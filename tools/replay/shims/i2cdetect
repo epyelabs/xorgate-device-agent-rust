@@ -1,0 +1,9 @@
+#!/bin/sh
+# Rig shim: i2cdetect. Prints the tape's last `i2cdetect` stdout. The player
+# leaves this shim out of PATH when the tape's first i2cdetect is notFound.
+if [ -f "$RIG_STATE/i2cdetect.out" ]; then
+  cat "$RIG_STATE/i2cdetect.out"
+  exit 0
+fi
+echo "Error: Could not open file \`/dev/i2c-1' or \`/dev/i2c/1': No such file or directory" >&2
+exit 1

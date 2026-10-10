@@ -1,0 +1,29 @@
+[package]
+name = "xorgate-replay"
+description = "Record/replay harness for the xorgate agent port: tape inspect/synth, rig player, capture diff (plan phase-2 §Record/replay)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "xorgate-replay"
+path = "src/main.rs"
+
+[dependencies]
+xorgate-hal = { workspace = true }
+xorgate-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+rumqttc = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+nix = { workspace = true, features = ["term", "fs", "inotify"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

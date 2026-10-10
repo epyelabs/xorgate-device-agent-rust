@@ -1,0 +1,7 @@
+#!/bin/sh
+# Rig shim: timedatectl — the rig host clock is NTP-synced (phase file: "synced").
+case "$*" in
+  *NTPSynchronized*) echo yes ;;
+  *) echo "System clock synchronized: yes"; echo "NTP service: active" ;;
+esac
+exit 0

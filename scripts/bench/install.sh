@@ -72,9 +72,24 @@ fi
 log "installing on $BENCH from $REMOTE_TARBALL"
 # Everything below runs as root ON THE BENCH. Quoted heredoc: nothing expands
 # locally; the only input is $1 (the tarball path).
-bench_sudo_script "$REMOTE_TARBALL" <<'REMOTE'
-set -euo pipefail
+{ bench_remote_lib; cat <<'REMOTE'
 TARBALL="$1"
+# Phase 2 bench-safety precondition (orchestrator, review-wp2): a build with
+# the WP2 collectors must never run against the JS agent's inputs. While the
+# unit is enabled or active the swap below would put the new build into it
+# (Restart=always), so refuse unless the SHARED profile is fully in force —
+# run scripts/bench/dev-manifests.sh and scripts/bench/profile.sh shared first.
+echo "== 0. input-profile precondition"
+if systemctl is-enabled --quiet xorgate-agent-rs 2>/dev/null || systemctl is-active --quiet xorgate-agent-rs 2>/dev/null; then
+  if ! inputs_safe; then
+    echo "REFUSING to install: xorgate-agent-rs is enabled/active and the shared input profile is incomplete (above)."
+    echo "  run: scripts/bench/dev-manifests.sh && scripts/bench/profile.sh shared   then retry"
+    exit 1
+  fi
+  echo "  ok: shared input profile in force"
+else
+  echo "  unit not enabled/active: installing; start.sh refuses until the shared profile is in force"
+fi
 RS_ROOT=/opt/xorgate-rs
 RS_HOME=/var/lib/xorgate-rs
 RS_ENV=/etc/xorgate/agent-rs-dev.env
@@ -226,3 +241,4 @@ echo "== changed (${#CHANGES[@]})"
 if [ "${#CHANGES[@]}" -eq 0 ]; then echo "  nothing"; else printf '  %s\n' "${CHANGES[@]}"; fi
 echo "next: scripts/bench/start.sh"
 REMOTE
+} | bench_sudo_script "$REMOTE_TARBALL"

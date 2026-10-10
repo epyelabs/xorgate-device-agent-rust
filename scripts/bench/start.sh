@@ -10,10 +10,11 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 
 log "enable --now $UNIT on $BENCH"
-# shellcheck disable=SC2119
-bench_sudo_script <<'REMOTE'
-set -euo pipefail
+{ bench_remote_lib; cat <<'REMOTE'
 UNIT=xorgate-agent-rs
+# Phase 2 bench-safety precondition (orchestrator, review-wp2): never start a
+# build with the WP2 collectors against the JS agent's inputs.
+inputs_safe || { echo "REFUSING to start: the shared input profile is incomplete (above) — run scripts/bench/dev-manifests.sh && scripts/bench/profile.sh shared --no-restart"; exit 1; }
 [ -f /etc/systemd/system/$UNIT.service ] || { echo "unit not installed — run scripts/bench/install.sh first"; exit 1; }
 [ -f /etc/systemd/system/$UNIT.service.d/90-bench-dev.conf ] || { echo "bench drop-in missing — run scripts/bench/install.sh first"; exit 1; }
 [ -f /etc/xorgate/agent-rs-dev.env ] || { echo "/etc/xorgate/agent-rs-dev.env missing — run scripts/bench/install.sh first"; exit 1; }
@@ -31,3 +32,4 @@ printf '%-18s %s\n' xorgate-agent "$(systemctl is-active xorgate-agent || true)"
                     $UNIT "$(systemctl is-active $UNIT || true)"
 systemctl status --no-pager -n 15 $UNIT || true
 REMOTE
+} | bench_sudo_script

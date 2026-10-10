@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Build the JS agent @ 89b5c64 for the rig WITHOUT touching the JS repo
+# (phase file §Record/replay route 1): `git archive` into
+# tools/replay/.cache/js-<sha>, then `npm ci && npm run build` inside
+# node:20-bookworm (linux/arm64, the rig's runtime). Idempotent.
+#
+#   tools/replay/js-build.sh [--force]
+#   JS_REPO=… JS_SHA=… tools/replay/js-build.sh
+set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+JS_REPO="${JS_REPO:-$(cd "$HERE/../../.." && pwd)/xorgate-device-agent}"
+JS_SHA="${JS_SHA:-89b5c64}"
+DEST="$HERE/.cache/js-$JS_SHA"
+if [ "${1:-}" != "--force" ] && [ -f "$DEST/dist/worker.js" ] && [ -f "$DEST/dist/cli.js" ]; then
+  echo "js: $DEST (exists)"
+  exit 0
+fi
+[ -d "$JS_REPO/.git" ] || [ -f "$JS_REPO/.git" ] || { echo "no JS repo at $JS_REPO (set JS_REPO)" >&2; exit 1; }
+before=$(git -C "$JS_REPO" status --porcelain)
+rm -rf "$DEST"
+mkdir -p "$DEST"
+git -C "$JS_REPO" archive "$JS_SHA" | tar -x -C "$DEST"
+docker run --rm --platform linux/arm64 -v "$DEST:/js" -w /js node:20-bookworm \
+  sh -c 'npm ci --no-audit --no-fund --loglevel=error && npm run build >/dev/null && node --version'
+after=$(git -C "$JS_REPO" status --porcelain)
+[ "$before" = "$after" ] || { echo "JS repo working tree changed during the build — investigate" >&2; exit 1; }
+echo "js: $DEST (built from $JS_SHA; JS repo untouched)"

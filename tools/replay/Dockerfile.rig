@@ -1,0 +1,12 @@
+# Record/replay rig image: Node 20 on Bookworm arm64 (the bench's Node major +
+# glibc) for the JS agent, plus the runtime libraries the Rust binary links
+# (GStreamer 1.22). Nothing is baked in: the JS build, the Rust binaries, the
+# certs, the tapes and this directory are bind-mounted by docker-compose.yml,
+# so a rebuild of either agent needs no image rebuild.
+FROM --platform=linux/arm64 node:20-bookworm
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
+      python3 procps mosquitto-clients \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /rig/tools

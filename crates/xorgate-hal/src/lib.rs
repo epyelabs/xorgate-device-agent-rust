@@ -21,3 +21,4 @@ pub mod privileged;
 pub mod read_lossy;
 pub mod settings_io;
 pub mod system;
+pub mod tape;

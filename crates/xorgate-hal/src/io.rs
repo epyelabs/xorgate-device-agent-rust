@@ -102,14 +102,12 @@ pub struct TapeStart {
     pub home_files: Option<Map<String, Value>>,
 }
 
-/// Open the gz NDJSON tape at `path` (`XORGATE_RS_TAPE`). **WP7 fills this
-/// body** with its `tape::FileTape`; until then the agent logs the error and
-/// runs with [`NullTape`].
-pub fn open_file_tape(path: &Path, _start: &TapeStart) -> io::Result<Arc<dyn TapeSink>> {
-    Err(io::Error::other(format!(
-        "tape writer not built into this binary (WP7); {} not opened",
-        path.display()
-    )))
+/// Open the gz NDJSON tape at `path` (`XORGATE_RS_TAPE`): WP7's
+/// [`crate::tape::FileTape`] (parent dirs created, meta line written and
+/// flushed). On error the agent logs it and runs with [`NullTape`].
+pub fn open_file_tape(path: &Path, start: &TapeStart) -> io::Result<Arc<dyn TapeSink>> {
+    let meta = crate::tape::meta_from_start(start, &|k| std::env::var(k).ok());
+    Ok(Arc::new(crate::tape::FileTape::create(path, &meta)?))
 }
 
 /// Node's `err.message` for a failed fs call: `CODE: description, syscall
@@ -197,6 +195,9 @@ mod tests {
         t.nmea("$GPGGA");
         t.mqtt_in("a", b"b", true, 1);
         t.close();
-        assert!(open_file_tape(Path::new("/nope"), &TapeStart::default()).is_err());
+        // /proc refuses file creation even to root.
+        assert!(
+            open_file_tape(Path::new("/proc/nope/t.ndjson.gz"), &TapeStart::default()).is_err()
+        );
     }
 }

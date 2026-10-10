@@ -7,3 +7,10 @@
 /*.tar.gz
 /*.sha256
 .DS_Store
+
+# WP7 record/replay: rig cache (JS build, binaries, certs, runs) and tapes.
+# Tapes hold the bench location + SIM identity (O8): never committed, except
+# the shifted smoke tape.
+/tools/replay/.cache/
+*.ndjson.gz
+!/fixtures/replay/smoke.ndjson.gz

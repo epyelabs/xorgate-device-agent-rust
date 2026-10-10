@@ -5,6 +5,7 @@ members = [
   "crates/xorgate-hal",
   "crates/xorgate-cloud",
   "crates/xorgate-agent",
+  "crates/xorgate-replay",
 ]
 
 [workspace.package]
@@ -44,6 +45,10 @@ sd-notify = "0.5"
 nix = { version = "0.31", features = ["fs", "signal", "process", "user"] }
 libc = "0.2"
 gstreamer = { version = "0.25", features = ["v1_22"] }
+# WP7 (phase-2/wp7-replay): gzip tapes (pure-Rust miniz_oxide backend) and the
+# rig tolerance table.
+flate2 = "1"
+toml = "0.9"
 # Phase 2 WP5 (IoT creds + S3 PUT): HTTPS over rustls/aws-lc-rs with the
 # platform verifier, HTTP/1.1 only and no env proxies (node:https parity);
 # `stream` for the idle-timeout body wrapper. Hand-rolled SigV4 (no aws-sdk, Q5).

@@ -91,6 +91,25 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      # WP7 (Phase 2 C3 tooling): the smoke tape replayed Rust-vs-Rust through
+      # the OS-boundary knobs (pty, LTE file, fake IMU helper, PATH shims, a
+      # local TLS mosquitto) — no Docker in this container, and no in-process
+      # HAL seam exists. JS-vs-Rust parity stays the Docker rig's job.
+      - name: Replay smoke tape (Rust-only, tools/replay/ci-smoke.sh)
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            mosquitto openssl python3 procps
+          cargo build -p xorgate-agent -p xorgate-replay
+          tools/replay/ci-smoke.sh target/debug/xorgate-rs target/debug/xorgate-replay /tmp/replay-ci-smoke
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: replay-ci-smoke
+          path: /tmp/replay-ci-smoke/diff.md
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: cargo build --release
         run: |
           cargo build --release

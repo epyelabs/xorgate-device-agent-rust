@@ -1,0 +1,523 @@
+# Record/replay tolerance table — plan phase-2-cloud-plane.md §Record/replay,
+# "Tolerance table". `xorgate-replay diff` cites the `id` of the row that
+# covered every tolerated mismatch; a mismatch no row covers is UNTOLERATED and
+# makes the diff exit non-zero (C3).
+#
+# Rules for editing (wp-specific-briefs.md WP7): T1-T9 come from the phase file;
+# T7 rows are imported VERBATIM from phase-1/evidence/accepted-divergences.md
+# (D1-D20), each with its pinning test. A NEW row (or a widened one) needs an
+# O-decision or a reviewer's OK, cited in `basis` — never a silent widening.
+#
+# Path syntax: dot-separated JSON paths; `*` matches one segment (or part of
+# one: `*At`), `**` any number of segments. Streams: telemetry, report, ack,
+# status, sms, file:<name>, state, events, sudo, pidfile.
+
+version = 1
+
+[[rule]]
+id = "T1"
+title = "ts-like fields are excluded; order is still checked"
+basis = "phase file T1"
+kind = "exclude"
+streams = ["telemetry", "report", "ack", "status", "sms", "state", "file:config-sync.json", "file:commands.json", "file:gnss-sky.json", "pidfile"]
+paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts", "*Ts", "**.*Ts", "timestamp"]
+
+[[rule]]
+id = "T2"
+title = "seq compared as deltas; deviceId and requestId normalised to rig ids"
+basis = "phase file T2"
+kind = "deltas"
+streams = ["telemetry", "state"]
+paths = ["seq", "latest.seq"]
+normalize_ids = true
+
+[[rule]]
+id = "T2"
+title = "rig identities: a process id is per-instance like the deviceId"
+basis = "phase file T2 (deviceId/requestId normalised); WP7 reading — pid is the same kind of per-instance identity (reviewer to confirm)"
+kind = "exclude"
+streams = ["state", "pidfile"]
+paths = ["pid"]
+
+[[rule]]
+id = "T3"
+title = "system metrics read live from the rig host (both agents, minutes apart at most)"
+basis = "phase file T3"
+kind = "numeric"
+streams = ["telemetry"]
+# throttled / rail_5v / psu_max_current are tape-fed and therefore EXACT (no row).
+tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage.value" = 1.0, "metrics.system.disk_usage.value" = 0.1, "metrics.system.cpu_temp.value" = 0.5 }
+# Rig artifact, not a widening (FLAG: reviewer to confirm): both agents read the
+# rig's live /proc/meminfo, and a concurrent load on the shared Docker VM (other
+# worktrees' cargo builds) moves ram_usage by several points between the two
+# agents' tick instants (observed 18→52 % within 1 s, JS-vs-JS). The player
+# samples the same formula every 50 ms (`host.ndjson`); a ram difference beyond
+# ±1 is cited as `T3/host` ONLY if the host's own series swung by at least the
+# excess between the two `ts` (±250 ms), else it stays UNTOLERATED. On the bench
+# tape replay in a quiet VM this never fires.
+# cpu_usage likewise (JS-vs-Rust, pairs up to ~0.9 s apart while the two tick
+# phases differ): the player samples /proc/stat, and a cpu difference beyond
+# ±10 is `T3/host` only if the host's own busy share over the two agents' 1 s
+# windows (ending at each `ts`) differs by at least the excess.
+host_reference = { "metrics.system.ram_usage.value" = "ram", "metrics.system.cpu_usage.value" = "cpu" }
+
+[[rule]]
+id = "T4"
+title = "group/field presence may differ within ±1 tick of an input transition and in the first 5 s"
+basis = "phase file T4"
+kind = "presence_window"
+streams = ["telemetry"]
+startup_ms = 5000
+# ±1 tick (1000 ms at 1 Hz) + 500 ms for the phase offset between the agents.
+window_ms = 1500
+# Per GROUP (review-wp7 finding 3; the old single list covered 65-94 % of the
+# run): a presence difference under `metrics.<group>` is T4/<group> only within
+# ±window of THAT group's input transitions, derived by the diff from the tape:
+#   gps    ← NMEA first line, stop (gap > 2 s), stale (+10 s), resume, GGA quality change, end (+10 s)
+#   imu    ← imu_spawn / imu_exit, IMU line stream start/stop (gap > 2 s), i2cdetect
+#   lte    ← lte_file changes
+#   system ← exec / dt changes
+# Never mqtt_in / cli / conn. Any other path: only the first 5 s. diff.md prints
+# each group's window coverage (% of the run).
+
+[[rule]]
+id = "T5"
+title = "report count may differ by ±1 where two triggers straddle the 2 s debounce; the last report of every quiet period must be identical"
+basis = "phase file T5"
+kind = "report_count"
+streams = ["report"]
+max_count_delta = 1
+quiet_ms = 10000
+
+[[rule]]
+id = "T6"
+title = "phase-owned gaps until Phase 3/4"
+basis = "phase file T6; scope boundary table; CF30"
+kind = "phase_owned"
+streams = ["telemetry", "report", "state", "events", "sudo"]
+paths = [
+  "media", "media.**",
+  "recording", "recording.**",
+  "status.bootDefer", "status.bootDefer.**", "status.powerShed", "status.powerShed.**",
+  "effective.recording.bootDefer", "effective.recording.bootDefer.**",
+  "effective.recording.powerShed", "effective.recording.powerShed.**",
+  "**.clockStepperArmed",
+  "effective.cameraMount", "effective.cameraMount.**",
+]
+# state.json `recentEvents` msg prefixes owned by Phase 3/4 — EXACT texts of
+# the TS emitters (review-wp7 finding 2: the old bare `upload` hid the Phase 2
+# `uploadBucket backfilled:` / `uploadBucket persist failed:`, worker.ts:800/806).
+# ONE-DIRECTIONAL: tolerated only when the JS side has the event and the Rust
+# side has none of it (Rust emitting one of these before Phase 3/4 is a bug).
+#   hardware: …            worker.ts:140 (hardware reconciler log)
+#   camera mount: …        worker.ts:181 (boot-config reconciler, cam-sensor-level-rotate)
+#   [clock] …              clock-step.ts:232-307 (offline clock stepper, CF20 → Phase 4)
+#   recording manager      recording/manager.ts:300/306/473/558/607/696/774/782,
+#                          boot-policy.ts:800/830/906 (power shed), video-capture.ts (video capture …)
+#   uploader               recording/uploader.ts:148/202/204
+# The LED renderer and the media supervisor journal no events.
+event_prefixes = [
+  "hardware: ",
+  "camera mount: ",
+  "[clock] ",
+  "recording: ",
+  "camera(s) disabled by settings: ",
+  "recording.video.enabled is on but no bridged camera is available ",
+  "power shed → ",
+  "power shed restore → ",
+  "power shedding disarmed — restoring full operation",
+  "power shedding disabled by settings — restoring full operation",
+  "telemetry recording started (",
+  "telemetry recording stopped (",
+  "video capture ",
+  "video boot-defer ",
+  "video gps gate armed (",
+  "upload: skipping unrecognized segment ",
+  "upload paused (offline)",
+  "upload failed, retrying in ",
+]
+# Report details produced ONLY by those hints: latchDetail (config-sync.ts:1007-1024)
+# returns "in force, but …" from bootDefer/powerShed (recording) and
+# `clockStepperArmed === false` (timeSync: "in force, but the clock stepper stood
+# down for this boot (NTP is synchronized)"); the hints are None until Phase 3/4
+# (CF20/CF30), so Rust omits the detail. Tolerated only when one side is absent
+# and the other starts with the latch prefix — every other detail is compared.
+latch_detail_paths = ["status.*.detail"]
+latch_detail_prefix = "in force, but "
+# NARROWED (review-wp7): only the exact latchDetail texts, and only JS present /
+# Rust absent. recording: "in force, but " + `; `-joined parts below;
+# timeSync: the one exact text.
+latch_detail_parts = [
+  "video is held by the boot power staging gate and starts when it releases",
+  "video is held by the GPS/LTE gate and starts when it releases",
+  "load shedding is active (*)",
+]
+latch_detail_exact = ["in force, but the clock stepper stood down for this boot (NTP is synchronized)"]
+# sudo argv owned by Phase 3/4 (camera-mount helper, set-clock helper).
+sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
+
+[[rule]]
+id = "T7"
+title = "accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20, D22, D23)"
+basis = "phase file T7; accepted-divergences.md"
+kind = "import"
+source = "phase-1/evidence/accepted-divergences.md"
+
+  [[rule.row]]
+  id = "D1"
+  what = "SMS lone surrogate in an incomplete UCS2 concat: TS \\ud83d escape, Rust U+FFFD"
+  streams = ["sms"]
+  matcher = "fffd_vs_lone_surrogate"
+  pinned_by = "sms_pdu::tests::lone_surrogate_in_incomplete_concat_becomes_replacement_char"
+
+  [[rule.row]]
+  id = "D2"
+  what = "reportedString 64-unit cut inside a surrogate pair: lone \\ud83d vs U+FFFD"
+  streams = ["report"]
+  matcher = "fffd_vs_lone_surrogate"
+  pinned_by = "config_report::tests::reported_string_cut_inside_a_surrogate_pair_is_fffd"
+
+  [[rule.row]]
+  id = "D3"
+  what = "JSON.parse vs serde_json: 1e400 / lone-surrogate escapes / nesting > 128 reject the whole text in Rust"
+  streams = ["telemetry", "report", "ack", "file:settings.json", "file:commands.json"]
+  matcher = "doc_only"
+  pinned_by = "settings::tests::serde_json_is_stricter_than_json_parse"
+
+  [[rule.row]]
+  id = "D4"
+  what = "lossy UTF-8 reads (TS readFileSync utf8 / payload.toString())"
+  matcher = "doc_only"
+  pinned_by = "Phase 2 HAL rule (String::from_utf8_lossy before the core parser)"
+
+  [[rule.row]]
+  id = "D5"
+  what = "settings_migrate saved key order when recording/video/cameras was absent (one-shot mediaEnabled:false migration)"
+  streams = ["file:settings.json"]
+  matcher = "same_json_different_key_order"
+  pinned_by = "doc only (settings_migrate.rs module doc)"
+
+  [[rule.row]]
+  id = "D6"
+  what = "commands.json ledger entry with unknown keys: Rust writes requestId, at, …extras"
+  streams = ["file:commands.json"]
+  matcher = "same_json_different_key_order"
+  pinned_by = "doc only (commands.rs LedgerEntry.extra)"
+
+  [[rule.row]]
+  id = "D7"
+  what = "re-serialised ModemTelemetry / PowerSampleReading null fields omitted"
+  matcher = "doc_only"
+  pinned_by = "doc only (types.rs module comment)"
+
+  [[rule.row]]
+  id = "D8"
+  what = "GPS group key order from a SIMULATED source"
+  streams = ["telemetry"]
+  matcher = "doc_only"
+  pinned_by = "doc only (telemetry.rs GpsGroup)"
+
+  [[rule.row]]
+  id = "D9"
+  what = "Date.parse without an offset: TS local time, Rust UTC (rig runs TZ=UTC)"
+  matcher = "doc_only"
+  pinned_by = "js::tests::date_parse_accepted_divergences"
+
+  [[rule.row]]
+  id = "D10"
+  what = "Date.parse legacy non-ISO forms: TS parses, Rust NaN"
+  matcher = "doc_only"
+  pinned_by = "js::tests::date_parse_accepted_divergences"
+
+  [[rule.row]]
+  id = "D11"
+  what = "IMU partial sample line: Rust rejects it and keeps the previous sample"
+  streams = ["telemetry"]
+  matcher = "doc_only"
+  pinned_by = "imu::tests::partial_sample_is_rejected"
+
+  [[rule.row]]
+  id = "D12"
+  what = "NMEA malformed numeric field: NaN vs None (both absent on the wire)"
+  matcher = "doc_only"
+  pinned_by = "tests/nmea_fixtures.rs [extra] unparseable numeric fields"
+
+  [[rule.row]]
+  id = "D13"
+  what = "sortInterfaces localeCompare (ICU) vs ASCII"
+  matcher = "doc_only"
+  pinned_by = "network::tests::sort_interfaces_icu_divergences"
+
+  [[rule.row]]
+  id = "D14"
+  what = "toISOString beyond ±8.64e15: RangeError vs \"Invalid Date\""
+  matcher = "doc_only"
+  pinned_by = "js::tests::iso_string_matches_v8 (±(8.64e15 + 1), ±Infinity, NaN)"
+
+  [[rule.row]]
+  id = "D15"
+  what = "modem telemetry health an inherited key (\"toString\"): gnss_health {} vs not emitted"
+  matcher = "doc_only"
+  pinned_by = "doc only (modem::lte_group)"
+
+  [[rule.row]]
+  id = "D16"
+  what = "modem telemetry non-string timestamp (modem::lte_group AND readModemBias / config_report::modem_bias_from_telemetry): stringified / Date.parse(String(n)) vs None (lte key absent; bias stale, fresh:false)"
+  matcher = "doc_only"
+  pinned_by = "doc only"
+
+  [[rule.row]]
+  id = "D17"
+  what = "throttled mask > 16 hex digits: precision loss vs saturation"
+  matcher = "doc_only"
+  pinned_by = "doc only (system.rs)"
+
+  [[rule.row]]
+  id = "D18"
+  what = "sky-state mono arithmetic: negative vs saturating_sub"
+  matcher = "doc_only"
+  pinned_by = "doc only (sky_state.rs)"
+
+  [[rule.row]]
+  id = "D19"
+  what = "toFixed digits > 100: RangeError vs assert"
+  matcher = "doc_only"
+  pinned_by = "doc only (js::to_fixed)"
+
+  [[rule.row]]
+  id = "D20"
+  what = "build-info fallback channel: \"local\" + package version vs \"dev-local\" + baked sha (Phase 0 decision)"
+  streams = ["report"]
+  matcher = "doc_only"
+  pinned_by = "xorgate-agent::build_info tests"
+
+  [[rule.row]]
+  id = "D22"
+  what = "telemetry group with a non-finite leaf: TS JSON.stringify writes `null` (the cloud then drops the whole payload), Rust omits that GROUP. Matched only when the JS side's group holds a null leaf and the Rust side lacks the group"
+  streams = ["telemetry"]
+  matcher = "null_leaf_group"
+  pinned_by = "review-wp2 #6 (documented only; accepted-divergences.md D22)"
+
+  [[rule.row]]
+  id = "D23"
+  what = "TS drops the FIRST NMEA chunk after a watchdog reopen (REOPEN_SILENT_MS silence): hardware/gps.ts:79 `stream.destroy()` leaves the old fs.ReadStream's in-flight libuv read on the old fd, that zombie read wins the first chunk after NMEA resumes and the destroyed stream discards it; the new stream starts at the second chunk. Rust (xorgate-hal nmea_tty.rs, 250 ms poll slice re-checks stop) drops the old fd and keeps the chunk — Rust matches the input. Matched ONLY: the JS side (A or B with kind js, the other rust); ONLY the first JS telemetry tick at/after each resume (from the tape); ONLY the metrics.gps fields the swallowed sentences set (GGA → fix_quality/satellites/alt/lat/lon/ttff_s; RMC → lat/lon/speed/course; GSA → hdop; GSV → satellites_in_view/sats_heard/snr_max/sky_state; a GGA quality 0 / void RMC also clears lat/lon/alt/speed/course/hdop) of the sentences in that first chunk. T4 does not apply to those gps fields at that tick. Accepted by the orchestrator 2026-10-10 (review-wp7 finding 1, resolution a)"
+  streams = ["telemetry"]
+  matcher = "nmea_reopen_first_chunk"
+  pinned_by = "review-wp7 finding 1 (Node 20 experiment 3/3; accepted-divergences.md D23)"
+
+[[rule]]
+id = "T8"
+title = "Phase 2 orchestrator decisions"
+basis = "phase file T8; O2, O3, O4; WP1 brief (publish while disconnected); README §6 (build identity)"
+kind = "decisions"
+
+  [[rule.row]]
+  id = "O2"
+  what = "O2 mono-vs-wall intervals — the five the TS measures on Date.now(): the gps reopen watchdog (30 s), NMEA freshness (10 s), TTFF, the gnss-sky.json 15 s cadence, the refresh 30 s window — PLUS WP2's lte/system `sample()` 1 s cache gates (collectors/lte.ts, system.ts:94-114), all on mono in Rust. Values are identical unless the wall clock steps: tolerated only within a window around a tape `clock` event that shows a wall step"
+  matcher = "wall_step_window"
+  # NARROWED (review-wp7): only the six mono-derived observables.
+  observables = [
+    "telemetry:metrics.gps", "telemetry:metrics.gps.**",
+    "file:gnss-sky.json:timestamp", "file:gnss-sky.json:hold_s",
+    "ack:**",
+    "telemetry:metrics.lte", "telemetry:metrics.lte.**",
+    "telemetry:metrics.system", "telemetry:metrics.system.**",
+  ]
+
+  [[rule.row]]
+  id = "sim-mode-telemetry"
+  what = "O7 (orchestrator 2026-10-10, wp7-fix-cov sms-sim scenario): with MODE=sim on the tape (meta.env.MODE) each agent's telemetry is its own simulator — the TS generator vs the Rust empty SimSource (O7: sim runs with collectors off) — so the telemetry stream is NOT compared for that tape (diff.md says so; telemetry compared = 0). Every other stream (sms, acks, reports, status, events, files) is compared as usual"
+  streams = ["telemetry"]
+  matcher = "sim_mode"
+
+  [[rule.row]]
+  id = "O3"
+  what = "`update` sudo argv names xorgate-updater-rs.service"
+  streams = ["sudo"]
+  normalize = { "xorgate-updater-rs.service" = "xorgate-updater.service" }
+
+  [[rule.row]]
+  id = "O4"
+  what = "real-mode read_sms (tape meta.env.MODE = real, JS vs Rust only): the TS sweep finds no SIMCom interface-05 tty and answers status \"no_modem\", error \"no SIMCom interface 05 tty\" (sms-modem.ts:524); the Rust agent has no SMS reader until Phase 4 and answers status \"error\", error \"sms reader not available in this build\" (command_flow.rs:63, :511-516 — the O4 decision). Matched ONLY when the JS result carries exactly the TS pair and the Rust result exactly the O4 pair, and ONLY the `status` and `error` fields of that result: on `…/sms` those two leaves, and in the `read_sms <id>: status=… error=…` event line that renders the same result (worker.ts:930-937) those two words. Every other field (and the rest of the line) is compared as usual"
+  streams = ["sms", "events"]
+  matcher = "read_sms_unavailable"
+
+  [[rule.row]]
+  id = "sms-duration"
+  what = "read_sms `durationMs` is a measured wall span of the sweep (TS sms-modem.ts:504-519 `end - start`; Rust command_flow.rs, monotonic, series-5 item 2): two agents' sweeps take 0-2 ms each (JS-vs-JS spread over every series-1..4 run: max 2 ms of 18 pairs). Matched ONLY on `…/sms` `durationMs` and the `durationMs=<n>` of the `read_sms <id>:` event line (paired per request id), ONLY when BOTH values are non-negative integers differing by at most max_delta_ms; nothing else in the payload"
+  streams = ["sms", "events"]
+  matcher = "sms_duration_ms"
+  max_delta_ms = 50
+
+  [[rule.row]]
+  id = "pidfile"
+  what = "pidfile worker / argv / nodeVersion (CF4)"
+  streams = ["pidfile"]
+  paths = ["worker", "argv", "argv.**", "nodeVersion"]
+
+  [[rule.row]]
+  id = "writtenBy"
+  what = "state.json writtenBy"
+  streams = ["state"]
+  paths = ["writtenBy"]
+
+  [[rule.row]]
+  id = "build"
+  what = "the agent's own build identity in the report (README §6, Q7: each agent reports its own build)"
+  streams = ["report"]
+  # NARROWED (review-wp7): the key set and order of `build` are compared; only
+  # the four leaf VALUES are each agent's own.
+  paths = ["effective.agent.build.version", "effective.agent.build.channel", "effective.agent.build.builtAt", "effective.agent.build.packageVersion"]
+  values_only = true
+
+  [[rule.row]]
+  id = "set-wifi"
+  what = "`set wifi` is Phase 4 (CF22; WP6 T8): Rust prints `xorgate-rs: 'set wifi' arrives in a later build` and exits 1 before the sudo note (cli_set.rs:44) where the TS runs set.ts:679-717. C11: stdout/stderr/exit differ; settings.json must still be identical (untouched)"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-banner"
+  what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the SHORTER Rust usage (only this binary's verbs: run/status/set/logs; cli.rs usage()) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-systemd-verbs"
+  what = "`start` / `stop` / `restart` (WP6 A5; README §3.3 drops the self-managed daemon): Rust prints `xorgate-rs: '<verb>' is systemd's job for the Rust agent: sudo systemctl <verb> xorgate-agent-rs` and exits 1 (cli.rs) where the TS manages its detached worker (manager.ts start/stop/restart). C11: stdout/stderr/exit differ; settings.json must match"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-later-verbs"
+  what = "verbs owned by Phase 3/4 (`update`, `pipeline`, `recording`, `led`, `sms`, `manage`, `monitor`; WP6 A5): Rust prints `xorgate-rs: '<verb>' arrives in a later build` and exits 1 (cli.rs) — the TS has these verbs, so `unknown command` would be wrong. C11: stdout/stderr/exit differ; settings.json must match. Retire each verb's row when its phase lands"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "logs-journal"
+  what = "O9: with no $XORGATE_HOME/agent.log the Rust `logs` execs `journalctl -u xorgate-agent-rs -n N` (logs.rs:59-72) where the TS prints the empty-log text (logs.ts). C11: stdout/stderr/exit differ when the home has no agent.log; with an agent.log both must match"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "set-mode-running"
+  what = "WP6 A3: `set mode <m>` while an agent is running — the TS restarts its self-managed daemon (set.ts:515-530: stop + start with the pidfile argv), Rust (systemd only, README §3.3) prints `could not restart automatically: …` + the `sudo systemctl restart xorgate-agent-rs` hint and exits 1 (cli_set.rs:54-63), the shape of the TS failure branch :527-529. C11: stdout/stderr/exit differ; settings.json must be identical"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "rig-cut-ungated"
+  what = "RIG limitation, NARROWED per review-wp7 finding 4: while the broker path is cut the hold gate cannot observe ticks (publishes are queued), so inputs are released ungated and the fallback pairing keeps the pre-cut offset. Inside a closed span (extended until BOTH agents publish again) ±5 s the diff therefore RE-PAIRS the telemetry with the alignment (current partner, or one tick earlier/later) that differs least, then compares STRICTLY: no presence tolerance, no gps/lte/system value tolerance. The only residual: a VALUE inside the span whose group's input the tape released BETWEEN the two agents' reads (the gate cannot hold releases while an agent's ticks are unobserved — still the case until BOTH reconnect): metrics.imu.* ← an IMU line (−1 s), metrics.lte.* ← an LTE-file change, metrics.system.* ← an exec/dt change, and for lte/system ONLY a field that change moved (one side's value is the other side's value at the adjacent tick: one agent read the old version, the other the new; a field equal in both versions never matches); never gps (continuous NMEA, aligned by the re-pair). A re-pair run may orphan at most 2 ticks (judged as this row; listed with the moves in diff.md); otherwise ONE unpaired tick per side and span is reconnect-cadence. Replaces the earlier `cadence` row: publishing while disconnected is now parity (WP1 follow-up; Phase 0 deviation #8 gone)"
+  streams = ["telemetry", "status"]
+  around_closed_ms = 5000
+
+  [[rule.row]]
+  id = "offline-queue-bound"
+  what = "offline queue bound (WP1 follow-up amb. 1): Rust caps the QoS 1 store and the QoS 0 queue at 1000 each, oldest dropped (xorgate-cloud mqtt.rs OFFLINE_QUEUE_LIMIT); mqtt.js is unbounded (client.js:1081-1096). Past ~16.7 min of outage at 1 Hz the TS flushes more stale telemetry and counts more `published`; a Rust seq jump across such a span is the dropped ticks. Shorter outages: parity (every tick flushed)"
+  streams = ["telemetry", "state"]
+  around_closed_ms = 5000
+  min_span_ms = 1000000
+
+  [[rule.row]]
+  id = "input-edge"
+  what = "NARROWED per review-wp7 (JS-lag only): within ±1.5 s of an NMEA transition (gps group: stream start/stop/stale/resume, GGA quality change) or a GSV satellites-in-view change, a metrics.gps.* value where the JS agent reads Rust's PREVIOUS sample and the JS NEXT sample equals Rust's value — the line reached Node's read a tick later; a Rust value one tick late is NOT covered; at most 2 ticks per 10 min. Cause: the TS handles NMEA per CHUNK on the event loop (hardware/gps.ts:61-74, fs.ReadStream through the libuv threadpool) and lagged a released line by 0.15–0.4 s in the loaded VM, where Rust's reader thread forwards it at once. Seen 1–2× per 10 min JS-vs-Rust (fix_quality on a 13 ms pair after an NMEA restart; sky_state, whose change is a hold timer measured from GSV ARRIVAL, sky_state.rs / gps.ts), never JS-vs-JS. A value that matches neither neighbour stays UNTOLERATED"
+  streams = ["telemetry"]
+  around_closed_ms = 1500
+  # NARROWED (review-wp7): JS-LAG only — the JS value is Rust's PREVIOUS sample
+  # and the JS NEXT sample is Rust's value (a Rust value one tick late fails);
+  # only metrics.gps.* within ±1.5 s of an NMEA transition (gps group) or a GSV
+  # satellites-in-view change; at most 2 ticks per 10 min, else all UNTOLERATED.
+  max_hits_per_10min = 2
+
+  [[rule.row]]
+  id = "ttff-arrival"
+  what = "NARROWED to ±0.1 s (review-wp7). `ttff_s` is the difference of two NMEA line ARRIVAL instants inside each process (first quality-0 GGA → first fix, gps.ts:139-151 / gps_group.rs TtffClock, identical logic). The player writes each line to both ptys at once, but Node handles a pty chunk when its event loop gets to it (fs.ReadStream reads through the libuv threadpool; 0.4–1.5 s tick stalls were seen in the loaded Docker VM) while Rust's reader thread forwards it at once; quantised to 0.1 s (round(t,1)) this flips by one step (149.1 vs 149, JS-vs-Rust; JS-vs-JS identical). Tolerated: ±0.1 s (one quantum) on `metrics.gps.ttff_s.value` only"
+  streams = ["telemetry"]
+  # NARROWED (review-wp7): one 0.1 s quantum.
+  numeric = { "metrics.gps.ttff_s.value" = 0.1 }
+
+  [[rule.row]]
+  id = "sky-file-end"
+  what = "RIG: gnss-sky.json at the end is each agent's LAST 15 s write (gps.ts:232-258 SKY_PUBLISH_MS) at its own instant (`timestamp`); `hold_s` is the state's age at that write, so with the SAME `state` it may differ by the distance between the two writes' `timestamp`s (rounded up) + 1 s truncation; every other key of the file is compared"
+  streams = ["file:gnss-sky.json"]
+
+  [[rule.row]]
+  id = "end-snapshot"
+  what = "RIG: state.json `latest` at the end — both agents get SIGTERM together, but their last ticks before it are up to one tick apart (different phases), so the final payload's values may be one sample apart; `seq` there is T2, `ts` T1. Every published payload is compared in the telemetry stream"
+  streams = ["state"]
+  # NARROWED (review-wp7): no path exclusion. Each side's `latest` must EQUAL its
+  # own last published telemetry payload (else UNTOLERATED); across agents the
+  # key structure of `latest` is compared under the telemetry rules (T4/T6 …)
+  # and only the VALUES are this row.
+  matcher = "end_snapshot"
+
+  [[rule.row]]
+  id = "mqtt-error-text"
+  what = "MQTT/TLS transport error TEXT (wp1.md amb. #6; review-wp1 MUST-FIX #1 item 1; WP1 follow-up amb. 5): the state.json `error` events and `lastError` carry rumqttc/rustls text where mqtt.js/Node has its own (`read ECONNRESET`, `Client network socket disconnected …`), EXCEPT `Keepalive timeout` and `connack timeout`, which WP1 maps to the mqtt.js words and which must match exactly. Other error-level events that are not one of the agent's own wordings compare as one class `<transport error>` (present on both sides or neither); `lastError` likewise"
+  streams = ["events", "state"]
+  matcher = "transport_error_event"
+  own_prefixes = ["publish error:", "config subscribe failed", "command subscribe failed", "unhandledRejection", "ledger write failed", "read error:", "upload failed"]
+  exact_texts = ["Keepalive timeout", "connack timeout"]
+
+  [[rule.row]]
+  id = "reconnect-cadence"
+  what = "reconnect cadence (review-wp1 MUST-FIX #1 item 2; WP1 follow-up amb. 3, 5): Rust backs off 1→60 s with jitter (xorgate-cloud mqtt.rs) where mqtt.js retries every 2 s (mqtt.ts:63 reconnectPeriod 2000), and detects a dead link at the 2nd unanswered ping (~2× keepalive) vs mqtt.js ~1.5×. So in a run with a closed span: the COUNTS of `reconnecting…`, `connection closed`, `connected to …` and transport-error events differ; a telemetry/status message inside the span (extended to both reconnects) ±5 s may be unpaired (a QoS 0 tick racing the drop is lost by Rust, written to the dying socket by mqtt.js); `published`/`publishErrors` may differ by 1 per closed span + 1 (the SIGTERM race at the end); the REPORT count of a quiet period overlapping the span may differ (each reconnect's retained redelivery triggers a `cloud` report, and mqtt.js, reconnecting sooner, can see an intermediate retained rev the Rust agent never sees — the next quiet period's last report still binds both); and a report VALUE that an input fed differently because the input changed between the two agents' post-reconnect report times (a tape transition between them, report pair inside a cut's window — e.g. effective.sim.checked_at from the LTE file)"
+  streams = ["events", "telemetry", "status", "state", "report"]
+  matcher = "reconnect_cadence"
+  around_closed_ms = 5000
+  event_exact = ["warn: reconnecting…", "warn: connection closed"]
+  # NARROWED (review-wp7): `connected to …` is NOT here — each agent must log it
+  # exactly #closed spans + 1 times; `reconnecting…` / `connection closed` only
+  # with the Rust count ≤ the JS count; the transport-error class either way;
+  # an unpaired telemetry tick at most ONE per side and span; the report COUNT
+  # of a period overlapping a span only as modelled (|Δ| ≤ spans it overlaps,
+  # every extra report origin `cloud` with a rev the tape published); a report
+  # VALUE only on a path an LTE-file change between the two reports feeds.
+  event_prefixes = ["error: <transport error>"]
+  count_paths = ["published", "publishErrors"]
+
+  [[rule.row]]
+  id = "subscribe-fail-order"
+  what = "a subscribe still awaiting its SUBACK at a drop fails once with `Connection closed` (mqtt.js _flushVolatile, client.js:794-803); Rust reports it just BEFORE the error/close events, the TS between `error` and `close` (WP1 follow-up amb. 4). The events stream is compared as a multiset, so the order never shows; counts must match"
+  matcher = "doc_only"
+
+  [[rule.row]]
+  id = "disconnect-codec"
+  what = "rumqttc 0.25.1 and a broker DISCONNECT (WP1 follow-up amb. 6 as corrected by review-wp1-followup MUST-FIX #1): a reason-code-only DISCONNECT is SILENTLY SWALLOWED — the close that follows shows as close-only when the broker sends TLS close_notify and as an `error` (<transport error>) + close when it does not; a zero-length DISCONNECT `[E0 00]` yields `Payload is required`. mqtt.js logs the disconnect + close. Never a reconnect loop, never data loss. Not reachable with mosquitto in the rig; whether AWS IoT Core sends these forms is unverified (bench capture). A mismatch of this shape on a bench tape is reported UNTOLERATED and judged against this row by hand. (A TLS peer-close WITHOUT close_notify producing an extra `mqtt error` is NOT tolerated: phase-2/integration removes it)"
+  matcher = "doc_only"
+
+  [[rule.row]]
+  id = "tick-drift"
+  what = "FLAG (rig, reviewer to confirm; A2): Node's setInterval re-arms after each callback and drifts a few ms per tick, tokio's interval keeps its phase, so the two agents' tick phases slide past each other; when the pair gap exceeds the rig's flip gap (`--flip-gap-ms`, 500 ms since series 5 = the nearest alignment; was 800) the hold gate flips roles and logs ONE lead tick as `skip` (pairs.ndjson). That tick's message is unpaired (within ±400 ms of the logged tick) and not value-compared; the values of every paired tick still are"
+  streams = ["telemetry"]
+
+  [[rule.row]]
+  id = "fs-error-text"
+  what = "failed atomic-write error TEXT (review-wp3 T8 item 1, shrunk per phase-2/integration): both agents now name Node's step and the temp file (`open '<dir>/.settings.json.tmp.<pid>.<n>'`, `rename '<tmp>' -> '<dest>'`, pathless write/fsync); only the temp file's `<pid>.<n>` differs per process and is normalised. Reaches state.json (warn) via `cloud config apply failed: …` (worker.ts:892) and `uploadBucket persist failed: …` (worker.ts:806) only on a failed write; not reachable in the rig"
+  streams = ["events"]
+  event_prefixes = ["cloud config apply failed: ", "uploadBucket persist failed: "]
+
+  [[rule.row]]
+  id = "rust-only-events"
+  what = "Rust-only event `config report failed: …` (review-wp3 T8 item 2): emitted on `PublishFailure::Failed` (the report publish could not be queued); the TS wording exists (config-sync.ts:1567, a thrown publish) but mqtt.js queues offline and never reaches it in that case. Tolerated only when present on the Rust side and absent on the JS side"
+  streams = ["events"]
+  event_prefixes = ["config report failed: "]
+
+  [[rule.row]]
+  id = "write-error-survival"
+  what = "state.json / pidfile write errors (wp1.md amb. #11; review-wp1 MUST-FIX #1 item 4): the TS throws from a timer and the process dies, Rust logs `[agent] state.json write failed: …` / `pidfile write failed` and continues. Consumer-invisible; not reachable in the rig unless the home is made unwritable — a JS crash with such a write error ends its streams (the diff then lists every later message as unpaired)"
+  matcher = "doc_only"
+
+  [[rule.row]]
+  id = "task-prefix"
+  what = "panics in supervised tasks are reported like unhandledRejection with an extra `<task>:` segment (wp1.md amb. #15; review-wp1 MUST-FIX #1 item 5): Rust `unhandledRejection: <task>: <msg>` vs TS `unhandledRejection: <msg>` (worker.ts:656-662) — the Rust side's `<task>: ` is stripped before comparing"
+  streams = ["events", "state"]
+  matcher = "task_prefix"
+
+  [[rule.row]]
+  id = "s3-error-text"
+  what = "PENDING Phase 3 (CF32, review-wp5 MUST-FIX 1): S3 / IoT-creds transport error TEXT (s3.rs:381-393, iot_creds.rs:252-316 vs node) reaches state.json via `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) once the uploader is wired; the suffix after the prefix is not compared for non-HTTP failures. Not reachable in Phase 2 (recording off)"
+  streams = ["events"]
+  matcher = "suffix_after_prefix"
+  event_prefixes = ["upload failed, retrying in "]
+
+[[rule]]
+id = "T9"
+title = "NO numeric-format tolerance: numbers are compared as their JSON text (1 vs 1.0 is a FAIL)"
+basis = "phase file T9"
+kind = "strict_numbers"
