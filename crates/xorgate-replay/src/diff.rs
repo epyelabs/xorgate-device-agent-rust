@@ -1611,6 +1611,41 @@ mod tests {
     }
 
     #[test]
+    fn report_count_around_a_cut_is_reconnect_cadence() {
+        let t = table();
+        let r = |rev: i64| serde_json::json!({"v":1,"origin":"cloud","rev":rev});
+        let a = cap(
+            "js",
+            vec![
+                msg(10_000, "config/reported", r(1)),
+                msg(14_000, "config/reported", r(2)),
+            ],
+        );
+        let b = cap("rust", vec![msg(40_000, "config/reported", r(2))]);
+        let count_tol = |play: &PlayInfo| {
+            diff(&a, &b, play, &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == "(count)")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        assert!(count_tol(&PlayInfo::default())
+            .iter()
+            .all(|x| x == UNTOLERATED));
+        let cut = PlayInfo {
+            closed_spans: vec![(5_000, 12_000)],
+            ..Default::default()
+        };
+        let tols = count_tol(&cut);
+        assert_eq!(
+            tols.first().map(String::as_str),
+            Some("T8/reconnect-cadence"),
+            "{tols:?}"
+        );
+    }
+
+    #[test]
     fn ram_beyond_t3_is_host_only_where_the_host_moved() {
         let t = table();
         let ram = |ts: i64, seq: i64, v: f64| {
