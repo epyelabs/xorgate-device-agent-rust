@@ -143,6 +143,29 @@ async fn server_disconnect_is_surfaced_before_the_close() {
     assert!(end.shutdown(Duration::from_secs(2)).await);
 }
 
+/// review-wp1-followup #2: the broker side vanishes WITHOUT TLS close_notify
+/// (the stub's `Kill` drops the stream: FIN, no alert). Node 20/24 + mqtt.js
+/// emit `close`/`end` only (`integration-tools/fin-probe.mjs`), so no `error`.
+#[tokio::test]
+async fn tls_fin_without_close_notify_is_not_an_error() {
+    let b = broker().await;
+    let (_p, mut events, end) = client(b.port, 60).split();
+    connected(&mut events).await;
+    b.cmd(1, Cmd::Kill);
+    match next(&mut events).await {
+        MqttEvent::Disconnected {
+            reason,
+            emits_error,
+        } => {
+            assert!(reason.contains("close_notify"), "{reason}");
+            assert!(!emits_error, "{reason}");
+        }
+        ev => panic!("{ev:?}"),
+    }
+    connected(&mut events).await; // and it reconnects
+    assert!(end.shutdown(Duration::from_secs(2)).await);
+}
+
 /// review-wp1 #3: a ping left unanswered ends the link as mqtt.js's
 /// `Keepalive timeout`, with the `error` event (keepalive 5 s: ~10 s).
 #[tokio::test]

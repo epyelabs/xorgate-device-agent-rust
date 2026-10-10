@@ -467,9 +467,9 @@ pub fn main(_args: &[String]) -> i32 {
         home,
         build: crate::build_info::load().format(),
     };
-    for line in render(&st, now, &ctx) {
-        println!("{line}");
-    }
+    // EPIPE (`status | head -1`): `console.log` swallows it and the exit code
+    // stays the state's (`status.ts:32` sets it first) — integration review #1.
+    let _ = super::logs::write_lines(render(&st, now, &ctx));
     if matches!(st, DaemonStatus::Running { .. }) {
         0
     } else {

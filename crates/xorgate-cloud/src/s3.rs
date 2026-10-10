@@ -124,9 +124,17 @@ impl ObjectPut for S3Put {
     }
 }
 
-/// The client node:https behaves like: no env proxy, HTTP/1.1, platform roots.
+/// The client node:https behaves like: no env proxy, HTTP/1.1, platform roots;
+/// redirects are never followed (`https.request` does not, `s3-put.ts:109`;
+/// reqwest would re-issue a 303 as a GET — review-wp5 #4); idle pooled
+/// sockets close after 5 s like Node ≥ 19's `globalAgent` (`keepAlive`,
+/// `timeout: 5000`), so a server-closed socket is not reused (review-wp5 #6).
 pub fn https_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder().no_proxy().build()
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .pool_idle_timeout(Duration::from_secs(5))
+        .build()
 }
 
 /// `S3PutOptions` (`s3-put.ts:14-27`).
@@ -282,6 +290,12 @@ pub fn build_upload_options(
 // node:https-like plumbing shared with `iot_creds`.
 
 /// Last-activity stamp for the idle watchdog (monotonic, tokio clock).
+///
+/// Known edges vs Node's socket `timeout` (review-wp5 #5, accepted): DNS,
+/// TCP connect and the TLS handshake are not counted as activity (Node
+/// resets on handshake bytes; hyper exposes no connect hook), and the last
+/// body pull precedes the kernel hand-off by at most hyper's write buffer
+/// (~408 KB). Both are negligible against the 15 s / 60 s budgets.
 pub(crate) struct Activity {
     last: Mutex<Instant>,
 }

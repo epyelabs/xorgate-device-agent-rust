@@ -157,13 +157,13 @@ fn tape_cli(args: &[String]) {
 }
 
 /// `saveSettings(doc)`; on failure the `main().catch` line (Node's
-/// `err.message`: the temp-file `open` names `.settings.json.tmp.<pid>.0`).
+/// `err.message` of the failing step: `open '<dir>/.settings.json.tmp.<pid>.<n>'`,
+/// or `rename '<tmp>' -> '<path>'`; review-wp6 #7).
 fn save(io: &dyn SetIo, doc: &Map<String, Value>) -> Result<(), String> {
     let path = xorgate_hal::settings_io::settings_path(&io.home());
-    xorgate_hal::atomic_write::atomic_write_json(&path, &JsJsonMap(doc)).map_err(|e| {
-        let tmp = path.with_file_name(format!(".settings.json.tmp.{}.0", std::process::id()));
-        xorgate_hal::io::node_fs_message(&e, "open", &tmp)
-    })
+    let bytes = serde_json::to_vec(&JsJsonMap(doc)).map_err(|e| e.to_string())?;
+    xorgate_hal::atomic_write::atomic_write_bytes_traced(&path, &bytes)
+        .map_err(|e| e.node_message())
 }
 
 fn load(io: &dyn SetIo) -> AgentSettings {

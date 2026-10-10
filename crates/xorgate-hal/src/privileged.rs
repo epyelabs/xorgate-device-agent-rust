@@ -39,8 +39,10 @@ pub struct PrivilegedArgv {
 }
 
 impl PrivilegedArgv {
-    /// The TS argv verbatim (`commands.ts:252, 256`).
-    pub fn ts_exact(call: &PrivilegedCall) -> Self {
+    /// The TS argv verbatim (`commands.ts:252, 256`). Test-only: the Rust
+    /// agent never runs it (O3 swaps the updater unit; review-wp4 #5).
+    #[cfg(test)]
+    pub(crate) fn ts_exact(call: &PrivilegedCall) -> Self {
         Self { argv: call.argv() }
     }
 

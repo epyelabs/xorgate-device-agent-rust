@@ -12,15 +12,14 @@
 //! know its syscall and path.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
 use xorgate_core::commands::{load_ledger, Ledger};
 
-use crate::atomic_write::fsync_dir;
-use crate::io::node_fs_message;
+use crate::atomic_write::{fsync_dir, temp_path_for};
+use crate::io::{node_fd_message, node_fs_message, node_rename_message};
 use crate::read_lossy::{read_text, FileText};
 
 /// `loadLedger(path)` (`commands.ts:172-194`): `readFileSync(path, "utf8")`
@@ -32,8 +31,6 @@ pub fn load(path: &Path) -> Ledger {
     }
 }
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// `atomicWriteJson(path, ledger)` (`commands.ts:213-216`). `Err` is the Node
 /// `err.message` of the failing step.
 pub fn save(path: &Path, ledger: &Ledger) -> Result<(), String> {
@@ -42,16 +39,8 @@ pub fn save(path: &Path, ledger: &Ledger) -> Result<(), String> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let dir = match path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        Some(d) => d.to_path_buf(),
-        None => PathBuf::from("."),
-    };
-    let base = path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp = dir.join(format!(".{base}.tmp.{}.{n}", std::process::id()));
+    // The same module-global counter as every other atomic write (TS `tmpCounter`).
+    let (dir, tmp) = temp_path_for(path);
     let prior = if is_root() {
         std::fs::metadata(path).ok()
     } else {
@@ -72,11 +61,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     // renameSync, unlink the temp on failure.
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!(
-            "{} -> '{}'",
-            node_fs_message(&e, "rename", &tmp),
-            path.display()
-        ));
+        return Err(node_rename_message(&e, &tmp, path));
     }
     fsync_dir(&dir);
     Ok(())
@@ -88,17 +73,11 @@ fn write_and_sync(
     prior: Option<&std::fs::Metadata>,
 ) -> Result<(), String> {
     f.write_all(bytes)
-        .map_err(|e| no_path_message(&e, "write"))?;
+        .map_err(|e| node_fd_message(&e, "write"))?;
     if let Some(m) = prior {
         preserve_ownership(f, m);
     }
-    f.sync_all().map_err(|e| no_path_message(&e, "fsync"))
-}
-
-/// Node's message for a syscall on an fd (no path): `EIO: i/o error, write`.
-fn no_path_message(e: &io::Error, syscall: &str) -> String {
-    let m = node_fs_message(e, syscall, Path::new(""));
-    m.strip_suffix(" ''").map(str::to_string).unwrap_or(m)
+    f.sync_all().map_err(|e| node_fd_message(&e, "fsync"))
 }
 
 fn is_root() -> bool {
@@ -121,7 +100,9 @@ fn preserve_ownership(f: &File, prior: &std::fs::Metadata) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use xorgate_core::commands::claim;
 
     fn scratch(tag: &str) -> PathBuf {
@@ -190,7 +171,7 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty());
         assert_eq!(
-            no_path_message(&io::Error::from_raw_os_error(libc::ENOSPC), "write"),
+            node_fd_message(&io::Error::from_raw_os_error(libc::ENOSPC), "write"),
             "ENOSPC: no space left on device, write"
         );
         let _ = std::fs::remove_dir_all(&d);

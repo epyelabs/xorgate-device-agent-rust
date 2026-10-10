@@ -14,7 +14,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use xorgate_core::telemetry::{ActivityLevel, ConnectionState, StatusPayload};
 
 use crate::ctx::{AgentCtx, ConfigPlane, TelemetrySource};
@@ -22,6 +22,26 @@ use crate::mqtt_plane::{MqttHandle, MqttPlane, QoS};
 
 /// The hard exit budget after the final publish (`setTimeout(…, 2000)`, `:1324`).
 pub const EXIT_BUDGET: Duration = Duration::from_millis(2000);
+
+/// The `sig` label of a shutdown forced by the MQTT loop task ending on its
+/// own (`[agent] shutting down (mqtt event loop ended)…`).
+pub const LOOP_ENDED: &str = "mqtt event loop ended";
+
+/// The MQTT loop task ended without a shutdown (it ends only after the
+/// cancel, so this is a panic inside it). Rust-only — mqtt.js has no such
+/// path (review-wp1 #10a, review-wp1-followup #4): log, `lastError`, flush,
+/// then the worker runs the normal [`Shutdown`] (pidfile removal, an
+/// `online:false` attempt — the dead loop cannot carry it, the LWT does —
+/// the ≤ 2 s budget) and exits with this code, so systemd's
+/// `Restart=always` restarts a cleanly stopped process. `panic="abort"` is
+/// O10's call at the gate, not made here.
+pub fn on_mqtt_loop_ended(ctx: &AgentCtx) -> i32 {
+    let t = ctx.now_ms();
+    error!("[agent] mqtt event loop ended unexpectedly");
+    ctx.state.set_error(LOOP_ENDED, t);
+    ctx.state.flush(t, true);
+    1
+}
 
 /// The SIGHUP handler (`worker.ts:1339-1343`), wording verbatim.
 pub fn on_sighup(ctx: &AgentCtx) {

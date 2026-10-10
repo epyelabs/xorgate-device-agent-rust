@@ -61,7 +61,10 @@ pub fn journal_args(n: f64, follow: bool) -> Vec<String> {
     let count = if n.is_finite() && n >= 1.0 {
         format!("{}", n.trunc() as u64)
     } else {
-        // `slice(-Infinity)` / a negative count: everything the journal has.
+        // `slice(-Infinity)` is everything. A negative count is NOT everything
+        // in the TS — `slice(-(-3))` drops the first 3 lines, which the file
+        // path reproduces (`slice_start`) — but the journal has no such
+        // offset, so both become everything it has (A7, review-wp6 #14).
         "all".to_string()
     };
     let mut a = vec!["-u".to_string(), UNIT.to_string(), "-n".to_string(), count];
@@ -104,13 +107,26 @@ pub fn main(args: &[String]) -> i32 {
         return exec_journal(n, follow);
     }
 
-    for line in read_log_tail(n, &path) {
-        println!("{line}");
-    }
+    // A closed stdout (`logs | head -1`): Node's `console.log` swallows the
+    // EPIPE (`kWriteToConsole`), so the tail stops writing and the run ends
+    // with its normal code (integration review #1). `-f` then dies on its
+    // first `process.stdout.write` (exit 1), which `follow_file` mirrors.
+    let _ = write_lines(read_log_tail(n, &path));
     if !follow {
         return 0;
     }
     follow_file(&path)
+}
+
+/// One `console.log` per line on a locked stdout; the first write or flush
+/// error (EPIPE) stops the writing and is returned instead of panicking like
+/// `println!`. Callers mirroring `console.log` ignore it, as Node does.
+pub(crate) fn write_lines(lines: impl IntoIterator<Item = String>) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
+    for line in lines {
+        writeln!(out, "{line}")?;
+    }
+    out.flush()
 }
 
 /// O9 fallback: replace this process with `journalctl` (found on `PATH`).

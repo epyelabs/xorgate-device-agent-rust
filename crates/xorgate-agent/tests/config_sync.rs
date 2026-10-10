@@ -831,11 +831,13 @@ fn every_fixture_scenario_has_a_test() {
     }
 }
 
-// --- WP1 ambiguity #8: a QoS 1 report into a dead link stays pending ----------------
+// --- a transport that refuses with NotConnected: the report stays pending ----------
 
-/// The Rust client does not queue offline (`PublishFailure::NotConnected`):
-/// the local change must stay pending — even when `online()` already reads
-/// true — and the next connect's `boot` request (upgraded to `local`) re-sends it.
+/// The real client queues offline publishes (`Ok`, WP1 follow-up), so
+/// `NotConnected` comes only from a test transport now; the defensive arm
+/// still treats it as not delivered: the local change stays pending — even
+/// when `online()` already reads true — and the next connect's `boot`
+/// request (upgraded to `local`) re-sends it.
 #[tokio::test(start_paused = true)]
 async fn not_connected_keeps_the_local_change_pending() {
     let (h, cap) = (Home::new("nc"), Arc::new(Cap::default()));
@@ -890,4 +892,31 @@ async fn heartbeat_requests_boot_every_period() {
         .map(|s| serde_json::from_str::<Value>(s).unwrap()["origin"].to_string())
         .collect();
     assert_eq!(origins, vec!["\"boot\""; 3]);
+}
+
+/// `cloud config apply failed: <err.message>` (`worker.ts:890-893`) names the
+/// failing step and the TEMP path, as Node does (`atomicWrite.ts:46`; node
+/// 20 + 24 probe in integration.md): `ENOENT: no such file or directory,
+/// open '<dir>/.settings.json.tmp.<pid>.<n>'`. Only `<pid>.<n>` differs from
+/// a TS run (T8).
+#[test]
+fn a_failed_apply_reports_the_temp_path_like_node() {
+    let dir = std::env::temp_dir().join(format!("xg-apply-fail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("missing").join("settings.json");
+    let m = parse_cloud_message(r#"{"v":1,"rev":3,"gnssAntBias":true}"#).unwrap();
+    let err = apply_cloud_config(&m.config, &path).unwrap_err();
+    let prefix = format!(
+        "ENOENT: no such file or directory, open '{}/missing/.settings.json.tmp.{}.",
+        dir.display(),
+        std::process::id()
+    );
+    let rest = err.strip_prefix(&prefix).unwrap_or_else(|| panic!("{err}"));
+    let n = rest.strip_suffix('\'').unwrap_or_else(|| panic!("{err}"));
+    assert!(
+        n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty(),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

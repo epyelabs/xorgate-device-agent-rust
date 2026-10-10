@@ -18,9 +18,8 @@ use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::settings::AgentSettings;
 use xorgate_core::settings_migrate::{migrate_media_enabled, MediaEnabledMigration};
 use xorgate_core::telemetry::ActivityLevel;
-use xorgate_hal::atomic_write::atomic_write_bytes;
+use xorgate_hal::atomic_write::{atomic_write_bytes_traced, AtomicWriteError};
 use xorgate_hal::config_sync_file::ensure_config_sync_baseline;
-use xorgate_hal::io::node_fs_message;
 use xorgate_hal::kvs_manifest_io::load_manifest;
 use xorgate_hal::settings_io::read_settings_text;
 
@@ -35,9 +34,10 @@ pub fn settings_json(settings: &AgentSettings) -> String {
     xorgate_core::js::to_json_string(&serde_json::to_value(settings).expect("settings serialise"))
 }
 
-/// `saveSettings(settings, path)` with JS-exact bytes.
-pub fn save_settings_js(path: &Path, settings: &AgentSettings) -> std::io::Result<()> {
-    atomic_write_bytes(path, settings_json(settings).as_bytes())
+/// `saveSettings(settings, path)` with JS-exact bytes; the error renders as
+/// Node's `err.message` ([`AtomicWriteError::node_message`]).
+pub fn save_settings_js(path: &Path, settings: &AgentSettings) -> Result<(), AtomicWriteError> {
+    atomic_write_bytes_traced(path, settings_json(settings).as_bytes())
 }
 
 /// The boot-time settings.json upgrades (`worker.ts:92-105`), BEFORE any
@@ -58,7 +58,7 @@ pub fn boot(ctx: &AgentCtx) {
         migrate_media_enabled(read_settings_text(&paths.settings).as_deref(), &stream_keys);
     if let Some(next) = &migration.save {
         if let Err(e) = save_settings_js(&paths.settings, next) {
-            let msg = node_fs_message(&e, "open", &paths.settings);
+            let msg = e.node_message();
             error!("[agent] fatal: settings.json migration write failed: {msg}");
             eprintln!("[agent] fatal: settings.json migration write failed: {msg}");
             std::process::exit(1);

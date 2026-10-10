@@ -351,6 +351,12 @@ pub trait PhaseHooks: Send + Sync + 'static {
         None
     }
     /// ConfigSync `hints()` (`:727-734`): bootDefer / powerShed / clockStepperArmed.
+    ///
+    /// Called while ConfigSync holds its core mutex (as are `camera_mount_state`
+    /// and the telemetry-scope closure, `sync.rs publish_report`): an
+    /// implementation must not take a lock whose holder can call into
+    /// ConfigSync (`request()`, `note_cloud_config`) — deadlock (review-wp3 #5,
+    /// Phase 3/4 rule).
     fn report_hints(&self) -> ReportHints {
         ReportHints::default()
     }
