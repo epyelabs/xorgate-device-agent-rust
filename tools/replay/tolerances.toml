@@ -249,6 +249,13 @@ source = "phase-1/evidence/accepted-divergences.md"
   matcher = "doc_only"
   pinned_by = "xorgate-agent::build_info tests"
 
+  [[rule.row]]
+  id = "D22"
+  what = "telemetry group with a non-finite leaf: TS JSON.stringify writes `null` (the cloud then drops the whole payload), Rust omits that GROUP. Matched only when the JS side's group holds a null leaf and the Rust side lacks the group"
+  streams = ["telemetry"]
+  matcher = "null_leaf_group"
+  pinned_by = "review-wp2 #6 (documented only; accepted-divergences.md D22)"
+
 [[rule]]
 id = "T8"
 title = "Phase 2 orchestrator decisions"
@@ -374,7 +381,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "fs-error-text"
-  what = "failed atomic-write error TEXT (review-wp3 T8 item 1): the TS names the temp file and the failing syscall (`EACCES: permission denied, open '<dir>/.settings.json.tmp.<pid>.<n>'`, or `rename '…' -> '…'`), Rust the final path with `open`. Reaches state.json (warn) via `cloud config apply failed: …` (worker.ts:892) and `uploadBucket persist failed: …` (worker.ts:806) only on a failed write. Compared after replacing `, <syscall> '<path>'…` by `, <fs-op> '<path>'`; the code and text before it must match"
+  what = "failed atomic-write error TEXT (review-wp3 T8 item 1, shrunk per phase-2/integration): both agents now name Node's step and the temp file (`open '<dir>/.settings.json.tmp.<pid>.<n>'`, `rename '<tmp>' -> '<dest>'`, pathless write/fsync); only the temp file's `<pid>.<n>` differs per process and is normalised. Reaches state.json (warn) via `cloud config apply failed: …` (worker.ts:892) and `uploadBucket persist failed: …` (worker.ts:806) only on a failed write; not reachable in the rig"
   streams = ["events"]
   event_prefixes = ["cloud config apply failed: ", "uploadBucket persist failed: "]
 

@@ -527,6 +527,15 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             out.push(cx.mismatch(path, a, b, tol));
         }
         _ => {
+            // T7/D22: the JS group carries a `null` leaf (a non-finite number),
+            // the Rust side omitted the whole group.
+            if let (Some(x), None) = (a, b) {
+                let rows = cx.table.matcher_rows("null_leaf_group", &cx.stream);
+                if !rows.is_empty() && path.matches('.').count() == 1 && has_null_leaf(x) {
+                    out.push(cx.mismatch(path, a, b, rows[0].clone()));
+                    return;
+                }
+            }
             // T6: a hint-only latch detail present on one side.
             let present = a.or(b).and_then(Value::as_str);
             if let (true, Some(text)) = (a.is_none() || b.is_none(), present) {
@@ -550,6 +559,15 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
         }
+    }
+}
+
+fn has_null_leaf(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::Object(m) => m.values().any(has_null_leaf),
+        Value::Array(a) => a.iter().any(has_null_leaf),
+        _ => false,
     }
 }
 
@@ -1128,22 +1146,38 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
     (format!("{level}: {msg}"), hit)
 }
 
-/// Node fs error text `<CODE>: <text>, <syscall> '<path>'[ -> '<path>']` with
-/// the syscall and the quoted paths replaced (`<fs-op> '<path>'`): the TS
-/// names the temp file and the failing syscall (open/rename), Rust the final
-/// path (T8 `fs-error-text`). Anything else is returned unchanged.
+/// Failed atomic-write text after phase-2/integration: both agents name Node's
+/// step and the temp file (`open '<dir>/.settings.json.tmp.<pid>.<n>'`,
+/// `rename '<tmp>' -> '<dest>'`, pathless write/fsync); only the temp file's
+/// `<pid>.<n>` is per-process (T8 `fs-error-text`). Anything else unchanged.
 fn normalise_fs_error(rest: &str) -> String {
-    let Some(q) = rest.find('\'') else {
-        return rest.to_string();
-    };
-    let head = &rest[..q];
-    let Some((before, op)) = head.trim_end().rsplit_once(", ") else {
-        return rest.to_string();
-    };
-    if op.is_empty() || !op.chars().all(|c| c.is_ascii_lowercase()) {
-        return rest.to_string();
+    let mut out = String::with_capacity(rest.len());
+    let mut i = 0;
+    let b = rest.as_bytes();
+    while i < b.len() {
+        if rest[i..].starts_with(".tmp.") {
+            let start = i + 5;
+            let mut j = start;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start && j < b.len() && b[j] == b'.' {
+                let mut k = j + 1;
+                while k < b.len() && b[k].is_ascii_digit() {
+                    k += 1;
+                }
+                if k > j + 1 {
+                    out.push_str(".tmp.<pid>.<n>");
+                    i = k;
+                    continue;
+                }
+            }
+        }
+        let ch = rest[i..].chars().next().unwrap_or_default();
+        out.push(ch);
+        i += ch.len_utf8();
     }
-    format!("{before}, <fs-op> '<path>'")
+    out
 }
 
 fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &mut Report) {
@@ -1482,18 +1516,17 @@ mod tests {
     }
 
     #[test]
-    fn fs_error_text_normalises_syscall_and_paths_only() {
+    fn fs_error_text_normalises_only_pid_and_counter() {
         assert_eq!(
             normalise_fs_error("EACCES: permission denied, open '/h/.settings.json.tmp.12.0'"),
-            "EACCES: permission denied, <fs-op> '<path>'"
+            "EACCES: permission denied, open '/h/.settings.json.tmp.<pid>.<n>'"
         );
         assert_eq!(
-            normalise_fs_error("EXDEV: cross-device link not permitted, rename '/a' -> '/b'"),
-            "EXDEV: cross-device link not permitted, <fs-op> '<path>'"
+            normalise_fs_error("EXDEV: cross-device link not permitted, rename '/h/.k.tmp.7.3' -> '/h/k'"),
+            "EXDEV: cross-device link not permitted, rename '/h/.k.tmp.<pid>.<n>' -> '/h/k'"
         );
         assert_eq!(normalise_fs_error("unexpected token"), "unexpected token");
         let t = table();
-        // worker.ts:892 logs it at warn.
         let (ka, ha) = event_key(
             "warn",
             "cloud config apply failed: EACCES: permission denied, open '/h/.settings.json.tmp.1.0'",
@@ -1502,12 +1535,20 @@ mod tests {
         );
         let (kb, _) = event_key(
             "warn",
-            "cloud config apply failed: EACCES: permission denied, open '/h/settings.json'",
+            "cloud config apply failed: EACCES: permission denied, open '/h/.settings.json.tmp.88.0'",
             "rust",
             &t,
         );
         assert_eq!(ka, kb);
         assert_eq!(ha.as_deref(), Some("T8/fs-error-text"));
+        // A different step or path is still a difference.
+        let (kc, _) = event_key(
+            "warn",
+            "cloud config apply failed: EACCES: permission denied, open '/h/settings.json'",
+            "rust",
+            &t,
+        );
+        assert_ne!(ka, kc);
     }
 
     #[test]
@@ -1643,6 +1684,31 @@ mod tests {
             Some("T8/reconnect-cadence"),
             "{tols:?}"
         );
+    }
+
+    #[test]
+    fn d22_null_leaf_group_vs_omitted_group() {
+        let t = table();
+        let tel = |imu: Option<Value>| {
+            let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":10_000,"seq":1,"metrics":{}});
+            if let Some(i) = imu {
+                m["metrics"]["imu"] = i;
+            }
+            m
+        };
+        let run = |imu: Value| {
+            let a = cap("js", vec![msg(10_000, "telemetry", tel(Some(imu)))]);
+            let b = cap("rust", vec![msg(10_000, "telemetry", tel(None))]);
+            let play = PlayInfo { start_wall: -100_000, end_wall: 100_000, ..Default::default() };
+            diff(&a, &b, &play, &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == "metrics.imu")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(serde_json::json!({"quat_r":{"value":null}})), vec!["T7/D22".to_string()]);
+        assert_eq!(run(serde_json::json!({"quat_r":{"value":1}})), vec![UNTOLERATED.to_string()]);
     }
 
     #[test]
