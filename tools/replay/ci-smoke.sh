@@ -58,8 +58,26 @@ rm -rf "$OUT"
   --broker-host localhost --broker-port 8884 --proxy-listen 127.0.0.1:8883 \
   --certs "$CERTS" --shims "$HERE/shims" --fake-python "$HERE/fake-python" \
   --work /tmp/replay-ci-work --settle-s 10 --stagger-ms 300
+# SMOKE ONLY: the host-load-dependent system fields are excluded. Both agents
+# read the CI runner's live /proc/stat, /proc/meminfo and statfs, so under a
+# loaded shared runner cpu_usage swings by tens of points between the two
+# agents' tick instants (seen: 51 vs 8.2, 300 ms apart, at 9c6a1d7 and 630ffe0)
+# and T3/host did not cite it. A Rust-vs-Rust smoke is a plumbing check, not
+# parity: the JS-vs-Rust rig runs (run-rig.sh) keep these fields under T3 +
+# T3/host unchanged. throttled and rail_5v are tape-fed (exact) and stay compared.
+TOL=$(mktemp)
+cat "$HERE/tolerances.toml" - > "$TOL" <<'TOML'
+
+[[rule]]
+id = "SMOKE-host"
+title = "CI smoke only (ci-smoke.sh): host-load-dependent system fields not compared"
+basis = "ci-smoke.sh: Rust-vs-Rust on a shared CI runner; the JS-vs-Rust rig runs keep T3"
+kind = "exclude"
+streams = ["telemetry", "state"]
+paths = ["metrics.system.cpu_usage.value", "metrics.system.ram_usage.value", "metrics.system.disk_usage.value", "latest.metrics.system.cpu_usage.value", "latest.metrics.system.ram_usage.value", "latest.metrics.system.disk_usage.value"]
+TOML
 set +e
-"$RP" diff "$OUT" --tolerances "$HERE/tolerances.toml"
+"$RP" diff "$OUT" --tolerances "$TOL"
 RC=$?
 set -e
 echo "== diff exit $RC ($OUT/diff.md)"
