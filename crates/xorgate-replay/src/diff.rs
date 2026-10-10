@@ -2040,7 +2040,15 @@ pub fn diff_with(
             match (x, y) {
                 (Some(x), Some(y)) => {
                     flags_pair(&cx, x, y, &mut rep);
-                    cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep)
+                    if stream == "sms" {
+                        // T8/O4 + T8/sms-duration judge their fields here;
+                        // `cmp` compares everything else.
+                        let (px, py, n) = sms_decisions(&cx, &x.payload, &y.payload, &mut rep);
+                        cmp(&cx, "", Some(&px), Some(&py), &mut rep);
+                        rep.stats.entry(stream.into()).or_default().leaves += n;
+                    } else {
+                        cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep)
+                    }
                 }
                 _ => {
                     // A status message around a cut connection (online/LWT
@@ -2177,7 +2185,7 @@ pub fn diff_with(
     }
 
     // ---- recentEvents msg multiset
-    diff_events(a, b, play, table, &mut rep);
+    diff_events(a, b, play, facts, table, &mut rep);
 
     // ---- sudo argv sequence
     diff_sudo(a, b, table, &mut rep);
@@ -2587,25 +2595,199 @@ fn normalise_fs_error(rest: &str) -> String {
     out
 }
 
-fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &mut Report) {
+/// The TS real-mode sweep result when no interface-05 tty exists
+/// (`sms-modem.ts:524`): T8/O4's JS half.
+const TS_SMS_NO_MODEM: (&str, &str) = ("no_modem", "no SIMCom interface 05 tty");
+/// The Rust real-mode sweep until Phase 4 (`command_flow.rs:511-516`): O4.
+const RS_SMS_UNAVAILABLE: (&str, &str) =
+    ("error", xorgate_core::command_flow::SMS_READER_UNAVAILABLE);
+
+/// T8/O4 applies: a real-mode tape (`meta.env.MODE = real`, worker.ts:930)
+/// and one JS + one Rust agent; `Some(js is A)`.
+fn o4_applies(facts: &InputFacts, js_a: Option<bool>) -> Option<bool> {
+    js_a.filter(|_| facts.mode.as_deref() == Some("real"))
+}
+
+/// T8/O4 and T8/sms-duration on one paired `…/sms` result. Each row judges
+/// exactly its own leaves (O4: `status` + `error`, only when the JS document
+/// holds the TS no-modem pair AND the Rust one the O4 pair; sms-duration:
+/// `durationMs`, only when both are non-negative integers ≤ `max_delta_ms`
+/// apart); those leaves are removed from the returned documents, which `cmp`
+/// compares as usual. The third value = the leaves removed (stats).
+fn sms_decisions(cx: &Cx, x: &Value, y: &Value, rep: &mut Report) -> (Value, Value, usize) {
+    let (mut x, mut y) = (x.clone(), y.clone());
+    let mut removed = 0;
+    let pair_of = |v: &Value| {
+        (
+            v.get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            v.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        )
+    };
+    let o4 = cx.table.matcher_rows("read_sms_unavailable", "sms");
+    if let (Some(js_a), Some(id)) = (o4_applies(cx.facts, cx.js_a), o4.first()) {
+        let (js, rs) = if js_a { (&x, &y) } else { (&y, &x) };
+        let (pj, pr) = (pair_of(js), pair_of(rs));
+        if (pj.0.as_str(), pj.1.as_str()) == TS_SMS_NO_MODEM
+            && (pr.0.as_str(), pr.1.as_str()) == RS_SMS_UNAVAILABLE
+        {
+            for k in ["status", "error"] {
+                rep.push(cx.mismatch(k, x.get(k), y.get(k), id.clone()));
+                for d in [&mut x, &mut y] {
+                    if let Some(o) = d.as_object_mut() {
+                        o.remove(k);
+                    }
+                }
+                removed += 1;
+            }
+        }
+    }
+    if let Some((rid, row)) = cx
+        .table
+        .decision_row("sms-duration")
+        .filter(|(_, r)| crate::tolerances::stream_matches(&r.streams, "sms"))
+    {
+        let max = row.max_delta_ms.unwrap_or(0);
+        let (p, q) = (
+            x.get("durationMs").and_then(Value::as_u64),
+            y.get("durationMs").and_then(Value::as_u64),
+        );
+        if let (Some(p), Some(q)) = (p, q) {
+            if p.abs_diff(q) <= max {
+                if p != q {
+                    let tol = format!("{rid}/sms-duration");
+                    rep.push(cx.mismatch(
+                        "durationMs",
+                        x.get("durationMs"),
+                        y.get("durationMs"),
+                        tol,
+                    ));
+                }
+                for d in [&mut x, &mut y] {
+                    if let Some(o) = d.as_object_mut() {
+                        o.remove("durationMs");
+                    }
+                }
+                removed += 1;
+            }
+        }
+    }
+    (x, y, removed)
+}
+
+/// A `read_sms <id>: status=… durationMs=<n>[ error=…]` event line
+/// (worker.ts:931-935, command_flow.rs `read_sms_line`) →
+/// `(line with durationMs=<ms>, request id, n)`; with `o4` the Rust O4 words
+/// are rewritten to the TS no-modem words (the second value says so).
+/// Anything else → `None`.
+fn sms_event_norm(msg: &str, o4: bool) -> Option<(String, bool, String, u64)> {
+    let rest = msg.strip_prefix("read_sms ")?;
+    let (id, body) = rest.split_once(": ")?;
+    if id.is_empty() || id.contains(' ') || !body.starts_with("status=") {
+        return None;
+    }
+    let (head, tail) = body.split_once(" durationMs=")?;
+    let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+    let n: u64 = tail.get(..digits)?.parse().ok()?;
+    let after = &tail[digits..];
+    if !(after.is_empty() || after.starts_with(" error=")) {
+        return None;
+    }
+    let mut head = head.to_string();
+    let mut after = after.to_string();
+    let mut hit = false;
+    let rs_status = format!("status={} ", RS_SMS_UNAVAILABLE.0);
+    let rs_error = format!(" error={}", RS_SMS_UNAVAILABLE.1);
+    if o4 && head.starts_with(&rs_status) && after == rs_error {
+        head = format!("status={} {}", TS_SMS_NO_MODEM.0, &head[rs_status.len()..]);
+        after = format!(" error={}", TS_SMS_NO_MODEM.1);
+        hit = true;
+    }
+    Some((
+        format!("read_sms {id}: {head} durationMs=<ms>{after}"),
+        hit,
+        id.to_string(),
+        n,
+    ))
+}
+
+fn diff_events(
+    a: &Capture,
+    b: &Capture,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
+    let js_a = js_a_of(a, b);
+    let o4 = table
+        .matcher_rows("read_sms_unavailable", "events")
+        .into_iter()
+        .next()
+        .filter(|_| o4_applies(facts, js_a).is_some());
+    let timing = table
+        .decision_row("sms-duration")
+        .filter(|(_, r)| crate::tolerances::stream_matches(&r.streams, "events"));
+    // Per side: request id → the `durationMs` of each of its read_sms lines.
+    type Durations = BTreeMap<String, Vec<u64>>;
     let count = |c: &Capture| {
         let mut m: BTreeMap<String, (usize, Option<String>)> = BTreeMap::new();
+        let mut durs: Durations = BTreeMap::new();
         for (_, level, msg) in &c.events {
-            let (k, hit) = event_key(level, msg, &c.meta.kind, table);
+            let (mut k, mut hit) = event_key(level, msg, &c.meta.kind, table);
+            if timing.is_some() {
+                let rust = c.meta.kind == "rust";
+                if let Some((line, o4_hit, id, n)) = sms_event_norm(msg, o4.is_some() && rust) {
+                    k = format!("{level}: {line}");
+                    if o4_hit {
+                        hit = o4.clone();
+                    }
+                    durs.entry(id).or_default().push(n);
+                }
+            }
             let e = m.entry(k).or_insert((0, None));
             e.0 += 1;
             if hit.is_some() {
                 e.1 = hit;
             }
         }
-        m
+        (m, durs)
     };
-    let (ca, cb) = (count(a), count(b));
+    let ((ca, da), (cb, db)) = (count(a), count(b));
+    // T8/sms-duration on the event lines: paired per request id, in order.
+    if let Some((rid, row)) = &timing {
+        let max = row.max_delta_ms.unwrap_or(0);
+        for (id, xs) in &da {
+            let Some(ys) = db.get(id) else { continue };
+            for (p, q) in xs.iter().zip(ys) {
+                rep.stats.entry("events".into()).or_default().compared += 1;
+                if p == q {
+                    continue;
+                }
+                rep.push(Mismatch {
+                    stream: "events".into(),
+                    at: format!("read_sms {id}"),
+                    path: "durationMs".into(),
+                    a: p.to_string(),
+                    b: q.to_string(),
+                    tol: if p.abs_diff(*q) <= max {
+                        format!("{rid}/sms-duration")
+                    } else {
+                        UNTOLERATED.into()
+                    },
+                });
+            }
+        }
+    }
     let keys: BTreeSet<&String> = ca.keys().chain(cb.keys()).collect();
     let t6 = table.of_kind("phase_owned", "events").next();
     let cadence = table.decision_row("reconnect-cadence");
     let had_cut = !play.closed_spans.is_empty();
-    let js_a = js_a_of(a, b);
     // Each agent connects once at start and once after every cut: a
     // different number of `connected to` is a reconnect loop or a lost
     // reconnect (review-wp7: `connected to` = #spans + 1 on both sides).
@@ -2656,7 +2838,10 @@ fn diff_events(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &m
         if x == y {
             if let Some(id) = norm {
                 // Equal only after a normalisation: record which row did it.
-                if k.contains("<transport error>") || k.contains("unhandledRejection") {
+                if k.contains("<transport error>")
+                    || k.contains("unhandledRejection")
+                    || o4.as_ref() == Some(&id)
+                {
                     rep.push(Mismatch {
                         stream: "events".into(),
                         at: "multiset (normalised)".into(),
@@ -4337,6 +4522,127 @@ mod tests {
         assert!(!has("report", "(qos)"));
         // 4 publishes against the contract + 2 pairs.
         assert_eq!(rep.stats["mqtt-flags"].compared, 6);
+    }
+
+    #[test]
+    fn o4_and_sms_duration_rows_judge_only_their_fields() {
+        let t = table();
+        let sms = |status: &str, error: &str, dur: Value, total: i64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","requestId":"r1","ts":5_000,
+                "status":status,"error":error,"durationMs":dur,"storage":{},
+                "total":total,"skipped":0,"partial":false,"messages":[]})
+        };
+        let line = |status: &str, dur: &str, error: &str| {
+            format!("read_sms r1: status={status} total=0 sent=0 unread=0 skipped=0 partial=false durationMs={dur} error={error}")
+        };
+        let js = |dur: i64, total: i64| {
+            let mut c = cap(
+                "js",
+                vec![msg(
+                    5_000,
+                    "sms",
+                    sms("no_modem", "no SIMCom interface 05 tty", dur.into(), total),
+                )],
+            );
+            c.events = vec![
+                (
+                    5_000,
+                    "warn".into(),
+                    line("no_modem", &dur.to_string(), "no SIMCom interface 05 tty"),
+                ),
+                (0, "info".into(), "connected to broker".into()),
+            ];
+            c
+        };
+        let rs = |dur: Value| {
+            let mut c = cap(
+                "rust",
+                vec![msg(
+                    5_001,
+                    "sms",
+                    sms(
+                        "error",
+                        "sms reader not available in this build",
+                        dur.clone(),
+                        0,
+                    ),
+                )],
+            );
+            c.events = vec![
+                (
+                    5_001,
+                    "warn".into(),
+                    line(
+                        "error",
+                        &dur.to_string(),
+                        "sms reader not available in this build",
+                    ),
+                ),
+                (0, "info".into(), "connected to broker".into()),
+            ];
+            c
+        };
+        let real = InputFacts {
+            mode: Some("real".into()),
+            ..Default::default()
+        };
+        let run = |a: &Capture, b: &Capture, f: &InputFacts| {
+            diff_with(a, b, &PlayInfo::default(), f, &[], &t)
+        };
+        let hits = |rep: &Report, id: &str| rep.mismatches.iter().filter(|m| m.tol == id).count();
+        // Real mode, JS vs Rust, 1 ms vs 0 ms: O4 (2 sms leaves + the event
+        // line) and sms-duration (sms + event line), nothing untolerated.
+        let rep = run(&js(1, 0), &rs(0.into()), &real);
+        assert_eq!(rep.untolerated(), 0, "{:?}", rep.mismatches);
+        assert_eq!(hits(&rep, "T8/O4"), 3, "{:?}", rep.mismatches);
+        assert_eq!(hits(&rep, "T8/sms-duration"), 2, "{:?}", rep.mismatches);
+        assert_eq!(
+            rep.stats["sms"].leaves,
+            leaf_count(&js(1, 0).msgs[0].payload)
+        );
+        // A/B swapped: the same.
+        assert_eq!(run(&rs(0.into()), &js(1, 0), &real).untolerated(), 0);
+        // Another field of that result still counts.
+        let rep = run(&js(0, 3), &rs(0.into()), &real);
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "total" && m.tol == UNTOLERATED));
+        // Not real mode (sim/replay answer from the fixture): O4 never applies.
+        let sim = InputFacts {
+            mode: Some("sim".into()),
+            ..Default::default()
+        };
+        let rep = run(&js(0, 0), &rs(0.into()), &sim);
+        assert_eq!(hits(&rep, "T8/O4"), 0);
+        assert!(rep.untolerated() >= 3, "{:?}", rep.mismatches);
+        // JS vs JS: O4 never applies, even with the Rust words on one side.
+        let mut b = rs(0.into());
+        b.meta.kind = "js".into();
+        assert_eq!(hits(&run(&js(0, 0), &b, &real), "T8/O4"), 0);
+        // Durations > 50 ms apart, negative, or non-integer: UNTOLERATED.
+        let rep = run(&js(51, 0), &rs(0.into()), &real);
+        let unt: Vec<_> = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.tol == UNTOLERATED)
+            .map(|m| (m.stream.clone(), m.path.clone()))
+            .collect();
+        assert!(
+            unt.contains(&("sms".into(), "durationMs".into())),
+            "{unt:?}"
+        );
+        assert!(
+            unt.contains(&("events".into(), "durationMs".into())),
+            "{unt:?}"
+        );
+        assert!(run(&js(50, 0), &rs(0.into()), &real).untolerated() == 0);
+        assert!(run(&js(1, 0), &rs((-1).into()), &real).untolerated() > 0);
+        assert!(run(&js(1, 0), &rs(serde_json::json!(1.5)), &real).untolerated() > 0);
+        // JS vs JS timing spread (2 vs 0): sms-duration only.
+        let rep = run(&js(2, 0), &js(0, 0), &InputFacts::default());
+        assert_eq!(rep.untolerated(), 0, "{:?}", rep.mismatches);
+        assert_eq!(hits(&rep, "T8/sms-duration"), 2);
     }
 
     #[test]

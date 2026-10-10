@@ -338,9 +338,16 @@ kind = "decisions"
 
   [[rule.row]]
   id = "O4"
-  what = "real-mode read_sms: sms result status:error \"sms reader not available in this build\""
-  streams = ["sms"]
+  what = "real-mode read_sms (tape meta.env.MODE = real, JS vs Rust only): the TS sweep finds no SIMCom interface-05 tty and answers status \"no_modem\", error \"no SIMCom interface 05 tty\" (sms-modem.ts:524); the Rust agent has no SMS reader until Phase 4 and answers status \"error\", error \"sms reader not available in this build\" (command_flow.rs:63, :511-516 — the O4 decision). Matched ONLY when the JS result carries exactly the TS pair and the Rust result exactly the O4 pair, and ONLY the `status` and `error` fields of that result: on `…/sms` those two leaves, and in the `read_sms <id>: status=… error=…` event line that renders the same result (worker.ts:930-937) those two words. Every other field (and the rest of the line) is compared as usual"
+  streams = ["sms", "events"]
   matcher = "read_sms_unavailable"
+
+  [[rule.row]]
+  id = "sms-duration"
+  what = "read_sms `durationMs` is a measured wall span of the sweep (TS sms-modem.ts:504-519 `end - start`; Rust command_flow.rs, monotonic, series-5 item 2): two agents' sweeps take 0-2 ms each (JS-vs-JS spread over every series-1..4 run: max 2 ms of 18 pairs). Matched ONLY on `…/sms` `durationMs` and the `durationMs=<n>` of the `read_sms <id>:` event line (paired per request id), ONLY when BOTH values are non-negative integers differing by at most max_delta_ms; nothing else in the payload"
+  streams = ["sms", "events"]
+  matcher = "sms_duration_ms"
+  max_delta_ms = 50
 
   [[rule.row]]
   id = "pidfile"

@@ -115,6 +115,9 @@ pub struct Row {
     /// a presence mismatch.
     #[serde(default)]
     pub values_only: bool,
+    /// Largest allowed |A − B| of a measured duration (T8 `sms-duration`).
+    #[serde(default)]
+    pub max_delta_ms: Option<u64>,
 }
 
 const KINDS: &[&str] = &[
