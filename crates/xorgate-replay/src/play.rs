@@ -146,6 +146,9 @@ const FLIP_GAP_MS: i64 = 800;
 /// A hold whose pair was not observed in full ends after this long.
 const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
+/// Cut mode: how long after the lag agent's predicted tick its read is
+/// assumed done (the JS `ts` is stamped after `await source.read()`).
+const CUT_READ_MS: i64 = 150;
 const PREFILL_MS: u64 = 1000;
 
 // ------------------------------------------------------------------ gate
@@ -246,6 +249,33 @@ impl Gate {
         }
     }
 
+    /// Is `now` between the predicted ticks of a pair (cut mode)?
+    fn predicted_pair_window(&self, now: i64) -> bool {
+        let next = |t: &TickTrack| -> Option<i64> {
+            let base = *t.bases.iter().min()?;
+            let from = now - self.guard_before - CUT_READ_MS - INTERVAL_MS;
+            let k = (from - base).div_euclid(INTERVAL_MS) + 1;
+            Some(base + k * INTERVAL_MS)
+        };
+        let (Some(mut n0), Some(mut n1)) = (next(&self.track[0]), next(&self.track[1])) else {
+            return false;
+        };
+        // Pair each tick with the other's nearest one.
+        if n1 - n0 > INTERVAL_MS / 2 {
+            n1 -= INTERVAL_MS;
+        } else if n0 - n1 > INTERVAL_MS / 2 {
+            n0 -= INTERVAL_MS;
+        }
+        let (lead, lag) = (n0.min(n1), n0.max(n1));
+        for k in 0..3 {
+            let (l, g) = (lead + k * INTERVAL_MS, lag + k * INTERVAL_MS);
+            if g - l <= FLIP_GAP_MS && now >= l - self.guard_before && now <= g + CUT_READ_MS {
+                return true;
+            }
+        }
+        false
+    }
+
     /// May an input change now? Never while the broker path is cut (`cut`):
     /// nothing is observable then and the telemetry generated in a cut is not
     /// value-compared (T8 `cadence`).
@@ -253,7 +283,17 @@ impl Gate {
         let (Some(a), Some(b)) = (self.track[0].last_ts, self.track[1].last_ts) else {
             return true;
         };
-        if cut || now - a > STALE_MS || now - b > STALE_MS {
+        if cut {
+            // Ticks are not observable while the broker path is cut (the
+            // agents queue their payloads), so hold on PREDICTED ticks: the
+            // lower-envelope estimate extrapolated through the cut (Node's
+            // drift is a few ms per tick). Inputs wait from the lead tick −
+            // guard until the lag tick + CUT_READ_MS (its read); in a flip
+            // region (gap > FLIP_GAP_MS) nothing is held.
+            self.hold = None;
+            return !self.predicted_pair_window(now);
+        }
+        if now - a > STALE_MS || now - b > STALE_MS {
             self.hold = None;
             return true;
         }
@@ -1464,7 +1504,14 @@ mod tests {
         let mut g = Gate::new(60);
         g.on_tick(0, 1_000, 1_000);
         g.on_tick(1, 1_300, 1_300);
-        assert!(g.is_open(1_950, true));
+        // Cut: predicted ticks A 2000 / B 2300 → held 1940..2450, open after.
+        assert!(g.is_open(1_900, true));
+        assert!(!g.is_open(1_950, true));
+        assert!(!g.is_open(2_400, true));
+        assert!(g.is_open(2_500, true));
+        // …and 20 ticks later (predicted through the cut).
+        assert!(!g.is_open(22_100, true));
+        assert!(g.is_open(22_600, true));
         assert!(!g.is_open(1_950, false));
         // No partner observed: still holding until an agent is silent > 2.5 s.
         assert!(!g.is_open(3_400, false));
