@@ -280,7 +280,11 @@ async fn fetch(opts: &IotCredentialsOptions) -> Result<AwsCredentials, CredsErro
     pem.push(b'\n');
     pem.extend_from_slice(&key);
     let identity = reqwest::Identity::from_pem(&pem).map_err(|e| CredsError(error_chain(&e)))?;
-    let mut builder = reqwest::Client::builder().no_proxy().identity(identity);
+    // `https.request` never follows a redirect (`iot-creds.ts:78`; review-wp5 #4).
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .identity(identity);
     if let Some(roots) = &opts.test_roots_pem {
         let certs = reqwest::Certificate::from_pem_bundle(roots)
             .map_err(|e| CredsError(error_chain(&e)))?;

@@ -54,7 +54,10 @@ const MAX_KEEPALIVE_SECS: f64 = 65535.0;
 /// with the one warning line to log (amb. #2, review-wp1 #6). The TS accepts
 /// any finite > 0 (`config.ts:217-228`); no provisioned device sets the key
 /// (default 60), and a TS client given a value outside the range would never
-/// have connected cleanly either.
+/// have connected cleanly either. A fractional value (e.g. `7.5`) connects
+/// here (rumqttc sends whole seconds), while mqtt-packet refuses it (`Invalid keepalive`,
+/// `writeToStream.js:130-134`) and the TS reconnect-loops: Rust is more
+/// lenient (review-wp1-followup #8, accepted).
 fn clamp_keepalive(sec: f64) -> (f64, Option<String>) {
     let shown = xorgate_core::js::number_to_string(sec);
     if sec < MIN_KEEPALIVE_SECS {

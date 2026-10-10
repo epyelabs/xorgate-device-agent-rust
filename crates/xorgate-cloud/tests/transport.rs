@@ -420,6 +420,14 @@ async fn put_sends_signed_headers_and_an_unchunked_body() {
         "{headers:?}"
     );
     assert_eq!(headers.iter().filter(|(k, _)| k == "host").count(), 1);
+    // review-wp5 #10a: the signed content-length is sent exactly once.
+    assert_eq!(
+        headers
+            .iter()
+            .filter(|(k, _)| k == "content-length")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

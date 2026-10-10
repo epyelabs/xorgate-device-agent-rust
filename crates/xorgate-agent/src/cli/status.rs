@@ -467,8 +467,9 @@ pub fn main(_args: &[String]) -> i32 {
         home,
         build: crate::build_info::load().format(),
     };
-    for line in render(&st, now, &ctx) {
-        println!("{line}");
+    // EPIPE (`status | head -1`): exit 1, not a `println!` panic (review-wp6 #12).
+    if super::logs::write_lines(render(&st, now, &ctx)).is_err() {
+        return 1;
     }
     if matches!(st, DaemonStatus::Running { .. }) {
         0

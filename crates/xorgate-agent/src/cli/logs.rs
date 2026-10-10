@@ -61,7 +61,10 @@ pub fn journal_args(n: f64, follow: bool) -> Vec<String> {
     let count = if n.is_finite() && n >= 1.0 {
         format!("{}", n.trunc() as u64)
     } else {
-        // `slice(-Infinity)` / a negative count: everything the journal has.
+        // `slice(-Infinity)` is everything. A negative count is NOT everything
+        // in the TS — `slice(-(-3))` drops the first 3 lines, which the file
+        // path reproduces (`slice_start`) — but the journal has no such
+        // offset, so both become everything it has (A7, review-wp6 #14).
         "all".to_string()
     };
     let mut a = vec!["-u".to_string(), UNIT.to_string(), "-n".to_string(), count];
@@ -104,13 +107,25 @@ pub fn main(args: &[String]) -> i32 {
         return exec_journal(n, follow);
     }
 
-    for line in read_log_tail(n, &path) {
-        println!("{line}");
+    // A closed stdout (`logs | head -1`) ends the run with exit 1, as Node's
+    // unhandled EPIPE does, instead of a `println!` panic (review-wp6 #12).
+    if write_lines(read_log_tail(n, &path)).is_err() {
+        return 1;
     }
     if !follow {
         return 0;
     }
     follow_file(&path)
+}
+
+/// One `console.log` per line on a locked stdout; the first write or flush
+/// error (EPIPE) is returned instead of panicking like `println!`.
+pub(crate) fn write_lines(lines: impl IntoIterator<Item = String>) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
+    for line in lines {
+        writeln!(out, "{line}")?;
+    }
+    out.flush()
 }
 
 /// O9 fallback: replace this process with `journalctl` (found on `PATH`).

@@ -55,3 +55,30 @@ fn follow_exits_when_the_reader_is_gone() {
     assert_eq!(err, "", "no panic line, no message");
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// review-wp6 row 12: the initial tail (and `status`) into an already-closed
+/// pipe ends with exit 1 and no `println!` panic line (Node dies on the
+/// unhandled EPIPE too).
+#[test]
+fn tail_and_status_into_a_closed_pipe_exit_1_without_a_panic() {
+    let home = std::env::temp_dir().join(format!("xg-cli-epipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("agent.log"), "a\nb\nc\n").unwrap();
+    for args in [&["logs"][..], &["status"][..]] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader); // every write is EPIPE
+        let out = Command::new(BIN)
+            .args(args)
+            .env("XORGATE_HOME", &home)
+            .stdin(Stdio::null())
+            .stdout(writer)
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");
+        assert!(!err.contains("panicked"), "{args:?}: {err}");
+    }
+    std::fs::remove_dir_all(&home).unwrap();
+}
