@@ -152,6 +152,8 @@ const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
 /// `NMEA_STALE_MS` (`gps.ts:15`): a gps group older than this is dropped.
 const NMEA_STALE_MS: i64 = 10_000;
+/// `REOPEN_SILENT_MS` (`gps.ts`): silence after which an agent reopens its port.
+const REOPEN_SILENT_MS: i64 = 30_000;
 /// Cut mode: how long after the lag agent's predicted tick its read is
 /// assumed done (the JS `ts` is stamped after `await source.read()`).
 const CUT_READ_MS: i64 = 150;
@@ -1144,6 +1146,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let mut closed_since: Option<i64> = None;
     let mut retained: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut last_nmea: Option<(u64, i64)> = None;
+    let mut nmea_resumes: Vec<i64> = Vec::new();
     let mut asym_since: Option<i64> = None;
     let mut imu_asym_since: Option<i64> = None;
     let mut last_quality: Option<String> = None;
@@ -1196,6 +1199,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                         // transition's effect, at each agent's own tick.
                         if r.t - lt > NMEA_STALE_MS as u64 {
                             transitions.push(lw + NMEA_STALE_MS);
+                        }
+                        if r.t - lt >= REOPEN_SILENT_MS as u64 {
+                            nmea_resumes.push(now);
                         }
                         transitions.push(now);
                     }
@@ -1438,6 +1444,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         calibration,
         host: Vec::new(),
         skips: Vec::new(),
+        nmea_resumes,
     };
     fs::write(
         args.out.join("play.json"),

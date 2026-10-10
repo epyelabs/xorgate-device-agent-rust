@@ -61,6 +61,10 @@ pub struct PlayInfo {
     pub wall_steps: Vec<(i64, i64)>,
     #[serde(default)]
     pub calibration: bool,
+    /// Wall ms where NMEA resumed after a silence ≥ REOPEN_SILENT_MS (both
+    /// agents have reopened their port by then; T8 `nmea-reopen-lag`).
+    #[serde(default)]
+    pub nmea_resumes: Vec<i64>,
     /// Host reference samples `(wall ms, series → value)` from the player's
     /// `host.ndjson` (T3 host attribution); loaded by `load_run`.
     #[serde(skip)]
@@ -325,6 +329,9 @@ struct Cx<'a> {
     /// T2 bases: path → (base A, base B).
     deltas: &'a BTreeMap<String, (f64, f64)>,
     first_wall: i64,
+    /// Paired telemetry only: the neighbouring pairs' payloads
+    /// `[prev A, next A, prev B, next B]` (T8 `input-edge`).
+    neighbors: [Option<&'a Value>; 4],
 }
 
 impl Cx<'_> {
@@ -383,6 +390,55 @@ impl Cx<'_> {
             self.play.host_swing(&series, a, b, 250)?
         };
         (moved + 1e-9 >= over).then(|| format!("{id}/host"))
+    }
+
+    /// T8 `input-edge`: within the row's window of an input transition, a
+    /// value that is exactly the OTHER agent's previous or next sample (one
+    /// sample shifted: the input reached one agent's read a tick later).
+    fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
+        if let Some(id) = self.nmea_reopen_lag(path, x, y) {
+            return Some(id);
+        }
+        let (rid, row) = self.table.decision_row("input-edge")?;
+        if !crate::tolerances::stream_matches(&row.streams, &self.stream) {
+            return None;
+        }
+        let w = self.when?;
+        let win = row.around_closed_ms.unwrap_or(1500) as i64;
+        if !self.play.transitions.iter().any(|t| (w - t).abs() <= win) {
+            return None;
+        }
+        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
+        let [pa, na, pb, nb] = self.neighbors;
+        // Both sides must be explained: A's value is one of B's neighbouring
+        // samples AND B's value one of A's (a step seen a tick apart).
+        let shifted = (at(pb).as_ref() == Some(x) || at(nb).as_ref() == Some(x))
+            && (at(pa).as_ref() == Some(y) || at(na).as_ref() == Some(y));
+        shifted.then(|| format!("{rid}/input-edge"))
+    }
+
+    /// T8 `nmea-reopen-lag`: in the first ticks after NMEA resumes following
+    /// a reopen-length silence, a gps value on ONE side is still its earlier
+    /// reading while its own NEXT sample equals the other side's value.
+    fn nmea_reopen_lag(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
+        let (rid, row) = self.table.decision_row("nmea-reopen-lag")?;
+        if !path.starts_with("metrics.gps.") {
+            return None;
+        }
+        let w = self.when?;
+        let win = row.around_closed_ms.unwrap_or(2500) as i64;
+        if !self
+            .play
+            .nmea_resumes
+            .iter()
+            .any(|r| w >= *r && w - r <= win)
+        {
+            return None;
+        }
+        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
+        let [_, na, _, nb] = self.neighbors;
+        (at(na).as_ref() == Some(y) || at(nb).as_ref() == Some(x))
+            .then(|| format!("{rid}/nmea-reopen-lag"))
     }
 
     /// T8 reconnect-cadence for REPORT values: after a cut each agent's
@@ -544,6 +600,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             let tol = cx
                 .near_closed()
+                .or_else(|| cx.input_edge(path, x, y))
                 .or_else(|| cx.report_input_between())
                 .or_else(|| cx.near_wall_step())
                 .unwrap_or_else(|| UNTOLERATED.into());
@@ -581,6 +638,40 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 .or_else(|| cx.near_wall_step())
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
+        }
+    }
+}
+
+/// T8 `sky-file-end`: gnss-sky.json at the end is each agent's LAST 15 s
+/// write, at its own instant (`timestamp`); `hold_s` is the state's age at
+/// that write. A `hold_s` difference within the write instants' distance
+/// (+1 s for whole-second truncation) is the same state seen at different
+/// times: cited, then equalised so the remaining keys are still compared.
+fn sky_hold_at_write(a: &mut Value, b: &mut Value, cx: &Cx, rep: &mut Report) {
+    let Some((rid, _)) = cx.table.decision_row("sky-file-end") else {
+        return;
+    };
+    let num = |v: &Value, k: &str| v.get(k).and_then(Value::as_f64);
+    let (Some(ha), Some(hb), Some(ta), Some(tb)) = (
+        num(a, "hold_s"),
+        num(b, "hold_s"),
+        num(a, "timestamp"),
+        num(b, "timestamp"),
+    ) else {
+        return;
+    };
+    if ha == hb || a.get("state") != b.get("state") {
+        return;
+    }
+    if (ha - hb).abs() <= ((ta - tb).abs() / 1000.0).ceil() + 1.0 {
+        rep.push(cx.mismatch(
+            "hold_s",
+            a.get("hold_s"),
+            b.get("hold_s"),
+            format!("{rid}/sky-file-end"),
+        ));
+        if let (Some(o), Some(h)) = (b.as_object_mut(), a.get("hold_s").cloned()) {
+            o.insert("hold_s".into(), h);
         }
     }
 }
@@ -763,8 +854,18 @@ pub fn diff(
         st.unpaired_a = ua.len();
         st.unpaired_b = ub.len();
     }
-    for (x, y) in &paired {
+    for (i, (x, y)) in paired.iter().enumerate() {
         let w = ts_of(&x.payload);
+        let nb = |j: Option<usize>, side: usize| {
+            j.and_then(|j| paired.get(j)).map(|p| {
+                if side == 0 {
+                    &p.0.payload
+                } else {
+                    &p.1.payload
+                }
+            })
+        };
+        let (prev, next) = (i.checked_sub(1), Some(i + 1));
         let cx = Cx {
             table,
             play,
@@ -778,6 +879,7 @@ pub fn diff(
             when_b: ts_of(&y.payload),
             deltas: &bases,
             first_wall,
+            neighbors: [nb(prev, 0), nb(next, 0), nb(prev, 1), nb(next, 1)],
         };
         if x.topic != y.topic {
             rep.push(cx.mismatch(
@@ -801,6 +903,7 @@ pub fn diff(
                 when_b: None,
                 deltas: &empty,
                 first_wall,
+                neighbors: [None; 4],
             };
             // A QoS 0 tick racing the drop (±1 per span; WP1 follow-up amb. 3).
             let tol = cx
@@ -863,6 +966,7 @@ pub fn diff(
                 when_b: None,
                 deltas: &empty,
                 first_wall,
+                neighbors: [None; 4],
             };
             match (x, y) {
                 (Some(x), Some(y)) => cmp(&cx, "", Some(&x.payload), Some(&y.payload), &mut rep),
@@ -907,6 +1011,7 @@ pub fn diff(
             when_b: None,
             deltas: &empty,
             first_wall,
+            neighbors: [None; 4],
         };
         match (&fa, &fb) {
             (None, None) => {}
@@ -921,6 +1026,9 @@ pub fn diff(
                             o.remove("recentEvents");
                         }
                     }
+                }
+                if *name == "gnss-sky.json" {
+                    sky_hold_at_write(&mut vx, &mut vy, &cx, &mut rep);
                 }
                 let before = rep.mismatches.len();
                 cmp(&cx, "", Some(&vx), Some(&vy), &mut rep);
@@ -983,6 +1091,7 @@ fn seq_increments(msgs: &[&Msg], side: &str, play: &PlayInfo, table: &Table, rep
             when_b: None,
             deltas: &empty,
             first_wall: play.start_wall,
+            neighbors: [None; 4],
         };
         // A jump across an outage longer than the offline queue holds (1000
         // payloads ≈ 16.7 min at 1 Hz): Rust dropped the oldest queued ticks
@@ -1048,6 +1157,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
             when_b: None,
             deltas: &empty,
             first_wall: play.start_wall,
+            neighbors: [None; 4],
         };
         if pa.len() != pb.len() {
             // T8 reconnect-cadence: around a cut each reconnect's retained
@@ -1105,6 +1215,7 @@ fn diff_reports(a: &Capture, b: &Capture, play: &PlayInfo, table: &Table, rep: &
                     when_b: Some(y.w),
                     deltas: &empty,
                     first_wall: play.start_wall,
+                    neighbors: [None; 4],
                 };
                 cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
             }
@@ -1771,6 +1882,130 @@ mod tests {
         assert_eq!(tol(&play), vec!["T8/reconnect-cadence".to_string()]);
         play.transitions = vec![70_000]; // no input change between the reports
         assert_eq!(tol(&play), vec![UNTOLERATED.to_string()]);
+    }
+
+    #[test]
+    fn input_edge_only_for_a_one_sample_shift_near_a_transition() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, q: i64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"gps":{"fix_quality":{"value":q}}}})
+        };
+        let run = |bq: [i64; 3], transitions: Vec<i64>| {
+            let a = cap(
+                "js",
+                vec![
+                    msg(20_000, "telemetry", tel(20_000, 1, 0)),
+                    msg(21_000, "telemetry", tel(21_000, 2, 0)),
+                    msg(22_000, "telemetry", tel(22_000, 3, 1)),
+                ],
+            );
+            let b = cap(
+                "rust",
+                (0..3)
+                    .map(|k| {
+                        msg(
+                            20_010 + k * 1000,
+                            "telemetry",
+                            tel(20_010 + k * 1000, k + 1, bq[k as usize]),
+                        )
+                    })
+                    .collect(),
+            );
+            let play = PlayInfo {
+                start_wall: 0,
+                end_wall: 100_000,
+                transitions,
+                ..Default::default()
+            };
+            diff(&a, &b, &play, &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == "metrics.gps.fix_quality.value")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        // B sees the fix one tick early, next to a transition: shifted sample.
+        assert_eq!(
+            run([0, 1, 1], vec![20_700]),
+            vec!["T8/input-edge".to_string()]
+        );
+        // Same shift far from any transition: a real difference.
+        assert_eq!(run([0, 1, 1], vec![]), vec![UNTOLERATED.to_string()]);
+        // A value neither neighbour had: a real difference.
+        assert_eq!(run([0, 4, 1], vec![20_700]), vec![UNTOLERATED.to_string()]);
+    }
+
+    #[test]
+    fn nmea_reopen_lag_and_sky_hold_at_write() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, q: Option<i64>| {
+            let mut m = serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
+            if let Some(q) = q {
+                m["metrics"]["gps"] = serde_json::json!({"fix_quality":{"value":q}});
+            }
+            m
+        };
+        let a = cap(
+            "js",
+            vec![
+                msg(50_000, "telemetry", tel(50_000, 1, None)),
+                msg(51_000, "telemetry", tel(51_000, 2, Some(0))),
+                msg(52_000, "telemetry", tel(52_000, 3, Some(1))),
+            ],
+        );
+        let b = cap(
+            "rust",
+            vec![
+                msg(50_010, "telemetry", tel(50_010, 1, None)),
+                msg(51_010, "telemetry", tel(51_010, 2, Some(1))),
+                msg(52_010, "telemetry", tel(52_010, 3, Some(1))),
+            ],
+        );
+        let mut play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            ..Default::default()
+        };
+        let tol = |play: &PlayInfo| {
+            diff(&a, &b, play, &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == "metrics.gps.fix_quality.value")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(tol(&play), vec![UNTOLERATED.to_string()]);
+        play.nmea_resumes = vec![50_700];
+        assert_eq!(tol(&play), vec!["T8/nmea-reopen-lag".to_string()]);
+
+        // gnss-sky.json: same state, hold_s apart by the write distance.
+        let mut ca = cap("js", vec![]);
+        let mut cb = cap("rust", vec![]);
+        let sky = |ts: i64, hold: i64| {
+            format!(
+                r#"{{"v":1,"timestamp":{ts},"state":2,"heard":3,"usable":1,"in_view":8,"max_snr":30,"hold_s":{hold}}}"#
+            )
+        };
+        ca.finals
+            .insert("gnss-sky.json".into(), Some(sky(100_000, 183)));
+        cb.finals
+            .insert("gnss-sky.json".into(), Some(sky(101_500, 181)));
+        let tols: Vec<_> = diff(&ca, &cb, &PlayInfo::default(), &[], &t)
+            .mismatches
+            .into_iter()
+            .filter(|m| m.stream == "file:gnss-sky.json")
+            .map(|m| (m.path, m.tol))
+            .collect();
+        assert!(
+            tols.contains(&("hold_s".to_string(), "T8/sky-file-end".to_string())),
+            "{tols:?}"
+        );
+        assert!(!tols.iter().any(|(_, t)| t == UNTOLERATED), "{tols:?}");
+        cb.finals
+            .insert("gnss-sky.json".into(), Some(sky(100_100, 170)));
+        let rep = diff(&ca, &cb, &PlayInfo::default(), &[], &t);
+        assert!(rep.untolerated() > 0);
     }
 
     #[test]

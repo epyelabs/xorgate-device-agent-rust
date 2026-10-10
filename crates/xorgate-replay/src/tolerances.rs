@@ -340,10 +340,6 @@ mod tests {
             t.numeric("telemetry", "metrics.gps.ttff_s.value"),
             Some(("T8/ttff-arrival".to_string(), 0.2))
         );
-        assert_eq!(
-            t.numeric("file:gnss-sky.json", "hold_s"),
-            Some(("T8/sky-file-end".to_string(), 1.0))
-        );
         assert_eq!(t.numeric("telemetry", "metrics.gps.lat.value"), None);
     }
 }

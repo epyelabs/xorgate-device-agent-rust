@@ -145,13 +145,17 @@ the same — common brief rule 6):
   stream-fed field differ by one sample, so the player never changes an input
   between the two ticks of a pair: it estimates each agent's next tick from
   the lower envelope of `ts − k·1000` over its last 8 payloads and holds
-  releases from `lead tick − 60 ms` until BOTH payloads of the pair are
-  observed (timeout 2 s). Inputs are delayed by less than one pair gap and
+  releases from `lead tick − 150 ms` (`--guard-ms`; a line released just
+  before must be HANDLED by Node before its read) until BOTH payloads of the
+  pair are observed (timeout 2 s); a pair whose first tick is already
+  observed is held for its natural partner. Inputs are delayed by less than one pair gap and
   never reordered. Pairs go to `pairs.ndjson`; the diff compares exactly those
   ticks. When the gap exceeds 800 ms the roles flip and the one lead tick in
-  between is logged as `skip`. No gating while the broker path is cut or an
-  agent has been silent > 2.5 s (telemetry stamped in a cut is not
-  value-compared: T8 `cadence`). `--stagger-ms N` starts B N ms after A, which
+  between is logged as `skip`. While the broker path is cut (payloads are
+  queued, ticks unobservable) the gate holds on PREDICTED ticks (the
+  envelope extrapolated through the cut); no gating while an agent has been
+  silent > 2.5 s outside a cut. Values stamped in a cut ±5 s are still
+  tolerated as T8 `rig-cut-ungated`. `--stagger-ms N` starts B N ms after A, which
   forces distinct phases in a JS-vs-JS calibration.
 - **NMEA only while both ports are open.** A line is written to the ptys only
   while BOTH agents' processes hold their slave open (`/proc/<pid>/fd`, cached
@@ -236,8 +240,16 @@ even then.
 
 ## CI
 
+`tools/replay/ci-smoke.sh <xorgate-rs> <xorgate-replay>` runs in the CI job
+(`.github/workflows/ci.yml`, step "Replay smoke tape"): there is no in-process
+`ReplayHal` seam (the collectors read the OS), and the CI container has no
+Docker, so it replays `fixtures/replay/smoke.ndjson.gz` Rust-vs-Rust through
+the same OS-boundary knobs with a local TLS mosquitto, diffs under
+`tolerances.toml`, and checks that the telemetry carried gps/imu/lte/system
+and that the agent's own re-recorded tape holds nmea/imu/lte_file/exec/
+i2cdetect. Also:
+
 `cargo test -p xorgate-replay` covers the tape round trip, synth determinism,
 the gate state machine, the rewrite rules and the diff/tolerance engine; a
-smoke test reads `fixtures/replay/smoke.ndjson.gz`. The full rig needs Docker
-(not available inside the CI job's container), so CI runs the smoke tape
-Rust-only; the JS-vs-Rust run is the gate runner's C3 on the Mac.
+smoke test reads `fixtures/replay/smoke.ndjson.gz`. The JS-vs-Rust run is the
+gate runner's C3 in the Docker rig on the Mac.
