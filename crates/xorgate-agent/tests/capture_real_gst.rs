@@ -32,7 +32,10 @@ impl CaptureBackend for Tap {
     fn program(&self) -> &str {
         self.inner.program()
     }
-    fn spawn(&self, args: &[String]) -> (Box<dyn CaptureChild>, mpsc::UnboundedReceiver<ChildEvent>) {
+    fn spawn(
+        &self,
+        args: &[String],
+    ) -> (Box<dyn CaptureChild>, mpsc::UnboundedReceiver<ChildEvent>) {
         self.argv.lock().unwrap().push(args.to_vec());
         let (child, mut rx) = self.inner.spawn(args);
         let (tx, out) = mpsc::unbounded_channel();
@@ -88,7 +91,9 @@ async fn real_gst_sidecar_timing() {
         argv: argv.clone(),
     });
     let ev = events.clone();
-    o.on_event = Some(Arc::new(move |_l, m| ev.lock().unwrap().push(m.to_string())));
+    o.on_event = Some(Arc::new(move |_l, m| {
+        ev.lock().unwrap().push(m.to_string())
+    }));
     let sup = VideoCaptureSupervisor::new(o);
     sup.start();
     let sid = sup.status()[0].session_id.clone().unwrap();
@@ -127,8 +132,14 @@ async fn real_gst_sidecar_timing() {
         prev = Some(start);
         n += 1;
     }
-    println!("SIDECAR {}", std::fs::read_to_string(dir.join("00000.json")).unwrap_or_default());
-    println!("SESSION {}", std::fs::read_to_string(dir.join("session.json")).unwrap_or_default());
+    println!(
+        "SIDECAR {}",
+        std::fs::read_to_string(dir.join("00000.json")).unwrap_or_default()
+    );
+    println!(
+        "SESSION {}",
+        std::fs::read_to_string(dir.join("session.json")).unwrap_or_default()
+    );
     assert!(n >= 2, "expected ≥2 fragments, got {n}");
     let _ = std::fs::remove_dir_all(&home);
 }
