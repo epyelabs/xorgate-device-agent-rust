@@ -26,7 +26,7 @@ use xorgate_agent::recording::uploader::{Uploader, UploaderOpts};
 use xorgate_cloud::s3::{ObjectPut, PutError, PutFuture};
 use xorgate_core::settings::UploadMode;
 use xorgate_core::telemetry::ActivityLevel;
-use xorgate_hal::io::NullTape;
+use xorgate_hal::io::{FsOp, NullTape, S3PutRec, TapeSink};
 
 const S1: &str = "0198aaaa-0000-7000-8000-000000000001";
 const S2: &str = "0198bbbb-0000-7000-8000-000000000002";
@@ -100,6 +100,26 @@ fn rig(
     mode: Arc<Mutex<UploadMode>>,
     backoff: Option<(u64, u64)>,
 ) -> Rig {
+    rig_with(
+        sources,
+        put,
+        online,
+        mode,
+        backoff,
+        None,
+        PathBuf::from("/"),
+    )
+}
+
+fn rig_with(
+    sources: Vec<Arc<dyn SegmentSource>>,
+    put: PutHook,
+    online: Arc<AtomicBool>,
+    mode: Arc<Mutex<UploadMode>>,
+    backoff: Option<(u64, u64)>,
+    tape: Option<Arc<dyn TapeSink>>,
+    home_of_tape: PathBuf,
+) -> Rig {
     let events: Events = Arc::default();
     let statuses: Arc<Mutex<Vec<bool>>> = Arc::default();
     let uploaded: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
@@ -119,7 +139,8 @@ fn rig(
         backoff_min_ms: backoff.map(|b| b.0),
         backoff_max_ms: backoff.map(|b| b.1),
         clock: Arc::new(AgentClock::following_tokio(1_750_000_000_000)),
-        tape: Arc::new(NullTape),
+        tape: tape.unwrap_or_else(|| Arc::new(NullTape)),
+        tape_home: Some(home_of_tape),
     });
     Rig {
         up: Arc::new(up),
@@ -899,4 +920,87 @@ async fn uploader_drain_fixture_replays_the_ts_runtime() {
         );
         r.up.stop();
     }
+}
+
+// ---------------------------------------------------------------------------
+// tape hooks (phase-3 §Record/replay: `s3_put` per settled PUT, `fs_out`
+// delete per local file removed after its unit)
+
+#[derive(Default)]
+struct RecTape {
+    puts: Mutex<Vec<S3PutRec>>,
+    fs: Mutex<Vec<(String, FsOp, u64)>>,
+}
+
+impl TapeSink for RecTape {
+    fn enabled(&self) -> bool {
+        true
+    }
+    fn s3_put(&self, r: &S3PutRec) {
+        self.puts.lock().unwrap().push(r.clone());
+    }
+    fn fs_out(&self, rel: &str, op: FsOp, size: u64) {
+        self.fs.lock().unwrap().push((rel.to_string(), op, size));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn tape_records_each_put_in_order_and_the_deletes_after_the_unit() {
+    let home = scratch("tape");
+    let root = home.join("recordings/video");
+    manifest(&root, "cam0", S1, None);
+    let mp4 = frag(&root, "cam0", S1, 0, true, None);
+    let tape = Arc::new(RecTape::default());
+    let fail = Arc::new(Mutex::new(Some("00000.mp4".to_string())));
+    let calls = Arc::new(Mutex::new(vec![]));
+    let r = rig_with(
+        vec![vsrc(&root, &[], None)],
+        fail_once_put(calls.clone(), fail),
+        on(),
+        auto(),
+        Some((5, 10)),
+        Some(tape.clone()),
+        home.clone(),
+    );
+    r.up.kick();
+    settle(&r.up).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    settle(&r.up).await;
+    assert!(!mp4.exists());
+    let puts = tape.puts.lock().unwrap().clone();
+    let k = |t: &str| format!("media-sessions/v1/dev-1/cam0/{S1}/00000.{t}");
+    type Row = (String, String, u64, Option<u16>, Option<String>);
+    let summary: Vec<Row> = puts
+        .iter()
+        .map(|p| {
+            (
+                p.key.clone(),
+                p.content_type.clone(),
+                p.size,
+                p.status,
+                p.error.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (k("json"), "application/json".into(), 9, Some(200), None),
+            (k("mp4"), "video/mp4".into(), 10, None, Some("boom".into())),
+            (k("json"), "application/json".into(), 9, Some(200), None),
+            (k("mp4"), "video/mp4".into(), 10, Some(200), None),
+        ]
+    );
+    assert_eq!(
+        puts[3].sha256,
+        xorgate_cloud::sigv4::sha256_hex(b"mp4-cam0-0")
+    );
+    let rel = |t: &str| format!("recordings/video/cam0/{S1}/00000.{t}");
+    assert_eq!(
+        *tape.fs.lock().unwrap(),
+        [
+            (rel("mp4"), FsOp::Delete, 10),
+            (rel("json"), FsOp::Delete, 9)
+        ]
+    );
 }

@@ -37,7 +37,7 @@ use xorgate_core::upload_step::{
     failure_event, may_continue, may_kick, on_failure, plan_retry, skip_unrecognized_event,
     FailureStep, BACKOFF_MAX_MS, BACKOFF_MIN_MS,
 };
-use xorgate_hal::io::TapeSink;
+use xorgate_hal::io::{FsOp, S3PutRec, TapeSink};
 
 pub use super::sources::{
     telemetry_source, video_source, ActiveSessionIds, SegmentSource, SidecarRef, UploadSegment,
@@ -79,6 +79,9 @@ pub struct UploaderOpts {
     /// `Date.now()` for `lastUploadAt` only.
     pub clock: Arc<dyn Clock + Send + Sync>,
     pub tape: Arc<dyn TapeSink>,
+    /// The agent home the tape's `fs_out.rel` is relative to (`None`: the
+    /// absolute path is recorded). [`build_uploader`] sets `<root>/..`.
+    pub tape_home: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -343,6 +346,10 @@ impl Shared {
                 continue;
             };
 
+            let sizes = (
+                body.len() as u64,
+                sidecar_body.as_ref().map(|b| b.len() as u64),
+            );
             self.set_uploading(true);
             let res = self
                 .put_unit(&source, &seg, &key, body, sidecar_body, &token)
@@ -350,9 +357,14 @@ impl Shared {
             self.lock().aborter = None;
             res?;
 
-            let _ = std::fs::remove_file(&seg.path); // deleted concurrently (eviction) — fine
+            // deleted concurrently (eviction) — fine
+            if std::fs::remove_file(&seg.path).is_ok() {
+                self.tape_delete(&seg.path, sizes.0);
+            }
             if let Some(sc) = &seg.sidecar {
-                let _ = std::fs::remove_file(&sc.path);
+                if std::fs::remove_file(&sc.path).is_ok() {
+                    self.tape_delete(&sc.path, sizes.1.unwrap_or(0));
+                }
             }
             {
                 let mut st = self.lock();
@@ -383,18 +395,60 @@ impl Shared {
                 .put
                 .put(&sc.s3_key, sb.clone(), &sc.content_type, token)
                 .await;
-            self.tape_put(&sc.s3_key, &sc.content_type, &sb, &r);
+            self.tape_put(&sc.s3_key, &sc.content_type, &sb, &r).await;
             r?;
         }
         let ct = source.content_type().to_string();
         let r = self.opts.put.put(key, body.clone(), &ct, token).await;
-        self.tape_put(key, &ct, &body, &r);
+        self.tape_put(key, &ct, &body, &r).await;
         r
     }
 
-    /// The `s3_put` tape record (phase-3 §Record/replay), one per PUT.
-    fn tape_put(&self, key: &str, content_type: &str, body: &Bytes, res: &Result<(), PutError>) {
-        let _ = (key, content_type, body, res, &self.opts.tape);
+    /// The `s3_put` tape record (phase-3 §Record/replay), one per settled
+    /// PUT. Only when a tape is open (the body hash is then computed on the
+    /// blocking pool, like the signing hash, P12).
+    async fn tape_put(
+        &self,
+        key: &str,
+        content_type: &str,
+        body: &Bytes,
+        res: &Result<(), PutError>,
+    ) {
+        if !self.opts.tape.enabled() {
+            return;
+        }
+        let b = body.clone();
+        let sha256 = tokio::task::spawn_blocking(move || xorgate_cloud::sigv4::sha256_hex(&b))
+            .await
+            .unwrap_or_else(|_| xorgate_cloud::sigv4::sha256_hex(body));
+        let (status, error) = match res {
+            Ok(()) => (Some(200), None),
+            Err(e) => (http_status_of(&e.0), Some(e.0.clone())),
+        };
+        self.opts.tape.s3_put(&S3PutRec {
+            key: key.to_string(),
+            content_type: content_type.to_string(),
+            size: body.len() as u64,
+            sha256,
+            status,
+            error,
+        });
+    }
+
+    /// The `fs_out` `delete` record for a local file removed after its PUT.
+    fn tape_delete(&self, path: &Path, size: u64) {
+        if !self.opts.tape.enabled() {
+            return;
+        }
+        let rel = self
+            .opts
+            .tape_home
+            .as_deref()
+            .and_then(|h| path.strip_prefix(h).ok())
+            .unwrap_or(path);
+        self.opts
+            .tape
+            .fs_out(&rel.to_string_lossy(), FsOp::Delete, size);
     }
 
     /// `scheduleRetry()` (`uploader.ts:215-224`), with the state lock held.
@@ -426,6 +480,12 @@ impl Shared {
         });
         st.retry_timer = Some((gen, task.abort_handle()));
     }
+}
+
+/// The HTTP status inside `S3 PUT failed: HTTP <n> …` (`s3-put.ts:126`).
+fn http_status_of(msg: &str) -> Option<u16> {
+    let rest = msg.strip_prefix("S3 PUT failed: HTTP ")?;
+    rest.split(' ').next()?.parse().ok()
 }
 
 /// `readFileSync(seg.path)` + `readFileSync(seg.sidecar.path)`; any failure
@@ -487,5 +547,6 @@ pub fn build_uploader(b: BuildUploader) -> Uploader {
         backoff_max_ms: b.backoff_max_ms,
         clock: b.clock,
         tape: b.tape,
+        tape_home: b.root.parent().map(Path::to_path_buf),
     })
 }
