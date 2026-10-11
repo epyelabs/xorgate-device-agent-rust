@@ -645,3 +645,43 @@ fn live_parking_has_a_single_call_site() {
         "{set_shed_calls:?}"
     );
 }
+
+/// CF39 / review-wp3 #4: every uploadBucket re-arm re-runs
+/// `buildUploadOptions` (never a cached manifest) and hands the result to
+/// `setUpload` — `None` (still no bucket) keeps the current uploader.
+#[tokio::test(start_paused = true)]
+async fn rearm_rebuilds_upload_options_every_time() {
+    let mut rig = Rig::new("rearm");
+    rig.video = false;
+    let m = rig.build();
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let b2 = builds.clone();
+    let hooks = RecordingHooks::new(
+        None,
+        None,
+        Arc::new(move || {
+            let n = b2.fetch_add(1, Ordering::SeqCst);
+            (n > 0).then(|| xorgate_cloud::s3::UploadOptions {
+                put: Arc::new(NoopPut),
+                is_online: Arc::new(|| true),
+            })
+        }),
+        rig.clock.clone(),
+    );
+    hooks.install(m.clone());
+    hooks.recording_start().await;
+    hooks.rearm_upload();
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.log.uploaders.load(Ordering::SeqCst), 0, "no bucket yet");
+    hooks.rearm_upload();
+    assert_eq!(builds.load(Ordering::SeqCst), 2);
+    assert_eq!(rig.log.uploaders.load(Ordering::SeqCst), 1, "armed live");
+    hooks.rearm_upload();
+    assert_eq!(rig.log.uploaders.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        rig.log.uploader_stops.load(Ordering::SeqCst),
+        1,
+        "old one replaced"
+    );
+    m.stop();
+}
