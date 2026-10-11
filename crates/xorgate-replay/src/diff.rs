@@ -610,7 +610,26 @@ fn parse_payload(raw: &str) -> Value {
 /// bytes as base64, `{"present":false}` when absent) when the capture has
 /// one, else the legacy `final/<name>` copies of [`FILES`].
 fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
-    let text = |b: &[u8]| norm_id(&String::from_utf8_lossy(b), id);
+    // Phase 3: renders (`etc/pipelines/<key>.gst`) name the agent's own shm
+    // socket under its work dir (`/tmp/rig-work/<label>/home/shm/…`): the
+    // work dir is normalised to `<work>` like the deviceId (phase file
+    // "`.gst/.camera/.gst.direct` renders: bytes after the home normalisation").
+    let work = std::fs::read(dir.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|m| {
+            Path::new(m["home"].as_str()?)
+                .parent()
+                .map(|p| p.display().to_string())
+        })
+        .filter(|w| !w.is_empty());
+    let text = |b: &[u8]| {
+        let t = norm_id(&String::from_utf8_lossy(b), id);
+        match &work {
+            Some(w) => t.replace(w.as_str(), "<work>"),
+            None => t,
+        }
+    };
     let mut finals = BTreeMap::new();
     let snap: Option<Value> = std::fs::read(dir.join("final.json"))
         .ok()
@@ -808,7 +827,7 @@ impl Report {
             .count()
     }
 
-    fn push(&mut self, m: Mismatch) {
+    pub(crate) fn push(&mut self, m: Mismatch) {
         let st = self.stats.entry(m.stream.clone()).or_default();
         if m.tol == UNTOLERATED {
             st.untolerated += 1;
@@ -2889,9 +2908,19 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
     if let Some((rid, row)) = table.decision_row("s3-error-text") {
         for p in &row.event_prefixes {
             if let Some(rest) = msg.strip_prefix(p.as_str()) {
-                if let Some((secs, _)) = rest.split_once(": ") {
-                    msg = format!("{p}{secs}: <transport error>");
-                    hit = Some(format!("{rid}/s3-error-text"));
+                if let Some((secs, tail)) = rest.split_once(": ") {
+                    // CF32 shrink (WP6): the agent's OWN texts (HTTP status
+                    // errors, timeouts, creds parse failures — the TS strings
+                    // of s3-put.ts / iot-creds.ts) are compared exactly; only
+                    // a transport-library text is folded.
+                    if !row
+                        .own_prefixes
+                        .iter()
+                        .any(|o| tail.starts_with(o.as_str()))
+                    {
+                        msg = format!("{p}{secs}: <transport error>");
+                        hit = Some(format!("{rid}/s3-error-text"));
+                    }
                 }
             }
         }
@@ -4004,10 +4033,10 @@ mod tests {
             run(Some("in force, but something else"), None),
             vec![UNTOLERATED.to_string()]
         );
-        // recording: the prefix + `; `-joined known parts.
+        // Phase 3 (CF45): the recording latch parts are compared exactly now.
         let rec = "in force, but video is held by the GPS/LTE gate and starts when it releases; \
                    load shedding is active (bridge-only)";
-        assert_eq!(run(Some(rec), None), vec!["T6".to_string()]);
+        assert_eq!(run(Some(rec), None), vec![UNTOLERATED.to_string()]);
         assert_eq!(
             run(Some("in force, but load shedding is active ()"), None),
             vec![UNTOLERATED.to_string()]
@@ -5552,7 +5581,7 @@ mod tests {
         let mut b = cap("rust", vec![]);
         a.events = vec![
             (1, "info".into(), "connected".into()),
-            (2, "info".into(), "hardware: cam0 ok".into()),
+            (2, "info".into(), "camera mount: cam0 0°".into()),
         ];
         b.events = vec![
             (1, "info".into(), "connected".into()),
@@ -5565,7 +5594,7 @@ mod tests {
             .map(|m| (m.path.as_str(), m.tol.as_str()))
             .collect();
         assert!(
-            tols.contains(&("info: hardware: cam0 ok", "T6")),
+            tols.contains(&("info: camera mount: cam0 0°", "T6")),
             "{tols:?}"
         );
         assert!(
@@ -5602,12 +5631,13 @@ mod tests {
         for (k, want) in [
             ("info: uploadBucket backfilled: my-bucket", UNTOLERATED),
             ("warn: uploadBucket persist failed: EACCES", UNTOLERATED),
-            ("info: upload paused (offline)", "T6"),
+            // Phase 3 (CF45): recording/media/hardware events must match.
+            ("info: upload paused (offline)", UNTOLERATED),
             (
                 "info: [clock] NTP synchronized — offline clock stepping stood down for this boot",
                 "T6",
             ),
-            ("info: hardware: cam0 ok", "T6"),
+            ("info: hardware: cam0 ok", UNTOLERATED),
             ("info: hardware block updated: cm5/v4l2", UNTOLERATED),
         ] {
             assert_eq!(tol_of(&js, &rust, k).as_deref(), Some(want), "{k}");
@@ -5632,10 +5662,9 @@ mod tests {
             Some(UNTOLERATED)
         );
         // B = js, A = rust: the direction follows the kinds, not the labels.
-        assert_eq!(
-            tol_of(&rust, &js, "info: hardware: cam0 ok").as_deref(),
-            Some("T6")
-        );
+        let clock =
+            "info: [clock] NTP synchronized — offline clock stepping stood down for this boot";
+        assert_eq!(tol_of(&rust, &js, clock).as_deref(), Some("T6"));
         // JS vs JS: never tolerated by T6.
         assert_eq!(
             tol_of(&js, &cap("js", vec![]), "info: hardware: cam0 ok").as_deref(),

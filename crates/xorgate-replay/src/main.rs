@@ -9,8 +9,11 @@
 //! xorgate-replay diff  RUN [--tolerances tools/replay/tolerances.toml] [-o RUN/diff.md]
 //! ```
 
+mod aws;
 mod diff;
 mod inspect;
+mod media;
+mod media_diff;
 mod play;
 mod record;
 mod rewrite;
@@ -140,7 +143,18 @@ fn main() -> Result<()> {
         } => {
             let table = tolerances::Table::load(&tolerances)?;
             let (a, b, info, pairs) = diff::load_run(&run, None, None)?;
-            let rep = diff::diff(&a, &b, &info, &pairs, &table);
+            let mut rep = diff::diff(&a, &b, &info, &pairs, &table);
+            // Phase 3 streams (media_diff.rs): children, sessions, sidecars,
+            // mp4, telemetry segments, S3, counters, evictions, shm.
+            let shm: Vec<serde_json::Value> = std::fs::read_to_string(run.join("shm.ndjson"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+            let ma = media_diff::MediaCapture::load(&run.join("a"), &shm);
+            let mb = media_diff::MediaCapture::load(&run.join("b"), &shm);
+            media_diff::diff_media(&ma, &mb, &info, &table, &mut rep);
+            rep.hits = diff::row_hits(&rep, &table);
             let md = diff::render(&rep, &a, &b, &info, &table, &run);
             let out = out.unwrap_or_else(|| run.join("diff.md"));
             std::fs::write(&out, &md)?;

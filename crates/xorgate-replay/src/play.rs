@@ -60,8 +60,9 @@ use tokio_util::sync::CancellationToken;
 use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 
 use crate::diff::PlayInfo;
-use crate::rewrite;
+use crate::media::{self, MediaPlan, ObsAgent};
 use crate::watch::{self, WatchGate};
+use crate::{aws, rewrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AgentKind {
@@ -140,6 +141,12 @@ pub struct PlayArgs {
     /// default the tool is ABSENT (phase file).
     #[arg(long)]
     pub with_rpicam: bool,
+    /// The rig's media dir (the fake KVS master, `tools/replay/media/`).
+    #[arg(long, default_value = "/rig/tools/media")]
+    pub media_dir: PathBuf,
+    /// Where the fake IoT credentials + S3 listen (`aws.rs`).
+    #[arg(long, default_value = "0.0.0.0:443")]
+    pub aws_listen: String,
     /// Start agent B this many ms after A (calibration: forces the two tick
     /// phases apart so the hold gate is exercised like JS vs Rust).
     #[arg(long, default_value_t = 0)]
@@ -676,6 +683,7 @@ impl Agent {
         args: &PlayArgs,
         tape: &Tape,
         i2c_absent: bool,
+        plan: &MediaPlan,
     ) -> Result<Self> {
         let dir = args.out.join(label);
         let work = args.work.join(label);
@@ -699,7 +707,8 @@ impl Agent {
         {
             let entry = entry?;
             let name = entry.file_name();
-            if (i2c_absent && name == "i2cdetect") || (!args.with_rpicam && name == "rpicam-hello")
+            if (i2c_absent && name == "i2cdetect")
+                || (!args.with_rpicam && !plan.rpicam && name == "rpicam-hello")
             {
                 continue;
             }
@@ -710,7 +719,7 @@ impl Agent {
         // Manifests.
         fs::write(
             etc.join("kvs.json"),
-            json!({"channels": tape.meta.kvs.channels}).to_string(),
+            media::kvs_manifest(plan, tape, device_id).to_string(),
         )?;
         let hw_path = etc.join("hardware.json");
         if !tape.meta.hardware.is_null() {
@@ -735,7 +744,7 @@ impl Agent {
             bin.display()
         );
         let cert = |n: &str| args.certs.join(n).display().to_string();
-        let env: Vec<(String, String)> = vec![
+        let mut env: Vec<(String, String)> = vec![
             ("PATH", path_env),
             ("HOME", work.display().to_string()),
             ("TZ", "UTC".into()),
@@ -779,6 +788,14 @@ impl Agent {
             }),
         )
         .collect();
+        // Phase 3 media side (media.rs): fake KVS master, rig CA for Node,
+        // filler tree. Later entries replace earlier ones of the same key.
+        for (k, v) in
+            media::prepare_agent(plan, &work, &home, device_id, &args.certs, &args.media_dir)?
+        {
+            env.retain(|(ek, _)| *ek != k);
+            env.push((k, v));
+        }
         fs::write(
             dir.join("meta.json"),
             serde_json::to_vec_pretty(&json!({
@@ -805,6 +822,14 @@ impl Agent {
             pty_unopened: 0,
             pty_open_cache: None,
         })
+    }
+
+    fn obs(&self) -> ObsAgent {
+        ObsAgent {
+            work: self.work.clone(),
+            home: self.home.clone(),
+            dir: self.dir.clone(),
+        }
     }
 
     fn command(&self, args: &PlayArgs, argv: &[String], worker: bool) -> Command {
@@ -1291,9 +1316,10 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         TapeEvent::I2cdetect { not_found, .. } => Some(*not_found),
         _ => None,
     }) == Some(true);
+    let plan = MediaPlan::of(&tape);
     let mut agents = vec![
-        Agent::prepare("a", args.a, DEVICE_A, &args, &tape, first_i2c_absent)?,
-        Agent::prepare("b", args.b, DEVICE_B, &args, &tape, first_i2c_absent)?,
+        Agent::prepare("a", args.a, DEVICE_A, &args, &tape, first_i2c_absent, &plan)?,
+        Agent::prepare("b", args.b, DEVICE_B, &args, &tape, first_i2c_absent, &plan)?,
     ];
     let log = Arc::new(Mutex::new(File::create(args.out.join("player.log"))?));
     let plog = |msg: String| {
@@ -1353,6 +1379,46 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         Arc::new(Mutex::new(Some(CancellationToken::new())));
     let upstream = format!("{}:{}", args.broker_host, args.broker_port);
     tokio::spawn(proxy(args.proxy_listen.clone(), upstream, cut.clone()));
+
+    // Phase 3: fake IoT credentials + S3 (aws.rs), trusted via the rig CA.
+    let aws_fake = aws::AwsFake::new(
+        agents
+            .iter()
+            .map(|a| (a.device_id.to_string(), a.label.to_string(), a.dir.clone()))
+            .collect(),
+        aws::faults_of(tape.meta.rig.as_ref()),
+        &args.out,
+    )?;
+    if plan.full_manifest {
+        match aws::trust_rig_ca(&args.certs) {
+            Ok(m) => plog(format!("rig CA added to the system store: {m}")),
+            Err(e) => plog(format!(
+                "WARNING: rig CA not installed ({e:#}); Rust uploads will fail TLS"
+            )),
+        }
+        let hosts: Vec<String> = plan
+            .buckets
+            .iter()
+            .map(|b| format!("{b}.s3.{}.amazonaws.com", aws::RIG_REGION))
+            .chain(std::iter::once(aws::RIG_CREDS_HOST.to_string()))
+            .collect();
+        if let Err(e) = aws::add_hosts(&hosts) {
+            plog(format!("WARNING: /etc/hosts not updated ({e:#})"));
+        }
+        let (fake, listen, certs) = (
+            aws_fake.clone(),
+            args.aws_listen.clone(),
+            args.certs.clone(),
+        );
+        let alog = log.clone();
+        tokio::spawn(async move {
+            if let Err(e) = aws::serve(fake, listen, certs).await {
+                if let Ok(mut f) = alog.lock() {
+                    let _ = writeln!(f, "{} aws fake stopped: {e:#}", wall_now_ms());
+                }
+            }
+        });
+    }
 
     // Clear any retained config from a previous run.
     for a in &agents {
@@ -1444,6 +1510,15 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     plog(format!(
         "agents started (B staggered {} ms); prefilled {idx} records",
         args.stagger_ms
+    ));
+    if let Ok(mut g) = aws_fake.start_wall.lock() {
+        *g = play_start_wall;
+    }
+    let obs_stop = CancellationToken::new();
+    let obs_task = tokio::spawn(media::observe(
+        agents.iter().map(Agent::obs).collect(),
+        args.out.clone(),
+        obs_stop.clone(),
     ));
 
     let mut closed_spans: Vec<(i64, i64)> = Vec::new();
@@ -1776,8 +1851,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 }
             }
             TapeEvent::Clock { .. } | TapeEvent::Proc { .. } => {}
-            // Phase 3 output/child kinds: compared by the diff, not replayed
-            // as inputs (the external-exit re-enactment lands with the rig).
+            // A child the agent did NOT signal exited on the recording device
+            // (crash, EOF): re-enacted on both agents at tape time (media.rs).
+            TapeEvent::ChildExit(x) if x.external => {
+                transitions.push(now);
+                for a in &agents {
+                    let rec = media::external_exit(&a.obs(), &plan, x);
+                    plog(format!("external child exit at t={}: {}", r.t, rec));
+                }
+            }
+            // Phase 3 output kinds: compared by the diff, not replayed.
             TapeEvent::ChildSpawn(_)
             | TapeEvent::ChildLine { .. }
             | TapeEvent::ChildSignal { .. }
@@ -1816,6 +1899,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     }
     let (first, second) = agents.split_at_mut(1);
     tokio::join!(first[0].wait_stopped(), second[0].wait_stopped());
+    // Children outlive their agent by up to a moment (SIGINT → EOS): one more
+    // observer pass sees them gone, then the final media copies.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    obs_stop.cancel();
+    let _ = obs_task.await;
+    for a in &agents {
+        if let Err(e) = media::finish(&a.obs()) {
+            plog(format!("agent {}: media finish failed: {e:#}", a.label));
+        }
+    }
     // Final file copies (`final/<key>`, raw bytes) + `final.json`: every
     // [`snapshot_targets`] file with base64 bytes, or `present: false`.
     for a in &agents {

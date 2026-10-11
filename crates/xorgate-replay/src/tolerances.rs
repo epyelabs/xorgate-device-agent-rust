@@ -137,6 +137,9 @@ const KINDS: &[&str] = &[
     "import",
     "decisions",
     "strict_numbers",
+    // Phase 3 (WP6): the media streams' rows T10/T12/T13/T14, read by
+    // media_diff.rs (`tolerance` = the ± bounds).
+    "media",
 ];
 
 impl Table {
@@ -330,9 +333,11 @@ mod tests {
             .join("../../tools/replay/tolerances.toml");
         let t = Table::load(&path).unwrap();
         assert_eq!(t.excluded("telemetry", "ts").as_deref(), Some("T1"));
+        // Phase 3 (CF45): the media/recording blocks are compared now.
+        assert_eq!(t.excluded("telemetry", "media.kvs.value"), None);
         assert_eq!(
-            t.excluded("telemetry", "media.kvs.value").as_deref(),
-            Some("T6")
+            t.excluded("telemetry", "recording.sessionId").as_deref(),
+            Some("T11")
         );
         assert_eq!(
             t.excluded("state", "writtenBy").as_deref(),

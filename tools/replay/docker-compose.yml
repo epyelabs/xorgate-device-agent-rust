@@ -1,17 +1,27 @@
-# Record/replay rig (plan phase-2-cloud-plane.md §Record/replay). Driven by
-# run-rig.sh; see README.md. `rig` runs `xorgate-replay` (play | diff) with the
-# two agents as its children; `mosquitto` is the TLS broker both agents and the
-# capture client talk to. The agents reach the broker through the player's
-# proxy on `broker:8883` (= 127.0.0.1 inside the rig) so a tape `conn closed`
-# span can cut them without touching the capture client.
+# Record/replay rig (plan phase-2-cloud-plane.md §Record/replay; Phase 3
+# additions phase-3-recording-media.md §Record/replay). Driven by run-rig.sh;
+# see README.md. `rig` runs `xorgate-replay` (play | diff) with the two agents
+# as its children; `mosquitto` is the TLS broker both agents and the capture
+# client talk to. The agents reach the broker through the player's proxy on
+# `broker:8883` (= 127.0.0.1 inside the rig) so a tape `conn closed` span can
+# cut them without touching the capture client.
+# Phase 3: the player also serves the fake IoT credentials endpoint (mTLS) and
+# the fake S3 (SigV4-verified) on :443; their rig host names map to 127.0.0.1
+# below (the player adds any other `<bucket>.s3.ca-central-1.amazonaws.com` a
+# tape's config names to /etc/hosts at start). The rig network is INTERNAL: no
+# agent request can ever reach real AWS.
 # Default project name only: run-rig.sh passes a per-run `-p xorgate-replay-<run>`
 # (or $COMPOSE_PROJECT_NAME) so its `down --remove-orphans` never touches
 # another run's broker.
 name: xorgate-replay
+networks:
+  rig:
+    internal: true
 services:
   mosquitto:
     image: eclipse-mosquitto:2
     platform: linux/arm64
+    networks: [rig]
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./.cache/certs:/mosquitto/certs:ro
@@ -19,11 +29,21 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.rig
-    image: xorgate-replay-rig:node20-bookworm
+    image: xorgate-replay-rig:node20-bookworm-gst
     platform: linux/arm64
     depends_on: [mosquitto]
+    networks: [rig]
+    # tini as PID 1: reaps the gst shim's detached tee processes.
+    init: true
+    # Two agents × two shmsink bridges × 20 MiB segments (+ the capture's own
+    # buffers) do not fit Docker's 64 MiB default /dev/shm.
+    shm_size: "512m"
     extra_hosts:
       - "broker:127.0.0.1"
+      # Fake AWS (crates/xorgate-replay/src/aws.rs RIG_* constants).
+      - "c0rig00000000.credentials.iot.ca-central-1.amazonaws.com:127.0.0.1"
+      - "xorgate-rig-media.s3.ca-central-1.amazonaws.com:127.0.0.1"
+      - "xorgate-synth-uploads.s3.ca-central-1.amazonaws.com:127.0.0.1"
     environment:
       - TZ=UTC
     volumes:

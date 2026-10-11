@@ -10,7 +10,9 @@
 #
 # Path syntax: dot-separated JSON paths; `*` matches one segment (or part of
 # one: `*At`), `**` any number of segments. Streams: telemetry, report, ack,
-# status, sms, file:<name>, state, events, sudo, pidfile.
+# status, sms, file:<name>, state, events, sudo, pidfile; Phase 3 (WP6,
+# media_diff.rs): children, session, sidecar, mp4, rec-telemetry, s3,
+# file:counters.json, evictions, shm.
 
 version = 1
 
@@ -20,7 +22,11 @@ title = "ts-like fields are excluded; order is still checked"
 basis = "phase file T1"
 kind = "exclude"
 streams = ["telemetry", "report", "ack", "status", "sms", "state", "file:config-sync.json", "file:commands.json", "file:gnss-sky.json", "pidfile"]
-paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts", "*Ts", "**.*Ts", "timestamp"]
+paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts", "*Ts", "**.*Ts", "timestamp",
+  # Phase 3 (phase-3-recording-media.md table "payload media/recording blocks"):
+  # backlogBytes counts mp4 sizes (encoder-dependent), `since` is the shed
+  # start instant (lastUploadAt is covered by `*At`).
+  "recording.backlogBytes", "**.recording.backlogBytes", "recording.liveBlock.since", "**.liveBlock.since"]
 
 [[rule]]
 id = "T2"
@@ -95,74 +101,38 @@ quiet_ms = 10000
 
 [[rule]]
 id = "T6"
-title = "phase-owned gaps until Phase 3/4"
-basis = "phase file T6; scope boundary table; CF30"
+title = "phase-owned gaps until Phase 4 (LED, camera mount, clock stepper)"
+basis = "phase file T6; scope boundary table; CF30; SHRUNK by Phase 3 (phase-3-recording-media.md §Record/replay, CF45): every recording/media matcher deleted, so a missing recording/media field or event FAILS"
 kind = "phase_owned"
 streams = ["telemetry", "report", "state", "events", "sudo"]
 paths = [
-  "media", "media.**",
-  "recording", "recording.**",
-  "status.bootDefer", "status.bootDefer.**", "status.powerShed", "status.powerShed.**",
-  "effective.recording.bootDefer", "effective.recording.bootDefer.**",
-  "effective.recording.powerShed", "effective.recording.powerShed.**",
   "**.clockStepperArmed",
   "effective.cameraMount", "effective.cameraMount.**",
 ]
-# state.json `recentEvents` msg prefixes owned by Phase 3/4 — EXACT texts of
-# the TS emitters (review-wp7 finding 2: the old bare `upload` hid the Phase 2
-# `uploadBucket backfilled:` / `uploadBucket persist failed:`, worker.ts:800/806).
-# ONE-DIRECTIONAL: tolerated only when the JS side has the event and the Rust
-# side has none of it (Rust emitting one of these before Phase 3/4 is a bug).
-#   hardware: …            worker.ts:140 (hardware reconciler log)
+# state.json `recentEvents` msg prefixes owned by Phase 4 — EXACT texts of
+# the TS emitters. ONE-DIRECTIONAL: tolerated only when the JS side has the
+# event and the Rust side has none of it.
 #   camera mount: …        worker.ts:181 (boot-config reconciler, cam-sensor-level-rotate)
 #   [clock] …              clock-step.ts:232-307 (offline clock stepper, CF20 → Phase 4)
-#   recording manager      recording/manager.ts:300/306/473/558/607/696/774/782,
-#                          boot-policy.ts:800/830/906 (power shed), video-capture.ts (video capture …)
-#   uploader               recording/uploader.ts:148/202/204
-# The LED renderer and the media supervisor journal no events.
+# (Phase 3 deleted: `hardware: `, the recording manager / boot policy / video
+# capture / uploader prefixes.)
 event_prefixes = [
-  "hardware: ",
   "camera mount: ",
   "[clock] ",
-  "recording: ",
-  "camera(s) disabled by settings: ",
-  "recording.video.enabled is on but no bridged camera is available ",
-  "power shed → ",
-  "power shed restore → ",
-  "power shedding disarmed — restoring full operation",
-  "power shedding disabled by settings — restoring full operation",
-  "telemetry recording started (",
-  "telemetry recording stopped (",
-  "video capture ",
-  "video boot-defer ",
-  "video gps gate armed (",
-  "upload: skipping unrecognized segment ",
-  "upload paused (offline)",
-  "upload failed, retrying in ",
 ]
-# Report details produced ONLY by those hints: latchDetail (config-sync.ts:1007-1024)
-# returns "in force, but …" from bootDefer/powerShed (recording) and
-# `clockStepperArmed === false` (timeSync: "in force, but the clock stepper stood
-# down for this boot (NTP is synchronized)"); the hints are None until Phase 3/4
-# (CF20/CF30), so Rust omits the detail. Tolerated only when one side is absent
-# and the other starts with the latch prefix — every other detail is compared.
+# Report detail produced ONLY by the Phase 4 hint `clockStepperArmed === false`
+# (config-sync.ts:1007-1024). The recording latch parts (boot power staging,
+# GPS/LTE gate, load shedding) are Phase 3 and compared exactly now.
 latch_detail_paths = ["status.*.detail"]
 latch_detail_prefix = "in force, but "
-# NARROWED (review-wp7): only the exact latchDetail texts, and only JS present /
-# Rust absent. recording: "in force, but " + `; `-joined parts below;
-# timeSync: the one exact text.
-latch_detail_parts = [
-  "video is held by the boot power staging gate and starts when it releases",
-  "video is held by the GPS/LTE gate and starts when it releases",
-  "load shedding is active (*)",
-]
+latch_detail_parts = []
 latch_detail_exact = ["in force, but the clock stepper stood down for this boot (NTP is synchronized)"]
-# sudo argv owned by Phase 3/4 (camera-mount helper, set-clock helper).
+# sudo argv owned by Phase 4 (camera-mount helper, set-clock helper).
 sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
 
 [[rule]]
 id = "T7"
-title = "accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20, D22, D23)"
+title = "accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20, D22-D25)"
 basis = "phase file T7; accepted-divergences.md"
 kind = "import"
 source = "phase-1/evidence/accepted-divergences.md"
@@ -308,6 +278,20 @@ source = "phase-1/evidence/accepted-divergences.md"
   streams = ["telemetry"]
   matcher = "nmea_reopen_first_chunk"
   pinned_by = "review-wp7 finding 1 (Node 20 experiment 3/3; accepted-divergences.md D23)"
+
+  [[rule.row]]
+  id = "D24"
+  what = "telemetry segment gzip BYTES: TS zlib (gzipSync, level 6, mtime 0, OS 3) vs Rust flate2 at the same level and header fields — the deflate stream may differ; the DECOMPRESSED bytes are identical and the backend reads only those (P6). The rig never compares gz bytes (rec-telemetry / s3 compare decompressed text; T13)"
+  streams = ["rec-telemetry", "s3"]
+  matcher = "doc_only"
+  pinned_by = "WP2 gzip finalize test (decompressed bytes equal the TS fixture); phase-3 P6"
+
+  [[rule.row]]
+  id = "D25"
+  what = "default media paths: with KVS_RUNTIME_BIN / KVS_RUNTIME_LIB_DIR / KVS_CACERT_PATH unset the TS defaults are /opt/xorgate/media/…, the Rust agent's resolve under its install root (/opt/xorgate-rs/media/…, like XORGATE_PYTHON_DIR); every env key is honoured identically and no wire/file shape changes (P4). The rig always sets the knobs, so it never shows"
+  streams = ["children"]
+  matcher = "doc_only"
+  pinned_by = "WP5 MediaConfig::from_env default-path test; phase-3 P4"
 
 [[rule]]
 id = "T8"
@@ -520,13 +504,72 @@ kind = "decisions"
 
   [[rule.row]]
   id = "s3-error-text"
-  what = "PENDING Phase 3 (CF32, review-wp5 MUST-FIX 1): S3 / IoT-creds transport error TEXT (s3.rs:381-393, iot_creds.rs:252-316 vs node) reaches state.json via `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) once the uploader is wired; the suffix after the prefix is not compared for non-HTTP failures. Not reachable in Phase 2 (recording off)"
+  what = "CF32 (review-wp5 MUST-FIX 1), shrunk by WP6: the suffix of `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) is folded ONLY when it is a transport-library text (node `fetch failed` / socket errors vs reqwest/hyper chains, s3.rs:381-393, iot_creds.rs:252-316). The agent's own texts — every `own_prefixes` entry, the TS strings of s3-put.ts / iot-creds.ts — are compared exactly (WP3 maps them)"
   streams = ["events"]
   matcher = "suffix_after_prefix"
   event_prefixes = ["upload failed, retrying in "]
+  own_prefixes = [
+    "S3 PUT failed: HTTP ",
+    "S3 PUT timed out",
+    "IoT credentials fetch failed: HTTP ",
+    "IoT credentials fetch timed out",
+    "IoT credentials response missing fields",
+    "IoT credentials response unparseable: ",
+  ]
 
 [[rule]]
 id = "T9"
 title = "NO numeric-format tolerance: numbers are compared as their JSON text (1 vs 1.0 is a FAIL)"
 basis = "phase file T9"
 kind = "strict_numbers"
+
+# ---------------------------------------------------------------- Phase 3
+# T10–T14: phase-3-recording-media.md §Record/replay "What is compared, and
+# how" (read by media_diff.rs; `tolerance` = the ± bounds in ms / counts).
+
+[[rule]]
+id = "T10"
+title = "child spawn instants ±1 s (argv/env/signals/ended exact; stagger gap ≥ cfg per side)"
+basis = "phase file T10"
+kind = "media"
+streams = ["children"]
+tolerance = { "spawnMs" = 1000.0 }
+
+[[rule]]
+id = "T11"
+title = "session identity + anchor: sessionId, bootId, anchorTs, anchorMono"
+basis = "phase file T11"
+kind = "exclude"
+streams = ["session", "rec-telemetry"]
+paths = ["sessionId", "bootId", "anchorTs", "anchorMono"]
+
+[[rule]]
+id = "T11"
+title = "the payload's recording.sessionId (the telemetry session uuid, minted per agent like T11's session ids)"
+basis = "phase file T11 (session ids are per-instance); phase file table row `payload media/recording blocks`"
+kind = "exclude"
+streams = ["telemetry", "state", "report"]
+paths = ["recording.sessionId", "latest.recording.sessionId", "**.recording.sessionId"]
+
+[[rule]]
+id = "T12"
+title = "sidecar timing: startTs ±300 ms vs the agent's own capture PLAYING time, startMono (within the session) ±300 ms, durationMs ±150 ms, sizeBytes any; mp4 count per session ±1 (the run's cut)"
+basis = "phase file T12"
+kind = "media"
+streams = ["sidecar", "mp4"]
+tolerance = { "startTs" = 300.0, "startMono" = 300.0, "durationMs" = 150.0 }
+paths = ["sizeBytes"]
+
+[[rule]]
+id = "T13"
+title = "telemetry segments: file-name ms stamps and rotation count ±1; gz bytes never compared (D24)"
+basis = "phase file T13; P6"
+kind = "media"
+streams = ["rec-telemetry"]
+
+[[rule]]
+id = "T14"
+title = "S3 PUT timing / failed-attempt counts, and a session's LAST fragment present on one side only; telemetry bodies compared decompressed (rec-telemetry), mp4 body hash not compared"
+basis = "phase file T14"
+kind = "media"
+streams = ["s3"]

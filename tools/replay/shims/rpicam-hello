@@ -1,6 +1,16 @@
 #!/bin/sh
-# Rig shim: rpicam-hello. NOT on PATH by default (the phase file runs the rig
-# with rpicam-hello ABSENT, i.e. "cannot enumerate"); `play --with-rpicam`
-# installs it to exercise the "enumerated zero cameras" branch instead.
+# Rig shim: rpicam-hello. Answers `--list-cameras` from the tape's `exec`
+# record (argv ["rpicam-hello","--list-cameras"]; the player writes
+# $RIG_STATE/exec/rpicam-hello__--list-cameras.{out,code}, the same per-argv
+# files as vcgencmd). Put on PATH when the tape carries such a record or with
+# `play --with-rpicam`; otherwise ABSENT ("cannot enumerate", the Phase 2
+# default). No tape answer: "No cameras available!" exit 255 (the zero-camera
+# branch, the pre-Phase-3 shim's only answer).
+key="rpicam-hello__$(printf '%s' "$*" | tr ' /' '__')"
+f="$RIG_STATE/exec/$key"
+if [ -f "$f.out" ]; then
+  cat "$f.out"
+  exit "$(cat "$f.code" 2>/dev/null || echo 0)"
+fi
 echo "No cameras available!"
 exit 255

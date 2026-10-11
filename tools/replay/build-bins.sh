@@ -23,6 +23,6 @@ docker run --rm --platform linux/arm64 \
   -v xorgate-rs-cargo-registry:/usr/local/cargo/registry \
   -v xorgate-rs-cargo-git:/usr/local/cargo/git \
   -v xorgate-rs-target:/target \
-  -e CARGO_TARGET_DIR="$TARGET_DIR" -w /src "$IMAGE" \
+  -e CARGO_TARGET_DIR="$TARGET_DIR" -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" -w /src "$IMAGE" \
   sh -c "cargo build --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/"
 ls -l "$HERE/.cache/bin"
