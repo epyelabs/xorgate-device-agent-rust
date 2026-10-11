@@ -83,6 +83,12 @@ pub enum MetaTag {
 pub struct KvsInfo {
     #[serde(default)]
     pub channels: Vec<Value>,
+    /// Phase 3: the manifest carried the upload identity (credential
+    /// endpoint, role alias, region, uploadBucket). The rig then writes a
+    /// COMPLETE manifest with its own fake-AWS values (`xorgate-replay`
+    /// `aws.rs`); absent = the Phase 2 `{"channels": …}` stub.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub upload: bool,
 }
 
 /// First line of every tape.
@@ -116,6 +122,11 @@ pub struct TapeMeta {
     /// Labels of spliced/synthetic content (O8 "labelled `synthetic`").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub synthetic: Vec<String>,
+    /// Phase 3, synthetic tapes only: rig directives that are not agent
+    /// inputs on a device (`s3Faults` windows, the `filler` tree seeded into
+    /// both homes before start). The Rust agent never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rig: Option<Value>,
 }
 
 impl TapeMeta {
@@ -133,6 +144,7 @@ impl TapeMeta {
             home: None,
             source: None,
             synthetic: Vec::new(),
+            rig: None,
         }
     }
 
@@ -1020,6 +1032,7 @@ pub fn meta_from_start(
     meta.hardware = start.hardware.clone();
     meta.kvs = KvsInfo {
         channels: start.kvs_channels.clone(),
+        upload: false,
     };
     meta.env = TapeMeta::redacted_env(env);
     meta.home = start.home_files.clone();
