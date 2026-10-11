@@ -82,7 +82,11 @@ impl DiskManager {
     }
 
     /// `new DiskManager({root, retention, freeBytes})`.
-    pub fn with_free_bytes(root: PathBuf, retention: ResolvedRetention, free_bytes: FreeBytesFn) -> Self {
+    pub fn with_free_bytes(
+        root: PathBuf,
+        retention: ResolvedRetention,
+        free_bytes: FreeBytesFn,
+    ) -> Self {
         let dropped = load_dropped(&root);
         Self {
             root,

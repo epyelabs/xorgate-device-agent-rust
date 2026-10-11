@@ -244,11 +244,12 @@ impl SegmentExecutor {
                 None => Ok(()),
             }
         };
-        let gz = gzip_finalize(&p, None, Some(&mut hook)).map_err(|e: StepError| SegmentIoError {
-            failure: OpFailure::Close,
-            message: e.message,
-            source: e.source,
-        })?;
+        let gz =
+            gzip_finalize(&p, None, Some(&mut hook)).map_err(|e: StepError| SegmentIoError {
+                failure: OpFailure::Close,
+                message: e.message,
+                source: e.source,
+            })?;
         let size = std::fs::metadata(&gz).map(|m| m.len()).unwrap_or(0);
         events.push(SegmentEvent::Gzipped { gz, size });
         Ok(())

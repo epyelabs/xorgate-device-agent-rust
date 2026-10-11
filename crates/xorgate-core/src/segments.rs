@@ -638,6 +638,80 @@ mod tests {
         assert_eq!(ops.len(), 3);
     }
 
+    /// S2 (CF35): `op_failed` rewinds core to the TS state at each throw.
+    #[test]
+    fn op_failed_rewinds_to_the_ts_state() {
+        let h = header;
+        let sample = |seq: f64| SampleLine {
+            ts: seq,
+            mono: seq,
+            seq,
+            metrics: Map::new(),
+        };
+        // Failed gzip inside writeLine's rotation: closed, open never ran.
+        let mut w = SegmentWriterCore::new("/d", None, Some(1000));
+        w.write_line(&sample(0.0), 1, 0, &h);
+        let ops = w.write_line(&sample(1.0), 2, 1000, &h);
+        assert!(matches!(ops[0], SegmentOp::Close { .. }));
+        w.op_failed(&ops, 0, OpFailure::Close);
+        assert_eq!(w.active_path(), None);
+        let ops = w.write_line(&sample(2.0), 3, 1100, &h);
+        assert!(matches!(&ops[0], SegmentOp::Open { path, .. } if path == "/d/seg-3-00001.jsonl"));
+        // Failed rotation from maybe_rotate: nothing to rewind.
+        let ops = w.maybe_rotate(5000);
+        w.op_failed(&ops, 0, OpFailure::Close);
+        assert_eq!(w.active_path(), None);
+        // mkdir failure: seq given back; create failure: seq consumed.
+        let ops = w.write_line(&sample(3.0), 4, 6000, &h);
+        w.op_failed(&ops, 0, OpFailure::OpenMkdir);
+        let ops = w.write_line(&sample(4.0), 5, 6001, &h);
+        assert!(matches!(&ops[0], SegmentOp::Open { path, .. } if path == "/d/seg-5-00002.jsonl"));
+        w.op_failed(&ops, 0, OpFailure::OpenCreate);
+        assert_eq!(w.active_path(), None);
+        let ops = w.write_line(&sample(5.0), 6, 6002, &h);
+        assert!(matches!(&ops[0], SegmentOp::Open { path, .. } if path == "/d/seg-6-00003.jsonl"));
+        // Header write failure: still open, nothing counted → header-only at rotate.
+        w.op_failed(&ops, 0, OpFailure::OpenHeader);
+        assert_eq!(w.active_path(), Some("/d/seg-6-00003.jsonl"));
+        let ops = w.finalize();
+        assert_eq!(
+            ops,
+            vec![SegmentOp::Close {
+                plain: "/d/seg-6-00003.jsonl".into(),
+                gz: None
+            }]
+        );
+        // Sample append failure: not counted; a header re-emit failure leaves samples alone.
+        let mut w = SegmentWriterCore::new("/e", Some(10_000), None);
+        let ops = w.write_line(&sample(0.0), 1, 0, &h);
+        let last = ops.len() - 1;
+        w.op_failed(&ops, last, OpFailure::Append);
+        assert_eq!(
+            w.finalize()[0],
+            SegmentOp::Close {
+                plain: "/e/seg-1-00000.jsonl".into(),
+                gz: None
+            }
+        );
+        let ops = w.write_line(&sample(1.0), 2, 0, &h);
+        assert_eq!(ops.len(), 2);
+        let re = w.note_time_source(TimeSource::Rtc, &h);
+        w.op_failed(&re, 0, OpFailure::Append);
+        assert!(matches!(
+            &w.finalize()[0],
+            SegmentOp::Close { gz: Some(_), .. }
+        ));
+        assert_eq!(gz_temp_path("/d/a.jsonl.gz", 42), "/d/a.jsonl.gz.tmp.42");
+        assert_eq!(
+            orphan_entry_action(&gz_temp_path("seg-1-00000.jsonl.gz", 7)),
+            OrphanEntryAction::DeleteTemp
+        );
+        assert_eq!(
+            GZIP_FINALIZE_STEPS.last(),
+            Some(&GzipFinalizeStep::NotifyClosed)
+        );
+    }
+
     #[test]
     fn orphan_rules() {
         assert_eq!(

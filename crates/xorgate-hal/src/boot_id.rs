@@ -46,7 +46,8 @@ pub fn random_bytes16() -> [u8; 16] {
             return b;
         }
     }
-    let seed = monotonic_ns() ^ ((std::process::id() as u64) << 32) ^ crate::tape::wall_now_ms() as u64;
+    let seed =
+        monotonic_ns() ^ ((std::process::id() as u64) << 32) ^ crate::tape::wall_now_ms() as u64;
     for (i, x) in b.iter_mut().enumerate() {
         *x = (seed.rotate_left((i as u32 * 8) % 64) & 0xff) as u8 ^ (i as u8).wrapping_mul(0x9d);
     }
@@ -119,7 +120,10 @@ mod tests {
         let u = random_uuid_v4();
         assert_eq!(u.len(), 36);
         let parts: Vec<&str> = u.split('-').collect();
-        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12]);
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            [8, 4, 4, 4, 12]
+        );
         assert!(parts[2].starts_with('4'));
         assert!(matches!(&parts[3][..1], "8" | "9" | "a" | "b"));
         assert_ne!(random_uuid_v4(), u);

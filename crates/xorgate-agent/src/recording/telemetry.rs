@@ -34,7 +34,8 @@ use crate::ctx::{BoxFut, GroupSample};
 use crate::recording::time_source::TimeSourceHandle;
 
 /// `sampleGroups()` (`TelemetryRecorderOptions.sampleGroups`).
-pub type SampleGroupsFn = Arc<dyn Fn() -> BoxFut<'static, IndexMap<String, GroupSample>> + Send + Sync>;
+pub type SampleGroupsFn =
+    Arc<dyn Fn() -> BoxFut<'static, IndexMap<String, GroupSample>> + Send + Sync>;
 /// `onSegmentClosed(gzPath)`.
 pub type SegmentClosedFn = Arc<dyn Fn(&Path) + Send + Sync>;
 /// Fired whenever the active plain segment changes (open / close).

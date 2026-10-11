@@ -71,26 +71,29 @@ pub fn is_closed_name(name: &str) -> bool {
     CLOSED_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
-/// `setActivePath` (`disk.ts:87-92`) keeps `"<owner> <path>"` strings;
-/// `enforce` strips everything up to the first space (`disk.ts:124-126`).
+/// The separator of the `activePaths` entries: a NUL byte (`disk.ts:89,91,
+/// 125` hold a literal `\0` — the reason the file reads as binary to grep).
+pub const ACTIVE_SEP: char = '\0';
+
+/// `setActivePath` (`disk.ts:87-92`) keeps `"<owner>\0<path>"` strings;
+/// `enforce` strips everything up to the first NUL (`disk.ts:124-126`).
 /// This is that set's member text.
 pub fn active_entry(owner: &str, path: &str) -> String {
-    format!("{owner} {path}")
+    format!("{owner}{ACTIVE_SEP}{path}")
 }
 
-/// `p.slice(p.indexOf(" ") + 1)` (`disk.ts:125`): an owner containing a
-/// space would cut early, exactly as in the TS.
+/// `p.slice(p.indexOf("\0") + 1)` (`disk.ts:125`).
 pub fn active_entry_path(entry: &str) -> &str {
-    match entry.find(' ') {
+    match entry.find(ACTIVE_SEP) {
         Some(i) => &entry[i + 1..],
         None => entry,
     }
 }
 
-/// `p.startsWith(`${owner} `)` (`disk.ts:89`): the entries a new
+/// `p.startsWith(`${owner}\0`)` (`disk.ts:89`): the entries a new
 /// registration for `owner` replaces.
 pub fn active_entry_owned_by(entry: &str, owner: &str) -> bool {
-    entry.starts_with(&format!("{owner} "))
+    entry.starts_with(&format!("{owner}{ACTIVE_SEP}"))
 }
 
 /// `files.filter((f) => f.closed && !active.has(f.path)).sort((a, b) =>
@@ -265,10 +268,14 @@ mod tests {
         assert!(!is_scanned_name("session.json"));
         assert!(is_scanned_name("x.json"));
         let e = active_entry("video:cam0", "/r/a b.mp4");
+        assert_eq!(e, "video:cam0\0/r/a b.mp4");
         assert_eq!(active_entry_path(&e), "/r/a b.mp4");
         assert!(active_entry_owned_by(&e, "video:cam0"));
         assert!(!active_entry_owned_by(&e, "video:cam"));
-        assert_eq!(sidecar_of_mp4("/v/00001.mp4").as_deref(), Some("/v/00001.json"));
+        assert_eq!(
+            sidecar_of_mp4("/v/00001.mp4").as_deref(),
+            Some("/v/00001.json")
+        );
         assert_eq!(sidecar_of_mp4("/t/seg.jsonl.gz"), None);
     }
 
@@ -283,7 +290,10 @@ mod tests {
         let active = HashSet::new();
         assert_eq!(evictable_order(&files, &active), vec![1, 3, 0]);
         // total 8000 > 7000: one eviction (the oldest closed) is enough.
-        assert_eq!(plan_eviction(&files, &active, None, &ret(7000.0, 0.0)), vec![1]);
+        assert_eq!(
+            plan_eviction(&files, &active, None, &ret(7000.0, 0.0)),
+            vec![1]
+        );
         // Free floor: 500 < 1000 until one eviction credits 1000.
         assert_eq!(
             plan_eviction(&files, &active, Some(500.0), &ret(1e9, 1000.0)),
