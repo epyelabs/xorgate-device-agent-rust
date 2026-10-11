@@ -156,6 +156,14 @@ pub type NotifyFn = Arc<dyn Fn() + Send + Sync>;
 /// `sampleGroups()` (the recorder's view of the collectors).
 pub type SampleGroupsFn =
     Arc<dyn Fn() -> BoxFut<'static, IndexMap<String, GroupSample>> + Send + Sync>;
+/// `onActiveSegment(streamKey, path)`.
+pub type ActiveSegmentFn = Arc<dyn Fn(&str, Option<PathBuf>) + Send + Sync>;
+/// `setLiveShed(shed)` — the choke point's actuator.
+pub type LiveShedFn = Arc<dyn Fn(bool) + Send + Sync>;
+/// `setDisabledCameras(keys)`.
+pub type DisabledCamerasFn = Arc<dyn Fn(&[String]) + Send + Sync>;
+/// `onStatus(status)`.
+pub type StatusFn = Arc<dyn Fn(&RecordingStatus) + Send + Sync>;
 /// `powerSample()` (the shed policy's ~1 Hz reading).
 pub type PowerSampleFn = Arc<dyn Fn() -> BoxFut<'static, Option<PowerSampleReading>> + Send + Sync>;
 
@@ -187,7 +195,7 @@ pub struct CaptureSpec {
     pub time_source: Arc<dyn TimeSourceApi>,
     pub on_segment_closed: NotifyFn,
     /// `onActiveSegment(streamKey, path)` → `disk.setActivePath("video:<key>", path)`.
-    pub on_active_segment: Arc<dyn Fn(&str, Option<PathBuf>) + Send + Sync>,
+    pub on_active_segment: ActiveSegmentFn,
     pub on_status: NotifyFn,
     pub on_event: EventFn,
     /// `onSpawned(streamKey)` → bounce that stream's KVS master.
@@ -249,9 +257,9 @@ pub struct VideoOpts {
     pub on_capture_spawned: Arc<dyn Fn(&str) + Send + Sync>,
     /// `setLiveShed(shed)` → `MediaSupervisor::set_shed` — called ONLY from
     /// the choke point in `apply_video`.
-    pub set_live_shed: Option<Arc<dyn Fn(bool) + Send + Sync>>,
+    pub set_live_shed: Option<LiveShedFn>,
     /// `setDisabledCameras(keys)` → `MediaSupervisor::set_disabled_streams`.
-    pub set_disabled_cameras: Option<Arc<dyn Fn(&[String]) + Send + Sync>>,
+    pub set_disabled_cameras: Option<DisabledCamerasFn>,
 }
 
 /// `RecordingManagerOptions` (`manager.ts:138-190`).
@@ -274,7 +282,7 @@ pub struct RecordingManagerOpts {
     /// The boot policy's readers (budget, telemetry.json, GNSS view).
     pub boot_sources: Box<dyn BootDeferSources + Send>,
     /// Called whenever status may have changed.
-    pub on_status: Arc<dyn Fn(&RecordingStatus) + Send + Sync>,
+    pub on_status: StatusFn,
     pub on_event: EventFn,
     /// The ONE monotonic source (P8) for both policies.
     pub clock: Arc<dyn Clock + Send + Sync>,
@@ -369,7 +377,7 @@ struct Inner {
     video: Option<VideoOpts>,
     sample_groups: SampleGroupsFn,
     power_sample: Option<PowerSampleFn>,
-    on_status: Arc<dyn Fn(&RecordingStatus) + Send + Sync>,
+    on_status: StatusFn,
     on_event: EventFn,
     clock: Arc<dyn Clock + Send + Sync>,
     backend: Arc<dyn RecordingBackend>,

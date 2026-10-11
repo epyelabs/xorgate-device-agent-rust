@@ -1,0 +1,647 @@
+//! `RecordingManager` lifecycle tests (`tokio::time::pause`) — the six
+//! `it()`s of `test/recording-manager.test.ts`, the orphan-recovery `it()` of
+//! "RecordingManager video wiring", the timers (`SETTINGS_POLL_MS` 5 s,
+//! `SHED_SAMPLE_MS` 1 s, `DISK_ENFORCE_MS` 60 s, `TIME_PROBE_TIMEOUT_MS` 2 s),
+//! connectivity / `setUpload` / `stop`, the hook wiring, the no-deadlock rule
+//! (P9) and the single live-parking call site (invariant 6). Components are
+//! the fakes of `recording_support` (the I/O halves are WP2–WP4's).
+
+#[path = "recording_support/mod.rs"]
+mod recording_support;
+
+use std::sync::atomic::Ordering;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+
+use recording_support::*;
+use serde_json::json;
+use xorgate_agent::ctx::PhaseHooks;
+use xorgate_agent::recording::manager::{CaptureStatus, VideoRecordingStatus};
+use xorgate_agent::recording::RecordingHooks;
+use xorgate_core::telemetry::{BoolLeaf, MediaStream, TelemetryMedia};
+use xorgate_core::types::{GnssView, PowerSampleReading, SkyState, TimeSource};
+
+async fn yields() {
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+}
+
+fn hooks_for(m: xorgate_agent::recording::RecordingManager, rig: &Rig) -> RecordingHooks {
+    let h = RecordingHooks::new(None, None, Arc::new(|| None), rig.clock.clone());
+    h.install(m);
+    h
+}
+
+// --- test/recording-manager.test.ts -----------------------------------------
+
+/// "creates nothing when recording is disabled (disabled-by-default regression)".
+#[tokio::test(start_paused = true)]
+async fn creates_nothing_when_recording_is_disabled() {
+    let mut rig = Rig::new("off");
+    rig.video = false;
+    let m = rig.build();
+    m.start().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!rig.root().exists());
+    assert_eq!(rig.log.finalize_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.log.disks.load(Ordering::SeqCst), 0);
+    let st = m.status();
+    assert!(!st.enabled);
+    assert_eq!(st.session_id, None);
+    assert_eq!(
+        serde_json::to_value(&st).unwrap(),
+        serde_json::to_value(xorgate_core::telemetry::RecordingStatus::all_off()).unwrap()
+    );
+    m.stop();
+}
+
+/// "starts and stops the recorder live from settings changes".
+#[tokio::test(start_paused = true)]
+async fn starts_and_stops_the_recorder_live() {
+    let mut rig = Rig::new("live");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    m.start().await;
+    let st = m.status();
+    assert!(st.enabled);
+    let sid = st.session_id.clone().expect("session");
+    let rec = rig.log.recorders.lock().unwrap()[0].clone();
+    assert_eq!(rec.rate_hz, 20);
+    assert_eq!(rec.dir, rig.root().join("telemetry").join(&sid));
+    assert_eq!(rec.session_id, sid);
+    assert_eq!(
+        rig.events(),
+        vec![format!(
+            "telemetry recording started (session {}…, 20 Hz)",
+            &sid[..8]
+        )]
+    );
+    rig.save_recording(&json!({"telemetry": {"enabled": false}}));
+    m.reapply();
+    assert!(!m.status().enabled);
+    assert_eq!(m.status().session_id, None);
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 1);
+    // TS quirk kept: `{enabled:false}` resolves rateHz to the default 1 ≠ 20,
+    // so `rateChanged` wins the reason (`manager.ts:437-440`).
+    assert_eq!(
+        rig.events().last().unwrap(),
+        "telemetry recording stopped (rateHz changed)"
+    );
+    rig.save_recording(&json!({"telemetry": {"enabled": true}}));
+    m.reapply();
+    rig.save_recording(&json!({"telemetry": {"enabled": false}}));
+    m.reapply();
+    assert_eq!(
+        rig.events().last().unwrap(),
+        "telemetry recording stopped (recording disabled)"
+    );
+    m.stop();
+}
+
+/// "mints a new session when rateHz changes".
+#[tokio::test(start_paused = true)]
+async fn mints_a_new_session_when_rate_changes() {
+    let mut rig = Rig::new("rate");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    m.start().await;
+    let first = m.status().session_id.unwrap();
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 5}}));
+    m.reapply();
+    let second = m.status().session_id.unwrap();
+    assert_ne!(first, second);
+    let ev = rig.events();
+    assert_eq!(ev[1], "telemetry recording stopped (rateHz changed)");
+    assert!(ev[2].ends_with("…, 5 Hz)"), "{ev:?}");
+    m.stop();
+}
+
+/// "stamps the first session with the PROBED time source, not the placeholder".
+#[tokio::test(start_paused = true)]
+async fn first_session_sees_the_probed_time_source() {
+    let mut rig = Rig::new("probe");
+    rig.video = false;
+    rig.time_source = Arc::new(FakeTimeSource {
+        value: Mutex::new(TimeSource::Unsynced),
+        probed: TimeSource::Ntp,
+        hang: false,
+        delay_ms: 20,
+    });
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    m.start().await;
+    assert_eq!(rig.log.time_sources.lock().unwrap()[0], TimeSource::Ntp);
+    m.stop();
+}
+
+/// "first video session.json carries the probed time source (badge-bug fix)"
+/// (video wiring #4): the capture supervisor is built after the probe, so its
+/// `timeSource()` — what `session.json` is stamped from — is the probed value.
+#[tokio::test(start_paused = true)]
+async fn first_video_session_sees_the_probed_time_source() {
+    let mut rig = Rig::new("vprobe");
+    rig.time_source = Arc::new(FakeTimeSource {
+        value: Mutex::new(TimeSource::Unsynced),
+        probed: TimeSource::Ntp,
+        hang: false,
+        delay_ms: 20,
+    });
+    rig.save_recording(&json!({"video": {"enabled": true, "bootDefer": "off"}}));
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(
+        rig.log.captures.lock().unwrap()[0],
+        (true, vec!["cam0".to_string()])
+    );
+    assert_eq!(rig.log.time_sources.lock().unwrap()[0], TimeSource::Ntp);
+    m.stop();
+}
+
+/// "a hung probe cannot delay start beyond the bound (proceeds pessimistic)".
+#[tokio::test(start_paused = true)]
+async fn a_hung_probe_is_bounded() {
+    let mut rig = Rig::new("hung");
+    rig.video = false;
+    rig.time_source = Arc::new(FakeTimeSource {
+        value: Mutex::new(TimeSource::Unsynced),
+        probed: TimeSource::Ntp,
+        hang: true,
+        delay_ms: 0,
+    });
+    rig.time_probe_timeout_ms = Some(50);
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    let t0 = tokio::time::Instant::now();
+    m.start().await;
+    assert_eq!(t0.elapsed(), Duration::from_millis(50));
+    assert!(m.status().enabled);
+    assert_eq!(
+        rig.log.time_sources.lock().unwrap()[0],
+        TimeSource::Unsynced
+    );
+    m.stop();
+}
+
+/// The default bound is `TIME_PROBE_TIMEOUT_MS` = 2 s.
+#[tokio::test(start_paused = true)]
+async fn the_default_probe_bound_is_two_seconds() {
+    let mut rig = Rig::new("hung2");
+    rig.video = false;
+    rig.time_source = Arc::new(FakeTimeSource {
+        value: Mutex::new(TimeSource::Unsynced),
+        probed: TimeSource::Ntp,
+        hang: true,
+        delay_ms: 0,
+    });
+    let m = rig.build();
+    let t0 = tokio::time::Instant::now();
+    m.start().await;
+    assert_eq!(t0.elapsed(), Duration::from_millis(2000));
+    m.stop();
+}
+
+/// "finalizes orphans from a previous run on start, even with recording off".
+#[tokio::test(start_paused = true)]
+async fn finalizes_orphans_on_start_with_recording_off() {
+    let mut rig = Rig::new("orph");
+    rig.video = false;
+    rig.orphans = 1;
+    std::fs::create_dir_all(rig.root().join("telemetry").join("prev-session")).unwrap();
+    let m = rig.build();
+    m.start().await;
+    yields().await;
+    assert_eq!(rig.log.finalize_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.log.recover_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.log.disks.load(Ordering::SeqCst), 1, "ensureDisk");
+    assert!(
+        rig.log.enforces.load(Ordering::SeqCst) >= 1,
+        "initial enforce"
+    );
+    assert_eq!(
+        rig.events(),
+        vec!["recording: finalized 1 orphan segment(s) from previous run"]
+    );
+    assert!(!m.status().enabled);
+    m.stop();
+}
+
+/// "orphan video sessions get sidecars on start" (video wiring #5): the
+/// recovery pass runs before any capture spawns and reports its count.
+#[tokio::test(start_paused = true)]
+async fn orphan_video_sessions_are_backfilled_on_start() {
+    let mut rig = Rig::new("vorph");
+    rig.backfilled = 1;
+    std::fs::create_dir_all(rig.root().join("video").join("cam0").join("sess-dead")).unwrap();
+    let m = rig.build();
+    m.start().await;
+    let ev = rig.events();
+    assert_eq!(
+        ev[0],
+        "recording: backfilled 1 video sidecar(s) from previous run"
+    );
+    assert_eq!(rig.log.recover_calls.load(Ordering::SeqCst), 1);
+    m.stop();
+}
+
+// --- timers -------------------------------------------------------------------
+
+/// `SETTINGS_POLL_MS`: a settings.json change applies within one 5 s poll.
+#[tokio::test(start_paused = true)]
+async fn the_settings_poll_applies_changes_every_five_seconds() {
+    let mut rig = Rig::new("poll");
+    rig.video = false;
+    rig.poll_ms = 5_000;
+    let m = rig.build();
+    m.start().await;
+    rig.save_recording(&json!({"telemetry": {"enabled": true}}));
+    tokio::time::sleep(Duration::from_millis(4_900)).await;
+    assert!(!m.status().enabled);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    yields().await;
+    assert!(m.status().enabled, "applied by the 5 s poll");
+    m.stop();
+}
+
+/// `SHED_SAMPLE_MS`: the 1 s monitor arms with a camera + sampler, walks to
+/// rung 1 on its own ticks, and disarms (no more samples) once no camera is left.
+#[tokio::test(start_paused = true)]
+async fn the_shed_monitor_ticks_every_second_and_disarms() {
+    let mut rig = Rig::new("shed");
+    rig.shed_sample_ms = 1_000;
+    *rig.reading.lock().unwrap() = Some(PowerSampleReading {
+        uv: true,
+        rail_v: Some(4.7),
+        temp_c: None,
+        soft_temp: None,
+    });
+    rig.save_recording(&json!({
+        "video": {"enabled": true, "bootDefer": "off"},
+        "powerShedding": {"uvWindowSecs": 5, "escalateDwellSecs": 5, "restoreSecs": 10}
+    }));
+    let m = rig.build();
+    m.start().await;
+    for _ in 0..3 {
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        yields().await;
+    }
+    assert_eq!(rig.log.sample_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(*rig.log.live_shed.lock().unwrap(), vec![true]);
+    assert_eq!(m.status().power_shed.as_deref(), Some("no-live"));
+    // Every camera disabled → monitor disarmed, ladder reset, live released.
+    rig.save_recording(&json!({
+        "video": {"enabled": true, "bootDefer": "off", "cameras": {"cam0": false}},
+        "powerShedding": {"uvWindowSecs": 5, "escalateDwellSecs": 5, "restoreSecs": 10}
+    }));
+    m.reapply();
+    let calls = rig.log.sample_calls.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(5_000)).await;
+    yields().await;
+    assert_eq!(
+        rig.log.sample_calls.load(Ordering::SeqCst),
+        calls,
+        "disarmed"
+    );
+    assert_eq!(m.status().power_shed, None);
+    assert!(rig
+        .events()
+        .contains(&"power shedding disarmed — restoring full operation".to_string()));
+    assert_eq!(*rig.log.live_shed.lock().unwrap(), vec![true, false]);
+    m.stop();
+}
+
+/// `DISK_ENFORCE_MS`: enforcement on creation, then every 60 s.
+#[tokio::test(start_paused = true)]
+async fn the_disk_sweep_runs_every_minute() {
+    let mut rig = Rig::new("disk");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true}}));
+    let m = rig.build();
+    m.start().await;
+    yields().await;
+    let n0 = rig.log.enforces.load(Ordering::SeqCst);
+    assert!(n0 >= 1);
+    tokio::time::sleep(Duration::from_millis(59_000)).await;
+    yields().await;
+    assert_eq!(rig.log.enforces.load(Ordering::SeqCst), n0);
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    yields().await;
+    assert_eq!(rig.log.enforces.load(Ordering::SeqCst), n0 + 1);
+    m.stop();
+}
+
+// --- connectivity / setUpload / stop -------------------------------------------
+
+/// `notifyConnectivity` kicks / pauses; `setUpload` replaces the uploader.
+#[tokio::test(start_paused = true)]
+async fn connectivity_and_upload_rearm() {
+    let mut rig = Rig::new("up");
+    rig.video = false;
+    rig.upload = true;
+    let m = rig.build();
+    assert_eq!(
+        rig.log.uploaders.load(Ordering::SeqCst),
+        1,
+        "built in the constructor"
+    );
+    m.start().await;
+    let k0 = rig.log.kicks.load(Ordering::SeqCst);
+    assert!(k0 >= 2, "apply() + start() kick");
+    m.notify_connectivity(true);
+    assert_eq!(rig.log.kicks.load(Ordering::SeqCst), k0 + 1);
+    m.notify_connectivity(false);
+    assert_eq!(rig.log.pauses.load(Ordering::SeqCst), 1);
+    m.set_upload(None);
+    assert_eq!(
+        rig.log.uploaders.load(Ordering::SeqCst),
+        1,
+        "None is a no-op"
+    );
+    m.set_upload(Some(xorgate_cloud::s3::UploadOptions {
+        put: Arc::new(NoopPut),
+        is_online: Arc::new(|| true),
+    }));
+    assert_eq!(rig.log.uploader_stops.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.log.uploaders.load(Ordering::SeqCst), 2);
+    assert_eq!(rig.log.kicks.load(Ordering::SeqCst), k0 + 2);
+    m.stop();
+    assert_eq!(rig.log.uploader_stops.load(Ordering::SeqCst), 2);
+}
+
+struct NoopPut;
+impl xorgate_cloud::s3::ObjectPut for NoopPut {
+    fn put<'a>(
+        &'a self,
+        _key: &'a str,
+        _body: bytes::Bytes,
+        _content_type: &'a str,
+        _cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> xorgate_cloud::s3::PutFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// `stop()`: recorder finalized ("agent shutdown"), capture SIGINTed, timers
+/// off; a late config message (`reapply`) cannot restart anything.
+#[tokio::test(start_paused = true)]
+async fn stop_is_final() {
+    let mut rig = Rig::new("stop");
+    rig.poll_ms = 5_000;
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off"}}),
+    );
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0"]);
+    m.stop();
+    assert_eq!(rig.live_cams(), Vec::<String>::new());
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        rig.events().last().unwrap(),
+        "telemetry recording stopped (agent shutdown)"
+    );
+    assert!(!m.status().enabled);
+    assert_eq!(m.video_key(), "");
+    let spawns = rig.spawns().len();
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true, "rateHz": 5}, "video": {"enabled": false}}),
+    );
+    m.reapply();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    yields().await;
+    assert_eq!(rig.spawns().len(), spawns);
+    assert_eq!(rig.log.recorders.lock().unwrap().len(), 1);
+}
+
+/// The worker's `onCaptureSpawned` reaches the media supervisor's bounce for
+/// every capture spawn (`[media camN] restarting master …`, D6).
+#[tokio::test(start_paused = true)]
+async fn every_capture_spawn_bounces_its_master() {
+    let mut rig = Rig::new("bounce");
+    rig.cameras = vec!["cam0".into(), "cam1".into()];
+    rig.save_recording(
+        &json!({"video": {"enabled": true, "bootDefer": "off", "spawnStaggerSecs": 0}}),
+    );
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(
+        *rig.log.spawned_callbacks.lock().unwrap(),
+        vec!["cam0", "cam1"]
+    );
+    m.stop();
+}
+
+// --- hooks ---------------------------------------------------------------------
+
+/// The hook wiring: connect/close → `notify_connectivity`; the tick overlay;
+/// `final_recording_status` after `recording_stop`; `report_hints` from the
+/// published snapshot.
+#[tokio::test(start_paused = true)]
+async fn hooks_wire_every_call_site() {
+    let mut rig = Rig::new("hooks");
+    rig.upload = true;
+    rig.budget_ma = Some(3000);
+    rig.save_recording(&json!({"telemetry": {"enabled": true}, "video": {"enabled": true}}));
+    let m = rig.build();
+    let hooks = hooks_for(m.clone(), &rig);
+    hooks.recording_start().await;
+    m.settled().await;
+    // Boot defer armed on a 3 A budget: the hint comes from the snapshot.
+    let hints = hooks.report_hints();
+    assert_eq!(hints.boot_defer.as_deref(), Some("deferring"));
+    assert_eq!(hints.power_shed, None);
+    assert_eq!(hints.clock_stepper_armed, None);
+    let k0 = rig.log.kicks.load(Ordering::SeqCst);
+    hooks.notify_connectivity(true);
+    hooks.notify_connectivity(false);
+    assert_eq!(rig.log.kicks.load(Ordering::SeqCst), k0 + 1);
+    assert_eq!(rig.log.pauses.load(Ordering::SeqCst), 1);
+    let st = hooks.recording_status();
+    assert!(st.enabled);
+    assert_eq!(st.boot_defer.as_deref(), Some("deferring"));
+    hooks.note_recording_status(&st);
+    assert_eq!(hooks.recording_status_for_led(), st);
+    // Bridge-only capture: media.recording false, the stream annotated false.
+    let media = TelemetryMedia {
+        kvs: BoolLeaf { value: true },
+        recording: BoolLeaf { value: false },
+        streams: vec![
+            MediaStream {
+                stream_key: "cam0".into(),
+                channel_name: "dev-1-cam0".into(),
+                state: "running".into(),
+                recording: None,
+            },
+            MediaStream {
+                stream_key: "cam9".into(),
+                channel_name: "dev-1-cam9".into(),
+                state: "running".into(),
+                recording: None,
+            },
+        ],
+    };
+    let out = hooks.overlay_media(media.clone());
+    assert_eq!(
+        serde_json::to_string(&out).unwrap(),
+        r#"{"kvs":{"value":true},"recording":{"value":false},"streams":[{"streamKey":"cam0","channelName":"dev-1-cam0","state":"running","recording":false},{"streamKey":"cam9","channelName":"dev-1-cam9","state":"running"}]}"#
+    );
+    hooks.recording_stop();
+    let fin = hooks.final_recording_status().unwrap();
+    assert!(!fin.enabled);
+    assert_eq!(fin.session_id, None);
+    assert_eq!(fin.boot_defer.as_deref(), Some("deferring"));
+}
+
+/// `worker.ts:1200-1221`: `media.recording` = any capture recording; only
+/// streams under capture supervision get the flag.
+#[test]
+fn overlay_flags_only_supervised_streams() {
+    let media = TelemetryMedia {
+        kvs: BoolLeaf { value: true },
+        recording: BoolLeaf { value: false },
+        streams: ["cam0", "cam1", "cam2"]
+            .iter()
+            .map(|k| MediaStream {
+                stream_key: k.to_string(),
+                channel_name: format!("c-{k}"),
+                state: "running".into(),
+                recording: None,
+            })
+            .collect(),
+    };
+    let video = VideoRecordingStatus {
+        recording: true,
+        streams: vec![
+            CaptureStatus {
+                stream_key: "cam0".into(),
+                state: "running".into(),
+                session_id: Some("s".into()),
+                recording: true,
+            },
+            CaptureStatus {
+                stream_key: "cam1".into(),
+                state: "backoff".into(),
+                session_id: None,
+                recording: false,
+            },
+        ],
+    };
+    let out = xorgate_agent::recording::hooks::overlay(media, &video);
+    assert!(out.recording.value);
+    let flags: Vec<Option<bool>> = out.streams.iter().map(|s| s.recording).collect();
+    assert_eq!(flags, vec![Some(true), Some(false), None]);
+}
+
+/// P9 / review-wp3 #5: `report_hints` (called under ConfigSync's mutex) and
+/// the tick's reads never take the manager's state lock — they return while
+/// an `apply` is blocked inside its live-parking callback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hooks_never_block_on_a_manager_mid_apply() {
+    let mut rig = Rig::new("nodl");
+    rig.budget_ma = Some(3000);
+    *rig.gnss.lock().unwrap() = Some(GnssView {
+        fix: false,
+        sky: SkyState::Clear,
+    });
+    std::fs::write(
+        rig.telemetry_path(),
+        r#"{"timestamp":"2026-10-10T00:00:00.000Z","status":"connected","reg":1}"#,
+    )
+    .unwrap();
+    rig.save_recording(&json!({"video": {"enabled": true, "gpsGate": "always"}}));
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = Mutex::new(release_rx);
+    let entered_tx = Mutex::new(entered_tx);
+    rig.live_shed_hook = Some(Arc::new(move |_s: bool| {
+        let _ = entered_tx.lock().unwrap().send(());
+        let _ = release_rx
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10));
+    }));
+    let m = rig.build();
+    let hooks = Arc::new(hooks_for(m.clone(), &rig));
+    let m2 = m.clone();
+    let start = tokio::spawn(async move { m2.start().await });
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("apply reached setLiveShed");
+    // apply() now holds the manager's state lock, blocked in the callback.
+    let (done_tx, done_rx) = mpsc::channel();
+    let (h, mm) = (hooks.clone(), m.clone());
+    std::thread::spawn(move || {
+        let hints = h.report_hints();
+        let st = h.recording_status();
+        let _ = mm.video_status();
+        let _ = h.overlay_media(TelemetryMedia::idle());
+        let _ = done_tx.send((hints, st));
+    });
+    let (hints, st) = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("hooks returned while the manager was mid-apply (no deadlock)");
+    // The snapshot taken mid-apply: the gate verdict was already published.
+    assert_eq!(hints.boot_defer.as_deref(), Some("gating"));
+    assert_eq!(st.boot_defer.as_deref(), Some("gating"));
+    release_tx.send(()).unwrap();
+    start.await.unwrap();
+    assert_eq!(
+        m.status().live_block.map(|b| b.reason).as_deref(),
+        Some("gps-gate")
+    );
+    m.stop();
+}
+
+/// Invariant 6: the live masters are parked from exactly ONE place — the
+/// manager's choke point (`decide_live` → `set_live_shed`) — and the media
+/// supervisor's `set_shed` is reached only through that callback.
+#[test]
+fn live_parking_has_a_single_call_site() {
+    let src = format!("{}/src", env!("CARGO_MANIFEST_DIR"));
+    let mut set_live_shed_calls = Vec::new();
+    let mut set_shed_calls = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(&src)];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|x| x.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                let at = format!("{}:{}", p.strip_prefix(&src).unwrap().display(), n + 1);
+                if code.contains(".set_live_shed {") || code.contains("&vo.set_live_shed") {
+                    set_live_shed_calls.push(at.clone());
+                }
+                if code.contains(".set_shed(") {
+                    set_shed_calls.push(at);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        set_live_shed_calls.len(),
+        1,
+        "set_live_shed invoked outside the choke point: {set_live_shed_calls:?}"
+    );
+    assert!(set_live_shed_calls[0].starts_with("recording/manager.rs"));
+    assert_eq!(
+        set_shed_calls.len(),
+        1,
+        "MediaControl::set_shed called outside the worker's setLiveShed closure: {set_shed_calls:?}"
+    );
+    assert!(
+        set_shed_calls[0].starts_with("worker.rs"),
+        "{set_shed_calls:?}"
+    );
+}

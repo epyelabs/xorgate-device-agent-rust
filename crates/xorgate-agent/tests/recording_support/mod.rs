@@ -355,6 +355,8 @@ pub struct Rig {
     pub shed_sample_ms: u64,
     pub time_probe_timeout_ms: Option<u64>,
     pub upload: bool,
+    /// Called inside `setLiveShed` (after logging) — the no-deadlock test blocks here.
+    pub live_shed_hook: Option<Arc<dyn Fn(bool) + Send + Sync>>,
 }
 
 impl Rig {
@@ -385,6 +387,7 @@ impl Rig {
             shed_sample_ms: 3_600_000,
             time_probe_timeout_ms: None,
             upload: false,
+            live_shed_hook: None,
         }
     }
 
@@ -429,6 +432,7 @@ impl Rig {
             })
             .collect();
         let (l1, l2, l3) = (log.clone(), log.clone(), log.clone());
+        let hook = self.live_shed_hook.clone();
         let video = VideoOpts {
             media_enabled: self.media_enabled,
             cameras: Arc::new(move || cams.clone()),
@@ -437,7 +441,10 @@ impl Rig {
                 l3.spawned_callbacks.lock().unwrap().push(k.to_string())
             }),
             set_live_shed: Some(Arc::new(move |s: bool| {
-                l1.live_shed.lock().unwrap().push(s)
+                l1.live_shed.lock().unwrap().push(s);
+                if let Some(h) = &hook {
+                    h(s);
+                }
             })),
             set_disabled_cameras: Some(Arc::new(move |k: &[String]| {
                 l2.disabled.lock().unwrap().push(k.to_vec())
