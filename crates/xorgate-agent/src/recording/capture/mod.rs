@@ -452,26 +452,7 @@ impl VideoCaptureSupervisor {
         let mut out = Out::default();
         {
             let mut g = s.lock();
-            if g.stopped {
-                return;
-            }
-            g.stopped = true;
-            for (key, run) in g.runs.iter_mut() {
-                cancel(&mut run.stable_timer);
-                cancel(&mut run.restart_timer);
-                run.stop_watching();
-                run.state = CaptureState::Stopped;
-                if let Some(slot) = run.child.as_mut() {
-                    slot.signalled = true;
-                    out.sigs.push(Sig {
-                        child: slot.child.clone(),
-                        key: key.clone(),
-                        pid: slot.pid,
-                        sig: libc::SIGINT,
-                        exited: slot.exited.clone(),
-                    });
-                }
-            }
+            let _ = stop_locked(&mut g, &mut out);
         }
         s.flush(out);
     }
@@ -481,28 +462,23 @@ impl VideoCaptureSupervisor {
     /// Required before a replacement supervisor spawns: an exiting shmsink
     /// unlinks its socket path, so an old child overlapping a new one would
     /// delete the NEW socket (hardware-verified).
+    ///
+    /// Invariant 8 (review-wp4 S1): the child snapshot, `stopped = true` and
+    /// the SIGINTs are ONE critical section ([`stop_locked`]). The TS has no
+    /// gap (one synchronous block); with two lock acquisitions a restart or
+    /// stagger timer on another worker could spawn a child between them that
+    /// this call SIGINTs but never awaits. After the section every spawn path
+    /// refuses (`spawn_locked` checks `stopped`; the timers are cancelled).
     pub async fn stop_and_wait(&self, grace: Duration) {
-        let handles: Vec<(Sig, watch::Receiver<bool>)> = {
-            let g = self.shared.lock();
-            g.runs
-                .iter()
-                .filter_map(|(k, r)| {
-                    r.child.as_ref().map(|c| {
-                        (
-                            Sig {
-                                child: c.child.clone(),
-                                key: k.clone(),
-                                pid: c.pid,
-                                sig: libc::SIGKILL,
-                                exited: c.exited.clone(),
-                            },
-                            c.exited.clone(),
-                        )
-                    })
-                })
-                .collect()
+        let s = &self.shared;
+        let mut out = Out::default();
+        let handles = {
+            let mut g = s.lock();
+            stop_locked(&mut g, &mut out)
         };
-        self.stop();
+        #[cfg(test)]
+        tests::run_stop_gap_hook(s);
+        s.flush(out);
         if handles.is_empty() {
             return;
         }
@@ -513,7 +489,7 @@ impl VideoCaptureSupervisor {
         };
         if tokio::time::timeout(grace, all).await.is_err() {
             for (sig, _) in &handles {
-                self.shared.deliver(sig);
+                s.deliver(sig);
             }
             for (_, rx) in &handles {
                 wait_exited(rx.clone()).await;
@@ -762,6 +738,53 @@ fn tape_shm_audit(s: &Arc<Shared>) {
     });
 }
 
+/// `stop()`'s body under the caller's lock, returning the `stopAndWait`
+/// snapshot — `(SIGKILL escalation, onExit flag)` of every live child — taken
+/// in the SAME critical section that sets `stopped` (review-wp4 S1). Like the
+/// TS, the snapshot is taken even when already stopped (`stop()` is then a
+/// no-op), so a second `stop_and_wait` still awaits the exiting children.
+fn stop_locked(g: &mut Inner, out: &mut Out) -> Vec<(Sig, watch::Receiver<bool>)> {
+    let handles = g
+        .runs
+        .iter()
+        .filter_map(|(k, r)| {
+            r.child.as_ref().map(|c| {
+                (
+                    Sig {
+                        child: c.child.clone(),
+                        key: k.clone(),
+                        pid: c.pid,
+                        sig: libc::SIGKILL,
+                        exited: c.exited.clone(),
+                    },
+                    c.exited.clone(),
+                )
+            })
+        })
+        .collect();
+    if g.stopped {
+        return handles;
+    }
+    g.stopped = true;
+    for (key, run) in g.runs.iter_mut() {
+        cancel(&mut run.stable_timer);
+        cancel(&mut run.restart_timer);
+        run.stop_watching();
+        run.state = CaptureState::Stopped;
+        if let Some(slot) = run.child.as_mut() {
+            slot.signalled = true;
+            out.sigs.push(Sig {
+                child: slot.child.clone(),
+                key: key.clone(),
+                pid: slot.pid,
+                sig: libc::SIGINT,
+                exited: slot.exited.clone(),
+            });
+        }
+    }
+    handles
+}
+
 /// Wait until a child's `onExit` has run (a dropped sender counts as done).
 async fn wait_exited(mut rx: watch::Receiver<bool>) {
     let _ = rx.wait_for(|v| *v).await;
@@ -869,7 +892,10 @@ fn launch(s: &Arc<Shared>, g: &mut Inner, cameras: &[CaptureCamera], out: &mut O
     }
 }
 
-/// `spawn(streamKey)` (`video-capture.ts:600-720`).
+/// `spawn(streamKey)` (`video-capture.ts:600-720`). Refuses once the
+/// supervisor is stopped or the run retiring (`:601-602`): with
+/// [`stop_locked`] that makes a timer firing after `stop_and_wait`'s snapshot
+/// a no-op (review-wp4 S1).
 fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
     let Inner {
         runs,
@@ -1253,5 +1279,177 @@ fn check_progress(
                 exited: slot.exited.clone(),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use xorgate_core::video_presets::resolve_video_preset;
+
+    use super::*;
+    use crate::ctx::AgentClock;
+
+    type GapHook = Box<dyn FnOnce(&Arc<Shared>)>;
+
+    thread_local! {
+        /// Runs inside `stop_and_wait` at the first instant after its child
+        /// snapshot at which another task can take the supervisor lock —
+        /// where a racing restart/stagger timer task runs (review-wp4 S1).
+        /// Before the fix that instant was BETWEEN the snapshot and `stop()`
+        /// (the test then saw 3 spawns, 1 awaited); now it is after both.
+        static STOP_GAP_HOOK: RefCell<Option<GapHook>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn run_stop_gap_hook(s: &Arc<Shared>) {
+        if let Some(h) = STOP_GAP_HOOK.with(|c| c.borrow_mut().take()) {
+            h(s);
+        }
+    }
+
+    /// Like a real gst-launch: exits a while after a signal, and its shmsink
+    /// unlinks the socket path on the way out (`video-capture.ts:509-515`).
+    struct SlowChild {
+        socket: PathBuf,
+        exit_ms: u64,
+        tx: Mutex<Option<mpsc::UnboundedSender<ChildEvent>>>,
+    }
+
+    impl CaptureChild for SlowChild {
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+        fn signal(&self, _sig: i32) {
+            let Some(tx) = self.tx.lock().unwrap().take() else {
+                return;
+            };
+            let (socket, ms) = (self.socket.clone(), self.exit_ms);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+                let _ = std::fs::remove_file(&socket);
+                let _ = tx.send(ChildEvent::Done(ChildDone {
+                    exit_code: Some(0),
+                    ..ChildDone::default()
+                }));
+            });
+        }
+        fn renice(&self, _nice: i32) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Child N (1-based) takes `300 * N` ms to exit after its signal.
+    #[derive(Default)]
+    struct SlowBackend {
+        spawns: AtomicUsize,
+    }
+
+    impl CaptureBackend for SlowBackend {
+        fn program(&self) -> &str {
+            backend::GST_LAUNCH
+        }
+        fn spawn(
+            &self,
+            args: &[String],
+        ) -> (Box<dyn CaptureChild>, mpsc::UnboundedReceiver<ChildEvent>) {
+            let n = self.spawns.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+            let socket = args
+                .iter()
+                .find_map(|a| a.strip_prefix("socket-path="))
+                .map(PathBuf::from)
+                .expect("socket-path= in the argv");
+            let (tx, rx) = mpsc::unbounded_channel();
+            let child = SlowChild {
+                socket,
+                exit_ms: 300 * n,
+                tx: Mutex::new(Some(tx)),
+            };
+            (Box::new(child), rx)
+        }
+    }
+
+    /// S1 / invariant 8: a stagger (restart-slot) timer that comes due at the
+    /// instant `stop_and_wait` runs must not spawn a child the call never
+    /// awaits — its shmsink would unlink the replacement supervisor's socket.
+    #[tokio::test(start_paused = true)]
+    async fn stop_and_wait_leaves_no_child_a_racing_restart_timer_could_spawn() {
+        let home = std::env::temp_dir().join(format!(
+            "xg-capture-s1-{}-{}",
+            std::process::id(),
+            hrtime_ns()
+        ));
+        let shm = home.join("shm");
+        let be = Arc::new(SlowBackend::default());
+        let cam = |k: &str| CaptureCamera {
+            stream_key: k.into(),
+            camera_name: format!("/base/{k}@1a"),
+        };
+        let mut o = VideoCaptureOpts::new(
+            "dev-1",
+            vec![cam("cam0"), cam("cam1")],
+            false,
+            resolve_video_preset("1080p15-2mbps").clone(),
+            60,
+            home.join("video"),
+            shm.clone(),
+            "boot-1",
+            Arc::new(|| TimeSource::Ntp),
+            Arc::new(AgentClock::following_tokio(1_760_000_000_000)),
+        );
+        o.backend = be.clone();
+        o.stagger_ms = 1_000;
+        o.fs_watch = false;
+        o.shm_segment_dir = home.join("devshm");
+        let sup = VideoCaptureSupervisor::new(o);
+        sup.start();
+        // cam0 spawned; cam1 waits on its stagger slot (the restart timer).
+        assert_eq!(be.spawns.load(Ordering::SeqCst), 1);
+        let (run_id, gen) = {
+            let g = sup.shared.lock();
+            let r = &g.runs["cam1"];
+            (r.id, r.restart_timer.as_ref().expect("stagger armed").gen)
+        };
+        tokio::time::advance(Duration::from_millis(999)).await;
+
+        // The timer comes due exactly now: its task takes the lock right
+        // after the snapshot. Fire it with its real generation, and also try
+        // the spawn that a timer past its own guards would make.
+        STOP_GAP_HOOK.with(|c| {
+            *c.borrow_mut() = Some(Box::new(move |s: &Arc<Shared>| {
+                fire(s, "cam1", run_id, Slot::Restart, gen);
+                let mut out = Out::default();
+                {
+                    let mut g = s.lock();
+                    spawn_locked(s, &mut g, "cam1", &mut out);
+                }
+                s.flush(out);
+            }));
+        });
+        sup.stop_and_wait(Duration::from_secs(10)).await;
+        assert!(STOP_GAP_HOOK.with(|c| c.borrow().is_none()), "the hook ran");
+
+        assert_eq!(
+            be.spawns.load(Ordering::SeqCst),
+            1,
+            "no child spawned after the snapshot"
+        );
+        assert!(
+            sup.shared.lock().runs.values().all(|r| r.child.is_none()),
+            "stop_and_wait awaited every child"
+        );
+
+        // The replacement supervisor's sockets survive every old child's exit.
+        std::fs::create_dir_all(&shm).unwrap();
+        for k in ["cam0", "cam1"] {
+            std::fs::write(shm.join(format!("{k}.sock")), b"").unwrap();
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        for k in ["cam0", "cam1"] {
+            assert!(shm.join(format!("{k}.sock")).exists(), "{k}.sock deleted");
+        }
+        assert_eq!(be.spawns.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
