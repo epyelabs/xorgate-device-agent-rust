@@ -1,72 +1,245 @@
 #!/usr/bin/env bash
-# Safety test for scripts/bench/exclusive.sh (review-wp7 fix 6), run as ROOT in a
-# throwaway container: `docker run --rm -v "$PWD:/src" -w /src debian:bookworm bash scripts/bench/tests/exclusive-safety.sh`
-# Stubs ssh/sudo/systemctl so the real script body runs locally; asserts the PROD
-# JS unit (xorgate-agent) is active after every failure path.
+# shellcheck disable=SC2319,SC2015,SC2012  # test assertions: `[ … ]; expect $?` and `a && pass || failc`
+# Safety test for scripts/bench/{exclusive,profile,dev-manifests}.sh (review-wp7
+# fix 6 + Phase 3 WP6), run as ROOT in a throwaway container:
+#   docker run --rm -v "$PWD:/src" -w /src debian:bookworm bash scripts/bench/tests/exclusive-safety.sh
+# Stubs ssh/sudo/systemctl (tests/_stubs.sh) so the real script bodies run
+# locally; asserts the PROD JS unit (xorgate-agent) is active after every
+# failure path, the media-off shared profile, the camera-release wait, an
+# idempotent end and side-effect-free dry runs.
 set -uo pipefail
-[ "$(id -u)" -eq 0 ] || { echo "run as root (in a container)"; exit 2; }
-command -v python3 >/dev/null || { apt-get update -qq >/dev/null && apt-get install -y -qq python3 >/dev/null; }
-REPO=$(cd "$(dirname "$0")/../../.." && pwd)
-STUB=$(mktemp -d); STATE=$(mktemp -d)
-export SYSD_STATE=$STATE
-cat > "$STUB/ssh" <<'S'
-#!/usr/bin/env bash
-# skip ssh options and the host, run the remote command locally
-while [ $# -gt 0 ]; do case "$1" in -o|-i|-p|-F) shift 2;; -*) shift;; *) shift; break;; esac; done
-exec "$@"
-S
-cat > "$STUB/sudo" <<'S'
-#!/usr/bin/env bash
-exec "$@"
-S
-cat > "$STUB/systemctl" <<'S'
-#!/usr/bin/env bash
-st="$SYSD_STATE"; cmd="$1"; shift || true
-case "$cmd" in
-  is-active) u="$1"; s=$(cat "$st/$u" 2>/dev/null || echo inactive); echo "$s"; [ "$s" = active ];;
-  start|restart) u="$1"; [ -f "$st/FAIL_START_$u" ] && { echo "stub: start $u failed" >&2; exit 1; }; echo active > "$st/$u";;
-  stop) u="$1"; echo inactive > "$st/$u";;
-  daemon-reload) [ -f "$st/FAIL_RELOAD" ] && { echo "stub: daemon-reload failed" >&2; exit 1; }; true;;
-  show) echo "";;
-  *) true;;
-esac
-S
-chmod +x "$STUB"/*
-export PATH="$STUB:$PATH" BENCH=stub@localhost
-# minimal on-"bench" fixtures the script expects
-mkdir -p /etc/systemd/system /etc/xorgate /var/lib/xorgate-rs/evidence /var/lib/xorgate /run/systemd/system
-touch /etc/systemd/system/xorgate-agent-rs.service
-echo '{"latest":{"metrics":{"system":{}}}}' > /var/lib/xorgate/state.json
-id pi >/dev/null 2>&1 || useradd -M pi
-fail=0
-check() { local want="$1" msg="$2"; local got; got=$(cat "$STATE/xorgate-agent" 2>/dev/null || echo inactive)
-  if [ "$got" = "$want" ]; then echo "PASS: $msg (xorgate-agent=$got)"; else echo "FAIL: $msg (xorgate-agent=$got, want $want)"; fail=1; fi; }
-reset() { rm -f "$STATE"/*; echo active > "$STATE/xorgate-agent"; echo active > "$STATE/xorgate-agent-rs"; echo active > "$STATE/sim7600-lte"; }
+# shellcheck source=scripts/bench/tests/_stubs.sh
+source "$(dirname "$0")/_stubs.sh"
+check() { local want="$1" msg="$2"; local got; got=$(js_state)
+  if [ "$got" = "$want" ]; then pass "$msg (xorgate-agent=$got)"; else failc "$msg (xorgate-agent=$got, want $want)"; fi; }
+reset() { reset_units; }
+fixture_bench
 
+sed -i '/^KVS_/d' "$RS_ENV"   # cases 1-3 predate the Phase 3 env guard
 echo "== case 1: end with JS stopped and the Rust restart failing (daemon-reload fails)"
 reset; echo inactive > "$STATE/xorgate-agent"; touch "$STATE/FAIL_RELOAD"
-bash "$REPO/scripts/bench/exclusive.sh" end >/tmp/c1.log 2>&1; echo "  exclusive.sh end rc=$?"
+bash "$B/exclusive.sh" end >"$LOGS/c1.log" 2>&1; echo "  exclusive.sh end rc=$?"
 check active "end starts JS even though the later Rust restart fails"
 
 echo "== case 2: end run twice (idempotent)"
 reset; echo inactive > "$STATE/xorgate-agent"
-bash "$REPO/scripts/bench/exclusive.sh" end >/tmp/c2a.log 2>&1; bash "$REPO/scripts/bench/exclusive.sh" end >/tmp/c2b.log 2>&1; echo "  rc=$?"
+bash "$B/exclusive.sh" end >"$LOGS/c2a.log" 2>&1; bash "$B/exclusive.sh" end >"$LOGS/c2b.log" 2>&1; echo "  rc=$?"
 check active "double end leaves JS active"
 
 echo "== case 3: begin aborts after JS was stopped (preflight passes, exclusive profile step fails)"
-reset; mkdir -p /etc/xorgate; : > /etc/xorgate/agent-rs-dev.env
-# make preflight pass, then force a failure at the restart step
-echo "KVS_MANIFEST=/var/lib/xorgate-rs/etc/kvs.json" > /etc/xorgate/agent-rs-dev.env
-mkdir -p /var/lib/xorgate-rs/etc
-for f in agent.env kvs.json hardware.json; do echo x > /etc/xorgate/$f; done
+reset
+echo "KVS_MANIFEST=/var/lib/xorgate-rs/etc/kvs.json" >> "$RS_ENV"
+mkdir -p "$RS_ETC"
 C15=/var/lib/xorgate-rs/evidence/c15-baseline.sha256   # = _lib.sh C15_BASELINE
-mkdir -p "$(dirname "$C15")"; (cd / && sha256sum etc/xorgate/agent.env etc/xorgate/kvs.json etc/xorgate/hardware.json) > "$C15"
-echo '{"v":2,"imu":"bno085"}' > /var/lib/xorgate-rs/etc/hardware-exclusive.json   # = HW_EXCLUSIVE
-echo '{"v":2,"imu":null}' > /var/lib/xorgate-rs/etc/hardware.json               # = HW_SHARED
+(cd / && sha256sum etc/xorgate/agent.env etc/xorgate/kvs.json etc/xorgate/hardware.json) > "$C15"
+echo '{"v":2,"imu":"bno085"}' > "$RS_ETC/hardware-exclusive.json"   # = HW_EXCLUSIVE
+echo '{"v":2,"imu":null}' > "$RS_ETC/hardware.json"                 # = HW_SHARED
+cp "$DEV_BACKUP/kvs.json" "$RS_ETC/kvs-exclusive.json"              # = KVS_EXCLUSIVE
 touch "$STATE/FAIL_RELOAD"
-bash "$REPO/scripts/bench/exclusive.sh" begin >/tmp/c3.log 2>&1; echo "  exclusive.sh begin rc=$?"
+bash "$B/exclusive.sh" begin >"$LOGS/c3.log" 2>&1; echo "  exclusive.sh begin rc=$?"
 check active "aborted begin restores JS via the trap"
-if grep -q "begin aborted" /tmp/c3.log; then echo "PASS: trap fired after JS was stopped"; else echo "FAIL: trap did not fire (begin refused before stopping JS?) — log:"; tail -8 /tmp/c3.log; fail=1; fi
+if grep -q "begin aborted" "$LOGS/c3.log"; then pass "trap fired after JS was stopped"; else failc "trap did not fire (begin refused before stopping JS?) — log:"; tail -8 "$LOGS/c3.log"; fi
+bash "$B/exclusive.sh" end >/dev/null 2>&1
 
-echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
+# ---------------------------------------------------------------- Phase 3 (WP6)
+echo "== case (e1): every dry run on an UNCONFIGURED bench writes nothing"
+fixture_bench; fixture_phase2_copies; reset
+snapshot > "$LOGS/snap-e1-before"
+for cmd in "dev-manifests.sh --dry-run" "profile.sh shared --dry-run" "profile.sh exclusive --dry-run" \
+           "exclusive.sh begin --dry-run" "exclusive.sh end --dry-run" "exclusive.sh tape-off --dry-run" \
+           "gate-seam.sh on --dry-run" "gate-seam.sh release --dry-run" "gate-seam.sh off --dry-run" \
+           "soak.sh --dry-run" "soak.sh start --minutes 2 --interval 5 --dry-run" "soak.sh stop --dry-run" \
+           "filler.sh seed --mib 30 --dry-run" "filler.sh clear --dry-run" "shm-audit.sh" "shm-audit.sh --json"; do
+  # shellcheck disable=SC2086
+  bash "$B/"$cmd >"$LOGS/e1-${cmd//[ \/]/_}.log" 2>&1; echo "  $cmd rc=$?"
+done
+snapshot > "$LOGS/snap-e1-after"
+if diff "$LOGS/snap-e1-before" "$LOGS/snap-e1-after" >"$LOGS/e1.diff"; then pass "dry runs (unconfigured) wrote nothing"; else failc "dry runs wrote:"; head -20 "$LOGS/e1.diff"; fi
+grep -q "would write /var/lib/xorgate-rs/etc/kvs.json\|would: install -o pi -g pi -m 0600 .*kvs.json" "$LOGS/e1-dev-manifests.sh_--dry-run.log" \
+  && pass "dev-manifests dry run announces the kvs copies" || { failc "dev-manifests dry run did not announce kvs.json"; tail -20 "$LOGS/e1-dev-manifests.sh_--dry-run.log"; }
+check active "dry runs leave JS active"
+
+echo "== dev-manifests (real): kvs copies, pipelines cleanup"
+reset
+bash "$B/dev-manifests.sh" >"$LOGS/dm1.log" 2>&1; rc=$?
+expect $((rc != 0)) "dev-manifests.sh rc=0"
+python3 - "$RS_ETC/kvs.json" "$RS_ETC/kvs-exclusive.json" "$DEV_BACKUP/kvs.json" <<'PY' >"$LOGS/dm-kvs.txt" 2>&1
+import json, sys
+s, x, src = (json.load(open(p)) for p in sys.argv[1:4])
+assert s["channels"] == [], s
+assert list(s.keys()) == list(src.keys()), (list(s.keys()), list(src.keys()))
+for k in ("deviceId", "region", "credentialEndpoint", "roleAlias", "uploadBucket"):
+    assert s[k] == src[k], k
+assert open(sys.argv[2]).read() == open(sys.argv[3]).read()
+print("ok")
+PY
+expect $? "kvs.json = DEV with channels [] (key order + credential fields kept); kvs-exclusive.json verbatim"
+[ ! -e "$RS_ETC/pipelines/cam0.gst" ] && [ ! -e "$RS_ETC/pipelines/cam0.camera" ] && [ ! -e "$RS_ETC/pipelines/cam1.gst" ]
+expect $? "copied JS renders removed from $RS_ETC/pipelines (exact copies + old JS-socket copy)"
+[ -f "$RS_ETC/pipelines/cam0.gst.direct" ] && [ -d "$RS_ETC/pipelines" ]
+expect $? "the Rust render + the pipelines dir are kept"
+[ "$(stat -c '%U %a' "$RS_ETC/pipelines")" = "pi 700" ]; expect $? "pipelines dir pi 0700"
+grep -qx "KVS_MANIFEST=$RS_ETC/kvs.json" "$RS_ENV"; expect $? "env file KVS_MANIFEST -> the channels-[] copy"
+! grep -qE '^KVS_(RUNTIME_BIN|RUNTIME_LIB_DIR|CACERT_PATH)=' "$RS_ENV" && grep -q '^DEVICE_ID=' "$RS_ENV"; expect $? "env file: the JS-install KVS_RUNTIME_BIN/LIB_DIR/CACERT_PATH keys dropped, the rest kept"
+bash "$B/dev-manifests.sh" >"$LOGS/dm2.log" 2>&1
+grep -q "== done: 0 change(s)" "$LOGS/dm2.log"; expect $? "dev-manifests.sh second run: 0 changes"
+
+echo "== case (a): profile.sh shared refuses exclusive/media-on env-file values"
+for bad in "KVS_RUNTIME_BIN=/opt/xorgate-rs/media/xorgate-kvs-webrtc" "KVS_RUNTIME_BIN=/var/lib/xorgate-rs/no-kvs" \
+           "PATH=/usr/bin:/bin" "KVS_MANIFEST=$RS_ETC/kvs-exclusive.json" "KVS_MANIFEST=/etc/xorgate/kvs.json"; do
+  reset; cp "$RS_ENV" "$LOGS/env.bak"
+  key=${bad%%=*}
+  if grep -q "^$key=" "$RS_ENV"; then sed -i "s|^$key=.*|$bad|" "$RS_ENV"; else echo "$bad" >> "$RS_ENV"; fi
+  rm -f /etc/systemd/system/xorgate-agent-rs.service.d/95-inputs.conf
+  bash "$B/profile.sh" shared >"$LOGS/a.log" 2>&1; rc=$?
+  if [ "$rc" = 1 ] && grep -q REFUSING "$LOGS/a.log" && [ ! -e /etc/systemd/system/xorgate-agent-rs.service.d/95-inputs.conf ]; then
+    pass "profile.sh shared refuses $bad (rc=1, nothing written)"
+  else failc "profile.sh shared with $bad: rc=$rc"; tail -5 "$LOGS/a.log"; fi
+  cp "$LOGS/env.bak" "$RS_ENV"
+done
+reset; sed -i '/^KVS_MANIFEST=/d' "$RS_ENV"
+bash "$B/profile.sh" shared >"$LOGS/a-unset.log" 2>&1; rc=$?
+expect $((rc != 1)) "profile.sh shared refuses an UNSET KVS_MANIFEST (agent default = PROD manifest)"
+cp "$LOGS/env.bak" "$RS_ENV"
+touch /var/lib/xorgate-rs/no-kvs
+bash "$B/profile.sh" shared >"$LOGS/a-nokvs.log" 2>&1; rc=$?
+expect $((rc != 1)) "profile.sh shared refuses when /var/lib/xorgate-rs/no-kvs exists"
+rm -f /var/lib/xorgate-rs/no-kvs
+bash "$B/profile.sh" shared >"$LOGS/a-ok.log" 2>&1; rc=$?
+expect $((rc != 0)) "profile.sh shared accepts KVS_MANIFEST=$RS_ETC/kvs.json (rc=$rc)"
+
+echo "== case (b): the shared drop-in + shims; inputs_safe passes"
+D=/etc/systemd/system/xorgate-agent-rs.service.d/95-inputs.conf
+grep -qx 'Environment=PATH=/var/lib/xorgate-rs/shared-shims:/usr/local/bin:/usr/bin:/bin' "$D"; expect $? "95-inputs.conf: PATH with shared-shims first"
+grep -qx 'Environment=KVS_RUNTIME_BIN=/var/lib/xorgate-rs/no-kvs' "$D"; expect $? "95-inputs.conf: KVS_RUNTIME_BIN=/var/lib/xorgate-rs/no-kvs"
+[ "$(grep -c '^Environment=PATH=' "$D")" = 1 ]; expect $? "95-inputs.conf: exactly one PATH line"
+for s in rpicam-hello gst-launch-1.0; do
+  out=$(/var/lib/xorgate-rs/shared-shims/$s --list-cameras 2>&1 >/dev/null); rc=$?
+  [ "$rc" = 1 ] && grep -q "disabled in the shared profile" <<<"$out" && [ "$(stat -c '%U %a' /var/lib/xorgate-rs/shared-shims/$s)" = "root 755" ]
+  expect $? "shim $s: exit 1, 'disabled in the shared profile' on stderr, root 0755"
+done
+bash "$B/exclusive.sh" status >"$LOGS/b.log" 2>&1
+grep -q "inputs: SAFE" "$LOGS/b.log"; expect $? "inputs_safe passes in the shared profile"
+cp "$RS_ETC/kvs.json" "$LOGS/kvs.bak"; cp "$DEV_BACKUP/kvs.json" "$RS_ETC/kvs.json"
+bash "$B/exclusive.sh" status >"$LOGS/b2.log" 2>&1
+grep -q "missing: channels: \[\]" "$LOGS/b2.log" && grep -q "inputs: NOT SAFE" "$LOGS/b2.log"; expect $? "inputs_safe fails when kvs.json has channels"
+cp "$LOGS/kvs.bak" "$RS_ETC/kvs.json"
+printf '#!/bin/sh\nexit 0\n' > /var/lib/xorgate-rs/shared-shims/gst-launch-1.0
+bash "$B/exclusive.sh" status >"$LOGS/b3.log" 2>&1
+grep -q "UNSAFE: shim .*gst-launch-1.0 exits 0" "$LOGS/b3.log"; expect $? "inputs_safe fails on a shim that exits 0"
+bash "$B/profile.sh" shared >"$LOGS/b4.log" 2>&1
+bash "$B/profile.sh" shared >"$LOGS/b5.log" 2>&1
+grep -q "== done: 0 change(s)" "$LOGS/b5.log"; expect $? "profile.sh shared repaired the shim and is idempotent (0 changes on rerun)"
+
+echo "== case (c1): begin captures the JS media + waits for the camera release, then opens the window"
+reset
+C15=/var/lib/xorgate-rs/evidence/c15-baseline.sha256
+(cd / && sha256sum /etc/xorgate/agent.env /etc/xorgate/kvs.json /etc/xorgate/hardware.json) > "$C15"
+FK=$(mktemp -d); cp /bin/sleep "$FK/gst-launch-1.0"; cp /bin/sleep "$FK/xorgate-kvs-webrtc"
+"$FK/gst-launch-1.0" 1000 & G=$!
+env SECRET_TOKEN=hunter2 AWS_IOT_CORE_CERT=/x "$FK/xorgate-kvs-webrtc" 1000 & K=$!
+echo "$G $K" > "$STATE/js-children"
+export XORGATE_TEST_JS_MEDIA_PIDS_CMD="cat $STATE/js-children"
+bash "$B/exclusive.sh" begin >"$LOGS/c1b.log" 2>&1; rc=$?
+WIN=$(ls -1d /var/lib/xorgate-rs/evidence/window-* | tail -n1)
+expect $((rc != 0)) "begin rc=0 once the JS children are gone"
+grep -q "camera released" "$LOGS/c1b.log"; expect $? "begin waited for the camera release"
+[ "$(js_state)" = inactive ] && [ -f /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf ]; expect $? "window open (JS stopped, exclusive drop-in present)"
+[ "$(head -n1 "$WIN/js-gst-$G.cmdline")" = "$FK/gst-launch-1.0" ] && [ "$(sed -n 2p "$WIN/js-gst-$G.cmdline")" = 1000 ]; expect $? "js-gst-<pid>.cmdline saved (NUL -> newline)"
+grep -qx SECRET_TOKEN "$WIN/js-kvs-$K.envkeys" && ! grep -q hunter2 "$WIN/js-kvs-$K.envkeys" && [ -f "$WIN/js-kvs-$K.cmdline" ]; expect $? "js-kvs-<pid>.envkeys holds KEYS only (+ cmdline)"
+[ "$(wc -l < "$WIN/pipelines.sha256")" = 3 ] && [ -s "$WIN/shm-before.txt" ] && [ -f "$WIN/js-media-released" ] && grep -q "streams: cam0=running" "$WIN/js-media-before.txt"
+expect $? "pipelines.sha256 (3 files), shm-before.txt, js-media-before.txt, js-media-released saved"
+grep -q "KVS_MANIFEST=$RS_ETC/kvs-exclusive.json" /run/xorgate-agent-rs-exclusive.env; expect $? "exclusive env file: KVS_MANIFEST -> kvs-exclusive.json"
+grep -qx "Environment=KVS_RUNTIME_BIN=/opt/xorgate-rs/media/xorgate-kvs-webrtc" /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf \
+  && grep -qx "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf; expect $? "99-exclusive.conf: full PATH (no shims) + packaged KVS_RUNTIME_BIN"
+grep -q "gate-seam.sh" "$LOGS/c1b.log" && grep -q "soak.sh" "$LOGS/c1b.log" && grep -q "filler.sh" "$LOGS/c1b.log"; expect $? "begin hints name gate-seam/soak/filler"
+unset XORGATE_TEST_JS_MEDIA_PIDS_CMD
+wait "$G" "$K" 2>/dev/null
+
+echo "== case (d): end tears the window down, is idempotent and never signals a JS pid"
+# Window helpers left on: a gate seam, a soak, a filler session, Rust leftovers.
+bash "$B/gate-seam.sh" on >"$LOGS/d-seam.log" 2>&1
+bash "$B/soak.sh" --minutes 1 --interval 1 >"$LOGS/d-soak.log" 2>&1
+bash "$B/filler.sh" seed --mib 20 >"$LOGS/d-fill.log" 2>&1
+[ -f /run/systemd/system/xorgate-agent-rs.service.d/97-gate-seam.conf ] && [ "$(cat "$STATE/xorgate-rs-soak")" = active ] \
+  && [ -n "$(ls /var/lib/xorgate-rs/recordings/video/cam0/*/.xorgate-filler 2>/dev/null)" ]; expect $? "seam on, soak started, filler seeded before end"
+mkdir -p /var/lib/xorgate-rs/recordings/video/cam1/019a0000-0000-7000-8000-000000000001
+echo real > /var/lib/xorgate-rs/recordings/video/cam1/019a0000-0000-7000-8000-000000000001/00000.mp4
+# Rust leftovers: one stops on SIGINT, one ignores it (needs SIGKILL). A
+# non-interactive bash starts `&` jobs with SIGINT ignored, so R1 re-arms the
+# default disposition before exec'ing the fake gst.
+cp /bin/sleep "$FK/gst-launch-1.0"
+python3 -c 'import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])' "$FK/gst-launch-1.0" 1000 & R1=$!
+bash -c 'trap "" INT; while :; do sleep 0.2; done' & R2=$!
+# A "JS" media process (child of the JS MainPID) that a buggy scan lists as Rust: must survive.
+bash -c "\"$FK/gst-launch-1.0\" 1000 & wait" & JM=$!
+sleep 0.5; JC=""
+for f in /proc/[0-9]*/stat; do st=$(cat "$f" 2>/dev/null) || continue; st=${st##*) }; read -r _ pp _ <<<"$st"; [ "$pp" = "$JM" ] && { JC=${f#/proc/}; JC=${JC%/stat}; }; done
+[ -n "$JC" ] || failc "could not find the fake JS child of $JM"
+echo "$JM" > "$STATE/xorgate-agent.mainpid"
+python3 - "$JM" <<'PY'
+import json, sys
+p = "/var/lib/xorgate/state.json"; d = json.load(open(p)); d["pid"] = int(sys.argv[1]); json.dump(d, open(p, "w"))
+PY
+export XORGATE_TEST_RS_MEDIA_PIDS_CMD="echo $R1 $R2 $JC | tr ' ' '\n'"
+bash "$B/exclusive.sh" end >"$LOGS/d1.log" 2>&1; rc1=$?
+bash "$B/exclusive.sh" end >"$LOGS/d2.log" 2>&1; rc2=$?
+unset XORGATE_TEST_RS_MEDIA_PIDS_CMD
+expect $((rc1 != 0 || rc2 != 0)) "end rc=0 twice (rc1=$rc1 rc2=$rc2)" || true
+[ "$rc1" = 0 ] || { echo "  --- d1.log tail"; tail -15 "$LOGS/d1.log"; }
+[ "$rc2" = 0 ] || { echo "  --- d2.log tail"; tail -15 "$LOGS/d2.log"; }
+check active "end leaves JS active"
+grep -q "== done: 0 change(s)" "$LOGS/d2.log"; expect $? "second end: 0 changes"
+[ ! -e /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf ] && [ ! -e /run/systemd/system/xorgate-agent-rs.service.d/98-tape.conf ] \
+  && [ ! -e /run/systemd/system/xorgate-agent-rs.service.d/97-gate-seam.conf ] && [ ! -e /run/xorgate-rs-lte ] && [ ! -e /run/xorgate-agent-rs-exclusive.env ]
+expect $? "runtime drop-ins, exclusive env, gate seam gone"
+[ "$(cat "$STATE/xorgate-rs-soak")" = inactive ]; expect $? "soak unit stopped"
+[ -z "$(ls /var/lib/xorgate-rs/recordings/video/cam0/*/.xorgate-filler 2>/dev/null)" ] && [ -f /var/lib/xorgate-rs/recordings/video/cam1/019a0000-0000-7000-8000-000000000001/00000.mp4 ]
+expect $? "filler cleared, a real (unmarked) session kept"
+dead() { local s; s=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; s=${s##*) }; [ "${s%% *}" = Z ]; }
+dead "$R1" && dead "$R2"; expect $? "Rust leftovers gone (SIGINT one, SIGKILL the INT-ignoring one)"
+grep -q "SIGKILL -> Rust pid $R2" "$LOGS/d1.log" && ! grep -q "SIGKILL -> Rust pid $R1 " "$LOGS/d1.log"; expect $? "SIGINT stopped one leftover; the INT-ignoring one got SIGKILL after 5 s"
+! dead "$JC" && grep -q "pid $JC belongs to xorgate-agent — NOT signalled" "$LOGS/d1.log"; expect $? "a JS-unit pid listed as Rust is NOT signalled"
+grep -q "JS media after .*\[all running\] streams: cam0=running" "$LOGS/d1.log"; expect $? "end reports the JS streams running (state.json of the current JS pid)"
+[ -s "$WIN/shm-after.txt" ] && grep -q "pipelines: /etc/xorgate/pipelines/\* sha256 UNCHANGED" "$LOGS/d1.log" && grep -q "C15: .* UNCHANGED" "$LOGS/d1.log"
+expect $? "shm-after.txt written; C15 + pipelines.sha256 UNCHANGED"
+grep -q "== 1b\." "$LOGS/d1.log" && [ "$(grep -n '== 1b\.' "$LOGS/d1.log" | cut -d: -f1)" -lt "$(grep -n '== 2\. JS agent' "$LOGS/d1.log" | cut -d: -f1)" ]
+expect $? "leftover sweep ran right after the Rust stop"
+echo '{"pid": 0, "latest": {"media": {"kvs": {"value": false}, "streams": [{"streamKey": "cam0", "state": "stopped"}]}}}' > /var/lib/xorgate/state.json
+rm -f "$STATE/xorgate-agent.mainpid"
+echo "  JS media after 0s: pid=0 (fresh) kvs=False [x] streams: cam0=stopped" > "$WIN/js-media-before.txt"
+bash "$B/exclusive.sh" end >"$LOGS/d3.log" 2>&1
+grep -q "JS media after 0s: .*\[= pre-window baseline\] streams: cam0=stopped" "$LOGS/d3.log"; expect $? "end accepts JS streams equal to the pre-window baseline (no 90 s wait)"
+kill -KILL "$JC" "$JM" 2>/dev/null
+echo '{"pid": 0, "latest": {"metrics": {"system": {}}, "media": {"kvs": {"value": true}, "streams": [{"streamKey": "cam0", "state": "running"}]}}}' > /var/lib/xorgate/state.json
+
+echo "== case (c2): begin aborts (JS restored) when the JS media processes linger"
+reset
+export XORGATE_TEST_JS_MEDIA_PIDS_CMD="echo 4242" XORGATE_TEST_JS_RELEASE_SECS=3
+bash "$B/exclusive.sh" begin >"$LOGS/c2.log" 2>&1; rc=$?
+unset XORGATE_TEST_JS_MEDIA_PIDS_CMD XORGATE_TEST_JS_RELEASE_SECS
+expect $((rc == 0)) "begin rc!=0 when the camera is never released (rc=$rc)"
+check active "lingering JS media: the trap restores JS"
+grep -q "camera not released" "$LOGS/c2.log" && grep -q "begin aborted" "$LOGS/c2.log"; expect $? "abort names the camera release + the trap fired"
+[ ! -e /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf ]; expect $? "no exclusive drop-in left behind"
+grep -q "systemctl stop xorgate-agent-rs" "$STATE/systemctl.log"; expect $? "the trap stopped Rust before restoring JS"
+
+echo "== case (e2): dry runs on a CONFIGURED bench (seam on, filler seeded, window open) write nothing"
+reset
+bash "$B/gate-seam.sh" on >/dev/null 2>&1; bash "$B/filler.sh" seed --mib 20 >/dev/null 2>&1
+echo active > "$STATE/xorgate-rs-soak"
+snapshot > "$LOGS/snap-e2-before"
+for cmd in "exclusive.sh end --dry-run" "gate-seam.sh off --dry-run" "gate-seam.sh release --dry-run" "soak.sh stop --dry-run" \
+           "filler.sh clear --dry-run" "filler.sh seed --dry-run" "profile.sh shared --dry-run" "dev-manifests.sh --dry-run"; do
+  # shellcheck disable=SC2086
+  bash "$B/"$cmd >"$LOGS/e2-${cmd//[ \/]/_}.log" 2>&1; echo "  $cmd rc=$?"
+done
+snapshot > "$LOGS/snap-e2-after"
+if diff "$LOGS/snap-e2-before" "$LOGS/snap-e2-after" >"$LOGS/e2.diff"; then pass "dry runs (configured) wrote nothing"; else failc "dry runs wrote:"; head -20 "$LOGS/e2.diff"; fi
+grep -q "would: rm -rf -- /var/lib/xorgate-rs/recordings/video/cam0/" "$LOGS/e2-filler.sh_clear_--dry-run.log"; expect $? "filler clear dry run names the marked session"
+grep -q "would: systemctl stop xorgate-rs-gate-seam\|would: rm -f /run/systemd/system/xorgate-agent-rs.service.d/97-gate-seam.conf" "$LOGS/e2-gate-seam.sh_off_--dry-run.log"; expect $? "gate-seam off dry run names the drop-in"
+[ "$(cat "$STATE/xorgate-rs-soak")" = active ]; expect $? "soak stop dry run left the unit running"
+bash "$B/exclusive.sh" end >/dev/null 2>&1
+
+echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)  (logs in $LOGS)"
 exit $fail

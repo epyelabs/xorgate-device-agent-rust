@@ -5,16 +5,30 @@
 #   scripts/bench/dev-manifests.sh [--dry-run]
 #
 # On the bench, as root:
-#   - /var/lib/xorgate-rs/etc/ (pi, 0700) gets kvs.json from the parked DEV
-#     bundle /etc/xorgate/dev-backup-20260823/, pipelines/ copied from
-#     /etc/xorgate, and TWO hardware copies of /etc/xorgate/hardware.json:
+#   - /var/lib/xorgate-rs/etc/ (pi, 0700) gets TWO kvs copies of the parked DEV
+#     bundle's /etc/xorgate/dev-backup-20260823/kvs.json (Phase 3, plan P3):
+#     kvs.json with "channels": [] (SHARED, media-off: no masters, no bridged
+#     cameras; credentialEndpoint/roleAlias/region/uploadBucket kept so
+#     telemetry recording + upload still run; key order preserved) and
+#     kvs-exclusive.json verbatim (cam0/cam1 on the DEV identity; the
+#     exclusive window's runtime env file points KVS_MANIFEST there);
+#     an EMPTY pipelines/ dir (pi 0700): NO .gst/.gst.direct/.camera is copied
+#     from /etc/xorgate/pipelines any more (those renders name the JS socket
+#     /var/lib/xorgate/shm/<key>.sock; the Rust reconcile renders its own at
+#     the first exclusive boot, D4) and earlier copies are REMOVED (a file
+#     byte-equal to its /etc/xorgate/pipelines namesake, or a .gst* naming
+#     /var/lib/xorgate/shm/; anything else — the Rust renders — is kept);
+#     and TWO hardware copies of /etc/xorgate/hardware.json:
 #     hardware.json with "imu": null (SHARED profile: no i2cdetect probe while
 #     the JS helper owns the BNO085) and hardware-exclusive.json verbatim (the
 #     exclusive window's runtime drop-in points HARDWARE_MANIFEST there); all
 #     pi 0600, read-only use of the prod copies;
+#     (the shared-profile shims /var/lib/xorgate-rs/shared-shims/ are made by
+#     profile.sh shared, which also verifies them);
 #   - /etc/xorgate/agent-rs-dev.env (the Rust agent's own env file, created by
 #     install.sh) gets KVS_MANIFEST / HARDWARE_MANIFEST / KVS_PIPELINE_DIR
-#     pointing there;
+#     pointing there, and LOSES KVS_RUNTIME_BIN / KVS_RUNTIME_LIB_DIR /
+#     KVS_CACERT_PATH when they name the JS install (/opt/xorgate/...);
 #   - GUARD: refuses (and restores the env file) if any path key of the env file
 #     still points into /etc/xorgate outside the dev-backup dir, except
 #     root-ca.pem;
@@ -31,7 +45,7 @@ for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     --rebaseline) REBASE=1 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) echo "unknown arg $a" >&2; exit 2 ;;
   esac
 done
@@ -47,16 +61,43 @@ copy_file() { # src dst
   if [ -f "$2" ] && cmp -s "$1" "$2"; then echo "  = $2 unchanged"; return; fi
   act install -o pi -g pi -m 0600 "$1" "$2"; note "$2 <- $1"
 }
-copy_file "$DEV_BACKUP/kvs.json" "$RS_ETC/kvs.json"
+# kvs.json (SHARED, media-off) = the DEV manifest with channels: [] (P3).
+KTMP=$(mktemp)
+python3 - "$DEV_BACKUP/kvs.json" > "$KTMP" <<'PY'
+import collections, json, sys
+d = json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict)
+d["channels"] = []  # an existing key keeps its position
+print(json.dumps(d, indent=2))
+PY
+for k in credentialEndpoint roleAlias region uploadBucket; do
+  python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); sys.exit(0 if isinstance(v,str) and v else 1)' "$KTMP" "$k" \
+    || echo "  NOTE: DEV kvs.json has no $k$([ "$k" = uploadBucket ] && echo ' (segment upload disabled unless XORGATE_UPLOAD_BUCKET)')"
+done
+if [ -f "$KVS_SHARED" ] && cmp -s "$KTMP" "$KVS_SHARED"; then echo "  = $KVS_SHARED unchanged (channels: [])"
+else
+  if [ -f "$KVS_SHARED" ]; then echo "  $KVS_SHARED differs:"; diff "$KVS_SHARED" "$KTMP" | sed 's/^/    /' || true; fi
+  act install -o pi -g pi -m 0600 "$KTMP" "$KVS_SHARED"; note "$KVS_SHARED <- $DEV_BACKUP/kvs.json with channels: [] (shared, media-off)"
+fi
+rm -f "$KTMP"
+# kvs-exclusive.json = the DEV manifest verbatim (exclusive window only).
+copy_file "$DEV_BACKUP/kvs.json" "$KVS_EXCLUSIVE"
 # hardware.json: the shared copy says imu: null, hardware-exclusive.json is the
 # real block (orchestrator decision on WP2 amb. 10; see _lib.sh hardware_copies).
 hardware_copies
-if [ -d /etc/xorgate/pipelines ]; then
-  [ -d "$RS_ETC/pipelines" ] || { act install -d -o pi -g pi -m 0700 "$RS_ETC/pipelines"; note "$RS_ETC/pipelines created"; }
-  for f in /etc/xorgate/pipelines/*; do
-    [ -f "$f" ] && copy_file "$f" "$RS_ETC/pipelines/$(basename "$f")"
-  done
-fi
+# Pipelines (Phase 3): copy NOTHING; remove what earlier runs copied. The dir
+# itself stays (KVS_PIPELINE_DIR; the Rust reconcile renders into it).
+[ -d "$RS_ETC/pipelines" ] || { act install -d -o pi -g pi -m 0700 "$RS_ETC/pipelines"; note "$RS_ETC/pipelines created"; }
+for f in "$RS_ETC"/pipelines/*; do
+  [ -f "$f" ] || continue
+  b=$(basename "$f")
+  if [ -f "/etc/xorgate/pipelines/$b" ] && cmp -s "$f" "/etc/xorgate/pipelines/$b"; then
+    act rm -f "$f"; note "$f removed (a copy of /etc/xorgate/pipelines/$b)"
+  elif case "$b" in *.gst|*.gst.direct) grep -q '/var/lib/xorgate/shm/' "$f" ;; *) false ;; esac; then
+    act rm -f "$f"; note "$f removed (an old copy naming the JS socket /var/lib/xorgate/shm/)"
+  else
+    echo "  = $f kept (not a copy of the JS renders)"
+  fi
+done
 
 echo "== 2. $RS_ENV"
 TMP=$(mktemp)
@@ -67,6 +108,15 @@ setkey() { # key value
 setkey KVS_MANIFEST "$RS_ETC/kvs.json"
 setkey HARDWARE_MANIFEST "$RS_ETC/hardware.json"
 setkey KVS_PIPELINE_DIR "$RS_ETC/pipelines"
+# Phase 3 (P4): the DEV bundle's env names the JS install's KVS runtime
+# (/opt/xorgate/media/...). The profiles own KVS_RUNTIME_BIN (profile.sh refuses
+# an env file that sets it) and the Rust defaults resolve under /opt/xorgate-rs,
+# so drop these keys when they point into the JS install.
+DROPPED=""
+for k in KVS_RUNTIME_BIN KVS_RUNTIME_LIB_DIR KVS_CACERT_PATH; do
+  if grep -qE "^$k=/opt/xorgate/" "$TMP"; then sed -i "/^$k=/d" "$TMP"; DROPPED="$DROPPED $k"; fi
+done
+[ -z "$DROPPED" ] || echo "  dropping$DROPPED (JS install paths /opt/xorgate/media; Rust defaults /opt/xorgate-rs/media)"
 # Guard: no path key may point into /etc/xorgate outside the dev-backup dir
 # (root-ca.pem excepted: it is the public Amazon root).
 BAD=$(grep -E '^[A-Z_]+=/etc/xorgate' "$TMP" | grep -vE "=$DEV_BACKUP/|=/etc/xorgate/root-ca\.pem$" || true)
@@ -79,7 +129,7 @@ if cmp -s "$TMP" "$RS_ENV"; then
 else
   echo "  diff (keys only; values are paths):"; diff <(sed 's/=.*//' "$RS_ENV") <(sed 's/=.*//' "$TMP") | sed 's/^/    /' || true
   diff "$RS_ENV" "$TMP" | grep -E '^[<>] (KVS_MANIFEST|HARDWARE_MANIFEST|KVS_PIPELINE_DIR)=' | sed 's/^/    /' || true
-  act install -o pi -g pi -m 0600 "$TMP" "$RS_ENV"; note "$RS_ENV: KVS_MANIFEST/HARDWARE_MANIFEST/KVS_PIPELINE_DIR -> $RS_ETC"
+  act install -o pi -g pi -m 0600 "$TMP" "$RS_ENV"; note "$RS_ENV: KVS_MANIFEST/HARDWARE_MANIFEST/KVS_PIPELINE_DIR -> $RS_ETC${DROPPED:+; removed$DROPPED}"
 fi
 rm -f "$TMP"
 

@@ -123,10 +123,12 @@ PY
   rm -f "$tmp"
 }
 # The env file is an EnvironmentFile=, which beats every Environment= of the
-# drop-ins: it must never carry the input knobs the profiles own.
+# drop-ins: it must never carry the input knobs the profiles own. Phase 3
+# (WP6): KVS_RUNTIME_BIN too (any value) — the shared profile points it at an
+# absent file (masters never start), the exclusive one at the packaged runtime.
 env_file_guard() {
   local bad
-  bad=$(grep -E '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH)=' "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
+  bad=$(grep -E '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN)=' "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
   if [ -n "$bad" ]; then
     echo "REFUSING: $RS_ENV sets $(echo "$bad" | tr '\n' ' ')— an EnvironmentFile overrides the profile drop-ins; remove those keys by hand"
     exit 1
@@ -141,11 +143,21 @@ inputs_safe() {
     if [ "$js" = active ] || [ "$js" = activating ]; then echo "  UNSAFE: exclusive drop-in present while $JS_UNIT is $js"; return 1; fi
     return 0
   fi
-  grep -qx 'Environment=PATH=/usr/local/bin:/usr/bin:/bin' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: PATH without /usr/sbin in $INPUTS_DROPIN"; ok=1; }
+  grep -qx "Environment=PATH=$SHARED_PATH" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: PATH=$SHARED_PATH (shared-shims first, no /usr/sbin) in $INPUTS_DROPIN"; ok=1; }
+  grep -qx "Environment=KVS_RUNTIME_BIN=$NO_KVS" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: KVS_RUNTIME_BIN=$NO_KVS in $INPUTS_DROPIN"; ok=1; }
+  if [ -e "$NO_KVS" ]; then echo "  UNSAFE: $NO_KVS exists (must stay absent: KVS runtime unavailable in the shared profile)"; ok=1; fi
+  local s rc
+  for s in $SHIM_NAMES; do
+    if [ ! -x "$SHIMS_DIR/$s" ]; then echo "  missing: shim $SHIMS_DIR/$s (profile.sh shared)"; ok=1; continue; fi
+    if "$SHIMS_DIR/$s" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+    [ "$rc" = 1 ] || { echo "  UNSAFE: shim $SHIMS_DIR/$s exits $rc (want 1)"; ok=1; }
+  done
+  [ "$(kvs_channels_count "$KVS_SHARED")" = 0 ] || { echo "  missing: channels: [] in $KVS_SHARED (dev-manifests.sh)"; ok=1; }
+  grep -qx "KVS_MANIFEST=$KVS_SHARED" "$RS_ENV" 2>/dev/null || { echo "  missing: KVS_MANIFEST=$KVS_SHARED in $RS_ENV (dev-manifests.sh)"; ok=1; }
   grep -qx 'Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: GPS_NMEA_PORT=/run/xorgate-rs-no-gps in $INPUTS_DROPIN"; ok=1; }
   grep -qx 'Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python in $INPUTS_DROPIN"; ok=1; }
   grep -qx "HARDWARE_MANIFEST=$HW_SHARED" "$RS_ENV" 2>/dev/null || { echo "  missing: HARDWARE_MANIFEST=$HW_SHARED in $RS_ENV (dev-manifests.sh)"; ok=1; }
-  if grep -qE '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH)=' "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH"; ok=1; fi
+  if grep -qE '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN)=' "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN"; ok=1; fi
   if [ -f "/etc/xorgate/hardware.json" ]; then
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("imu"))' "$HW_SHARED" 2>/dev/null)" = None ] || { echo "  missing: imu: null in $HW_SHARED (dev-manifests.sh / profile.sh shared)"; ok=1; }
   fi
@@ -153,10 +165,22 @@ inputs_safe() {
 }
 profile_shared() {
   env_file_guard
+  # Phase 3 (WP6, plan P3): the shared profile is MEDIA-OFF — refuse an env
+  # file that would turn media back on (KVS_MANIFEST other than the
+  # channels-[] copy beats the drop-ins), and the no-kvs path must not exist.
+  env_file_guard_shared
+  if [ -e "$NO_KVS" ]; then echo "REFUSING: $NO_KVS exists — it must stay ABSENT (KVS_RUNTIME_BIN of the shared profile); remove it by hand"; exit 1; fi
   # O6 shared: the JS agent owns the GNSS tty and the BNO085, so the Rust
   # agent's GPS port does not exist, its Python helper cannot spawn, and its
   # hardware copy declares no IMU (no i2cdetect probe of bus 1).
   hardware_copies
+  # P3: rpicam-hello / gst-launch-1.0 shims first on PATH (no camera probe,
+  # no capture while the JS agent owns the sensors). Created HERE (not in
+  # dev-manifests.sh) so the profile and its verifier own them together.
+  shared_shims
+  local nch
+  nch=$(kvs_channels_count "$KVS_SHARED")
+  [ "$nch" = 0 ] || echo "  WARNING: $KVS_SHARED has channels=$nch (want 0) — run scripts/bench/dev-manifests.sh (inputs_safe fails until then)"
   remove_if_present "$EXCLUSIVE_ENV" || true
   write_if_changed "$INPUTS_DROPIN" 0644 <<'CONF' || true
 # Phase 2 SHARED input profile (scripts/bench/profile.sh, plan O6). Persistent.
@@ -170,9 +194,16 @@ profile_shared() {
 # 1 even if a cloud hardware block brings `imu` back into hardware.json (WP3
 # saves it, message.rs:137). Every tool Phase 2 needs (vcgencmd, python3, sudo,
 # systemctl, journalctl, timedatectl) is in /usr/bin.
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Phase 3 (plan P3, media-off): shared-shims/{rpicam-hello,gst-launch-1.0}
+# come FIRST (they print "disabled in the shared profile" and exit 1: no
+# camera probe, no capture), and KVS_RUNTIME_BIN names a file that does not
+# exist (runtime unavailable -> one [media] warn, masters never start). The
+# Rust kvs.json copy has channels: [] (dev-manifests.sh); telemetry
+# recording + upload still run.
+Environment=PATH=/var/lib/xorgate-rs/shared-shims:/usr/local/bin:/usr/bin:/bin
 Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps
 Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python
+Environment=KVS_RUNTIME_BIN=/var/lib/xorgate-rs/no-kvs
 CONF
   remove_if_present "$EXCLUSIVE_DROPIN" || true
 }
@@ -198,17 +229,24 @@ profile_exclusive() {
 # Explicit values (not UnsetEnvironment=): the full PATH (i2cdetect in
 # /usr/sbin), the SIM7600 GNSS port (hardware/gps.ts:15 default), the packaged
 # python dir (/opt/xorgate-rs/python, scripts/pack.sh).
+# Phase 3 (media-on): the full PATH has NO shared-shims (the real
+# rpicam-hello / gst-launch-1.0), and KVS_RUNTIME_BIN is the packaged runtime.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=GPS_NMEA_PORT=/dev/ttyUSB1
 Environment=XORGATE_PYTHON_DIR=/opt/xorgate-rs/python
+Environment=KVS_RUNTIME_BIN=/opt/xorgate-rs/media/xorgate-kvs-webrtc
 # EnvironmentFile= wins over Environment=, and a later file over an earlier
-# one: this one (last drop-in) points HARDWARE_MANIFEST at the real IMU block.
+# one: this one (last drop-in) points HARDWARE_MANIFEST at the real IMU block
+# and KVS_MANIFEST at the channels-on DEV manifest (beats agent-rs-dev.env).
 EnvironmentFile=/run/xorgate-agent-rs-exclusive.env
 CONF
   [ -f "$HW_EXCLUSIVE" ] || { if [ "$DRY" = 1 ]; then echo "  [dry-run] NOTE: $HW_EXCLUSIVE missing — run dev-manifests.sh"; else echo "refusing: $HW_EXCLUSIVE missing — run scripts/bench/dev-manifests.sh"; exit 1; fi; }
+  [ -f "$KVS_EXCLUSIVE" ] || { if [ "$DRY" = 1 ]; then echo "  [dry-run] NOTE: $KVS_EXCLUSIVE missing — run dev-manifests.sh"; else echo "refusing: $KVS_EXCLUSIVE missing — run scripts/bench/dev-manifests.sh"; exit 1; fi; }
+  [ -x "$KVS_RUNTIME_RS" ] || echo "  NOTE: $KVS_RUNTIME_RS not installed (a pre-Phase-3 build?) — masters will report the runtime unavailable"
   write_if_changed "$EXCLUSIVE_ENV" 0644 <<ENV || true
-# Phase 2 exclusive window (scripts/bench/profile.sh exclusive). RUNTIME file.
+# Phase 2/3 exclusive window (scripts/bench/profile.sh exclusive). RUNTIME file.
 HARDWARE_MANIFEST=$HW_EXCLUSIVE
+KVS_MANIFEST=$KVS_EXCLUSIVE
 ENV
 }
 reload_restart_rs() {
@@ -236,6 +274,316 @@ c15_check() {
   else
     echo "  C15: CHANGED vs baseline:"; sha256sum -c "$C15_BASELINE" 2>&1 | sed 's/^/      /'
   fi
+}
+# ---------------------------------------------------------------------------
+# Phase 3 (WP6) additions — media-off shared profile, window helpers
+# (plan phase-3-recording-media.md §Bench recipe, P3/P7/P13). Appended only.
+SHIMS_DIR=$RS_HOME/shared-shims
+SHIM_NAMES="rpicam-hello gst-launch-1.0"
+SHARED_PATH=$SHIMS_DIR:/usr/local/bin:/usr/bin:/bin
+NO_KVS=$RS_HOME/no-kvs
+KVS_SHARED=$RS_ETC/kvs.json
+KVS_EXCLUSIVE=$RS_ETC/kvs-exclusive.json
+KVS_RUNTIME_RS=/opt/xorgate-rs/media/xorgate-kvs-webrtc
+JS_HOME=/var/lib/xorgate
+GATE_DROPIN=$RUN_DROPIN_DIR/97-gate-seam.conf
+GATE_UNIT=xorgate-rs-gate-seam
+GATE_DIR=/run/xorgate-rs-lte
+GATE_FILE=$GATE_DIR/telemetry.json
+# The modem daemon's file (JS src/hardware/modem.ts:31 default) — READ ONLY.
+GATE_SRC=/run/sim7600-lte/telemetry.json
+GATE_SCRIPT=/run/xorgate-rs-gate-seam.sh
+GATE_MODE=/run/xorgate-rs-gate-seam.status
+SOAK_UNIT=xorgate-rs-soak
+SOAK_RUN=/run/xorgate-rs-soak
+FILLER_ROOT=$RS_HOME/recordings/video
+FILLER_MARK=.xorgate-filler
+# Test-only seams (scripts/bench/tests/*.sh; NEVER set on the bench — ssh +
+# sudo drop the caller's environment there anyway):
+#   XORGATE_TEST_JS_MEDIA_PIDS_CMD / XORGATE_TEST_RS_MEDIA_PIDS_CMD  a bash
+#     command whose stdout replaces the JS / Rust media pid scan;
+#   XORGATE_TEST_JS_RELEASE_SECS  replaces the 60 s camera-release wait.
+# Number of KVS channels in a manifest ("?" when unreadable).
+kvs_channels_count() {
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1])).get("channels"); print(len(c) if isinstance(c, list) else "?")' "$1" 2>/dev/null || echo "?"
+}
+# Shared-profile-only env-file guard (plan P3): KVS_MANIFEST must name the
+# channels-[] copy; unset = the agent default /etc/xorgate/kvs.json (PROD,
+# channels on), any other value (kvs-exclusive.json, a prod path) = media on.
+env_file_guard_shared() {
+  [ -f "$RS_ENV" ] || { echo "  NOTE: $RS_ENV absent (the unit cannot start without it)"; return 0; }
+  local km
+  km=$(sed -n 's/^KVS_MANIFEST=//p' "$RS_ENV" | tail -n1)
+  if [ "$km" != "$KVS_SHARED" ]; then
+    echo "REFUSING: $RS_ENV has KVS_MANIFEST='${km:-<unset: agent default /etc/xorgate/kvs.json>}' — the shared (media-off) profile needs KVS_MANIFEST=$KVS_SHARED (run scripts/bench/dev-manifests.sh; an EnvironmentFile overrides the drop-ins)"
+    exit 1
+  fi
+}
+shared_shims() {
+  local s
+  if [ ! -d "$SHIMS_DIR" ]; then act install -d -o root -g root -m 0755 "$SHIMS_DIR"; note "$SHIMS_DIR created (root 0755)"; fi
+  for s in $SHIM_NAMES; do
+    write_if_changed "$SHIMS_DIR/$s" 0755 <<SHIM || true
+#!/bin/sh
+# xorgate-rs SHARED-profile shim (scripts/bench/profile.sh shared, plan P3).
+# First on the Rust agent's PATH while the JS prod agent owns the cameras:
+# no camera probe, no capture. The exclusive profile's PATH omits this dir.
+echo "$s: disabled in the shared profile (xorgate-rs bench, plan P3)" >&2
+exit 1
+SHIM
+  done
+}
+# --- process classification ------------------------------------------------
+# alive = /proc entry present and not a zombie.
+pid_alive() {
+  local s
+  s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  s=${s##*) }
+  [ "${s%% *}" != Z ]
+}
+# argv[0] basename (comm for an empty cmdline). Fails for a dead pid.
+proc_name() {
+  local a
+  a=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -n1) || true
+  [ -n "$a" ] || a=$(cat "/proc/$1/comm" 2>/dev/null) || return 1
+  [ -n "$a" ] || return 1
+  basename -- "$a"
+}
+is_media_name() { case "$1" in gst-launch-1.0|xorgate-kvs-webrtc) return 0 ;; *) return 1 ;; esac; }
+# Pids whose cgroup is <unit>.service (or below it).
+pids_in_unit() {
+  local f p
+  for f in /proc/[0-9]*/cgroup; do
+    grep -qE "/$1\.service(/|\$)" "$f" 2>/dev/null || continue
+    p=${f#/proc/}; echo "${p%/cgroup}"
+  done
+}
+_main_pids_refresh() {
+  _JS_MAIN=$(systemctl show "$JS_UNIT" -p MainPID --value 2>/dev/null || true)
+  _RS_MAIN=$(systemctl show "$UNIT" -p MainPID --value 2>/dev/null || true)
+  : "${_JS_MAIN:=0}" "${_RS_MAIN:=0}"
+}
+# JS | RUST | OTHER-LIVE | DEAD: the unit cgroup first, then the parent chain
+# against both units' MainPIDs.
+pid_owner() {
+  local p=$1 cg pp s i
+  pid_alive "$p" || { echo DEAD; return 0; }
+  cg=$(cat "/proc/$p/cgroup" 2>/dev/null || true)
+  if grep -qE "/$JS_UNIT\.service(/|\$)" <<<"$cg"; then echo JS; return 0; fi
+  if grep -qE "/$UNIT\.service(/|\$)" <<<"$cg"; then echo RUST; return 0; fi
+  [ -n "${_JS_MAIN:-}" ] || _main_pids_refresh
+  if [ "$p" = "$_JS_MAIN" ] && [ "$_JS_MAIN" != 0 ]; then echo JS; return 0; fi
+  if [ "$p" = "$_RS_MAIN" ] && [ "$_RS_MAIN" != 0 ]; then echo RUST; return 0; fi
+  pp=$p
+  for i in $(seq 1 64); do
+    s=$(cat "/proc/$pp/stat" 2>/dev/null) || break
+    s=${s##*) }; read -r _ pp _ <<<"$s"
+    case "$pp" in ''|0|1) break ;; esac
+    [ "$pp" = "$_JS_MAIN" ] && [ "$_JS_MAIN" != 0 ] && { echo JS; return 0; }
+    [ "$pp" = "$_RS_MAIN" ] && [ "$_RS_MAIN" != 0 ] && { echo RUST; return 0; }
+  done
+  : "$i"
+  echo OTHER-LIVE
+}
+# JS capture/master pids (cgroup scan of xorgate-agent.service).
+js_media_pids() {
+  if [ -n "${XORGATE_TEST_JS_MEDIA_PIDS_CMD:-}" ]; then bash -c "$XORGATE_TEST_JS_MEDIA_PIDS_CMD"; return 0; fi
+  local p n
+  for p in $(pids_in_unit "$JS_UNIT"); do
+    n=$(proc_name "$p" 2>/dev/null) || continue
+    if is_media_name "$n"; then echo "$p"; fi
+  done
+}
+# Rust capture/master pids: every live gst-launch-1.0 / xorgate-kvs-webrtc that
+# is in (or descends from) the Rust unit, plus escapees outside both units whose
+# argv/exe names the Rust tree (/var/lib/xorgate-rs/, /opt/xorgate-rs/).
+# NEVER a pid of the JS unit.
+rs_media_pids() {
+  if [ -n "${XORGATE_TEST_RS_MEDIA_PIDS_CMD:-}" ]; then bash -c "$XORGATE_TEST_RS_MEDIA_PIDS_CMD"; return 0; fi
+  local d p n o
+  _main_pids_refresh
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    n=$(proc_name "$p" 2>/dev/null) || continue
+    is_media_name "$n" || continue
+    o=$(pid_owner "$p")
+    case "$o" in
+      RUST) echo "$p" ;;
+      OTHER-LIVE)
+        if grep -qa -e /var/lib/xorgate-rs/ -e /opt/xorgate-rs/ "/proc/$p/cmdline" 2>/dev/null \
+           || readlink "/proc/$p/exe" 2>/dev/null | grep -q '^/opt/xorgate-rs/'; then echo "$p"; fi ;;
+    esac
+  done
+}
+# SIGINT every Rust media pid, wait 5 s, SIGKILL the rest. Re-checks before
+# EVERY signal that the pid is not in (or below) the JS unit. Never fails
+# (callers run it right before the JS restart).
+kill_rs_media() {
+  local p targets="" left=""
+  for p in $(rs_media_pids | sort -u); do
+    pid_alive "$p" || continue
+    if [ "$(pid_owner "$p")" = JS ]; then echo "  ! pid $p belongs to $JS_UNIT — NOT signalled"; continue; fi
+    targets="$targets $p"
+  done
+  if [ -z "$targets" ]; then echo "  = no Rust gst-launch-1.0/xorgate-kvs-webrtc alive"; return 0; fi
+  for p in $targets; do
+    note "SIGINT -> Rust $(proc_name "$p" 2>/dev/null || echo '?') pid $p"
+    act kill -INT "$p" || true
+  done
+  [ "$DRY" = 1 ] && return 0
+  for _ in $(seq 1 10); do
+    left=""; for p in $targets; do if pid_alive "$p"; then left="$left $p"; fi; done
+    if [ -z "$left" ]; then echo "  = Rust media leftovers gone after SIGINT"; return 0; fi
+    sleep 0.5
+  done
+  for p in $left; do
+    pid_alive "$p" || continue
+    if [ "$(pid_owner "$p")" = JS ]; then echo "  ! pid $p belongs to $JS_UNIT — NOT signalled"; continue; fi
+    kill -KILL "$p" 2>/dev/null || true
+    note "SIGKILL -> Rust pid $p (ignored SIGINT for 5 s)"
+  done
+  return 0
+}
+# --- /dev/shm audit (shm-audit.sh, exclusive.sh begin/end, soak.sh) ---------
+# TSV rows: shm<TAB>name<TAB>size<TAB>pid<TAB>owner | sock<TAB>path<TAB>size<TAB>-<TAB>home
+# shmsink names its segments "shmpipe.%5d.%5d" (pid, counter; space padded).
+shm_audit_rows() {
+  local f name pid size owner
+  _main_pids_refresh
+  for f in /dev/shm/shmpipe.*; do
+    [ -e "$f" ] || continue
+    name=${f#/dev/shm/}
+    pid=${name#shmpipe.}; pid=${pid%%.*}; pid=${pid// /}
+    size=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    case "$pid" in ''|*[!0-9]*) owner=UNPARSED ;; *) owner=$(pid_owner "$pid") ;; esac
+    printf 'shm\t%s\t%s\t%s\t%s\n' "$name" "$size" "$pid" "$owner"
+  done
+  for f in "$RS_HOME"/shm/*.sock "$JS_HOME"/shm/*.sock; do
+    [ -e "$f" ] || continue
+    case "$f" in "$RS_HOME"/*) owner=rust_home ;; *) owner=js_home ;; esac
+    printf 'sock\t%s\t%s\t-\t%s\n' "$f" "$(stat -c %s "$f" 2>/dev/null || echo 0)" "$owner"
+  done
+}
+# "js=N rust=N other=N dead=N" for the shmpipe rows.
+shm_counts() {
+  shm_audit_rows | awk -F'\t' '$1=="shm"{c[$5]++} END{printf "js=%d rust=%d other=%d dead=%d\n", c["JS"], c["RUST"], c["OTHER-LIVE"]+c["UNPARSED"], c["DEAD"]}'
+}
+# Human (default) or --json report; always returns 0 (evidence, not a gate).
+# shellcheck disable=SC2120  # --json is passed by shm-audit.sh only
+shm_audit() {
+  local rows
+  rows=$(shm_audit_rows)
+  if [ "${1:-}" = --json ]; then
+    python3 -c '
+import json, sys
+shm, socks, c = [], [], {"JS": 0, "RUST": 0, "OTHER-LIVE": 0, "DEAD": 0, "UNPARSED": 0}
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    k, name, size, pid, owner = line.split("\t")
+    if k == "shm":
+        shm.append({"name": name, "size": int(size), "pid": int(pid) if pid.isdigit() else None, "owner": owner})
+        c[owner] = c.get(owner, 0) + 1
+    else:
+        socks.append({"path": name, "size": int(size), "home": owner})
+print(json.dumps({"shm": shm, "sockets": socks, "summary": {"shm": len(shm), "js": c["JS"], "rust": c["RUST"], "otherLive": c["OTHER-LIVE"] + c["UNPARSED"], "dead": c["DEAD"], "sockets": len(socks)}}, indent=2))
+' <<<"$rows"
+    return 0
+  fi
+  echo "  /dev/shm/shmpipe.* (owner: JS = xorgate-agent child, RUST = xorgate-agent-rs child, DEAD = no such pid):"
+  if grep -q '^shm' <<<"$rows"; then
+    awk -F'\t' '$1=="shm"{printf "    %-10s pid=%-8s size=%-10s %s\n", $5, $4, $3, "\x27" $2 "\x27"}' <<<"$rows"
+  else
+    echo "    (none)"
+  fi
+  echo "  shm sockets:"
+  if grep -q '^sock' <<<"$rows"; then
+    awk -F'\t' '$1=="sock"{printf "    %-9s %s\n", $5, $2}' <<<"$rows"
+  else
+    echo "    (none)"
+  fi
+  awk -F'\t' '$1=="shm"{n++; c[$5]++} $1=="sock"{s++} END{printf "  SUMMARY shm=%d js=%d rust=%d other-live=%d dead=%d sockets=%d\n", n, c["JS"], c["RUST"], c["OTHER-LIVE"]+c["UNPARSED"], c["DEAD"], s}' <<<"$rows"
+  return 0
+}
+# --- window helpers shared by gate-seam.sh / soak.sh / filler.sh / exclusive.sh end
+# D12 seam teardown: stop the copier, drop the runtime drop-in + files.
+gate_seam_off() {
+  local st
+  st=$(systemctl is-active "$GATE_UNIT" 2>/dev/null || true)
+  if [ "$st" = active ] || [ "$st" = activating ]; then act systemctl stop "$GATE_UNIT"; note "$GATE_UNIT stopped"; else echo "  = $GATE_UNIT not running ($st)"; fi
+  act systemctl reset-failed "$GATE_UNIT" 2>/dev/null || true
+  remove_if_present "$GATE_DROPIN" || true
+  remove_if_present "$GATE_SCRIPT" || true
+  remove_if_present "$GATE_MODE" || true
+  if [ -d "$GATE_DIR" ]; then
+    case "$GATE_DIR" in /run/xorgate-rs-lte) act rm -rf -- "$GATE_DIR"; note "$GATE_DIR removed" ;; *) echo "  refusing to remove $GATE_DIR" ;; esac
+  else echo "  = $GATE_DIR absent"; fi
+}
+soak_stop() {
+  local st
+  st=$(systemctl is-active "$SOAK_UNIT" 2>/dev/null || true)
+  if [ "$st" = active ] || [ "$st" = activating ]; then act systemctl stop "$SOAK_UNIT"; note "$SOAK_UNIT stopped"; else echo "  = $SOAK_UNIT not running ($st)"; fi
+  act systemctl reset-failed "$SOAK_UNIT" 2>/dev/null || true
+  if [ -d "$SOAK_RUN" ]; then act rm -rf -- "$SOAK_RUN"; note "$SOAK_RUN removed"; fi
+  return 0
+}
+# Absolute, symlink-resolved path must be under /var/lib/xorgate-rs/ (never
+# /var/lib/xorgate itself).
+under_rs_home() {
+  local r
+  r=$(realpath -m -- "$1")
+  case "$r" in /var/lib/xorgate-rs/*) return 0 ;; *) return 1 ;; esac
+}
+filler_sessions() {
+  local m
+  for m in "$FILLER_ROOT"/*/*/"$FILLER_MARK"; do [ -e "$m" ] && dirname -- "$m"; done
+  return 0
+}
+filler_clear() {
+  local d n=0
+  under_rs_home "$FILLER_ROOT" || { echo "  REFUSING: $FILLER_ROOT resolves to $(realpath -m -- "$FILLER_ROOT") (outside /var/lib/xorgate-rs)"; return 1; }
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    if ! under_rs_home "$d"; then echo "  REFUSING: $d resolves outside /var/lib/xorgate-rs"; continue; fi
+    echo "  filler session $d ($(du -sh -- "$d" 2>/dev/null | cut -f1), $(find "$d" -maxdepth 1 -name '*.mp4' | wc -l) fragments)"
+    act rm -rf -- "$d"; note "$d removed (filler)"; n=$((n + 1))
+  done < <(filler_sessions)
+  [ "$n" -gt 0 ] || echo "  = no filler sessions under $FILLER_ROOT"
+  return 0
+}
+# D17: the JS agent's capture/masters back, read from its state.json (READ
+# ONLY). $1 = timeout seconds (0 = report once); $2 = optional baseline
+# "cam0=running cam1=stopped" (exclusive.sh begin's js-media-before.txt).
+# Returns 0 when, in a state.json written by the CURRENT JS process, every
+# stream is running OR the states equal the baseline.
+js_media_wait_running() {
+  local t=${1:-0} base=${2:-} i out
+  for ((i = 0; ; i++)); do
+    _main_pids_refresh
+    out=$(python3 - "$JS_HOME/state.json" "$_JS_MAIN" "$(pids_in_unit "$JS_UNIT" | tr '\n' ' ')" "$base" <<'PY' || true
+import json, sys
+path, main, unit_pids, base = sys.argv[1], sys.argv[2], sys.argv[3].split(), sys.argv[4]
+try:
+    d = json.load(open(path))
+except Exception as e:
+    print(f"WAIT state.json unreadable ({e.__class__.__name__})"); sys.exit(0)
+pid = str(d.get("pid"))
+fresh = "fresh" if (main in ("", "0") or pid == main or pid in unit_pids) else "STALE"
+media = (d.get("latest") or {}).get("media") or {}
+streams = media.get("streams") or []
+states = " ".join(f"{s.get('streamKey')}={s.get('state')}" for s in streams) or "(no streams)"
+running = bool(streams) and all(s.get("state") == "running" for s in streams)
+same = bool(base) and states == base
+ok = fresh == "fresh" and (running or same)
+why = "all running" if running else ("= pre-window baseline" if same else (f"baseline: {base}" if base else "not all running"))
+print(("OK" if ok else "WAIT") + f" pid={pid} ({fresh}; MainPID {main or '?'}) kvs={(media.get('kvs') or {}).get('value')} [{why}] streams: {states}")
+PY
+)
+    if [ "${out%% *}" = OK ] || [ "$i" -ge "$t" ]; then break; fi
+    sleep 1
+  done
+  echo "  JS media after ${i}s: ${out#* }"
+  [ "${out%% *}" = OK ]
 }
 LIB
 }
