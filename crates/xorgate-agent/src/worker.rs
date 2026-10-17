@@ -38,6 +38,7 @@ use crate::ctx::{
 };
 use crate::env::{AgentEnv, Creds};
 use crate::mqtt_plane::{MqttHandle, MqttPlane, OfflineTransport, RealTransport};
+use crate::recording::hooks::{stream_guard_fn, MediaReconciler, StreamHardware};
 use crate::recording::{policy_sources, RecordingHooks, RecordingManager, RecordingManagerOpts};
 use crate::scope::ScopeHandle;
 use crate::shutdown::Shutdown;
@@ -462,16 +463,30 @@ async fn run(args: &[String]) -> Result<i32> {
 
     // The KVS media supervisor (`createMediaCollector(config.media)` inside
     // `createCollector`, `collectors/index.ts:133-135`): real mode with media
-    // enabled only. WP1-REBASE: WP5's `media::MediaSupervisor` (+ the stream
-    // guard closure of `worker.ts:205-218`) is built here.
-    let media: Option<Arc<dyn MediaControl>> = None;
+    // enabled only, with the stream guard closure of `worker.ts:205-218` over
+    // the reconcile verdicts `reconcileHardwareNow` publishes.
+    let stream_hw = Arc::new(StreamHardware::default());
+    let media_cfg = crate::media::MediaConfig::from_env(&env, cfg.offline);
+    let media: Option<Arc<dyn MediaControl>> = (cfg.mode == RunMode::Real && media_cfg.enabled)
+        .then(|| {
+            let guard = stream_guard_fn(ctx.hardware.clone(), stream_hw.clone(), &media_cfg);
+            Arc::new(crate::media::MediaSupervisor::new(
+                media_cfg.clone(),
+                guard,
+                ctx.tape.clone(),
+            )) as Arc<dyn MediaControl>
+        });
 
     // The Phase 3 hooks, installed before any subsystem clones the ctx. The
     // manager itself is built after the boot reconciles (`worker.ts:439`).
     let hooks = Arc::new(RecordingHooks::new(
         media.clone(),
-        // WP1-REBASE: `reconcileHardwareNow` (`worker.ts:133-150`, WP5).
-        None,
+        Some(Arc::new(MediaReconciler {
+            ctx: ctx.clone(),
+            stream_hw: stream_hw.clone(),
+            pipeline_dir: media_cfg.pipeline_dir.clone().into(),
+            list_exec: crate::media::real_list_exec(ctx.tape.clone()),
+        })),
         config_plane::upload_options_builder(&ctx),
         ctx.clock.clone(),
     ));

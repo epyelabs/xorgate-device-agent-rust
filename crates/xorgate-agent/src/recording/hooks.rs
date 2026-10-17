@@ -28,8 +28,15 @@ use xorgate_core::clock::Clock;
 use xorgate_core::config_report::ReportHints;
 use xorgate_core::telemetry::{RecordingStatus, TelemetryMedia};
 
+use indexmap::IndexMap;
+use tokio::sync::watch;
+use tracing::{info, warn};
+use xorgate_core::hardware_block::DeviceHardwareBlock;
+use xorgate_core::stream_guard::StreamHardwareStatus;
+use xorgate_core::telemetry::{ActivityLevel, RunMode};
+
 use super::manager::RecordingManager;
-use crate::ctx::{BoxFut, MediaControl, PhaseHooks};
+use crate::ctx::{AgentCtx, BoxFut, MediaControl, PhaseHooks};
 
 /// `reconcileHardwareNow()` (`worker.ts:133-150`): re-render pipelines
 /// against the hardware block; the stream keys whose `.gst` changed.
@@ -41,6 +48,133 @@ pub trait HardwareReconciler: Send + Sync {
 /// the manifest is re-read and the `segment upload disabled (…)` line may be
 /// logged again (CF39, review-wp3 #4).
 pub type UploadBuilder = Arc<dyn Fn() -> Option<UploadOptions> + Send + Sync>;
+
+/// `streamHardware` + `streamGuardArmed` (`worker.ts:129-130`): the reconcile
+/// verdicts the media spawn guard reads. Armed only after a pass that could
+/// enumerate cameras.
+#[derive(Default)]
+pub struct StreamHardware {
+    inner: Mutex<(bool, IndexMap<String, StreamHardwareStatus>)>,
+}
+
+impl StreamHardware {
+    /// `streamGuardArmed`.
+    pub fn armed(&self) -> bool {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).0
+    }
+    /// `streamHardware.get(key)`.
+    pub fn status(&self, key: &str) -> Option<StreamHardwareStatus> {
+        let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        g.1.get(key).copied()
+    }
+}
+
+/// `config.media.streamGuard` (`worker.ts:205-218`, replay branch out — P14).
+/// Runs under the supervisor's lock: it reads only the hardware watch, the
+/// verdict map and the pipeline dir — never the supervisor.
+pub fn stream_guard_fn(
+    block: Arc<watch::Sender<Option<DeviceHardwareBlock>>>,
+    hw: Arc<StreamHardware>,
+    media: &crate::media::MediaConfig,
+) -> crate::media::GuardFn {
+    let dir = std::path::PathBuf::from(&media.pipeline_dir);
+    let explicit = media.pipeline_path.clone().map(std::path::PathBuf::from);
+    Arc::new(move |key: &str| {
+        let has_block = block.borrow().is_some();
+        let (armed, status) = (hw.armed(), hw.status(key));
+        crate::media::stream_guard_verdict(has_block, armed, status, || {
+            crate::media::resolve_channel_pipeline(&dir, key, explicit.as_deref()).is_some()
+        })
+    })
+}
+
+/// `reconcileHardwareNow()` (`worker.ts:132-150`): real, online, with a
+/// hardware block only; logs `[hardware] …` + a `hardware: …` state event
+/// (flushed); arms the guard when enumeration worked; returns the streams
+/// whose `.gst` changed.
+pub struct MediaReconciler {
+    pub ctx: AgentCtx,
+    pub stream_hw: Arc<StreamHardware>,
+    /// `config.media.pipelineDir`.
+    pub pipeline_dir: std::path::PathBuf,
+    /// `rpicam-hello --list-cameras` — [`crate::media::real_list_exec`] (the
+    /// `exec` tape record) in the worker; a fake in tests.
+    pub list_exec: crate::media::ListExec,
+}
+
+impl HardwareReconciler for MediaReconciler {
+    fn reconcile(&self) -> BoxFut<'_, Vec<String>> {
+        Box::pin(async move {
+            let cfg = &self.ctx.env.config;
+            let block = self.ctx.hardware.borrow().clone();
+            let Some(block) = block else {
+                return Vec::new();
+            };
+            if cfg.mode != RunMode::Real || cfg.offline {
+                return Vec::new();
+            }
+            let (state, clock) = (self.ctx.state.clone(), self.ctx.clock.clone());
+            let log: crate::media::ReconcileLog = Arc::new(move |level, msg: &str| {
+                let t = clock.wall_ms();
+                let level = match level {
+                    crate::media::ReconcileLevel::Warn => {
+                        warn!("[hardware] {msg}");
+                        ActivityLevel::Warn
+                    }
+                    crate::media::ReconcileLevel::Info => {
+                        info!("[hardware] {msg}");
+                        ActivityLevel::Info
+                    }
+                };
+                // `store.event(level, …); store.flush(t, true)` = `note`.
+                state.note(level, format!("hardware: {msg}"), t);
+            });
+            let shm = self.ctx.paths.home.join("shm");
+            let res = crate::media::reconcile_hardware(
+                &block,
+                crate::media::ReconcileOpts {
+                    pipeline_dir: self.pipeline_dir.clone(),
+                    // `shmSocketPathFor` (`recording/config.ts:153-155`).
+                    shm_socket_path_for: Arc::new(move |key: &str| {
+                        shm.join(format!("{key}.sock")).display().to_string()
+                    }),
+                    list_exec: Some(self.list_exec.clone()),
+                    log: Some(log),
+                },
+            )
+            .await;
+            if res.cameras.is_some() {
+                let mut g = self
+                    .stream_hw
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                // `streamHardware.clear(); set(...)…; streamGuardArmed = true`.
+                *g = (true, res.statuses.clone());
+            }
+            res.changed_streams
+        })
+    }
+}
+
+/// The media collector's surface (`collectors/index.ts:146-176`) over WP5's supervisor.
+impl MediaControl for crate::media::MediaSupervisor {
+    fn read(&self) -> TelemetryMedia {
+        crate::media::MediaSupervisor::read(self)
+    }
+    fn stop(&self) {
+        crate::media::MediaSupervisor::stop(self)
+    }
+    fn restart_channel(&self, key: &str) {
+        crate::media::MediaSupervisor::restart_channel(self, key)
+    }
+    fn set_shed(&self, shed: bool) {
+        crate::media::MediaSupervisor::set_shed(self, shed)
+    }
+    fn set_disabled_streams(&self, keys: &[String]) {
+        crate::media::MediaSupervisor::set_disabled_streams(self, keys)
+    }
+}
 
 /// `lastRecordingStatus` staleness for the LED (`worker.ts:581-587`).
 const LED_STATUS_STALE_MS: i64 = 2000;

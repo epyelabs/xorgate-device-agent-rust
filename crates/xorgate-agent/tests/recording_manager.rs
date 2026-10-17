@@ -623,7 +623,9 @@ fn live_parking_has_a_single_call_site() {
                 if code.contains(".set_live_shed {") || code.contains("&vo.set_live_shed") {
                     set_live_shed_calls.push(at.clone());
                 }
-                if code.contains(".set_shed(") {
+                // `media/` is the actuator itself (WP5's supervisor handing
+                // the call to its pure ladder), not a caller of it.
+                if code.contains(".set_shed(") && !at.starts_with("media/") {
                     set_shed_calls.push(at);
                 }
             }
