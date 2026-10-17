@@ -1,0 +1,12 @@
+import { mkdtempSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";
+const home = mkdtempSync(join(tmpdir(), "wp1q-")); process.env.XORGATE_HOME = home;
+const { saveSettings } = await import("./src/daemon/settings.js");
+const { RecordingManager } = await import("./src/recording/manager.js");
+const ev: string[] = [];
+saveSettings({ recording: { telemetry: { enabled: true, rateHz: 20 } } });
+const m = new RecordingManager({ deviceId: "d", sampleGroups: async () => ({}), root: join(home, "r"), pollMs: 3600000, timeSource: { current: () => "ntp", refresh: async () => "ntp" } as any, onEvent: (_l, msg) => ev.push(msg) });
+await m.start();
+saveSettings({ recording: { telemetry: { enabled: false } } }); m.reapply();
+saveSettings({ recording: { telemetry: { enabled: true } } }); m.reapply();
+saveSettings({ recording: { telemetry: { enabled: false } } }); m.reapply();
+m.stop(); console.log(JSON.stringify(ev.map((e) => e.replace(/session [0-9a-f]{8}/, "session X")), null, 1)); process.exit(0);

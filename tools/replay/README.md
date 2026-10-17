@@ -404,8 +404,24 @@ payload's `media`/`recording` blocks, `bootDefer`/`powerShed`/`liveBlock`, the
 recording/hardware/uploader events and the recording latch details are
 compared now, so a missing recording/media event FAILS. T1 adds
 `recording.backlogBytes` and `liveBlock.since`; T11 excludes the payload's
-`recording.sessionId`; T8 `s3-error-text` folds only transport-library texts
-(the agent's own `S3 PUT failed: HTTP …` / timeout / creds texts are exact).
+`recording.sessionId`; T8 `s3-error-text` folds ONLY WP3's unmapped transport
+texts (`fold_texts`, node side: unknown issuer / self-signed, SAN mismatch,
+corrupt PEM body, key/cert mismatch, the empty multi-address `AggregateError`;
+Rust side: the raw `error_chain` fallback). The agent's own `S3 PUT failed:
+HTTP …` / timeout / creds texts (`own_prefixes`) and every transport text WP3
+maps to node's wording (`mapped_prefixes`: `getaddrinfo …`, `connect E…`,
+`socket hang up`, the PEM `no start line` / DECODER `unsupported` …) are exact.
+
+### Phase 3 tsx drivers (`js/`)
+
+WP1–WP5's fixture dumpers, copied verbatim from `phase-3/evidence/wp<N>-tools/`
+and run through `js/run-tsx.sh <driver> [args]` against the scratch JS copy:
+`wp1-dump-recording-flow.ts` (+ `wp1-scenarios.json`, `wp1-rate-quirk.ts`),
+`dump-recorder.mts`, `dump-disk.mts` (WP2), `dump-upload-keys.mts`,
+`dump-upload-step.mts` (WP3), `dump-capture-ladder.mts` (WP4),
+`dump-media-ladder.mts`, `dump-kvs-runtime.mts`, `dump-hardware-reconcile.mts`,
+`dump-stream-guard.mts` (WP5). The fixture each one writes is listed in
+`js/run-tsx.sh`.
 
 ### Limits (Phase 3)
 

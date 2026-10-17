@@ -12,6 +12,18 @@
 # (WP1), dump-gps-scenarios (WP2), dump-config-sync (WP3), dump-command-flow,
 # probe-exec (WP4), dump-cli-set, dump-cli-status (WP6); fixtures they dump go
 # to fixtures/<area>/ via the caller (most take an <outdir> argument).
+# Phase 3 drivers (copied verbatim from phase-3/evidence/wp<N>-tools/ by WP6):
+#   WP1 wp1-dump-recording-flow.ts <wp1-scenarios.json> <out>  → fixtures/recording_flow/manager.json
+#       wp1-rate-quirk.ts                                      (TS quirk probe, prints only)
+#   WP2 dump-recorder.mts <outdir> → fixtures/recorder_gate/; dump-disk.mts <outdir> → fixtures/disk_plan/
+#   WP3 dump-upload-keys.mts > fixtures/upload_keys/upload-keys.json;
+#       dump-upload-step.mts > fixtures/upload_step/uploader-drain.json
+#   WP4 dump-capture-ladder.mts → fixtures/capture_ladder/ladder.json
+#   WP5 dump-media-ladder.mts → fixtures/media_ladder/ladder.json; dump-kvs-runtime.mts →
+#       fixtures/media_ladder/kvs-runtime.json; dump-hardware-reconcile.mts, dump-stream-guard.mts
+# A driver taking a data file (WP1's scenarios) gets it by its /js-relative path:
+#   cp wp1-scenarios.json into the scratch copy first, or pass `.rig-drivers/<name>` after
+#   copying it there (run-tsx.sh copies only the driver itself).
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DRIVER="${1:?usage: run-tsx.sh <driver.mts> [args…]}"; shift

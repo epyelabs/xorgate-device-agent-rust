@@ -1,0 +1,984 @@
+[
+ {
+  "name": "starts capture in bridge-only mode with recording off, record mode when on",
+  "it": "starts capture in bridge-only mode with recording off, record mode when on",
+  "describe": "RecordingManager video wiring",
+  "budgetMa": null,
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": true,
+      "bootDefer": "off"
+     }
+    }
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": false,
+      "bootDefer": "off"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "never spawns capture when media is disabled",
+  "it": "never spawns capture when media is disabled",
+  "describe": "RecordingManager video wiring",
+  "mediaEnabled": false,
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "preset change restarts capture with new args (new session)",
+  "it": "preset change restarts capture with new args (new session)",
+  "describe": "RecordingManager video wiring",
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": true,
+      "preset": "720p30-2mbps",
+      "bootDefer": "off"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "first video session.json carries the probed time source (badge-bug fix)",
+  "it": "first video session.json carries the probed time source (badge-bug fix)",
+  "describe": "RecordingManager video wiring",
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "a disabled camera gets no pipeline; the other camera keeps its session",
+  "it": "a disabled camera gets no pipeline; the other camera keeps its session",
+  "describe": "per-camera enables (Phase 6 capacity control)",
+  "cameras": [
+   "cam0",
+   "cam1"
+  ],
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "spawnStaggerSecs": 0
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": true,
+      "bootDefer": "off",
+      "spawnStaggerSecs": 0,
+      "cameras": {
+       "cam1": false
+      }
+     }
+    }
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": true,
+      "bootDefer": "off",
+      "spawnStaggerSecs": 0,
+      "cameras": {
+       "cam1": true
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "disabling every camera leaves no capture at all",
+  "it": "disabling every camera leaves no capture at all",
+  "describe": "per-camera enables (Phase 6 capacity control)",
+  "cameras": [
+   "cam0",
+   "cam1"
+  ],
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "spawnStaggerSecs": 0,
+    "cameras": {
+     "cam0": false,
+     "cam1": false
+    }
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "an unknown/absent camera key is inert (a camera unplugged since is just gone)",
+  "it": "an unknown/absent camera key is inert (a camera unplugged since is just gone)",
+  "describe": "per-camera enables (Phase 6 capacity control)",
+  "cameras": [
+   "cam0",
+   "cam1"
+  ],
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "spawnStaggerSecs": 0,
+    "cameras": {
+     "cam2": true
+    }
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "a camera-set change while recording keeps recording (no shape change)",
+  "it": "a camera-set change while recording keeps recording (no shape change)",
+  "describe": "per-camera enables (Phase 6 capacity control)",
+  "cameras": [
+   "cam0",
+   "cam1"
+  ],
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "spawnStaggerSecs": 0
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": true,
+      "bootDefer": "off",
+      "spawnStaggerSecs": 0,
+      "cameras": {
+       "cam0": false
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "defers to bridge-only, then flips to full capture when the modem settles",
+  "it": "defers to bridge-only, then flips to full capture when the modem settles",
+  "describe": "RecordingManager boot power staging (Phase 2)",
+  "budgetMa": 3000,
+  "settings": {
+   "video": {
+    "enabled": true
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connecting",
+     "reg": 0
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "reapply"
+   },
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "reapply"
+   }
+  ]
+ },
+ {
+  "name": "skips the defer outright on a 5 A budget in auto mode",
+  "it": "skips the defer outright on a 5 A budget in auto mode",
+  "describe": "RecordingManager boot power staging (Phase 2)",
+  "budgetMa": 5000,
+  "settings": {
+   "video": {
+    "enabled": true
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "bootDefer=always arms even on a 5 A budget",
+  "it": "bootDefer=always arms even on a 5 A budget",
+  "describe": "RecordingManager boot power staging (Phase 2)",
+  "budgetMa": 5000,
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "always"
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "shortening bootDeferMaxSecs via settings releases an active defer (timeout)",
+  "it": "shortening bootDeferMaxSecs via settings releases an active defer (timeout)",
+  "describe": "RecordingManager boot power staging (Phase 2)",
+  "budgetMa": 3000,
+  "settings": {
+   "video": {
+    "enabled": true
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connecting",
+     "reg": 0
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "advance",
+    "ms": 2000
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": true,
+      "bootDeferMaxSecs": 1
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "the GPS gate parks live streaming too, and releases both on a fix",
+  "it": "the GPS gate parks live streaming too, and releases both on a fix",
+  "describe": "RecordingManager boot power staging (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "gpsGate": "auto"
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "gnss",
+    "value": {
+     "fix": true,
+     "sky": "clear"
+    }
+   },
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "reapply"
+   }
+  ]
+ },
+ {
+  "name": "a no-RF sky releases the gate without a fix",
+  "it": "a no-RF sky releases the gate without a fix",
+  "describe": "RecordingManager boot power staging (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "gpsGate": "always"
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "gnss",
+    "value": {
+     "fix": false,
+     "sky": "no-rf"
+    }
+   },
+   {
+    "op": "reapply"
+   }
+  ]
+ },
+ {
+  "name": "telemetry recording is never deferred or gated",
+  "it": "telemetry recording is never deferred or gated",
+  "describe": "RecordingManager boot power staging (Phase 2)",
+  "budgetMa": 3000,
+  "settings": {
+   "telemetry": {
+    "enabled": true,
+    "rateHz": 20
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "walks the ladder down (live first, recording second) and back up",
+  "it": "walks the ladder down (live first, recording second) and back up",
+  "describe": "RecordingManager power load shedding (Phase 3)",
+  "reading": {
+   "uv": true,
+   "railV": 4.7
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   },
+   "powerShedding": {
+    "uvWindowSecs": 5,
+    "escalateDwellSecs": 5,
+    "restoreSecs": 10
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 3
+   },
+   {
+    "op": "shedTicks",
+    "n": 3
+   },
+   {
+    "op": "shedTicks",
+    "n": 3
+   },
+   {
+    "op": "reading",
+    "value": {
+     "uv": false,
+     "railV": 5.05
+    }
+   },
+   {
+    "op": "shedTicks",
+    "n": 6
+   },
+   {
+    "op": "shedTicks",
+    "n": 6
+   },
+   {
+    "op": "shedTicks",
+    "n": 6
+   },
+   {
+    "op": "shedTicks",
+    "n": 6
+   }
+  ]
+ },
+ {
+  "name": "cycle cap parks; a powerShedding settings change resets and restores",
+  "it": "cycle cap parks; a powerShedding settings change resets and restores",
+  "describe": "RecordingManager power load shedding (Phase 3)",
+  "reading": {
+   "uv": true,
+   "railV": 5.0
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   },
+   "powerShedding": {
+    "uvWindowSecs": 5,
+    "restoreSecs": 10,
+    "maxShedsPerHour": 0
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 4
+   },
+   {
+    "op": "reading",
+    "value": {
+     "uv": false,
+     "railV": 5.05
+    }
+   },
+   {
+    "op": "shedTicks",
+    "n": 120
+   },
+   {
+    "op": "settings",
+    "recording": {
+     "video": {
+      "enabled": true,
+      "bootDefer": "off"
+     },
+     "powerShedding": {
+      "uvWindowSecs": 5,
+      "restoreSecs": 10,
+      "maxShedsPerHour": 4
+     }
+    }
+   },
+   {
+    "op": "shedTicks",
+    "n": 2
+   }
+  ]
+ },
+ {
+  "name": "feature disabled: monitor never arms, zero behavior change",
+  "it": "feature disabled: monitor never arms, zero behavior change",
+  "describe": "RecordingManager power load shedding (Phase 3)",
+  "reading": {
+   "uv": true,
+   "railV": 4.5
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   },
+   "powerShedding": {
+    "enabled": false
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 0
+   }
+  ]
+ },
+ {
+  "name": "no power sampler (sim/dev host): feature inert",
+  "it": "no power sampler (sim/dev host): feature inert",
+  "describe": "RecordingManager power load shedding (Phase 3)",
+  "powerSample": false,
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   }
+  },
+  "steps": [
+   {
+    "op": "start"
+   }
+  ]
+ },
+ {
+  "name": "no block: the field is ABSENT entirely \u2014 not null, not {}",
+  "it": "no block: the field is ABSENT entirely \u2014 not null, not {}",
+  "describe": "RecordingManager liveBlock contract (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "reading": {
+   "uv": false,
+   "railV": 5.05,
+   "tempC": 55
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "gpsGate": "off"
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 5
+   }
+  ]
+ },
+ {
+  "name": "the armed gate publishes gps-gate, and releasing drops the field",
+  "it": "the armed gate publishes gps-gate, and releasing drops the field",
+  "describe": "RecordingManager liveBlock contract (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "reading": {
+   "uv": false,
+   "railV": 5.05,
+   "tempC": 55
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "gpsGate": "always"
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "gnss",
+    "value": {
+     "fix": true,
+     "sky": "clear"
+    }
+   },
+   {
+    "op": "reapply"
+   }
+  ]
+ },
+ {
+  "name": "`since` is stamped once and holds steady while the block does",
+  "it": "`since` is stamped once and holds steady while the block does",
+  "describe": "RecordingManager liveBlock contract (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "reading": {
+   "uv": false,
+   "railV": 5.05,
+   "tempC": 55
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "gpsGate": "always"
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "advance",
+    "ms": 15
+   },
+   {
+    "op": "reapply"
+   },
+   {
+    "op": "advance",
+    "ms": 15
+   },
+   {
+    "op": "reapply"
+   },
+   {
+    "op": "advance",
+    "ms": 15
+   },
+   {
+    "op": "reapply"
+   },
+   {
+    "op": "advance",
+    "ms": 15
+   },
+   {
+    "op": "reapply"
+   },
+   {
+    "op": "advance",
+    "ms": 15
+   },
+   {
+    "op": "reapply"
+   }
+  ]
+ },
+ {
+  "name": "a rail shed publishes undervoltage with the rail in the detail",
+  "it": "a rail shed publishes undervoltage with the rail in the detail",
+  "describe": "RecordingManager liveBlock contract (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "reading": {
+   "uv": false,
+   "railV": 4.7,
+   "tempC": 55
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "gpsGate": "off"
+   },
+   "powerShedding": {
+    "railLowSecs": 3,
+    "restoreSecs": 5
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 4
+   },
+   {
+    "op": "reading",
+    "value": {
+     "uv": false,
+     "railV": 5.05,
+     "tempC": 55
+    }
+   },
+   {
+    "op": "shedTicks",
+    "n": 8
+   }
+  ]
+ },
+ {
+  "name": "a thermal shed publishes thermal, and HOLDS it after the trigger clears",
+  "it": "a thermal shed publishes thermal, and HOLDS it after the trigger clears",
+  "describe": "RecordingManager liveBlock contract (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "reading": {
+   "uv": false,
+   "railV": 5.05,
+   "tempC": 85
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "gpsGate": "off"
+   },
+   "powerShedding": {
+    "cpuTempSecs": 5,
+    "restoreSecs": 600
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 6
+   },
+   {
+    "op": "reading",
+    "value": {
+     "uv": false,
+     "railV": 5.05,
+     "tempC": 75
+    }
+   },
+   {
+    "op": "shedTicks",
+    "n": 121
+   }
+  ]
+ },
+ {
+  "name": "the gate wins when both the gate and a shed are blocking live",
+  "it": "the gate wins when both the gate and a shed are blocking live",
+  "describe": "RecordingManager liveBlock contract (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "reading": {
+   "uv": false,
+   "railV": 4.7,
+   "tempC": 55
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "gpsGate": "always"
+   },
+   "powerShedding": {
+    "railLowSecs": 3,
+    "restoreSecs": 5
+   }
+  },
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 4
+   },
+   {
+    "op": "gnss",
+    "value": {
+     "fix": true,
+     "sky": "clear"
+    }
+   },
+   {
+    "op": "advance",
+    "ms": 5
+   },
+   {
+    "op": "reapply"
+   },
+   {
+    "op": "shedTicks",
+    "n": 1
+   }
+  ]
+ },
+ {
+  "name": "thermal caps at rung 1 even when held past escalateDwellSecs (invariant 7)",
+  "it": "thermal caps at rung 1 even when held past escalateDwellSecs (invariant 7)",
+  "describe": "RecordingManager liveBlock contract (Phase 2)",
+  "budgetMa": 3000,
+  "gnss": {
+   "fix": false,
+   "sky": "clear"
+  },
+  "reading": {
+   "uv": false,
+   "railV": 5.05,
+   "tempC": 85
+  },
+  "settings": {
+   "video": {
+    "enabled": true,
+    "bootDefer": "off",
+    "gpsGate": "off"
+   },
+   "powerShedding": {
+    "cpuTempSecs": 5,
+    "restoreSecs": 600,
+    "escalateDwellSecs": 30
+   }
+  },
+  "extra": true,
+  "steps": [
+   {
+    "op": "telemetry",
+    "value": {
+     "status": "connected",
+     "reg": 1
+    }
+   },
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 6
+   },
+   {
+    "op": "shedTicks",
+    "n": 200
+   }
+  ]
+ },
+ {
+  "name": "telemetry recording keeps running through a rung-2 power shed (invariant 7)",
+  "it": "telemetry recording keeps running through a rung-2 power shed (invariant 7)",
+  "describe": "RecordingManager power load shedding (Phase 3)",
+  "reading": {
+   "uv": true,
+   "railV": 4.7
+  },
+  "settings": {
+   "telemetry": {
+    "enabled": true
+   },
+   "video": {
+    "enabled": true,
+    "bootDefer": "off"
+   },
+   "powerShedding": {
+    "uvWindowSecs": 5,
+    "escalateDwellSecs": 5,
+    "restoreSecs": 10
+   }
+  },
+  "extra": true,
+  "steps": [
+   {
+    "op": "start"
+   },
+   {
+    "op": "shedTicks",
+    "n": 12
+   }
+  ]
+ }
+]
