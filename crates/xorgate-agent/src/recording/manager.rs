@@ -26,6 +26,14 @@
 //!   plus the leaf slots (P9 — `report_hints` runs under ConfigSync's mutex).
 //! - The capture stop→start handover chain (`videoTransition`) is one task
 //!   draining a FIFO of [`Transition`]s in order.
+//! - LOCK ORDER: `state` → `slots`; nothing takes `state` while holding
+//!   `slots`. `start_video` builds the capture AND calls `capture.start()`
+//!   while holding `state` (the TS continuation after `stopAndWait` is
+//!   atomic). That is safe only because no capture callback (`onStatus`,
+//!   `onSegmentClosed`, `onActiveSegment`, `onSpawned`, `onEvent`) takes
+//!   `state` synchronously: they reach the manager through the message task
+//!   or the leaf `slots`. Keep it that way. A capture callback that locks
+//!   `state` deadlocks the transition task (review-wp1 N2).
 //!
 //! # A throwing telemetry finalize (review-wp1 M1)
 //! `stopRecorder` → `recorder.stop()` throws (`manager.ts:777-780`) out of
@@ -1080,7 +1088,9 @@ impl Inner {
     }
 
     /// `startVideo` (`manager.ts:702-741`) — called from the transition task
-    /// with `state` held (the TS continuation is atomic).
+    /// with `state` held (the TS continuation is atomic). `capture.start()`
+    /// runs under that lock: see LOCK ORDER in the module docs. No capture
+    /// callback may take `state` synchronously.
     fn start_video(
         &self,
         st: &State,
