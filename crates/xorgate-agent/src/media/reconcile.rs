@@ -104,14 +104,29 @@ fn path_str(p: &Path) -> String {
 
 /// `reconcileHardware(block, opts)` (`hardware-reconcile.ts:77-182`).
 ///
-/// A failed `mkdirSync`/`writeFileSync` throws in the TS (the worker's boot
-/// await rejects); here it is logged once as a `warn` and the pass carries
-/// on — the TS process would not survive to compare against (see the
-/// evidence file's ambiguity list).
+/// # Errors
+///
+/// The FIRST failed `mkdirSync` (`:108`) / `writeFileSync` (`:146,160,170`)
+/// ends the pass with `Err(<Node err.message>)`, e.g.
+/// `EACCES: permission denied, open '<dir>/cam1.camera'` — exactly where the
+/// TS throws. Nothing is logged for the failure here (no `[hardware]` line,
+/// so no `hardware: …` state event), no partial [`ReconcileResult`] is
+/// returned (no `rendered` status, no `changed_streams` entry), and files
+/// written earlier in the pass stay on disk, as in the TS. Lines already
+/// logged before the failure stay logged.
+///
+/// Caller contracts (WP1, `worker.ts`):
+/// - BOOT (`:427`, top-level `await reconcileHardwareNow()`, before the
+///   `unhandledRejection` net at `:656`): the error propagates and the
+///   process exits non-zero (systemd restarts it).
+/// - CLOUD hardware-block change (`:843-850`): catch it and log
+///   `error!("[agent] hardware reconcile failed {msg}")` (console.error's
+///   space join); `streamHardware`/guard arming are NOT updated, no master is
+///   bounced and `recording.reapply()` is skipped.
 pub async fn reconcile_hardware(
     block: &DeviceHardwareBlock,
     opts: ReconcileOpts,
-) -> ReconcileResult {
+) -> Result<ReconcileResult, String> {
     let log: ReconcileLog = opts.log.clone().unwrap_or_else(|| {
         Arc::new(|level, msg| match level {
             ReconcileLevel::Warn => tracing::warn!("[hardware] {msg}"),
@@ -130,7 +145,7 @@ pub async fn reconcile_hardware(
             ReconcileLevel::Warn,
             "camera enumeration unavailable (rpicam-hello missing or libcamera broken) — leaving pipelines untouched",
         );
-        return out;
+        return Ok(out);
     };
 
     // First camera per connector wins.
@@ -156,19 +171,11 @@ pub async fn reconcile_hardware(
     }
 
     let dir = path_str(&opts.pipeline_dir);
-    if let Err(e) = std::fs::create_dir_all(&opts.pipeline_dir) {
-        log(
-            ReconcileLevel::Warn,
-            &xorgate_hal::io::node_fs_message(&e, "mkdir", &opts.pipeline_dir),
-        );
-    }
-    let write = |p: &str, content: &str| {
-        if let Err(e) = std::fs::write(p, content) {
-            log(
-                ReconcileLevel::Warn,
-                &xorgate_hal::io::node_fs_message(&e, "open", Path::new(p)),
-            );
-        }
+    std::fs::create_dir_all(&opts.pipeline_dir)
+        .map_err(|e| xorgate_hal::io::node_fs_message(&e, "mkdir", &opts.pipeline_dir))?;
+    let write = |p: &str, content: &str| -> Result<(), String> {
+        std::fs::write(p, content)
+            .map_err(|e| xorgate_hal::io::node_fs_message(&e, "open", Path::new(p)))
     };
 
     for video in &block.video {
@@ -215,7 +222,7 @@ pub async fn reconcile_hardware(
             .is_none_or(|c| is_recognized_bridged_render(c, &sock))
         {
             if current_gst.as_deref().map(js_trim) != Some(js_trim(&desired_gst)) {
-                write(&gst_path, &desired_gst);
+                write(&gst_path, &desired_gst)?;
                 out.changed_streams.push(video.key.clone());
                 wrote = true;
             }
@@ -232,7 +239,7 @@ pub async fn reconcile_hardware(
 
         // .camera is a cache of THIS boot's enumeration — always ground-truthed.
         if read_if_exists(&cam_path).as_deref().map(js_trim) != Some(js_trim(&desired_cam)) {
-            write(&cam_path, &desired_cam);
+            write(&cam_path, &desired_cam)?;
             wrote = true;
         }
 
@@ -242,7 +249,7 @@ pub async fn reconcile_hardware(
             .is_none_or(|c| is_recognized_direct_render(c, &video.key, &cam.camera_name))
             && current_direct.as_deref().map(js_trim) != Some(js_trim(&desired_direct))
         {
-            write(&direct_path, &desired_direct);
+            write(&direct_path, &desired_direct)?;
             wrote = true;
         }
 
@@ -269,7 +276,7 @@ pub async fn reconcile_hardware(
     }
 
     out.cameras = Some(cameras);
-    out
+    Ok(out)
 }
 
 /// `resolveChannelPipeline(pipelineDir, streamKey, globalFallback)`
