@@ -120,7 +120,10 @@ pub trait DiskApi: Send + Sync {
     fn set_retention(&self, r: &ResolvedRetention);
     fn set_active_path(&self, owner: &str, p: Option<PathBuf>);
     fn stats(&self) -> BacklogStats;
-    fn enforce(&self) -> BoxFut<'_, ()>;
+    /// `enforce()` as a JS async call: the SYNCHRONOUS prefix (`disk.ts:114-122`
+    /// — claim, counter reload, tree scan, free-bytes probe start) runs NOW,
+    /// inside the caller; the returned future is the tail (review-wp2 N1).
+    fn enforce(&self) -> BoxFut<'static, ()>;
 }
 
 /// `Uploader` (`uploader.ts`; WP3).
@@ -309,6 +312,10 @@ pub struct RecordingSnapshot {
 
 #[derive(Default)]
 struct Slots {
+    /// Mirror of `State::recorder` for `runEnforce`'s `this.recorder?.activePath()`,
+    /// read without the state lock (enforce runs inside callbacks fired while
+    /// the state lock is held, e.g. the finalize of `stopRecorder`).
+    recorder: Option<Arc<dyn RecorderApi>>,
     disk: Option<Arc<dyn DiskApi>>,
     uploader: Option<Arc<dyn UploaderApi>>,
     capture: Option<Arc<dyn CaptureApi>>,
@@ -345,8 +352,6 @@ struct State {
 enum Msg {
     /// A component's `onStatus` → `notifyStatus()`.
     Status,
-    /// `void this.runEnforce()`.
-    Enforce,
 }
 
 /// One link of the `videoTransition` promise chain (`manager.ts:228`).
@@ -727,17 +732,27 @@ impl Inner {
             upload,
             mode,
             active_session_ids: active,
-            on_status: self.notifier(Msg::Status),
+            on_status: self.status_notifier(),
             on_event: self.on_event.clone(),
-            on_uploaded: self.notifier(Msg::Enforce),
+            on_uploaded: self.enforcer(),
         })
     }
 
-    fn notifier(&self, m: Msg) -> NotifyFn {
+    /// `() => this.notifyStatus()` — one hop through the message task.
+    fn status_notifier(&self) -> NotifyFn {
         let tx = self.msgs.clone();
-        let enforce = matches!(m, Msg::Enforce);
         Arc::new(move || {
-            let _ = tx.send(if enforce { Msg::Enforce } else { Msg::Status });
+            let _ = tx.send(Msg::Status);
+        })
+    }
+
+    /// `() => void this.runEnforce()` — called synchronously by the component.
+    fn enforcer(&self) -> NotifyFn {
+        let w = self.self_weak();
+        Arc::new(move || {
+            if let Some(i) = w.upgrade() {
+                i.run_enforce();
+            }
         })
     }
 
@@ -1035,9 +1050,9 @@ impl Inner {
             video_root: self.root.join("video"),
             shm_dir: self.shm_dir.clone(),
             time_source: self.time_source.clone(),
-            on_segment_closed: self.notifier(Msg::Enforce),
+            on_segment_closed: self.enforcer(),
             on_active_segment: on_active,
-            on_status: self.notifier(Msg::Status),
+            on_status: self.status_notifier(),
             on_event: self.on_event.clone(),
             on_spawned: Arc::new(move |k: &str| spawned(k)),
         });
@@ -1059,11 +1074,12 @@ impl Inner {
             rate_hz,
             time_source: self.time_source.clone(),
             sample_groups: self.sample_groups.clone(),
-            on_segment_closed: self.notifier(Msg::Enforce),
+            on_segment_closed: self.enforcer(),
         });
         st.session_id = Some(session_id.clone());
         st.active_rate_hz = Some(rate_hz);
         st.recorder = Some(recorder.clone());
+        lock(&self.slots).recorder = Some(recorder.clone());
         recorder.start();
         self.event(
             ActivityLevel::Info,
@@ -1081,6 +1097,7 @@ impl Inner {
         };
         r.stop()?;
         st.recorder = None;
+        lock(&self.slots).recorder = None;
         st.active_rate_hz = None;
         self.event(ActivityLevel::Info, &flow::telemetry_stopped_event(why));
         st.session_id = None;
@@ -1096,29 +1113,45 @@ impl Inner {
             .backend
             .disk(&self.root, &st.cfg.retention, self.on_event.clone());
         lock(&self.slots).disk = Some(d);
-        let _ = self.msgs.send(Msg::Enforce);
+        // `void this.runEnforce()`.
+        self.run_enforce_from(st.recorder.clone());
         let token = self.cancel.child_token();
         st.disk_timer = Some(token.clone());
-        let tx = self.msgs.clone();
+        let enforce = self.enforcer();
         spawn_every(flow::DISK_ENFORCE_MS, token, move || {
-            let _ = tx.send(Msg::Enforce);
+            enforce();
             None
         });
     }
 
-    /// `runEnforce` (`manager.ts:796-805`).
-    async fn run_enforce(self: Arc<Self>) {
+    /// `runEnforce` (`manager.ts:796-805`): `setActivePath` and the disk's
+    /// synchronous scan prefix run NOW, inside the caller (for
+    /// `onSegmentClosed` that is the rotation itself, review-wp2 N1); the
+    /// enforce tail, `notifyStatus()` and the uploader kick follow on a task.
+    fn run_enforce(&self) {
+        let rec = lock(&self.slots).recorder.clone();
+        self.run_enforce_from(rec);
+    }
+
+    /// [`Self::run_enforce`] with `this.recorder` supplied by a caller that
+    /// holds the state lock.
+    fn run_enforce_from(&self, recorder: Option<Arc<dyn RecorderApi>>) {
         let Some(disk) = lock(&self.slots).disk.clone() else {
             return;
         };
-        let rec = lock(&self.state).recorder.clone();
-        disk.set_active_path("telemetry", rec.and_then(|r| r.active_path()));
-        disk.enforce().await;
-        {
-            let st = lock(&self.state);
-            self.notify_status(&st);
-        }
-        self.kick_uploader();
+        disk.set_active_path("telemetry", recorder.and_then(|r| r.active_path()));
+        let tail = disk.enforce();
+        let Some(me) = self.self_weak().upgrade() else {
+            return;
+        };
+        tokio::spawn(async move {
+            tail.await;
+            {
+                let st = lock(&me.state);
+                me.notify_status(&st);
+            }
+            me.kick_uploader();
+        });
     }
 
     /// The manager-owned snapshot of `st`, published to the watch.
@@ -1182,9 +1215,6 @@ async fn message_task(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Msg>) {
             Msg::Status => {
                 let st = lock(&inner.state);
                 inner.notify_status(&st);
-            }
-            Msg::Enforce => {
-                tokio::spawn(inner.clone().run_enforce());
             }
         }
     }

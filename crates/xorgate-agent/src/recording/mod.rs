@@ -131,7 +131,7 @@ pub mod pending {
         fn stats(&self) -> BacklogStats {
             BacklogStats::default()
         }
-        fn enforce(&self) -> BoxFut<'_, ()> {
+        fn enforce(&self) -> BoxFut<'static, ()> {
             Box::pin(async {})
         }
     }

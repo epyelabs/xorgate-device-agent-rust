@@ -72,6 +72,12 @@ pub struct Log {
     pub recorder_stops: AtomicUsize,
     /// The next N `stop()` calls fail (a throwing finalize).
     pub recorder_stop_failures: AtomicUsize,
+    /// Each recorder's `onSegmentClosed`, in creation order.
+    pub segment_closed: Mutex<Vec<NotifyFn>>,
+    /// A successful `stop()` fires `onSegmentClosed` (WP2's finalize does).
+    pub fire_closed_on_stop: std::sync::atomic::AtomicBool,
+    /// Every `disk.setActivePath("telemetry", …)`.
+    pub active_paths: Mutex<Vec<Option<PathBuf>>>,
     pub finalize_calls: AtomicUsize,
     pub recover_calls: AtomicUsize,
     pub disks: AtomicUsize,
@@ -182,6 +188,7 @@ impl CaptureApi for FakeCapture {
 struct FakeRecorder {
     log: Arc<Log>,
     active: Option<PathBuf>,
+    on_closed: NotifyFn,
 }
 impl RecorderApi for FakeRecorder {
     fn start(&self) {}
@@ -192,6 +199,10 @@ impl RecorderApi for FakeRecorder {
             return Err("ENOSPC: no space left on device, write".into());
         }
         self.log.recorder_stops.fetch_add(1, Ordering::SeqCst);
+        // WP2's finalize fires `onSegmentClosed` from inside `stop()`.
+        if self.log.fire_closed_on_stop.load(Ordering::SeqCst) {
+            (self.on_closed)();
+        }
         Ok(())
     }
     fn active_path(&self) -> Option<PathBuf> {
@@ -205,11 +216,13 @@ pub struct FakeDisk {
 }
 impl DiskApi for FakeDisk {
     fn set_retention(&self, _r: &ResolvedRetention) {}
-    fn set_active_path(&self, _owner: &str, _p: Option<PathBuf>) {}
+    fn set_active_path(&self, _owner: &str, p: Option<PathBuf>) {
+        self.log.active_paths.lock().unwrap().push(p);
+    }
     fn stats(&self) -> BacklogStats {
         *self.stats.lock().unwrap()
     }
-    fn enforce(&self) -> BoxFut<'_, ()> {
+    fn enforce(&self) -> BoxFut<'static, ()> {
         self.log.enforces.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {})
     }
@@ -269,9 +282,15 @@ impl RecordingBackend for FakeBackend {
             rate_hz: spec.rate_hz,
             dir: spec.dir.clone(),
         });
+        self.log
+            .segment_closed
+            .lock()
+            .unwrap()
+            .push(spec.on_segment_closed.clone());
         Arc::new(FakeRecorder {
             log: self.log.clone(),
             active: Some(spec.dir.join("seg-active.jsonl")),
+            on_closed: spec.on_segment_closed,
         })
     }
     fn uploader(&self, _spec: UploaderSpec) -> Arc<dyn UploaderApi> {

@@ -896,3 +896,49 @@ async fn a_failed_finalize_aborts_stop_recorder() {
     );
     m.stop();
 }
+
+/// review-wp2 N1 (manager side): `onSegmentClosed: () => void this.runEnforce()`
+/// runs `setActivePath` + the disk's synchronous scan prefix INSIDE the
+/// callback (the rotation), not one task hop later — including when the
+/// finalize of `stopRecorder` fires it while the manager's state is locked
+/// (no deadlock; `this.recorder` is still the stopping one, `manager.ts:777-779`).
+#[tokio::test(start_paused = true)]
+async fn segment_closed_runs_the_enforce_prefix_synchronously() {
+    let mut rig = Rig::new("segclosed");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    m.start().await;
+    let sid = m.status().session_id.unwrap();
+    let base = rig.log.enforces.load(Ordering::SeqCst);
+    let closed = rig.log.segment_closed.lock().unwrap()[0].clone();
+    closed();
+    // No await in between: the prefix already ran.
+    assert_eq!(rig.log.enforces.load(Ordering::SeqCst), base + 1);
+    let active = Some(
+        rig.root()
+            .join("telemetry")
+            .join(&sid)
+            .join("seg-active.jsonl"),
+    );
+    assert_eq!(
+        rig.log.active_paths.lock().unwrap().last().unwrap(),
+        &active
+    );
+    // The tail then notifies + kicks (here: no uploader, a status publish).
+    let statuses = rig.log.statuses.lock().unwrap().len();
+    yields().await;
+    assert!(rig.log.statuses.lock().unwrap().len() > statuses);
+
+    // Fired from inside stop() (state lock held) — no deadlock.
+    rig.log.fire_closed_on_stop.store(true, Ordering::SeqCst);
+    rig.save_recording(&json!({"telemetry": {"enabled": false}}));
+    m.reapply();
+    assert_eq!(rig.log.enforces.load(Ordering::SeqCst), base + 2);
+    assert_eq!(
+        rig.log.active_paths.lock().unwrap().last().unwrap(),
+        &active
+    );
+    assert!(!m.status().enabled);
+    m.stop();
+}
