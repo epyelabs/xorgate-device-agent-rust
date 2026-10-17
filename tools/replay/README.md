@@ -423,6 +423,23 @@ and run through `js/run-tsx.sh <driver> [args]` against the scratch JS copy:
 `dump-stream-guard.mts` (WP5). The fixture each one writes is listed in
 `js/run-tsx.sh`.
 
+Rig-only refinements found by the media calibration (JS-vs-JS, synth `media`):
+telemetry segment bodies are compared decompressed AND normalised (header
+`deviceId` → `{id}`, `sessionId` → its label); the kvs env's per-agent
+`/rig/certs/<label>.crt|.key` → `<cert>`/`<key>`; T4 `transition` covers array
+paths (`media.streams.<i>.state`); a live-read T3 metric's int-vs-float shape
+inside segments is T3 (an integral value prints as an int in both runtimes);
+T3/host also accepts a host sample pair from each agent's read window
+[ts − 150, ts + 50] ms (the run's own encoders swing the host ram ~3 points
+per 50 ms). The CI smoke (`ci-smoke.sh`, Rust-vs-Rust) additionally widens the
+tick-drift per-side period bound to [995, 1015] ms for shared runners; the
+rig bound stays [999.5, 1010].
+
+The `exec` record carries `stderr` when the caller reports one
+(`TapeSink::exec_with_stderr`, e.g. rpicam-hello's zero-camera `No cameras
+available!`); the player writes `<state>/exec/<key>.err` and the shims print it
+on stderr.
+
 ### Limits (Phase 3)
 
 - Sample VALUES inside telemetry segments are not compared pairwise (each
