@@ -29,6 +29,8 @@ tracing-journald = { workspace = true }
 sd-notify = { workspace = true }
 nix = { workspace = true }
 gstreamer = { workspace = true }
+# Phase 3 WP3: the uploader hands `ObjectPut` its bodies as `Bytes`.
+bytes = { workspace = true }
 
 [dev-dependencies]
 # `start_paused` tests of the spine (tokio::time::pause); `net` for the stub broker.

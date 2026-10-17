@@ -15,6 +15,7 @@ pub mod env;
 pub mod logging;
 pub mod mqtt_plane;
 pub mod pidfile;
+pub mod recording;
 pub mod scope;
 pub mod shutdown;
 pub mod state;

@@ -105,7 +105,7 @@ impl ObjectPut for S3Put {
         Box::pin(async move {
             let credentials = self.creds.get().await.map_err(|e| PutError(e.0))?;
             let client = self.client()?;
-            s3_put(
+            s3_put_offloaded(
                 &client,
                 S3PutOptions {
                     region: &self.region,
@@ -185,6 +185,44 @@ pub async fn s3_put(client: &reqwest::Client, opts: S3PutOptions<'_>) -> Result<
     .await
 }
 
+/// [`s3_put`] with the body's sha256 computed on the blocking pool (P12,
+/// review-wp5 #7: ~150 ms for a 30 MB fragment on a CM4 must not stall a
+/// runtime worker). Same order as `signPut` (`s3-put.ts:58-61`): the
+/// `x-amz-date` stamp is taken BEFORE the hash.
+pub async fn s3_put_offloaded(
+    client: &reqwest::Client,
+    opts: S3PutOptions<'_>,
+) -> Result<(), PutError> {
+    let now_ms = opts.now_ms.unwrap_or_else(wall_now_ms);
+    let hash_body = opts.body.clone();
+    let payload_sha256 =
+        match tokio::task::spawn_blocking(move || crate::sigv4::sha256_hex(&hash_body)).await {
+            Ok(h) => h,
+            // Blocking pool gone (runtime shutting down): hash inline.
+            Err(_) => crate::sigv4::sha256_hex(&opts.body),
+        };
+    let signed = crate::sigv4::sign_put_hashed(
+        opts.region,
+        opts.bucket,
+        opts.key,
+        &payload_sha256,
+        opts.body.len(),
+        opts.content_type,
+        opts.credentials.signing(),
+        now_ms,
+    );
+    let base = format!("https://{}", signed.host);
+    put_signed(
+        client,
+        &base,
+        &signed,
+        opts.body,
+        opts.timeout.unwrap_or(S3_PUT_TIMEOUT),
+        opts.cancel,
+    )
+    .await
+}
+
 /// The request half of `s3Put` against `base` (the virtual host in
 /// production; a local test server in tests). Every signed header is sent as
 /// signed, `content-length` included, so the body goes out un-chunked.
@@ -219,7 +257,7 @@ pub async fn put_signed(
     match run_idle(request, &activity, timeout, cancel).await {
         Err(Interrupted::TimedOut) => Err(PutError("S3 PUT timed out".into())),
         Err(Interrupted::Aborted) => Err(PutError("The operation was aborted".into())),
-        Ok(Err(e)) => Err(PutError(error_chain(&e))),
+        Ok(Err(e)) => Err(PutError(node_transport_error(&e))),
         Ok(Ok((200, _))) => Ok(()),
         Ok(Ok((status, body))) => Err(PutError(format!(
             "S3 PUT failed: HTTP {status} {}",
@@ -389,9 +427,149 @@ impl AsyncRead for TrackingReader {
     }
 }
 
-/// An error and its `source()` chain joined with `": "` — the closest
-/// stable rendering of reqwest/hyper/rustls failures (node prints e.g.
-/// `getaddrinfo ENOTFOUND host`; wording differs, ambiguity A4).
+/// A reqwest transport failure in node:https's `err.message` wording where
+/// the class is recognisable (CF32, review-wp5 MUST-FIX 1): the text lands in
+/// the state.json event `upload failed, retrying in Ns: <msg>`
+/// (`uploader.ts:204`). Probed on node v20.20.2 (phase-3/evidence/wp3.md):
+///
+/// | class | node text |
+/// |---|---|
+/// | DNS NXDOMAIN / no data | `getaddrinfo ENOTFOUND <host>` |
+/// | DNS temporary failure | `getaddrinfo EAI_AGAIN <host>` |
+/// | TCP connect refused / reset / timed out / unreachable | `connect <ECODE> <ip>:<port>` |
+/// | server closed before a response | `socket hang up` |
+/// | reset after connect | `read ECONNRESET` |
+/// | broken pipe while sending | `write EPIPE` |
+/// | TCP closed during the TLS handshake | `Client network socket disconnected before secure TLS connection was established` |
+/// | expired / not-yet-valid server cert | `certificate has expired` / `certificate is not yet valid` |
+///
+/// Everything else (other TLS verdicts — webpki's `UnknownIssuer` cannot
+/// tell node's `self-signed certificate` from `unable to get local issuer
+/// certificate` — and alt-name mismatches, which embed the cert's SAN list)
+/// keeps the [`error_chain`] text: tolerance row T8 (`s3-error-text`).
+pub(crate) fn node_transport_error(e: &reqwest::Error) -> String {
+    let host = e.url().and_then(|u| u.host_str()).map(str::to_string);
+    node_wording(e, host.as_deref()).unwrap_or_else(|| error_chain(e))
+}
+
+/// node's `connect <code>` errno names for the connect-phase io kinds.
+fn connect_code(kind: std::io::ErrorKind) -> Option<&'static str> {
+    use std::io::ErrorKind as K;
+    Some(match kind {
+        K::ConnectionRefused => "ECONNREFUSED",
+        K::ConnectionReset => "ECONNRESET",
+        K::TimedOut => "ETIMEDOUT",
+        K::HostUnreachable => "EHOSTUNREACH",
+        K::NetworkUnreachable => "ENETUNREACH",
+        K::ConnectionAborted => "ECONNABORTED",
+        K::AddrNotAvailable => "EADDRNOTAVAIL",
+        _ => return None,
+    })
+}
+
+/// The address hyper-util's `ConnectError` carries for a failed TCP connect.
+/// It is exposed only through `Debug` (`ConnectError("tcp connect error",
+/// 1.2.3.4:443, Os { .. })`), so it is parsed from there; `None` when the
+/// shape ever changes (the caller then falls back to [`error_chain`]).
+fn connect_error_addr(e: &(dyn std::error::Error + 'static)) -> Option<std::net::SocketAddr> {
+    let dbg = format!("{e:?}");
+    let rest = dbg.strip_prefix("ConnectError(\"tcp connect error\", ")?;
+    let end = rest.find([',', ')']).unwrap_or(rest.len());
+    rest[..end].trim().parse().ok()
+}
+
+fn node_wording(e: &(dyn std::error::Error + 'static), host: Option<&str>) -> Option<String> {
+    let mut chain: Vec<&(dyn std::error::Error + 'static)> = Vec::new();
+    let mut cur = Some(e);
+    while let Some(x) = cur {
+        chain.push(x);
+        cur = x.source();
+    }
+    let texts: Vec<String> = chain.iter().map(|x| x.to_string()).collect();
+    let has = |needle: &str| texts.iter().any(|t| t.contains(needle));
+    // `std::io::Error::source()` skips its own payload, so a rustls error or
+    // a `tls handshake eof` is reached through `get_ref()`.
+    let ios: Vec<&std::io::Error> = chain
+        .iter()
+        .filter_map(|x| x.downcast_ref::<std::io::Error>())
+        .collect();
+
+    // DNS (`ConnectError::dns` over getaddrinfo's gai_strerror text).
+    if texts.iter().any(|t| t == "dns error") || has("failed to lookup address information") {
+        let host = host?;
+        if has("Temporary failure in name resolution") {
+            return Some(format!("getaddrinfo EAI_AGAIN {host}"));
+        }
+        if has("Name or service not known")
+            || has("No address associated with hostname")
+            || has("nodename nor servname provided")
+        {
+            return Some(format!("getaddrinfo ENOTFOUND {host}"));
+        }
+        return None;
+    }
+
+    // TCP connect.
+    if let Some(pos) = texts.iter().position(|t| t == "tcp connect error") {
+        let addr = connect_error_addr(chain[pos])?;
+        let code = chain[pos..]
+            .iter()
+            .find_map(|x| x.downcast_ref::<std::io::Error>())
+            .and_then(|io| connect_code(io.kind()))?;
+        // node prints `${address}:${port}` (no brackets around IPv6).
+        return Some(format!("connect {code} {}:{}", addr.ip(), addr.port()));
+    }
+
+    // TLS handshake verdicts / EOF.
+    let tls = chain
+        .iter()
+        .find_map(|x| x.downcast_ref::<rustls::Error>())
+        .or_else(|| {
+            ios.iter()
+                .find_map(|io| io.get_ref().and_then(|x| x.downcast_ref::<rustls::Error>()))
+        });
+    if let Some(tls) = tls {
+        use rustls::CertificateError as C;
+        return match tls {
+            rustls::Error::InvalidCertificate(C::Expired | C::ExpiredContext { .. }) => {
+                Some("certificate has expired".into())
+            }
+            rustls::Error::InvalidCertificate(C::NotValidYet | C::NotValidYetContext { .. }) => {
+                Some("certificate is not yet valid".into())
+            }
+            _ => None,
+        };
+    }
+    if texts.iter().any(|t| t == "tls handshake eof")
+        || ios.iter().any(|io| {
+            io.kind() == std::io::ErrorKind::UnexpectedEof && io.to_string() == "tls handshake eof"
+        })
+    {
+        return Some(
+            "Client network socket disconnected before secure TLS connection was established"
+                .into(),
+        );
+    }
+
+    // hyper `IncompleteMessage`: the server closed before a response head.
+    if has("connection closed before message completed") {
+        return Some("socket hang up".into());
+    }
+
+    // Socket errors after connect.
+    for io in &ios {
+        match io.kind() {
+            std::io::ErrorKind::ConnectionReset => return Some("read ECONNRESET".into()),
+            std::io::ErrorKind::BrokenPipe => return Some("write EPIPE".into()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// An error and its `source()` chain joined with `": "` — the rendering of
+/// the reqwest/hyper/rustls failures [`node_transport_error`] does not map
+/// (tolerance T8; review-wp5 A4).
 pub(crate) fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
     let mut out = e.to_string();
     let mut src = e.source();
@@ -424,6 +602,37 @@ mod tests {
         assert_eq!(js_slice_utf16("a😀b", 3), "a😀");
         assert_eq!(js_slice_utf16("a😀b", 2), "a\u{FFFD}");
         assert_eq!(js_slice_utf16("ab", 300), "ab");
+    }
+
+    #[test]
+    fn tls_verdicts_map_only_where_the_node_text_is_unambiguous() {
+        use rustls::CertificateError as C;
+        let io = |c: C| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                rustls::Error::InvalidCertificate(c),
+            )
+        };
+        assert_eq!(
+            node_wording(&io(C::Expired), None).as_deref(),
+            Some("certificate has expired")
+        );
+        assert_eq!(
+            node_wording(&io(C::NotValidYet), None).as_deref(),
+            Some("certificate is not yet valid")
+        );
+        // self-signed vs missing-issuer is not distinguishable: chain text (T8).
+        assert_eq!(node_wording(&io(C::UnknownIssuer), None), None);
+        let eof = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "tls handshake eof");
+        assert_eq!(
+            node_wording(&eof, None).as_deref(),
+            Some("Client network socket disconnected before secure TLS connection was established")
+        );
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert_eq!(
+            node_wording(&reset, None).as_deref(),
+            Some("read ECONNRESET")
+        );
     }
 
     #[tokio::test(start_paused = true)]

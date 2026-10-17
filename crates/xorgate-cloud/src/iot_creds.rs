@@ -23,7 +23,9 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::watch;
 
-use crate::s3::{error_chain, js_slice_utf16, run_idle, Activity, Interrupted};
+use crate::s3::{
+    error_chain, js_slice_utf16, node_transport_error, run_idle, Activity, Interrupted,
+};
 use crate::sigv4::SigningCredentials;
 
 /// `DEFAULT_SKEW_MS` (`iot-creds.ts:41`).
@@ -269,6 +271,36 @@ mod libc_errno {
     pub const EISDIR: i32 = 21;
 }
 
+/// The OpenSSL 3 text node's `tls.createSecureContext` throws from
+/// `https.request({ cert, key })` (`iot-creds.ts:78-86`) for the PEM
+/// failures recognisable without a parser (CF32; probed on node v20.20.2):
+/// the cert is checked first (`setCerts` before `setKey`), so a cert with no
+/// certificate block is `no start line` whatever the key holds, and a key
+/// with no private-key block (empty, garbage, a certificate) is the DECODER
+/// `unsupported`. A block that is present but corrupt keeps the reqwest text
+/// (tolerance T8).
+fn node_pem_error(cert: &[u8], key: &[u8]) -> Option<&'static str> {
+    let has = |hay: &[u8], needles: &[&str]| {
+        needles
+            .iter()
+            .any(|n| hay.windows(n.len()).any(|w| w == n.as_bytes()))
+    };
+    if !has(
+        cert,
+        &[
+            "-----BEGIN CERTIFICATE-----",
+            "-----BEGIN TRUSTED CERTIFICATE-----",
+            "-----BEGIN X509 CERTIFICATE-----",
+        ],
+    ) {
+        return Some("error:0480006C:PEM routines::no start line");
+    }
+    if !has(key, &["PRIVATE KEY-----"]) {
+        return Some("error:1E08010C:DECODER routines::unsupported");
+    }
+    None
+}
+
 /// `fetch()` (`iot-creds.ts:73-131`): one mTLS GET.
 async fn fetch(opts: &IotCredentialsOptions) -> Result<AwsCredentials, CredsError> {
     // `iot-creds.ts:75-76`: read synchronously, before any network I/O.
@@ -276,6 +308,9 @@ async fn fetch(opts: &IotCredentialsOptions) -> Result<AwsCredentials, CredsErro
         .map_err(|e| CredsError(node_read_error(&e, &opts.cert_path)))?;
     let key = std::fs::read(&opts.key_path)
         .map_err(|e| CredsError(node_read_error(&e, &opts.key_path)))?;
+    if let Some(msg) = node_pem_error(&cert, &key) {
+        return Err(CredsError(msg.into()));
+    }
     let mut pem = cert;
     pem.push(b'\n');
     pem.extend_from_slice(&key);
@@ -314,7 +349,7 @@ async fn fetch(opts: &IotCredentialsOptions) -> Result<AwsCredentials, CredsErro
     match run_idle(request, &activity, timeout, None).await {
         Err(Interrupted::TimedOut) => Err(CredsError("IoT credentials fetch timed out".into())),
         Err(Interrupted::Aborted) => Err(CredsError("The operation was aborted".into())),
-        Ok(Err(e)) => Err(CredsError(error_chain(&e))),
+        Ok(Err(e)) => Err(CredsError(node_transport_error(&e))),
         Ok(Ok((status, body))) => parse_credentials_response(status, &body),
     }
 }

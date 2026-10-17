@@ -65,5 +65,7 @@ pub mod telemetry;
 pub mod telemetry_scope;
 pub mod topics;
 pub mod types;
+pub mod upload_keys;
+pub mod upload_step;
 pub mod video_capture;
 pub mod video_presets;
