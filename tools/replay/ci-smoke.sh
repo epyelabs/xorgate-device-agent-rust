@@ -76,6 +76,14 @@ kind = "exclude"
 streams = ["telemetry", "state"]
 paths = ["metrics.system.cpu_usage.value", "metrics.system.ram_usage.value", "metrics.system.disk_usage.value", "latest.metrics.system.cpu_usage.value", "latest.metrics.system.ram_usage.value", "latest.metrics.system.disk_usage.value"]
 TOML
+# SMOKE ONLY (orchestrator 2026-10-17; CI run 38097053830: mean tick 998.23 vs
+# 999.91 ms): the T8 tick-drift row's per-side period bound [999.5, 1010] is a
+# RIG bound calibrated on the quiet Mac VM; on a shared GitHub runner a mean
+# can dip below 999.5. The smoke widens the per-side floor/ceiling to
+# [995, 1015]; the |ΔP| ≤ 4 ms pair check (max_period_delta_ms) is unchanged,
+# and the rig's JS-vs-Rust bound in tolerances.toml is untouched.
+grep -q '^  period_ms = \[999.5, 1010.0\]$' "$TOL" || { echo "ci-smoke: tick-drift period_ms row not found in tolerances.toml" >&2; exit 2; }
+sed -i 's/^  period_ms = \[999.5, 1010.0\]$/  period_ms = [995.0, 1015.0]/' "$TOL"
 set +e
 "$RP" diff "$OUT" --tolerances "$TOL"
 RC=$?
