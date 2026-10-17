@@ -762,3 +762,71 @@ async fn hardware_reconcile_failure_paths() {
     assert!(m.status().enabled);
     m.stop();
 }
+
+/// One PUT the production uploader sent.
+struct LoggingPut(Arc<Mutex<Vec<(String, String)>>>);
+
+impl xorgate_cloud::s3::ObjectPut for LoggingPut {
+    fn put<'a>(
+        &'a self,
+        key: &'a str,
+        _body: bytes::Bytes,
+        content_type: &'a str,
+        _cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> xorgate_cloud::s3::PutFuture<'a> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((key.to_string(), content_type.to_string()));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// The production backend's uploader (WP3 `build_uploader`, `manager.ts:246-272`):
+/// built at construction from the boot upload options, kicked by `start()`,
+/// it drains a leftover telemetry segment under `<root>/telemetry` with the
+/// TS key; `isOnline` is the MQTT gate only (review-wp3 S1) — offline, nothing
+/// is PUT, and a reconnect (`notify_connectivity(true)`) kicks it again.
+#[tokio::test(start_paused = true)]
+async fn production_backend_uploads_through_wp3() {
+    let mut rig = Rig::new("prod-upload");
+    rig.video = false;
+    let puts = Arc::new(Mutex::new(Vec::new()));
+    let online = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let o2 = online.clone();
+    rig.upload_override = Some(xorgate_cloud::s3::UploadOptions {
+        put: Arc::new(LoggingPut(puts.clone())),
+        is_online: Arc::new(move || o2.load(Ordering::SeqCst)),
+    });
+    rig.backend_override = Some(Arc::new(xorgate_agent::recording::Backend {
+        clock: rig.clock.clone(),
+        tape: xorgate_hal::io::null_tape(),
+    }));
+    let sid = "0198aaaa-0000-7000-8000-000000000001";
+    let dir = rig.root().join("telemetry").join(sid);
+    std::fs::create_dir_all(&dir).unwrap();
+    let seg = dir.join("seg-1753000000000-00003.jsonl.gz");
+    std::fs::write(&seg, b"x").unwrap();
+    let m = rig.build();
+    m.start().await;
+    for _ in 0..5 {
+        yields().await;
+    }
+    assert!(puts.lock().unwrap().is_empty(), "offline: no PUT");
+    assert!(seg.exists());
+    online.store(true, Ordering::SeqCst);
+    m.notify_connectivity(true);
+    for _ in 0..10 {
+        yields().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        *puts.lock().unwrap(),
+        vec![(
+            format!("telemetry/v1/dev-1/{sid}/1753000000000-00003.jsonl.gz"),
+            "application/gzip".to_string()
+        )]
+    );
+    assert!(!seg.exists(), "deleted after the confirmed PUT");
+    m.stop();
+}

@@ -144,10 +144,9 @@ impl HardwareReconciler for MediaReconciler {
                     log: Some(log),
                 },
             )
-            .await;
-            // WP1-REBASE (review-wp5 M1): `reconcile_hardware` returns a
-            // `Result` once the WP5 fix lands — `.map_err(|e| e.to_string())?`
-            // here, so a throw leaves the verdicts untouched (TS parity).
+            // A throw (first failed mkdir/write, Node's message) leaves the
+            // verdicts untouched (TS parity, review-wp5 M1).
+            .await?;
             if res.cameras.is_some() {
                 let mut g = self
                     .stream_hw

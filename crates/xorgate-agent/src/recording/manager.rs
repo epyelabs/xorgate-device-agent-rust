@@ -76,12 +76,8 @@ pub struct BacklogStats {
     pub dropped_segments: u64,
 }
 
-/// `Uploader.status()` (`uploader.ts:235`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct UploaderStatus {
-    pub uploading: bool,
-    pub last_upload_at: Option<i64>,
-}
+/// `Uploader.status()` (`uploader.ts:235`) — WP3's type.
+pub use super::uploader::UploaderStatus;
 
 /// `CaptureStatus` (`video-capture.ts:266-272`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,14 +201,16 @@ pub struct CaptureSpec {
 /// What `buildUploader` (`manager.ts:246-278`) hands `new Uploader`.
 pub struct UploaderSpec {
     pub device_id: String,
-    pub telemetry_root: PathBuf,
-    pub video_root: PathBuf,
-    /// `put` + `isOnline` (worker `buildUploadOptions`).
+    /// The recordings root (`telemetryRoot(root)` / `videoRoot(root)` under it).
+    pub root: PathBuf,
+    /// `put` + `isOnline` (worker `buildUploadOptions`; `isOnline` = MQTT
+    /// connected ONLY, `worker.ts:411` — the mode gate is `mode`, review-wp3 S1).
     pub upload: UploadOptions,
     /// `mode: () => this.cfg.upload.mode`.
     pub mode: Arc<dyn Fn() -> UploadMode + Send + Sync>,
-    /// The video source's `isSessionActive` (capture's live sessions are not uploaded).
-    pub is_session_active: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// `this.videoCapture?.activeSessionIds() ?? new Set()` — the video
+    /// source's `isSessionActive` (capture's live sessions are not uploaded).
+    pub active_session_ids: super::sources::ActiveSessionIds,
     pub on_status: NotifyFn,
     pub on_event: EventFn,
     /// `onUploaded: () => void this.runEnforce()`.
@@ -710,19 +708,20 @@ impl Inner {
         };
         let active = {
             let w = Arc::downgrade(self);
-            Arc::new(move |sid: &str| {
-                let Some(i) = w.upgrade() else { return false };
+            Arc::new(move || {
+                let Some(i) = w.upgrade() else {
+                    return HashSet::new();
+                };
                 let c = lock(&i.slots).capture.clone();
-                c.is_some_and(|c| c.active_session_ids().contains(sid))
+                c.map(|c| c.active_session_ids()).unwrap_or_default()
             })
         };
         self.backend.uploader(UploaderSpec {
             device_id: self.device_id.clone(),
-            telemetry_root: self.root.join("telemetry"),
-            video_root: self.root.join("video"),
+            root: self.root.clone(),
             upload,
             mode,
-            is_session_active: active,
+            active_session_ids: active,
             on_status: self.notifier(Msg::Status),
             on_event: self.on_event.clone(),
             on_uploaded: self.notifier(Msg::Enforce),

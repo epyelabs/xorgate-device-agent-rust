@@ -357,6 +357,10 @@ pub struct Rig {
     pub upload: bool,
     /// Called inside `setLiveShed` (after logging) — the no-deadlock test blocks here.
     pub live_shed_hook: Option<Arc<dyn Fn(bool) + Send + Sync>>,
+    /// A real backend instead of [`FakeBackend`] (component-wiring tests).
+    pub backend_override: Option<Arc<dyn RecordingBackend>>,
+    /// Upload options instead of the `upload` flag's always-OK put.
+    pub upload_override: Option<xorgate_cloud::s3::UploadOptions>,
 }
 
 impl Rig {
@@ -388,6 +392,8 @@ impl Rig {
             time_probe_timeout_ms: None,
             upload: false,
             live_shed_hook: None,
+            backend_override: None,
+            upload_override: None,
         }
     }
 
@@ -462,9 +468,11 @@ impl Rig {
             })
         });
         let (l5, l6) = (log.clone(), log.clone());
-        let upload = self.upload.then(|| xorgate_cloud::s3::UploadOptions {
-            put: Arc::new(NoPut),
-            is_online: Arc::new(|| true),
+        let upload = self.upload_override.clone().or_else(|| {
+            self.upload.then(|| xorgate_cloud::s3::UploadOptions {
+                put: Arc::new(NoPut),
+                is_online: Arc::new(|| true),
+            })
         });
         RecordingManager::new(RecordingManagerOpts {
             device_id: "dev-1".into(),
@@ -484,10 +492,12 @@ impl Rig {
                 l6.events.lock().unwrap().push((lv, m.to_string()))
             }),
             clock: self.clock.clone(),
-            backend: Arc::new(FakeBackend {
-                log: log.clone(),
-                orphans: self.orphans,
-                backfilled: self.backfilled,
+            backend: self.backend_override.clone().unwrap_or_else(|| {
+                Arc::new(FakeBackend {
+                    log: log.clone(),
+                    orphans: self.orphans,
+                    backfilled: self.backfilled,
+                })
             }),
             poll_ms: Some(self.poll_ms),
             shed_sample_ms: Some(self.shed_sample_ms),
