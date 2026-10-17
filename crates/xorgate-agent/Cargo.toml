@@ -31,6 +31,8 @@ nix = { workspace = true }
 gstreamer = { workspace = true }
 # Phase 3 WP3: the uploader hands `ObjectPut` its bodies as `Bytes`.
 bytes = { workspace = true }
+# Phase 3 WP4: setpriority(2) for the capture child (nice 10, video-capture.ts:690).
+libc = { workspace = true }
 
 [dev-dependencies]
 # `start_paused` tests of the spine (tokio::time::pause); `net` for the stub broker.
