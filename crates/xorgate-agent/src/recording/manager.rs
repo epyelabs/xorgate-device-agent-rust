@@ -746,6 +746,19 @@ impl Inner {
         })
     }
 
+    /// The telemetry recorder's own `onSegmentClosed`: fired INSIDE the
+    /// rotation/finalize under the recorder's lock (WP2), where the TS
+    /// `this.recorder.activePath()` is null — so the recorder is not called
+    /// back (it would deadlock); the active path is `None`, as in the TS.
+    fn recorder_enforcer(&self) -> NotifyFn {
+        let w = self.self_weak();
+        Arc::new(move || {
+            if let Some(i) = w.upgrade() {
+                i.run_enforce_active(None);
+            }
+        })
+    }
+
     /// `() => void this.runEnforce()` — called synchronously by the component.
     fn enforcer(&self) -> NotifyFn {
         let w = self.self_weak();
@@ -1074,7 +1087,7 @@ impl Inner {
             rate_hz,
             time_source: self.time_source.clone(),
             sample_groups: self.sample_groups.clone(),
-            on_segment_closed: self.enforcer(),
+            on_segment_closed: self.recorder_enforcer(),
         });
         st.session_id = Some(session_id.clone());
         st.active_rate_hz = Some(rate_hz);
@@ -1136,10 +1149,15 @@ impl Inner {
     /// [`Self::run_enforce`] with `this.recorder` supplied by a caller that
     /// holds the state lock.
     fn run_enforce_from(&self, recorder: Option<Arc<dyn RecorderApi>>) {
+        self.run_enforce_active(recorder.and_then(|r| r.active_path()));
+    }
+
+    /// `runEnforce` with `this.recorder?.activePath()` already evaluated.
+    fn run_enforce_active(&self, active: Option<PathBuf>) {
         let Some(disk) = lock(&self.slots).disk.clone() else {
             return;
         };
-        disk.set_active_path("telemetry", recorder.and_then(|r| r.active_path()));
+        disk.set_active_path("telemetry", active);
         let tail = disk.enforce();
         let Some(me) = self.self_weak().upgrade() else {
             return;
