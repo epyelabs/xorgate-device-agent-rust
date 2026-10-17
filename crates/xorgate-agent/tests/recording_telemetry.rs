@@ -22,12 +22,14 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use xorgate_agent::ctx::GroupSample;
+use xorgate_agent::recording::disk::{DiskManager, EnforceScan, FreeBytesFn};
 use xorgate_agent::recording::telemetry::{
-    finalize_orphan_segments, finalize_orphan_segments_taped, TelemetryRecorder,
+    finalize_orphan_segments, finalize_orphan_segments_taped, SegmentClosedFn, TelemetryRecorder,
     TelemetryRecorderOpts,
 };
 use xorgate_agent::recording::time_source::{ProbeFn, TimeSourceHandle};
 use xorgate_core::clock::Clock;
+use xorgate_core::recording_config::ResolvedRetention;
 use xorgate_core::segments::GzipFinalizeStep;
 use xorgate_core::session::ProbedTimeSource;
 use xorgate_core::telemetry::{MetricGroup, MetricLeaf};
@@ -197,6 +199,8 @@ struct Rig {
     samples: Shared<IndexMap<String, GroupSample>>,
     mono_ns: Arc<AtomicU64>,
     closed: Shared<Vec<PathBuf>>,
+    /// Extra `onSegmentClosed` work (the manager's enforce prefix, N1).
+    on_closed: Shared<Option<SegmentClosedFn>>,
     base: tokio::time::Instant,
     tape: Arc<FsTape>,
 }
@@ -210,6 +214,7 @@ impl Rig {
             samples: Arc::new(Mutex::new(IndexMap::new())),
             mono_ns: Arc::new(AtomicU64::new(0)),
             closed: Arc::new(Mutex::new(Vec::new())),
+            on_closed: Arc::new(Mutex::new(None)),
             base: tokio::time::Instant::now(),
             tape: Arc::new(FsTape::default()),
         }
@@ -228,6 +233,7 @@ impl Rig {
         let samples = self.samples.clone();
         let mono_ns = self.mono_ns.clone();
         let closed = self.closed.clone();
+        let on_closed = self.on_closed.clone();
         TelemetryRecorder::new(TelemetryRecorderOpts {
             root: root.to_path_buf(),
             device_id: "dev-1".into(),
@@ -240,7 +246,11 @@ impl Rig {
                 Box::pin(async move { s })
             }),
             on_segment_closed: Some(Arc::new(move |p: &Path| {
-                closed.lock().unwrap().push(p.to_path_buf())
+                closed.lock().unwrap().push(p.to_path_buf());
+                let extra = on_closed.lock().unwrap().clone();
+                if let Some(f) = extra {
+                    f(p);
+                }
             })),
             on_active_path: None,
             clock: self.clock.clone(),
@@ -594,6 +604,98 @@ async fn plain_close_eio_retries_the_same_segment_every_tick() {
         );
         let _ = std::fs::remove_dir_all(&home);
     }
+}
+
+/// One run of the N1 edge scenario: an old closed segment (100 B) + a live
+/// session whose first segment rotates on the third tick; the
+/// `onSegmentClosed` hook runs the manager's `runEnforce` prefix
+/// (`setActivePath("telemetry", null)` + the scan) and the async tail runs
+/// after the tick. Returns (gz size of the rotated segment, old segment
+/// still there, backlog segments, plain bytes of the next segment when the
+/// tail ran).
+async fn enforce_edge_run(tag: &str, max_bytes: f64) -> (u64, bool, u64, u64) {
+    let home = scratch(tag);
+    let root = home.join("recordings");
+    let old = root.join("telemetry/old-session/seg-1-00000.jsonl.gz");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, vec![1u8; 100]).unwrap();
+    let t = std::time::UNIX_EPOCH + Duration::from_secs(1);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
+    let no_free: FreeBytesFn = Arc::new(|| Box::pin(async { None }));
+    let dm = Arc::new(DiskManager::with_free_bytes(
+        root.clone(),
+        ResolvedRetention {
+            max_bytes,
+            min_free_bytes: 0.0,
+        },
+        no_free,
+    ));
+    let rig = Rig::new();
+    rig.ts.set("ntp").await;
+    let pending: Shared<Vec<EnforceScan>> = Arc::new(Mutex::new(Vec::new()));
+    let (dm2, p2) = (dm.clone(), pending.clone());
+    *rig.on_closed.lock().unwrap() = Some(Arc::new(move |_gz: &Path| {
+        dm2.set_active_path("telemetry", None);
+        if let Some(pass) = dm2.enforce_scan() {
+            p2.lock().unwrap().push(pass);
+        }
+    }));
+    let rec = rig.recorder(&root, 10, None, Some(1000), None, None);
+    let dir = PathBuf::from(rec.dir());
+    rig.step(&imu(&rig, 5_000, 0, 1)).await;
+    rec.tick().await;
+    rig.step(&imu(&rig, 5_500, 500, 2)).await;
+    rec.tick().await;
+    rig.step(&imu(&rig, 6_000, 1000, 3)).await;
+    rec.tick().await; // rotates: gz → hook (scan) → seg-6000-00001 opens
+    let next = rec.active_path().unwrap();
+    assert_eq!(next, dir.join("seg-6000-00001.jsonl"));
+    let next_bytes = std::fs::metadata(&next).unwrap().len();
+    let passes: Vec<EnforceScan> = std::mem::take(&mut *pending.lock().unwrap());
+    assert_eq!(passes.len(), 1, "{tag}: one scan per closed segment");
+    for pass in passes {
+        dm.enforce_finish(pass).await;
+    }
+    let gz = std::fs::metadata(dir.join("seg-5000-00000.jsonl.gz"))
+        .unwrap()
+        .len();
+    let out = (gz, old.exists(), dm.stats().backlog_segments, next_bytes);
+    rec.stop().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    out
+}
+
+/// N1 (review-wp2): the TS `onSegmentClosed` → `void runEnforce()` runs its
+/// synchronous prefix INSIDE `rotate()` — `setActivePath("telemetry",
+/// null)`, `loadCounters`, `scan()` (`manager.ts:796-799`, `disk.ts:117-121`)
+/// — before `writeLine`'s `open`, so the NEW segment's header line is never
+/// in `total`. At `total == maxBytes` nothing is evicted (`total >
+/// maxBytes` is the test); one byte less evicts the oldest closed segment.
+#[tokio::test]
+async fn enforce_scan_runs_inside_the_rotation_at_the_max_bytes_edge() {
+    // Pass 1 measures the rotated gz (deterministic: same stream, same clocks).
+    let (gz, kept, backlog, next_bytes) = enforce_edge_run("edge0", 1e12).await;
+    assert!(kept);
+    assert_eq!(backlog, 2);
+    assert!(
+        next_bytes > 0,
+        "the next segment's header was on disk when the tail ran"
+    );
+    let at_edge = (100 + gz) as f64;
+    // total == maxBytes: had the scan seen the new header, total would exceed it.
+    let (gz1, kept, backlog, _) = enforce_edge_run("edge1", at_edge).await;
+    assert_eq!(gz1, gz);
+    assert!(kept, "at the edge: nothing evicted");
+    assert_eq!(backlog, 2);
+    // One byte under: the oldest closed segment goes.
+    let (_, kept, backlog, _) = enforce_edge_run("edge2", at_edge - 1.0).await;
+    assert!(!kept, "over by one byte: the oldest is evicted");
+    assert_eq!(backlog, 1);
 }
 
 /// A failed sample `writeSync` (`segments.ts:172`) counts nothing: a segment

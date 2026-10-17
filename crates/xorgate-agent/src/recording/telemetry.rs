@@ -37,7 +37,18 @@ use crate::recording::time_source::TimeSourceHandle;
 /// `sampleGroups()` (`TelemetryRecorderOptions.sampleGroups`).
 pub type SampleGroupsFn =
     Arc<dyn Fn() -> BoxFut<'static, IndexMap<String, GroupSample>> + Send + Sync>;
-/// `onSegmentClosed(gzPath)`.
+/// `onSegmentClosed(gzPath)`. Called synchronously INSIDE the rotation —
+/// after the gz is in place, before the next segment opens — and under the
+/// recorder's state lock, exactly where the TS calls it (`segments.ts:190`;
+/// review-wp2 N1). The recorder's active path is `None` at that instant (the
+/// TS `activePath()` is null there too), so the callback must NOT call back
+/// into the recorder (it would deadlock): the manager's `runEnforce` prefix
+/// is `disk.set_active_path("telemetry", None)` + [`DiskManager::enforce_scan`]
+/// here, and the async tail ([`DiskManager::enforce_finish`] + uploader kick)
+/// is spawned.
+///
+/// [`DiskManager::enforce_scan`]: crate::recording::disk::DiskManager::enforce_scan
+/// [`DiskManager::enforce_finish`]: crate::recording::disk::DiskManager::enforce_finish
 pub type SegmentClosedFn = Arc<dyn Fn(&Path) + Send + Sync>;
 /// Fired whenever the active plain segment changes (open / close).
 pub type ActivePathFn = Arc<dyn Fn(Option<&Path>) + Send + Sync>;
@@ -57,7 +68,8 @@ pub struct TelemetryRecorderOpts {
     pub rate_hz: u32,
     pub time_source: TimeSourceHandle,
     pub sample_groups: SampleGroupsFn,
-    /// `onSegmentClosed` — the manager's `void this.runEnforce()`.
+    /// `onSegmentClosed` — the manager's `void this.runEnforce()`; runs
+    /// inside the rotation (see [`SegmentClosedFn`]).
     pub on_segment_closed: Option<SegmentClosedFn>,
     /// Not in the TS (the manager polls `activePath()` before each enforce);
     /// an optional push of the same value. Never required for parity.
@@ -136,8 +148,10 @@ impl Inner {
         }
     }
 
-    /// Execute one core call's ops; the events are collected for
-    /// [`Inner::fire`], which runs after the state lock is released.
+    /// Execute one core call's ops. `onSegmentClosed` fires inside, right
+    /// after each gz lands (before a following `Open`, as in the TS); the
+    /// events are collected for [`Inner::fire`], which runs after the state
+    /// lock is released.
     fn run(
         &self,
         st: &mut State,
@@ -148,12 +162,17 @@ impl Inner {
             return Ok(());
         }
         let State { core, exec, .. } = st;
-        exec.execute(core, &ops, events)
+        let mut on_closed = |gz: &Path| {
+            if let Some(cb) = &self.opts.on_segment_closed {
+                cb(gz);
+            }
+        };
+        exec.execute_with(core, &ops, events, &mut on_closed)
     }
 
-    /// Tape `fs_out` + `onSegmentClosed` + the active-path push, in the
-    /// order the ops ran (outside the state lock: the manager's enforce
-    /// calls back into `active_path()`).
+    /// Tape `fs_out` + the active-path push, in the order the ops ran
+    /// (outside the state lock: an active-path consumer may call back into
+    /// `active_path()`).
     fn fire(&self, events: Vec<SegmentEvent>, active: Option<Option<String>>) {
         let tape = &*self.opts.tape;
         let root = &self.opts.root;
@@ -169,10 +188,7 @@ impl Inner {
                     tape.fs_out(&home_rel(root, path), FsOp::Delete, 0)
                 }
                 SegmentEvent::Gzipped { gz, size } => {
-                    tape.fs_out(&home_rel(root, gz), FsOp::Gz, *size);
-                    if let Some(cb) = &self.opts.on_segment_closed {
-                        cb(gz);
-                    }
+                    tape.fs_out(&home_rel(root, gz), FsOp::Gz, *size)
                 }
             }
         }

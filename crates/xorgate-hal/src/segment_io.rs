@@ -129,10 +129,30 @@ impl SegmentExecutor {
         ops: &[SegmentOp],
         events: &mut Vec<SegmentEvent>,
     ) -> Result<(), SegmentIoError> {
+        self.execute_with(core, ops, events, &mut |_| {})
+    }
+
+    /// [`Self::execute`], calling `on_closed(gz)` synchronously as soon as a
+    /// `Close` has finalized its gz — BEFORE the batch's next op, i.e. where
+    /// the TS calls `onSegmentClosed` inside `rotate()`, ahead of
+    /// `writeLine`'s `open` (`segments.ts:190`; review-wp2 N1).
+    pub fn execute_with(
+        &mut self,
+        core: &mut SegmentWriterCore,
+        ops: &[SegmentOp],
+        events: &mut Vec<SegmentEvent>,
+        on_closed: &mut dyn FnMut(&Path),
+    ) -> Result<(), SegmentIoError> {
         for (i, op) in ops.iter().enumerate() {
+            let before = events.len();
             if let Err(e) = self.execute_one(op, events) {
                 core.op_failed(ops, i, e.failure);
                 return Err(e);
+            }
+            for ev in &events[before..] {
+                if let SegmentEvent::Gzipped { gz, .. } = ev {
+                    on_closed(gz);
+                }
             }
         }
         Ok(())

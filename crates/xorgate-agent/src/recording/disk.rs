@@ -9,6 +9,13 @@
 //! into the persistent `droppedSegments`. Active segments (registered by
 //! their writers) and unknown file types are never touched. Driven by the
 //! manager on rotation events + a slow (60 s) timer (WP1).
+//!
+//! `enforce()` is split at its first `await` like the TS: the synchronous
+//! prefix (counter reload + tree scan, `disk.ts:114-122`) is
+//! [`DiskManager::enforce_scan`], so the recorder's `onSegmentClosed` can run
+//! it INSIDE the rotation, before the next segment's header exists (the TS
+//! `void runEnforce()` does; review-wp2 N1); the rest is
+//! [`DiskManager::enforce_finish`].
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -18,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use xorgate_core::disk_plan::{
     active_entry, active_entry_owned_by, active_entry_path, backlog_after,
     counter_persist_failed_error, evictable_order, evicted_warning, eviction_failed_error,
-    sidecar_of_mp4, BacklogStats, EvictionPass,
+    sidecar_of_mp4, BacklogStats, EvictionPass, ScannedFile,
 };
 use xorgate_core::recording_config::ResolvedRetention;
 use xorgate_hal::counters_file::{load_dropped, save_dropped};
@@ -48,17 +55,28 @@ pub struct DiskManager {
     root: PathBuf,
     free_bytes: FreeBytesFn,
     state: Mutex<DiskState>,
-    enforcing: AtomicBool,
+    enforcing: Arc<AtomicBool>,
     tape: Arc<dyn TapeSink>,
 }
 
-/// Clears `enforcing` on every exit of `enforce()` (its `finally`).
-struct EnforceGuard<'a>(&'a AtomicBool);
+/// Clears `enforcing` when the pass ends however it ends (the `finally` of
+/// `enforce()`), including an [`EnforceScan`] dropped unfinished.
+struct EnforceSlot(Arc<AtomicBool>);
 
-impl Drop for EnforceGuard<'_> {
+impl Drop for EnforceSlot {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
+}
+
+/// One `enforce()` pass after its synchronous prefix
+/// ([`DiskManager::enforce_scan`]): the scanned tree and the pending
+/// free-bytes probe. Holds the pass's `enforcing` slot until
+/// [`DiskManager::enforce_finish`] completes or it is dropped.
+pub struct EnforceScan {
+    files: Vec<ScannedFile>,
+    free: BoxFut<'static, Option<f64>>,
+    _slot: EnforceSlot,
 }
 
 /// The default probe (`disk.ts:73-78`): `readDisk(root)` → `totalBytes -
@@ -99,7 +117,7 @@ impl DiskManager {
                 last_backlog: (0, 0),
                 active: Vec::new(),
             }),
-            enforcing: AtomicBool::new(false),
+            enforcing: Arc::new(AtomicBool::new(false)),
             tape: Arc::new(NullTape),
         }
     }
@@ -159,20 +177,42 @@ impl DiskManager {
     /// Serialized: an overlapping call (rotation event during the slow
     /// timer's run) returns at once.
     pub async fn enforce(&self) {
+        if let Some(pass) = self.enforce_scan() {
+            self.enforce_finish(pass).await;
+        }
+    }
+
+    /// The synchronous prefix of `enforce()` (`disk.ts:114-122`, up to the
+    /// `await this.freeBytesFn()`): claim the pass, reload the counter, scan
+    /// the tree, start the free-bytes probe. `None` = a pass is already
+    /// running (the TS `if (this.enforcing) return`). Never blocks on the
+    /// recorder, so it may run inside `onSegmentClosed`.
+    pub fn enforce_scan(&self) -> Option<EnforceScan> {
         if self
             .enforcing
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return;
+            return None;
         }
-        let _guard = EnforceGuard(&self.enforcing);
+        let slot = EnforceSlot(self.enforcing.clone());
         // Adopt the persisted counter as the base so an external reset
         // landing between ticks is never clobbered (Phase 6.5).
         let dropped = load_dropped(&self.root);
         self.lock().dropped = dropped;
         let files = scan(&self.root);
-        let free = (self.free_bytes)().await;
+        let free = (self.free_bytes)();
+        Some(EnforceScan {
+            files,
+            free,
+            _slot: slot,
+        })
+    }
+
+    /// The rest of `enforce()` (`disk.ts:122-167`) over `pass`'s scan.
+    pub async fn enforce_finish(&self, pass: EnforceScan) {
+        let EnforceScan { files, free, _slot } = pass;
+        let free = free.await;
 
         // From here on the TS is synchronous: retention and the active set
         // are read AFTER the await (`disk.ts:124-135`).
