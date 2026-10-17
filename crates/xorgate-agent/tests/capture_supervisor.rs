@@ -447,6 +447,50 @@ async fn parks_after_repeated_quick_failures() {
     sup.stop();
 }
 
+/// Accepted divergence D27 (review-wp4 M1): the shm dir, the session dir and
+/// `session.json` cannot be created (their parents are regular files). The
+/// TS throws from `start()` (`video-capture.ts:405`/`:608`/`:626`) and wedges
+/// the manager's video transitions; Rust logs, spawns gst anyway (pointed at
+/// the missing dir), and the ordinary quick-fail ladder takes over.
+#[tokio::test(start_paused = true)]
+async fn d27_spawn_time_fs_failure_logs_and_lets_the_ladder_retry() {
+    let home = Home::new("d27");
+    let be = Arc::new(FakeBackend::default());
+    let ev = Events::default();
+    let blocker = home.0.join("not-a-dir");
+    std::fs::write(&blocker, b"").unwrap();
+    let mut o = opts(&home, cam0(), true, be.clone(), &ev);
+    o.video_root = blocker.join("video");
+    o.shm_dir = blocker.join("shm");
+    o.stable_ms = 10_000;
+    o.sweep_poll_ms = 3_600_000;
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start(); // no panic, no Err: the spawn went ahead
+    assert_eq!(be.len(), 1);
+    let sid = first_session(&sup);
+    let dir = blocker.join("video").join("cam0").join(&sid);
+    assert!(!dir.exists());
+    assert!(be
+        .get(0)
+        .joined()
+        .contains(&dir.to_string_lossy().into_owned()));
+    assert!(has_event(&ev, &format!("(session {}", &sid[..8])));
+    assert_eq!(sup.status()[0].state, CaptureState::Starting);
+
+    // gst fails on the missing dir → the normal ladder, with a NEW session.
+    be.last().exit(Some(1));
+    delay(20).await;
+    assert_eq!(sup.status()[0].state, CaptureState::Retrying);
+    assert!(has_event(
+        &ev,
+        "video capture cam0 exited (code 1); retry 1/3 in 2000ms"
+    ));
+    delay(2_000).await;
+    assert_eq!(be.len(), 2);
+    assert_ne!(first_session(&sup), sid);
+    sup.stop();
+}
+
 // ---------------------------------------------------------------------------
 // describe("VideoCaptureSupervisor progress watchdog") ×7
 

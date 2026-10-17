@@ -373,9 +373,15 @@ impl VideoCaptureSupervisor {
 
     /// `start()` (`video-capture.ts:404-407`): create the shm dir, launch
     /// every camera (staggered). Must be called inside a tokio runtime.
+    ///
+    /// Accepted divergence D27: a failed shm-dir `mkdir` is ignored (the
+    /// TS `mkdirSync` at `:405` throws out of the manager's `videoTransition`
+    /// chain → unhandledRejection + state.json error, and every later video
+    /// transition is skipped until restart). The child then fails to bind its
+    /// socket and the ladder retries / parks.
     pub fn start(&self) {
         let s = &self.shared;
-        let _ = std::fs::create_dir_all(&s.opts.shm_dir);
+        let _ = std::fs::create_dir_all(&s.opts.shm_dir); // D27
         let mut out = Out::default();
         {
             let mut g = s.lock();
@@ -401,6 +407,7 @@ impl VideoCaptureSupervisor {
             if g.stopped {
                 return;
             }
+            // D27 (see `start`): the TS `mkdirSync` at `:420` throws here.
             let _ = std::fs::create_dir_all(&s.opts.shm_dir);
             let wanted: HashSet<&str> = cameras.iter().map(|c| c.stream_key.as_str()).collect();
             let keys: Vec<String> = g.runs.keys().cloned().collect();
@@ -896,6 +903,19 @@ fn launch(s: &Arc<Shared>, g: &mut Inner, cameras: &[CaptureCamera], out: &mut O
 /// supervisor is stopped or the run retiring (`:601-602`): with
 /// [`stop_locked`] that makes a timer firing after `stop_and_wait`'s snapshot
 /// a no-op (review-wp4 S1).
+///
+/// Accepted divergence D27 (review-wp4 M1): a failed session-dir `mkdir` or
+/// `session.json` write is logged at error (`[video-capture <key>] …`) and
+/// the spawn CONTINUES — gst then fails on the missing dir and the normal
+/// quick-fail ladder retries and parks. The TS throws (`:608` `mkdirSync`,
+/// `:626` `writeSessionManifest`): from `start()`/`setCameras()` that rejects
+/// the manager's `videoTransition` chain (`manager.ts:578-583`) →
+/// `[agent] unhandledRejection` + `store.setError` (`worker.ts:656-660`) and
+/// every later video transition is skipped (wedged until restart); from a
+/// restart/stagger timer (`:484-487`, `:893-899`) it is an uncaught
+/// exception → the process dies → systemd restart. Reproducing a wedge or a
+/// crash is not parity worth having. Pinned by `capture_supervisor.rs`
+/// `d27_spawn_time_fs_failure_logs_and_lets_the_ladder_retry`.
 fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
     let Inner {
         runs,
@@ -915,6 +935,7 @@ fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
         let session_id = mint_session_id(o.clock.wall_ms(), random16());
         let session_dir = o.video_root.join(key).join(&session_id);
         if let Err(e) = std::fs::create_dir_all(&session_dir) {
+            // D27: the TS throws here (`video-capture.ts:608`).
             error!(
                 "[video-capture {key}] session dir {}: {e}",
                 session_dir.display()
@@ -937,6 +958,7 @@ fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
             anchor_mono: hrtime_ns().to_string(),
         };
         if let Err(e) = write_session_manifest(&session_dir, &manifest) {
+            // D27: the TS throws here (`video-capture.ts:626`).
             error!(
                 "[video-capture {key}] session.json write failed: {}",
                 xorgate_hal::io::node_fs_message(&e, "open", &session_dir)
