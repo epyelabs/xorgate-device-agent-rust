@@ -830,3 +830,69 @@ async fn production_backend_uploads_through_wp3() {
     assert!(!seg.exists(), "deleted after the confirmed PUT");
     m.stop();
 }
+
+/// review-wp2 N5 (2): the probe outliving the 2 s bound is NOT cancelled —
+/// the TS race leaves the `refresh()` promise running — so the tracker still
+/// flips to the probed source after the bound.
+#[tokio::test(start_paused = true)]
+async fn a_slow_probe_keeps_running_past_the_bound() {
+    let mut rig = Rig::new("slowprobe");
+    rig.video = false;
+    let ts = Arc::new(FakeTimeSource {
+        value: Mutex::new(TimeSource::Unsynced),
+        probed: TimeSource::Ntp,
+        hang: false,
+        delay_ms: 5_000,
+    });
+    rig.time_source = ts.clone();
+    let m = rig.build();
+    let t0 = tokio::time::Instant::now();
+    m.start().await;
+    assert_eq!(t0.elapsed(), Duration::from_millis(2_000));
+    assert_eq!(*ts.value.lock().unwrap(), TimeSource::Unsynced);
+    tokio::time::sleep(Duration::from_millis(3_001)).await;
+    assert_eq!(
+        *ts.value.lock().unwrap(),
+        TimeSource::Ntp,
+        "probe not cancelled"
+    );
+    m.stop();
+}
+
+/// review-wp2 N5 (1): a throwing finalize aborts `stopRecorder` — the
+/// recorder stays, no `stopped` event, and the rest of `apply()` (the restart
+/// at the new rate) does not run; only the NEXT settings change retries.
+#[tokio::test(start_paused = true)]
+async fn a_failed_finalize_aborts_stop_recorder() {
+    let mut rig = Rig::new("finfail");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    m.start().await;
+    let sid = m.status().session_id.unwrap();
+    rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 10}}));
+    m.reapply();
+    assert!(m.status().enabled);
+    assert_eq!(m.status().session_id.as_deref(), Some(sid.as_str()));
+    assert_eq!(rig.log.recorders.lock().unwrap().len(), 1, "no restart");
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 0);
+    assert!(!rig.events().iter().any(|e| e.contains("stopped")));
+    // TS quirk kept: `lastSettingsKey` was taken BEFORE the throwing apply,
+    // so the unchanged settings never retry (the 5 s poll only re-runs the
+    // video diff) — the old recorder keeps running at 20 Hz.
+    m.reapply();
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.log.recorders.lock().unwrap().len(), 1);
+    // The next settings change stops (finalize OK) and restarts at its rate.
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 5}}));
+    m.reapply();
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.log.recorders.lock().unwrap().len(), 2);
+    assert_eq!(rig.log.recorders.lock().unwrap()[1].rate_hz, 5);
+    assert_eq!(
+        rig.events()[1],
+        "telemetry recording stopped (rateHz changed)"
+    );
+    m.stop();
+}

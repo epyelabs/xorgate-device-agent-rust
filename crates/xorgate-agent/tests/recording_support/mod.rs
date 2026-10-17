@@ -70,6 +70,8 @@ pub struct Log {
     pub statuses: Mutex<Vec<RecordingStatus>>,
     pub recorders: Mutex<Vec<RecorderSpecView>>,
     pub recorder_stops: AtomicUsize,
+    /// The next N `stop()` calls fail (a throwing finalize).
+    pub recorder_stop_failures: AtomicUsize,
     pub finalize_calls: AtomicUsize,
     pub recover_calls: AtomicUsize,
     pub disks: AtomicUsize,
@@ -183,8 +185,14 @@ struct FakeRecorder {
 }
 impl RecorderApi for FakeRecorder {
     fn start(&self) {}
-    fn stop(&self) {
+    fn stop(&self) -> Result<(), String> {
+        let fails = &self.log.recorder_stop_failures;
+        if fails.load(Ordering::SeqCst) > 0 {
+            fails.fetch_sub(1, Ordering::SeqCst);
+            return Err("ENOSPC: no space left on device, write".into());
+        }
         self.log.recorder_stops.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
     fn active_path(&self) -> Option<PathBuf> {
         self.active.clone()

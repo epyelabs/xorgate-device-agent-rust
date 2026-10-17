@@ -109,8 +109,9 @@ pub trait TimeSourceApi: Send + Sync {
 /// `TelemetryRecorder` (`telemetry-recorder.ts`; WP2).
 pub trait RecorderApi: Send + Sync {
     fn start(&self);
-    /// Synchronous finalize of the active segment (clean stop leaves no orphan).
-    fn stop(&self);
+    /// Synchronous finalize of the active segment (clean stop leaves no
+    /// orphan). `Err` = the finalize threw (`TelemetryRecorder.stop()`).
+    fn stop(&self) -> Result<(), String>;
     fn active_path(&self) -> Option<PathBuf>;
 }
 
@@ -618,7 +619,11 @@ impl RecordingManager {
         if let Some(u) = uploader {
             u.stop();
         }
-        inner.stop_recorder(&mut st, flow::STOP_SHUTDOWN);
+        if let Err(e) = inner.stop_recorder(&mut st, flow::STOP_SHUTDOWN) {
+            // TS: the throw escapes `stop()` (and the shutdown handler); here
+            // the capture children are still stopped (deviation, wp1.md).
+            tracing::error!("[recording] telemetry recorder stop failed: {e}");
+        }
         let capture = lock(&inner.slots).capture.take();
         if let Some(c) = capture {
             c.stop();
@@ -775,7 +780,12 @@ impl Inner {
             st.cfg.telemetry.rate_hz,
         );
         if let Some(why) = plan.stop {
-            self.stop_recorder(st, why);
+            // A throwing finalize aborts the rest of `apply()` (TS: the
+            // exception leaves `apply` before startRecorder/applyVideo).
+            if let Err(e) = self.stop_recorder(st, why) {
+                tracing::error!("[recording] telemetry recorder stop failed: {e}");
+                return;
+            }
         }
         if plan.start {
             self.start_recorder(st);
@@ -1062,12 +1072,19 @@ impl Inner {
     }
 
     /// `stopRecorder` (`manager.ts:777-785`).
-    fn stop_recorder(&self, st: &mut State, why: &str) {
-        let Some(r) = st.recorder.take() else { return };
-        r.stop();
+    /// A finalize error ABORTS it (review-wp2 N5): the recorder stays set,
+    /// no `stopped` event — as the TS, whose `recorder.stop()` throws before
+    /// `this.recorder = null`.
+    fn stop_recorder(&self, st: &mut State, why: &str) -> Result<(), String> {
+        let Some(r) = st.recorder.clone() else {
+            return Ok(());
+        };
+        r.stop()?;
+        st.recorder = None;
         st.active_rate_hz = None;
         self.event(ActivityLevel::Info, &flow::telemetry_stopped_event(why));
         st.session_id = None;
+        Ok(())
     }
 
     /// `ensureDisk` (`manager.ts:786-795`): build once, enforce now, then every 60 s.

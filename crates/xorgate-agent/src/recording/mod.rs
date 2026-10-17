@@ -118,7 +118,9 @@ pub mod pending {
 
     impl RecorderApi for Inert {
         fn start(&self) {}
-        fn stop(&self) {}
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
         fn active_path(&self) -> Option<PathBuf> {
             None
         }
