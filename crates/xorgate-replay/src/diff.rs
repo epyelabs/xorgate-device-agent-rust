@@ -1021,6 +1021,32 @@ impl Cx<'_> {
     /// satellites-in-view change, a metrics.gps value where the JS side reads
     /// Rust's PREVIOUS sample and the JS NEXT sample is Rust's value (Node
     /// handles a pty chunk late). A Rust value one tick late is not covered.
+    /// T4 `transition` (Phase 3, phase file table row "payload
+    /// media/recording blocks": transitions ±1 tick): a media/recording
+    /// value (or its presence) that differs at this pair while the OTHER
+    /// side shows this side's value one tick earlier or later — the same
+    /// transition landing on adjacent ticks (stream states, `uploading`,
+    /// `powerShed`, `liveBlock` …), either direction (JS-vs-JS too).
+    fn transition(&self, path: &str, x: Option<&Value>, y: Option<&Value>) -> Option<String> {
+        let r = self.table.of_kind("transition", &self.stream).find(|r| {
+            r.paths
+                .iter()
+                .any(|p| crate::tolerances::path_matches(p, path))
+        })?;
+        fn at_path<'v>(v: Option<&'v Value>, path: &str) -> Option<&'v Value> {
+            v.and_then(|v| lookup(v, path))
+        }
+        let at = |v| at_path(v, path);
+        let [pa, na, pb, nb] = self.neighbors;
+        let (has_a, has_b) = (pa.is_some() || na.is_some(), pb.is_some() || nb.is_some());
+        if !has_a && !has_b {
+            return None;
+        }
+        let b_moves = (pb.is_some() && at(pb) == x) || (nb.is_some() && at(nb) == x);
+        let a_moves = (pa.is_some() && at(pa) == y) || (na.is_some() && at(na) == y);
+        (b_moves || a_moves).then(|| r.id.clone())
+    }
+
     fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let (rid, row) = self.table.decision_row("input-edge")?;
         if !crate::tolerances::stream_matches(&row.streams, &self.stream)
@@ -1331,6 +1357,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             let tol = cx
                 .d23(path)
+                .or_else(|| cx.transition(path, a, b))
                 .or_else(|| cx.cut_input(path, x, y))
                 .or_else(|| cx.input_edge(path, x, y))
                 .or_else(|| cx.report_input_between(path))
@@ -1372,7 +1399,8 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             // Presence (or array length / type) mismatch.
             let tol = cx
-                .near_transition(path)
+                .transition(path, a, b)
+                .or_else(|| cx.near_transition(path))
                 .or_else(|| cx.near_wall_step(path))
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
@@ -2909,15 +2937,7 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
         for p in &row.event_prefixes {
             if let Some(rest) = msg.strip_prefix(p.as_str()) {
                 if let Some((secs, tail)) = rest.split_once(": ") {
-                    // CF32 shrink (WP6): the agent's OWN texts (HTTP status
-                    // errors, timeouts, creds parse failures — the TS strings
-                    // of s3-put.ts / iot-creds.ts) are compared exactly; only
-                    // a transport-library text is folded.
-                    if !row
-                        .own_prefixes
-                        .iter()
-                        .any(|o| tail.starts_with(o.as_str()))
-                    {
+                    if s3_error_folds(row, kind, tail) {
                         msg = format!("{p}{secs}: <transport error>");
                         hit = Some(format!("{rid}/s3-error-text"));
                     }
@@ -2947,6 +2967,39 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
         }
     }
     (format!("{level}: {msg}"), hit)
+}
+
+/// CF32 shrink (WP6 over WP3's mapping, `s3.rs::node_transport_error` /
+/// `iot_creds.rs::node_pem_error`): the agent's OWN texts (`own_prefixes`:
+/// HTTP status errors, timeouts, creds parse failures — the TS strings of
+/// s3-put.ts / iot-creds.ts) and every transport text WP3 maps to node's
+/// wording (`mapped_prefixes`) are compared exactly. What is left is folded:
+/// on the node side only the texts of WP3's unmapped list (`fold_texts`:
+/// unknown issuer, SAN mismatch, corrupt PEM body, key/cert mismatch, the
+/// empty `AggregateError`), on the Rust side the raw `error_chain` fallback
+/// (anything not own and not mapped).
+fn s3_error_folds(row: &crate::tolerances::Row, kind: &str, tail: &str) -> bool {
+    if row
+        .own_prefixes
+        .iter()
+        .any(|o| tail.starts_with(o.as_str()))
+        || row
+            .mapped_prefixes
+            .iter()
+            .any(|o| tail.starts_with(o.as_str()))
+    {
+        return false;
+    }
+    if kind == "rust" {
+        return true;
+    }
+    row.fold_texts.iter().any(|f| {
+        if f.is_empty() {
+            tail.is_empty()
+        } else {
+            tail.contains(f.as_str())
+        }
+    })
 }
 
 /// Failed atomic-write text after phase-2/integration: both agents name Node's
@@ -3915,6 +3968,54 @@ mod tests {
             &t,
         );
         assert_ne!(ka, kc);
+    }
+
+    /// CF32 shrink (WP3 hand-over): only WP3's unmapped transport texts fold.
+    #[test]
+    fn s3_error_text_folds_only_the_unmapped_list() {
+        let t = table();
+        let k = |msg: &str, kind: &str| {
+            event_key(
+                "warn",
+                &format!("upload failed, retrying in 2s: {msg}"),
+                kind,
+                &t,
+            )
+        };
+        let folded = "warn: upload failed, retrying in 2s: <transport error>";
+        // Unmapped categories: node text vs the Rust error chain.
+        for js in [
+            "self-signed certificate",
+            "unable to get local issuer certificate",
+            "Hostname/IP does not match certificate's altnames: Host: a. is not in the cert's altnames: DNS:b",
+            "error:05800074:x509 certificate routines::key values mismatch",
+            "error:04800064:PEM routines::bad base64 decode",
+            "",
+        ] {
+            let (ka, ha) = k(js, "js");
+            assert_eq!(ka, folded, "{js:?}");
+            assert_eq!(ha.as_deref(), Some("T8/s3-error-text"));
+        }
+        let (kr, _) = k("error sending request: client error (Connect): invalid peer certificate: UnknownIssuer", "rust");
+        assert_eq!(kr, folded);
+        // Mapped and own texts compare exactly on both sides.
+        for m in [
+            "connect ECONNREFUSED 10.0.0.1:443",
+            "getaddrinfo ENOTFOUND b.s3.ca-central-1.amazonaws.com",
+            "socket hang up",
+            "error:0480006C:PEM routines::no start line",
+            "S3 PUT failed: HTTP 503 Slow Down",
+        ] {
+            for kind in ["js", "rust"] {
+                let (key, hit) = k(m, kind);
+                assert_eq!(key, format!("warn: upload failed, retrying in 2s: {m}"));
+                assert_eq!(hit, None);
+            }
+        }
+        // A node text outside the list (an unexpected wording) is NOT folded,
+        // so a mapped-vs-chain divergence stays UNTOLERATED.
+        let (kx, _) = k("some new node text", "js");
+        assert_ne!(kx, folded);
     }
 
     #[test]

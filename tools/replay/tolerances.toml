@@ -91,6 +91,14 @@ window_ms = 1500
 # All instants are the player's ACTUAL releases (releases.ndjson, re-review R1).
 
 [[rule]]
+id = "T4"
+title = "media/recording state transitions may land one tick apart (the other side shows this value at the adjacent tick)"
+basis = "phase-3-recording-media.md §Record/replay table, row `payload media/recording blocks`: transitions ±1 tick (T4)"
+kind = "transition"
+streams = ["telemetry"]
+paths = ["media", "media.**", "recording", "recording.**"]
+
+[[rule]]
 id = "T5"
 title = "report count may differ by ±1 where two triggers straddle the 2 s debounce; the last report of every quiet period must be identical"
 basis = "phase file T5"
@@ -504,7 +512,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "s3-error-text"
-  what = "CF32 (review-wp5 MUST-FIX 1), shrunk by WP6: the suffix of `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) is folded ONLY when it is a transport-library text (node `fetch failed` / socket errors vs reqwest/hyper chains, s3.rs:381-393, iot_creds.rs:252-316). The agent's own texts — every `own_prefixes` entry, the TS strings of s3-put.ts / iot-creds.ts — are compared exactly (WP3 maps them)"
+  what = "CF32 (review-wp5 MUST-FIX 1), shrunk by WP6 to WP3's unmapped list (wp3.md CF32 mapping table, last row): the suffix of `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) is folded ONLY for webpki UnknownIssuer (node: self-signed / unable to get local issuer), a SAN mismatch (node embeds the altnames), a corrupt-but-present PEM block, a key/cert mismatch, and node 20's multi-address AggregateError (empty message) — node side `fold_texts`, Rust side the raw `error_chain` fallback. The agent's own texts (`own_prefixes`, the TS strings of s3-put.ts / iot-creds.ts) and every text WP3 maps to node wording (`mapped_prefixes`: s3.rs node_transport_error, iot_creds.rs node_pem_error) are compared exactly"
   streams = ["events"]
   matcher = "suffix_after_prefix"
   event_prefixes = ["upload failed, retrying in "]
@@ -515,6 +523,29 @@ kind = "decisions"
     "IoT credentials fetch timed out",
     "IoT credentials response missing fields",
     "IoT credentials response unparseable: ",
+  ]
+  mapped_prefixes = [
+    "getaddrinfo ",
+    "connect E",
+    "socket hang up",
+    "read ECONNRESET",
+    "write EPIPE",
+    "Client network socket disconnected before secure TLS connection was established",
+    "certificate has expired",
+    "certificate is not yet valid",
+    "error:0480006C:PEM routines::no start line",
+    "error:1E08010C:DECODER routines::unsupported",
+  ]
+  fold_texts = [
+    "self-signed certificate",
+    "unable to get local issuer certificate",
+    "unable to verify the first certificate",
+    "Hostname/IP does not match certificate's altnames",
+    "PEM routines::",
+    "asn1 encoding routines::",
+    "DECODER routines::",
+    "x509 certificate routines::key values mismatch",
+    "",
   ]
 
 [[rule]]
