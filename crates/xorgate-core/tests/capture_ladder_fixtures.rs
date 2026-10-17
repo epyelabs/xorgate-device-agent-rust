@@ -4,6 +4,11 @@
 //! (private `onExit` / `checkProgress` / `isRecording` / `reapShmSegments`
 //! driven over an input grid with `Date.now`/`setTimeout` stubbed; the spawn
 //! and `setCameras` event text from real `start()`/`setCameras()` calls).
+//! The `constants` block is not typed into the dumper: the module-private
+//! consts are read from the archive's `src/recording/video-capture.ts` (one
+//! `const NAME = <int>;` each), and `SWEEP_POLL_MS` — the one constant no
+//! case exercises — is also observed as the real `watchSession`'s
+//! `setInterval` period (review-wp4 N2).
 
 mod common;
 
