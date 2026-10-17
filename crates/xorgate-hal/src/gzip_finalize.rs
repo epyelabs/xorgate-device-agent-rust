@@ -5,7 +5,10 @@
 //!
 //! Gzip bytes (P6): `flate2` at level 6 with the header fields node's
 //! `zlib.gzipSync` writes (mtime 0, XFL 0, OS 3 = Unix). The deflate stream
-//! itself may differ from zlib's (miniz_oxide backend) — accepted divergence
+//! itself may differ from zlib's: the active backend is `miniz_oxide`
+//! (flate2's default `rust_backend`; `zlib-rs` is only an optional entry of
+//! flate2 in `Cargo.lock` that no enabled feature activates — `cargo tree -i
+//! zlib-rs -e features --target all` prints nothing). Accepted divergence
 //! D24: the decompressed bytes are identical and the backend only ever reads
 //! the decompressed stream.
 //!
