@@ -902,9 +902,16 @@ fn capture_logs() -> (Arc<Mutex<Vec<String>>>, tracing::subscriber::DefaultGuard
     (logs, tracing::subscriber::set_default(sub))
 }
 
-/// review-wp2 N5 (1): a throwing finalize aborts `stopRecorder` — the
-/// recorder stays, no `stopped` event, and the rest of `apply()` (the restart
-/// at the new rate) does not run; only the NEXT settings change retries.
+/// review-wp2 N5 (1) + review-wp1 M1/S1: a throwing finalize aborts
+/// `stopRecorder` and the rest of `apply()`, and `reapply` returns the `Err`.
+/// The recorder stays in the manager with no `stopped` event, and the restart
+/// at the new rate does not run. The kept recorder is DEAD: WP2's `stop()`
+/// set `stopped` and cleared its timer before the finalize threw
+/// (`telemetry-recorder.ts:75-81`). It samples nothing, while `status()`
+/// still reports the old session. Only a later settings change whose
+/// finalize succeeds replaces it. This end state is the TS's on the caught
+/// call sites (config message, hardware change). The 5 s poll exits instead
+/// (`the_poll_path_hands_a_failed_finalize_to_the_worker`).
 #[tokio::test(start_paused = true)]
 async fn a_failed_finalize_aborts_stop_recorder() {
     let mut rig = Rig::new("finfail");
@@ -926,8 +933,8 @@ async fn a_failed_finalize_aborts_stop_recorder() {
         "the kept recorder is stopped: it no longer samples"
     );
     // TS quirk kept: `lastSettingsKey` was taken BEFORE the throwing apply,
-    // so the unchanged settings never retry (the 5 s poll only re-runs the
-    // video diff) — the old recorder keeps running at 20 Hz.
+    // so unchanged settings never retry. The poll only re-runs the video diff,
+    // and the dead recorder stays in place.
     m.reapply().unwrap();
     assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 0);
     assert_eq!(rig.log.recorders.lock().unwrap().len(), 1);
