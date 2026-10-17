@@ -27,20 +27,39 @@ use xorgate_core::recording_config::ResolvedRetention;
 use xorgate_hal::io::TapeSink;
 
 /// The production [`manager::RecordingBackend`]: the real components as
-/// they merge — WP3's uploader now; WP1-REBASE: the WP2 recorder/disk/time
-/// source/orphan passes and the WP4 capture supervisor still delegate to
-/// [`pending::Inert`].
+/// they merge — WP3's uploader, WP4's capture supervisor + video orphan
+/// recovery; WP1-REBASE: the WP2 recorder/disk/orphan finalize/boot id still
+/// delegate to [`pending::Inert`].
 pub struct Backend {
     pub clock: Arc<dyn Clock + Send + Sync>,
     pub tape: Arc<dyn TapeSink>,
+    /// The agent home (`fs_out` tape paths are relative to it).
+    pub home: Option<std::path::PathBuf>,
 }
 
 impl manager::RecordingBackend for Backend {
     fn finalize_orphan_segments(&self, t: &Path) -> usize {
         manager::RecordingBackend::finalize_orphan_segments(&pending::Inert, t)
     }
+    /// `recoverOrphanVideoSessions(videoRoot)` (`video-segments.ts:341-375`,
+    /// WP4): runs before any capture spawns (`manager.ts:302-304`), so no
+    /// session is active; the result is reported to the tape.
     fn recover_orphan_video_sessions(&self, v: &Path) -> usize {
-        manager::RecordingBackend::recover_orphan_video_sessions(&pending::Inert, v)
+        let none = std::collections::HashSet::new();
+        let res = capture::recover_orphan_video_sessions(
+            v,
+            &capture::RecoverOpts {
+                active_session_ids: &none,
+                clock: self.clock.as_ref(),
+            },
+        );
+        capture::tape_sweep_outcome(
+            self.tape.as_ref(),
+            self.home.as_deref(),
+            &res.closed,
+            &res.reaped,
+        );
+        res.recovered
     }
     fn boot_id(&self) -> String {
         manager::RecordingBackend::boot_id(&pending::Inert)
@@ -78,8 +97,84 @@ impl manager::RecordingBackend for Backend {
             tape: self.tape.clone(),
         }))
     }
+    /// `new VideoCaptureSupervisor({...})` (`manager.ts:702-741`, WP4).
     fn capture(&self, spec: manager::CaptureSpec) -> Arc<dyn manager::CaptureApi> {
-        manager::RecordingBackend::capture(&pending::Inert, spec)
+        // `timeSource: () => this.timeSource.current()` — the SYNC tracker read
+        // that kicks a background re-probe when stale (review-wp4 N1).
+        let ts = spec.time_source;
+        let mut o = capture::VideoCaptureOpts::new(
+            spec.device_id,
+            spec.cameras,
+            spec.record,
+            spec.preset.clone(),
+            u64::from(spec.segment_seconds),
+            spec.video_root,
+            spec.shm_dir,
+            self.boot_id(),
+            Arc::new(move || ts.current()),
+            self.clock.clone(),
+        );
+        o.encoder = Some(spec.encoder);
+        o.stagger_ms = spec.stagger_ms;
+        o.home = self.home.clone();
+        let closed = spec.on_segment_closed;
+        o.on_segment_closed = Some(Arc::new(move |_mp4: &Path| closed()));
+        let active = spec.on_active_segment;
+        o.on_active_path = Some(Arc::new(move |key: &str, p: Option<&Path>| {
+            active(key, p.map(Path::to_path_buf))
+        }));
+        o.on_status = Some(spec.on_status);
+        o.on_event = Some(spec.on_event);
+        o.on_spawned = Some(spec.on_spawned);
+        o.tape = self.tape.clone();
+        Arc::new(CaptureAdapter(Arc::new(
+            capture::VideoCaptureSupervisor::new(o),
+        )))
+    }
+}
+
+/// WP4's supervisor behind [`manager::CaptureApi`].
+struct CaptureAdapter(Arc<capture::VideoCaptureSupervisor>);
+
+/// `stopAndWait(graceMs = 10_000)` (`video-capture.ts:516`).
+const STOP_AND_WAIT_GRACE: std::time::Duration = std::time::Duration::from_millis(10_000);
+
+impl manager::CaptureApi for CaptureAdapter {
+    fn start(&self) {
+        self.0.start()
+    }
+    fn set_cameras(
+        &self,
+        cameras: Vec<xorgate_core::video_capture::CaptureCamera>,
+    ) -> crate::ctx::BoxFut<'_, ()> {
+        Box::pin(async move { self.0.set_cameras(&cameras).await })
+    }
+    fn stop(&self) {
+        self.0.stop()
+    }
+    fn stop_and_wait(&self) -> crate::ctx::BoxFut<'_, ()> {
+        Box::pin(async move { self.0.stop_and_wait(STOP_AND_WAIT_GRACE).await })
+    }
+    fn active_session_ids(&self) -> std::collections::HashSet<String> {
+        self.0.active_session_ids()
+    }
+    fn any_recording(&self) -> bool {
+        self.0.any_recording()
+    }
+    fn status(&self) -> Vec<manager::CaptureStatus> {
+        self.0
+            .status()
+            .into_iter()
+            .map(|s| manager::CaptureStatus {
+                stream_key: s.stream_key,
+                state: serde_json::to_value(s.state)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default(),
+                session_id: s.session_id,
+                recording: s.recording,
+            })
+            .collect()
     }
 }
 

@@ -801,6 +801,7 @@ async fn production_backend_uploads_through_wp3() {
     rig.backend_override = Some(Arc::new(xorgate_agent::recording::Backend {
         clock: rig.clock.clone(),
         tape: xorgate_hal::io::null_tape(),
+        home: None,
     }));
     let sid = "0198aaaa-0000-7000-8000-000000000001";
     let dir = rig.root().join("telemetry").join(sid);
@@ -946,5 +947,32 @@ async fn segment_closed_runs_the_enforce_prefix_synchronously() {
     assert_eq!(rig.log.enforces.load(Ordering::SeqCst), base + 3);
     assert_eq!(rig.log.active_paths.lock().unwrap().last().unwrap(), &None);
     assert!(!m.status().enabled);
+    m.stop();
+}
+
+/// The production backend's video pieces (WP4): orphan recovery over a
+/// missing tree is 0 (no tree yet, `video-segments.ts:341-345`), and a
+/// manager with video wired but no camera builds no capture supervisor.
+#[tokio::test(start_paused = true)]
+async fn production_backend_video_pieces_are_inert_without_a_tree_or_camera() {
+    use xorgate_agent::recording::manager::RecordingBackend;
+    let rig = Rig::new("prod-video");
+    let b = xorgate_agent::recording::Backend {
+        clock: rig.clock.clone(),
+        tape: xorgate_hal::io::null_tape(),
+        home: Some(rig.home.clone()),
+    };
+    assert_eq!(
+        b.recover_orphan_video_sessions(&rig.root().join("video")),
+        0
+    );
+    let mut rig = Rig::new("prod-video-mgr");
+    rig.cameras = vec![];
+    rig.backend_override = Some(Arc::new(b));
+    let m = rig.build();
+    m.start().await;
+    yields().await;
+    assert!(m.video_status().streams.is_empty());
+    assert!(!m.video_status().recording);
     m.stop();
 }

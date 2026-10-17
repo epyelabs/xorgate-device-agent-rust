@@ -249,10 +249,11 @@ fn build_recording_manager(
         on_status,
         on_event,
         clock: ctx.clock.clone(),
-        // WP3's uploader; WP1-REBASE: the WP2/WP4 components.
+        // WP3 uploader + WP4 capture; WP1-REBASE: the WP2 components.
         backend: Arc::new(crate::recording::Backend {
             clock: ctx.clock.clone(),
             tape: ctx.tape.clone(),
+            home: Some(ctx.paths.home.clone()),
         }),
         poll_ms: None,
         shed_sample_ms: None,
