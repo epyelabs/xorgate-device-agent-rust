@@ -14,10 +14,15 @@
 //! - `Close` — `fsyncSync` + `closeSync` (`:179-180`), then `unlinkSync`
 //!   for a header-only segment (`:185-188`) or [`gzip_finalize`] (`:189`).
 //!
-//! One deviation, on a path that cannot fail in practice: when the plain
-//! fsync throws, the TS keeps its fd and `path` (the throw precedes `fd =
-//! null`) while Rust has already dropped (= closed) the handle; core treats
-//! it as a failed `Close` (segment closed). See evidence wp2 "ambiguities".
+//! A plain `fsyncSync`/`closeSync` throw leaves the TS holding its fd and
+//! `path` (the throw precedes `fd = null`, `:179-182`), so the segment stays
+//! active and every later tick retries the rotation. The executor does the
+//! same (review-wp2 S1): on a failed plain fsync — or an injected close
+//! fault, checked before the handle is released — it KEEPS the handle and
+//! reports [`OpFailure::ClosePlain`], and core restores the segment's
+//! counters. A real `close(2)` error is not observable through `std::fs::File`
+//! (drop ignores it; Linux releases the fd even on EIO), so after a
+//! successful fsync the handle is always gone; see evidence wp2 A2a.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -216,15 +221,26 @@ impl SegmentExecutor {
             message: msg,
             source: e,
         };
-        if let Some((_, file)) = self.open.take() {
-            let synced = self
+        if let Some((open_path, file)) = self.open.take() {
+            let closed = self
                 .check(IoPoint::Close(GzipFinalizeStep::FsyncPlain), &p)
-                .and_then(|_| file.sync_all());
-            drop(file); // closeSync
-            if let Err(e) = synced {
-                let msg = node_fd_message(&e, "fsync");
-                return Err(close_err(e, msg));
+                .and_then(|_| file.sync_all())
+                .map_err(|e| (node_fd_message(&e, "fsync"), e))
+                .and_then(|_| {
+                    self.check(IoPoint::Close(GzipFinalizeStep::ClosePlain), &p)
+                        .map_err(|e| (node_fd_message(&e, "close"), e))
+                });
+            if let Err((message, source)) = closed {
+                // S1: the TS still holds fd + path — keep the handle so the
+                // next rotation retries the same segment.
+                self.open = Some((open_path, file));
+                return Err(SegmentIoError {
+                    failure: OpFailure::ClosePlain,
+                    message,
+                    source,
+                });
             }
+            drop(file); // closeSync
             let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             events.push(SegmentEvent::Closed {
                 path: p.clone(),

@@ -160,6 +160,22 @@ pub struct SegmentWriterCore {
     /// [`Self::op_failed`] whether an `Append` was `writeLine`'s sample
     /// (counted in `sampleLines`) or `noteTimeSource`'s header re-emit.
     last_call: LastCall,
+    /// The state before the last [`Self::rotate`] cleared `path` (and before
+    /// any `open` the same call planned): what a failed plain fsync/close
+    /// restores, because the TS throws there with `fd`/`path` still set
+    /// (`segments.ts:179-182`; review-wp2 S1).
+    pre_rotate: Option<PreRotate>,
+}
+
+/// The fields of the open segment at the start of a `rotate()` (S1 rewind).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreRotate {
+    path: String,
+    bytes: u64,
+    sample_lines: u64,
+    opened_at_mono: MonoMs,
+    seg_seq: u32,
+    last_time_source: Option<TimeSource>,
 }
 
 /// The public method behind the last op batch (S2 bookkeeping).
@@ -186,6 +202,7 @@ impl SegmentWriterCore {
             seg_seq: 0,
             last_time_source: None,
             last_call: LastCall::Rotate,
+            pre_rotate: None,
         }
     }
 
@@ -304,6 +321,14 @@ impl SegmentWriterCore {
         let Some(plain) = self.path.take() else {
             return Vec::new();
         };
+        self.pre_rotate = Some(PreRotate {
+            path: plain.clone(),
+            bytes: self.bytes,
+            sample_lines: self.sample_lines,
+            opened_at_mono: self.opened_at_mono,
+            seg_seq: self.seg_seq,
+            last_time_source: self.last_time_source,
+        });
         let gz = (self.sample_lines > 0).then(|| format!("{plain}.gz"));
         vec![SegmentOp::Close { plain, gz }]
     }
@@ -316,7 +341,8 @@ impl SegmentWriterCore {
     ///
     /// | failed step | TS state at the throw | rewind here |
     /// |---|---|---|
-    /// | `Close` (fsync/close/unlink/`gzipFinalize`, `:179-189`) | `fd`/`path` null; a following `open` never ran | if an `Open` follows in `ops`: `path = None`, `segSeq` given back |
+    /// | `Close`, plain `fsyncSync`/`closeSync` ([`OpFailure::ClosePlain`], `:179-180`) | `fd`/`path` STILL SET, `bytes`/`sampleLines`/`openedAtMono`/`lastTimeSource` untouched, a following `open` never ran | the whole pre-rotate state restored (`path`, `bytes`, `sampleLines`, `openedAtMono`, `segSeq`, `lastTimeSource`); the executor keeps the fd, so every later tick retries the rotation and no second segment opens (review-wp2 S1) |
+    /// | `Close`, after the fd closed (unlink/`gzipFinalize`, `:181-189`) | `fd`/`path` null; a following `open` never ran | if an `Open` follows in `ops`: `path = None`, `segSeq` given back |
     /// | `Open`, `mkdirSync` (`:157`) | untouched | `path = None`, `segSeq` given back |
     /// | `Open`, `openSync` (`:161`) | `path` set, `segSeq` consumed, `fd` null | `path = None` (TS keeps a stale `activePath()`; tolerated, see evidence wp2) |
     /// | `Open`, header `writeSync` (`:166`) | fd OPEN, `bytes = 0`, `sampleLines = 0` | `bytes = 0`, `sampleLines = 0` (executor keeps the handle) |
@@ -333,6 +359,16 @@ impl SegmentWriterCore {
             .iter()
             .any(|o| matches!(o, SegmentOp::Open { .. }));
         match (op, failure) {
+            (SegmentOp::Close { plain, .. }, OpFailure::ClosePlain) => {
+                if let Some(pre) = self.pre_rotate.take().filter(|p| &p.path == plain) {
+                    self.path = Some(pre.path);
+                    self.bytes = pre.bytes;
+                    self.sample_lines = pre.sample_lines;
+                    self.opened_at_mono = pre.opened_at_mono;
+                    self.seg_seq = pre.seg_seq;
+                    self.last_time_source = pre.last_time_source;
+                }
+            }
             (SegmentOp::Close { .. }, _) => {
                 if opened_later {
                     self.path = None;
@@ -376,7 +412,12 @@ pub enum OpFailure {
     OpenHeader,
     /// `Append`: `writeSync` threw.
     Append,
-    /// `Close`: any step of the plain close or of [`GZIP_FINALIZE_STEPS`].
+    /// `Close`: the plain `fsyncSync(fd)` or `closeSync(fd)` threw
+    /// (`segments.ts:179-180`) — the TS still holds `fd` and `path`, so the
+    /// segment stays active and the executor keeps its handle.
+    ClosePlain,
+    /// `Close`: a step after the plain fd closed (header-only unlink or any
+    /// step of [`GZIP_FINALIZE_STEPS`] past `ClosePlain`).
     Close,
 }
 
@@ -420,7 +461,8 @@ pub enum GzipFinalizeStep {
 
 /// The ordered step list a `Close { gz: Some(_) }` executes; a `Close { gz:
 /// None }` runs `FsyncPlain, ClosePlain, UnlinkHeaderOnly`. A failure at any
-/// step stops the list there ([`OpFailure::Close`]).
+/// step stops the list there: [`OpFailure::ClosePlain`] at `FsyncPlain` /
+/// `ClosePlain` (the segment stays active), [`OpFailure::Close`] after.
 pub const GZIP_FINALIZE_STEPS: [GzipFinalizeStep; 11] = [
     GzipFinalizeStep::FsyncPlain,
     GzipFinalizeStep::ClosePlain,
@@ -710,6 +752,57 @@ mod tests {
             GZIP_FINALIZE_STEPS.last(),
             Some(&GzipFinalizeStep::NotifyClosed)
         );
+    }
+
+    /// S1 (review-wp2): a plain fsync/close failure keeps the segment active
+    /// with its counters (`segments.ts:179-182` throws with `fd`/`path`
+    /// set): `writeLine` retries the rotation, no new segment is planned
+    /// until the close succeeds, and `segSeq` is not consumed.
+    #[test]
+    fn plain_close_failure_keeps_the_segment_active() {
+        let h = header;
+        let sample = |seq: f64| SampleLine {
+            ts: seq,
+            mono: seq,
+            seq,
+            metrics: Map::new(),
+        };
+        let mut w = SegmentWriterCore::new("/d", None, Some(1000));
+        w.write_line(&sample(0.0), 1, 0, &h);
+        w.write_line(&sample(1.0), 2, 500, &h);
+        let before = w.clone();
+        // writeLine's rotation: Close fails at the plain fsync → Open/Append never ran.
+        let ops = w.write_line(&sample(2.0), 3, 1000, &h);
+        assert_eq!(ops.len(), 3);
+        w.op_failed(&ops, 0, OpFailure::ClosePlain);
+        assert_eq!(w.active_path(), Some("/d/seg-1-00000.jsonl"));
+        assert_eq!(
+            (w.bytes, w.sample_lines, w.opened_at_mono, w.seg_seq),
+            (before.bytes, before.sample_lines, before.opened_at_mono, 1)
+        );
+        assert_eq!(w.last_time_source, before.last_time_source);
+        // maybe_rotate retries; a failure there restores the same state.
+        let ops = w.maybe_rotate(1100);
+        assert!(
+            matches!(&ops[..], [SegmentOp::Close { plain, gz: Some(_) }] if plain == "/d/seg-1-00000.jsonl")
+        );
+        w.op_failed(&ops, 0, OpFailure::ClosePlain);
+        assert_eq!(w.active_path(), Some("/d/seg-1-00000.jsonl"));
+        // The fault clears: the SAME segment closes with its 2 samples and #1 opens.
+        let ops = w.write_line(&sample(3.0), 4, 1200, &h);
+        assert_eq!(
+            ops[0],
+            SegmentOp::Close {
+                plain: "/d/seg-1-00000.jsonl".into(),
+                gz: Some("/d/seg-1-00000.jsonl.gz".into())
+            }
+        );
+        assert!(matches!(&ops[1], SegmentOp::Open { path, .. } if path == "/d/seg-4-00001.jsonl"));
+        // finalize (stop) failing at the plain close keeps it open too.
+        let ops = w.finalize();
+        w.op_failed(&ops, 0, OpFailure::ClosePlain);
+        assert_eq!(w.active_path(), Some("/d/seg-4-00001.jsonl"));
+        assert_eq!(w.sample_lines, 1);
     }
 
     #[test]

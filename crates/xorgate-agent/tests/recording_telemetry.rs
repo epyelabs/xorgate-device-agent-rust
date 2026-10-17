@@ -500,6 +500,102 @@ async fn disk_full_gzip_failure_then_next_tick_recovers() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// S1 (review-wp2): an EIO from the plain `fsyncSync` / `closeSync` of a
+/// rotation (`segments.ts:179-180`) throws with `fd`/`path` still set, so
+/// the TS keeps the segment ACTIVE and retries the rotation on every later
+/// tick (`writeLine` and the idle `maybeRotate` alike); the samples of the
+/// failing ticks are lost (`this.seq++` consumed), no second `.jsonl` is
+/// opened, and once the fault clears the SAME segment closes with its
+/// original lines and the next one opens with segment seq 1.
+#[tokio::test]
+async fn plain_close_eio_retries_the_same_segment_every_tick() {
+    for (tag, point) in [
+        ("fsync", GzipFinalizeStep::FsyncPlain),
+        ("close", GzipFinalizeStep::ClosePlain),
+    ] {
+        let home = scratch(&format!("eio-{tag}"));
+        let root = home.join("recordings");
+        let rig = Rig::new();
+        rig.ts.set("ntp").await;
+        let armed = Arc::new(AtomicUsize::new(0));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (a2, h2) = (armed.clone(), hits.clone());
+        let exec = SegmentExecutor::with_fault(Box::new(move |at, _p| {
+            if at == IoPoint::Close(point) && a2.load(Ordering::SeqCst) == 1 {
+                h2.fetch_add(1, Ordering::SeqCst);
+                return Err(std::io::Error::from_raw_os_error(5)); // EIO
+            }
+            Ok(())
+        }));
+        let rec = rig.recorder(&root, 10, None, Some(1000), None, Some(exec));
+        let dir = PathBuf::from(rec.dir());
+        let first = dir.join("seg-5000-00000.jsonl");
+        rig.step(&imu(&rig, 5_000, 0, 1)).await;
+        rec.tick().await; // opens seg-5000-00000, sample seq 0
+        rig.step(&imu(&rig, 5_500, 500, 2)).await;
+        rec.tick().await; // sample seq 1
+        armed.store(1, Ordering::SeqCst);
+        rig.step(&imu(&rig, 6_000, 1000, 3)).await;
+        rec.tick().await; // writeLine's rotation: EIO → tick failed, seq 2 lost
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "{tag}");
+        assert_eq!(rec.active_path().as_deref(), Some(first.as_path()), "{tag}");
+        rig.step(&imu(&rig, 6_100, 1100, 4)).await;
+        rec.tick().await; // retried by writeLine, seq 3 lost
+        rig.step(&imu(&rig, 6_200, 1200, 4)).await;
+        rec.tick().await; // idle tick: retried by maybeRotate
+        assert_eq!(hits.load(Ordering::SeqCst), 3, "{tag}: retried every tick");
+        assert_eq!(rec.active_path().as_deref(), Some(first.as_path()), "{tag}");
+        assert_eq!(
+            sorted_names(&dir),
+            vec!["seg-5000-00000.jsonl".to_string()],
+            "{tag}: no extra file"
+        );
+        assert!(rig.closed.lock().unwrap().is_empty(), "{tag}");
+        armed.store(0, Ordering::SeqCst);
+        rig.step(&imu(&rig, 6_300, 1300, 5)).await;
+        rec.tick().await; // fault cleared: the same segment completes, #1 opens
+        assert_eq!(
+            rec.active_path().unwrap(),
+            dir.join("seg-6300-00001.jsonl"),
+            "{tag}"
+        );
+        rec.stop().unwrap();
+        assert_eq!(
+            sorted_names(&dir),
+            vec!["seg-5000-00000.jsonl.gz", "seg-6300-00001.jsonl.gz"],
+            "{tag}"
+        );
+        let l = lines_of(&gunzip(
+            &std::fs::read(dir.join("seg-5000-00000.jsonl.gz")).unwrap(),
+        ));
+        assert_eq!(l.len(), 3, "{tag}: header + the two pre-fault samples");
+        assert_eq!(
+            (l[1]["seq"].clone(), l[2]["seq"].clone()),
+            (Value::from(0), Value::from(1))
+        );
+        let l = lines_of(&gunzip(
+            &std::fs::read(dir.join("seg-6300-00001.jsonl.gz")).unwrap(),
+        ));
+        assert_eq!(l.len(), 2, "{tag}");
+        assert_eq!(l[1]["seq"], 4, "{tag}: seqs 2 and 3 were consumed");
+        assert_eq!(rig.closed.lock().unwrap().len(), 2, "{tag}");
+        let d = "recordings/telemetry/session-x";
+        assert_eq!(
+            rig.tape.ops(),
+            vec![
+                format!("create {d}/seg-5000-00000.jsonl 0"),
+                format!("close {d}/seg-5000-00000.jsonl"),
+                format!("gz {d}/seg-5000-00000.jsonl.gz"),
+                format!("create {d}/seg-6300-00001.jsonl 0"),
+                format!("close {d}/seg-6300-00001.jsonl"),
+                format!("gz {d}/seg-6300-00001.jsonl.gz"),
+            ],
+            "{tag}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
 /// A failed sample `writeSync` (`segments.ts:172`) counts nothing: a segment
 /// whose every sample failed is header-only at rotation and is dropped.
 #[tokio::test]
