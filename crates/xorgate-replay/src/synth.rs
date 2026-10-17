@@ -726,6 +726,7 @@ fn build_inner(
                 argv: thr.clone(),
                 stdout: "throttled=0x0\n".into(),
                 code: Some(0),
+                stderr: None,
             },
         );
         b.push(
@@ -734,6 +735,7 @@ fn build_inner(
                 argv: thr.clone(),
                 stdout: "throttled=0x50005\n".into(),
                 code: Some(0),
+                stderr: None,
             },
         );
         b.push(
@@ -742,6 +744,7 @@ fn build_inner(
                 argv: thr,
                 stdout: "throttled=0x50000\n".into(),
                 code: Some(0),
+                stderr: None,
             },
         );
         let mut t = 70;
@@ -755,6 +758,7 @@ fn build_inner(
                     argv: pmic.clone(),
                     stdout: PMIC_TEMPLATE.replace("@EXT5V@", &format!("{volts:.8}")),
                     code: Some(0),
+                    stderr: None,
                 },
             );
             t += 5_000;
@@ -1024,6 +1028,7 @@ fn build_inner(
                 argv: vec!["rpicam-hello".into(), "--list-cameras".into()],
                 stdout: CM5_CAMERA_LIST.into(),
                 code: Some(0),
+                stderr: None,
             },
         );
     }
@@ -1146,6 +1151,7 @@ fn build_inner(
                     argv: thr.clone(),
                     stdout: throttled(t).into(),
                     code: Some(0),
+                    stderr: None,
                 },
             );
             b.push(
@@ -1154,6 +1160,7 @@ fn build_inner(
                     argv: pmic.clone(),
                     stdout: PMIC_TEMPLATE.replace("@EXT5V@", &format!("{:.8}", volts(t, k))),
                     code: Some(0),
+                    stderr: None,
                 },
             );
             t += 2_000;

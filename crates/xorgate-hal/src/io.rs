@@ -66,6 +66,14 @@ pub trait TapeSink: Send + Sync + 'static {
     fn lte_file(&self, _bytes: Option<&[u8]>) {}
     /// A tool run: argv (program first), stdout, exit code (`None` = timeout / not found).
     fn exec(&self, _argv: &[&str], _stdout: &str, _code: Option<i32>) {}
+    /// A tool run whose STDERR matters to the caller's verdict (Phase 3,
+    /// review-wp5 S1: `rpicam-hello --list-cameras` prints `No cameras
+    /// available!` on stderr, `cameras.ts:79-92` reads `stdout + stderr`).
+    /// The tape keeps a non-empty `stderr`; the default forwards to
+    /// [`TapeSink::exec`] so a sink that ignores stderr needs no change.
+    fn exec_with_stderr(&self, argv: &[&str], stdout: &str, _stderr: &str, code: Option<i32>) {
+        self.exec(argv, stdout, code);
+    }
     /// `/proc/device-tree/chosen/power/max_current` bytes, or `None` when absent.
     fn dt(&self, _max_current: Option<&[u8]>) {}
     /// An inbound MQTT publish (retained redeliveries included).

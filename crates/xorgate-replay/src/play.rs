@@ -919,13 +919,23 @@ impl Agent {
         }
     }
 
-    fn exec(&self, argv: &[String], stdout: &str, code: Option<i32>) -> Result<()> {
+    /// The shims (`vcgencmd`, `rpicam-hello`) answer from these per-argv
+    /// files: `.out` → stdout, `.err` → stderr (the tape's `stderr`, absent =
+    /// none; review-wp5 S1), `.code` → exit code.
+    fn exec(
+        &self,
+        argv: &[String],
+        stdout: &str,
+        stderr: Option<&str>,
+        code: Option<i32>,
+    ) -> Result<()> {
         let key = argv.join(" ").replace([' ', '/'], "_");
         let key = match key.split_once('_') {
             Some((tool, rest)) => format!("{tool}__{rest}"),
             None => key,
         };
         let base = self.state.join("exec").join(key);
+        write_atomic(&base.with_extension("err"), stderr.unwrap_or("").as_bytes())?;
         write_atomic(&base.with_extension("out"), stdout.as_bytes())?;
         write_atomic(
             &base.with_extension("code"),
@@ -1995,7 +2005,12 @@ fn apply_state(agents: &[Agent], ev: &TapeEvent, shift_s: i64) -> Result<()> {
                 });
                 a.lte(bytes.as_deref())?;
             }
-            TapeEvent::Exec { argv, stdout, code } => a.exec(argv, stdout, *code)?,
+            TapeEvent::Exec {
+                argv,
+                stdout,
+                code,
+                stderr,
+            } => a.exec(argv, stdout, stderr.as_deref(), *code)?,
             TapeEvent::I2cdetect { stdout, .. } => a.i2c(stdout.as_deref())?,
             TapeEvent::Dt { .. } => {
                 // /proc/device-tree is a fixed path in both agents and cannot
