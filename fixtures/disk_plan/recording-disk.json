@@ -1,0 +1,1670 @@
+{
+ "jsSourceFile": "src/recording/disk.ts (test/recording-disk.test.ts ×8 + tree scenarios)",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "npx tsx plans/device-agent-js-to-rust/phase-3/evidence/wp2-tools/dump-disk.mts (scratch git-archive copy @ 89b5c64, linux/arm64 node:20; handed to tools/replay/js/ via WP6)",
+ "cases": [
+  {
+   "name": "evicts oldest closed segments first until under maxBytes",
+   "input": {
+    "name": "evicts oldest closed segments first until under maxBytes",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     },
+     {
+      "rel": "telemetry/s1/seg-2-00001.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 200000
+     },
+     {
+      "rel": "telemetry/s2/seg-3-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 300000
+     }
+    ],
+    "retention": {
+     "maxBytes": 2000,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s1/seg-2-00001.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 200000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s2/seg-3-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 300000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 2000,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s1/seg-1-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 2,
+       "backlogBytes": 2000,
+       "droppedSegments": 1
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/s1/",
+     "telemetry/s1/seg-2-00001.jsonl.gz",
+     "telemetry/s2/",
+     "telemetry/s2/seg-3-00000.jsonl.gz"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":1}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "evicts for the min-free floor even under quota",
+   "input": {
+    "name": "evicts for the min-free floor even under quota",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     },
+     {
+      "rel": "telemetry/s1/seg-2-00001.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 200000
+     }
+    ],
+    "retention": {
+     "maxBytes": 1000000,
+     "minFreeBytes": 1000
+    },
+    "free": 500,
+    "steps": [
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s1/seg-2-00001.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 200000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 500,
+      "retention": {
+       "maxBytes": 1000000,
+       "minFreeBytes": 1000
+      },
+      "unlinks": [
+       "telemetry/s1/seg-1-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 1000,
+       "droppedSegments": 1
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/s1/",
+     "telemetry/s1/seg-2-00001.jsonl.gz"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":1}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "never touches the active plain segment or unknown files",
+   "input": {
+    "name": "never touches the active plain segment or unknown files",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-9-00009.jsonl",
+      "size": 5000,
+      "mtimeMs": 50000
+     },
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     }
+    ],
+    "retention": {
+     "maxBytes": 100,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s1/seg-9-00009.jsonl",
+        "size": 5000,
+        "mtimeMs": 50000,
+        "closed": false
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 100,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s1/seg-1-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/s1/",
+     "telemetry/s1/seg-9-00009.jsonl"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":1}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "persists droppedSegments across restarts",
+   "input": {
+    "name": "persists droppedSegments across restarts",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     }
+    ],
+    "retention": {
+     "maxBytes": 100,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "stats"
+     },
+     {
+      "op": "newManager"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 100,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s1/seg-1-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     },
+     {
+      "op": "newManager",
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":1}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "reflects an external counter reset without a restart (Phase 6.5)",
+   "input": {
+    "name": "reflects an external counter reset without a restart (Phase 6.5)",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     }
+    ],
+    "retention": {
+     "maxBytes": 100,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "stats"
+     },
+     {
+      "op": "writeCounters",
+      "text": "{\"v\":1,\"droppedSegments\":0}"
+     },
+     {
+      "op": "stats"
+     },
+     {
+      "op": "add",
+      "files": [
+       {
+        "rel": "telemetry/s2/seg-2-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 200000
+       }
+      ]
+     },
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 100,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s1/seg-1-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     },
+     {
+      "op": "writeCounters"
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 0
+      }
+     },
+     {
+      "op": "add"
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s2/seg-2-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 200000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 100,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s2/seg-2-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":1}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "respects setActivePath registration",
+   "input": {
+    "name": "respects setActivePath registration",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     },
+     {
+      "rel": "telemetry/s1/seg-2-00001.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 200000
+     }
+    ],
+    "retention": {
+     "maxBytes": 100,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "setActive",
+      "owner": "telemetry",
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz"
+     },
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "setActive"
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s1/seg-2-00001.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 200000,
+        "closed": true
+       }
+      ],
+      "active": [
+       "telemetry/s1/seg-1-00000.jsonl.gz"
+      ],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 100,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s1/seg-2-00001.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 1
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/s1/",
+     "telemetry/s1/seg-1-00000.jsonl.gz"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":1}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "reports backlog without evicting when within limits",
+   "input": {
+    "name": "reports backlog without evicting when within limits",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     },
+     {
+      "rel": "telemetry/s1/seg-2-00001.jsonl.gz",
+      "size": 2000,
+      "mtimeMs": 200000
+     }
+    ],
+    "retention": {
+     "maxBytes": 1000000,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s1/seg-2-00001.jsonl.gz",
+        "size": 2000,
+        "mtimeMs": 200000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 1000000,
+       "minFreeBytes": 0
+      },
+      "unlinks": [],
+      "stats": {
+       "backlogSegments": 2,
+       "backlogBytes": 3000,
+       "droppedSegments": 0
+      }
+     }
+    ],
+    "tree": [
+     "telemetry/",
+     "telemetry/s1/",
+     "telemetry/s1/seg-1-00000.jsonl.gz",
+     "telemetry/s1/seg-2-00001.jsonl.gz"
+    ],
+    "counters": null,
+    "rootExists": true
+   }
+  },
+  {
+   "name": "handles a missing tree gracefully",
+   "input": {
+    "name": "handles a missing tree gracefully",
+    "files": [],
+    "retention": {
+     "maxBytes": 100,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "stats"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 100,
+       "minFreeBytes": 0
+      },
+      "unlinks": [],
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 0
+      }
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 0
+      }
+     }
+    ],
+    "tree": [],
+    "counters": null,
+    "rootExists": false
+   }
+  },
+  {
+   "name": "mixed tree: quota walk across telemetry and video",
+   "input": {
+    "name": "mixed tree: quota walk across telemetry and video",
+    "files": [
+     {
+      "rel": "video/cam0/019a0000-old/session.json",
+      "size": 300,
+      "mtimeMs": 1000000
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00000.mp4",
+      "size": 40000,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00000.json",
+      "size": 400,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00001.mp4",
+      "size": 40000,
+      "mtimeMs": 1060250
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00001.json",
+      "size": 400,
+      "mtimeMs": 1060250
+     },
+     {
+      "rel": "video/cam1/019a0001-old/session.json",
+      "size": 300,
+      "mtimeMs": 1000000
+     },
+     {
+      "rel": "video/cam1/019a0001-old/00000.mp4",
+      "size": 30000,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "video/cam1/019a0001-old/00001.mp4",
+      "size": 30000,
+      "mtimeMs": 1060500
+     },
+     {
+      "rel": "telemetry/019a0002/seg-1-00000.jsonl.gz",
+      "size": 5000,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "telemetry/019a0002/seg-2-00001.jsonl.gz",
+      "size": 5000,
+      "mtimeMs": 1060000
+     },
+     {
+      "rel": "telemetry/019a0003/seg-3-00000.jsonl.gz",
+      "size": 5000,
+      "mtimeMs": 1200000
+     },
+     {
+      "rel": "telemetry/019a0003/seg-4-00001.jsonl",
+      "size": 7000,
+      "mtimeMs": 900000
+     },
+     {
+      "rel": "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+      "size": 6000,
+      "mtimeMs": 900000
+     },
+     {
+      "rel": "telemetry/notes.txt",
+      "size": 123,
+      "mtimeMs": 500000
+     },
+     {
+      "rel": "video/cam0/stray.json",
+      "size": 77,
+      "mtimeMs": 400000
+     }
+    ],
+    "dirs": [
+     "telemetry/019a00ff-empty"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":5}",
+    "retention": {
+     "maxBytes": 120000,
+     "minFreeBytes": 0
+    },
+    "free": null,
+    "steps": [
+     {
+      "op": "setActive",
+      "owner": "video:cam1",
+      "rel": "video/cam1/019a0001-old/00001.mp4"
+     },
+     {
+      "op": "setActive",
+      "owner": "telemetry",
+      "rel": "telemetry/019a0003/seg-4-00001.jsonl"
+     },
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "setActive",
+      "owner": "video:cam1",
+      "rel": null
+     },
+     {
+      "op": "setRetention",
+      "maxBytes": 20000,
+      "minFreeBytes": 0
+     },
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "stats"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "setActive"
+     },
+     {
+      "op": "setActive"
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/019a0002/seg-1-00000.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1000250,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0002/seg-2-00001.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1060000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-3-00000.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1200000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl",
+        "size": 7000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+        "size": 6000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/notes.txt",
+        "size": 123,
+        "mtimeMs": 500000,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00000.json",
+        "size": 400,
+        "mtimeMs": 1000250,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00000.mp4",
+        "size": 40000,
+        "mtimeMs": 1000250,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.json",
+        "size": 400,
+        "mtimeMs": 1060250,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.mp4",
+        "size": 40000,
+        "mtimeMs": 1060250,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/stray.json",
+        "size": 77,
+        "mtimeMs": 400000,
+        "closed": false
+       },
+       {
+        "path": "video/cam1/019a0001-old/00000.mp4",
+        "size": 30000,
+        "mtimeMs": 1000250,
+        "closed": true
+       },
+       {
+        "path": "video/cam1/019a0001-old/00001.mp4",
+        "size": 30000,
+        "mtimeMs": 1060500,
+        "closed": true
+       }
+      ],
+      "active": [
+       "video/cam1/019a0001-old/00001.mp4",
+       "telemetry/019a0003/seg-4-00001.jsonl"
+      ],
+      "free": null,
+      "retention": {
+       "maxBytes": 120000,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/019a0002/seg-1-00000.jsonl.gz",
+       "video/cam0/019a0000-old/00000.mp4",
+       "video/cam0/019a0000-old/00000.json",
+       "video/cam1/019a0001-old/00000.mp4",
+       "video/cam1/019a0001-old/00000.json"
+      ],
+      "stats": {
+       "backlogSegments": 3,
+       "backlogBytes": 50000,
+       "droppedSegments": 8
+      }
+     },
+     {
+      "op": "setActive"
+     },
+     {
+      "op": "setRetention"
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/019a0002/seg-2-00001.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1060000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-3-00000.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1200000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl",
+        "size": 7000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+        "size": 6000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/notes.txt",
+        "size": 123,
+        "mtimeMs": 500000,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.json",
+        "size": 400,
+        "mtimeMs": 1060250,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.mp4",
+        "size": 40000,
+        "mtimeMs": 1060250,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/stray.json",
+        "size": 77,
+        "mtimeMs": 400000,
+        "closed": false
+       },
+       {
+        "path": "video/cam1/019a0001-old/00001.mp4",
+        "size": 30000,
+        "mtimeMs": 1060500,
+        "closed": true
+       }
+      ],
+      "active": [
+       "telemetry/019a0003/seg-4-00001.jsonl"
+      ],
+      "free": null,
+      "retention": {
+       "maxBytes": 20000,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/019a0002/seg-2-00001.jsonl.gz",
+       "video/cam0/019a0000-old/00001.mp4",
+       "video/cam0/019a0000-old/00001.json",
+       "video/cam1/019a0001-old/00001.mp4",
+       "video/cam1/019a0001-old/00001.json"
+      ],
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 5000,
+       "droppedSegments": 11
+      }
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 5000,
+       "droppedSegments": 11
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/019a0003/",
+     "telemetry/019a0003/seg-3-00000.jsonl.gz",
+     "telemetry/019a0003/seg-4-00001.jsonl",
+     "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+     "telemetry/notes.txt",
+     "video/",
+     "video/cam0/",
+     "video/cam0/019a0000-old/",
+     "video/cam0/019a0000-old/session.json",
+     "video/cam0/stray.json",
+     "video/cam1/",
+     "video/cam1/019a0001-old/",
+     "video/cam1/019a0001-old/session.json"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":11}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "mixed tree: free floor drives eviction, credited per file",
+   "input": {
+    "name": "mixed tree: free floor drives eviction, credited per file",
+    "files": [
+     {
+      "rel": "video/cam0/019a0000-old/session.json",
+      "size": 300,
+      "mtimeMs": 1000000
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00000.mp4",
+      "size": 40000,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00000.json",
+      "size": 400,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00001.mp4",
+      "size": 40000,
+      "mtimeMs": 1060250
+     },
+     {
+      "rel": "video/cam0/019a0000-old/00001.json",
+      "size": 400,
+      "mtimeMs": 1060250
+     },
+     {
+      "rel": "video/cam1/019a0001-old/session.json",
+      "size": 300,
+      "mtimeMs": 1000000
+     },
+     {
+      "rel": "video/cam1/019a0001-old/00000.mp4",
+      "size": 30000,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "video/cam1/019a0001-old/00001.mp4",
+      "size": 30000,
+      "mtimeMs": 1060500
+     },
+     {
+      "rel": "telemetry/019a0002/seg-1-00000.jsonl.gz",
+      "size": 5000,
+      "mtimeMs": 1000250
+     },
+     {
+      "rel": "telemetry/019a0002/seg-2-00001.jsonl.gz",
+      "size": 5000,
+      "mtimeMs": 1060000
+     },
+     {
+      "rel": "telemetry/019a0003/seg-3-00000.jsonl.gz",
+      "size": 5000,
+      "mtimeMs": 1200000
+     },
+     {
+      "rel": "telemetry/019a0003/seg-4-00001.jsonl",
+      "size": 7000,
+      "mtimeMs": 900000
+     },
+     {
+      "rel": "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+      "size": 6000,
+      "mtimeMs": 900000
+     },
+     {
+      "rel": "telemetry/notes.txt",
+      "size": 123,
+      "mtimeMs": 500000
+     },
+     {
+      "rel": "video/cam0/stray.json",
+      "size": 77,
+      "mtimeMs": 400000
+     }
+    ],
+    "retention": {
+     "maxBytes": 10000000,
+     "minFreeBytes": 100000
+    },
+    "free": 31000,
+    "steps": [
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "setFree",
+      "value": 99999
+     },
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "setFree",
+      "value": null
+     },
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/019a0002/seg-1-00000.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1000250,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0002/seg-2-00001.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1060000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-3-00000.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1200000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl",
+        "size": 7000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+        "size": 6000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/notes.txt",
+        "size": 123,
+        "mtimeMs": 500000,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00000.json",
+        "size": 400,
+        "mtimeMs": 1000250,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00000.mp4",
+        "size": 40000,
+        "mtimeMs": 1000250,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.json",
+        "size": 400,
+        "mtimeMs": 1060250,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.mp4",
+        "size": 40000,
+        "mtimeMs": 1060250,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/stray.json",
+        "size": 77,
+        "mtimeMs": 400000,
+        "closed": false
+       },
+       {
+        "path": "video/cam1/019a0001-old/00000.mp4",
+        "size": 30000,
+        "mtimeMs": 1000250,
+        "closed": true
+       },
+       {
+        "path": "video/cam1/019a0001-old/00001.mp4",
+        "size": 30000,
+        "mtimeMs": 1060500,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 31000,
+      "retention": {
+       "maxBytes": 10000000,
+       "minFreeBytes": 100000
+      },
+      "unlinks": [
+       "telemetry/019a0002/seg-1-00000.jsonl.gz",
+       "video/cam0/019a0000-old/00000.mp4",
+       "video/cam0/019a0000-old/00000.json",
+       "video/cam1/019a0001-old/00000.mp4",
+       "video/cam1/019a0001-old/00000.json"
+      ],
+      "stats": {
+       "backlogSegments": 4,
+       "backlogBytes": 80000,
+       "droppedSegments": 3
+      }
+     },
+     {
+      "op": "setFree"
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/019a0002/seg-2-00001.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1060000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-3-00000.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1200000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl",
+        "size": 7000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+        "size": 6000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/notes.txt",
+        "size": 123,
+        "mtimeMs": 500000,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.json",
+        "size": 400,
+        "mtimeMs": 1060250,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.mp4",
+        "size": 40000,
+        "mtimeMs": 1060250,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/stray.json",
+        "size": 77,
+        "mtimeMs": 400000,
+        "closed": false
+       },
+       {
+        "path": "video/cam1/019a0001-old/00001.mp4",
+        "size": 30000,
+        "mtimeMs": 1060500,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 99999,
+      "retention": {
+       "maxBytes": 10000000,
+       "minFreeBytes": 100000
+      },
+      "unlinks": [
+       "telemetry/019a0002/seg-2-00001.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 3,
+       "backlogBytes": 75000,
+       "droppedSegments": 4
+      }
+     },
+     {
+      "op": "setFree"
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/019a0003/seg-3-00000.jsonl.gz",
+        "size": 5000,
+        "mtimeMs": 1200000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl",
+        "size": 7000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+        "size": 6000,
+        "mtimeMs": 900000,
+        "closed": false
+       },
+       {
+        "path": "telemetry/notes.txt",
+        "size": 123,
+        "mtimeMs": 500000,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.json",
+        "size": 400,
+        "mtimeMs": 1060250,
+        "closed": false
+       },
+       {
+        "path": "video/cam0/019a0000-old/00001.mp4",
+        "size": 40000,
+        "mtimeMs": 1060250,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/stray.json",
+        "size": 77,
+        "mtimeMs": 400000,
+        "closed": false
+       },
+       {
+        "path": "video/cam1/019a0001-old/00001.mp4",
+        "size": 30000,
+        "mtimeMs": 1060500,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": null,
+      "retention": {
+       "maxBytes": 10000000,
+       "minFreeBytes": 100000
+      },
+      "unlinks": [],
+      "stats": {
+       "backlogSegments": 3,
+       "backlogBytes": 75000,
+       "droppedSegments": 4
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/019a0003/",
+     "telemetry/019a0003/seg-3-00000.jsonl.gz",
+     "telemetry/019a0003/seg-4-00001.jsonl",
+     "telemetry/019a0003/seg-4-00001.jsonl.gz.tmp.4242",
+     "telemetry/notes.txt",
+     "video/",
+     "video/cam0/",
+     "video/cam0/019a0000-old/",
+     "video/cam0/019a0000-old/00001.json",
+     "video/cam0/019a0000-old/00001.mp4",
+     "video/cam0/019a0000-old/session.json",
+     "video/cam0/stray.json",
+     "video/cam1/",
+     "video/cam1/019a0001-old/",
+     "video/cam1/019a0001-old/00001.mp4",
+     "video/cam1/019a0001-old/session.json"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":4}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "corrupt / odd counters files",
+   "input": {
+    "name": "corrupt / odd counters files",
+    "files": [
+     {
+      "rel": "telemetry/s1/seg-1-00000.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 100000
+     },
+     {
+      "rel": "telemetry/s1/seg-2-00001.jsonl.gz",
+      "size": 1000,
+      "mtimeMs": 200000
+     }
+    ],
+    "counters": "{not json",
+    "retention": {
+     "maxBytes": 1500,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "stats"
+     },
+     {
+      "op": "enforce"
+     },
+     {
+      "op": "writeCounters",
+      "text": "{\"v\":1,\"droppedSegments\":-3}"
+     },
+     {
+      "op": "stats"
+     },
+     {
+      "op": "writeCounters",
+      "text": "{\"droppedSegments\":\"7\"}"
+     },
+     {
+      "op": "stats"
+     },
+     {
+      "op": "writeCounters",
+      "text": "null"
+     },
+     {
+      "op": "stats"
+     },
+     {
+      "op": "writeCounters",
+      "text": "{\"v\":2,\"droppedSegments\":41,\"extra\":true}"
+     },
+     {
+      "op": "add",
+      "files": [
+       {
+        "rel": "telemetry/s3/seg-9-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 300000
+       }
+      ]
+     },
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 0,
+       "backlogBytes": 0,
+       "droppedSegments": 0
+      }
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-1-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 100000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s1/seg-2-00001.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 200000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 1500,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s1/seg-1-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 1000,
+       "droppedSegments": 1
+      }
+     },
+     {
+      "op": "writeCounters"
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 1000,
+       "droppedSegments": 0
+      }
+     },
+     {
+      "op": "writeCounters"
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 1000,
+       "droppedSegments": 0
+      }
+     },
+     {
+      "op": "writeCounters"
+     },
+     {
+      "op": "stats",
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 1000,
+       "droppedSegments": 0
+      }
+     },
+     {
+      "op": "writeCounters"
+     },
+     {
+      "op": "add"
+     },
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/s1/seg-2-00001.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 200000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/s3/seg-9-00000.jsonl.gz",
+        "size": 1000,
+        "mtimeMs": 300000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 1500,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/s1/seg-2-00001.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 1,
+       "backlogBytes": 1000,
+       "droppedSegments": 42
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/s3/",
+     "telemetry/s3/seg-9-00000.jsonl.gz"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":42}",
+    "rootExists": true
+   }
+  },
+  {
+   "name": "equal mtimes keep scan order",
+   "input": {
+    "name": "equal mtimes keep scan order",
+    "files": [
+     {
+      "rel": "telemetry/b/seg-1-00000.jsonl.gz",
+      "size": 100,
+      "mtimeMs": 10000
+     },
+     {
+      "rel": "telemetry/a/seg-2-00000.jsonl.gz",
+      "size": 100,
+      "mtimeMs": 10000
+     },
+     {
+      "rel": "telemetry/a/seg-1-00000.jsonl.gz",
+      "size": 100,
+      "mtimeMs": 10000
+     },
+     {
+      "rel": "video/cam0/s/00000.mp4",
+      "size": 100,
+      "mtimeMs": 10000
+     },
+     {
+      "rel": "telemetry/B/seg-0-00000.jsonl.gz",
+      "size": 100,
+      "mtimeMs": 10000
+     }
+    ],
+    "retention": {
+     "maxBytes": 250,
+     "minFreeBytes": 0
+    },
+    "free": 10000000,
+    "steps": [
+     {
+      "op": "enforce"
+     }
+    ]
+   },
+   "expected": {
+    "steps": [
+     {
+      "op": "enforce",
+      "listing": [
+       {
+        "path": "telemetry/B/seg-0-00000.jsonl.gz",
+        "size": 100,
+        "mtimeMs": 10000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/a/seg-1-00000.jsonl.gz",
+        "size": 100,
+        "mtimeMs": 10000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/a/seg-2-00000.jsonl.gz",
+        "size": 100,
+        "mtimeMs": 10000,
+        "closed": true
+       },
+       {
+        "path": "telemetry/b/seg-1-00000.jsonl.gz",
+        "size": 100,
+        "mtimeMs": 10000,
+        "closed": true
+       },
+       {
+        "path": "video/cam0/s/00000.mp4",
+        "size": 100,
+        "mtimeMs": 10000,
+        "closed": true
+       }
+      ],
+      "active": [],
+      "free": 10000000,
+      "retention": {
+       "maxBytes": 250,
+       "minFreeBytes": 0
+      },
+      "unlinks": [
+       "telemetry/B/seg-0-00000.jsonl.gz",
+       "telemetry/a/seg-1-00000.jsonl.gz",
+       "telemetry/a/seg-2-00000.jsonl.gz"
+      ],
+      "stats": {
+       "backlogSegments": 2,
+       "backlogBytes": 200,
+       "droppedSegments": 3
+      }
+     }
+    ],
+    "tree": [
+     "counters.json",
+     "telemetry/",
+     "telemetry/b/",
+     "telemetry/b/seg-1-00000.jsonl.gz",
+     "video/",
+     "video/cam0/",
+     "video/cam0/s/",
+     "video/cam0/s/00000.mp4"
+    ],
+    "counters": "{\"v\":1,\"droppedSegments\":3}",
+    "rootExists": true
+   }
+  }
+ ]
+}

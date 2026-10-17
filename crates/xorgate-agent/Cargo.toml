@@ -45,3 +45,7 @@ rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
 bytes = { workspace = true }
+# Phase 3 WP2: decompress + hash finalized segments in tests/recording_telemetry.rs.
+flate2 = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
