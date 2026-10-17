@@ -52,8 +52,8 @@ pub type FaultHook = Box<dyn FnMut(IoPoint, &Path) -> io::Result<()> + Send + Sy
 pub enum SegmentEvent {
     /// A new plain segment was created (its header written or not).
     Created { path: PathBuf },
-    /// The plain segment's fd was fsynced and closed.
-    Closed { path: PathBuf },
+    /// The plain segment's fd was fsynced and closed; `size` = plain bytes.
+    Closed { path: PathBuf, size: u64 },
     /// A header-only segment was unlinked instead of shipped.
     Deleted { path: PathBuf },
     /// `<plain>.gz` is in place (plain removed); `size` = gz bytes.
@@ -225,7 +225,11 @@ impl SegmentExecutor {
                 let msg = node_fd_message(&e, "fsync");
                 return Err(close_err(e, msg));
             }
-            events.push(SegmentEvent::Closed { path: p.clone() });
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            events.push(SegmentEvent::Closed {
+                path: p.clone(),
+                size,
+            });
         }
         if !has_samples {
             // A header-only segment carries no data — dropped, not shipped.

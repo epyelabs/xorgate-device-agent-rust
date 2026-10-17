@@ -29,6 +29,7 @@ use xorgate_core::segments::{
 use xorgate_hal::gzip_finalize::{gzip_finalize, read_file_node};
 use xorgate_hal::io::{node_fs_message, TapeSink};
 use xorgate_hal::segment_io::{SegmentEvent, SegmentExecutor, SegmentIoError};
+use xorgate_hal::tape::FsOp;
 
 use crate::ctx::{BoxFut, GroupSample};
 use crate::recording::time_source::TimeSourceHandle;
@@ -154,10 +155,24 @@ impl Inner {
     /// order the ops ran (outside the state lock: the manager's enforce
     /// calls back into `active_path()`).
     fn fire(&self, events: Vec<SegmentEvent>, active: Option<Option<String>>) {
+        let tape = &*self.opts.tape;
+        let root = &self.opts.root;
         for ev in events {
-            if let SegmentEvent::Gzipped { gz, .. } = &ev {
-                if let Some(cb) = &self.opts.on_segment_closed {
-                    cb(gz);
+            match &ev {
+                SegmentEvent::Created { path } => {
+                    tape.fs_out(&home_rel(root, path), FsOp::Create, 0)
+                }
+                SegmentEvent::Closed { path, size } => {
+                    tape.fs_out(&home_rel(root, path), FsOp::Close, *size)
+                }
+                SegmentEvent::Deleted { path } => {
+                    tape.fs_out(&home_rel(root, path), FsOp::Delete, 0)
+                }
+                SegmentEvent::Gzipped { gz, size } => {
+                    tape.fs_out(&home_rel(root, gz), FsOp::Gz, *size);
+                    if let Some(cb) = &self.opts.on_segment_closed {
+                        cb(gz);
+                    }
                 }
             }
         }
@@ -358,7 +373,11 @@ pub fn finalize_orphan_segments(telemetry_root: &Path) -> usize {
 }
 
 /// [`finalize_orphan_segments`] with the tape hook.
-pub fn finalize_orphan_segments_taped(telemetry_root: &Path, _tape: &dyn TapeSink) -> usize {
+///
+/// `fs_out` rel paths are relative to the agent home, i.e. the parent of the
+/// recordings root (`telemetry_root/../..`).
+pub fn finalize_orphan_segments_taped(telemetry_root: &Path, tape: &dyn TapeSink) -> usize {
+    let recordings_root = telemetry_root.parent().unwrap_or(telemetry_root);
     let mut finalized = 0;
     let Some(sessions) = sorted_names(telemetry_root) else {
         return 0; // no tree yet
@@ -376,12 +395,21 @@ pub fn finalize_orphan_segments_taped(telemetry_root: &Path, _tape: &dyn TapeSin
             let path = dir.join(&name);
             match orphan_entry_action(&name) {
                 OrphanEntryAction::DeleteTemp => {
-                    let _ = std::fs::remove_file(&path); // best effort
+                    // best effort
+                    if std::fs::remove_file(&path).is_ok() {
+                        tape.fs_out(&home_rel(recordings_root, &path), FsOp::Delete, 0);
+                    }
                 }
                 OrphanEntryAction::Skip => {}
                 OrphanEntryAction::Finalize => match finalize_one(&path) {
-                    Ok(true) => finalized += 1,
-                    Ok(false) => {}
+                    Ok(Some(gz)) => {
+                        finalized += 1;
+                        let size = std::fs::metadata(&gz).map(|m| m.len()).unwrap_or(0);
+                        tape.fs_out(&home_rel(recordings_root, &gz), FsOp::Gz, size);
+                    }
+                    Ok(None) => {
+                        tape.fs_out(&home_rel(recordings_root, &path), FsOp::Delete, 0);
+                    }
                     Err(msg) => tracing::error!(
                         "{}",
                         orphan_finalize_failed_error(&path.to_string_lossy(), &msg)
@@ -393,19 +421,19 @@ pub fn finalize_orphan_segments_taped(telemetry_root: &Path, _tape: &dyn TapeSin
     finalized
 }
 
-/// One orphan `.jsonl` (`segments.ts:252-266`): `Ok(true)` = finalized,
-/// `Ok(false)` = deleted (nothing worth keeping), `Err` = Node's message.
-fn finalize_one(path: &Path) -> Result<bool, String> {
+/// One orphan `.jsonl` (`segments.ts:252-266`): `Ok(Some(gz))` = finalized,
+/// `Ok(None)` = deleted (nothing worth keeping), `Err` = Node's message.
+fn finalize_one(path: &Path) -> Result<Option<PathBuf>, String> {
     let raw = read_file_node(path, xorgate_core::segments::GzipFinalizeStep::ReadPlain)
         .map_err(|e| e.message)?;
     match finalize_plan(&raw) {
         OrphanPlan::Delete => {
             std::fs::remove_file(path).map_err(|e| node_fs_message(&e, "unlink", path))?;
-            Ok(false)
+            Ok(None)
         }
         OrphanPlan::Finalize { keep_len } => {
-            gzip_finalize(path, Some(&raw[..keep_len]), None).map_err(|e| e.message)?;
-            Ok(true)
+            let gz = gzip_finalize(path, Some(&raw[..keep_len]), None).map_err(|e| e.message)?;
+            Ok(Some(gz))
         }
     }
 }
@@ -424,4 +452,16 @@ fn sorted_names(dir: &Path) -> Option<Vec<String>> {
             .map(|n| n.to_string_lossy().into_owned())
             .collect(),
     )
+}
+
+/// The tape's `fs_out.rel` for `path`: relative to the agent home (the
+/// parent of the recordings root, `XORGATE_HOME`), e.g.
+/// `recordings/telemetry/<sid>/seg-…jsonl.gz`. A path outside the home is
+/// recorded as given.
+pub fn home_rel(recordings_root: &Path, path: &Path) -> String {
+    let home = recordings_root.parent().unwrap_or(recordings_root);
+    path.strip_prefix(home)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }

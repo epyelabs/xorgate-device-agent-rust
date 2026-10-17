@@ -23,7 +23,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use xorgate_agent::ctx::GroupSample;
 use xorgate_agent::recording::telemetry::{
-    finalize_orphan_segments, TelemetryRecorder, TelemetryRecorderOpts,
+    finalize_orphan_segments, finalize_orphan_segments_taped, TelemetryRecorder,
+    TelemetryRecorderOpts,
 };
 use xorgate_agent::recording::time_source::{ProbeFn, TimeSourceHandle};
 use xorgate_core::clock::Clock;
@@ -31,7 +32,9 @@ use xorgate_core::segments::GzipFinalizeStep;
 use xorgate_core::session::ProbedTimeSource;
 use xorgate_core::telemetry::{MetricGroup, MetricLeaf};
 use xorgate_core::types::SteppedClockSource;
+use xorgate_hal::io::TapeSink;
 use xorgate_hal::segment_io::{IoPoint, SegmentExecutor};
+use xorgate_hal::tape::FsOp;
 
 #[derive(Default)]
 struct TestClock {
@@ -153,6 +156,41 @@ fn steps(input: &Value) -> Vec<Step> {
 
 type Shared<T> = Arc<Mutex<T>>;
 
+/// Captures the `fs_out` tape hooks as `"<op> <rel> <size>"`.
+#[derive(Default)]
+struct FsTape(Mutex<Vec<String>>);
+
+impl TapeSink for FsTape {
+    fn fs_out(&self, rel: &str, op: FsOp, size: u64) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{} {rel} {size}", op.as_str()));
+    }
+}
+
+impl FsTape {
+    /// The ops with sizes masked except for `delete`/`create` (gz sizes
+    /// depend on the stream).
+    fn ops(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                let mut p = l.splitn(3, ' ');
+                let (op, rel, size) = (p.next().unwrap(), p.next().unwrap(), p.next().unwrap());
+                if op == "gz" || op == "close" {
+                    assert_ne!(size, "0", "{l}");
+                    format!("{op} {rel}")
+                } else {
+                    l.clone()
+                }
+            })
+            .collect()
+    }
+}
+
 struct Rig {
     clock: Arc<TestClock>,
     ts: Ts,
@@ -160,6 +198,7 @@ struct Rig {
     mono_ns: Arc<AtomicU64>,
     closed: Shared<Vec<PathBuf>>,
     base: tokio::time::Instant,
+    tape: Arc<FsTape>,
 }
 
 impl Rig {
@@ -172,6 +211,7 @@ impl Rig {
             mono_ns: Arc::new(AtomicU64::new(0)),
             closed: Arc::new(Mutex::new(Vec::new())),
             base: tokio::time::Instant::now(),
+            tape: Arc::new(FsTape::default()),
         }
     }
 
@@ -204,7 +244,7 @@ impl Rig {
             })),
             on_active_path: None,
             clock: self.clock.clone(),
-            tape: xorgate_hal::io::null_tape(),
+            tape: self.tape.clone(),
             segment_max_bytes: max_bytes,
             segment_max_age_ms: max_age_ms,
             native_cadence_hz: cadence,
@@ -422,8 +462,28 @@ async fn disk_full_gzip_failure_then_next_tick_recovers() {
     let l = lines_of(&gunzip(&gz));
     assert_eq!(l.len(), 2);
     assert_eq!(l[1]["seq"], 3);
+    // Tape `fs_out` (rel to the home): the failed close records only the
+    // fsync+close, no gz; the recovery tick opens a new segment.
+    let d = "recordings/telemetry/session-x";
+    assert_eq!(
+        rig.tape.ops(),
+        vec![
+            format!("create {d}/seg-5000-00000.jsonl 0"),
+            format!("close {d}/seg-5000-00000.jsonl"),
+            format!("create {d}/seg-6100-00001.jsonl 0"),
+            format!("close {d}/seg-6100-00001.jsonl"),
+            format!("gz {d}/seg-6100-00001.jsonl.gz"),
+        ]
+    );
     // Next boot: the sweep removes the temp and ships the stranded segment.
-    assert_eq!(finalize_orphan_segments(&root.join("telemetry")), 1);
+    let sweep = FsTape::default();
+    assert_eq!(
+        finalize_orphan_segments_taped(&root.join("telemetry"), &sweep),
+        1
+    );
+    // The stale temp has THIS pid, so the sweep's own gzip temp overwrote
+    // and renamed it; its later unlink finds nothing → no `delete`.
+    assert_eq!(sweep.ops(), vec![format!("gz {d}/seg-5000-00000.jsonl.gz")]);
     assert_eq!(
         sorted_names(&dir),
         vec!["seg-5000-00000.jsonl.gz", "seg-6100-00001.jsonl.gz"]
@@ -471,6 +531,15 @@ async fn failed_appends_count_nothing() {
     assert_eq!(rec.active_path(), None);
     assert!(sorted_names(&dir).is_empty());
     assert!(rig.closed.lock().unwrap().is_empty());
+    let d = "recordings/telemetry/session-x";
+    assert_eq!(
+        rig.tape.ops(),
+        vec![
+            format!("create {d}/seg-1-00000.jsonl 0"),
+            format!("close {d}/seg-1-00000.jsonl"),
+            format!("delete {d}/seg-1-00000.jsonl 0"),
+        ]
+    );
     rec.stop().unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }

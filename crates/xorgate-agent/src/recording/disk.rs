@@ -24,8 +24,10 @@ use xorgate_core::recording_config::ResolvedRetention;
 use xorgate_hal::counters_file::{load_dropped, save_dropped};
 use xorgate_hal::disk_scan::{prune_empty_session_dirs, scan};
 use xorgate_hal::io::{node_fs_message, NullTape, TapeSink};
+use xorgate_hal::tape::FsOp;
 
 use crate::ctx::BoxFut;
+use crate::recording::telemetry::home_rel;
 
 /// `freeBytes()` (`DiskManagerOptions.freeBytes`): filesystem free bytes, or
 /// `None` when unknown (the floor then never applies).
@@ -195,12 +197,19 @@ impl DiskManager {
                 tracing::error!("{}", eviction_failed_error(&f.path, &msg));
                 continue;
             }
+            self.tape
+                .fs_out(&home_rel(&self.root, path), FsOp::Delete, f.size);
             deleted.insert(i);
             pass.evicted(f.size);
             st.dropped += 1.0;
             if let Some(sidecar) = sidecar_of_mp4(&f.path) {
                 // no sidecar yet — fine
-                let _ = std::fs::remove_file(&sidecar);
+                let sidecar = Path::new(&sidecar);
+                let size = std::fs::metadata(sidecar).map(|m| m.len()).unwrap_or(0);
+                if std::fs::remove_file(sidecar).is_ok() {
+                    self.tape
+                        .fs_out(&home_rel(&self.root, sidecar), FsOp::Delete, size);
+                }
             }
         }
         if !deleted.is_empty() {
@@ -211,6 +220,5 @@ impl DiskManager {
             prune_empty_session_dirs(&self.root);
         }
         st.last_backlog = backlog_after(&files, &evictable, &deleted);
-        let _ = &self.tape;
     }
 }

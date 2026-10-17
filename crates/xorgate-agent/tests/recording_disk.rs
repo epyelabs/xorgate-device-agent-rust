@@ -190,3 +190,57 @@ async fn overlapping_enforce_collapses() {
     assert_eq!(dm.stats().dropped_segments, 1);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// Captures `fs_out` as `"<op> <rel> <size>"`.
+#[derive(Default)]
+struct FsTape(Mutex<Vec<String>>);
+
+impl xorgate_hal::io::TapeSink for FsTape {
+    fn fs_out(&self, rel: &str, op: xorgate_hal::tape::FsOp, size: u64) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{} {rel} {size}", op.as_str()));
+    }
+}
+
+/// Every eviction (and the mp4's sidecar) is a tape `fs_out` `delete`,
+/// relative to the agent home, oldest first. As in `disk.ts:121,143-151`
+/// the 7-byte sidecar counts in `total` but is not subtracted when it goes:
+/// 97 → 57 → 17 → 7, so the gz (17 > 15) is evicted too.
+#[tokio::test]
+async fn evictions_are_taped_as_fs_out_deletes() {
+    let home = scratch("tape");
+    let root = home.join("recordings");
+    for f in [
+        serde_json::json!({"rel": "video/cam0/s/00000.mp4", "size": 40, "mtimeMs": 1000}),
+        serde_json::json!({"rel": "video/cam0/s/00000.json", "size": 7, "mtimeMs": 1000}),
+        serde_json::json!({"rel": "video/cam0/s/00001.mp4", "size": 40, "mtimeMs": 2000}),
+        serde_json::json!({"rel": "telemetry/s/seg-1-00000.jsonl.gz", "size": 10, "mtimeMs": 3000}),
+    ] {
+        put(&root, &f);
+    }
+    let tape = Arc::new(FsTape::default());
+    let f: FreeBytesFn = Arc::new(|| Box::pin(async { Some(1e12) }));
+    let dm = DiskManager::with_free_bytes(
+        root.clone(),
+        ResolvedRetention {
+            max_bytes: 15.0,
+            min_free_bytes: 0.0,
+        },
+        f,
+    )
+    .with_tape(tape.clone());
+    dm.enforce().await;
+    assert_eq!(
+        *tape.0.lock().unwrap(),
+        vec![
+            "delete recordings/video/cam0/s/00000.mp4 40".to_string(),
+            "delete recordings/video/cam0/s/00000.json 7".to_string(),
+            "delete recordings/video/cam0/s/00001.mp4 40".to_string(),
+            "delete recordings/telemetry/s/seg-1-00000.jsonl.gz 10".to_string(),
+        ]
+    );
+    assert_eq!(dm.stats().dropped_segments, 3);
+    let _ = std::fs::remove_dir_all(&home);
+}
