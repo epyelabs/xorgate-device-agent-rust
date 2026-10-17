@@ -8,7 +8,9 @@
 //! Normalisation (both sides): the agent's work dir → `<work>`, its deviceId →
 //! `{id}`, every session uuid → `<sid:video:<key>#<n>>` / `<sid:telemetry#<n>>` (n = order of first
 //! appearance per `video/<key>` / `telemetry` dir), telemetry file-name ms
-//! stamps → `<ms>` (T13).
+//! stamps → `<ms>` (T13), the agent's own rig cert/key paths → `<cert>` /
+//! `<key>` (kvs env). Telemetry segment bodies are compared decompressed with
+//! the same normalisation (header `deviceId`, `sessionId`).
 //!
 //! | stream | exact | tolerated |
 //! |---|---|---|
@@ -152,6 +154,10 @@ struct Norm {
     work: String,
     id: String,
     sids: BTreeMap<String, String>,
+    /// The agent's own mTLS cert/key paths (`/rig/certs/<label>.crt|.key`,
+    /// meta env `CERT_PATH`/`KEY_PATH`) → `<cert>`/`<key>`: the kvs env
+    /// keys `AWS_IOT_CORE_CERT`/`_PRIVATE_KEY` name them per agent.
+    files: Vec<(String, &'static str)>,
 }
 
 impl Norm {
@@ -162,6 +168,11 @@ impl Norm {
         }
         if !self.id.is_empty() {
             t = t.replace(&self.id, "{id}");
+        }
+        for (f, l) in &self.files {
+            if !f.is_empty() {
+                t = t.replace(f.as_str(), l);
+            }
         }
         for (u, l) in &self.sids {
             if t.contains(u.as_str()) {
@@ -285,7 +296,22 @@ impl MediaCapture {
                 sids.insert(u, format!("<sid:{}#{i}>", d.replace('/', ":")));
             }
         }
-        let n = Norm { work, id, sids };
+        let files = vec![
+            (
+                meta["env"]["CERT_PATH"].as_str().unwrap_or("").to_string(),
+                "<cert>",
+            ),
+            (
+                meta["env"]["KEY_PATH"].as_str().unwrap_or("").to_string(),
+                "<key>",
+            ),
+        ];
+        let n = Norm {
+            work,
+            id,
+            sids,
+            files,
+        };
 
         // Children.
         let mut spawns: Vec<Spawn> = Vec::new();
@@ -412,9 +438,18 @@ impl MediaCapture {
                 )
             })
             .collect();
+        // Telemetry segments are kept DECOMPRESSED + normalised (deviceId →
+        // `{id}`, session uuid → its label, like the sidecars): the header
+        // line carries both, and gz bytes are never compared (D24/T13). A
+        // body that does not gunzip is kept as is (`segments` skips it).
         let norm_body = |rel: &str, b: Vec<u8>| -> Vec<u8> {
             if rel.ends_with(".json") {
                 n.s(&String::from_utf8_lossy(&b)).into_bytes()
+            } else if rel.ends_with(".jsonl.gz") {
+                match gunzip(&b) {
+                    Some(t) => n.s(&t).into_bytes(),
+                    None => b,
+                }
             } else {
                 b
             }
@@ -639,8 +674,12 @@ fn segments(m: &MediaCapture) -> BTreeMap<String, Vec<String>> {
             .next()
             .unwrap_or("")
             .to_string();
-        if let Some(text) = gunzip(b) {
-            per.entry(sid).or_default().entry(seq).or_insert(text);
+        // Decompressed + normalised at load (`norm_body`).
+        if let Ok(text) = std::str::from_utf8(b) {
+            per.entry(sid)
+                .or_default()
+                .entry(seq)
+                .or_insert_with(|| text.to_string());
         }
     }
     let mut out = BTreeMap::new();
@@ -1077,6 +1116,8 @@ pub fn diff_media(
             }
             for (x, y) in ha.iter().zip(hb.iter()) {
                 let skip = |p: &str| -> Option<String> {
+                    // json_cmp paths start at `header.`; T11 names the field.
+                    let p = p.strip_prefix("header.").unwrap_or(p);
                     if t11_paths.iter().any(|q| q == p) {
                         Some("T11".into())
                     } else if t1.contains(p) || p.ends_with("At") || p.ends_with("Ts") {
@@ -1362,5 +1403,25 @@ mod tests {
         );
         assert_eq!(s["m.a"], BTreeSet::from(["int"]));
         assert_eq!(s["m.b"], BTreeSet::from(["float"]));
+        let n = Norm {
+            work: "/tmp/rig-work/a".into(),
+            id: "00000000-0000-4000-8000-00000000000a".into(),
+            sids: BTreeMap::from([(
+                "0198a6a1-2b3c-7d4e-8f00-112233445566".to_string(),
+                "<sid:telemetry#0>".to_string(),
+            )]),
+            files: vec![
+                ("/rig/certs/a.crt".into(), "<cert>"),
+                ("/rig/certs/a.key".into(), "<key>"),
+            ],
+        };
+        assert_eq!(
+            n.s(r#"{"AWS_IOT_CORE_CERT":"/rig/certs/a.crt","AWS_IOT_CORE_PRIVATE_KEY":"/rig/certs/a.key","KVS_GST_PIPELINE":"/tmp/rig-work/a/etc/pipelines/cam0.gst"}"#),
+            r#"{"AWS_IOT_CORE_CERT":"<cert>","AWS_IOT_CORE_PRIVATE_KEY":"<key>","KVS_GST_PIPELINE":"<work>/etc/pipelines/cam0.gst"}"#
+        );
+        assert_eq!(
+            n.s(r#"{"type":"header","deviceId":"00000000-0000-4000-8000-00000000000a","sessionId":"0198a6a1-2b3c-7d4e-8f00-112233445566"}"#),
+            r#"{"type":"header","deviceId":"{id}","sessionId":"<sid:telemetry#0>"}"#
+        );
     }
 }
