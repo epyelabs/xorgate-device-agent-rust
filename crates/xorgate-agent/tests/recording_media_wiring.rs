@@ -104,13 +104,13 @@ async fn reconcile_arms_the_guard_and_journals_hardware_events() {
         listing(&unavailable["passes"][0]["listing"]),
         runs.clone(),
     ));
-    assert!(r0.reconcile().await.is_empty());
+    assert!(r0.reconcile().await.unwrap().is_empty());
     assert_eq!(runs.load(Ordering::SeqCst), 0);
     assert_eq!(guard("cam0"), StreamGuard::Ok);
 
     // Enumeration unavailable: one warn event, guard stays UNARMED (open).
     ctx.hardware.send_replace(Some(block.clone()));
-    assert!(r0.reconcile().await.is_empty());
+    assert!(r0.reconcile().await.unwrap().is_empty());
     assert_eq!(runs.load(Ordering::SeqCst), 1);
     assert!(!hw.armed());
     assert_eq!(guard("cam0"), StreamGuard::Ok);
@@ -128,7 +128,7 @@ async fn reconcile_arms_the_guard_and_journals_hardware_events() {
         listing(&good["passes"][0]["listing"]),
         runs.clone(),
     ));
-    let changed = r1.reconcile().await;
+    let changed = r1.reconcile().await.unwrap();
     assert_eq!(changed, vec!["cam0".to_string()]);
     assert!(hw.armed());
     assert_eq!(guard("cam0"), StreamGuard::Ok);
@@ -158,7 +158,7 @@ async fn reconcile_arms_the_guard_and_journals_hardware_events() {
 
     // A later unavailable pass keeps the last armed verdicts (TS: only a pass
     // with `cameras !== null` replaces the map).
-    assert!(r0.reconcile().await.is_empty());
+    assert!(r0.reconcile().await.unwrap().is_empty());
     assert!(hw.armed());
     assert_eq!(guard("cam1"), StreamGuard::NoCamera);
 
@@ -186,7 +186,7 @@ async fn offline_skips_the_reconcile() {
         pipeline_dir: home.join("pipelines"),
         list_exec: counting_exec(listing(&good["passes"][0]["listing"]), runs.clone()),
     };
-    assert!(rec.reconcile().await.is_empty());
+    assert!(rec.reconcile().await.unwrap().is_empty());
     assert_eq!(runs.load(Ordering::SeqCst), 0);
     assert!(!hw.armed());
     assert!(!home.join("pipelines").exists());

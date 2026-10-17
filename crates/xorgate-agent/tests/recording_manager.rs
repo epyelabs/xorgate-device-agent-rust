@@ -687,3 +687,78 @@ async fn rearm_rebuilds_upload_options_every_time() {
     );
     m.stop();
 }
+
+/// A reconciler returning a scripted result (review-wp5 M1).
+struct ScriptedReconciler(Mutex<Vec<Result<Vec<String>, String>>>);
+
+impl xorgate_agent::recording::hooks::HardwareReconciler for ScriptedReconciler {
+    fn reconcile(&self) -> xorgate_agent::ctx::BoxFut<'_, Result<Vec<String>, String>> {
+        let r = self.0.lock().unwrap().remove(0);
+        Box::pin(async move { r })
+    }
+}
+
+/// Records `restart_channel` calls.
+#[derive(Default)]
+struct BounceLog(Mutex<Vec<String>>);
+
+impl xorgate_agent::ctx::MediaControl for BounceLog {
+    fn read(&self) -> TelemetryMedia {
+        TelemetryMedia::idle()
+    }
+    fn stop(&self) {}
+    fn restart_channel(&self, key: &str) {
+        self.0.lock().unwrap().push(key.to_string());
+    }
+    fn set_shed(&self, _shed: bool) {}
+    fn set_disabled_streams(&self, _keys: &[String]) {}
+}
+
+/// `worker.ts:427` + `:843-850` (review-wp5 M1): a throwing boot reconcile
+/// is fatal (`reconcile_boot` → `Err`, the worker exits non-zero); a throwing
+/// cloud-change reconcile is caught — no master bounce, no `reapply` — while
+/// a good one bounces the changed streams, then reapplies.
+#[tokio::test(start_paused = true)]
+async fn hardware_reconcile_failure_paths() {
+    let mut rig = Rig::new("hw-fail");
+    rig.video = false;
+    let m = rig.build();
+    let media = Arc::new(BounceLog::default());
+    let hw = Arc::new(ScriptedReconciler(Mutex::new(vec![
+        Err("EACCES: permission denied, mkdir '/x'".into()),
+        Err("ENOSPC: no space left on device, write".into()),
+        Ok(vec!["cam0".into()]),
+    ])));
+    let hooks = RecordingHooks::new(
+        Some(media.clone()),
+        Some(hw),
+        Arc::new(|| None),
+        rig.clock.clone(),
+    );
+    // Boot: the error surfaces to the worker.
+    assert_eq!(
+        hooks.reconcile_boot().await,
+        Err("EACCES: permission denied, mkdir '/x'".to_string())
+    );
+    hooks.install(m.clone());
+    hooks.recording_start().await;
+    assert!(!m.status().enabled);
+
+    // Cloud change, failing pass: settings now enable telemetry, but the
+    // caught failure skips `reapply` — nothing starts, nothing bounces.
+    rig.save_recording(&json!({"telemetry": {"enabled": true}}));
+    hooks.hardware_changed();
+    yields().await;
+    assert!(media.0.lock().unwrap().is_empty());
+    assert!(
+        !m.status().enabled,
+        "reapply skipped after a failed reconcile"
+    );
+
+    // A good pass: bounce cam0, then reapply (the recorder starts).
+    hooks.hardware_changed();
+    yields().await;
+    assert_eq!(*media.0.lock().unwrap(), vec!["cam0".to_string()]);
+    assert!(m.status().enabled);
+    m.stop();
+}

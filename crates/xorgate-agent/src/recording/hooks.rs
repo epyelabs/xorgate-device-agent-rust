@@ -10,7 +10,7 @@
 //! | `reapply_recording` | `recording.reapply()` on every config message (`:878`) |
 //! | `rearm_upload` | `recording.setUpload(buildUploadOptions())` (`:801`) |
 //! | `hardware_changed` | `reconcileHardwareNow()` → bounce changed → `reapply()` (`:839-846`) |
-//! | `reconcile_hardware_boot` | `await reconcileHardwareNow()` (`:427`) |
+//! | `reconcile_boot` (inherent, fallible — fatal at boot) | `await reconcileHardwareNow()` (`:427`) |
 //! | `recording_start` | `await recording.start()` (`:529`) |
 //! | `note_recording_status` | `noteRecordingStatus(…)` (`:577-579`, the LED cache) |
 //! | `final_recording_status` | `store.setRecording(recording.status())` (`:1307`) |
@@ -39,9 +39,11 @@ use super::manager::RecordingManager;
 use crate::ctx::{AgentCtx, BoxFut, MediaControl, PhaseHooks};
 
 /// `reconcileHardwareNow()` (`worker.ts:133-150`): re-render pipelines
-/// against the hardware block; the stream keys whose `.gst` changed.
+/// against the hardware block; the stream keys whose `.gst` changed. `Err`
+/// = the pass threw (a failed mkdir/write, `hardware-reconcile.ts` throws):
+/// fatal at boot, logged and skipped on a cloud change (review-wp5 M1).
 pub trait HardwareReconciler: Send + Sync {
-    fn reconcile(&self) -> BoxFut<'_, Vec<String>>;
+    fn reconcile(&self) -> BoxFut<'_, Result<Vec<String>, String>>;
 }
 
 /// `buildUploadOptions()` (`worker.ts:389-413`) — re-run on every re-arm, so
@@ -103,15 +105,15 @@ pub struct MediaReconciler {
 }
 
 impl HardwareReconciler for MediaReconciler {
-    fn reconcile(&self) -> BoxFut<'_, Vec<String>> {
+    fn reconcile(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
         Box::pin(async move {
             let cfg = &self.ctx.env.config;
             let block = self.ctx.hardware.borrow().clone();
             let Some(block) = block else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
             if cfg.mode != RunMode::Real || cfg.offline {
-                return Vec::new();
+                return Ok(Vec::new());
             }
             let (state, clock) = (self.ctx.state.clone(), self.ctx.clock.clone());
             let log: crate::media::ReconcileLog = Arc::new(move |level, msg: &str| {
@@ -143,6 +145,9 @@ impl HardwareReconciler for MediaReconciler {
                 },
             )
             .await;
+            // WP1-REBASE (review-wp5 M1): `reconcile_hardware` returns a
+            // `Result` once the WP5 fix lands — `.map_err(|e| e.to_string())?`
+            // here, so a throw leaves the verdicts untouched (TS parity).
             if res.cameras.is_some() {
                 let mut g = self
                     .stream_hw
@@ -152,7 +157,7 @@ impl HardwareReconciler for MediaReconciler {
                 // `streamHardware.clear(); set(...)…; streamGuardArmed = true`.
                 *g = (true, res.statuses.clone());
             }
-            res.changed_streams
+            Ok(res.changed_streams)
         })
     }
 }
@@ -216,6 +221,19 @@ impl RecordingHooks {
 
     pub fn manager(&self) -> Option<&RecordingManager> {
         self.manager.get()
+    }
+
+    /// The boot `await reconcileHardwareNow()` (`worker.ts:427`): a throw is
+    /// a top-level-await rejection in the TS (before the `unhandledRejection`
+    /// net of `:656`) — the process dies non-zero and systemd restarts it.
+    /// The worker propagates this `Err` the same way (review-wp5 M1). Used
+    /// instead of `PhaseHooks::reconcile_hardware_boot` (left the no-op
+    /// default: its signature cannot carry the error and stays frozen).
+    pub async fn reconcile_boot(&self) -> Result<(), String> {
+        match &self.hardware {
+            Some(hw) => hw.reconcile().await.map(|_| ()),
+            None => Ok(()),
+        }
     }
 
     /// `recordingStatusForLed()` (`worker.ts:581-587`): the tick's cached
@@ -286,14 +304,23 @@ impl PhaseHooks for RecordingHooks {
         }
     }
 
-    /// `void reconcileHardwareNow().then(changed => bounce; reapply)`.
+    /// `void reconcileHardwareNow().then(changed => bounce; reapply)
+    /// .catch(err => console.error("[agent] hardware reconcile failed", msg))`
+    /// (`worker.ts:843-850`): a failed pass bounces nothing and does not reapply.
     fn hardware_changed(&self) {
         let (Some(hw), Some(m)) = (self.hardware.clone(), self.manager().cloned()) else {
             return;
         };
         let media = self.media.clone();
         tokio::spawn(async move {
-            let changed = hw.reconcile().await;
+            let changed = match hw.reconcile().await {
+                Ok(c) => c,
+                Err(e) => {
+                    // `console.error(a, b)` joins its arguments with one space.
+                    tracing::error!("[agent] hardware reconcile failed {e}");
+                    return;
+                }
+            };
             if let Some(media) = &media {
                 for key in &changed {
                     media.restart_channel(key);
@@ -301,14 +328,6 @@ impl PhaseHooks for RecordingHooks {
             }
             m.reapply();
         });
-    }
-
-    fn reconcile_hardware_boot(&self) -> BoxFut<'_, ()> {
-        Box::pin(async move {
-            if let Some(hw) = &self.hardware {
-                let _ = hw.reconcile().await;
-            }
-        })
     }
 
     fn recording_start(&self) -> BoxFut<'_, ()> {
