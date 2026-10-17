@@ -16,8 +16,9 @@
 //! lastProbeAt` negative and freeze the cached provenance for the rest of
 //! the boot; the same field wedge Phase 8 fixed in the recorder). The mono
 //! value is offset by `refresh_ms` so the very first `current()` is due, as
-//! it always is in the TS (`Date.now() - 0 >= refreshMs`). Evidence wp2,
-//! ambiguity A1.
+//! it always is in the TS (`Date.now() - 0 >= refreshMs`). Accepted
+//! divergence D26 (evidence wp2, ambiguity A1; review-wp2 S2), pinned by
+//! `tests::d26_reprobe_interval_runs_on_mono_across_wall_steps`.
 
 use std::sync::{Arc, Mutex};
 
@@ -151,5 +152,90 @@ impl TimeSourceHandle {
     /// never displaces `ntp`.
     pub fn note_step(&self, source: SteppedClockSource) {
         self.lock().note_step(source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct StepClock {
+        wall: AtomicI64,
+        mono: AtomicU64,
+    }
+
+    impl Clock for StepClock {
+        fn wall_ms(&self) -> i64 {
+            self.wall.load(Ordering::SeqCst)
+        }
+        fn mono_ms(&self) -> u64 {
+            self.mono.load(Ordering::SeqCst)
+        }
+    }
+
+    async fn settle() {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Divergence D26 (review-wp2 S2, accepted): the 60 s re-probe interval
+    /// runs on the MONOTONIC clock (rule 3 / invariant 2), not on
+    /// `Date.now()` as in `session.ts:134,143`. Pinned both ways:
+    /// - a FORWARD wall step does not make a probe due (the TS re-probes at
+    ///   once, `Date.now() - lastProbeAt >= refreshMs`);
+    /// - after a BACKWARD wall step the probe still comes due 60 s of mono
+    ///   later and the new value (here `ntp`) is reported, where the TS keeps
+    ///   the stale `rtc`/`unsynced` until wall time catches up with
+    ///   `lastProbeAt` (`Date.now() - lastProbeAt` is negative).
+    #[tokio::test]
+    async fn d26_reprobe_interval_runs_on_mono_across_wall_steps() {
+        let clock = Arc::new(StepClock::default());
+        clock.wall.store(1_760_000_000_000, Ordering::SeqCst);
+        let answer = Arc::new(Mutex::new(ProbedTimeSource::Rtc));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let (a2, p2) = (answer.clone(), probes.clone());
+        let probe: ProbeFn = Arc::new(move || {
+            p2.fetch_add(1, Ordering::SeqCst);
+            let v = *a2.lock().unwrap();
+            Box::pin(async move { v })
+        });
+        let h = TimeSourceHandle::create(60_000, probe, clock.clone());
+        assert_eq!(h.refresh().await, TimeSource::Rtc);
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+        *answer.lock().unwrap() = ProbedTimeSource::Ntp;
+
+        // Forward wall step of 1 h, 1 s of mono: not due (the TS would probe).
+        clock.wall.fetch_add(3_600_000, Ordering::SeqCst);
+        clock.mono.store(1_000, Ordering::SeqCst);
+        assert_eq!(h.current(), TimeSource::Rtc);
+        settle().await;
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "a wall step never schedules"
+        );
+
+        // Backward wall step of 2 h (wall now 1 h BEFORE the last probe), mono
+        // 60 s past it: due on mono → re-probed → ntp (the TS stays `rtc`).
+        clock.wall.fetch_sub(7_200_000, Ordering::SeqCst);
+        clock.mono.store(60_000, Ordering::SeqCst);
+        assert_eq!(
+            h.current(),
+            TimeSource::Rtc,
+            "the cache answers; the probe is kicked"
+        );
+        settle().await;
+        assert_eq!(probes.load(Ordering::SeqCst), 2);
+        assert_eq!(h.current(), TimeSource::Ntp);
+        settle().await;
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            2,
+            "next one 60 s of mono later"
+        );
     }
 }
