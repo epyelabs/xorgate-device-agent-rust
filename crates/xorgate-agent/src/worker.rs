@@ -234,13 +234,17 @@ fn build_recording_manager(
         info!("[agent] {msg}");
         state.note(level, msg, clock.wall_ms());
     });
+    let time_source = crate::recording::time_source::TimeSourceHandle::system(
+        ctx.clock.clone(),
+        ctx.tape.clone(),
+    );
     RecordingManager::new(RecordingManagerOpts {
         device_id: cfg.device_id.clone(),
         root: ctx.paths.home.join("recordings"),
         shm_dir: ctx.paths.home.join("shm"),
         settings_path: ctx.paths.settings.clone(),
-        // WP1-REBASE: WP2's TimeSourceHandle (60 s cache, timedatectl probe).
-        time_source: Arc::new(crate::recording::pending::Inert),
+        // `createTimeSourceTracker()` (60 s cache, the `timedatectl` probe).
+        time_source: Arc::new(time_source.clone()),
         upload,
         video: Some(video),
         sample_groups: policy_sources::sample_groups_fn(source.clone()),
@@ -249,11 +253,12 @@ fn build_recording_manager(
         on_status,
         on_event,
         clock: ctx.clock.clone(),
-        // WP3 uploader + WP4 capture; WP1-REBASE: the WP2 components.
+        // WP2 recorder/disk/time source + WP3 uploader + WP4 capture.
         backend: Arc::new(crate::recording::Backend {
             clock: ctx.clock.clone(),
             tape: ctx.tape.clone(),
             home: Some(ctx.paths.home.clone()),
+            time_source,
         }),
         poll_ms: None,
         shed_sample_ms: None,

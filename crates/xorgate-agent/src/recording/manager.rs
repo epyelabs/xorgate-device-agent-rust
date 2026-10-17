@@ -169,6 +169,8 @@ pub type PowerSampleFn = Arc<dyn Fn() -> BoxFut<'static, Option<PowerSampleReadi
 
 /// What `startRecorder` (`manager.ts:744-776`) hands `new TelemetryRecorder`.
 pub struct RecorderSpec {
+    /// The recordings root (WP2 derives `<root>/telemetry/<sessionId>`).
+    pub root: PathBuf,
     /// `<telemetry root>/<sessionId>`.
     pub dir: PathBuf,
     pub device_id: String,
@@ -1080,6 +1082,7 @@ impl Inner {
         let dir = self.root.join("telemetry").join(&session_id);
         self.ensure_disk(st);
         let recorder = self.backend.recorder(RecorderSpec {
+            root: self.root.clone(),
             dir,
             device_id: self.device_id.clone(),
             session_id: session_id.clone(),

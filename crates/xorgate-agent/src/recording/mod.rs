@@ -26,20 +26,23 @@ use xorgate_core::clock::Clock;
 use xorgate_core::recording_config::ResolvedRetention;
 use xorgate_hal::io::TapeSink;
 
-/// The production [`manager::RecordingBackend`]: the real components as
-/// they merge — WP3's uploader, WP4's capture supervisor + video orphan
-/// recovery; WP1-REBASE: the WP2 recorder/disk/orphan finalize/boot id still
-/// delegate to [`pending::Inert`].
+/// The production [`manager::RecordingBackend`]: WP2's recorder, disk
+/// manager, orphan finalize and boot id; WP3's uploader; WP4's capture
+/// supervisor + video orphan recovery.
 pub struct Backend {
     pub clock: Arc<dyn Clock + Send + Sync>,
     pub tape: Arc<dyn TapeSink>,
     /// The agent home (`fs_out` tape paths are relative to it).
     pub home: Option<std::path::PathBuf>,
+    /// The ONE tracker (`createTimeSourceTracker()`, `manager.ts:205`) the
+    /// manager's probe, every recorder header and the capture share.
+    pub time_source: time_source::TimeSourceHandle,
 }
 
 impl manager::RecordingBackend for Backend {
+    /// `finalizeOrphanSegments(telemetryRoot)` (`segments.ts:224-270`, WP2).
     fn finalize_orphan_segments(&self, t: &Path) -> usize {
-        manager::RecordingBackend::finalize_orphan_segments(&pending::Inert, t)
+        telemetry::finalize_orphan_segments_taped(t, self.tape.as_ref())
     }
     /// `recoverOrphanVideoSessions(videoRoot)` (`video-segments.ts:341-375`,
     /// WP4): runs before any capture spawns (`manager.ts:302-304`), so no
@@ -61,19 +64,47 @@ impl manager::RecordingBackend for Backend {
         );
         res.recovered
     }
+    /// `readBootId()` (`session.ts:49-65`, cached per process).
     fn boot_id(&self) -> String {
-        manager::RecordingBackend::boot_id(&pending::Inert)
+        xorgate_hal::boot_id::read_boot_id()
     }
+    /// `new DiskManager({ root, retention })` (`manager.ts:788`). `disk.ts`
+    /// emits no state event, so `on_event` is unused (WP2 interface note).
     fn disk(
         &self,
         root: &Path,
         retention: &ResolvedRetention,
-        on_event: manager::EventFn,
+        _on_event: manager::EventFn,
     ) -> Arc<dyn manager::DiskApi> {
-        manager::RecordingBackend::disk(&pending::Inert, root, retention, on_event)
+        Arc::new(DiskAdapter(Arc::new(
+            disk::DiskManager::new(root.to_path_buf(), retention.clone())
+                .with_tape(self.tape.clone()),
+        )))
     }
+    /// `new TelemetryRecorder({...})` (`manager.ts:748-768`).
     fn recorder(&self, spec: manager::RecorderSpec) -> Arc<dyn manager::RecorderApi> {
-        manager::RecordingBackend::recorder(&pending::Inert, spec)
+        let closed = spec.on_segment_closed;
+        Arc::new(telemetry::TelemetryRecorder::new(
+            telemetry::TelemetryRecorderOpts {
+                root: spec.root,
+                device_id: spec.device_id,
+                session_id: spec.session_id,
+                boot_id: spec.boot_id,
+                rate_hz: spec.rate_hz,
+                time_source: self.time_source.clone(),
+                sample_groups: spec.sample_groups,
+                // `onSegmentClosed: () => { void this.runEnforce(); }`.
+                on_segment_closed: Some(Arc::new(move |_gz: &Path| closed())),
+                on_active_path: None,
+                clock: self.clock.clone(),
+                tape: self.tape.clone(),
+                segment_max_bytes: None,
+                segment_max_age_ms: None,
+                native_cadence_hz: None,
+                mono_ns: None,
+                executor: None,
+            },
+        ))
     }
     /// `buildUploader` (`manager.ts:246-272`) → WP3's [`uploader::build_uploader`].
     fn uploader(&self, spec: manager::UploaderSpec) -> Arc<dyn manager::UploaderApi> {
@@ -178,6 +209,59 @@ impl manager::CaptureApi for CaptureAdapter {
     }
 }
 
+/// WP2's `DiskManager` behind [`manager::DiskApi`].
+struct DiskAdapter(Arc<disk::DiskManager>);
+
+impl manager::DiskApi for DiskAdapter {
+    fn set_retention(&self, r: &ResolvedRetention) {
+        self.0.set_retention(r.clone());
+    }
+    fn set_active_path(&self, owner: &str, p: Option<std::path::PathBuf>) {
+        self.0.set_active_path(owner, p.as_deref());
+    }
+    fn stats(&self) -> manager::BacklogStats {
+        let s = self.0.stats();
+        manager::BacklogStats {
+            backlog_bytes: s.backlog_bytes,
+            backlog_segments: s.backlog_segments,
+            dropped_segments: s.dropped_segments,
+        }
+    }
+    /// The sync prefix (`disk.ts:114-122`) now, the tail as the future.
+    fn enforce(&self) -> crate::ctx::BoxFut<'static, ()> {
+        let pass = self.0.enforce_scan();
+        let dm = self.0.clone();
+        Box::pin(async move {
+            if let Some(p) = pass {
+                dm.enforce_finish(p).await;
+            }
+        })
+    }
+}
+
+impl manager::RecorderApi for telemetry::TelemetryRecorder {
+    fn start(&self) {
+        telemetry::TelemetryRecorder::start(self)
+    }
+    fn stop(&self) -> Result<(), String> {
+        telemetry::TelemetryRecorder::stop(self).map_err(|e| e.to_string())
+    }
+    fn active_path(&self) -> Option<std::path::PathBuf> {
+        telemetry::TelemetryRecorder::active_path(self)
+    }
+}
+
+impl manager::TimeSourceApi for time_source::TimeSourceHandle {
+    fn current(&self) -> xorgate_core::types::TimeSource {
+        time_source::TimeSourceHandle::current(self)
+    }
+    fn refresh(&self) -> crate::ctx::BoxFut<'_, ()> {
+        Box::pin(async move {
+            time_source::TimeSourceHandle::refresh(self).await;
+        })
+    }
+}
+
 impl manager::UploaderApi for uploader::Uploader {
     fn kick(&self) {
         uploader::Uploader::kick(self)
@@ -190,102 +274,5 @@ impl manager::UploaderApi for uploader::Uploader {
     }
     fn status(&self) -> manager::UploaderStatus {
         uploader::Uploader::status(self)
-    }
-}
-
-/// WP1-REBASE: the production [`manager::RecordingBackend`] is assembled
-/// from the WP2–WP4 components once they merge (the adapters live here).
-/// Until then the worker runs this inert backend: no files, no children —
-/// exactly the Phase 2 behaviour (recording all-off, media idle).
-pub mod pending {
-    use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
-    use std::sync::Arc;
-
-    use xorgate_core::recording_config::ResolvedRetention;
-    use xorgate_core::types::TimeSource;
-    use xorgate_core::video_capture::CaptureCamera;
-
-    use super::manager::*;
-    use crate::ctx::BoxFut;
-
-    pub struct Inert;
-
-    impl RecorderApi for Inert {
-        fn start(&self) {}
-        fn stop(&self) -> Result<(), String> {
-            Ok(())
-        }
-        fn active_path(&self) -> Option<PathBuf> {
-            None
-        }
-    }
-    impl DiskApi for Inert {
-        fn set_retention(&self, _r: &ResolvedRetention) {}
-        fn set_active_path(&self, _owner: &str, _p: Option<PathBuf>) {}
-        fn stats(&self) -> BacklogStats {
-            BacklogStats::default()
-        }
-        fn enforce(&self) -> BoxFut<'static, ()> {
-            Box::pin(async {})
-        }
-    }
-    impl UploaderApi for Inert {
-        fn kick(&self) {}
-        fn pause(&self) {}
-        fn stop(&self) {}
-        fn status(&self) -> UploaderStatus {
-            UploaderStatus::default()
-        }
-    }
-    impl CaptureApi for Inert {
-        fn start(&self) {}
-        fn set_cameras(&self, _c: Vec<CaptureCamera>) -> BoxFut<'_, ()> {
-            Box::pin(async {})
-        }
-        fn stop(&self) {}
-        fn stop_and_wait(&self) -> BoxFut<'_, ()> {
-            Box::pin(async {})
-        }
-        fn active_session_ids(&self) -> HashSet<String> {
-            HashSet::new()
-        }
-        fn any_recording(&self) -> bool {
-            false
-        }
-        fn status(&self) -> Vec<CaptureStatus> {
-            Vec::new()
-        }
-    }
-    impl TimeSourceApi for Inert {
-        fn current(&self) -> TimeSource {
-            TimeSource::Unsynced
-        }
-        fn refresh(&self) -> BoxFut<'_, ()> {
-            Box::pin(async {})
-        }
-    }
-    impl RecordingBackend for Inert {
-        fn finalize_orphan_segments(&self, _t: &Path) -> usize {
-            0
-        }
-        fn recover_orphan_video_sessions(&self, _v: &Path) -> usize {
-            0
-        }
-        fn boot_id(&self) -> String {
-            String::new()
-        }
-        fn disk(&self, _r: &Path, _ret: &ResolvedRetention, _e: EventFn) -> Arc<dyn DiskApi> {
-            Arc::new(Inert)
-        }
-        fn recorder(&self, _s: RecorderSpec) -> Arc<dyn RecorderApi> {
-            Arc::new(Inert)
-        }
-        fn uploader(&self, _s: UploaderSpec) -> Arc<dyn UploaderApi> {
-            Arc::new(Inert)
-        }
-        fn capture(&self, _s: CaptureSpec) -> Arc<dyn CaptureApi> {
-            Arc::new(Inert)
-        }
     }
 }

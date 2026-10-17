@@ -798,10 +798,17 @@ async fn production_backend_uploads_through_wp3() {
         put: Arc::new(LoggingPut(puts.clone())),
         is_online: Arc::new(move || o2.load(Ordering::SeqCst)),
     });
+    let probe: xorgate_agent::recording::time_source::ProbeFn =
+        Arc::new(|| Box::pin(async { xorgate_core::session::ProbedTimeSource::Ntp }));
     rig.backend_override = Some(Arc::new(xorgate_agent::recording::Backend {
         clock: rig.clock.clone(),
         tape: xorgate_hal::io::null_tape(),
         home: None,
+        time_source: xorgate_agent::recording::time_source::TimeSourceHandle::create(
+            60_000,
+            probe,
+            rig.clock.clone(),
+        ),
     }));
     let sid = "0198aaaa-0000-7000-8000-000000000001";
     let dir = rig.root().join("telemetry").join(sid);
@@ -957,10 +964,17 @@ async fn segment_closed_runs_the_enforce_prefix_synchronously() {
 async fn production_backend_video_pieces_are_inert_without_a_tree_or_camera() {
     use xorgate_agent::recording::manager::RecordingBackend;
     let rig = Rig::new("prod-video");
+    let probe: xorgate_agent::recording::time_source::ProbeFn =
+        Arc::new(|| Box::pin(async { xorgate_core::session::ProbedTimeSource::Ntp }));
     let b = xorgate_agent::recording::Backend {
         clock: rig.clock.clone(),
         tape: xorgate_hal::io::null_tape(),
         home: Some(rig.home.clone()),
+        time_source: xorgate_agent::recording::time_source::TimeSourceHandle::create(
+            60_000,
+            probe,
+            rig.clock.clone(),
+        ),
     };
     assert_eq!(
         b.recover_orphan_video_sessions(&rig.root().join("video")),
