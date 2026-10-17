@@ -29,7 +29,9 @@
 //! SIGKILLed by `kill_on_drop` (hal child); the TS equivalent is execa's
 //! `cleanup` SIGTERM at Node exit. The runtime has no SIGTERM handler, so
 //! both are a default-action death right after `stop()`'s SIGINT (evidence
-//! file, ambiguity A3).
+//! file, ambiguity A3). Rule-4 audit of that SIGKILL path: a master owns no
+//! `/dev/shm` segment or socket (it is the shmsrc CONSUMER; the capture
+//! writer owns `shmpipe.*` and the socket), so no reaper is needed.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -296,8 +298,12 @@ impl Inner {
                     delay_ms,
                 } => {
                     let me = self.clone();
+                    // Deadline taken NOW (at arm, like setTimeout), not at
+                    // the spawned task's first poll (review-wp5 N2).
+                    let at =
+                        tokio::time::Instant::now() + std::time::Duration::from_millis(delay_ms);
                     tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        tokio::time::sleep_until(at).await;
                         me.fire(&channel, kind, id);
                     });
                 }
