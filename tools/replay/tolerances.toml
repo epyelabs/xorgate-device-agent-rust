@@ -60,7 +60,11 @@ tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage
 # samples the same formula every 50 ms (`host.ndjson`); a ram difference beyond
 # ±1 is cited as `T3/host` ONLY if the host's own series swung by at least the
 # excess between the two `ts` (±250 ms), else it stays UNTOLERATED. On the bench
-# tape replay in a quiet VM this never fires.
+# tape replay in a quiet VM this never fires. Phase 3 (WP6): a media run's own
+# load (four x264 encoders + shmsink segments) swings the host ram by ~3 points
+# within 50 ms, so the host sample nearest `ts` is not the one an agent read;
+# a host pair from each agent's read window [ts − 150, ts + 50] ms that
+# explains the difference (same sign, within ±1) is also `T3/host`.
 # cpu_usage likewise (JS-vs-Rust, pairs up to ~0.9 s apart while the two tick
 # phases differ): the player samples /proc/stat, and a cpu difference beyond
 # ±10 is `T3/host` only if the host's own busy share over the two agents' 1 s

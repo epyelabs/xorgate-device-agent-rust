@@ -128,6 +128,15 @@ impl PlayInfo {
     }
 
     /// The host series `name` at wall `w` (nearest sample within `within` ms).
+    /// Every host sample of `name` in `[w - before, w + after]`.
+    pub fn host_in(&self, name: &str, w: i64, before: i64, after: i64) -> Vec<f64> {
+        self.host
+            .iter()
+            .filter(|(t, m)| *t >= w - before && *t <= w + after && m.contains_key(name))
+            .map(|(_, m)| m[name])
+            .collect()
+    }
+
     pub fn host_at(&self, name: &str, w: i64, within: i64) -> Option<f64> {
         self.host
             .iter()
@@ -1004,15 +1013,31 @@ impl Cx<'_> {
         // NARROWED (review-wp7): the HOST's own difference between the two
         // agents' instants must explain the agents' difference with the same
         // sign, within the agents' tolerance: |(A−B) − (host(tsA) − host(tsB))| ≤ tol.
-        let hd = if series == "cpu" {
+        let d = p - q;
+        let explains =
+            |hd: f64| d.signum() == hd.signum() && hd != 0.0 && (d - hd).abs() <= tol + 1e-9;
+        if series == "cpu" {
             // Each agent's cpu_usage is the busy share since its previous tick
             // (1 s at RATE_HZ=1) ending at its read (≈ `ts`).
-            self.play.host_cpu(a, 1000)? - self.play.host_cpu(b, 1000)?
-        } else {
-            self.play.host_at(&series, a, 250)? - self.play.host_at(&series, b, 250)?
-        };
-        let d = p - q;
-        (d.signum() == hd.signum() && hd != 0.0 && (d - hd).abs() <= tol + 1e-9)
+            let hd = self.play.host_cpu(a, 1000)? - self.play.host_cpu(b, 1000)?;
+            return explains(hd).then(|| format!("{id}/host"));
+        }
+        let hd = self.play.host_at(&series, a, 250)? - self.play.host_at(&series, b, 250)?;
+        if explains(hd) {
+            return Some(format!("{id}/host"));
+        }
+        // Phase 3 (media runs): with four x264 encoders + shmsink segments in
+        // the VM the host's ram swings by ~3 points within 50 ms, so the
+        // sample NEAREST `ts` is not the one an agent read (it reads meminfo
+        // up to ~100 ms before stamping `ts`). Accept a host sample pair from
+        // each agent's read window [ts − 150, ts + 50] ms that explains the
+        // difference under the same rule.
+        let (ha, hb) = (
+            self.play.host_in(&series, a, 150, 50),
+            self.play.host_in(&series, b, 150, 50),
+        );
+        ha.iter()
+            .any(|x| hb.iter().any(|y| explains(x - y)))
             .then(|| format!("{id}/host"))
     }
 
@@ -1932,8 +1957,13 @@ fn first_values(
     out
 }
 
+/// A value by its diff path (`a.b.0.c`): numeric segments index arrays (the
+/// paths `cmp` builds for array elements, e.g. `media.streams.1.state`).
 fn lookup<'v>(v: &'v Value, path: &str) -> Option<&'v Value> {
-    path.split('.').try_fold(v, |cur, seg| cur.get(seg))
+    path.split('.').try_fold(v, |cur, seg| match cur {
+        Value::Array(a) => seg.parse::<usize>().ok().and_then(|i| a.get(i)),
+        _ => cur.get(seg),
+    })
 }
 
 /// Which side is the js agent when the other is rust (one-directional rows).
@@ -3970,6 +4000,17 @@ mod tests {
         assert_ne!(ka, kc);
     }
 
+    #[test]
+    fn lookup_indexes_arrays() {
+        let v = serde_json::json!({"media": {"streams": [{"state": "a"}, {"state": "b"}]}});
+        assert_eq!(
+            lookup(&v, "media.streams.1.state"),
+            Some(&serde_json::json!("b"))
+        );
+        assert_eq!(lookup(&v, "media.streams.2.state"), None);
+        assert_eq!(lookup(&v, "media.streams.x"), None);
+    }
+
     /// CF32 shrink (WP3 hand-over): only WP3's unmapped transport texts fold.
     #[test]
     fn s3_error_text_folds_only_the_unmapped_list() {
@@ -4663,6 +4704,30 @@ mod tests {
         assert_eq!(tol_ram(25.0).as_deref(), Some("T3/host"));
         // The host rose 5.5 points, Rust reports 5 points LOWER: a formula bug.
         assert_eq!(tol_ram(15.0).as_deref(), Some(UNTOLERATED));
+        // Phase 3: an oscillating host (media load) — the sample nearest each
+        // ts does not explain A − B, a pair from the read windows does.
+        let play_osc = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            host: vec![
+                host(19_950, 23.1),
+                host(20_000, 20.5),
+                host(20_150, 20.0),
+                host(20_200, 22.0),
+            ],
+            ..Default::default()
+        };
+        let tol_osc = |bv: f64| {
+            let a = cap("js", vec![msg(20_000, "telemetry", ram(20_000, 23.0))]);
+            let b = cap("rust", vec![msg(20_200, "telemetry", ram(20_200, bv))]);
+            diff(&a, &b, &play_osc, &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.path == "metrics.system.ram_usage.value")
+                .map(|m| m.tol)
+        };
+        assert_eq!(tol_osc(20.0).as_deref(), Some("T3/host"));
+        assert_eq!(tol_osc(26.0).as_deref(), Some(UNTOLERATED));
 
         // build: the four leaf values are each agent's own; the key set is not.
         let rep_b = |build: Value| serde_json::json!({"v":1,"origin":"boot","rev":1,"effective":{"agent":{"build":build}}});
@@ -4855,6 +4920,7 @@ mod tests {
                     argv: vec!["vcgencmd".into(), "get_throttled".into()],
                     stdout: "x".into(),
                     code: Some(0),
+                    stderr: None,
                 },
             ),
             rec(65_000, TapeEvent::dt(Some(&[0, 0, 0x0b, 0xb8]))),

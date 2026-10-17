@@ -1160,13 +1160,25 @@ pub fn diff_media(
             let (sha, shb) = (sh(&pa), sh(&pb));
             for p in sha.keys().chain(shb.keys()).collect::<BTreeSet<_>>() {
                 if sha.get(p) != shb.get(p) {
+                    // A value read LIVE from the rig host (a T3 numeric path:
+                    // cpu/ram/disk/temp) is integral on some ticks — both
+                    // runtimes then print it as an int (JsNumber = JS) — so
+                    // int-vs-float there follows the value, not the format.
+                    // Tape-fed numbers keep the strict T9 shape check.
+                    let num_only = |o: Option<&BTreeSet<&'static str>>| {
+                        o.is_some_and(|s| s.iter().all(|k| *k == "int" || *k == "float"))
+                    };
+                    let tol = match table.numeric("telemetry", p) {
+                        Some((id, _)) if num_only(sha.get(p)) && num_only(shb.get(p)) => id,
+                        _ => UNTOLERATED.to_string(),
+                    };
                     rep.push(mm(
                         "rec-telemetry",
                         &at,
                         &format!("{p}(shape)"),
                         format!("{:?}", sha.get(p)),
                         format!("{:?}", shb.get(p)),
-                        UNTOLERATED,
+                        &tol,
                     ));
                 }
             }
