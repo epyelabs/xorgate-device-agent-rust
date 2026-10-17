@@ -1,0 +1,2517 @@
+{
+  "jsSourceFile": "src/agent/collectors/media.ts (createMediaCollector, :83-380)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-3/evidence/wp5-tools/dump-media-ladder.mts via tools/replay/js/run-tsx.sh (real media.ts, fake kvs-webrtc runtime, virtual timers)",
+  "cases": [
+    {
+      "name": "quick exits x3 -> failed -> parked 60 s -> retry; a stable master that drops restarts promptly",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s0/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s0/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 100,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": 1
+          },
+          {
+            "at": 1500,
+            "op": "read"
+          },
+          {
+            "at": 4000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": 1
+          },
+          {
+            "at": 9000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": null
+          },
+          {
+            "at": 10000,
+            "op": "read"
+          },
+          {
+            "at": 70000,
+            "op": "read"
+          },
+          {
+            "at": 85000,
+            "op": "read"
+          },
+          {
+            "at": 100000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": 1
+          },
+          {
+            "at": 101000,
+            "op": "read"
+          },
+          {
+            "at": 103000,
+            "op": "read"
+          }
+        ],
+        "endAt": 130000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 1 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 100,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              }
+            ]
+          }
+        },
+        {
+          "t": 1000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 1); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 1500,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "retrying"
+              }
+            ]
+          }
+        },
+        {
+          "t": 3000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 4000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 1); retry 2/3 in 4000ms"
+        },
+        {
+          "t": 8000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 9000,
+          "k": "log",
+          "level": "error",
+          "line": "[media a73f7a36-dev-cam0] master exited (code ?) before stabilizing 3x; parking for 60s. Check: KVS SDK .so libs in /opt/xorgate-rs/media/lib, GStreamer install, and IoT creds."
+        },
+        {
+          "t": 10000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "failed"
+              }
+            ]
+          }
+        },
+        {
+          "t": 69000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 70000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              }
+            ]
+          }
+        },
+        {
+          "t": 85000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 100000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 1); restarting"
+        },
+        {
+          "t": 101000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 102000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 103000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "stable 15 s resets the backoff and the quick-failure count",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s1/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s1/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 5000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": 1
+          },
+          {
+            "at": 8000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": 127
+          },
+          {
+            "at": 13000,
+            "op": "read"
+          },
+          {
+            "at": 30000,
+            "op": "read"
+          },
+          {
+            "at": 40000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": 3
+          },
+          {
+            "at": 43000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam0",
+            "code": 1
+          },
+          {
+            "at": 44000,
+            "op": "read"
+          }
+        ],
+        "endAt": 60000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 1 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 5000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 1); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 7000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 8000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 127); retry 2/3 in 4000ms"
+        },
+        {
+          "t": 12000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 13000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              }
+            ]
+          }
+        },
+        {
+          "t": 30000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 40000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 3); restarting"
+        },
+        {
+          "t": 42000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 43000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 1); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 44000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "retrying"
+              }
+            ]
+          }
+        },
+        {
+          "t": 45000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        }
+      ]
+    },
+    {
+      "name": "setShed parks every master (SIGINT, no respawn) and releases with a fresh ladder",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            },
+            {
+              "streamKey": "cam1",
+              "channelName": "a73f7a36-dev-cam1"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s2/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s2/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 300,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 20000,
+            "op": "read"
+          },
+          {
+            "at": 21000,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 21100,
+            "op": "read"
+          },
+          {
+            "at": 22000,
+            "op": "read"
+          },
+          {
+            "at": 23000,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 24000,
+            "op": "restart",
+            "key": "cam0"
+          },
+          {
+            "at": 30000,
+            "op": "shed",
+            "on": false
+          },
+          {
+            "at": 31000,
+            "op": "read"
+          },
+          {
+            "at": 40000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam1",
+            "code": 1
+          },
+          {
+            "at": 41000,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 41500,
+            "op": "read"
+          },
+          {
+            "at": 42000,
+            "op": "shed",
+            "on": false
+          },
+          {
+            "at": 50000,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 50100,
+            "op": "shed",
+            "on": false
+          },
+          {
+            "at": 50200,
+            "op": "read"
+          },
+          {
+            "at": 51000,
+            "op": "read"
+          }
+        ],
+        "endAt": 80000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 2 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": null
+        },
+        {
+          "t": 20000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "running"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 21000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 21000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam1",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 21000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] live masters parked (power policy)"
+        },
+        {
+          "t": 21100,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "stopped"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "stopped"
+              }
+            ]
+          }
+        },
+        {
+          "t": 22000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "stopped"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "stopped"
+              }
+            ]
+          }
+        },
+        {
+          "t": 30000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 30000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": null
+        },
+        {
+          "t": 30000,
+          "k": "log",
+          "level": "log",
+          "line": "[media] live masters released (power policy cleared)"
+        },
+        {
+          "t": 31000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "starting"
+              }
+            ]
+          }
+        },
+        {
+          "t": 40000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam1] master exited (code 1); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 41000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 41000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] live masters parked (power policy)"
+        },
+        {
+          "t": 41500,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "stopped"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "stopped"
+              }
+            ]
+          }
+        },
+        {
+          "t": 42000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 42000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": null
+        },
+        {
+          "t": 42000,
+          "k": "log",
+          "level": "log",
+          "line": "[media] live masters released (power policy cleared)"
+        },
+        {
+          "t": 50000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 50000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam1",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 50000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] live masters parked (power policy)"
+        },
+        {
+          "t": 50100,
+          "k": "log",
+          "level": "log",
+          "line": "[media] live masters released (power policy cleared)"
+        },
+        {
+          "t": 50200,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "stopped"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "stopped"
+              }
+            ]
+          }
+        },
+        {
+          "t": 50300,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 0); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 50300,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam1] master exited (code 0); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 51000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "retrying"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "retrying"
+              }
+            ]
+          }
+        },
+        {
+          "t": 52300,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 52300,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": null
+        }
+      ]
+    },
+    {
+      "name": "shed before the lazy start: channels start stopped, release spawns them",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s3/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s3/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 500,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "shed",
+            "on": false
+          },
+          {
+            "at": 1500,
+            "op": "read"
+          }
+        ],
+        "endAt": 20000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 1 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 500,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "stopped"
+              }
+            ]
+          }
+        },
+        {
+          "t": 1000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 1000,
+          "k": "log",
+          "level": "log",
+          "line": "[media] live masters released (power policy cleared)"
+        },
+        {
+          "t": 1500,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "setDisabledStreams parks one camera's master; re-enable starts it; remembered before start",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            },
+            {
+              "streamKey": "cam1",
+              "channelName": "a73f7a36-dev-cam1"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s4/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s4/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 300,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "disabled",
+            "keys": [
+              "cam1"
+            ]
+          },
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "read"
+          },
+          {
+            "at": 5000,
+            "op": "disabled",
+            "keys": []
+          },
+          {
+            "at": 6000,
+            "op": "disabled",
+            "keys": [
+              "cam0"
+            ]
+          },
+          {
+            "at": 7000,
+            "op": "read"
+          },
+          {
+            "at": 8000,
+            "op": "disabled",
+            "keys": [
+              "cam0"
+            ]
+          },
+          {
+            "at": 9000,
+            "op": "disabled",
+            "keys": []
+          },
+          {
+            "at": 9500,
+            "op": "read"
+          },
+          {
+            "at": 10000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam1",
+            "code": 1
+          },
+          {
+            "at": 10500,
+            "op": "disabled",
+            "keys": [
+              "cam1"
+            ]
+          },
+          {
+            "at": 11000,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 11500,
+            "op": "disabled",
+            "keys": []
+          },
+          {
+            "at": 12000,
+            "op": "read"
+          },
+          {
+            "at": 13000,
+            "op": "shed",
+            "on": false
+          },
+          {
+            "at": 13500,
+            "op": "read"
+          }
+        ],
+        "endAt": 40000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 2 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 1000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "stopped"
+              }
+            ]
+          }
+        },
+        {
+          "t": 5000,
+          "k": "log",
+          "level": "log",
+          "line": "[media a73f7a36-dev-cam1] camera re-enabled in settings; starting master"
+        },
+        {
+          "t": 5000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": null
+        },
+        {
+          "t": 6000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 6000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master stopped (camera disabled in settings)"
+        },
+        {
+          "t": 7000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "stopped"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "starting"
+              }
+            ]
+          }
+        },
+        {
+          "t": 9000,
+          "k": "log",
+          "level": "log",
+          "line": "[media a73f7a36-dev-cam0] camera re-enabled in settings; starting master"
+        },
+        {
+          "t": 9000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 9500,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "starting"
+              }
+            ]
+          }
+        },
+        {
+          "t": 10000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam1] master exited (code 1); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 10500,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam1] master stopped (camera disabled in settings)"
+        },
+        {
+          "t": 11000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 11000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] live masters parked (power policy)"
+        },
+        {
+          "t": 11500,
+          "k": "log",
+          "level": "log",
+          "line": "[media a73f7a36-dev-cam1] camera re-enabled in settings; starting master"
+        },
+        {
+          "t": 12000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "stopped"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "stopped"
+              }
+            ]
+          }
+        },
+        {
+          "t": 13000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 13000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": null
+        },
+        {
+          "t": 13000,
+          "k": "log",
+          "level": "log",
+          "line": "[media] live masters released (power policy cleared)"
+        },
+        {
+          "t": 13500,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "starting"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "restartChannel bounces a live master (onExit respawns); no-op without a handle or while shed",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s5/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s5/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 300,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 20000,
+            "op": "restart",
+            "key": "cam0"
+          },
+          {
+            "at": 21000,
+            "op": "read"
+          },
+          {
+            "at": 23000,
+            "op": "restart",
+            "key": "cam0"
+          },
+          {
+            "at": 23200,
+            "op": "restart",
+            "key": "cam1"
+          },
+          {
+            "at": 24000,
+            "op": "restart",
+            "key": "cam0"
+          },
+          {
+            "at": 25000,
+            "op": "read"
+          },
+          {
+            "at": 30000,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 31000,
+            "op": "restart",
+            "key": "cam0"
+          }
+        ],
+        "endAt": 40000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 1 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 20000,
+          "k": "log",
+          "level": "log",
+          "line": "[media a73f7a36-dev-cam0] restarting master (capture daemon respawned)"
+        },
+        {
+          "t": 20000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 20300,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 0); restarting"
+        },
+        {
+          "t": 21000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 22300,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 23000,
+          "k": "log",
+          "level": "log",
+          "line": "[media a73f7a36-dev-cam0] restarting master (capture daemon respawned)"
+        },
+        {
+          "t": 23000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 23300,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 0); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 25000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "retrying"
+              }
+            ]
+          }
+        },
+        {
+          "t": 25300,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 30000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 30000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] live masters parked (power policy)"
+        }
+      ]
+    },
+    {
+      "name": "stream guard: no-camera / no-pipeline park on the 60 s retry, logged on verdict change only",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            },
+            {
+              "streamKey": "cam1",
+              "channelName": "a73f7a36-dev-cam1"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s6/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s6/pipelines",
+        "globalPipeline": "/etc/xorgate/global.gst",
+        "guard": {
+          "cam0": "no-camera",
+          "cam1": "ok"
+        },
+        "pipelines": [
+          "cam1"
+        ],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "read"
+          },
+          {
+            "at": 61000,
+            "op": "guard",
+            "key": "cam0",
+            "verdict": "no-pipeline"
+          },
+          {
+            "at": 62000,
+            "op": "read"
+          },
+          {
+            "at": 121000,
+            "op": "read"
+          },
+          {
+            "at": 122000,
+            "op": "guard",
+            "key": "cam0",
+            "verdict": "ok"
+          },
+          {
+            "at": 182000,
+            "op": "read"
+          },
+          {
+            "at": 183000,
+            "op": "pipeline",
+            "key": "cam0",
+            "present": true
+          },
+          {
+            "at": 184000,
+            "op": "restart",
+            "key": "cam0"
+          },
+          {
+            "at": 190000,
+            "op": "read"
+          }
+        ],
+        "endAt": 200000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 2 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] not starting a master: no-camera (model expects a camera that did not enumerate)"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": "/tmp/xg-media-ladder/s6/pipelines/cam1.gst"
+        },
+        {
+          "t": 1000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "no-camera"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "starting"
+              }
+            ]
+          }
+        },
+        {
+          "t": 62000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "no-camera"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 120000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] not starting a master: no-pipeline (no pipeline file rendered/resolved)"
+        },
+        {
+          "t": 121000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "no-pipeline"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 180000,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": "/etc/xorgate/global.gst"
+        },
+        {
+          "t": 182000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "running"
+              }
+            ]
+          }
+        },
+        {
+          "t": 184000,
+          "k": "log",
+          "level": "log",
+          "line": "[media a73f7a36-dev-cam0] restarting master (capture daemon respawned)"
+        },
+        {
+          "t": 184000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 184050,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam0] master exited (code 0); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 186050,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": "/tmp/xg-media-ladder/s6/pipelines/cam0.gst"
+        },
+        {
+          "t": 190000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "starting"
+              },
+              {
+                "streamKey": "cam1",
+                "channelName": "a73f7a36-dev-cam1",
+                "state": "running"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "stop SIGINTs every master and cancels restarts; reads are IDLE afterwards",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            },
+            {
+              "streamKey": "cam1",
+              "channelName": "a73f7a36-dev-cam1"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s7/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s7/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 300,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 3000,
+            "op": "exit",
+            "channel": "a73f7a36-dev-cam1",
+            "code": 1
+          },
+          {
+            "at": 4000,
+            "op": "stop"
+          },
+          {
+            "at": 4100,
+            "op": "read"
+          },
+          {
+            "at": 4200,
+            "op": "stop"
+          },
+          {
+            "at": 4300,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 4400,
+            "op": "disabled",
+            "keys": [
+              "cam0"
+            ]
+          },
+          {
+            "at": 4500,
+            "op": "restart",
+            "key": "cam0"
+          },
+          {
+            "at": 5000,
+            "op": "read"
+          }
+        ],
+        "endAt": 20000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 2 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam1",
+          "pipeline": null
+        },
+        {
+          "t": 3000,
+          "k": "log",
+          "level": "warn",
+          "line": "[media a73f7a36-dev-cam1] master exited (code 1); retry 1/3 in 2000ms"
+        },
+        {
+          "t": 4000,
+          "k": "signal",
+          "channel": "a73f7a36-dev-cam0",
+          "sig": "SIGINT"
+        },
+        {
+          "t": 4100,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 5000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "inert: runtime unavailable (reason) warns once",
+      "input": {
+        "detect": {
+          "available": false,
+          "gstreamer": false,
+          "reason": "runtime binary not found at /opt/xorgate-rs/media/xorgate-kvs-webrtc"
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s8/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s8/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "read"
+          },
+          {
+            "at": 2000,
+            "op": "shed",
+            "on": true
+          },
+          {
+            "at": 3000,
+            "op": "shed",
+            "on": false
+          },
+          {
+            "at": 4000,
+            "op": "read"
+          }
+        ],
+        "endAt": 5000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] runtime binary not found at /opt/xorgate-rs/media/xorgate-kvs-webrtc"
+        },
+        {
+          "t": 1000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 4000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "inert: runtime unavailable without a reason",
+      "input": {
+        "detect": {
+          "available": false,
+          "gstreamer": false
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s9/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s9/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "read"
+          }
+        ],
+        "endAt": 2000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] media runtime unavailable"
+        },
+        {
+          "t": 1000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "inert: no manifest file",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": null,
+        "manifestPath": "/tmp/xg-media-ladder/s10/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s10/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "read"
+          }
+        ],
+        "endAt": 2000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] no KVS manifest at /tmp/xg-media-ladder/s10/kvs.json; media disabled"
+        },
+        {
+          "t": 1000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "inert: corrupt manifest",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": false
+        },
+        "manifest": "{not json",
+        "manifestPath": "/tmp/xg-media-ladder/s11/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s11/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "read"
+          }
+        ],
+        "endAt": 2000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] gst-launch-1.0 not found; GStreamer may be missing (continuing)"
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] no KVS manifest at /tmp/xg-media-ladder/s11/kvs.json; media disabled"
+        },
+        {
+          "t": 1000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "inert: manifest with no channels (shared bench profile)",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": true
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": []
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s12/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s12/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 1000,
+            "op": "read"
+          },
+          {
+            "at": 1500,
+            "op": "shed",
+            "on": true
+          }
+        ],
+        "endAt": 2000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] KVS manifest has no channels; nothing to stream"
+        },
+        {
+          "t": 1000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "gst-launch-1.0 missing is a warning; masters still start",
+      "input": {
+        "detect": {
+          "available": true,
+          "gstreamer": false
+        },
+        "manifest": {
+          "deviceId": "a73f7a36-dev",
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "channels": [
+            {
+              "streamKey": "cam0",
+              "channelName": "a73f7a36-dev-cam0"
+            }
+          ]
+        },
+        "manifestPath": "/tmp/xg-media-ladder/s13/kvs.json",
+        "pipelineDir": "/tmp/xg-media-ladder/s13/pipelines",
+        "globalPipeline": null,
+        "guard": null,
+        "pipelines": [],
+        "sigintExitMs": 50,
+        "libDir": "/opt/xorgate-rs/media/lib",
+        "source": "testsrc",
+        "steps": [
+          {
+            "at": 0,
+            "op": "read"
+          },
+          {
+            "at": 16000,
+            "op": "read"
+          }
+        ],
+        "endAt": 17000
+      },
+      "expected": [
+        {
+          "t": 0,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": false
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": []
+          }
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "warn",
+          "line": "[media] gst-launch-1.0 not found; GStreamer may be missing (continuing)"
+        },
+        {
+          "t": 0,
+          "k": "log",
+          "level": "log",
+          "line": "[media] starting 1 KVS master(s) (region=us-east-1, source=testsrc) for a73f7a36-dev"
+        },
+        {
+          "t": 0,
+          "k": "spawn",
+          "channel": "a73f7a36-dev-cam0",
+          "pipeline": null
+        },
+        {
+          "t": 16000,
+          "k": "read",
+          "media": {
+            "kvs": {
+              "value": true
+            },
+            "recording": {
+              "value": false
+            },
+            "streams": [
+              {
+                "streamKey": "cam0",
+                "channelName": "a73f7a36-dev-cam0",
+                "state": "running"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

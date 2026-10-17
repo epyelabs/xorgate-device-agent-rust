@@ -1,0 +1,335 @@
+{
+  "jsSourceFile": "src/hardware/kvs-webrtc.ts (detectRuntime :56-77, streamChannel :85-109)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-3/evidence/wp5-tools/dump-kvs-runtime.mts via tools/replay/js/run-tsx.sh (node:20-bookworm linux/arm64; no gst-launch-1.0 in the container)",
+  "cases": [
+    {
+      "name": "defaults: no pipeline, no inherited LD_LIBRARY_PATH",
+      "op": "streamChannel",
+      "input": {
+        "channel": "a73f7a36-dev-cam0",
+        "mediaType": "video-only",
+        "source": "testsrc",
+        "inheritedLd": null,
+        "env": {
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "thingName": "a73f7a36-dev",
+          "certPath": "/etc/xorgate/cert.crt",
+          "keyPath": "/etc/xorgate/private.key",
+          "caCertPath": "/opt/xorgate-rs/media/cert.pem",
+          "libDir": "/opt/xorgate-rs/media/lib",
+          "logLevel": "3",
+          "idleTeardownSecs": "30"
+        }
+      },
+      "expected": {
+        "argv": [
+          "a73f7a36-dev-cam0",
+          "video-only",
+          "testsrc"
+        ],
+        "env": {
+          "AWS_DEFAULT_REGION": "us-east-1",
+          "AWS_IOT_CORE_CREDENTIAL_ENDPOINT": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "AWS_IOT_CORE_CERT": "/etc/xorgate/cert.crt",
+          "AWS_IOT_CORE_PRIVATE_KEY": "/etc/xorgate/private.key",
+          "AWS_IOT_CORE_ROLE_ALIAS": "xorgate-kvs-role-alias",
+          "AWS_IOT_CORE_THING_NAME": "a73f7a36-dev",
+          "AWS_KVS_CACERT_PATH": "/opt/xorgate-rs/media/cert.pem",
+          "AWS_KVS_LOG_LEVEL": "3",
+          "LD_LIBRARY_PATH": "/opt/xorgate-rs/media/lib",
+          "KVS_IDLE_TEARDOWN_SECS": "30"
+        },
+        "stderr": [
+          "stderr line"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "per-channel pipeline + inherited LD_LIBRARY_PATH appended",
+      "op": "streamChannel",
+      "input": {
+        "channel": "a73f7a36-dev-cam0",
+        "mediaType": "video-only",
+        "source": "testsrc",
+        "inheritedLd": "/usr/lib/extra",
+        "env": {
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "thingName": "a73f7a36-dev",
+          "certPath": "/etc/xorgate/cert.crt",
+          "keyPath": "/etc/xorgate/private.key",
+          "caCertPath": "/opt/xorgate-rs/media/cert.pem",
+          "libDir": "/opt/xorgate-rs/media/lib",
+          "pipelinePath": "/var/lib/xorgate-rs/etc/pipelines/cam0.gst",
+          "logLevel": "3",
+          "idleTeardownSecs": "30"
+        }
+      },
+      "expected": {
+        "argv": [
+          "a73f7a36-dev-cam0",
+          "video-only",
+          "testsrc"
+        ],
+        "env": {
+          "AWS_DEFAULT_REGION": "us-east-1",
+          "AWS_IOT_CORE_CREDENTIAL_ENDPOINT": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "AWS_IOT_CORE_CERT": "/etc/xorgate/cert.crt",
+          "AWS_IOT_CORE_PRIVATE_KEY": "/etc/xorgate/private.key",
+          "AWS_IOT_CORE_ROLE_ALIAS": "xorgate-kvs-role-alias",
+          "AWS_IOT_CORE_THING_NAME": "a73f7a36-dev",
+          "AWS_KVS_CACERT_PATH": "/opt/xorgate-rs/media/cert.pem",
+          "AWS_KVS_LOG_LEVEL": "3",
+          "LD_LIBRARY_PATH": "/opt/xorgate-rs/media/lib:/usr/lib/extra",
+          "KVS_GST_PIPELINE": "/var/lib/xorgate-rs/etc/pipelines/cam0.gst",
+          "KVS_IDLE_TEARDOWN_SECS": "30"
+        },
+        "stderr": [
+          "stderr line"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "empty inherited LD_LIBRARY_PATH is dropped; idle teardown 0",
+      "op": "streamChannel",
+      "input": {
+        "channel": "a73f7a36-dev-cam0",
+        "mediaType": "audio-video",
+        "source": "devicesrc",
+        "inheritedLd": "",
+        "env": {
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "thingName": "a73f7a36-dev",
+          "certPath": "/etc/xorgate/cert.crt",
+          "keyPath": "/etc/xorgate/private.key",
+          "caCertPath": "/opt/xorgate-rs/media/cert.pem",
+          "libDir": "/opt/xorgate-rs/media/lib",
+          "logLevel": "1",
+          "idleTeardownSecs": "0"
+        }
+      },
+      "expected": {
+        "argv": [
+          "a73f7a36-dev-cam0",
+          "audio-video",
+          "devicesrc"
+        ],
+        "env": {
+          "AWS_DEFAULT_REGION": "us-east-1",
+          "AWS_IOT_CORE_CREDENTIAL_ENDPOINT": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "AWS_IOT_CORE_CERT": "/etc/xorgate/cert.crt",
+          "AWS_IOT_CORE_PRIVATE_KEY": "/etc/xorgate/private.key",
+          "AWS_IOT_CORE_ROLE_ALIAS": "xorgate-kvs-role-alias",
+          "AWS_IOT_CORE_THING_NAME": "a73f7a36-dev",
+          "AWS_KVS_CACERT_PATH": "/opt/xorgate-rs/media/cert.pem",
+          "AWS_KVS_LOG_LEVEL": "1",
+          "LD_LIBRARY_PATH": "/opt/xorgate-rs/media/lib",
+          "KVS_IDLE_TEARDOWN_SECS": "0"
+        },
+        "stderr": [
+          "stderr line"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "empty libDir + inherited LD: inherited only",
+      "op": "streamChannel",
+      "input": {
+        "channel": "a73f7a36-dev-cam0",
+        "mediaType": "video-only",
+        "source": "testsrc",
+        "inheritedLd": "/x/lib",
+        "env": {
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "thingName": "a73f7a36-dev",
+          "certPath": "/etc/xorgate/cert.crt",
+          "keyPath": "/etc/xorgate/private.key",
+          "caCertPath": "/opt/xorgate-rs/media/cert.pem",
+          "libDir": "",
+          "logLevel": "",
+          "idleTeardownSecs": ""
+        }
+      },
+      "expected": {
+        "argv": [
+          "a73f7a36-dev-cam0",
+          "video-only",
+          "testsrc"
+        ],
+        "env": {
+          "AWS_DEFAULT_REGION": "us-east-1",
+          "AWS_IOT_CORE_CREDENTIAL_ENDPOINT": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "AWS_IOT_CORE_CERT": "/etc/xorgate/cert.crt",
+          "AWS_IOT_CORE_PRIVATE_KEY": "/etc/xorgate/private.key",
+          "AWS_IOT_CORE_ROLE_ALIAS": "xorgate-kvs-role-alias",
+          "AWS_IOT_CORE_THING_NAME": "a73f7a36-dev",
+          "AWS_KVS_CACERT_PATH": "/opt/xorgate-rs/media/cert.pem",
+          "AWS_KVS_LOG_LEVEL": "",
+          "LD_LIBRARY_PATH": "/x/lib",
+          "KVS_IDLE_TEARDOWN_SECS": ""
+        },
+        "stderr": [
+          "stderr line"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "empty libDir, nothing inherited: LD_LIBRARY_PATH set to empty",
+      "op": "streamChannel",
+      "input": {
+        "channel": "a73f7a36-dev-cam0",
+        "mediaType": "video-only",
+        "source": "testsrc",
+        "inheritedLd": null,
+        "env": {
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "thingName": "a73f7a36-dev",
+          "certPath": "/etc/xorgate/cert.crt",
+          "keyPath": "/etc/xorgate/private.key",
+          "caCertPath": "/opt/xorgate-rs/media/cert.pem",
+          "libDir": "",
+          "logLevel": "3",
+          "idleTeardownSecs": "30"
+        }
+      },
+      "expected": {
+        "argv": [
+          "a73f7a36-dev-cam0",
+          "video-only",
+          "testsrc"
+        ],
+        "env": {
+          "AWS_DEFAULT_REGION": "us-east-1",
+          "AWS_IOT_CORE_CREDENTIAL_ENDPOINT": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "AWS_IOT_CORE_CERT": "/etc/xorgate/cert.crt",
+          "AWS_IOT_CORE_PRIVATE_KEY": "/etc/xorgate/private.key",
+          "AWS_IOT_CORE_ROLE_ALIAS": "xorgate-kvs-role-alias",
+          "AWS_IOT_CORE_THING_NAME": "a73f7a36-dev",
+          "AWS_KVS_CACERT_PATH": "/opt/xorgate-rs/media/cert.pem",
+          "AWS_KVS_LOG_LEVEL": "3",
+          "LD_LIBRARY_PATH": "",
+          "KVS_IDLE_TEARDOWN_SECS": "30"
+        },
+        "stderr": [
+          "stderr line"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "logLevel/idleTeardownSecs undefined: AWS_KVS_LOG_LEVEL defaults to 3, KVS_IDLE_TEARDOWN_SECS unset; empty pipelinePath unset",
+      "op": "streamChannel",
+      "input": {
+        "channel": "a73f7a36-dev-cam0",
+        "mediaType": "video-only",
+        "source": "testsrc",
+        "inheritedLd": null,
+        "env": {
+          "region": "us-east-1",
+          "credentialEndpoint": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "roleAlias": "xorgate-kvs-role-alias",
+          "thingName": "a73f7a36-dev",
+          "certPath": "/etc/xorgate/cert.crt",
+          "keyPath": "/etc/xorgate/private.key",
+          "caCertPath": "/opt/xorgate-rs/media/cert.pem",
+          "libDir": "/opt/xorgate-rs/media/lib",
+          "pipelinePath": ""
+        }
+      },
+      "expected": {
+        "argv": [
+          "a73f7a36-dev-cam0",
+          "video-only",
+          "testsrc"
+        ],
+        "env": {
+          "AWS_DEFAULT_REGION": "us-east-1",
+          "AWS_IOT_CORE_CREDENTIAL_ENDPOINT": "c1abcdefgh.credentials.iot.us-east-1.amazonaws.com",
+          "AWS_IOT_CORE_CERT": "/etc/xorgate/cert.crt",
+          "AWS_IOT_CORE_PRIVATE_KEY": "/etc/xorgate/private.key",
+          "AWS_IOT_CORE_ROLE_ALIAS": "xorgate-kvs-role-alias",
+          "AWS_IOT_CORE_THING_NAME": "a73f7a36-dev",
+          "AWS_KVS_CACERT_PATH": "/opt/xorgate-rs/media/cert.pem",
+          "AWS_KVS_LOG_LEVEL": "3",
+          "LD_LIBRARY_PATH": "/opt/xorgate-rs/media/lib"
+        },
+        "stderr": [
+          "stderr line"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "detectRuntime: binary present",
+      "op": "detectRuntime",
+      "input": {
+        "binaryPath": "/tmp/xg-kvs-runtime/fake-master",
+        "kvsRuntimeBinEnv": null,
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "expected": {
+        "available": true,
+        "gstreamer": false
+      }
+    },
+    {
+      "name": "detectRuntime: binary missing",
+      "op": "detectRuntime",
+      "input": {
+        "binaryPath": "/tmp/xg-kvs-runtime/nope",
+        "kvsRuntimeBinEnv": null,
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "expected": {
+        "available": false,
+        "gstreamer": false,
+        "reason": "runtime binary not found at /tmp/xg-kvs-runtime/nope"
+      }
+    },
+    {
+      "name": "detectRuntime: path is a directory",
+      "op": "detectRuntime",
+      "input": {
+        "binaryPath": "/tmp/xg-kvs-runtime/adir",
+        "kvsRuntimeBinEnv": null,
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "expected": {
+        "available": false,
+        "gstreamer": false,
+        "reason": "runtime binary not found at /tmp/xg-kvs-runtime/adir"
+      }
+    },
+    {
+      "name": "detectRuntime: binary present, KVS_RUNTIME_BIN set",
+      "op": "detectRuntime",
+      "input": {
+        "binaryPath": "/tmp/xg-kvs-runtime/fake-master",
+        "kvsRuntimeBinEnv": "/tmp/xg-kvs-runtime/fake-master",
+        "platform": "linux",
+        "arch": "arm64"
+      },
+      "expected": {
+        "available": true,
+        "gstreamer": false
+      }
+    }
+  ]
+}

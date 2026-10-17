@@ -1,0 +1,887 @@
+{
+  "jsSourceFile": "src/worker.ts:209-220 (config.media.streamGuard, real mode)",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-3/evidence/wp5-tools/dump-stream-guard.mts via tools/replay/js/run-tsx.sh",
+  "cases": [
+    {
+      "name": "block=false armed=false status=null key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=null key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=null key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=null key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=rendered key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=rendered key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=rendered key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=rendered key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=ok key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=ok key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=ok key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=ok key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=custom key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=custom key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=custom key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=custom key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=no-camera key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=no-camera key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=no-camera key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=false status=no-camera key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=null key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=null key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=null key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=null key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=rendered key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=rendered key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=rendered key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=rendered key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=ok key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=ok key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=ok key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=ok key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=custom key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=custom key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=custom key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=custom key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=no-camera key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=no-camera key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=no-camera key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=false armed=true status=no-camera key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": false,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=null key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=null key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=null key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=null key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=rendered key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=rendered key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=rendered key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=rendered key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=ok key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=ok key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=ok key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=ok key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=custom key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=custom key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=custom key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=custom key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=no-camera key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=no-camera key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=no-camera key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=false status=no-camera key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": false,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=null key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "no-camera"
+    },
+    {
+      "name": "block=true armed=true status=null key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "no-camera"
+    },
+    {
+      "name": "block=true armed=true status=null key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "no-camera"
+    },
+    {
+      "name": "block=true armed=true status=null key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": null,
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "no-camera"
+    },
+    {
+      "name": "block=true armed=true status=rendered key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=rendered key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=rendered key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "no-pipeline"
+    },
+    {
+      "name": "block=true armed=true status=rendered key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "rendered",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=ok key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=ok key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=ok key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "no-pipeline"
+    },
+    {
+      "name": "block=true armed=true status=ok key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "ok",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=custom key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=custom key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=custom key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "no-pipeline"
+    },
+    {
+      "name": "block=true armed=true status=custom key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "custom",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "ok"
+    },
+    {
+      "name": "block=true armed=true status=no-camera key=cam0(.gst present) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": null
+      },
+      "expected": "no-camera"
+    },
+    {
+      "name": "block=true armed=true status=no-camera key=cam0(.gst present) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": true,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "no-camera"
+    },
+    {
+      "name": "block=true armed=true status=no-camera key=cam1(.gst absent) global=null",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": null
+      },
+      "expected": "no-camera"
+    },
+    {
+      "name": "block=true armed=true status=no-camera key=cam1(.gst absent) global=/etc/xorgate/global.gst",
+      "input": {
+        "hasBlock": true,
+        "armed": true,
+        "status": "no-camera",
+        "pipelinePresent": false,
+        "globalPipeline": "/etc/xorgate/global.gst"
+      },
+      "expected": "no-camera"
+    }
+  ]
+}

@@ -106,6 +106,20 @@ for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service 
   grep -qx "$required" <<<"$LISTING" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
 done
 
+# Phase 3 WP5: the vendored KVS runtime (media/, byte-identical to the JS repo
+# @ 89b5c64, P4) must be packed, and the STAGED copy must verify against
+# media/SHA256SUMS (= the JS repo's blobs) — a corrupted/LFS-pointer blob or a
+# missing .so fails the pack instead of the first live view on a device.
+[ -f "$STAGE/media/SHA256SUMS" ] || { echo "pack: media/SHA256SUMS missing (vendored KVS runtime)" >&2; exit 1; }
+while read -r _sum name; do
+  grep -qx "media/$name" <<<"$LISTING" || { echo "pack: missing media/$name in $TARBALL" >&2; exit 1; }
+done < "$STAGE/media/SHA256SUMS"
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$STAGE/media" && sha256sum --quiet -c SHA256SUMS) >&2 || { echo "pack: media/ does not match media/SHA256SUMS" >&2; exit 1; }
+else
+  (cd "$STAGE/media" && shasum -a 256 --quiet -c SHA256SUMS) >&2 || { echo "pack: media/ does not match media/SHA256SUMS" >&2; exit 1; }
+fi
+
 if command -v sha256sum >/dev/null 2>&1; then
   SHA=$(cd "$OUT_DIR" && sha256sum "$TARBALL" | cut -d' ' -f1)
 else
