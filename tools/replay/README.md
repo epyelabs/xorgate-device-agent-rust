@@ -430,8 +430,16 @@ telemetry segment bodies are compared decompressed AND normalised (header
 paths (`media.streams.<i>.state`); a live-read T3 metric's int-vs-float shape
 inside segments is T3 (an integral value prints as an int in both runtimes);
 T3/host also accepts a host sample pair from each agent's read window
-[ts − 150, ts + 50] ms (the run's own encoders swing the host ram ~3 points
-per 50 ms). The CI smoke (`ci-smoke.sh`, Rust-vs-Rust) additionally widens the
+[ts − 150, ts + 250] ms (the run's own encoders swing the host ram ~3 points
+per 50 ms); T10 `flash`: a kvs master SIGINT-stopped within 100 ms of its
+spawn (the capture-spawn bounce racing the master's restart inside one agent,
+worker.ts:455 → media.ts:51-59) may be absent on the other side, dropped from
+both sides only when that equalises the spawn counts; T8 `end-snapshot`:
+state.json's shutdown-time `recording.backlogSegments` ±3 (each camera's final
+EOS fragment + the telemetry segment land before or after the last write —
+every tick's value is still exact in the telemetry stream). All eight synth
+scenarios calibrate clean JS-vs-JS (`phase-3/evidence/replay-20261017T22*`).
+The CI smoke (`ci-smoke.sh`, Rust-vs-Rust) additionally widens the
 tick-drift per-side period bound to [995, 1015] ms for shared runners; the
 rig bound stays [999.5, 1010].
 

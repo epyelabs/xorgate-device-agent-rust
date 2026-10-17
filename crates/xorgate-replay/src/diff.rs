@@ -1028,13 +1028,14 @@ impl Cx<'_> {
         }
         // Phase 3 (media runs): with four x264 encoders + shmsink segments in
         // the VM the host's ram swings by ~3 points within 50 ms, so the
-        // sample NEAREST `ts` is not the one an agent read (it reads meminfo
-        // up to ~100 ms before stamping `ts`). Accept a host sample pair from
-        // each agent's read window [ts − 150, ts + 50] ms that explains the
-        // difference under the same rule.
+        // sample NEAREST `ts` is not the one an agent read (its collectors
+        // read meminfo around the tick, before or after the payload's `ts` is
+        // stamped: rec-shed-uv calibration, 38 → 27 % within 50 ms). Accept a
+        // host sample pair from each agent's read window [ts − 150, ts + 250]
+        // ms that explains the difference under the same rule.
         let (ha, hb) = (
-            self.play.host_in(&series, a, 150, 50),
-            self.play.host_in(&series, b, 150, 50),
+            self.play.host_in(&series, a, 150, 250),
+            self.play.host_in(&series, b, 150, 250),
         );
         ha.iter()
             .any(|x| hb.iter().any(|y| explains(x - y)))
@@ -4727,7 +4728,8 @@ mod tests {
                 .map(|m| m.tol)
         };
         assert_eq!(tol_osc(20.0).as_deref(), Some("T3/host"));
-        assert_eq!(tol_osc(26.0).as_deref(), Some(UNTOLERATED));
+        // Beyond what any host pair in the read windows explains.
+        assert_eq!(tol_osc(28.0).as_deref(), Some(UNTOLERATED));
 
         // build: the four leaf values are each agent's own; the key set is not.
         let rep_b = |build: Value| serde_json::json!({"v":1,"origin":"boot","rev":1,"effective":{"agent":{"build":build}}});

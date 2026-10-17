@@ -55,6 +55,8 @@ pub struct Spawn {
     /// Wall ms of `New clock:` (capture PLAYING).
     pub playing: Option<i64>,
     pub end: Option<String>,
+    /// Wall ms of the child's exit (kvs: the shim's `exit` line).
+    pub end_w: Option<i64>,
     pub sid: Option<String>,
 }
 
@@ -318,6 +320,7 @@ impl MediaCapture {
         let mut by_pid: BTreeMap<u32, usize> = BTreeMap::new();
         let mut lines_of: BTreeMap<u32, Vec<String>> = BTreeMap::new();
         let mut kvs_end: BTreeMap<u32, String> = BTreeMap::new();
+        let mut exit_w: BTreeMap<u32, i64> = BTreeMap::new();
         for v in &shim {
             let pid = v["pid"].as_u64().unwrap_or(0) as u32;
             match v["k"].as_str() {
@@ -358,6 +361,7 @@ impl MediaCapture {
                         env,
                         playing: None,
                         end: None,
+                        end_w: None,
                         sid,
                     });
                 }
@@ -376,6 +380,7 @@ impl MediaCapture {
                     kvs_end.insert(pid, "int".into());
                 }
                 Some("exit") => {
+                    exit_w.insert(pid, v["w"].as_i64().unwrap_or(0));
                     let code = v["code"].as_i64().unwrap_or(-1);
                     let k = if v["external"] == true {
                         "external".to_string()
@@ -401,6 +406,7 @@ impl MediaCapture {
             .collect();
         for s in spawns.iter_mut() {
             if s.role == "kvs" {
+                s.end_w = exit_w.get(&s.pid).copied();
                 s.end = kvs_end
                     .get(&s.pid)
                     .cloned()
@@ -778,6 +784,7 @@ pub fn diff_media(
 
     // ---- children
     let spawn_ms = row_tol(table, "T10", "spawnMs", 1000.0) as i64;
+    let flash_ms = row_tol(table, "T10", "flashMs", 0.0) as i64;
     let groups = |m: &MediaCapture| {
         let mut g: BTreeMap<(String, String), Vec<Spawn>> = BTreeMap::new();
         for s in &m.spawns {
@@ -791,18 +798,41 @@ pub fn diff_media(
     let keys: BTreeSet<&(String, String)> = ga.keys().chain(gb.keys()).collect();
     for key in keys {
         let at = format!("{}/{}", key.0, key.1);
-        let (xa, xb) = (
+        let (mut xa, mut xb) = (
             ga.get(key).cloned().unwrap_or_default(),
             gb.get(key).cloned().unwrap_or_default(),
         );
         if xa.len() != xb.len() {
+            // T10 `flash`: a kvs master SIGINT-stopped within `flashMs` of
+            // its own spawn is the capture-spawn bounce (worker.ts:455
+            // onCaptureSpawned → media.ts:51-59 restartChannel) landing in
+            // the same instant as the master's (re)start — whether the
+            // release or the capture spawn runs first is a race inside ONE
+            // agent (JS-vs-JS rec-cameras: 4 vs 3). Dropped from BOTH sides
+            // only when that makes the counts equal; the rest compare as usual.
+            let flash = |s: &Spawn| {
+                s.role == "kvs"
+                    && s.end.as_deref() == Some("int")
+                    && s.end_w.is_some_and(|e| e - s.w <= flash_ms)
+            };
+            let (fa, fb): (Vec<Spawn>, Vec<Spawn>) = (
+                xa.iter().filter(|s| !flash(s)).cloned().collect(),
+                xb.iter().filter(|s| !flash(s)).cloned().collect(),
+            );
+            let tol = if fa.len() == fb.len() {
+                xa = fa;
+                xb = fb;
+                t10
+            } else {
+                UNTOLERATED
+            };
             rep.push(mm(
                 "children",
                 &at,
                 "(spawn count)",
-                xa.len().to_string(),
-                xb.len().to_string(),
-                UNTOLERATED,
+                ga.get(key).map_or(0, Vec::len).to_string(),
+                gb.get(key).map_or(0, Vec::len).to_string(),
+                tol,
             ));
         }
         for (i, (sa, sb)) in xa.iter().zip(xb.iter()).enumerate() {
@@ -1377,6 +1407,62 @@ pub fn diff_media(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T10 flash: a kvs master stopped by the capture-spawn bounce in the
+    /// same instant on one side only is tolerated; any other extra spawn is not.
+    #[test]
+    fn t10_flash_spawn_equalises_counts_or_fails() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let kvs = |w: i64, end_after: i64, end: &str| Spawn {
+            w,
+            role: "kvs".into(),
+            key: "xorgate-{id}-cam1".into(),
+            pid: w as u32,
+            argv: vec!["xorgate-{id}-cam1".into(), "testsrc".into()],
+            env: BTreeMap::new(),
+            playing: None,
+            end: Some(end.into()),
+            end_w: Some(w + end_after),
+            sid: None,
+        };
+        let cap = |spawns: Vec<Spawn>| MediaCapture {
+            kind: "js".into(),
+            spawns,
+            present: true,
+            ..Default::default()
+        };
+        let play = PlayInfo::default();
+        let run = |extra: Spawn| {
+            let a = cap(vec![
+                kvs(6_500, 44_000, "int"),
+                extra,
+                kvs(102_900, 60_000, "int"),
+            ]);
+            let b = cap(vec![kvs(6_500, 44_000, "int"), kvs(102_920, 60_000, "int")]);
+            let mut rep = Report::default();
+            diff_media(&a, &b, &play, &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "children")
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            run(kvs(100_900, 0, "int")),
+            vec![
+                ("(spawn count)".to_string(), "T10".to_string()),
+                ("(spawn ms after start)".to_string(), "T10".to_string()),
+            ]
+        );
+        // A master that ran for 2 s is a real extra start, not a bounce flash.
+        assert!(run(kvs(100_900, 2_000, "int"))
+            .iter()
+            .any(|(p, t)| p == "(spawn count)" && t == UNTOLERATED));
+    }
 
     #[test]
     fn helpers() {

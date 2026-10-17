@@ -63,7 +63,7 @@ tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage
 # tape replay in a quiet VM this never fires. Phase 3 (WP6): a media run's own
 # load (four x264 encoders + shmsink segments) swings the host ram by ~3 points
 # within 50 ms, so the host sample nearest `ts` is not the one an agent read;
-# a host pair from each agent's read window [ts − 150, ts + 50] ms that
+# a host pair from each agent's read window [ts − 150, ts + 250] ms that
 # explains the difference (same sign, within ±1) is also `T3/host`.
 # cpu_usage likewise (JS-vs-Rust, pairs up to ~0.9 s apart while the two tick
 # phases differ): the player samples /proc/stat, and a cpu difference beyond
@@ -448,6 +448,13 @@ kind = "decisions"
   # key structure of `latest` is compared under the telemetry rules (T4/T6 …)
   # and only the VALUES are this row.
   matcher = "end_snapshot"
+  # Phase 3 (WP6, rig calibration rec-shed-uv JS-vs-JS: 1 vs 3): state.json's
+  # `recording` block is written at SHUTDOWN, after SIGTERM — each agent's gst
+  # children close their last fragment (EOS) and the recorder finalizes its
+  # segment at slightly different instants, so the final write sees 0..3 more
+  # unuploaded files (one per camera + the telemetry segment). Every tick's
+  # `recording.backlogSegments` is still compared EXACTLY in the telemetry stream.
+  numeric = { "recording.backlogSegments" = 3.0 }
 
   [[rule.row]]
   id = "mqtt-error-text"
@@ -564,11 +571,11 @@ kind = "strict_numbers"
 
 [[rule]]
 id = "T10"
-title = "child spawn instants ±1 s (argv/env/signals/ended exact; stagger gap ≥ cfg per side)"
-basis = "phase file T10"
+title = "child spawn instants ±1 s (argv/env/signals/ended exact; stagger gap ≥ cfg per side); a kvs master SIGINT-stopped within flashMs of its spawn (the capture-spawn bounce racing the master's restart) may be absent on the other side"
+basis = "phase file T10; flash: worker.ts:455 onCaptureSpawned → media.ts:51-59 restartChannel racing setDisabledCameras' release inside ONE agent (WP6 calibration rec-cameras JS-vs-JS: 4 vs 3 kvs cam1 spawns, the extra one stopped in the same ms); flashes are dropped from both sides only when that equalises the counts"
 kind = "media"
 streams = ["children"]
-tolerance = { "spawnMs" = 1000.0 }
+tolerance = { "spawnMs" = 1000.0, "flashMs" = 100.0 }
 
 [[rule]]
 id = "T11"
