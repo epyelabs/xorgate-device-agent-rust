@@ -943,3 +943,120 @@ fn recover_orphans_backfills_with_the_loose_ts_rule() {
     );
     assert_eq!(none.recovered, 0);
 }
+
+// ---------------------------------------------------------------------------
+// tape hooks (phase-3 §Record/replay, role "capture")
+
+/// A tape that records every Phase 3 call as one compact line.
+#[derive(Default)]
+struct RecTape(Mutex<Vec<String>>);
+
+impl RecTape {
+    fn push(&self, s: String) {
+        self.0.lock().unwrap().push(s);
+    }
+    fn lines(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl xorgate_hal::io::TapeSink for RecTape {
+    fn enabled(&self) -> bool {
+        true
+    }
+    fn child_spawn(&self, r: &xorgate_hal::io::ChildSpawnRec) {
+        self.push(format!(
+            "spawn {} {} pid={} nice={:?} argv0={} n={}",
+            r.role,
+            r.key,
+            r.pid,
+            r.nice,
+            r.argv[0],
+            r.argv.len()
+        ));
+    }
+    fn child_line(&self, role: &str, key: &str, fd: u8, line: &str) {
+        self.push(format!("line {role} {key} {fd} {line}"));
+    }
+    fn child_signal(&self, role: &str, key: &str, pid: u32, sig: i32) {
+        self.push(format!("signal {role} {key} {pid} {sig}"));
+    }
+    fn child_exit(&self, r: &xorgate_hal::io::ChildExitRec) {
+        self.push(format!(
+            "exit {} {} pid={} code={:?} external={}",
+            r.role, r.key, r.pid, r.code, r.external
+        ));
+    }
+    fn fs_out(&self, rel: &str, op: xorgate_hal::io::FsOp, size: u64) {
+        self.push(format!("fs_out {} {rel} {size}", op.as_str()));
+    }
+    fn shm(&self, names: &[String]) {
+        self.push(format!("shm {names:?}"));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn tape_hooks_report_spawn_lines_signals_exits_shm_and_fragments() {
+    let home = Home::new("tape");
+    let be = Arc::new(FakeBackend::with_pid(4242));
+    let ev = Events::default();
+    let tape = Arc::new(RecTape::default());
+    let mut o = opts(&home, cam0(), true, be.clone(), &ev);
+    o.stable_ms = 50;
+    o.sweep_poll_ms = 1_000;
+    o.home = Some(home.0.clone());
+    o.tape = tape.clone();
+    let devshm = home.0.join("devshm");
+    std::fs::create_dir_all(&devshm).unwrap();
+    std::fs::write(devshm.join("shmpipe.4242.    0"), b"x").unwrap();
+    std::fs::write(devshm.join("shmpipe.9999.    0"), b"x").unwrap();
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    let sid = first_session(&sup);
+    let rel = format!("recordings/video/cam0/{sid}");
+    let dir = home.session_dir("cam0", &sid);
+    let argc = be.get(0).args.len() + 1;
+
+    let _ = be
+        .get(0)
+        .tx
+        .send(ChildEvent::Stdout("New clock: GstSystemClock".into()));
+    let _ = be
+        .get(0)
+        .tx
+        .send(ChildEvent::Stderr("WARN something".into()));
+    std::fs::write(dir.join("00000.mp4"), vec![1u8; 100]).unwrap();
+    delay(1_050).await; // first poll sweep: 00000 is the active fragment
+    std::fs::write(dir.join("00001.mp4"), vec![1u8; 30]).unwrap();
+    delay(1_000).await; // second sweep: 00000 closes, 00001 is active
+    let sc0 = std::fs::metadata(dir.join("00000.json")).unwrap().len();
+    // An external crash: not agent-signalled.
+    be.get(0).exit(Some(1));
+    delay(20).await;
+    let sc1 = std::fs::metadata(dir.join("00001.json")).unwrap().len();
+    delay(2_000).await; // backoff respawn
+    assert_eq!(be.len(), 2);
+    sup.stop();
+    delay(20).await;
+
+    let lines = tape.lines();
+    let want: Vec<String> = vec![
+        format!("spawn capture cam0 pid=4242 nice=Some(10) argv0=gst-launch-1.0 n={argc}"),
+        "line capture cam0 1 New clock: GstSystemClock".into(),
+        "line capture cam0 2 WARN something".into(),
+        format!("fs_out create {rel}/00000.mp4 100"),
+        format!("fs_out close {rel}/00000.mp4 100"),
+        format!("fs_out sidecar {rel}/00000.json {sc0}"),
+        format!("fs_out create {rel}/00001.mp4 30"),
+        "exit capture cam0 pid=4242 code=Some(1) external=true".into(),
+        // The dead child's own segment is reaped first; the JS-owned one stays.
+        r#"shm ["shmpipe.9999.    0"]"#.into(),
+        format!("fs_out close {rel}/00001.mp4 30"),
+        format!("fs_out sidecar {rel}/00001.json {sc1}"),
+        format!("spawn capture cam0 pid=4242 nice=Some(10) argv0=gst-launch-1.0 n={argc}"),
+        format!("signal capture cam0 4242 {}", libc::SIGINT),
+        "exit capture cam0 pid=4242 code=Some(0) external=false".into(),
+        r#"shm ["shmpipe.9999.    0"]"#.into(),
+    ];
+    assert_eq!(lines, want);
+}

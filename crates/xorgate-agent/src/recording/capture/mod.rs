@@ -35,6 +35,16 @@
 //! ordering (a `stalled: no bytes written…` event always precedes its
 //! `stalled; retry 1/3…`).
 //!
+//! Tape (phase-3 §Record/replay, `role:"capture"`): `child_spawn` right
+//! after spawn (program + argv, pid, nice), `child_line` for EVERY drained
+//! line (the writer keeps `New clock:`/`Got EOS`/`ERROR`), `child_signal` for
+//! every agent-sent signal to a still-live child, `child_exit` (`external` =
+//! not agent-signalled) followed by `shm` (the `/dev/shm/shmpipe.*` names
+//! left after the reap), `shm` every 60 s while a tape is open, and `fs_out`
+//! per fragment: `create` when a fragment first becomes the active one,
+//! `close` + `sidecar` per sidecar written, `delete` per 0-byte fragment
+//! dropped. Paths are relative to `home`. No-ops without a tape.
+//!
 //! Not ported (phase-3 P14 / Q6): the replay-mode hooks `sourceHead`,
 //! `onPlaying`, `onEnded`, `eosIsClean`, `respawnHoldMs` (`:314-340`,
 //! `:768-787`) and the `XORGATE_SIM_MEDIA` path. `cycle()` is kept: in real
@@ -73,13 +83,17 @@ use xorgate_core::video_capture::{
 use xorgate_core::video_presets::VideoPreset;
 use xorgate_hal::child::{ChildDone, ChildEvent};
 use xorgate_hal::fragment_stat::{hrtime_ns, monotonic_ms, size_or_zero};
-use xorgate_hal::io::{null_tape, TapeSink};
+use xorgate_hal::io::{null_tape, ChildExitRec, ChildSpawnRec, FsOp, TapeSink, ROLE_CAPTURE};
 use xorgate_hal::{fs_watch, shm_reaper};
 
 pub use backend::{CaptureBackend, CaptureChild, GstLaunchBackend};
 pub use recover::{recover_orphan_video_sessions, RecoverOpts, RecoverResult};
 pub use sweep::{sweep_session_dir, write_session_manifest, SweepIo, SweepOutcome};
 pub use xorgate_core::video_capture::CaptureCamera;
+
+/// Period of the tape's `shm` audit record while a tape is open
+/// (phase-3 §Record/replay: "every 60 s + at child exit"). Tape-only.
+pub const SHM_TAPE_PERIOD_MS: u64 = 60_000;
 
 /// The env seam `captureSourceHead` reads on every spawn (`video-capture.ts:130`).
 pub const CAPTURE_SOURCE_HEAD_ENV: &str = "XORGATE_CAPTURE_SOURCE_HEAD";
@@ -250,6 +264,9 @@ struct Run {
     progress: Progress,
     stalled: bool,
     cycling: bool,
+    /// The active fragment last reported to the tape (`fs_out create` once
+    /// per fragment). Tape bookkeeping only.
+    tape_active: Option<PathBuf>,
 }
 
 impl Run {
@@ -277,6 +294,7 @@ impl Run {
             },
             stalled: false,
             cycling: false,
+            tape_active: None,
         }
     }
 
@@ -316,6 +334,9 @@ struct Sig {
     key: String,
     pid: Option<u32>,
     sig: i32,
+    /// The child's `onExit` flag: a signal to an exited child is not sent
+    /// (execa `kill` on a reaped child), so it is not taped either.
+    exited: watch::Receiver<bool>,
 }
 
 #[derive(Default)]
@@ -362,6 +383,9 @@ impl VideoCaptureSupervisor {
             launch(s, &mut g, &cams, &mut out);
         }
         s.flush(out);
+        if s.opts.tape.enabled() {
+            tape_shm_audit(s);
+        }
     }
 
     /// `setCameras(cameras)` (`video-capture.ts:418-444`): bring the running
@@ -398,6 +422,7 @@ impl VideoCaptureSupervisor {
                         key: key.clone(),
                         pid: slot.pid,
                         sig: libc::SIGINT,
+                        exited: slot.exited.clone(),
                     });
                 } else {
                     s.final_sweep(&key, run, true, &mut out);
@@ -443,6 +468,7 @@ impl VideoCaptureSupervisor {
                         key: key.clone(),
                         pid: slot.pid,
                         sig: libc::SIGINT,
+                        exited: slot.exited.clone(),
                     });
                 }
             }
@@ -468,6 +494,7 @@ impl VideoCaptureSupervisor {
                                 key: k.clone(),
                                 pid: c.pid,
                                 sig: libc::SIGKILL,
+                                exited: c.exited.clone(),
                             },
                             c.exited.clone(),
                         )
@@ -528,6 +555,7 @@ impl VideoCaptureSupervisor {
                     key: key.to_string(),
                     pid: slot.pid,
                     sig: libc::SIGINT,
+                    exited: slot.exited.clone(),
                 });
             } else {
                 spawn_locked(s, &mut g, key, &mut out);
@@ -636,8 +664,26 @@ impl Shared {
     /// `run.handle.stop(sig)` — execa's `child.kill(sig)`: the child pid
     /// only, a no-op once it is reaped (P11).
     fn deliver(&self, sig: &Sig) {
-        let _ = (&sig.key, sig.pid);
+        if *sig.exited.borrow() {
+            return; // reaped: execa's kill is a no-op, nothing is sent
+        }
+        if let Some(pid) = sig.pid {
+            self.opts
+                .tape
+                .child_signal(ROLE_CAPTURE, &sig.key, pid, sig.sig);
+        }
         sig.child.signal(sig.sig);
+    }
+
+    /// Home-relative path for the tape (the full path when outside `home`).
+    fn rel(&self, p: &Path) -> String {
+        rel_to(self.opts.home.as_deref(), p)
+    }
+
+    /// `fs_out` for one sweep's outcome (`close` + `sidecar` per closed
+    /// fragment, `delete` per dropped 0-byte fragment).
+    fn tape_sweep(&self, closed: &[PathBuf], reaped: &[PathBuf]) {
+        tape_sweep_outcome(&*self.opts.tape, self.opts.home.as_deref(), closed, reaped);
     }
 
     /// `finalSweep(run, cleanStop)` (`video-capture.ts:1009-1020`): clean
@@ -657,10 +703,63 @@ impl Shared {
                 clock_pair: self.clock_pair(),
             },
         );
+        self.tape_sweep(&res.closed, &res.reaped);
         for mp4 in res.closed {
             out.fx.push(Fx::Closed(mp4));
         }
     }
+}
+
+/// `p` relative to `home` when under it, else in full (tape paths).
+fn rel_to(home: Option<&Path>, p: &Path) -> String {
+    home.and_then(|h| p.strip_prefix(h).ok())
+        .unwrap_or(p)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `fs_out` records for a sweep's (or [`recover_orphan_video_sessions`]'s)
+/// closed and dropped fragments: per closed mp4 `close` (its size) then
+/// `sidecar` (the sidecar's size), per dropped one `delete` (0). Paths are
+/// relative to `home` when under it. A no-op without a tape.
+pub fn tape_sweep_outcome(
+    tape: &dyn TapeSink,
+    home: Option<&Path>,
+    closed: &[PathBuf],
+    reaped: &[PathBuf],
+) {
+    if !tape.enabled() {
+        return;
+    }
+    for mp4 in closed {
+        tape.fs_out(&rel_to(home, mp4), FsOp::Close, size_or_zero(mp4));
+        let sc = mp4.with_extension("json");
+        tape.fs_out(&rel_to(home, &sc), FsOp::Sidecar, size_or_zero(&sc));
+    }
+    for p in reaped {
+        tape.fs_out(&rel_to(home, p), FsOp::Delete, 0);
+    }
+}
+
+/// The tape's periodic `shm` record (every [`SHM_TAPE_PERIOD_MS`], first one
+/// a period after `start()`, until `stop()` or the supervisor is dropped).
+fn tape_shm_audit(s: &Arc<Shared>) {
+    let weak = Arc::downgrade(s);
+    let period = Duration::from_millis(SHM_TAPE_PERIOD_MS);
+    tokio::spawn(async move {
+        let mut iv = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            iv.tick().await;
+            let Some(s) = weak.upgrade() else { break };
+            if s.lock().stopped {
+                break;
+            }
+            s.opts
+                .tape
+                .shm(&shm_reaper::shm_pipe_names(&s.opts.shm_segment_dir));
+        }
+    });
 }
 
 /// Wait until a child's `onExit` has run (a dropped sender counts as done).
@@ -850,6 +949,7 @@ fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
     };
     run.stalled = false;
     run.cycling = false;
+    run.tape_active = None;
 
     // A socket file left by a killed predecessor makes the new shmsink
     // accept nothing ("Connection refused" on the KVS side).
@@ -869,9 +969,17 @@ fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
     });
 
     // Encoders run at nice 10 (record mode only; the bridge is near-zero CPU).
-    if o.record && pid.is_some() {
-        let _ = child.renice(10);
-    }
+    let nice = (o.record && pid.is_some() && child.renice(10).is_ok()).then_some(10);
+    o.tape.child_spawn(&ChildSpawnRec {
+        role: ROLE_CAPTURE.to_string(),
+        key: key.to_string(),
+        argv: std::iter::once(o.backend.program().to_string())
+            .chain(args.iter().cloned())
+            .collect(),
+        env: Default::default(),
+        pid: pid.unwrap_or(0),
+        nice,
+    });
 
     if o.record {
         watch_session(s, counter, key, run);
@@ -908,8 +1016,9 @@ async fn consume(
             // gst-launch's progress lines ride stdout: consumed always (an
             // unread pipe could block a chatty child); acted on only by the
             // replay hooks, which are not ported.
-            ChildEvent::Stdout(_line) => {}
+            ChildEvent::Stdout(line) => s.opts.tape.child_line(ROLE_CAPTURE, &key, 1, &line),
             ChildEvent::Stderr(line) => {
+                s.opts.tape.child_line(ROLE_CAPTURE, &key, 2, &line);
                 if let Some(l) = stderr_log_line(&key, &line) {
                     error!("{l}");
                 }
@@ -945,6 +1054,17 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
         // The child is gone, so anything of its still in the shm tmpfs is
         // orphaned by definition.
         let _reaped = shm_reaper::reap_shm_segments(&o.shm_segment_dir, slot.pid);
+        o.tape.child_exit(&ChildExitRec {
+            role: ROLE_CAPTURE.to_string(),
+            key: key.to_string(),
+            pid: slot.pid.unwrap_or(0),
+            code: done.exit_code,
+            signal: done.signal,
+            external: !slot.signalled,
+        });
+        if o.tape.enabled() {
+            o.tape.shm(&shm_reaper::shm_pipe_names(&o.shm_segment_dir));
+        }
 
         // Close out what the child left: clean stop (EOS ran) → the last
         // fragment is finalised; crash → it may be truncated.
@@ -1059,6 +1179,15 @@ fn sweep(s: &Arc<Shared>, key: &str, run_id: u64, gen: u64) {
                 clock_pair: s.clock_pair(),
             },
         );
+        if o.tape.enabled() {
+            s.tape_sweep(&res.closed, &res.reaped);
+            if let Some(p) = &res.active_path {
+                if run.tape_active.as_ref() != Some(p) {
+                    o.tape.fs_out(&s.rel(p), FsOp::Create, size_or_zero(p));
+                    run.tape_active = Some(p.clone());
+                }
+            }
+        }
         out.fx
             .push(Fx::Active(key.to_string(), res.active_path.clone()));
         for mp4 in res.closed {
@@ -1121,6 +1250,7 @@ fn check_progress(
                 key: key.to_string(),
                 pid: slot.pid,
                 sig: libc::SIGKILL,
+                exited: slot.exited.clone(),
             });
         }
     }
