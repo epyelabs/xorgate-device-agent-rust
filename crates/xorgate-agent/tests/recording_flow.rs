@@ -82,9 +82,9 @@ async fn run_case(c: &Value) -> usize {
             "start" => m.start().await,
             "settings" => {
                 rig.save_recording(&step["recording"]);
-                m.reapply();
+                m.reapply().unwrap();
             }
-            "reapply" => m.reapply(),
+            "reapply" => m.reapply().unwrap(),
             "telemetry" => match step.get("wrote") {
                 Some(t) => std::fs::write(rig.telemetry_path(), t.as_str().unwrap()).unwrap(),
                 None => {

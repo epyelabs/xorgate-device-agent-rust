@@ -179,8 +179,9 @@ impl MessageHandler {
                 );
             }
             // `recording.reapply()` + `replay?.reapply()` (Phase 3) and
-            // `void reconcileCameraMountNow()` (Phase 4) — on BOTH paths.
-            ctx.hooks.reapply_recording();
+            // `void reconcileCameraMountNow()` (Phase 4) — on BOTH paths. A
+            // throwing reapply skips the reconcile and lands in the catch.
+            ctx.hooks.reapply_recording()?;
             ctx.hooks.reconcile_camera_mount();
             Ok(())
         })();

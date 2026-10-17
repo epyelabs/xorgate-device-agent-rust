@@ -109,6 +109,16 @@ fn sd_notify(states: &[sd_notify::NotifyState]) {
     let _ = sd_notify::notify(states);
 }
 
+/// The next message on the recording manager's fatal channel, or never.
+async fn next_fatal(
+    rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+) -> Option<String> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// A `setInterval(fn, period)`: first fire one period from now.
 fn every(period: Duration) -> Interval {
     let mut i = interval_at(Instant::now() + period, period);
@@ -548,6 +558,8 @@ async fn run(args: &[String]) -> Result<i32> {
         media.clone(),
         upload,
     ));
+    // Errors the TS leaves uncaught in the manager (the 5 s poll, M1): exit 1.
+    let mut recording_fatal = hooks.manager().and_then(|m| m.take_fatal());
     ctx.hooks.recording_start().await;
 
     // MQTT (`worker.ts:664`), scope (`:684`), config plane (`:700-746`), commands.
@@ -606,6 +618,10 @@ async fn run(args: &[String]) -> Result<i32> {
             _ = sigterm.recv() => break ("SIGTERM", 0),
             _ = sigint.recv() => break ("SIGINT", 0),
             _ = sighup.recv() => crate::shutdown::on_sighup(&ctx),
+            Some(msg) = next_fatal(&mut recording_fatal) => break (
+                crate::shutdown::RECORDING_FATAL,
+                crate::shutdown::on_recording_fatal(&msg),
+            ),
             ev = events.recv() => match ev {
                 Some(ev) => plane.on_event(ev),
                 // The loop task died (review-wp1 #10a): the normal shutdown, exit 1.
@@ -643,7 +659,7 @@ async fn run(args: &[String]) -> Result<i32> {
         config: config.as_ref(),
         source: source.as_ref(),
         // A dead loop has no stream left to close (no `disconnected cleanly`).
-        link_closes: mqtt_end.is_some() && exit_code == 0,
+        link_closes: mqtt_end.is_some() && sig != crate::shutdown::LOOP_ENDED,
     }
     .run(sig, exit_code, |budget| async move {
         match mqtt_end {

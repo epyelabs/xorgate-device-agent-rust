@@ -23,7 +23,9 @@ use serde::Deserialize;
 use xorgate_agent::ctx::{AgentCtx, NoopHooks, ReportRequester, TelemetrySource};
 use xorgate_agent::mqtt_plane::{AckOutcome, MqttHandle, MqttPlane, PublishTick};
 use xorgate_agent::scope::ScopeHandle;
-use xorgate_agent::shutdown::{on_mqtt_loop_ended, Shutdown, LOOP_ENDED};
+use xorgate_agent::shutdown::{
+    on_mqtt_loop_ended, on_recording_fatal, Shutdown, LOOP_ENDED, RECORDING_FATAL,
+};
 use xorgate_cloud::mqtt::{ConnectionState as LinkState, Message, MqttEvent, QoS};
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::telemetry_scope::TenantScope;
@@ -385,6 +387,56 @@ async fn loop_task_end_runs_the_shutdown_path_with_exit_1() {
         "shutting down (mqtt event loop ended)"
     );
     assert!(r.ctx.shutting_down());
+}
+
+/// review-wp1 M1, 5 s poll path: the recording manager's fatal channel
+/// carries a failed telemetry finalize. The TS crashes there (an uncaught
+/// exception, exit 1). The worker logs `[agent] fatal: <msg>` and runs the
+/// NORMAL shutdown with exit 1 so systemd restarts it and the boot orphan
+/// finalize completes the segment. The link is alive, so `online:false` and
+/// the `close` both happen (`link_closes` is false only for LOOP_ENDED).
+#[tokio::test(start_paused = true)]
+async fn recording_fatal_runs_the_normal_shutdown_with_exit_1() {
+    let mut r = rig("rec-fatal", "dev-f");
+    std::fs::write(&r.ctx.paths.pid, "{}").unwrap();
+    r.connect();
+    r.take_timeline();
+    let ctx = r.ctx.clone();
+    let source: Arc<dyn TelemetrySource> = r.source.clone();
+    let code = on_recording_fatal("ENOSPC: no space left on device, write");
+    assert_eq!(code, 1);
+    let code = Shutdown {
+        ctx: &ctx,
+        mqtt: &r.mqtt,
+        plane: &mut r.plane,
+        config: r.config.as_ref(),
+        source: source.as_ref(),
+        link_closes: true,
+    }
+    .run(RECORDING_FATAL, code, |_| async { true })
+    .await;
+    assert_eq!(code, 1);
+    assert!(!r.ctx.paths.pid.exists(), "pidfile removed");
+    assert_eq!(
+        r.take_timeline(),
+        [
+            "hooks.led_stop",
+            "config.stop",
+            "hooks.recording_stop",
+            "hooks.final_recording_status",
+            "source.stop",
+            "publish status online:false",
+            "hooks.notify_connectivity false",
+        ]
+    );
+    let ev = state_events(&r.ctx);
+    assert_eq!(
+        &ev[ev.len() - 2..],
+        [
+            "shutting down (recording settings apply failed)",
+            "connection closed"
+        ]
+    );
 }
 
 /// Shutting down while the link is down: no `online:false`, no `close`.

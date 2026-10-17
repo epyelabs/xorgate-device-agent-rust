@@ -79,7 +79,7 @@ async fn starts_and_stops_the_recorder_live() {
         )]
     );
     rig.save_recording(&json!({"telemetry": {"enabled": false}}));
-    m.reapply();
+    m.reapply().unwrap();
     assert!(!m.status().enabled);
     assert_eq!(m.status().session_id, None);
     assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 1);
@@ -90,9 +90,9 @@ async fn starts_and_stops_the_recorder_live() {
         "telemetry recording stopped (rateHz changed)"
     );
     rig.save_recording(&json!({"telemetry": {"enabled": true}}));
-    m.reapply();
+    m.reapply().unwrap();
     rig.save_recording(&json!({"telemetry": {"enabled": false}}));
-    m.reapply();
+    m.reapply().unwrap();
     assert_eq!(
         rig.events().last().unwrap(),
         "telemetry recording stopped (recording disabled)"
@@ -110,7 +110,7 @@ async fn mints_a_new_session_when_rate_changes() {
     m.start().await;
     let first = m.status().session_id.unwrap();
     rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 5}}));
-    m.reapply();
+    m.reapply().unwrap();
     let second = m.status().session_id.unwrap();
     assert_ne!(first, second);
     let ev = rig.events();
@@ -296,7 +296,7 @@ async fn the_shed_monitor_ticks_every_second_and_disarms() {
         "video": {"enabled": true, "bootDefer": "off", "cameras": {"cam0": false}},
         "powerShedding": {"uvWindowSecs": 5, "escalateDwellSecs": 5, "restoreSecs": 10}
     }));
-    m.reapply();
+    m.reapply().unwrap();
     let calls = rig.log.sample_calls.load(Ordering::SeqCst);
     tokio::time::sleep(Duration::from_millis(5_000)).await;
     yields().await;
@@ -410,7 +410,7 @@ async fn stop_is_final() {
     rig.save_recording(
         &json!({"telemetry": {"enabled": true, "rateHz": 5}, "video": {"enabled": false}}),
     );
-    m.reapply();
+    m.reapply().unwrap();
     tokio::time::sleep(Duration::from_secs(30)).await;
     yields().await;
     assert_eq!(rig.spawns().len(), spawns);
@@ -867,6 +867,41 @@ async fn a_slow_probe_keeps_running_past_the_bound() {
     m.stop();
 }
 
+const ENOSPC: &str = "ENOSPC: no space left on device, write";
+
+/// The `[agent]`/`[recording]` log lines emitted on this thread while the
+/// guard lives (the tests run on tokio's current-thread runtime).
+fn capture_logs() -> (Arc<Mutex<Vec<String>>>, tracing::subscriber::DefaultGuard) {
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+    struct Msg(String);
+    impl Visit for Msg {
+        fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
+            if f.name() == "message" {
+                self.0 = format!("{v:?}");
+            }
+        }
+        fn record_str(&mut self, f: &Field, v: &str) {
+            if f.name() == "message" {
+                self.0 = v.to_string();
+            }
+        }
+    }
+    struct Capture(Arc<Mutex<Vec<String>>>);
+    impl<S: tracing::Subscriber> Layer<S> for Capture {
+        fn on_event(&self, ev: &tracing::Event<'_>, _: Context<'_, S>) {
+            let mut m = Msg(String::new());
+            ev.record(&mut m);
+            if m.0.starts_with("[agent]") || m.0.starts_with("[recording]") {
+                self.0.lock().unwrap().push(m.0);
+            }
+        }
+    }
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sub = tracing_subscriber::registry().with(Capture(logs.clone()));
+    (logs, tracing::subscriber::set_default(sub))
+}
+
 /// review-wp2 N5 (1): a throwing finalize aborts `stopRecorder` — the
 /// recorder stays, no `stopped` event, and the rest of `apply()` (the restart
 /// at the new rate) does not run; only the NEXT settings change retries.
@@ -880,21 +915,25 @@ async fn a_failed_finalize_aborts_stop_recorder() {
     let sid = m.status().session_id.unwrap();
     rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
     rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 10}}));
-    m.reapply();
+    assert_eq!(m.reapply(), Err(ENOSPC.to_string()));
     assert!(m.status().enabled);
     assert_eq!(m.status().session_id.as_deref(), Some(sid.as_str()));
     assert_eq!(rig.log.recorders.lock().unwrap().len(), 1, "no restart");
     assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 0);
     assert!(!rig.events().iter().any(|e| e.contains("stopped")));
+    assert!(
+        rig.log.recorder_stopped.lock().unwrap()[0].load(Ordering::SeqCst),
+        "the kept recorder is stopped: it no longer samples"
+    );
     // TS quirk kept: `lastSettingsKey` was taken BEFORE the throwing apply,
     // so the unchanged settings never retry (the 5 s poll only re-runs the
     // video diff) — the old recorder keeps running at 20 Hz.
-    m.reapply();
+    m.reapply().unwrap();
     assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 0);
     assert_eq!(rig.log.recorders.lock().unwrap().len(), 1);
     // The next settings change stops (finalize OK) and restarts at its rate.
     rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 5}}));
-    m.reapply();
+    m.reapply().unwrap();
     assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 1);
     assert_eq!(rig.log.recorders.lock().unwrap().len(), 2);
     assert_eq!(rig.log.recorders.lock().unwrap()[1].rate_hz, 5);
@@ -903,6 +942,136 @@ async fn a_failed_finalize_aborts_stop_recorder() {
         "telemetry recording stopped (rateHz changed)"
     );
     m.stop();
+}
+
+/// review-wp1 M1, 5 s poll call site (a local `xorgate set`/TUI edit): the
+/// TS `setInterval(() => this.reapply())` throw is uncaught, so Node exits 1
+/// (`manager.ts:319`; only `unhandledRejection` is netted, `worker.ts:656`).
+/// Here the poll stops and the error reaches the worker's fatal channel. The
+/// worker logs `[agent] fatal: <msg>` and exits 1 through its normal shutdown
+/// (`plane.rs recording_fatal_runs_the_normal_shutdown_with_exit_1`).
+#[tokio::test(start_paused = true)]
+async fn the_poll_path_hands_a_failed_finalize_to_the_worker() {
+    let mut rig = Rig::new("finfail-poll");
+    rig.video = false;
+    rig.poll_ms = 5_000;
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    let mut fatal = m.take_fatal().expect("the worker takes the receiver");
+    assert!(m.take_fatal().is_none(), "taken once");
+    m.start().await;
+    rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 10}}));
+    assert!(fatal.try_recv().is_err());
+    tokio::time::sleep(Duration::from_millis(5_001)).await;
+    yields().await;
+    assert_eq!(fatal.try_recv().unwrap(), ENOSPC);
+    assert!(rig.log.recorder_stopped.lock().unwrap()[0].load(Ordering::SeqCst));
+    // The poll is stopped (the TS process is gone): a later change is not
+    // applied by the poll and nothing more is sent.
+    rig.save_recording(&json!({"telemetry": {"enabled": false}}));
+    tokio::time::sleep(Duration::from_millis(20_000)).await;
+    yields().await;
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 0);
+    assert!(fatal.try_recv().is_err());
+    // The worker's shutdown still runs `stop()`, which retries the finalize.
+    m.stop();
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 1);
+}
+
+/// review-wp1 M1, config-message call site, the manager half: the hook
+/// returns the manager's `Err` to the config plane, which logs `cloud config
+/// apply failed` and records the warn event
+/// (`config_message.rs a_throwing_recording_reapply_lands_in_cloud_config_apply_failed`).
+#[tokio::test(start_paused = true)]
+async fn the_config_hook_returns_a_failed_finalize() {
+    let mut rig = Rig::new("finfail-cfg");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    let hooks = hooks_for(m.clone(), &rig);
+    hooks.recording_start().await;
+    rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
+    rig.save_recording(&json!({"telemetry": {"enabled": false}}));
+    assert_eq!(hooks.reapply_recording(), Err(ENOSPC.to_string()));
+    // The process keeps running (caught in the TS): no fatal message.
+    let mut fatal = m.take_fatal().unwrap();
+    assert!(fatal.try_recv().is_err());
+    assert!(
+        hooks.reapply_recording().is_ok(),
+        "unchanged settings: no retry"
+    );
+    m.stop();
+}
+
+/// review-wp1 M1, hardware-change call site: `recording.reapply()` inside the
+/// `.then` of `worker.ts:845-847` throws, the chain rejects, and the `.catch`
+/// logs `[agent] hardware reconcile failed <msg>`. The bounce already
+/// happened, and the process keeps running (no fatal message).
+#[tokio::test(start_paused = true)]
+async fn a_failed_finalize_after_a_hardware_change_is_caught() {
+    let mut rig = Rig::new("finfail-hw");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    let mut fatal = m.take_fatal().unwrap();
+    let media = Arc::new(BounceLog::default());
+    let hw = Arc::new(ScriptedReconciler(Mutex::new(vec![Ok(
+        vec!["cam0".into()],
+    )])));
+    let hooks = RecordingHooks::new(
+        Some(media.clone()),
+        Some(hw),
+        Arc::new(|| None),
+        rig.clock.clone(),
+    );
+    hooks.install(m.clone());
+    hooks.recording_start().await;
+    rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
+    rig.save_recording(&json!({"telemetry": {"enabled": false}}));
+    let (logs, guard) = capture_logs();
+    hooks.hardware_changed();
+    yields().await;
+    drop(guard);
+    let logs = logs.lock().unwrap().clone();
+    assert_eq!(*media.0.lock().unwrap(), vec!["cam0".to_string()]);
+    assert!(
+        logs.iter()
+            .any(|l| l == &format!("[agent] hardware reconcile failed {ENOSPC}")),
+        "{logs:?}"
+    );
+    assert!(m.status().enabled, "the recorder is kept (dead)");
+    assert!(fatal.try_recv().is_err());
+    m.stop();
+}
+
+/// D29 (wp1.md), shutdown call site: in the TS a throwing finalize escapes
+/// `recording.stop()` and the signal handler (`worker.ts:1306`), so Node
+/// exits 1 before `videoCapture.stop()` and the offline publish. Rust logs
+/// `[agent] fatal: <msg>` and still SIGINTs capture and finishes `stop()`.
+/// The process is exiting anyway, and capture still stops cleanly.
+#[tokio::test(start_paused = true)]
+async fn a_failed_finalize_at_shutdown_still_stops_capture() {
+    let rig = Rig::new("finfail-stop");
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off"}}),
+    );
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0"]);
+    rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
+    let (logs, guard) = capture_logs();
+    m.stop();
+    drop(guard);
+    let logs = logs.lock().unwrap().clone();
+    assert_eq!(logs, vec![format!("[agent] fatal: {ENOSPC}")]);
+    assert_eq!(rig.live_cams(), Vec::<String>::new(), "capture stopped");
+    assert_eq!(rig.log.recorder_stops.load(Ordering::SeqCst), 0);
+    assert!(!rig.events().iter().any(|e| e.contains("agent shutdown")));
+    assert_eq!(m.video_key(), "");
+    let mut fatal = m.take_fatal().unwrap();
+    assert!(fatal.try_recv().is_err(), "no second exit path");
 }
 
 /// review-wp2 N1 (manager side): `onSegmentClosed: () => void this.runEnforce()`
@@ -950,7 +1119,7 @@ async fn segment_closed_runs_the_enforce_prefix_synchronously() {
     // Fired from inside stop() (state lock held) — no deadlock.
     rig.log.fire_closed_on_stop.store(true, Ordering::SeqCst);
     rig.save_recording(&json!({"telemetry": {"enabled": false}}));
-    m.reapply();
+    m.reapply().unwrap();
     assert_eq!(rig.log.enforces.load(Ordering::SeqCst), base + 3);
     assert_eq!(rig.log.active_paths.lock().unwrap().last().unwrap(), &None);
     assert!(!m.status().enabled);

@@ -27,6 +27,24 @@
 //! - The capture stop→start handover chain (`videoTransition`) is one task
 //!   draining a FIFO of [`Transition`]s in order.
 //!
+//! # A throwing telemetry finalize (review-wp1 M1)
+//! `stopRecorder` → `recorder.stop()` throws (`manager.ts:777-780`) out of
+//! `apply()`/`reapply()`. [`RecordingManager::reapply`] returns that `Err`, and
+//! each caller does what its TS call site does:
+//! - the 5 s settings poll (`setInterval(() => this.reapply())`, `:319`): the
+//!   throw is uncaught, so Node exits 1. Here the poll stops and sends the
+//!   message on [`RecordingManager::take_fatal`]. The worker logs
+//!   `[agent] fatal: <msg>` and exits 1 through its normal shutdown. systemd
+//!   restarts it, and the boot orphan finalize completes the stranded segment.
+//! - a config message (`worker.ts:881`, inside the `:864-893` try): the
+//!   [`PhaseHooks::reapply_recording`](crate::ctx::PhaseHooks::reapply_recording)
+//!   `Err` lands in `[agent] cloud config apply failed <msg>` plus the warn
+//!   event.
+//! - a hardware change (the `.then` at `:845-847`): `[agent] hardware
+//!   reconcile failed <msg>`.
+//! - shutdown (`:1306`): D29. The TS throw is uncaught and Node exits 1. Rust
+//!   logs it and still stops capture and finishes the shutdown.
+//!
 //! TIME (P8): one `&dyn Clock` (the agent's `AgentClock`) for both policies;
 //! the wall clock only stamps `liveBlock.since` and session ids.
 //!
@@ -400,6 +418,10 @@ struct Inner {
     transitions: mpsc::UnboundedSender<Transition>,
     /// Cancelled by `stop()`: every timer and the message task end.
     cancel: CancellationToken,
+    /// An error the TS leaves uncaught (it crashes the process). The worker
+    /// takes the receiver and exits non-zero (M1, the 5 s poll path).
+    fatal_tx: mpsc::UnboundedSender<String>,
+    fatal_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     /// `Arc::new_cyclic` back-reference for callbacks and timers.
     self_weak: std::sync::Weak<Inner>,
 }
@@ -490,6 +512,7 @@ impl RecordingManager {
         let (msgs, msg_rx) = mpsc::unbounded_channel();
         let (transitions, tr_rx) = mpsc::unbounded_channel();
         let (snapshot, _) = watch::channel(RecordingSnapshot::default());
+        let (fatal_tx, fatal_rx) = mpsc::unbounded_channel();
         let inner = Arc::new_cyclic(|self_weak| Inner {
             self_weak: self_weak.clone(),
             device_id: opts.device_id,
@@ -516,6 +539,8 @@ impl RecordingManager {
             msgs,
             transitions,
             cancel: CancellationToken::new(),
+            fatal_tx,
+            fatal_rx: Mutex::new(Some(fatal_rx)),
         });
         tokio::spawn(message_task(inner.clone(), msg_rx));
         tokio::spawn(transition_task(inner.clone(), tr_rx));
@@ -579,12 +604,26 @@ impl RecordingManager {
             if st.stop_requested {
                 return;
             }
-            inner.apply(&mut st);
+            // No recorder exists before the first apply, so `stopRecorder`
+            // cannot run here. If it ever did, the TS `await recording.start()`
+            // would reject at top level (exit 1), which the fatal route matches.
+            if let Err(e) = inner.apply(&mut st) {
+                let _ = inner.fatal_tx.send(e);
+            }
         }
         let weak = Arc::downgrade(inner);
-        spawn_every(inner.poll_ms, inner.cancel.child_token(), move || {
+        let poll = inner.cancel.child_token();
+        let poll_stop = poll.clone();
+        spawn_every(inner.poll_ms, poll, move || {
             if let Some(i) = weak.upgrade() {
-                i.reapply();
+                // `setInterval(() => this.reapply())` (`manager.ts:319`): a
+                // throw is uncaught. There is no `uncaughtException` handler,
+                // only the `unhandledRejection` net at `worker.ts:656`, so
+                // Node exits 1. Stop polling and hand the error to the worker.
+                if let Err(e) = i.reapply() {
+                    poll_stop.cancel();
+                    let _ = i.fatal_tx.send(e);
+                }
             }
             None
         });
@@ -604,9 +643,16 @@ impl RecordingManager {
         }
     }
 
-    /// `reapply()` (`manager.ts:336-349`).
-    pub fn reapply(&self) {
-        self.inner.reapply();
+    /// `reapply()` (`manager.ts:336-349`). `Err` = `stopRecorder`'s finalize
+    /// threw. Each caller handles it as its TS call site does (module docs, M1).
+    pub fn reapply(&self) -> Result<(), String> {
+        self.inner.reapply()
+    }
+
+    /// The receiver of errors the TS leaves uncaught (the 5 s poll's
+    /// `reapply`). The worker takes it once and exits non-zero on a message.
+    pub fn take_fatal(&self) -> Option<mpsc::UnboundedReceiver<String>> {
+        lock(&self.inner.fatal_rx).take()
     }
 
     /// `stop()` (`manager.ts:351-372`): sync shutdown — timers off, uploader
@@ -627,9 +673,12 @@ impl RecordingManager {
             u.stop();
         }
         if let Err(e) = inner.stop_recorder(&mut st, flow::STOP_SHUTDOWN) {
-            // TS: the throw escapes `stop()` (and the shutdown handler); here
-            // the capture children are still stopped (deviation, wp1.md).
-            tracing::error!("[recording] telemetry recorder stop failed: {e}");
+            // D29 (wp1.md): in the TS the throw escapes `stop()` and the
+            // signal handler, so Node exits 1 before `videoCapture.stop()`.
+            // Rust logs the same stand-in line as the poll path (`[agent]
+            // fatal: <msg>`, in place of Node's uncaught dump) and still
+            // stops capture and finishes the shutdown.
+            tracing::error!("[agent] fatal: {e}");
         }
         let capture = lock(&inner.slots).capture.take();
         if let Some(c) = capture {
@@ -776,25 +825,27 @@ impl Inner {
     /// verdict can flip on its own). Deviation: after `stop()` this is a
     /// no-op (the TS process exits; a late config message must not restart
     /// the recorder during the Rust shutdown window).
-    fn reapply(&self) {
+    fn reapply(&self) -> Result<(), String> {
         let settings = load_settings(&self.settings_path);
         let key = serde_json::to_string(&settings.recording).unwrap_or_default();
         let mut st = lock(&self.state);
         if st.stop_requested {
-            return;
+            return Ok(());
         }
         if key != st.last_settings_key {
             st.last_settings_key = key;
             st.cfg = resolve_recording_config(settings.recording.as_ref());
             *lock(&self.upload_mode) = st.cfg.upload.mode;
-            self.apply(&mut st);
-            return;
+            return self.apply(&mut st);
         }
         self.apply_video(&mut st);
+        Ok(())
     }
 
-    /// `apply()` (`manager.ts:424-456`).
-    fn apply(&self, st: &mut State) {
+    /// `apply()` (`manager.ts:424-456`). `Err` = `stopRecorder`'s finalize
+    /// threw. The TS exception leaves `apply` before
+    /// startRecorder/applyVideo/notify/kick, and so does the `?` here.
+    fn apply(&self, st: &mut State) -> Result<(), String> {
         let disk = lock(&self.slots).disk.clone();
         if let Some(d) = disk {
             d.set_retention(&st.cfg.retention);
@@ -810,12 +861,7 @@ impl Inner {
             st.cfg.telemetry.rate_hz,
         );
         if let Some(why) = plan.stop {
-            // A throwing finalize aborts the rest of `apply()` (TS: the
-            // exception leaves `apply` before startRecorder/applyVideo).
-            if let Err(e) = self.stop_recorder(st, why) {
-                tracing::error!("[recording] telemetry recorder stop failed: {e}");
-                return;
-            }
+            self.stop_recorder(st, why)?;
         }
         if plan.start {
             self.start_recorder(st);
@@ -823,6 +869,7 @@ impl Inner {
         self.apply_video(st);
         self.notify_status(st);
         self.kick_uploader();
+        Ok(())
     }
 
     /// `applyVideo()` (`manager.ts:457-594`) — the choke point lives here.

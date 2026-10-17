@@ -278,9 +278,13 @@ impl PhaseHooks for RecordingHooks {
         overlay(media, &video)
     }
 
-    fn reapply_recording(&self) {
-        if let Some(m) = self.manager() {
-            m.reapply();
+    /// `recording.reapply()` inside the config message's try
+    /// (`worker.ts:881`): a throwing finalize propagates into the
+    /// `cloud config apply failed` handler (review-wp1 M1).
+    fn reapply_recording(&self) -> Result<(), String> {
+        match self.manager() {
+            Some(m) => m.reapply(),
+            None => Ok(()),
         }
     }
 
@@ -293,6 +297,8 @@ impl PhaseHooks for RecordingHooks {
     /// `void reconcileHardwareNow().then(changed => bounce; reapply)
     /// .catch(err => console.error("[agent] hardware reconcile failed", msg))`
     /// (`worker.ts:843-850`): a failed pass bounces nothing and does not reapply.
+    /// A throwing `recording.reapply()` inside the `.then` rejects the same
+    /// chain, so it lands in the same `.catch` line (review-wp1 M1).
     fn hardware_changed(&self) {
         let (Some(hw), Some(m)) = (self.hardware.clone(), self.manager().cloned()) else {
             return;
@@ -312,7 +318,9 @@ impl PhaseHooks for RecordingHooks {
                     media.restart_channel(key);
                 }
             }
-            m.reapply();
+            if let Err(e) = m.reapply() {
+                tracing::error!("[agent] hardware reconcile failed {e}");
+            }
         });
     }
 

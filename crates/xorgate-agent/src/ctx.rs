@@ -330,7 +330,12 @@ pub trait PhaseHooks: Send + Sync + 'static {
         media
     }
     /// `recording.reapply()` + `replay?.reapply()` (config path, both branches, `:878-881`).
-    fn reapply_recording(&self) {}
+    /// `Err` = the reapply threw inside the config message's try: the caller
+    /// skips the camera-mount reconcile and logs `cloud config apply failed`
+    /// (Phase 3 widening, review-wp1 M1).
+    fn reapply_recording(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// `recording.setUpload(buildUploadOptions())` after an `uploadBucket`
     /// backfill (`:801`).
     fn rearm_upload(&self) {}

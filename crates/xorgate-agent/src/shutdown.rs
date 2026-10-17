@@ -27,6 +27,23 @@ pub const EXIT_BUDGET: Duration = Duration::from_millis(2000);
 /// own (`[agent] shutting down (mqtt event loop ended)…`).
 pub const LOOP_ENDED: &str = "mqtt event loop ended";
 
+/// The `sig` label of a shutdown forced by an error the TS leaves uncaught in
+/// the recording manager (the 5 s settings poll's `reapply`, review-wp1 M1).
+pub const RECORDING_FATAL: &str = "recording settings apply failed";
+
+/// The recording manager's 5 s poll hit a throwing telemetry finalize. In the
+/// TS this is an uncaught exception inside `setInterval` (`manager.ts:319`).
+/// There is no `uncaughtException` handler, only the `unhandledRejection` net
+/// at `worker.ts:656`, so Node prints the error and exits 1. systemd's
+/// `Restart=always` restarts the agent, and the boot `finalizeOrphanSegments`
+/// completes the stranded segment. Rust logs `[agent] fatal: <msg>`, the
+/// stand-in for Node's uncaught dump (as A7 does for the boot reconcile),
+/// then runs the normal [`Shutdown`] and exits with this code.
+pub fn on_recording_fatal(msg: &str) -> i32 {
+    error!("[agent] fatal: {msg}");
+    1
+}
+
 /// The MQTT loop task ended without a shutdown (it ends only after the
 /// cancel, so this is a panic inside it). Rust-only — mqtt.js has no such
 /// path (review-wp1 #10a, review-wp1-followup #4): log, `lastError`, flush,

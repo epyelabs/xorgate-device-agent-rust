@@ -72,6 +72,11 @@ pub struct Log {
     pub recorder_stops: AtomicUsize,
     /// The next N `stop()` calls fail (a throwing finalize).
     pub recorder_stop_failures: AtomicUsize,
+    /// Each recorder's `stopped` flag, in creation order. As in WP2's
+    /// `TelemetryRecorder::stop` (= `telemetry-recorder.ts:75-81`), it is set
+    /// and the sampling timer cleared BEFORE the finalize. A recorder whose
+    /// finalize failed is therefore dead: it samples nothing (review-wp1 M1).
+    pub recorder_stopped: Mutex<Vec<Arc<std::sync::atomic::AtomicBool>>>,
     /// Each recorder's `onSegmentClosed`, in creation order.
     pub segment_closed: Mutex<Vec<NotifyFn>>,
     /// A successful `stop()` fires `onSegmentClosed` (WP2's finalize does).
@@ -189,10 +194,13 @@ struct FakeRecorder {
     log: Arc<Log>,
     active: Option<PathBuf>,
     on_closed: NotifyFn,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
 }
 impl RecorderApi for FakeRecorder {
     fn start(&self) {}
     fn stop(&self) -> Result<(), String> {
+        // `this.stopped = true; clearInterval(this.timer)` come first.
+        self.stopped.store(true, Ordering::SeqCst);
         let fails = &self.log.recorder_stop_failures;
         if fails.load(Ordering::SeqCst) > 0 {
             fails.fetch_sub(1, Ordering::SeqCst);
@@ -287,10 +295,17 @@ impl RecordingBackend for FakeBackend {
             .lock()
             .unwrap()
             .push(spec.on_segment_closed.clone());
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.log
+            .recorder_stopped
+            .lock()
+            .unwrap()
+            .push(stopped.clone());
         Arc::new(FakeRecorder {
             log: self.log.clone(),
             active: Some(spec.dir.join("seg-active.jsonl")),
             on_closed: spec.on_segment_closed,
+            stopped,
         })
     }
     fn uploader(&self, _spec: UploaderSpec) -> Arc<dyn UploaderApi> {
