@@ -715,7 +715,7 @@ impl xorgate_agent::ctx::MediaControl for BounceLog {
 }
 
 /// `worker.ts:427` + `:843-850` (review-wp5 M1): a throwing boot reconcile
-/// is fatal (`reconcile_boot` → `Err`, the worker exits non-zero); a throwing
+/// is fatal (`reconcile_hardware_boot` → `Err`, the worker exits non-zero); a throwing
 /// cloud-change reconcile is caught — no master bounce, no `reapply` — while
 /// a good one bounces the changed streams, then reapplies.
 #[tokio::test(start_paused = true)]
@@ -737,7 +737,7 @@ async fn hardware_reconcile_failure_paths() {
     );
     // Boot: the error surfaces to the worker.
     assert_eq!(
-        hooks.reconcile_boot().await,
+        hooks.reconcile_hardware_boot().await,
         Err("EACCES: permission denied, mkdir '/x'".to_string())
     );
     hooks.install(m.clone());

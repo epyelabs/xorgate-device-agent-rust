@@ -10,7 +10,7 @@
 //! | `reapply_recording` | `recording.reapply()` on every config message (`:878`) |
 //! | `rearm_upload` | `recording.setUpload(buildUploadOptions())` (`:801`) |
 //! | `hardware_changed` | `reconcileHardwareNow()` → bounce changed → `reapply()` (`:839-846`) |
-//! | `reconcile_boot` (inherent, fallible — fatal at boot) | `await reconcileHardwareNow()` (`:427`) |
+//! | `reconcile_hardware_boot` (fallible — fatal at boot) | `await reconcileHardwareNow()` (`:427`) |
 //! | `recording_start` | `await recording.start()` (`:529`) |
 //! | `note_recording_status` | `noteRecordingStatus(…)` (`:577-579`, the LED cache) |
 //! | `final_recording_status` | `store.setRecording(recording.status())` (`:1307`) |
@@ -223,19 +223,6 @@ impl RecordingHooks {
         self.manager.get()
     }
 
-    /// The boot `await reconcileHardwareNow()` (`worker.ts:427`): a throw is
-    /// a top-level-await rejection in the TS (before the `unhandledRejection`
-    /// net of `:656`) — the process dies non-zero and systemd restarts it.
-    /// The worker propagates this `Err` the same way (review-wp5 M1). Used
-    /// instead of `PhaseHooks::reconcile_hardware_boot` (left the no-op
-    /// default: its signature cannot carry the error and stays frozen).
-    pub async fn reconcile_boot(&self) -> Result<(), String> {
-        match &self.hardware {
-            Some(hw) => hw.reconcile().await.map(|_| ()),
-            None => Ok(()),
-        }
-    }
-
     /// `recordingStatusForLed()` (`worker.ts:581-587`): the tick's cached
     /// value unless ≥ 2 s old (Phase 4's LED is the consumer).
     pub fn recording_status_for_led(&self) -> RecordingStatus {
@@ -328,6 +315,19 @@ impl PhaseHooks for RecordingHooks {
             }
             m.reapply();
         });
+    }
+
+    /// The boot `await reconcileHardwareNow()` (`worker.ts:427`): a throw is
+    /// a top-level-await rejection in the TS (before the `unhandledRejection`
+    /// net of `:656`) — the process dies non-zero and systemd restarts it.
+    /// The worker propagates this `Err` the same way (review-wp5 M1).
+    fn reconcile_hardware_boot(&self) -> BoxFut<'_, Result<(), String>> {
+        Box::pin(async move {
+            match &self.hardware {
+                Some(hw) => hw.reconcile().await.map(|_| ()),
+                None => Ok(()),
+            }
+        })
     }
 
     fn recording_start(&self) -> BoxFut<'_, ()> {

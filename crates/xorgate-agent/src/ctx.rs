@@ -341,9 +341,11 @@ pub trait PhaseHooks: Send + Sync + 'static {
     /// (`:889`, WP3) and the worker's 60 s poll (`:648-651`).
     fn reconcile_camera_mount(&self) {}
     /// `await reconcileHardwareNow()` at boot (`:427`), before anything reads
-    /// the pipelines. Awaited by the worker.
-    fn reconcile_hardware_boot(&self) -> BoxFut<'_, ()> {
-        Box::pin(async {})
+    /// the pipelines. Awaited by the worker. `Err` = the pass threw (a
+    /// top-level-await rejection in the TS, before the `:656` net): the
+    /// worker exits non-zero (Phase 3 widening, review-wp5 M1).
+    fn reconcile_hardware_boot(&self) -> BoxFut<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
     }
     /// `await reconcileCameraMountNow()` at boot (`:432`), after the hardware
     /// reconcile and before the report plane. Awaited by the worker.

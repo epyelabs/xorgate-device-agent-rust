@@ -527,8 +527,8 @@ async fn run(args: &[String]) -> Result<i32> {
     // (`:439`, CF33) — and `await recording.start()` (`:529`), awaited before
     // the first capture spawn. The clock stepper (`:536-570`) and the LED
     // manager (`:609`) are Phase 4.
-    hooks
-        .reconcile_boot()
+    ctx.hooks
+        .reconcile_hardware_boot()
         .await
         .map_err(|e| anyhow::anyhow!("hardware reconcile failed: {e}"))?;
     ctx.hooks.reconcile_camera_mount_boot().await;
