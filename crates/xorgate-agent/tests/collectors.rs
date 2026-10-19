@@ -531,45 +531,64 @@ async fn polls_pending<F: std::future::Future + Unpin>(f: &mut F) -> bool {
 /// the first one's compute is in flight waits and returns the NEW cache. (The
 /// TS sets `recLastAt` BEFORE `await compute()` without holding anything,
 /// `system.ts:107-108`, so its second caller gets the PREVIOUS `recCache`.)
-/// Deterministic: the first future always parks inside its compute
-/// (`tokio::fs` → spawn_blocking), and `join!` polls the second right then.
-#[tokio::test(start_paused = true)]
-async fn system_sample_during_an_in_flight_compute_returns_the_new_cache() {
-    use xorgate_agent::collectors::system::SystemCollector;
-    let home = scratch("system-d30");
-    let (ctx, _) = ctx_at(&home, 1_781_000_000_000);
-    let c = SystemCollector::new(&ctx, false).await;
-    let first = c.sample().await.expect("first sample computes");
-    tokio::time::advance(Duration::from_millis(1000)).await;
-    // `a` must PARK inside its compute (holding the cache) — else `b` would
-    // not be issued during an in-flight compute and the test is vacuous.
-    // `b` is then polled while `a` is still parked: it must WAIT (Rust holds
-    // the cache across the compute) — TS-like code would answer at once with
-    // the PREVIOUS cache.
-    let mut fa = c.sample();
-    let mut fb = c.sample();
-    assert!(
-        polls_pending(&mut fa).await,
-        "the first sample() parked mid-compute"
-    );
-    assert!(
-        polls_pending(&mut fb).await,
-        "the second sample() waits for it"
-    );
-    let (a, b) = tokio::join!(fa, fb);
-    let (a, b) = (a.expect("a"), b.expect("b"));
-    assert!(
-        a.updated_mono > first.updated_mono,
-        "a recomputed (gate due)"
-    );
-    assert_eq!(
-        b.updated_mono, a.updated_mono,
-        "b got the NEW cache, not the previous one"
-    );
-    assert_eq!(b, a);
-    // …and a caller after it inside the same second gets that cache too.
-    tokio::time::advance(Duration::from_millis(999)).await;
-    assert_eq!(c.sample().await.expect("c").updated_mono, a.updated_mono);
+/// Deterministic (WP6, CI run 39328644627 flake): the runtime has ONE
+/// blocking thread and the test occupies it, so the first sample's compute
+/// (`tokio::fs` → `spawn_blocking`) is queued — it cannot finish inside its
+/// first poll — until the test releases the blocker after polling both.
+#[test]
+fn system_sample_during_an_in_flight_compute_returns_the_new_cache() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .max_blocking_threads(1)
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        use xorgate_agent::collectors::system::SystemCollector;
+        let home = scratch("system-d30");
+        let (ctx, _) = ctx_at(&home, 1_781_000_000_000);
+        let c = SystemCollector::new(&ctx, false).await;
+        let first = c.sample().await.expect("first sample computes");
+        tokio::time::advance(Duration::from_millis(1000)).await;
+        // Occupy the only blocking thread until both samples are in flight.
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started) = std::sync::mpsc::channel::<()>();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            gate.recv().unwrap();
+        });
+        started.recv().unwrap();
+        // `a` PARKS inside its compute (holding the cache: its blocking read
+        // is queued behind the blocker); `b`, polled while `a` is parked, must
+        // WAIT (Rust holds the cache across the compute) — TS-like code would
+        // answer at once with the PREVIOUS cache.
+        let mut fa = c.sample();
+        let mut fb = c.sample();
+        assert!(
+            polls_pending(&mut fa).await,
+            "the first sample() parked mid-compute"
+        );
+        assert!(
+            polls_pending(&mut fb).await,
+            "the second sample() waits for it"
+        );
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        let (a, b) = tokio::join!(fa, fb);
+        let (a, b) = (a.expect("a"), b.expect("b"));
+        assert!(
+            a.updated_mono > first.updated_mono,
+            "a recomputed (gate due)"
+        );
+        assert_eq!(
+            b.updated_mono, a.updated_mono,
+            "b got the NEW cache, not the previous one"
+        );
+        assert_eq!(b, a);
+        // …and a caller after it inside the same second gets that cache too.
+        tokio::time::advance(Duration::from_millis(999)).await;
+        assert_eq!(c.sample().await.expect("c").updated_mono, a.updated_mono);
+    });
 }
 
 // ---------------------------------------------------------------------------

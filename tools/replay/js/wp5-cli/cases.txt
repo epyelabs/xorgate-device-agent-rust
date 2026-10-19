@@ -1,0 +1,24 @@
+# id | env (space-separated K=V, evaluated in the container) | argv
+pipe-list-default||pipeline list
+pipe-set|SEED=src|pipeline set cam0 src.gst --dir p
+pipe-set-show|SEED=src|pipeline set cam0 src.gst --dir p ;; pipeline show cam0 --dir p
+pipe-bridge-direct|SEED=direct|pipeline set cam0 src.gst --dir p ;; pipeline bridge cam0 --dir p ;; pipeline direct cam0 --dir p
+pipe-bad-key||pipeline set ../evil x --dir p
+pipe-unknown||pipeline frob
+pipe-env|SEED=src KVS_PIPELINE_DIR=envp|pipeline set cam1 src.gst ;; pipeline list
+pipe-notdir|SEED=src|pipeline set cam0 src.gst --dir /dev/null/sub
+rec-absent||recording reset-counters
+rec-present|SEED=counters|recording reset-counters
+rec-usage||recording
+wifi-bad||set wifi
+wifi-bad2||set wifi maybe
+wifi-no-adapter|NMCLI_TYPES=eth0:ethernet|set wifi on
+wifi-off-over-ssh|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:connected SSH=self|set wifi off
+wifi-off-only-uplink|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:connected|set wifi off
+wifi-off-force|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:connected SSH=self|set wifi off --force
+wifi-off-offline|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:connected PING_CODE=1|set wifi off
+wifi-on-fails|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:disconnected SUDO_CODE=1 SUDO_ERR=Error:boom|set wifi on
+wifi-on-already|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:connected|set wifi on
+wifi-on-exit-code|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:unavailable SUDO_CODE=10|set wifi on
+wifi-on-no-sudo|NMCLI_TYPES=eth0:wifi NMCLI_STATES=eth0:disconnected NOSUDO=1|set wifi on
+wifi-no-nmcli|NONMCLI=1|set wifi off

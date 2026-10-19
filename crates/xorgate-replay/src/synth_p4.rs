@@ -216,8 +216,18 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
             let mut rec = rec_namespace("rec-shed-uv");
             rec["telemetry"]["enabled"] = json!(false);
             cfg(b, 400, &json!({"v": 1, "rev": 1, "recording": rec}));
-            b.push(40_300, TapeEvent::Conn { state: ConnState::Closed });
-            b.push(60_300, TapeEvent::Conn { state: ConnState::Connected });
+            b.push(
+                40_300,
+                TapeEvent::Conn {
+                    state: ConnState::Closed,
+                },
+            );
+            b.push(
+                60_300,
+                TapeEvent::Conn {
+                    state: ConnState::Connected,
+                },
+            );
             // A REAL change (the flash is gated on `changed`, worker.ts:866-872)
             // in a namespace nothing else on this tape reads (no IMU).
             let mount = json!({"enabled": true, "rollDeg": 90, "pitchDeg": 0, "yawDeg": 0});

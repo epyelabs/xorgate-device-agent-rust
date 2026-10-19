@@ -21,6 +21,17 @@
 #   WP4 dump-capture-ladder.mts → fixtures/capture_ladder/ladder.json
 #   WP5 dump-media-ladder.mts → fixtures/media_ladder/ladder.json; dump-kvs-runtime.mts →
 #       fixtures/media_ladder/kvs-runtime.json; dump-hardware-reconcile.mts, dump-stream-guard.mts
+# Phase 4 drivers (copied verbatim from phase-4/evidence/wp<N>-tools/ by WP6):
+#   WP1 zz-wp1-dump-led-traces.test.ts → fixtures/led_driver/, fixtures/led_manager/;
+#       zz-wp1-dump-led-cli.test.ts → fixtures/led_cli/; zz-review-supersede.test.ts
+#       (review probe). These are VITEST files, not tsx: copy into <scratch>/test/
+#       and run `npx --no-install vitest run test/<file>` (header of each file).
+#   WP2 dump-sms-reader.mts, dump-sms-cli.mts, sms-pty-read.mts (see their headers)
+#   WP3 dump-camera-mount.mts → fixtures/camera_mount/; probe-exec-timeout.mts
+#   WP4 dump-update-plan.mts → fixtures/update_plan/
+#   WP5 wp5-cli/ (dump-cli-pipeline, dump-iface-for-ip, dump-monitor-frames,
+#       e2e-cli-wp5.sh + run-side.sh + cases.txt)
+#   WP6 dump-sms-modem.mts → fixtures/replay/p4-sms-modem.json (the p4-sms tape's FakeModem)
 # A driver taking a data file (WP1's scenarios) gets it by its /js-relative path:
 #   cp wp1-scenarios.json into the scratch copy first, or pass `.rig-drivers/<name>` after
 #   copying it there (run-tsx.sh copies only the driver itself).

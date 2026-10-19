@@ -1055,6 +1055,22 @@ impl Agent {
         let graceful = tokio::time::timeout(Duration::from_secs(30), child.wait())
             .await
             .is_ok();
+        // The agent's capture children got their SIGINT (stop = EOS, the last
+        // fragment finalises) and may outlive the agent by the EOS: give the
+        // group the capture stop grace (`stopAndWait(graceMs = 10_000)`,
+        // video-capture.ts:516) before the SIGKILL, so how a child ENDED
+        // (int vs kill, media_diff `children`) is the agent's doing, not a
+        // race between the EOS and this kill on a loaded host (WP6: CI run
+        // 39328644627 attempt 1, Rust-vs-Rust capture/cam0#1 int vs kill).
+        let mut lingered_ms = 0u64;
+        if let (Some(pg), true) = (pgid, graceful) {
+            while lingered_ms < 10_000
+                && nix::sys::signal::killpg(pg, None::<nix::sys::signal::Signal>).is_ok()
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                lingered_ms += 50;
+            }
+        }
         if let Some(pg) = pgid {
             let _ = nix::sys::signal::killpg(pg, nix::sys::signal::Signal::SIGKILL);
         }
@@ -1068,7 +1084,7 @@ impl Agent {
         {
             let _ = writeln!(
                 f,
-                "[rig] agent {} {} after SIGTERM in {} ms",
+                "[rig] agent {} {} after SIGTERM in {} ms (its process group lingered {lingered_ms} ms)",
                 self.label,
                 if graceful {
                     "exited"
