@@ -50,10 +50,18 @@
 # watchdog on the agent's behalf. A wedged main loop is restarted by systemd
 # after WatchdogSec. Phase 0 keeps the watchdog generous (60 s); tune later.
 #
-# RGB status LED hooks (ExecStartPre=-… led boot / ExecStopPost=-… led
-# exit-state in the JS unit) are deliberately ABSENT in Phase 0 — Phase 4
-# (operations) adds them as `/usr/local/bin/xorgate-rs led …` once the LED
-# subsystem is ported. Until then the JS agent's LED state is left alone.
+# RGB status LED hooks (Phase 4 WP1, CF49) — the JS unit's two lines with the
+# Rust wrapper. Both run as the drop-in service user (pi), not root, through
+# `pinctrl` (no sudo) as separate processes: the agent itself drives the LED
+# through the GPIO character device (consumer "xorgate-rs"), but it is not
+# running when these fire, and pinctrl writes the registers directly anyway.
+# `exit-state` reads $SERVICE_RESULT, which systemd sets for ExecStopPost:
+# `success` (systemctl stop/restart, reboot — our SIGTERM path exits 0) blanks
+# the LED; a crash (exit-code/signal/core-dump/watchdog/timeout) latches solid
+# red. Both are prefixed `-` so the LED can NEVER stop the agent: without it,
+# a non-zero ExecStartPre aborts the start entirely.
+# The unit's environment (incl. a drop-in PATH) applies to both hooks, so the
+# bench shared profile's `pinctrl` shim makes them harmless there.
 
 [Unit]
 Description=Xorgate device agent (Rust) (IoT MQTT telemetry)
@@ -79,7 +87,9 @@ Environment=XORGATE_HOME=/var/lib/xorgate
 # the default service CWD "/" isn't writable by the service user, which makes
 # `import board` fail. /var/lib/xorgate is created + owned by the service user.
 WorkingDirectory=/var/lib/xorgate
+ExecStartPre=-/usr/local/bin/xorgate-rs led boot
 ExecStart=/opt/xorgate-rs/bin/xorgate-rs run
+ExecStopPost=-/usr/local/bin/xorgate-rs led exit-state
 
 # Restart on every exit (including a clean exit 0 after SIGTERM). Recovers from
 # a brief IoT/cert outage and from operator-induced stops.

@@ -1,0 +1,661 @@
+{
+ "jsSourceFile": "test/led-manager.test.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-wp1-dump-led-traces.test.ts (vitest fake timers) in a git-archive scratch copy of 89b5c64: each it() re-run step by step against the REAL LedDriver/LedManager with a recording writer; setTimeout/settle waits → advanceTimersByTimeAsync; trace = writer calls {t,pins,high} + log lines {t,msg} in virtual ms",
+ "cases": [
+  {
+   "name": "shows the starting rung as soon as it takes over",
+   "ts": "led-manager.test.ts:73",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 20
+    }
+   }
+  },
+  {
+   "name": "re-renders only when the resolved state actually changes",
+   "ts": "led-manager.test.ts:80",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 40,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 40,
+      "pins": [
+       21
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 20,
+      "msg": "starting → healthy (green heartbeat)"
+     },
+     {
+      "t": 40,
+      "msg": "healthy → network (purple blink-fast)"
+     }
+    ],
+    "marks": {
+     "afterFirst": 3,
+     "afterThree": 3
+    },
+    "extra": {
+     "endMs": 60
+    }
+   }
+  },
+  {
+   "name": "drives the colour the ladder picked for the signals",
+   "ts": "led-manager.test.ts:105",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       12,
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 40,
+      "pins": [
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 40,
+      "pins": [
+       12
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 20,
+      "msg": "starting → gps-wait (blue blink-slow)"
+     },
+     {
+      "t": 40,
+      "msg": "gps-wait → thermal (cyan blink-slow)"
+     }
+    ],
+    "marks": {
+     "cleared1": 1,
+     "cleared2": 3
+    },
+    "extra": {
+     "endMs": 60
+    }
+   }
+  },
+  {
+   "name": "flashes white for an applied config, then returns to the real state",
+   "ts": "led-manager.test.ts:124",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 40,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 190,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 390,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 540,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 540,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 540,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 660,
+      "pins": [
+       21
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 20,
+      "msg": "starting → healthy (green heartbeat)"
+     },
+     {
+      "t": 540,
+      "msg": "none → healthy (green heartbeat)"
+     }
+    ],
+    "marks": {
+     "cleared": 3,
+     "at40": 4
+    },
+    "extra": {
+     "endMs": 780
+    }
+   }
+  },
+  {
+   "name": "ignores ticks while the overlay is running",
+   "ts": "led-manager.test.ts:144",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 170,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 370,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 520,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 520,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 520,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 645,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 520,
+      "msg": "none → network (purple blink-fast)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 760
+    }
+   }
+  },
+  {
+   "name": "holds its current state when signal gathering throws",
+   "ts": "led-manager.test.ts:158",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 0,
+      "msg": "starting → healthy (green heartbeat)"
+     },
+     {
+      "t": 20,
+      "msg": "signal read failed, holding: collector exploded"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "threw": false,
+     "endMs": 20
+    }
+   }
+  },
+  {
+   "name": "blanks on stop and ignores everything afterwards",
+   "ts": "led-manager.test.ts:172",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     }
+    ],
+    "marks": {
+     "cleared1": 1,
+     "cleared2": 2
+    },
+    "extra": {
+     "endMs": 80
+    }
+   }
+  },
+  {
+   "name": "is a total no-op when the driver is inert",
+   "ts": "led-manager.test.ts:188",
+   "expected": {
+    "calls": [],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "inert: not a Raspberry Pi"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "available": false,
+     "endMs": 40
+    }
+   }
+  },
+  {
+   "name": "reads LTE status for itself, not via the publish loop",
+   "ts": "led-manager.test.ts:200",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 120,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 300,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 420,
+      "pins": [
+       21
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 0,
+      "msg": "starting → healthy (green heartbeat)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "readsAfterFirst": 1,
+     "readsEnd": 2,
+     "endMs": 1190
+    }
+   }
+  },
+  {
+   "name": "a dead zone with the cloud down stays green, not purple",
+   "ts": "led-manager.test.ts:229",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 0,
+      "msg": "starting → healthy (green heartbeat)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 60
+    }
+   }
+  },
+  {
+   "name": "an unreadable LTE file fails open",
+   "ts": "led-manager.test.ts:242",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 0,
+      "msg": "starting → healthy (green heartbeat)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 60
+    }
+   }
+  },
+  {
+   "name": "never calls the signal function when inert",
+   "ts": "led-manager.test.ts:254",
+   "expected": {
+    "calls": [],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "inert: not a Raspberry Pi"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "counts": {
+      "signalCalls": 0,
+      "lteReads": 0
+     },
+     "endMs": 0
+    }
+   }
+  }
+ ]
+}

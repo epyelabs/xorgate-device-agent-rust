@@ -57,6 +57,9 @@ bytes = "1"
 sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
+# Phase 4 WP1 (Q3): the agent drives the status LED through the GPIO character
+# device (one held line request, consumer "xorgate-rs"); the CLI + systemd hooks keep `pinctrl`.
+gpiocdev = "0.8"
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
 # Phase 2 WP1 (spine): tokio-util `rt` already above; sha2/hex shared with WP5
 # (settings.json fingerprint = readSettingsHash for WP3).
