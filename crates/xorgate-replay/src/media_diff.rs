@@ -19,7 +19,7 @@
 //! | `sidecar` | key order; every field but the tolerated ones | `startTs` ±300 ms relative to the agent's own capture PLAYING (`New clock:`) time, `startMono` deltas within the session ±300 ms, `durationMs` ±150 ms, `sizeBytes` any (T12) |
 //! | `mp4` | per side: seq contiguity from 0, no 0-byte closed fragment | fragment count per session ±1 (T12, the run's cut) |
 //! | `rec-telemetry` | decompressed header lines minus T1/T11 fields; sample key order; per segment the groups present, each group's leaf paths and number SHAPES (T9) | segment count per session ±1 and file-name ms stamps (T13; gz bytes never compared: D24) |
-//! | `s3` | per side every SigV4 signature valid, sidecar PUT before its mp4; A vs B the normalised key multiset of successful PUTs + content types | a session's LAST fragment present on one side only, attempt counts / timing (T14) |
+//! | `s3` | per side every SigV4 signature valid, sidecar PUT before its mp4; A vs B the normalised key multiset of successful PUTs + content types | a session's LAST fragment / LAST telemetry segment present on one side only (never a middle segment), attempt counts / timing (T14) |
 //! | `file:counters.json` | bytes as JSON | — |
 //! | `evictions` | the ordered list of fragments/segments deleted without a successful PUT | — |
 //! | `shm` | per side: orphan `shmpipe.<pid>.*` (pid of that side's dead gst child) count at the end | — |
@@ -656,6 +656,39 @@ fn sidecars(m: &MediaCapture) -> BTreeMap<(String, u64), Value> {
             if let Ok(v) = serde_json::from_slice::<Value>(b) {
                 out.entry((sid, seq)).or_insert(v);
             }
+        }
+    }
+    out
+}
+
+/// `(session label, seq)` of a telemetry segment path / S3 key:
+/// `…telemetry/<sid>/seg-<ms>-<seq>.jsonl[.gz]` locally,
+/// `telemetry/v1/{id}/<sid>/<ms>-<seq>.jsonl.gz` in S3 (ms masked or not).
+fn tele_seg_of(path: &str) -> Option<(String, u64)> {
+    if !path.contains("telemetry") {
+        return None;
+    }
+    let (dir, file) = path.rsplit_once('/')?;
+    let stem = file
+        .strip_suffix(".jsonl.gz")
+        .or_else(|| file.strip_suffix(".jsonl"))?;
+    let seq = stem.rsplit('-').next()?.parse().ok()?;
+    Some((dir.rsplit('/').next()?.to_string(), seq))
+}
+
+/// Every telemetry segment seq a side ever had, per session: the
+/// recordings tree as polled (incl. the open `.jsonl`), the final tree and
+/// every S3 PUT attempt.
+fn tele_segs(m: &MediaCapture) -> BTreeMap<String, BTreeSet<u64>> {
+    let mut out: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    let keys = m
+        .rec
+        .keys()
+        .chain(m.finals.keys())
+        .chain(m.s3.iter().map(|o| &o.key));
+    for k in keys {
+        if let Some((sid, seq)) = tele_seg_of(k) {
+            out.entry(sid).or_default().insert(seq);
         }
     }
     out
@@ -1331,6 +1364,12 @@ pub fn diff_media(
             .and_then(|s| s.keys().next_back())
             .is_some_and(|l| *l == seq)
     };
+    let (sa_tel, sb_tel) = (tele_segs(a), tele_segs(b));
+    let last_seg = |t: &BTreeMap<String, BTreeSet<u64>>, sid: &str, seq: u64| {
+        t.get(sid)
+            .and_then(|s| s.iter().next_back())
+            .is_some_and(|l| *l == seq)
+    };
     for k in oa.keys().chain(ob.keys()).collect::<BTreeSet<_>>() {
         stat(rep, "s3").compared += 1;
         match (oa.get(k), ob.get(k)) {
@@ -1344,9 +1383,23 @@ pub fn diff_media(
             )),
             (Some(_), Some(_)) => {}
             (x, y) => {
+                // T14: only a session's LAST piece may be one-sided — the
+                // newest fragment, or the newest telemetry segment (rotated at
+                // or after the cut), of that session on EITHER side. A middle
+                // segment PUT on one side only is a lost upload (review-wp6
+                // must-fix 1).
                 let at_cut = frag_of(k).is_some_and(|(sid, seq, _)| {
                     last_frag(&fa, &sid, seq) || last_frag(&fb, &sid, seq)
-                }) || k.contains("telemetry");
+                }) || tele_seg_of(k).is_some_and(|(sid, seq)| {
+                    // …and the side WITHOUT the PUT holds that segment (its
+                    // upload cut short) or never got that far: a side that
+                    // skipped it and wrote a newer one lost it.
+                    let missing = if x.is_some() { &sb_tel } else { &sa_tel };
+                    let reached = missing.get(&sid).is_some_and(|s| {
+                        s.contains(&seq) || s.iter().next_back().is_some_and(|l| *l < seq)
+                    }) || !missing.contains_key(&sid);
+                    (last_seg(&sa_tel, &sid, seq) || last_seg(&sb_tel, &sid, seq)) && reached
+                });
                 let tol = if at_cut { t14 } else { UNTOLERATED };
                 rep.push(mm(
                     "s3",
@@ -1599,6 +1652,72 @@ mod tests {
         // Rust-vs-Rust: exact.
         assert!(run_k("rust", 1, "rust", 1).is_empty());
         assert_eq!(run_k("rust", 0, "rust", 1), unt);
+    }
+
+    /// T14: a telemetry object PUT on one side only is tolerated only when it
+    /// is the newest segment of its session (on either side), never a middle one.
+    #[test]
+    fn t14_one_sided_telemetry_put_only_for_the_last_segment() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let key =
+            |seq: u64| format!("telemetry/v1/{{id}}/<sid:telemetry#0>/<ms>-{seq:05}.jsonl.gz");
+        let put = |seq: u64| S3Obs {
+            key: key(seq),
+            ctype: "application/gzip".into(),
+            status: 200,
+            sig: "ok".into(),
+        };
+        let cap = |seqs: &[u64]| MediaCapture {
+            kind: "js".into(),
+            s3: seqs.iter().map(|q| put(*q)).collect(),
+            present: true,
+            ..Default::default()
+        };
+        let run = |a: &[u64], b: &[u64]| {
+            let mut rep = Report::default();
+            diff_media(&cap(a), &cap(b), &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "s3" && m.path == "(PUT)")
+                .map(|m| (m.at, m.tol))
+                .collect::<Vec<_>>()
+        };
+        // The newest segment uploaded by one side only (the cut): T14.
+        assert_eq!(run(&[0, 1, 2], &[0, 1]), vec![(key(2), "T14".to_string())]);
+        // …also when the other side holds it locally, its PUT cut short.
+        let mut b = cap(&[0, 1]);
+        b.rec.insert(
+            "recordings/telemetry/<sid:telemetry#0>/seg-<ms>-00002.jsonl.gz".into(),
+            Seen::default(),
+        );
+        let mut rep = Report::default();
+        diff_media(&cap(&[0, 1, 2]), &b, &PlayInfo::default(), &table, &mut rep);
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "(PUT)" && m.at == key(2) && m.tol == "T14"));
+        // A MIDDLE segment lost on one side: untolerated.
+        assert_eq!(
+            run(&[0, 1, 2], &[0, 2]),
+            vec![(key(1), UNTOLERATED.to_string())]
+        );
+        // The side without the PUT skipped that segment and wrote a newer
+        // one: lost, not cut short.
+        let mut b = cap(&[0, 1]);
+        b.rec.insert(
+            "recordings/telemetry/<sid:telemetry#0>/seg-<ms>-00003.jsonl".into(),
+            Seen::default(),
+        );
+        let mut rep = Report::default();
+        diff_media(&cap(&[0, 1, 2]), &b, &PlayInfo::default(), &table, &mut rep);
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "(PUT)" && m.at == key(2) && m.tol == UNTOLERATED));
     }
 
     #[test]

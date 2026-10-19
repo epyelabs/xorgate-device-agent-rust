@@ -628,7 +628,7 @@ tolerance = { "perSession" = 2.0 }
 
 [[rule]]
 id = "T14"
-title = "S3 PUT timing / failed-attempt counts, and a session's LAST fragment present on one side only; telemetry bodies compared decompressed (rec-telemetry), mp4 body hash not compared"
+title = "S3 PUT timing / failed-attempt counts, and a session's LAST fragment or LAST telemetry segment (newest seq of that session on either side, and the side without the PUT holds it or never got that far) present on one side only — never a middle segment; telemetry bodies compared decompressed (rec-telemetry), mp4 body hash not compared"
 basis = "phase file T14"
 kind = "media"
 streams = ["s3"]
