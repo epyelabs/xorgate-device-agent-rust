@@ -41,7 +41,7 @@
 //! 800) the roles flip and the one lead tick in between is recorded as a
 //! `skip` (it has no partner that saw the same inputs).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -1576,6 +1576,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 .unwrap_or(false)
         })
     };
+    // REPORT FENCE (`watch.rs` FENCE_WINDOW_MS): an LTE rewrite due inside a
+    // report trigger's debounce window waits for BOTH agents' report.
+    let fenced_at = |ev: &TapeEvent, due: i64, now: i64| -> Option<bool> {
+        if args.no_gate {
+            return None;
+        }
+        let (input, _) = watch::gated(ev)?;
+        caps.watch.lock().ok()?.fence(input, due, now)
+    };
+    let mut fenced: BTreeSet<usize> = BTreeSet::new();
     // Barrier inputs wait out both agents' reconnect after a cut.
     let post_cut = |now: i64| {
         !args.no_gate
@@ -1617,7 +1627,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             let _ = tel_open(now);
             if let Some(&(pi, due_w)) = pending.front() {
                 let ev = &tape.records[pi].ev;
-                let held = watch_holds(ev, now);
+                let fence = fenced_at(ev, due_w, now) == Some(true);
+                if fence {
+                    fenced.insert(pi);
+                }
+                let held = watch_holds(ev, now) || fence;
                 let timeout = held && now - due_w > watch::MAX_HOLD_MS;
                 if (!held || timeout) && !post_cut(now) && tel_open(now) {
                     pending.pop_front();
@@ -1632,7 +1646,10 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 if left.is_zero() {
                     if !args.no_gate
                         && barrier(&r.ev)
-                        && (!pending.is_empty() || watch_holds(&r.ev, now) || post_cut(now))
+                        && (!pending.is_empty()
+                            || watch_holds(&r.ev, now)
+                            || post_cut(now)
+                            || fenced_at(&r.ev, now, now) == Some(true))
                     {
                         pending.push_back((next, now));
                         next += 1;
@@ -1659,7 +1676,27 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         }
         if let Some((input, _)) = watch::gated(&r.ev) {
             if let Ok(mut w) = caps.watch.lock() {
-                w.note_release(input, due_w, wall_now_ms(), timeout);
+                let at = wall_now_ms();
+                w.note_release(input, due_w, at, timeout);
+                if fenced.remove(&i) {
+                    let capped = w.fence(input, due_w, at).is_some();
+                    w.note_fenced(due_w, at, capped);
+                    plog(format!(
+                        "report fence: lte_file t={} held {} ms{}",
+                        r.t,
+                        at - due_w,
+                        if capped {
+                            " (CAPPED: a report never came)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+            }
+        }
+        if matches!(r.ev, TapeEvent::MqttIn { .. } | TapeEvent::Cli { .. }) {
+            if let Ok(mut w) = caps.watch.lock() {
+                w.on_trigger(wall_now_ms());
             }
         }
         let now = wall_now_ms();
