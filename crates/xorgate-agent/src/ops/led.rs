@@ -150,7 +150,17 @@ impl LedManager {
     /// re-renders only on a real change. The overlay owns the LED while it
     /// runs. The LTE refresh is fire-and-forget: this tick uses the
     /// previous read's value.
+    ///
+    /// **Runtime (review-wp1 S1):** must be called from inside the tokio
+    /// runtime (it spawns tasks; the TS method is plain sync on the event
+    /// loop). Never call it from `Drop` or a synchronous signal handler.
+    /// Outside a runtime it does not panic: it logs
+    /// `[led] <method>() called outside the tokio runtime — ignored` at error
+    /// and does nothing.
     pub fn tick(&self) {
+        if !in_runtime("tick") {
+            return;
+        }
         let lte = {
             let st = self.lock();
             if st.stopped {
@@ -196,7 +206,17 @@ impl LedManager {
     /// `configApplied()` (`led-manager.ts:111-123`): two white flashes
     /// pre-empting whatever is showing, then an immediate re-render of the
     /// resolved state (`current = null` forces it even when unchanged).
+    ///
+    /// **Runtime (review-wp1 S1):** must be called from inside the tokio
+    /// runtime (it spawns tasks; the TS method is plain sync on the event
+    /// loop). Never call it from `Drop` or a synchronous signal handler.
+    /// Outside a runtime it does not panic: it logs
+    /// `[led] <method>() called outside the tokio runtime — ignored` at error
+    /// and does nothing.
     pub fn config_applied(&self) {
+        if !in_runtime("config_applied") {
+            return;
+        }
         {
             let st = self.lock();
             if st.stopped {
@@ -233,9 +253,20 @@ impl LedManager {
     /// `stop()` (`led-manager.ts:130-136`): blank on shutdown, best-effort and
     /// not awaited (`ExecStopPost=… led exit-state` is the real guarantee);
     /// `quiet` because it races the process exit.
+    ///
+    /// **Runtime (review-wp1 S1):** must be called from inside the tokio
+    /// runtime (it spawns tasks; the TS method is plain sync on the event
+    /// loop). Never call it from `Drop` or a synchronous signal handler.
+    /// Outside a runtime it does not panic: it logs
+    /// `[led] <method>() called outside the tokio runtime — ignored` at error
+    /// and only latches `stopped` + cancels the pattern (the blank is
+    /// skipped; `ExecStopPost` still blanks).
     pub fn stop(&self) {
         self.lock().stopped = true;
         self.inner.driver.stop();
+        if !in_runtime("stop") {
+            return;
+        }
         tokio::spawn(self.inner.driver.blank(true));
     }
 
@@ -294,6 +325,18 @@ impl LedManager {
         ));
         tokio::spawn(self.inner.driver.play(next.colour, next.pattern));
     }
+}
+
+/// `true` when a tokio runtime is current (S1). Otherwise logs the misuse
+/// (no TS counterpart: the TS methods cannot run off the event loop) and
+/// returns `false`, so the caller backs out instead of `tokio::spawn`
+/// panicking.
+fn in_runtime(method: &str) -> bool {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return true;
+    }
+    tracing::error!("[led] {method}() called outside the tokio runtime — ignored");
+    false
 }
 
 /// `rung(reason)` as the `LedState` the TS passes straight to `render` /

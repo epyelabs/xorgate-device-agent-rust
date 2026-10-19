@@ -581,3 +581,38 @@ async fn lte_refresh_is_throttled_on_mono_time() {
     );
     h.led.driver().stop();
 }
+
+/// review-wp1 S1: `tick`/`config_applied`/`stop` called with no tokio
+/// runtime current (a `Drop` or sync signal path) must not panic; they log
+/// and back out (`stop` still latches `stopped` and cancels the pattern).
+#[tokio::test(start_paused = true)]
+async fn manager_methods_outside_the_runtime_do_not_panic() {
+    let t0 = Instant::now();
+    let (_c, sig) = cell(healthy());
+    let h = harness(t0, sig, true, None);
+    h.led.start().await;
+    settle(50).await;
+    let before = h.sink.calls.lock().unwrap().len();
+    assert!(before > 0, "start drew `starting`");
+    let led = h.led.clone();
+    std::thread::spawn(move || {
+        led.tick();
+        led.config_applied();
+        led.stop();
+    })
+    .join()
+    .expect("no panic outside the runtime");
+    settle(2000).await;
+    assert_eq!(
+        h.sink.calls.lock().unwrap().len(),
+        before,
+        "nothing written: tick/config_applied ignored, stop's blank skipped"
+    );
+    h.led.tick();
+    settle(50).await;
+    assert_eq!(
+        h.sink.calls.lock().unwrap().len(),
+        before,
+        "stop() still latched `stopped`"
+    );
+}
