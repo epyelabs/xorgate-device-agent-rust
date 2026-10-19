@@ -736,6 +736,38 @@ fn shapes(v: &Value, path: &str, out: &mut BTreeMap<String, BTreeSet<&'static st
 
 const T1_LIKE: &[&str] = &["ts", "mono", "startTs", "endTs", "createdAt", "updatedAt"];
 
+/// The `(samples without system)` verdict of one telemetry session, `None` =
+/// nothing to report. `ka`/`kb` = each side's implementation (`js`/`rust`).
+/// - JS-vs-JS: `T13/system-presence` `perSession` (the TS's own spread).
+/// - JS-vs-Rust: `T7/D30` (`d30_system_presence`) iff the Rust count is 0
+///   and the JS count ≥ 1; a Rust count > 0 is UNTOLERATED even when the
+///   counts agree (D30: Rust never drops — a drop is evidence against it).
+/// - Rust-vs-Rust (and anything else): exact.
+fn system_presence_tol(table: &Table, ka: &str, kb: &str, la: usize, lb: usize) -> Option<String> {
+    match (ka, kb) {
+        ("js", "js") => (la != lb).then(|| {
+            let id = "T13/system-presence";
+            let max = row_tol(table, id, "perSession", 0.0) as usize;
+            if has_row(table, id) && la.abs_diff(lb) <= max {
+                id.to_string()
+            } else {
+                UNTOLERATED.to_string()
+            }
+        }),
+        ("js", "rust") | ("rust", "js") => {
+            let (js, rs) = if ka == "js" { (la, lb) } else { (lb, la) };
+            (la != lb || rs > 0).then(|| {
+                let d30 = table.matcher_rows("d30_system_presence", "rec-telemetry");
+                match d30.first() {
+                    Some(id) if rs == 0 && js >= 1 => id.clone(),
+                    _ => UNTOLERATED.to_string(),
+                }
+            })
+        }
+        _ => (la != lb).then(|| UNTOLERATED.to_string()),
+    }
+}
+
 /// The Phase 3 comparison. `a`/`b` absent of any media artifact on BOTH
 /// sides = nothing to compare (a Phase 2 tape): the streams are listed with 0.
 pub fn diff_media(
@@ -1236,23 +1268,19 @@ pub fn diff_media(
         // recompute gate shared by the recorder and the shed tick;
         // telemetry-recorder.ts:102 skips a group not refreshed since its
         // last written sample), so the count is the agent's timer
-        // behaviour, not a tape input. Bound: `T13/system-presence`
-        // `perSession` (JS-vs-JS calibrations: max |Δ| 2).
-        if lack.0 != lack.1 {
-            let id = "T13/system-presence";
-            let max = row_tol(table, id, "perSession", 0.0) as usize;
-            let tol = if has_row(table, id) && lack.0.abs_diff(lack.1) <= max {
-                id
-            } else {
-                UNTOLERATED
-            };
+        // behaviour, not a tape input. Judged per implementation pair
+        // (review-wp6 §3): JS-vs-JS `T13/system-presence` `perSession`
+        // (calibrations: max |Δ| 2); JS-vs-Rust the D30 matcher only (Rust
+        // never drops: any Rust drop is UNTOLERATED, even when the counts
+        // agree); Rust-vs-Rust exact.
+        if let Some(tol) = system_presence_tol(table, &a.kind, &b.kind, lack.0, lack.1) {
             rep.push(mm(
                 "rec-telemetry",
                 sid,
                 "(samples without system)",
                 lack.0.to_string(),
                 lack.1.to_string(),
-                tol,
+                &tol,
             ));
         }
     }
@@ -1523,31 +1551,54 @@ mod tests {
             }
             t
         };
-        let cap = |missing: usize| {
+        let cap = |kind: &str, missing: usize| {
             let mut finals = BTreeMap::new();
             finals.insert(
                 "recordings/telemetry/sid-1/seg-1-00000.jsonl.gz".to_string(),
                 seg(missing).into_bytes(),
             );
             MediaCapture {
-                kind: "js".into(),
+                kind: kind.into(),
                 finals,
                 present: true,
                 ..Default::default()
             }
         };
-        let run = |ma: usize, mb: usize| {
+        let run_k = |ka: &str, ma: usize, kb: &str, mb: usize| {
             let mut rep = Report::default();
-            diff_media(&cap(ma), &cap(mb), &PlayInfo::default(), &table, &mut rep);
+            diff_media(
+                &cap(ka, ma),
+                &cap(kb, mb),
+                &PlayInfo::default(),
+                &table,
+                &mut rep,
+            );
             rep.mismatches
                 .into_iter()
                 .filter(|m| m.stream == "rec-telemetry" && m.path == "(samples without system)")
                 .map(|m| m.tol)
                 .collect::<Vec<_>>()
         };
+        let run = |ma: usize, mb: usize| run_k("js", ma, "js", mb);
+        let unt = vec![UNTOLERATED.to_string()];
+        let d30 = vec!["T7/D30".to_string()];
+        // JS-vs-JS: the calibrated spread.
         assert!(run(2, 2).is_empty());
         assert_eq!(run(0, 2), vec!["T13/system-presence".to_string()]);
-        assert_eq!(run(0, 3), vec![UNTOLERATED.to_string()]);
+        assert_eq!(run(0, 3), unt);
+        // JS-vs-Rust: D30 only — Rust 0 and JS ≥ 1, either column order, no
+        // JS cap; T13/system-presence never applies.
+        assert_eq!(run_k("js", 5, "rust", 0), d30);
+        assert_eq!(run_k("rust", 0, "js", 1), d30);
+        assert!(run_k("js", 0, "rust", 0).is_empty());
+        // Any Rust drop fails — also when the counts agree, and also when it
+        // is within the JS-vs-JS spread.
+        assert_eq!(run_k("js", 0, "rust", 1), unt);
+        assert_eq!(run_k("js", 2, "rust", 1), unt);
+        assert_eq!(run_k("rust", 2, "js", 2), unt);
+        // Rust-vs-Rust: exact.
+        assert!(run_k("rust", 1, "rust", 1).is_empty());
+        assert_eq!(run_k("rust", 0, "rust", 1), unt);
     }
 
     #[test]
