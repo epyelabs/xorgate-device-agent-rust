@@ -153,7 +153,11 @@ async fn sweep_transport_cases() {
         let m = modem.lock().unwrap();
         assert_eq!(m.log, strings(&exp["log"]), "{name}: command log");
         assert_eq!(Value::from(m.cmgf), exp["end"]["cmgf"], "{name}: end cmgf");
-        assert_eq!(m.mem1, exp["end"]["mem1"].as_str().unwrap(), "{name}: end mem1");
+        assert_eq!(
+            m.mem1,
+            exp["end"]["mem1"].as_str().unwrap(),
+            "{name}: end mem1"
+        );
         // Read-only by construction (sms-modem.test.ts:158).
         for cmd in &m.log {
             assert!(!is_destructive(cmd), "{name}: sent {cmd}");
@@ -203,7 +207,10 @@ fn destructive_matcher_is_the_ts_regex() {
 fn at_port_source_is_read_only_and_names_no_tty() {
     let dir = env!("CARGO_MANIFEST_DIR");
     for (file, src) in [
-        ("at_port.rs", std::fs::read_to_string(format!("{dir}/src/at_port.rs")).unwrap()),
+        (
+            "at_port.rs",
+            std::fs::read_to_string(format!("{dir}/src/at_port.rs")).unwrap(),
+        ),
         (
             "ops/sms.rs",
             std::fs::read_to_string(format!("{dir}/../xorgate-agent/src/ops/sms.rs")).unwrap(),
@@ -218,7 +225,9 @@ fn at_port_source_is_read_only_and_names_no_tty() {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        for bad in ["CMGR=", "CMGL", "CMGD", "CMGW", "CMSS", "/dev/tty", "ttyUSB2"] {
+        for bad in [
+            "CMGR=", "CMGL", "CMGD", "CMGW", "CMSS", "/dev/tty", "ttyUSB2",
+        ] {
             assert!(!code.contains(bad), "{file} names {bad}");
         }
         // Every `CPMS="…"` literal in the code is one-argument.

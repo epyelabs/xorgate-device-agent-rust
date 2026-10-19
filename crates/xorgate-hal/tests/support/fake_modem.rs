@@ -136,11 +136,7 @@ impl FakeModem {
         {
             self.mem1 = mem.to_string();
             out.extend([
-                format!(
-                    "+CPMS: {},{},23,23,23,23",
-                    self.used(mem),
-                    self.total(mem)
-                ),
+                format!("+CPMS: {},{},23,23,23,23", self.used(mem), self.total(mem)),
                 "OK".to_string(),
             ]);
         } else if let Some(i) = cmd
@@ -151,7 +147,10 @@ impl FakeModem {
                 return Reply::Throw("CMGRO sent in text mode".to_string());
             }
             let n: u64 = i.parse().unwrap();
-            match self.store(&self.mem1).and_then(|s| s.slots.get(&n.to_string())) {
+            match self
+                .store(&self.mem1)
+                .and_then(|s| s.slots.get(&n.to_string()))
+            {
                 Some(slot) => out.extend([
                     format!("+CMGRO: {},\"\",{}", slot.stat, slot.length),
                     slot.pdu.clone(),
@@ -186,7 +185,9 @@ pub struct TestClock {
 
 impl TestClock {
     pub fn new(t: i64) -> Arc<Self> {
-        Arc::new(Self { t: AtomicI64::new(t) })
+        Arc::new(Self {
+            t: AtomicI64::new(t),
+        })
     }
     pub fn advance(&self, ms: i64) {
         self.t.fetch_add(ms, Ordering::SeqCst);

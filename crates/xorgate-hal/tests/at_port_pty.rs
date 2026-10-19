@@ -43,7 +43,10 @@ const FIXED_NOW: i64 = 1_760_000_000_000;
 const LIMIT: u32 = 50;
 
 fn fixtures() -> PathBuf {
-    PathBuf::from(format!("{}/../../fixtures/sms_reader", env!("CARGO_MANIFEST_DIR")))
+    PathBuf::from(format!(
+        "{}/../../fixtures/sms_reader",
+        env!("CARGO_MANIFEST_DIR")
+    ))
 }
 
 fn pty_spec() -> FakeSpec {
@@ -169,7 +172,11 @@ async fn pty_end_to_end_matches_the_ts_reader() {
     let (slave, _keep, modem) = pty_modem(spec);
     let json = rust_read(&slave.to_string_lossy()).await;
     // `console.log(text)` adds the newline.
-    assert_eq!(format!("{json}\n"), want["stdout"].as_str().unwrap(), "payload bytes");
+    assert_eq!(
+        format!("{json}\n"),
+        want["stdout"].as_str().unwrap(),
+        "payload bytes"
+    );
     let log = modem.lock().unwrap().log.clone();
     let want_log: Vec<String> = serde_json::from_value(want["log"].clone()).unwrap();
     assert_eq!(log, want_log, "AT command sequence");
@@ -191,7 +198,10 @@ async fn open_failures_map_to_the_ts_statuses() {
         .await
         .err()
         .unwrap();
-    assert_eq!((e.status, e.message.as_str()), (SmsReadStatus::NoModem, "sms port not present"));
+    assert_eq!(
+        (e.status, e.message.as_str()),
+        (SmsReadStatus::NoModem, "sms port not present")
+    );
     let f = std::env::temp_dir().join(format!("xg-not-a-tty-{}", std::process::id()));
     std::fs::write(&f, b"").unwrap();
     let e = open_serial_transport(&f).await.err().unwrap();

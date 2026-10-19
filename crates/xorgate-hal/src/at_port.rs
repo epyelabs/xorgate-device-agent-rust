@@ -130,8 +130,7 @@ impl ResolvePortOptions {
         Self {
             sys_class_tty: PathBuf::from("/sys/class/tty"),
             dev_dir: PathBuf::from("/dev"),
-            port_override: std::env::var_os(SMS_PORT_ENV)
-                .map(|v| v.to_string_lossy().into_owned()),
+            port_override: std::env::var_os(SMS_PORT_ENV).map(|v| v.to_string_lossy().into_owned()),
         }
     }
 }
@@ -251,7 +250,12 @@ pub async fn open_serial_transport_taped(
     // `statSync(path)` follows symlinks; `isCharacterDevice()`.
     let st = match std::fs::metadata(path) {
         Ok(m) => m,
-        Err(_) => return Err(SmsReadError::new(SmsReadStatus::NoModem, "sms port not present")),
+        Err(_) => {
+            return Err(SmsReadError::new(
+                SmsReadStatus::NoModem,
+                "sms port not present",
+            ))
+        }
     };
     if !st.file_type().is_char_device() {
         return Err(SmsReadError::new(
@@ -270,7 +274,10 @@ pub async fn open_serial_transport_taped(
             return Err(SmsReadError::new(SmsReadStatus::ModemBusy, "sms port busy"));
         }
         if contains_ci(&stty.stderr, "no such") {
-            return Err(SmsReadError::new(SmsReadStatus::NoModem, "sms port vanished"));
+            return Err(SmsReadError::new(
+                SmsReadStatus::NoModem,
+                "sms port vanished",
+            ));
         }
         return Err(SmsReadError::new(
             SmsReadStatus::Error,
@@ -604,10 +611,15 @@ impl<'t> AtSession<'t> {
         with_pdu: bool,
     ) -> Result<AtResponse, AtError> {
         let deadline = tokio::time::Instant::now() + self.timeout;
-        let timeout_err = || AtError::Timeout(format!("timeout on {}", cmd.split('=').next().unwrap_or("")));
+        let timeout_err = || {
+            AtError::Timeout(format!(
+                "timeout on {}",
+                cmd.split('=').next().unwrap_or("")
+            ))
+        };
         self.drain().await;
         let line = format!("{cmd}\r");
-        tape_tx(&*self.tape, &self.port, &line);
+        tape_tx(&*self.tape, &self.port, cmd);
         match tokio::time::timeout_at(deadline, self.transport.write(line.as_bytes())).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(AtError::Transport(e.to_string())),
@@ -620,8 +632,7 @@ impl<'t> AtSession<'t> {
             expect_pdu: false,
         };
         loop {
-            let chunk = match tokio::time::timeout_at(deadline, self.transport.read_chunk()).await
-            {
+            let chunk = match tokio::time::timeout_at(deadline, self.transport.read_chunk()).await {
                 Ok(Ok(c)) => c,
                 Ok(Err(_)) => {
                     // A dead reader: nothing more arrives; the timer decides.
@@ -668,8 +679,8 @@ fn on_line(p: &mut Pending<'_>, line: String) -> Option<AtResponse> {
     None
 }
 
-/// I9 `at_tx{port, line}` — the WP6 base adds the sink method; until then a
-/// no-op seam with the final call shape.
+/// I9 `at_tx{port, line}` (`line` without the trailing `\r`) — the WP6
+/// base adds the sink method; until then a no-op seam with the final shape.
 fn tape_tx(tape: &dyn TapeSink, port: &str, line: &str) {
     let _ = (tape, port, line);
 }
@@ -821,7 +832,11 @@ pub async fn sweep_transport(
                 continue;
             }
             let sel = at
-                .command(&format!("AT+CPMS=\"{}\"", mem.as_str()), Some("+CPMS:"), false)
+                .command(
+                    &format!("AT+CPMS=\"{}\"", mem.as_str()),
+                    Some("+CPMS:"),
+                    false,
+                )
                 .await
                 .map_err(AtError::into_read_error)?;
             // Set only once the select answered (a thrown timeout skips it).
@@ -836,11 +851,7 @@ pub async fn sweep_transport(
                     format!("CPMS=\"{}\" failed: {}", mem.as_str(), sel.final_line),
                 ));
             }
-            let counts = sel
-                .lines
-                .first()
-                .and_then(|l| parse_cpms_set(l))
-                .or(known);
+            let counts = sel.lines.first().and_then(|l| parse_cpms_set(l)).or(known);
             let Some(counts) = counts else { continue };
             storage.insert(mem, counts);
             if counts.used == 0 {
@@ -971,7 +982,9 @@ pub fn acquire_sms_lock(path: &Path) -> Option<SmsLock> {
         }
         // `Number(readFileSync(path, "utf8").trim())`; a failed read = NaN.
         let pid = std::fs::read(path)
-            .map(|b| xorgate_core::sms_cli::js_string_to_number(js::trim(&String::from_utf8_lossy(&b))))
+            .map(|b| {
+                xorgate_core::sms_cli::js_string_to_number(js::trim(&String::from_utf8_lossy(&b)))
+            })
             .unwrap_or(f64::NAN);
         if pid_alive(pid) {
             return None;

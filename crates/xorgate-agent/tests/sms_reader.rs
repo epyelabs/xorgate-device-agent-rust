@@ -256,7 +256,11 @@ async fn a_dropped_caller_does_not_cancel_the_sweep() {
         tokio::task::yield_now().await;
     }
     let r = reader.read().await;
-    assert_eq!(opened.lock().unwrap().len(), 1, "joined or reused, not re-run");
+    assert_eq!(
+        opened.lock().unwrap().len(),
+        1,
+        "joined or reused, not re-run"
+    );
     assert_eq!(r.messages.len(), 30);
     let (m, closed) = opened.lock().unwrap()[0].clone();
     assert_eq!(m.lock().unwrap().mem1, "SR");
@@ -311,7 +315,10 @@ async fn real_mode_read_sms_publishes_the_readers_sweep() {
     }
     assert_eq!(opened.lock().unwrap().len(), 1, "the reader ran once");
     let pubs = link.publishes.lock().unwrap().clone();
-    let sms: Vec<_> = pubs.iter().filter(|(t, _, _)| t.ends_with("/sms")).collect();
+    let sms: Vec<_> = pubs
+        .iter()
+        .filter(|(t, _, _)| t.ends_with("/sms"))
+        .collect();
     assert_eq!(sms.len(), 1);
     let sweep = reader.last().expect("a finished sweep");
     let want = build_sms_payload(

@@ -126,7 +126,11 @@ pub fn render_table(p: &SmsResultPayload, port: &str, columns: Option<u16>) -> V
     let mut out = vec![format!(
         "sms: {}{err} · port {port} · {} · {} message(s){}{} · {} ms",
         status_word(p.status),
-        if stores.is_empty() { "no stores" } else { &stores },
+        if stores.is_empty() {
+            "no stores"
+        } else {
+            &stores
+        },
         p.total,
         if p.skipped != 0 {
             format!(", {} skipped", p.skipped)
