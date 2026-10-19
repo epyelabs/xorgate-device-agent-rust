@@ -232,9 +232,88 @@ pub fn resolve_cam_token(
         .then(|| stream_key.to_string())
 }
 
+/// `system/xorgate-camrotate:34` — its usage line (stderr, exit 2).
+pub const CAMROTATE_USAGE: &str = "usage: xorgate-camrotate <sensor> <camN> <0|180>";
+
+/// The ONLY mint of a `xorgate-camrotate` [`crate::commands::HelperCall`]
+/// (I5): `applyRotationViaHelper(sensor, camToken, deg)`'s argv
+/// (`boot-config.ts:285`) with the helper's own argument checks
+/// (`system/xorgate-camrotate:39-50`) applied first:
+/// sensor `'' | *[!a-z0-9_-]*` → usage; cam must be `cam[0-9]`; deg 0|180
+/// (the type already guarantees it).
+///
+/// `Err` = [`CAMROTATE_USAGE`], the helper's stderr for those arguments, so
+/// the reconciler's cloud-visible `could not edit <path>: <detail> …` reads
+/// exactly as when the TS let the helper refuse them (D33; an overlay name such as
+/// `IMX290` or a connector `csi10` → `cam10`). The sudo call is skipped.
+pub fn camrotate_call(
+    sensor: &str,
+    cam_token: &str,
+    deg: crate::types::CameraRotationDeg,
+) -> Result<crate::commands::HelperCall, String> {
+    let sensor_ok = !sensor.is_empty()
+        && sensor
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    let cam = cam_token.as_bytes();
+    let cam_ok = cam.len() == 4 && cam.starts_with(b"cam") && cam[3].is_ascii_digit();
+    if !sensor_ok || !cam_ok {
+        return Err(CAMROTATE_USAGE.to_string());
+    }
+    Ok(crate::commands::HelperCall::mint(
+        crate::commands::HelperKind::CamRotate {
+            sensor: sensor.to_string(),
+            cam_token: cam_token.to_string(),
+            deg: deg.degrees() as u16,
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camrotate_call_validates_like_the_helper() {
+        use crate::types::CameraRotationDeg::{Deg0, Deg180};
+        let c = camrotate_call("imx290", "cam0", Deg180).unwrap();
+        assert_eq!(
+            c.argv(),
+            [
+                "sudo",
+                "-n",
+                "/usr/local/bin/xorgate-camrotate",
+                "imx290",
+                "cam0",
+                "180"
+            ]
+        );
+        assert_eq!(c.timeout_ms(), Some(20_000));
+        assert_eq!(
+            camrotate_call("ov5647_x-1", "cam9", Deg0)
+                .unwrap()
+                .helper_args()[2],
+            "0"
+        );
+        for (s, cam) in [
+            ("", "cam0"),
+            ("IMX290", "cam0"),
+            ("../../etc/passwd", "cam0"),
+            ("imx 290", "cam0"),
+            ("imx290;reboot", "cam0"),
+            ("imx290", "cam10"),
+            ("imx290", "cam"),
+            ("imx290", "csi0"),
+            ("imx290", "camx"),
+            ("imx290", ""),
+        ] {
+            assert_eq!(
+                camrotate_call(s, cam, Deg180).unwrap_err(),
+                CAMROTATE_USAGE,
+                "{s:?} {cam:?}"
+            );
+        }
+    }
 
     #[test]
     fn js_number_subset() {

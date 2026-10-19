@@ -1,0 +1,14 @@
+# Installed by xorgate at /etc/cron.d/xorgate-fake-hwclock (install.sh /
+# `xorgate update`) — optimize-system-process-cycle plan, Phase 4.
+#
+# The stock Debian fake-hwclock saves the clock hourly (/etc/cron.hourly) +
+# on clean shutdown; a hard crash (the undervoltage class this plan exists
+# for) then restores a clock up to an hour stale on the next battery-less-RTC
+# boot. Saving every 5 minutes bounds that restore error to <=5 min even with
+# no GPS/LTE — which also keeps TLS cert validation and command-TTL logic
+# sane at boot. The distro's hourly script is left untouched (a redundant
+# save is harmless).
+# Absolute path: cron.d entries run with PATH=/usr/bin:/bin, which does not
+# include /sbin where fake-hwclock lives (hardware-verified 2026-07-29 — a
+# `command -v` guard just fails silently under cron).
+*/5 * * * * root [ -x /sbin/fake-hwclock ] && /sbin/fake-hwclock save

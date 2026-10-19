@@ -1,0 +1,1357 @@
+{
+  "jsSourceFile": "test/boot-config.test.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp3-tools/dump-camera-mount.mts via npx tsx in a scratch copy of the JS repo @89b5c64 (docker node:20-bookworm linux/arm64, TZ=UTC, mawk; node v20.20.2; the REAL system/xorgate-camrotate run directly with XORGATE_BOOT_CONFIG as the TS test does); paths under the scratch dir are rewritten to <dir>",
+  "constants": {
+    "CAMROTATE_HELPER": "/usr/local/bin/xorgate-camrotate",
+    "CONFIG_TXT": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+    "HARDWARE": {
+      "v": 2,
+      "platform": "rpi-cm4",
+      "encoder": "hw-h264",
+      "rails": false,
+      "statusLed": null,
+      "imu": "bno085",
+      "video": [
+        {
+          "key": "cam0",
+          "connector": "csi0",
+          "sensor": "imx290",
+          "codec": "h264"
+        },
+        {
+          "key": "cam1",
+          "connector": "csi1",
+          "sensor": "imx290",
+          "codec": "h264"
+        }
+      ]
+    },
+    "NOW": 1785326400000,
+    "helperNeverReboots": true
+  },
+  "cases": [],
+  "reconcile": [
+    {
+      "name": "does nothing at all when the namespace is absent",
+      "inForce": {
+        "cam0": 0
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": null,
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "edits the overlay, reports pending-reboot, and does not touch the file again",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        },
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        },
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        },
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 4
+    },
+    {
+      "name": "reports applied once the kernel has actually booted with it",
+      "config": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+      "inForce": {
+        "cam0": 180
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 180,
+                "bootDeg": 180,
+                "verdict": "applied"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "re-edits after a re-image dropped the token, and asks for one more reboot",
+      "inForce": {
+        "cam0": 180
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 180,
+                "bootDeg": 180,
+                "verdict": "applied"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "leaves an unmanaged camera's overlay strictly alone",
+      "inForce": {
+        "cam0": 0,
+        "cam1": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "refuses to edit a sensor whose overlay has no rotation parameter",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": false
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 0,
+                "verdict": "unsupported",
+                "detail": "the imx290 overlay on this device has no \"rotation\" parameter"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "refuses when the probe itself could not run",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": false,
+        "supports": false
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 0,
+                "verdict": "unsupported",
+                "detail": "could not ask dtoverlay whether imx290 supports rotation"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "says so when there is no overlay line, or no camera by that name",
+      "config": "camera_auto_detect=1\n",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          },
+          "cam7": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": null,
+                "verdict": "no-overlay",
+                "detail": "no dtoverlay line for cam0 in <dir>/config.txt — the camera overlay is missing"
+              },
+              {
+                "streamKey": "cam7",
+                "desiredDeg": 180,
+                "inForceDeg": null,
+                "bootDeg": null,
+                "verdict": "unknown-camera",
+                "detail": "this device has no camera \"cam7\""
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "camera_auto_detect=1\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "reports a failed privileged write instead of pretending it landed",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": {
+        "ok": false,
+        "changed": false,
+        "detail": "sudo: a password is required"
+      },
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 0,
+                "verdict": "write-failed",
+                "detail": "could not edit <dir>/config.txt: sudo: a password is required (the agent needs the xorgate-camrotate helper — run `sudo xorgate update`)"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam0: boot config rotation edit failed — sudo: a password is required"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "says it could not confirm when the device tree is unreadable",
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": null,
+                "bootDeg": 180,
+                "verdict": "unconfirmed",
+                "detail": "could not read the rotation currently in force from the device tree"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "works on a v1 device with no hardware block",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": null,
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "handles an empty camera map (managing nothing) without reading the boot config",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {}
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "rewrites duplicate lines in different sections to agree",
+      "config": "[cm4]\ndtoverlay=imx290,cam0\n[cm5]\ndtoverlay=imx290,cam0,4lane\n",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "[cm4]\ndtoverlay=imx290,cam0,rotation=180\n[cm5]\ndtoverlay=imx290,cam0,4lane,rotation=180\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "survives a read-only boot config by reporting, not throwing",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "chmod444": true,
+      "passCount": 1
+    },
+    {
+      "name": "[extra] no config.txt on this device",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "bootConfigPath": null,
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": null,
+                "verdict": "no-overlay",
+                "detail": "no config.txt on this device (looked in /boot/firmware and /boot)"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "[extra] config.txt cannot be read (ENOENT)",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "bootConfigPath": "missing",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": null,
+                "verdict": "write-failed",
+                "detail": "cannot read <dir>/nope/config.txt: ENOENT: no such file or directory, open '<dir>/nope/config.txt'"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "[extra] config.txt cannot be read (EISDIR)",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "bootConfigPath": "dir",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": null,
+                "verdict": "write-failed",
+                "detail": "cannot read <dir>/pipelines: EISDIR: illegal operation on a directory, read"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "[extra] 180 back to 0 removes the token, pending until reboot",
+      "config": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+      "inForce": {
+        "cam0": 180
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 0
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 0,
+                "inForceDeg": 180,
+                "bootDeg": 0,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 0° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              0
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        },
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 0,
+                "inForceDeg": 180,
+                "bootDeg": 0,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 2
+    },
+    {
+      "name": "[extra] the helper refuses an uppercase overlay name (usage)",
+      "config": "dtoverlay=IMX290,cam0\n",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam0": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 0,
+                "verdict": "write-failed",
+                "detail": "could not edit <dir>/config.txt: usage: xorgate-camrotate <sensor> <camN> <0|180> (the agent needs the xorgate-camrotate helper — run `sudo xorgate update`)"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam0: boot config rotation edit failed — usage: xorgate-camrotate <sensor> <camN> <0|180>"
+            }
+          ],
+          "probes": [
+            "IMX290"
+          ],
+          "applies": [
+            [
+              "IMX290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "dtoverlay=IMX290,cam0\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "[extra] the helper refuses a two-digit camera token (usage)",
+      "config": "dtoverlay=imx290,cam10\n",
+      "settings": {
+        "cameras": {
+          "cam10": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": null,
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam10",
+                "desiredDeg": 180,
+                "inForceDeg": null,
+                "bootDeg": 0,
+                "verdict": "write-failed",
+                "detail": "could not edit <dir>/config.txt: usage: xorgate-camrotate <sensor> <camN> <0|180> (the agent needs the xorgate-camrotate helper — run `sudo xorgate update`)"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam10: boot config rotation edit failed — usage: xorgate-camrotate <sensor> <camN> <0|180>"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam10",
+              180
+            ]
+          ],
+          "file": "dtoverlay=imx290,cam10\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "[extra] both cameras managed, sorted keys, one unconfirmed",
+      "inForce": {
+        "cam1": 0
+      },
+      "settings": {
+        "cameras": {
+          "cam1": {
+            "rotationDeg": 180
+          },
+          "cam0": {
+            "rotationDeg": 0
+          }
+        }
+      },
+      "hardware": "HARDWARE",
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 0,
+                "inForceDeg": null,
+                "bootDeg": 0,
+                "verdict": "unconfirmed",
+                "detail": "could not read the rotation currently in force from the device tree"
+              },
+              {
+                "streamKey": "cam1",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam1: imx290/cam1 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "probes": [
+            "imx290"
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam1",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1,rotation=180\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    },
+    {
+      "name": "[extra] a stream key the hardware block does not declare, v1 fallback refuses a non-camN key",
+      "inForce": {
+        "cam0": 0
+      },
+      "settings": {
+        "cameras": {
+          "front": {
+            "rotationDeg": 180
+          }
+        }
+      },
+      "hardware": null,
+      "probe": {
+        "ok": true,
+        "supports": true
+      },
+      "apply": "helper",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "front",
+                "desiredDeg": 180,
+                "inForceDeg": null,
+                "bootDeg": null,
+                "verdict": "unknown-camera",
+                "detail": "this device has no camera \"front\""
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [],
+          "probes": [],
+          "applies": [],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ],
+      "passCount": 1
+    }
+  ],
+  "writer": [
+    {
+      "name": "edits one token and leaves every other line and parameter alone",
+      "calls": [
+        [
+          "imx290",
+          "cam0",
+          180
+        ]
+      ],
+      "results": [
+        {
+          "ok": true,
+          "changed": true,
+          "detail": ""
+        }
+      ],
+      "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+      "bak": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+    },
+    {
+      "name": "is idempotent: a second identical call writes nothing (exit 3)",
+      "calls": [
+        [
+          "imx290",
+          "cam0",
+          180
+        ],
+        [
+          "imx290",
+          "cam0",
+          180
+        ]
+      ],
+      "results": [
+        {
+          "ok": true,
+          "changed": true,
+          "detail": ""
+        },
+        {
+          "ok": true,
+          "changed": false,
+          "detail": ""
+        }
+      ],
+      "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+      "bak": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+    },
+    {
+      "name": "removes the token again for 0 rather than writing rotation=0",
+      "calls": [
+        [
+          "imx290",
+          "cam0",
+          180
+        ],
+        [
+          "imx290",
+          "cam0",
+          0
+        ]
+      ],
+      "results": [
+        {
+          "ok": true,
+          "changed": true,
+          "detail": ""
+        },
+        {
+          "ok": true,
+          "changed": true,
+          "detail": ""
+        }
+      ],
+      "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+      "bak": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+    },
+    {
+      "name": "keeps a backup of the file as it was before the first edit",
+      "calls": [
+        [
+          "imx290",
+          "cam0",
+          180
+        ],
+        [
+          "imx290",
+          "cam1",
+          180
+        ]
+      ],
+      "results": [
+        {
+          "ok": true,
+          "changed": true,
+          "detail": ""
+        },
+        {
+          "ok": true,
+          "changed": true,
+          "detail": ""
+        }
+      ],
+      "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1,rotation=180\n#dtoverlay=googlevoicehat-soundcard\n",
+      "bak": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+    },
+    {
+      "name": "refuses a line that belongs to another overlay, and bad arguments",
+      "calls": [
+        [
+          "imx477",
+          "cam0",
+          180
+        ],
+        [
+          "imx290",
+          "cam0",
+          90
+        ],
+        [
+          "../../etc/passwd",
+          "cam0",
+          180
+        ]
+      ],
+      "results": [
+        {
+          "ok": false,
+          "changed": false,
+          "detail": "no dtoverlay=imx477 line for cam0 in <dir>/config.txt"
+        },
+        {
+          "ok": false,
+          "changed": false,
+          "detail": "usage: xorgate-camrotate <sensor> <camN> <0|180>"
+        },
+        {
+          "ok": false,
+          "changed": false,
+          "detail": "usage: xorgate-camrotate <sensor> <camN> <0|180>"
+        }
+      ],
+      "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n",
+      "bak": null
+    }
+  ]
+}

@@ -705,3 +705,119 @@ mod tests {
         assert_eq!(container_exit_code(DeviceCommandName::Update), None);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4 (I5): the two sudo helpers — `xorgate-setclock` (sudoers 021) and
+// `xorgate-camrotate` (sudoers 023)
+// ---------------------------------------------------------------------------
+
+/// One privileged helper invocation. Next to the three [`PrivilegedCall`]s
+/// these are the ONLY other sudo argv the agent can run (invariant 4, I5).
+///
+/// The TS has no such type: `clock-step.ts:186` and `boot-config.ts:285`
+/// call `run("sudo", ["-n", HELPER, …])` with whatever values they hold and
+/// let the helper re-validate them. Here the fields are private and the only
+/// constructors are [`crate::clock_step::setclock_call`] and
+/// [`crate::boot_config::camrotate_call`], which apply the helper's OWN
+/// validation (`system/xorgate-setclock:16-21`, `system/xorgate-camrotate:39-50`)
+/// first, so a value the helper would refuse never reaches sudo. A refusal
+/// carries the helper's own stderr line, so the caller's `detail` (cloud-
+/// visible for the camera mount) reads exactly as if the helper had run
+/// (accepted divergence D33: no sudo journal line for a refused call).
+///
+/// Shipped form vs the frozen I5 sketch (`pub enum HelperCall { SetClock {..},
+/// CamRotate {..} }`): a struct over the read-only [`HelperKind`] enum, so the
+/// validated values cannot be edited after minting (an enum with public
+/// fields could be built or mutated anywhere).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelperCall {
+    kind: HelperKind,
+}
+
+/// What a [`HelperCall`] does (read-only view; build one through the mint fns).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HelperKind {
+    /// `sudo -n /usr/local/bin/xorgate-setclock <epoch-seconds>` (`clock-step.ts:186`).
+    SetClock { epoch_s: u64 },
+    /// `sudo -n /usr/local/bin/xorgate-camrotate <sensor> <camN> <0|180>`
+    /// (`boot-config.ts:285`).
+    CamRotate {
+        sensor: String,
+        cam_token: String,
+        deg: u16,
+    },
+}
+
+impl HelperCall {
+    /// Crate-private: only the two mint functions call this.
+    pub(crate) fn mint(kind: HelperKind) -> Self {
+        Self { kind }
+    }
+
+    pub fn kind(&self) -> &HelperKind {
+        &self.kind
+    }
+
+    /// The helper's absolute path (the sudoers grants name it exactly).
+    pub fn helper(&self) -> &'static str {
+        match self.kind {
+            HelperKind::SetClock { .. } => crate::clock_step::SETCLOCK_HELPER,
+            HelperKind::CamRotate { .. } => crate::boot_config::CAMROTATE_HELPER,
+        }
+    }
+
+    /// The helper's own arguments, as the TS stringifies them
+    /// (`String(Math.round(targetMs / 1000))`, `String(deg)`).
+    pub fn helper_args(&self) -> Vec<String> {
+        match &self.kind {
+            HelperKind::SetClock { epoch_s } => vec![epoch_s.to_string()],
+            HelperKind::CamRotate {
+                sensor,
+                cam_token,
+                deg,
+            } => vec![sensor.clone(), cam_token.clone(), deg.to_string()],
+        }
+    }
+
+    /// `["sudo", "-n", <helper>, …]` — always `-n` (fail fast, never prompt).
+    pub fn argv(&self) -> Vec<String> {
+        let mut v = vec![
+            "sudo".to_string(),
+            "-n".to_string(),
+            self.helper().to_string(),
+        ];
+        v.extend(self.helper_args());
+        v
+    }
+
+    /// `run(…, { timeoutMs })`: the camera helper is bounded at 20 s
+    /// (`boot-config.ts:285-287`); the clock helper has no timeout
+    /// (`clock-step.ts:186`).
+    pub fn timeout_ms(&self) -> Option<u64> {
+        match self.kind {
+            HelperKind::SetClock { .. } => None,
+            HelperKind::CamRotate { .. } => Some(20_000),
+        }
+    }
+}
+
+#[cfg(test)]
+mod helper_call_tests {
+    use super::*;
+    use crate::clock_step::{setclock_argv, setclock_call};
+
+    #[test]
+    fn setclock_argv_is_sudo_plus_the_phase1_argv() {
+        let call = setclock_call(1_785_326_700_499.0).unwrap();
+        let mut want = vec!["sudo".to_string()];
+        want.extend(setclock_argv(1_785_326_700_499.0));
+        assert_eq!(call.argv(), want);
+        assert_eq!(call.timeout_ms(), None);
+        assert_eq!(
+            call.kind(),
+            &HelperKind::SetClock {
+                epoch_s: 1_785_326_700
+            }
+        );
+    }
+}

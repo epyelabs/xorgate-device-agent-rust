@@ -7,6 +7,7 @@
 //! tool yields `None` and the caller omits the field (agent-anatomy §10.3).
 
 pub mod atomic_write;
+pub mod boot_config_io;
 pub mod boot_id;
 pub mod boot_sources;
 pub mod camera_list;
