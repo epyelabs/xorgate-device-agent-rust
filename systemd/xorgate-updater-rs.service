@@ -1,0 +1,37 @@
+[Unit]
+Description=Xorgate agent self-update (Rust) (fetch latest build, install, restart agent)
+Documentation=https://github.com/epyelabs/xorgate-device-agent-rust
+
+# The Rust port of xorgate-updater.service (device/xorgate-device-agent
+# systemd/xorgate-updater.service @ 89b5c64), line for line except the unit
+# names: it runs `xorgate-rs update`, never the JS updater (O3, README §6).
+#
+# Deliberately NO [Install] section: this unit is never enabled and never runs
+# on boot. It is started on demand — by hand, or by the agent acting on a
+# cloud-issued `update` command via
+#   sudo -n systemctl start --no-block xorgate-updater-rs.service
+# (exact-match sudoers grant, /etc/sudoers.d/024_xorgate-update-rs — the argv
+# and that line come from ONE const, xorgate_core::update_plan::UPDATE_RS_ARGV).
+#
+# Why a unit at all, rather than the agent updating itself in-process or
+# spawning `sudo xorgate-rs update` as a child:
+#   - the agent runs unprivileged (User=pi drop-in); the updater needs root;
+#   - a child process would sit in the agent's own cgroup and be killed by the
+#     `systemctl restart xorgate-agent-rs` that the update itself performs.
+# systemd owns the updater instead, so it survives the restart of its caller,
+# and `systemctl start` on an already-activating oneshot coalesces into the
+# running job — which is what makes a double-pressed Update button harmless.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xorgate-rs update
+# The default TimeoutStartSec (90s) would SIGTERM the updater in the middle of
+# the download, which over LTE on a CM5 can take minutes (the JS unit sized this
+# for `npm ci`; the Rust rail has no npm step but keeps the budget for the
+# tarball fetch). `xorgate-rs update` rolls back on failure, but a kill mid-swap
+# is a class of failure worth not having.
+TimeoutStartSec=20min
+# `xorgate-rs update` reads /etc/xorgate/agent.env itself (for the dist bucket
+# URL and version), so no EnvironmentFile is needed here. A runtime drop-in
+# (`Environment=DEVICE_DIST_BUCKET_URL=…`) overrides it without editing the JS
+# agent's agent.env (phase-4 E11).
