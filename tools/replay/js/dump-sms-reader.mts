@@ -494,9 +494,30 @@ resolveCase(
 resolveCase("extra: blank override is ignored", [{ name: "ttyUSB3", iface: "05", vendor: "1e0e" }], { XORGATE_SMS_PORT: "   " });
 resolveCase("extra: override is trimmed", [], { XORGATE_SMS_PORT: "  /dev/pts/7 \n" });
 
+// ---- the pty end-to-end inbox (tests/at_port_pty.rs + sms-pty-read.mts) ----
+// The bench shape + a stored SUBMIT in SM and a two-part concatenated UCS2
+// message (emoji + CJK) in ME — the `p4-sms` tape's inbox.
+const ptySpec: FakeSpec = (() => {
+  const st = benchStores();
+  const sub = buildSubmit();
+  st.SM!.slots[7] = { stat: 3, length: sub.length, pdu: sub.pdu };
+  const part = (seq: number, ucs2: string) => {
+    const { pdu, length } = buildDeliver({
+      from: { kind: "alphanumeric", value: "Carrier" },
+      ucs2,
+      concat: { ref: 0x2a, total: 2, seq },
+      scts: scts(2026, 9, 30, 8, 15, 0, -16),
+    });
+    return { stat: 0, length, pdu };
+  };
+  st.ME = { total: 25, slots: { ...st.ME!.slots, 23: part(1, "Hello \u{1F44B} "), 24: part(2, "w\u00f6rld \u6771\u4eac") } };
+  return { stores: st, cmgf: 1, mem1: "SR" };
+})();
+
 process.stdout.write(
   JSON.stringify(
     {
+      ptySpec,
       jsSourceFile: "src/hardware/sms-modem.ts (resolveSmsPort :76-99, AtSession :212-270, sweepTransport :315-417, acquireSmsLock :431-470, SmsReader :487-541) + test/sms-modem.test.ts FakeModem :20-119",
       jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
       generatedBy: "tools/replay/js/run-tsx.sh tools/replay/js/dump-sms-reader.mts (phase-4 WP2)",
