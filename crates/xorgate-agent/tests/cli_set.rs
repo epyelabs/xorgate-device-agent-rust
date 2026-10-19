@@ -12,6 +12,7 @@ use serde_json::Value;
 use xorgate_agent::cli::set::{run, SetIo};
 use xorgate_core::cli_set::{Line, Stream};
 use xorgate_core::settings::AgentSettings;
+use xorgate_hal::network_io::{IfaceState, IfaceStatus, RadioResult, WifiPresence};
 use xorgate_hal::settings_io::{load_settings, save_settings, settings_path};
 
 #[derive(Deserialize)]
@@ -58,6 +59,18 @@ struct FakeIo {
     idx: Cell<usize>,
     root: Option<(u32, String)>,
     lines: RefCell<Vec<Line>>,
+    /// `set wifi` world (never nmcli/ping in tests): detectWifi's answer,
+    /// $SSH_CONNECTION, the ip → iface map, the probe verdicts, setWifi's
+    /// answer, and the setWifi calls made.
+    wifi: WifiPresence,
+    ssh: Option<String>,
+    ip_ifaces: Vec<(String, String)>,
+    statuses: Vec<IfaceStatus>,
+    radio: RadioResult,
+    radio_calls: RefCell<Vec<bool>>,
+    /// CF52: `(sleep index, wall step ms)` — the clock jumps after that sleep.
+    step: Option<(usize, i64)>,
+    sleeps: Cell<usize>,
 }
 
 impl FakeIo {
@@ -69,6 +82,21 @@ impl FakeIo {
             idx: Cell::new(0),
             root: None,
             lines: RefCell::new(Vec::new()),
+            wifi: WifiPresence {
+                present: false,
+                enabled: false,
+                device: None,
+            },
+            ssh: None,
+            ip_ifaces: Vec::new(),
+            statuses: Vec::new(),
+            radio: RadioResult {
+                ok: true,
+                message: String::new(),
+            },
+            radio_calls: RefCell::new(Vec::new()),
+            step: None,
+            sleeps: Cell::new(0),
         }
     }
     fn text(&self, stream: Stream) -> String {
@@ -92,6 +120,13 @@ impl SetIo for FakeIo {
     fn sleep_ms(&self, ms: i64) {
         self.now.set(self.now.get() + ms);
         self.idx.set(self.idx.get() + 1);
+        let n = self.sleeps.get();
+        if let Some((at, delta)) = self.step {
+            if at == n {
+                self.now.set(self.now.get() + delta);
+            }
+        }
+        self.sleeps.set(n + 1);
     }
     fn read_modem(&self) -> Option<Value> {
         let i = self.idx.get().min(self.lte.len().saturating_sub(1));
@@ -116,6 +151,26 @@ impl SetIo for FakeIo {
     }
     fn emit(&self, line: &Line) {
         self.lines.borrow_mut().push(line.clone());
+    }
+    fn detect_wifi(&self) -> WifiPresence {
+        self.wifi.clone()
+    }
+    fn ssh_connection(&self) -> Option<String> {
+        self.ssh.clone()
+    }
+    fn iface_for_ip(&self, ip: Option<&str>) -> Option<String> {
+        let ip = ip?;
+        self.ip_ifaces
+            .iter()
+            .find(|(i, _)| i == ip)
+            .map(|(_, n)| n.clone())
+    }
+    fn interface_statuses(&self) -> Vec<IfaceStatus> {
+        self.statuses.clone()
+    }
+    fn set_wifi(&self, on: bool) -> RadioResult {
+        self.radio_calls.borrow_mut().push(on);
+        self.radio.clone()
     }
 }
 
@@ -370,16 +425,159 @@ fn camera_mount_leaves_other_namespaces_alone() {
 
 // --- beyond the TS suite ------------------------------------------------------
 
-/// `set wifi` is Phase 4 (WP6 brief): the key is known, so not the unknown-key text.
+/// CF52: the APN watch windows stay on the wall clock (TS parity); a step
+/// in either direction neither crashes nor wedges the watch. No modem file at
+/// all → the 90 s old-daemon cutoff decides (`set.ts:625-631`).
 #[test]
-fn wifi_arrives_later() {
-    let h = scratch("wifi");
-    let (code, io) = set(&h, &["wifi", "off", "--force"]);
+fn apn_watch_survives_a_clock_step() {
+    const OLD_DAEMON: &str = "✗ the modem daemon is not reporting any APN machinery — it likely predates this feature and will NEVER apply the change. Update the agent (xorgate update).";
+    for (delta, sleeps) in [
+        // forward 10 min after the first sleep: elapsed 603 s > 90 s at once.
+        (600_000_i64, 1_usize),
+        // backward 1 h: elapsed runs from -3597 s up past +90 s in 3 s polls.
+        (-3_600_000, 1 + (3_597_000 + 90_000) / 3000 + 1),
+        // no step: the cutoff after 31 polls (93 s).
+        (0, 31),
+    ] {
+        let h = scratch(&format!("apn-step-{delta}"));
+        let mut io = FakeIo::new(&h, vec![None]);
+        io.step = Some((0, delta));
+        let args: Vec<String> = ["apn", "internet.example"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let code = run(&args, &io);
+        assert_eq!(code, 1, "step {delta}");
+        assert_eq!(io.lines.borrow().last().unwrap().text, OLD_DAEMON);
+        assert_eq!(io.sleeps.get(), sleeps, "step {delta}");
+    }
+}
+
+// --- `set wifi` (set.ts:679-717, Phase 4 WP5, CF51) ---------------------------
+
+fn wlan(enabled: bool) -> WifiPresence {
+    WifiPresence {
+        present: true,
+        enabled,
+        device: Some("wlan0".into()),
+    }
+}
+
+fn st(name: &str, state: IfaceState) -> IfaceStatus {
+    IfaceStatus {
+        name: name.into(),
+        state,
+    }
+}
+
+fn wifi_run(h: &Path, args: &[&str], cfg: impl FnOnce(&mut FakeIo)) -> (i32, FakeIo) {
+    let mut io = FakeIo::new(h, vec![None]);
+    cfg(&mut io);
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    (run(&args, &io), io)
+}
+
+/// A bad value fails before any probe, without the sudo note or a write.
+#[test]
+fn wifi_rejects_a_bad_value() {
+    let h = scratch("wifi-bad");
+    let (code, io) = wifi_run(&h, &["wifi"], |io| io.root = Some((1000, "pi".into())));
+    assert_eq!(code, 1);
+    assert_eq!(io.text(Stream::Err), "wifi must be 'on' or 'off', got ''");
+    let (code, io) = wifi_run(&h, &["wifi", "maybe"], |_| {});
     assert_eq!(code, 1);
     assert_eq!(
         io.text(Stream::Err),
-        "xorgate-rs: 'set wifi' arrives in a later build"
+        "wifi must be 'on' or 'off', got 'maybe'"
     );
+    assert!(io.radio_calls.borrow().is_empty());
+    assert!(!settings_path(&h).exists());
+}
+
+#[test]
+fn wifi_without_an_adapter() {
+    let h = scratch("wifi-none");
+    let (code, io) = wifi_run(&h, &["wifi", "on"], |_| {});
+    assert_eq!(code, 1);
+    assert_eq!(
+        io.text(Stream::Err),
+        "wifi: no WiFi adapter detected on this device"
+    );
+    assert!(io.radio_calls.borrow().is_empty());
+}
+
+/// `set wifi off` over a WiFi SSH session REFUSES (the bench smoke, E15).
+#[test]
+fn wifi_off_refuses_over_its_own_ssh_session() {
+    let h = scratch("wifi-ssh");
+    let (code, io) = wifi_run(&h, &["wifi", "off"], |io| {
+        io.wifi = wlan(true);
+        io.ssh = Some("192.168.8.10 51234 192.168.8.203 22".into());
+        io.ip_ifaces = vec![("192.168.8.203".into(), "wlan0".into())];
+        io.statuses = vec![
+            st("eth0", IfaceState::Online),
+            st("wlan0", IfaceState::Online),
+        ];
+    });
+    assert_eq!(code, 1);
+    let err: Vec<String> = io.lines.borrow().iter().map(|l| l.text.clone()).collect();
+    assert_eq!(
+        err,
+        [
+            "refusing to turn WiFi off: your SSH session is over wlan0.",
+            "re-run with --force if you're sure (you may lose connectivity)."
+        ]
+    );
+    assert!(io.radio_calls.borrow().is_empty());
+}
+
+#[test]
+fn wifi_off_refuses_when_it_is_the_only_uplink() {
+    let h = scratch("wifi-uplink");
+    let (code, io) = wifi_run(&h, &["wifi", "off"], |io| {
+        io.wifi = wlan(true);
+        io.ssh = Some("10.0.0.2 5 10.0.0.9 22".into()); // over eth0
+        io.ip_ifaces = vec![("10.0.0.9".into(), "eth0".into())];
+        io.statuses = vec![
+            st("eth0", IfaceState::Offline),
+            st("usb0", IfaceState::Down),
+            st("wlan0", IfaceState::Online),
+        ];
+    });
+    assert_eq!(code, 1);
+    assert_eq!(
+        io.lines.borrow()[0].text,
+        "refusing to turn WiFi off: wlan0 is currently your only internet connection."
+    );
+}
+
+/// `--force` skips the guard; `on` never runs it; the success line is `✓ <message>`.
+#[test]
+fn wifi_force_and_on_skip_the_guard() {
+    let h = scratch("wifi-force");
+    let guard = |io: &mut FakeIo| {
+        io.wifi = wlan(true);
+        io.ssh = Some("1 2 192.168.8.203 22".into());
+        io.ip_ifaces = vec![("192.168.8.203".into(), "wlan0".into())];
+        io.radio = RadioResult {
+            ok: true,
+            message: "wifi off (wlan0)".into(),
+        };
+    };
+    let (code, io) = wifi_run(&h, &["wifi", "off", "--force"], guard);
+    assert_eq!(code, 0);
+    assert_eq!(io.text(Stream::Out), "✓ wifi off (wlan0)");
+    assert_eq!(*io.radio_calls.borrow(), [false]);
+    let (code, io) = wifi_run(&h, &["wifi", "on"], |io| {
+        io.wifi = wlan(false);
+        io.radio = RadioResult {
+            ok: false,
+            message: "wifi on failed: exit null".into(),
+        };
+    });
+    assert_eq!(code, 1);
+    assert_eq!(io.text(Stream::Err), "wifi on failed: exit null");
+    assert_eq!(*io.radio_calls.borrow(), [true]);
     assert!(!settings_path(&h).exists());
 }
 

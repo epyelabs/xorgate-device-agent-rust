@@ -40,10 +40,6 @@ use crate::video_presets::{find_video_preset, video_preset_names};
 /// `USAGE` (`set.ts:94-95`).
 pub const USAGE: &str = "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)";
 
-/// `set wifi` before Phase 4 (WP6 brief; tolerated as T8). The TS toggles the
-/// OS WiFi device through NetworkManager (`set.ts:679-717`).
-pub const WIFI_LATER: &str = "xorgate-rs: 'set wifi' arrives in a later build";
-
 const RECORDING_LIVE: &str =
     "  the agent applies recording changes live within ~5 s (no restart needed)";
 const MODEM_LIVE_MINUTE: &str =
