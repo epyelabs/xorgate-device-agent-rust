@@ -1118,6 +1118,7 @@ pub fn diff_media(
                 tol,
             ));
         }
+        let mut lack = (0usize, 0usize);
         for (i, (sa, sb)) in xa.iter().zip(xb.iter()).enumerate() {
             stat(rep, "rec-telemetry").compared += 1;
             let at = format!("{sid}/seg#{i}");
@@ -1212,15 +1213,7 @@ pub fn diff_media(
                     ));
                 }
             }
-            // Per-SAMPLE `system` presence (rig fix 2026-10-19). The groups
-            // above are a per-segment union, so a recorder that drops the
-            // group on some ticks passed unseen. `system` is sampled by the
-            // agent itself (system.ts:104-113, a 1 s recompute gate shared
-            // by the recorder and the shed tick; telemetry-recorder.ts:102
-            // skips a group not refreshed since its last written sample),
-            // so a missing `system` is the agent's timer behaviour, not a
-            // tape input. JS-vs-JS (9 calibrations 2026-10-17): ≤ 1 per
-            // segment apart → `T13/system-presence` (`perSegment`).
+            // Per-SAMPLE `system` presence, summed over the session below.
             let lacking = |v: &[Value]| {
                 v.iter()
                     .filter(|x| x["metrics"].is_object() && x["metrics"].get("system").is_none())
@@ -1228,29 +1221,39 @@ pub fn diff_media(
             };
             let carries = |v: &[Value]| v.iter().any(|x| x["metrics"].get("system").is_some());
             if carries(&pa) || carries(&pb) {
-                let (na, nb) = (lacking(&pa), lacking(&pb));
-                if na != nb {
-                    let id = "T13/system-presence";
-                    let max = row_tol(table, id, "perSegment", 0.0) as usize;
-                    let tol = if has_row(table, id) && na.abs_diff(nb) <= max {
-                        id
-                    } else {
-                        UNTOLERATED
-                    };
-                    rep.push(mm(
-                        "rec-telemetry",
-                        &at,
-                        "(samples without system)",
-                        na.to_string(),
-                        nb.to_string(),
-                        tol,
-                    ));
-                }
+                lack.0 += lacking(&pa);
+                lack.1 += lacking(&pb);
             }
             rep.inputs
                 .entry(format!("rec-telemetry samples {sid}"))
                 .or_default()
                 .push_str(&format!("[{}:{}]", pa.len(), pb.len()));
+        }
+        // Per-SAMPLE `system` presence over the session's paired segments
+        // (rig fix 2026-10-19). The per-segment group union above let a
+        // recorder that drops `system` on ~8 % of ticks pass unseen.
+        // `system` is sampled by the agent itself (system.ts:104-113: a 1 s
+        // recompute gate shared by the recorder and the shed tick;
+        // telemetry-recorder.ts:102 skips a group not refreshed since its
+        // last written sample), so the count is the agent's timer
+        // behaviour, not a tape input. Bound: `T13/system-presence`
+        // `perSession` (JS-vs-JS calibrations: max |Δ| 2).
+        if lack.0 != lack.1 {
+            let id = "T13/system-presence";
+            let max = row_tol(table, id, "perSession", 0.0) as usize;
+            let tol = if has_row(table, id) && lack.0.abs_diff(lack.1) <= max {
+                id
+            } else {
+                UNTOLERATED
+            };
+            rep.push(mm(
+                "rec-telemetry",
+                sid,
+                "(samples without system)",
+                lack.0.to_string(),
+                lack.1.to_string(),
+                tol,
+            ));
         }
     }
 
@@ -1543,7 +1546,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert!(run(2, 2).is_empty());
-        assert_eq!(run(0, 1), vec!["T13/system-presence".to_string()]);
+        assert_eq!(run(0, 2), vec!["T13/system-presence".to_string()]);
         assert_eq!(run(0, 3), vec![UNTOLERATED.to_string()]);
     }
 
