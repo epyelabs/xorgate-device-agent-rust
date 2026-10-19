@@ -1,7 +1,7 @@
 {
  "jsSourceFile": "src/commands/pipeline.ts, src/commands/recording.ts",
  "jsCommit": "89b5c64",
- "generatedBy": "tools/replay/js/dump-cli-pipeline.mts (Phase 4 WP5)",
+ "generatedBy": "phase-4/evidence/wp5-tools/dump-cli-pipeline.mts → tools/replay/js/ via WP6 (Phase 4 WP5)",
  "note": "seedHex = the exact seed bytes. Rust RESTART_HINT differs by Q9 (D-row): tests map the TS hint to the Rust one.",
  "cases": [
   {

@@ -128,9 +128,9 @@ pub fn coord(l: Option<&Value>) -> String {
 pub fn fix_label(l: Option<&Value>) -> String {
     match val(l) {
         None => "—".to_string(),
-        Some(v) if v == 0.0 => "none".to_string(),
-        Some(v) if v == 1.0 => "GPS".to_string(),
-        Some(v) if v == 2.0 => "DGPS".to_string(),
+        Some(0.0) => "none".to_string(),
+        Some(1.0) => "GPS".to_string(),
+        Some(2.0) => "DGPS".to_string(),
         Some(v) => number_to_string(v),
     }
 }
@@ -191,7 +191,10 @@ mod tests {
     fn leaf_and_signed() {
         assert_eq!(leaf(Some(&json!({"value": 20, "unit": "m"})), 1), "20 m");
         assert_eq!(leaf(Some(&json!({"value": 0.5})), 1), "0.5");
-        assert_eq!(leaf(Some(&json!({"value": 54.25, "unit": "°C"})), 1), "54.3 °C");
+        assert_eq!(
+            leaf(Some(&json!({"value": 54.25, "unit": "°C"})), 1),
+            "54.3 °C"
+        );
         assert_eq!(leaf(None, 1), "—");
         assert_eq!(leaf(Some(&json!({"value": "x"})), 1), "—");
         assert_eq!(signed_fixed(0.92, 3), "+0.920");

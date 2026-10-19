@@ -400,14 +400,26 @@ mod tests {
     fn q10_keys_print_the_systemd_command() {
         let mut a = App::default();
         a.key(Key::Char('s'), &F);
-        assert_eq!(a.last_msg.as_deref(), Some("run: sudo systemctl start xorgate-agent-rs"));
+        assert_eq!(
+            a.last_msg.as_deref(),
+            Some("run: sudo systemctl start xorgate-agent-rs")
+        );
         a.key(Key::Char('x'), &F); // not running: ignored
-        assert_eq!(a.last_msg.as_deref(), Some("run: sudo systemctl start xorgate-agent-rs"));
+        assert_eq!(
+            a.last_msg.as_deref(),
+            Some("run: sudo systemctl start xorgate-agent-rs")
+        );
         let mut a = running_app();
         a.key(Key::Char('x'), &F);
-        assert_eq!(a.last_msg.as_deref(), Some("run: sudo systemctl stop xorgate-agent-rs"));
+        assert_eq!(
+            a.last_msg.as_deref(),
+            Some("run: sudo systemctl stop xorgate-agent-rs")
+        );
         a.key(Key::Char('R'), &F);
-        assert_eq!(a.last_msg.as_deref(), Some("run: sudo systemctl restart xorgate-agent-rs"));
+        assert_eq!(
+            a.last_msg.as_deref(),
+            Some("run: sudo systemctl restart xorgate-agent-rs")
+        );
         assert_eq!(a.key(Key::Char('q'), &F), vec![Effect::Exit]);
         assert_eq!(a.key(Key::CtrlC, &F), vec![Effect::Exit]);
     }
@@ -420,7 +432,10 @@ mod tests {
         assert_eq!(a.mode_choice.as_deref(), Some("sim"));
         a.key(Key::Char(' '), &F);
         assert_eq!(a.mode_choice.as_deref(), Some("real"));
-        assert_eq!(a.key(Key::Char('a'), &F), vec![Effect::SaveMode("real".into())]);
+        assert_eq!(
+            a.key(Key::Char('a'), &F),
+            vec![Effect::SaveMode("real".into())]
+        );
         assert!(!a.operating);
         // Enter on a non-running app does nothing.
         let mut b = App::default();

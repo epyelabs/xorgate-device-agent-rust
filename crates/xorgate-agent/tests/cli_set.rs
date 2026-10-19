@@ -442,7 +442,10 @@ fn apn_watch_survives_a_clock_step() {
         let h = scratch(&format!("apn-step-{delta}"));
         let mut io = FakeIo::new(&h, vec![None]);
         io.step = Some((0, delta));
-        let args: Vec<String> = ["apn", "internet.example"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["apn", "internet.example"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let code = run(&args, &io);
         assert_eq!(code, 1, "step {delta}");
         assert_eq!(io.lines.borrow().last().unwrap().text, OLD_DAEMON);
@@ -483,7 +486,10 @@ fn wifi_rejects_a_bad_value() {
     assert_eq!(io.text(Stream::Err), "wifi must be 'on' or 'off', got ''");
     let (code, io) = wifi_run(&h, &["wifi", "maybe"], |_| {});
     assert_eq!(code, 1);
-    assert_eq!(io.text(Stream::Err), "wifi must be 'on' or 'off', got 'maybe'");
+    assert_eq!(
+        io.text(Stream::Err),
+        "wifi must be 'on' or 'off', got 'maybe'"
+    );
     assert!(io.radio_calls.borrow().is_empty());
     assert!(!settings_path(&h).exists());
 }
@@ -493,7 +499,10 @@ fn wifi_without_an_adapter() {
     let h = scratch("wifi-none");
     let (code, io) = wifi_run(&h, &["wifi", "on"], |_| {});
     assert_eq!(code, 1);
-    assert_eq!(io.text(Stream::Err), "wifi: no WiFi adapter detected on this device");
+    assert_eq!(
+        io.text(Stream::Err),
+        "wifi: no WiFi adapter detected on this device"
+    );
     assert!(io.radio_calls.borrow().is_empty());
 }
 
@@ -505,7 +514,10 @@ fn wifi_off_refuses_over_its_own_ssh_session() {
         io.wifi = wlan(true);
         io.ssh = Some("192.168.8.10 51234 192.168.8.203 22".into());
         io.ip_ifaces = vec![("192.168.8.203".into(), "wlan0".into())];
-        io.statuses = vec![st("eth0", IfaceState::Online), st("wlan0", IfaceState::Online)];
+        io.statuses = vec![
+            st("eth0", IfaceState::Online),
+            st("wlan0", IfaceState::Online),
+        ];
     });
     assert_eq!(code, 1);
     let err: Vec<String> = io.lines.borrow().iter().map(|l| l.text.clone()).collect();

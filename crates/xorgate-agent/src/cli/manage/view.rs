@@ -79,7 +79,11 @@ pub fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
         }
         if col + w > width && col > 0 {
             // drop the trailing space of the full line
-            if out.last().and_then(|l| l.last()).is_some_and(|(c, _)| *c == ' ') {
+            if out
+                .last()
+                .and_then(|l| l.last())
+                .is_some_and(|(c, _)| *c == ' ')
+            {
                 out.last_mut().unwrap().pop();
             }
             out.push(Vec::new());
@@ -282,7 +286,10 @@ fn draw_header(f: &mut Frame, app: &App, host: &HostInfo, area: Rect) {
     }
     let row = |y: u16| Rect::new(c.x, c.y + y, c.width, 1);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled("XORGATE Manager", bold(Color::Cyan)))),
+        Paragraph::new(Line::from(Span::styled(
+            "XORGATE Manager",
+            bold(Color::Cyan),
+        ))),
         row(0),
     );
     let right = Line::from(vec![
@@ -332,8 +339,11 @@ fn draw_panel(f: &mut Frame, app: &App, i: usize, area: Rect) {
         (Status::Unknown, "—".to_string())
     };
     let (color, glyph) = status.style();
-    let badge = Line::from(vec![Span::styled(format!("{glyph} "), fg(color)), Span::raw(label)]);
-    let lines = vec![Line::from(Span::styled(title, tstyle)), badge];
+    let badge = Line::from(vec![
+        Span::styled(format!("{glyph} "), fg(color)),
+        Span::raw(label),
+    ]);
+    let lines = [Line::from(Span::styled(title, tstyle)), badge];
     let lines: Vec<Line> = lines
         .iter()
         .map(|l| truncate_line(l, c.width as usize))
@@ -427,7 +437,11 @@ pub fn draw(f: &mut Frame, app: &App, host: &HostInfo, spinner: &str) {
     };
     let below = hints.len() as u16
         + 1
-        + if msg.is_empty() { 0 } else { msg.len() as u16 + 1 }
+        + if msg.is_empty() {
+            0
+        } else {
+            msg.len() as u16 + 1
+        }
         + if app.show_logs {
             log_lines.len() as u16 + 3
         } else {
@@ -489,18 +503,33 @@ pub fn draw(f: &mut Frame, app: &App, host: &HostInfo, spinner: &str) {
     let mut y = body_y + body_h;
     if app.show_logs {
         y += 1;
-        let r = Rect::new(area.x, y, w, (log_lines.len() as u16 + 2).min(area.bottom().saturating_sub(y)));
+        let r = Rect::new(
+            area.x,
+            y,
+            w,
+            (log_lines.len() as u16 + 2).min(area.bottom().saturating_sub(y)),
+        );
         f.render_widget(rounded(GRAY), r);
         f.render_widget(Paragraph::new(log_lines.clone()), inner(r, 1, 0));
         y += log_lines.len() as u16 + 2;
     }
     if !msg.is_empty() {
         y += 1;
-        let r = Rect::new(area.x, y, w, (msg.len() as u16).min(area.bottom().saturating_sub(y)));
+        let r = Rect::new(
+            area.x,
+            y,
+            w,
+            (msg.len() as u16).min(area.bottom().saturating_sub(y)),
+        );
         f.render_widget(Paragraph::new(msg.clone()), r);
         y += msg.len() as u16;
     }
     y += 1;
-    let r = Rect::new(area.x, y.min(area.bottom()), w, (hints.len() as u16).min(area.bottom().saturating_sub(y)));
+    let r = Rect::new(
+        area.x,
+        y.min(area.bottom()),
+        w,
+        (hints.len() as u16).min(area.bottom().saturating_sub(y)),
+    );
     f.render_widget(Paragraph::new(hints), r);
 }

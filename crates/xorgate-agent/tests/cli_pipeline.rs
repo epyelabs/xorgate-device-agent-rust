@@ -1,7 +1,7 @@
 //! `xorgate-rs pipeline …` / `recording reset-counters` against the REAL TS
 //! commands @89b5c64 (`src/commands/{pipeline,recording}.ts`):
 //! `fixtures/cli_pipeline/cli-pipeline.json` (tsx-dumped by
-//! `tools/replay/js/dump-cli-pipeline.mts`) — per step stdout, stderr and exit
+//! `phase-4/evidence/wp5-tools/dump-cli-pipeline.mts`, for tools/replay/js/ via WP6) — per step stdout, stderr and exit
 //! code, then the exact bytes of every file left in the case's root. Covers
 //! the 6 CLI it()s of `test/pipeline.test.ts` (:51 :62 :69 :103 :124 :133)
 //! plus list/show/env/usage/throw/UTF-8 cases and the `recording` golden.
@@ -53,7 +53,11 @@ fn tree(root: &Path, rel: &str, root_s: &str, out: &mut BTreeMap<String, Option<
         .collect();
     names.sort();
     for n in names {
-        let r = if rel.is_empty() { n } else { format!("{rel}/{n}") };
+        let r = if rel.is_empty() {
+            n
+        } else {
+            format!("{rel}/{n}")
+        };
         let p = root.join(&r);
         if p.is_dir() {
             out.insert(r.clone(), None);
@@ -114,7 +118,10 @@ fn cli_pipeline_fixture() {
             let got = (norm(&out.stdout), norm(&out.stderr), code);
             let want = (want_out, s.stderr.clone(), s.exit_code);
             if got != want {
-                failures.push(format!("{} / {:?}:\n got {got:?}\nwant {want:?}", c.name, s.argv));
+                failures.push(format!(
+                    "{} / {:?}:\n got {got:?}\nwant {want:?}",
+                    c.name, s.argv
+                ));
             }
         }
         let mut got_tree = BTreeMap::new();

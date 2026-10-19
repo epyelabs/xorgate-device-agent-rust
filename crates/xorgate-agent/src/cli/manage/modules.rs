@@ -17,8 +17,8 @@ use xorgate_core::round::js_math_round;
 use xorgate_hal::network_io::WifiPresence;
 
 use super::format::{
-    angle, axis, bold, clock, coord, dim_gray, fg, fix_label, gauge, gray, leaf,
-    pad_end, path, to_hex_addr, val, Status, GRAY, WHITE,
+    angle, axis, bold, clock, coord, dim_gray, fg, fix_label, gauge, gray, leaf, pad_end, path,
+    to_hex_addr, val, Status, GRAY, WHITE,
 };
 use crate::cli::status::{js_string, truthy};
 
@@ -131,7 +131,8 @@ pub fn module_status(id: ModuleId, s: Option<&Value>) -> (String, Status) {
             }
             let streams = streams_of(md);
             if streams.is_empty() {
-                let live = truthy(path(md, &["kvs", "value"])) || truthy(path(md, &["recording", "value"]));
+                let live = truthy(path(md, &["kvs", "value"]))
+                    || truthy(path(md, &["recording", "value"]));
                 return if live {
                     ("live".to_string(), Status::Ok)
                 } else {
@@ -143,7 +144,9 @@ pub fn module_status(id: ModuleId, s: Option<&Value>) -> (String, Status) {
                 .iter()
                 .filter(|x| state(x).as_deref() == Some("running"))
                 .count();
-            let failed = streams.iter().any(|x| state(x).as_deref() == Some("failed"));
+            let failed = streams
+                .iter()
+                .any(|x| state(x).as_deref() == Some("failed"));
             if running > 0 {
                 (format!("{running}/{} live", streams.len()), Status::Ok)
             } else if failed {
@@ -225,7 +228,10 @@ pub struct DetailCtx<'a> {
 }
 
 fn title(t: &str) -> Vec<Line<'static>> {
-    vec![Line::from(Span::styled(t.to_string(), bold(Color::Cyan))), Line::default()]
+    vec![
+        Line::from(Span::styled(t.to_string(), bold(Color::Cyan))),
+        Line::default(),
+    ]
 }
 
 fn no_data() -> Line<'static> {
@@ -296,7 +302,10 @@ fn imu_detail(c: &DetailCtx) -> Vec<Line<'static>> {
         .join(" / ");
     let mut out = title("IMU · orientation + acceleration");
     if real {
-        out.push(Line::from(s("Sensor", Style::default().add_modifier(Modifier::BOLD))));
+        out.push(Line::from(s(
+            "Sensor",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
         out.push(match c.imu_detect {
             None => Line::from(format!("{} detecting (i2cdetect)…", c.spinner)),
             Some(d) if !d.available => Line::from(s(
@@ -399,7 +408,10 @@ fn gps_detail(c: &DetailCtx) -> Vec<Line<'static>> {
             gray(),
         )));
     } else {
-        out.push(Line::from(s("○ no NMEA — waiting for GNSS stream.", gray())));
+        out.push(Line::from(s(
+            "○ no NMEA — waiting for GNSS stream.",
+            gray(),
+        )));
     }
     out
 }
@@ -431,7 +443,10 @@ fn lte_detail(c: &DetailCtx) -> Vec<Line<'static>> {
     let link = c.link.filter(|l| truthy(Some(l)));
     let mut out = title("LTE · cellular signal");
     if real {
-        out.push(Line::from(s("Modem", Style::default().add_modifier(Modifier::BOLD))));
+        out.push(Line::from(s(
+            "Modem",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
         match c.modem {
             None => out.push(Line::from(format!("{} detecting (lsusb)…", c.spinner))),
             Some(md) if md.present => {
@@ -526,7 +541,9 @@ fn lte_detail(c: &DetailCtx) -> Vec<Line<'static>> {
                 Some(v) => v.clone(),
             };
             let color = gnss_health_color(
-                path(gnss, &["health"]).and_then(Value::as_str).unwrap_or(""),
+                path(gnss, &["health"])
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
             );
             let mut tail = String::new();
             if let Some(t) = path(gnss, &["ttff_s"]).filter(|v| v.is_number()) {
@@ -554,7 +571,10 @@ fn lte_detail(c: &DetailCtx) -> Vec<Line<'static>> {
             } else {
                 " · no reset this run".to_string()
             };
-            out.push(Line::from(s(format!("resets 24h {resets}{last_s}"), gray())));
+            out.push(Line::from(s(
+                format!("resets 24h {resets}{last_s}"),
+                gray(),
+            )));
         }
     }
     out
@@ -654,7 +674,10 @@ fn settings_detail(c: &DetailCtx) -> Vec<Line<'static>> {
     };
     let changed = val_mode != cur_mode;
     let mut out = title("Settings");
-    out.push(Line::from(s("Run mode (sim/real) and the WiFi radio.", gray())));
+    out.push(Line::from(s(
+        "Run mode (sim/real) and the WiFi radio.",
+        gray(),
+    )));
     out.push(Line::default());
     // rows = [run mode]; rows.length = 1 = the wifi row's index.
     let focused = v.operating && v.row == 0;
@@ -687,7 +710,10 @@ fn settings_detail(c: &DetailCtx) -> Vec<Line<'static>> {
 fn wifi_row(v: &SettingsView, focused: bool) -> Line<'static> {
     if let Some(w) = v.wifi.as_ref().filter(|w| !w.present) {
         let _ = w;
-        return Line::from(s(format!("  {} — not present", pad_end("wifi", 9)), dim_gray()));
+        return Line::from(s(
+            format!("  {} — not present", pad_end("wifi", 9)),
+            dim_gray(),
+        ));
     }
     let value = match &v.wifi {
         None => "…",

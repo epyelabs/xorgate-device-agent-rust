@@ -404,12 +404,17 @@ pub fn parse_os_release(text: &str) -> Option<String> {
         if rest.contains(['\r', '\u{2028}', '\u{2029}']) {
             continue;
         }
-        if k.is_empty() || !k.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_') {
+        if k.is_empty()
+            || !k
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        {
             continue;
         }
         let mut v = xorgate_core::js::trim(rest).to_string();
         if v.len() >= 2
-            && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')))
+            && ((v.starts_with('"') && v.ends_with('"'))
+                || (v.starts_with('\'') && v.ends_with('\'')))
         {
             v = v[1..v.len() - 1].to_string();
         } else if v == "\"" || v == "'" {
@@ -424,7 +429,10 @@ pub fn parse_os_release(text: &str) -> Option<String> {
     let get = |k: &str| map.iter().find(|(mk, _)| mk == k).map(|(_, v)| v.clone());
     let name = get("NAME");
     let codename = get("VERSION_CODENAME");
-    if let (Some(n), Some(c)) = (name.as_ref().filter(|s| !s.is_empty()), codename.filter(|s| !s.is_empty())) {
+    if let (Some(n), Some(c)) = (
+        name.as_ref().filter(|s| !s.is_empty()),
+        codename.filter(|s| !s.is_empty()),
+    ) {
         let first = n.split_whitespace().next().unwrap_or("");
         let mut cs = c.chars();
         let cap = match cs.next() {
@@ -519,7 +527,8 @@ impl ManageIo for SystemIo {
             args.push("--no-pager".to_string());
             let argv: Vec<&str> = args.iter().map(String::as_str).collect();
             let res =
-                xorgate_hal::exec::run("journalctl", &argv, Some(Duration::from_millis(3000))).await;
+                xorgate_hal::exec::run("journalctl", &argv, Some(Duration::from_millis(3000)))
+                    .await;
             if res.failed {
                 return Vec::new();
             }
@@ -562,10 +571,8 @@ impl ManageIo for SystemIo {
         Box::pin(async move {
             if is_mock() {
                 // `detectImu()` on a mock host (`imu.ts:126-128`).
-                let mut d = xorgate_core::imu::build_detect(vec![
-                    0x4b,
-                    xorgate_core::imu::IMU_BMS_ADDRESS,
-                ]);
+                let mut d =
+                    xorgate_core::imu::build_detect(vec![0x4b, xorgate_core::imu::IMU_BMS_ADDRESS]);
                 d.imu_address = Some(0x4b);
                 return d;
             }
@@ -633,7 +640,8 @@ fn spawn_inputs(tx: mpsc::UnboundedSender<Input>) {
         use futures_core::Stream;
         let mut events = EventStream::new();
         loop {
-            let next = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx)).await;
+            let next =
+                std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx)).await;
             let inp = match next {
                 None | Some(Err(_)) => Input::Quit,
                 Some(Ok(Event::Key(k))) => match map_key(k) {

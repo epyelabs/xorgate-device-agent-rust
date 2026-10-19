@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use xorgate_agent::cli::manage::app::Key;
-use xorgate_agent::cli::manage::modules::{ModemPresence, MODULES, ModuleId};
+use xorgate_agent::cli::manage::modules::{ModemPresence, ModuleId, MODULES};
 use xorgate_agent::cli::manage::view::HostInfo;
 use xorgate_agent::cli::manage::{draw_to, run_loop, Input, ManageIo};
 use xorgate_agent::cli::process_inspect::Identity;
@@ -201,12 +201,14 @@ async fn renders_header_and_sidebar_and_opens_a_module_detail() {
     assert!(frame.contains("Connectivity"));
     assert!(frame.contains("mqtt"));
     assert!(frame.contains("pid"));
-    for t in ["IMU", "GPS", "LTE", "System", "Media", "Activity", "Settings"] {
+    for t in [
+        "IMU", "GPS", "LTE", "System", "Media", "Activity", "Settings",
+    ] {
         assert!(frame.contains(t), "sidebar lists {t}\n{frame}");
     }
     assert!(frame.contains("recent events")); // default selection = Activity
     assert!(frame.contains("stop")); // running → control hint (Q10: prints the systemctl command)
-    // Sidebar statuses from the snapshot.
+                                     // Sidebar statuses from the snapshot.
     assert!(frame.contains("● 1 ev"));
     assert!(frame.contains("● cpu 31%"));
     assert!(frame.contains("● rssi -67"));
@@ -238,7 +240,10 @@ async fn opens_settings_and_edits_the_run_mode_then_moves_to_the_wifi_row() {
     });
     let h = Harness::start(io.clone());
     delay(150).await;
-    let idx = MODULES.iter().position(|m| *m == ModuleId::Settings).unwrap();
+    let idx = MODULES
+        .iter()
+        .position(|m| *m == ModuleId::Settings)
+        .unwrap();
     for _ in 0..idx {
         h.key(Key::Char('j'));
     }
@@ -289,11 +294,15 @@ async fn shows_the_not_running_call_to_action() {
     let frame = h.frame();
     assert!(frame.contains("Daemon not running"), "{frame}");
     assert!(frame.contains("start"));
-    assert!(frame.contains("Run sudo systemctl start xorgate-agent-rs to start the telemetry agent."));
+    assert!(
+        frame.contains("Run sudo systemctl start xorgate-agent-rs to start the telemetry agent.")
+    );
     assert!(frame.contains("○ daemon stopped"));
     // `s` keeps its key and prints the command instead of starting (Q10).
     h.key(Key::Char('s'));
     delay(60).await;
-    assert!(h.frame().contains("run: sudo systemctl start xorgate-agent-rs"));
+    assert!(h
+        .frame()
+        .contains("run: sudo systemctl start xorgate-agent-rs"));
     h.quit().await;
 }

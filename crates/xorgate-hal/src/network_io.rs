@@ -225,7 +225,12 @@ pub struct WifiPresence {
 /// `DEVICE,STATE` row is connected/connecting; without nmcli (or no wifi
 /// device) a `wlan*` netdev gives presence, enabled = it has an IPv4.
 pub async fn detect_wifi() -> WifiPresence {
-    let dev = run("nmcli", &["-t", "-f", "DEVICE,TYPE", "device", "status"], None).await;
+    let dev = run(
+        "nmcli",
+        &["-t", "-f", "DEVICE,TYPE", "device", "status"],
+        None,
+    )
+    .await;
     let device = if dev.failed {
         None
     } else {
@@ -242,7 +247,12 @@ pub async fn detect_wifi() -> WifiPresence {
             device: fallback,
         };
     };
-    let st = run("nmcli", &["-t", "-f", "DEVICE,STATE", "device", "status"], None).await;
+    let st = run(
+        "nmcli",
+        &["-t", "-f", "DEVICE,STATE", "device", "status"],
+        None,
+    )
+    .await;
     let enabled = !st.failed && parse_device_enabled(&st.stdout, &device);
     WifiPresence {
         present: true,
@@ -349,12 +359,21 @@ mod tests {
     #[test]
     fn lookups_follow_node_semantics() {
         let ifs: Interfaces = vec![
-            ("lo".into(), vec![a("IPv4", "127.0.0.1", true), a("IPv6", "::1", true)]),
-            ("wlan0".into(), vec![a("IPv6", "fe80::1", false), a("IPv4", "10.0.0.5", false)]),
+            (
+                "lo".into(),
+                vec![a("IPv4", "127.0.0.1", true), a("IPv6", "::1", true)],
+            ),
+            (
+                "wlan0".into(),
+                vec![a("IPv6", "fe80::1", false), a("IPv4", "10.0.0.5", false)],
+            ),
         ];
         assert_eq!(ipv4_of_in(&ifs, "wlan0").as_deref(), Some("10.0.0.5"));
         assert_eq!(ipv4_of_in(&ifs, "lo"), None); // internal skipped
-        assert_eq!(iface_for_ip_in(&ifs, Some("127.0.0.1")).as_deref(), Some("lo"));
+        assert_eq!(
+            iface_for_ip_in(&ifs, Some("127.0.0.1")).as_deref(),
+            Some("lo")
+        );
         assert_eq!(iface_for_ip_in(&ifs, Some("")), None);
         assert_eq!(iface_for_ip_in(&ifs, Some("fe80::1")), None); // IPv4 only
     }
@@ -368,7 +387,10 @@ mod tests {
             spawn_failed: true,
             ..Default::default()
         };
-        assert_eq!(wifi_result(false, "wlan0", &r).message, "wifi off failed: exit null");
+        assert_eq!(
+            wifi_result(false, "wlan0", &r).message,
+            "wifi off failed: exit null"
+        );
         let r = RunResult {
             stderr: "  Error: Device 'wlan0' not found.\n".into(),
             exit_code: Some(10),
@@ -384,12 +406,15 @@ mod tests {
             failed: true,
             ..Default::default()
         };
-        assert_eq!(wifi_result(true, "wlan0", &r).message, "wifi on failed: exit 4");
+        assert_eq!(
+            wifi_result(true, "wlan0", &r).message,
+            "wifi on failed: exit 4"
+        );
     }
 
     /// CF22: `network.test.ts:79-84` + recorded snapshots, against the REAL
     /// TS `ifaceForIp` / `ipv4Of` (`fixtures/network/iface_for_ip.json`,
-    /// tsx-dumped by `tools/replay/js/dump-iface-for-ip.mts`).
+    /// tsx-dumped by `phase-4/evidence/wp5-tools/dump-iface-for-ip.mts`, for tools/replay/js/ via WP6).
     #[test]
     fn iface_for_ip_fixture() {
         #[derive(serde::Deserialize)]
@@ -410,7 +435,12 @@ mod tests {
         assert_eq!(fx.cases.len(), 6);
         for c in &fx.cases {
             for (ip, want) in &c.iface_for_ip {
-                assert_eq!(&iface_for_ip_in(&c.interfaces, ip.as_deref()), want, "{} {ip:?}", c.name);
+                assert_eq!(
+                    &iface_for_ip_in(&c.interfaces, ip.as_deref()),
+                    want,
+                    "{} {ip:?}",
+                    c.name
+                );
             }
             for (n, want) in &c.ipv4_of {
                 assert_eq!(&ipv4_of_in(&c.interfaces, n), want, "{} {n}", c.name);
@@ -422,7 +452,10 @@ mod tests {
     fn live_snapshot_has_loopback_on_linux() {
         if cfg!(target_os = "linux") {
             let ifs = network_interfaces();
-            assert_eq!(iface_for_ip_in(&ifs, Some("127.0.0.1")).as_deref(), Some("lo"));
+            assert_eq!(
+                iface_for_ip_in(&ifs, Some("127.0.0.1")).as_deref(),
+                Some("lo")
+            );
         }
     }
 }

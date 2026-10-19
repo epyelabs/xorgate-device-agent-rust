@@ -133,7 +133,13 @@ pub fn run(rest: &[String], env: &PipelineEnv, c: &mut dyn Console) -> i32 {
 
 fn dispatch(rest: &[String], env: &PipelineEnv, c: &mut dyn Console) -> Result<i32, Thrown> {
     let (pos, flags) = parse(rest);
-    let flag = |k: &str| flags.iter().rev().find(|(f, _)| f == k).map(|(_, v)| v.clone());
+    let flag = |k: &str| {
+        flags
+            .iter()
+            .rev()
+            .find(|(f, _)| f == k)
+            .map(|(_, v)| v.clone())
+    };
     let dir_in = flag("--dir")
         .or_else(|| env.kvs_pipeline_dir.clone())
         .unwrap_or_else(|| DEFAULT_DIR.to_string());
@@ -188,8 +194,7 @@ pub fn parse(rest: &[String]) -> (Vec<String>, Vec<(String, String)>) {
 pub fn valid_key(key: Option<&str>) -> Option<&str> {
     key.filter(|k| {
         !k.is_empty()
-            && k
-                .bytes()
+            && k.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     })
 }
@@ -374,7 +379,9 @@ fn list(dir: &str, manifest_path: &str, cwd: &str, c: &mut dyn Console) -> Resul
 
 /// `isBridgedPipeline(dir, key)` (`media/pipeline.ts:36-42`).
 fn is_bridged(dir: &str, key: &str) -> bool {
-    xorgate_core::video_capture::is_bridged_pipeline(read_opt(&pipeline_file_for(dir, key)).as_deref())
+    xorgate_core::video_capture::is_bridged_pipeline(
+        read_opt(&pipeline_file_for(dir, key)).as_deref(),
+    )
 }
 
 /// `resolveCameraName(dir, key)` (`media/pipeline.ts:55-71`) over the three
@@ -395,7 +402,9 @@ fn show(dir: &str, key: Option<&str>, c: &mut dyn Console) -> Result<i32, Thrown
     };
     let f = pipeline_file_for(dir, key);
     if !exists(&f) {
-        c.log(&format!("{key}: no pipeline set (uses the runtime default)"));
+        c.log(&format!(
+            "{key}: no pipeline set (uses the runtime default)"
+        ));
         return Ok(0);
     }
     c.log(&format!("# {f}"));
@@ -427,7 +436,9 @@ fn set(
     }
     let content = read_utf8(&src)?;
     if !content.contains("appsink") {
-        c.error("WARN: pipeline has no 'appsink'; it should end with 'appsink ... name=appsink-video'");
+        c.error(
+            "WARN: pipeline has no 'appsink'; it should end with 'appsink ... name=appsink-video'",
+        );
     }
     mkdir_p(dir)?;
     let dest = pipeline_file_for(dir, key);
@@ -503,7 +514,9 @@ fn bridge(
     // `shmSocketPathFor(key)` = join(runtimeHome(), "shm", `${key}.sock`).
     let sock = node_join(&node_join(&env.home, "shm"), &format!("{key}.sock"));
     write_text(&gst, &format!("{}\n", bridged_kvs_pipeline(&sock, encoder)))?;
-    c.log(&format!("✓ {key} bridged: capture daemon will own {camera_name}"));
+    c.log(&format!(
+        "✓ {key} bridged: capture daemon will own {camera_name}"
+    ));
     c.log(&format!(
         "  .gst → shmsrc consumer (direct pipeline saved to {})",
         direct_backup_for(dir, key)
