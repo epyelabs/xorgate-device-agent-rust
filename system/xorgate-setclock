@@ -1,0 +1,34 @@
+#!/bin/sh
+# Installed by xorgate at /usr/local/bin/xorgate-setclock (install.sh /
+# `xorgate update`). Invoked by the device agent via `sudo -n` (sudoers
+# drop-in 021_xorgate-clock) to apply an offline GPS/NITZ clock step
+# (optimize-system-process-cycle plan, Phase 4 — see device-agent
+# src/agent/clock-step.ts, which owns ALL policy: NTP-synced stand-down,
+# offset threshold, per-boot cap, plausibility window).
+#
+# This helper is deliberately the entire sudo surface: it accepts one integer
+# epoch-seconds argument, re-validates it against the same plausibility window
+# as the agent (defense in depth — the sudoers entry can't constrain argument
+# values), sets the system clock, and persists it to the RTC + fake-hwclock so
+# a warm reboot inherits the corrected time.
+set -eu
+
+epoch="${1:-}"
+case "$epoch" in
+  ''|*[!0-9]*) echo "usage: xorgate-setclock <epoch-seconds>" >&2; exit 2 ;;
+esac
+# Plausibility window [2025-01-01, 2100-01-01) — mirrors clock-step.ts.
+[ "$epoch" -ge 1735689600 ] || { echo "refusing epoch $epoch (before 2025)" >&2; exit 2; }
+[ "$epoch" -lt 4102444800 ] || { echo "refusing epoch $epoch (after 2100)" >&2; exit 2; }
+
+date -u -s "@$epoch" > /dev/null
+
+# Persist: RTC first (kernel hctosys/fake-hwclock may consult it next boot),
+# then fake-hwclock's save file (its boot restore is what actually seeds the
+# clock on a battery-less CM5). Both best-effort — the step itself succeeded.
+if [ -e /dev/rtc0 ] && command -v hwclock > /dev/null 2>&1; then
+  hwclock --systohc || echo "warn: hwclock --systohc failed" >&2
+fi
+if command -v fake-hwclock > /dev/null 2>&1; then
+  fake-hwclock save || echo "warn: fake-hwclock save failed" >&2
+fi

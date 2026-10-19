@@ -1,0 +1,132 @@
+#!/bin/sh
+# Installed by xorgate at /usr/local/bin/xorgate-camrotate (install.sh /
+# `xorgate update`). Invoked by the device agent via `sudo -n` (sudoers
+# drop-in 023_xorgate-camrotate) to set ONE parameter — `rotation` — on ONE
+# kind of line — a camera `dtoverlay=` — in the boot config
+# (cam-sensor-level-rotate plan; see device-agent src/hardware/boot-config.ts,
+# which owns ALL policy: which camera, which sensor, whether the overlay
+# supports the parameter at all, and whether a write is needed).
+#
+# The agent runs unprivileged and /boot/firmware is root-owned, so this helper
+# is the entire sudo surface for the feature. Like xorgate-setclock it
+# re-validates every argument (the sudoers entry cannot constrain argument
+# VALUES) and does exactly one narrow thing.
+#
+#   usage: xorgate-camrotate <sensor> <camN> <0|180>
+#
+#   exit 0  the file was changed
+#   exit 3  already correct — nothing written
+#   exit 4  no dtoverlay line for that camera
+#   exit 2  bad arguments / no config.txt
+#   exit 1  the write itself failed
+#
+# ⚠️ THIS SCRIPT NEVER REBOOTS. The rotation is a device-tree parameter, so it
+# applies on the next boot; deciding when that happens is a human's call (the
+# cloud shows "reboot required"). A dashcam fleet that reboots itself over a
+# settings change is unrecoverable remotely.
+set -eu
+
+sensor="${1:-}"
+cam="${2:-}"
+deg="${3:-}"
+
+usage() {
+  echo "usage: xorgate-camrotate <sensor> <camN> <0|180>" >&2
+  exit 2
+}
+
+# Overlay name: what goes straight into `dtoverlay=<name>,…`, so keep it to the
+# charset real overlay filenames use.
+case "$sensor" in
+  '' | *[!a-z0-9_-]* ) usage ;;
+esac
+case "$cam" in
+  cam[0-9] ) ;;
+  * ) usage ;;
+esac
+case "$deg" in
+  0 | 180 ) ;;
+  * ) usage ;;
+esac
+
+# XORGATE_BOOT_CONFIG is a TEST-ONLY seam (the unit test drives this script
+# against fixture files). It is unreachable through sudo, which resets the
+# environment — under sudo this always resolves to the real boot config.
+config="${XORGATE_BOOT_CONFIG:-}"
+if [ -z "$config" ]; then
+  config=/boot/firmware/config.txt
+  [ -f "$config" ] || config=/boot/config.txt
+fi
+if [ ! -f "$config" ]; then
+  echo "no config.txt found (looked in /boot/firmware and /boot)" >&2
+  exit 2
+fi
+
+tmp="$config.xorgate-camrotate.$$"
+trap 'rm -f "$tmp" "$tmp.verdict"' EXIT INT TERM
+
+# One awk pass: rewrite only `dtoverlay=` lines that name BOTH this overlay and
+# this camera, and within them only the `rotation=` token. Every other line,
+# every other parameter (4lane, clock-frequency, mono, media-controller, …) and the
+# parameter ORDER are preserved byte for byte.
+awk -v sensor="$sensor" -v cam="$cam" -v deg="$deg" '
+  BEGIN { changed = 0; matched = 0 }
+  {
+    line = $0
+    # Leading whitespace is legal in config.txt; a commented-out line is not
+    # ours to resurrect.
+    head = line
+    sub(/^[ \t]+/, "", head)
+    if (index(head, "dtoverlay=") != 1) { print line; next }
+
+    body = substr(head, length("dtoverlay=") + 1)
+    n = split(body, tok, ",")
+    if (tok[1] != sensor) { print line; next }
+    mine = 0
+    for (i = 2; i <= n; i++) { if (tok[i] == cam) mine = 1 }
+    if (!mine) { print line; next }
+    matched = 1
+
+    out = tok[1]
+    for (i = 2; i <= n; i++) {
+      if (tok[i] ~ /^rotation=/) continue
+      out = out "," tok[i]
+    }
+    if (deg != "0") out = out ",rotation=" deg
+    rebuilt = "dtoverlay=" out
+    if (rebuilt != head) changed = 1
+    print rebuilt
+  }
+  END {
+    # Communicated through the file, not the exit code: awk exits before the
+    # caller can trust a partially written temp file.
+    print (matched ? (changed ? "CHANGED" : "SAME") : "NOMATCH") > "/dev/stderr"
+  }
+' "$config" > "$tmp" 2> "$tmp.verdict"
+
+verdict=$(cat "$tmp.verdict" 2>/dev/null || echo "")
+rm -f "$tmp.verdict"
+
+if [ "$verdict" = "NOMATCH" ]; then
+  echo "no dtoverlay=$sensor line for $cam in $config" >&2
+  exit 4
+fi
+if [ "$verdict" != "CHANGED" ]; then
+  exit 3
+fi
+
+# Keep one backup of the pre-xorgate-rotation file, and never overwrite it: the
+# first edit is the interesting one to be able to go back to.
+[ -f "$config.bak-camrotate" ] || cp -p "$config" "$config.bak-camrotate" 2>/dev/null || true
+
+# /boot/firmware is FAT on a Pi, where rename is the only ordering primitive
+# available — write a sibling temp file and rename over the target, so a power
+# cut during the swap leaves either the old file or the new one, never a
+# truncated config.txt on a device that then cannot boot.
+chmod --reference="$config" "$tmp" 2>/dev/null || chmod 755 "$tmp"
+mv -f "$tmp" "$config"
+trap - EXIT INT TERM
+sync 2>/dev/null || true
+
+echo "$config: $sensor,$cam rotation=$deg (applies on next boot)"
+exit 0
