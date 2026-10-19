@@ -1188,8 +1188,7 @@ fn d30_session_end(
     let lag = |m: &MediaCapture, w: i64| {
         m.shed_changes
             .iter()
-            .filter(|c| **c <= w + TICK_MS)
-            .next_back()
+            .rfind(|c| **c <= w + TICK_MS)
             .map(|c| w - c)
     };
     matches!((lag(a, wa), lag(b, wb)), (Some(x), Some(y)) if (x - y).abs() <= LAG_MS)
