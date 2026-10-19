@@ -1,0 +1,77 @@
+{
+  "jsSourceFile": "src/lib/exec.ts + src/hardware/boot-config.ts:285-292",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp3-tools/probe-exec-timeout.mts (docker node:20-bookworm linux/arm64, execa 9.6.1 from package-lock; DEFAULT_FORCE_KILL_TIMEOUT = 5000)",
+  "cases": [
+    {
+      "name": "partial both",
+      "script": "echo partial-out; echo partial-err >&2; exec sleep 30",
+      "timeoutMs": 300,
+      "elapsedMs": 311,
+      "res": {
+        "stdout": "partial-out\n",
+        "stderr": "partial-err\n",
+        "exitCode": null,
+        "failed": true,
+        "notFound": false
+      },
+      "detail": "partial-err"
+    },
+    {
+      "name": "stdout only",
+      "script": "echo only-out; exec sleep 30",
+      "timeoutMs": 300,
+      "elapsedMs": 305,
+      "res": {
+        "stdout": "only-out\n",
+        "stderr": "",
+        "exitCode": null,
+        "failed": true,
+        "notFound": false
+      },
+      "detail": "only-out"
+    },
+    {
+      "name": "silent",
+      "script": "exec sleep 30",
+      "timeoutMs": 300,
+      "elapsedMs": 304,
+      "res": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": null,
+        "failed": true,
+        "notFound": false
+      },
+      "detail": "exit null"
+    },
+    {
+      "name": "TERM trap exits 7, a grandchild holds the pipes 3 s",
+      "script": "trap 'echo got-term >&2; exit 7' TERM; echo waiting; sleep 3 & wait",
+      "timeoutMs": 300,
+      "elapsedMs": 3014,
+      "res": {
+        "stdout": "waiting\n",
+        "stderr": "got-term\n",
+        "exitCode": 7,
+        "failed": true,
+        "notFound": false
+      },
+      "detail": "got-term"
+    },
+    {
+      "name": "ignores TERM: SIGKILL after the 5 s grace",
+      "script": "trap '' TERM; echo stubborn; exec sleep 30",
+      "timeoutMs": 300,
+      "elapsedMs": 5313,
+      "res": {
+        "stdout": "stubborn\n",
+        "stderr": "",
+        "exitCode": null,
+        "failed": true,
+        "notFound": false
+      },
+      "detail": "stubborn"
+    }
+  ]
+}

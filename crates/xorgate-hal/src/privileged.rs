@@ -168,36 +168,92 @@ impl PrivilegedRunner for SudoRunner {
     }
 }
 
+/// execa 9.6.1's `forceKillAfterDelay` default (`lib/terminate/kill.js:22`,
+/// `DEFAULT_FORCE_KILL_TIMEOUT = 1000 * 5`).
+pub const EXECA_FORCE_KILL_AFTER: Duration = Duration::from_secs(5);
+
 /// [`run_argv`] with execa's `timeout` (`boot-config.ts:285-287`
-/// `{ timeoutMs: 20_000 }`): on expiry the child is killed (SIGKILL on drop;
-/// execa sends SIGTERM) and the result reads like execa's timed-out
-/// `reject:false` resolution — `failed`, no exit code — so the caller's
-/// `stderr || stdout || exit <code>` detail is `exit null`. Ambiguity (wp3.md
-/// A3): execa would keep any output captured before the kill; a 20 s
-/// overrun of a one-pass awk helper is not worth reproducing that for.
+/// `{ timeoutMs: 20_000 }`, execa 9.6.1 `reject:false` — review-wp3 S2,
+/// PARITY): on expiry the child gets SIGTERM (`killSignal` default; sudo
+/// relays it to the helper, whose trap removes its temp file); if it is still
+/// alive after [`EXECA_FORCE_KILL_AFTER`] it gets SIGKILL. The result
+/// resolves only once the child has exited AND both pipes have closed (a
+/// grandchild holding them delays it, as in execa), and keeps everything
+/// read: `failed: true` (timed out), `exitCode` = the child's own code if it
+/// exited (a TERM trap's `exit 7` → 7), null if a signal killed it, stdout /
+/// stderr complete. The caller's `stderr || stdout || exit <code>` detail
+/// therefore matches the TS (pinned by `fixtures/camera_mount/exec-timeout.json`,
+/// dumped from the real `run()` by `wp3-tools/probe-exec-timeout.mts`).
 async fn run_argv_timeout(program: &str, args: &[&str], timeout: Duration) -> RunResult {
-    let child = tokio::process::Command::new(program)
+    run_argv_timeout_grace(program, args, timeout, EXECA_FORCE_KILL_AFTER).await
+}
+
+async fn run_argv_timeout_grace(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    grace: Duration,
+) -> RunResult {
+    use tokio::io::AsyncReadExt;
+    let spawned = tokio::process::Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-    match tokio::time::timeout(timeout, child).await {
-        Ok(Ok(o)) => RunResult {
-            failed: !o.status.success(),
-            not_found: false,
-            exit_code: o.status.code().map(i64::from),
-            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
-        },
-        Ok(Err(_)) | Err(_) => RunResult {
-            failed: true,
-            not_found: false,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-        },
+        .spawn();
+    let mut child = match spawned {
+        Ok(c) => c,
+        // Spawn failure: as `run_argv` (execa resolves, notFound stays false).
+        Err(_) => {
+            return RunResult {
+                failed: true,
+                not_found: false,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+            }
+        }
+    };
+    let drain = |pipe: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>| {
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf).await;
+            }
+            buf
+        })
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let mut timed_out = false;
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(s) => s,
+        Err(_) => {
+            timed_out = true;
+            if let Some(pid) = child.id() {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
+            }
+            match tokio::time::timeout(grace, child.wait()).await {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = child.start_kill(); // SIGKILL
+                    child.wait().await
+                }
+            }
+        }
+    };
+    let stdout = out.await.unwrap_or_default();
+    let stderr = err.await.unwrap_or_default();
+    let code = status.as_ref().ok().and_then(|s| s.code());
+    RunResult {
+        failed: timed_out || !status.as_ref().is_ok_and(|s| s.success()),
+        not_found: false,
+        exit_code: code.map(i64::from),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     }
 }
 
@@ -522,26 +578,66 @@ mod tests {
         assert_eq!(inner.calls().len(), 1);
     }
 
+    /// review-wp3 S2: the 5 TS `run(…, {timeoutMs: 300})` outcomes dumped
+    /// from execa 9.6.1 (`fixtures/camera_mount/exec-timeout.json`): partial
+    /// output kept, TERM-trap exit code kept, pipes held by a grandchild
+    /// waited for, SIGKILL only after the 5 s grace. Run concurrently.
     #[tokio::test]
-    async fn helper_timeout_reads_like_execa_timed_out() {
-        let r = run_argv_timeout(
-            "sh",
-            &["-c", "echo partial; sleep 5"],
-            Duration::from_millis(100),
-        )
-        .await;
-        assert_eq!(
-            r,
-            RunResult {
-                failed: true,
-                not_found: false,
-                exit_code: None,
-                stdout: String::new(),
-                stderr: String::new(),
-            }
+    async fn helper_timeout_matches_execa_9_timeout() {
+        let p = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/camera_mount/exec-timeout.json"
         );
+        let f: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let cases = f["cases"].as_array().unwrap().clone();
+        assert_eq!(cases.len(), 5);
+        let mut tasks = Vec::new();
+        for c in cases {
+            tasks.push(tokio::spawn(async move {
+                let script = c["script"].as_str().unwrap().to_string();
+                let t = Duration::from_millis(c["timeoutMs"].as_u64().unwrap());
+                let t0 = std::time::Instant::now();
+                let r = run_argv_timeout("sh", &["-c", &script], t).await;
+                (c, r, t0.elapsed())
+            }));
+        }
+        for t in tasks {
+            let (c, r, elapsed) = t.await.unwrap();
+            let name = c["name"].as_str().unwrap();
+            let want = &c["res"];
+            assert_eq!(r.stdout, want["stdout"].as_str().unwrap(), "{name}");
+            assert_eq!(r.stderr, want["stderr"].as_str().unwrap(), "{name}");
+            assert_eq!(r.exit_code, want["exitCode"].as_i64(), "{name}");
+            assert_eq!(r.failed, want["failed"].as_bool().unwrap(), "{name}");
+            // `applyRotationViaHelper`'s detail (boot-config.ts:291-292).
+            let detail = if !r.stderr.trim().is_empty() {
+                r.stderr.trim().to_string()
+            } else if !r.stdout.trim().is_empty() {
+                r.stdout.trim().to_string()
+            } else {
+                match r.exit_code {
+                    Some(c) => format!("exit {c}"),
+                    None => "exit null".to_string(),
+                }
+            };
+            assert_eq!(detail, c["detail"].as_str().unwrap(), "{name}");
+            // Same timing class as the TS run (TERM at 0.3 s; grandchild 3 s;
+            // SIGKILL at 0.3 + 5 s).
+            let ts = c["elapsedMs"].as_u64().unwrap() as u128;
+            let ms = elapsed.as_millis();
+            assert!(
+                ms + 250 >= ts && ms <= ts + 1500,
+                "{name}: rust {ms} ms vs ts {ts} ms"
+            );
+        }
         let r = run_argv_timeout("sh", &["-c", "exit 3"], Duration::from_secs(5)).await;
         assert_eq!((r.exit_code, r.failed), (Some(3), true));
+        let r = run_argv_timeout("sh", &["-c", "echo ok"], Duration::from_secs(5)).await;
+        assert_eq!(
+            (r.exit_code, r.failed, r.stdout.as_str()),
+            (Some(0), false, "ok\n")
+        );
     }
 
     #[tokio::test]

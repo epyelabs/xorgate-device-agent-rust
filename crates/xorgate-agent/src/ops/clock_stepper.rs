@@ -148,6 +148,14 @@ impl ClockStepper {
     /// `tick()` (`clock-step.ts:301-311`): single-flight; a panicking
     /// dependency (the TS `throw`) is caught and logged as
     /// `[clock] tick failed: <message>` (warn), the stepper keeps running.
+    ///
+    /// Never drop the returned future mid-flight (no `timeout`/`select!`
+    /// around it — review-wp3 N1): the evaluation runs as a detached task
+    /// while the single-flight guard lives in this future, so dropping it
+    /// releases `ticking` while that evaluation keeps running and a second
+    /// one could overlap it (a double `sudo` step). The shipped callers
+    /// (`start()`'s interval, the immediate first tick) spawn it and run it
+    /// to completion.
     pub fn tick(&self) -> BoxFut<'static, ()> {
         let inner = self.inner.clone();
         Box::pin(async move {

@@ -482,7 +482,7 @@ pub const SETCLOCK_MAX_EPOCH_S: u64 = 4_102_444_800;
 /// ([`decide`] already refuses targets outside [2025, 2100)): e.g. a target
 /// 400 ms before 2100 rounds to 4102444800 and the helper says
 /// `refusing epoch 4102444800 (after 2100)`. The sudo call itself is skipped
-/// (no journal line) — the detail is identical.
+/// (no journal line) — the detail is identical (accepted divergence D33).
 pub fn setclock_call(target_ms: f64) -> Result<crate::commands::HelperCall, String> {
     let secs = crate::round::js_math_round(target_ms / 1000.0);
     // `case "$epoch" in ''|*[!0-9]*)`: NaN, a minus sign, or an exponent

@@ -722,7 +722,8 @@ mod tests {
 /// validation (`system/xorgate-setclock:16-21`, `system/xorgate-camrotate:39-50`)
 /// first, so a value the helper would refuse never reaches sudo. A refusal
 /// carries the helper's own stderr line, so the caller's `detail` (cloud-
-/// visible for the camera mount) reads exactly as if the helper had run.
+/// visible for the camera mount) reads exactly as if the helper had run
+/// (accepted divergence D33: no sudo journal line for a refused call).
 ///
 /// Shipped form vs the frozen I5 sketch (`pub enum HelperCall { SetClock {..},
 /// CamRotate {..} }`): a struct over the read-only [`HelperKind`] enum, so the

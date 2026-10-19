@@ -244,7 +244,7 @@ pub const CAMROTATE_USAGE: &str = "usage: xorgate-camrotate <sensor> <camN> <0|1
 ///
 /// `Err` = [`CAMROTATE_USAGE`], the helper's stderr for those arguments, so
 /// the reconciler's cloud-visible `could not edit <path>: <detail> …` reads
-/// exactly as when the TS let the helper refuse them (an overlay name such as
+/// exactly as when the TS let the helper refuse them (D33; an overlay name such as
 /// `IMX290` or a connector `csi10` → `cam10`). The sudo call is skipped.
 pub fn camrotate_call(
     sensor: &str,
