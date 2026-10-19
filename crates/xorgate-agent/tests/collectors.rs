@@ -516,6 +516,16 @@ async fn registry_order_omission_and_idle_media() {
     src.stop();
 }
 
+/// Poll `f` exactly once: is it still pending?
+async fn polls_pending<F: std::future::Future + Unpin>(f: &mut F) -> bool {
+    std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(
+            std::future::Future::poll(std::pin::Pin::new(&mut *f), cx).is_pending(),
+        )
+    })
+    .await
+}
+
 /// D30 pin (review-wp6 §2): `sample()` holds the recorder-side cache across
 /// its compute (`collectors/system.rs`), so a second `sample()` issued while
 /// the first one's compute is in flight waits and returns the NEW cache. (The
@@ -531,7 +541,22 @@ async fn system_sample_during_an_in_flight_compute_returns_the_new_cache() {
     let c = SystemCollector::new(&ctx, false).await;
     let first = c.sample().await.expect("first sample computes");
     tokio::time::advance(Duration::from_millis(1000)).await;
-    let (a, b) = tokio::join!(c.sample(), c.sample());
+    // `a` must PARK inside its compute (holding the cache) — else `b` would
+    // not be issued during an in-flight compute and the test is vacuous.
+    // `b` is then polled while `a` is still parked: it must WAIT (Rust holds
+    // the cache across the compute) — TS-like code would answer at once with
+    // the PREVIOUS cache.
+    let mut fa = c.sample();
+    let mut fb = c.sample();
+    assert!(
+        polls_pending(&mut fa).await,
+        "the first sample() parked mid-compute"
+    );
+    assert!(
+        polls_pending(&mut fb).await,
+        "the second sample() waits for it"
+    );
+    let (a, b) = tokio::join!(fa, fb);
     let (a, b) = (a.expect("a"), b.expect("b"));
     assert!(
         a.updated_mono > first.updated_mono,
