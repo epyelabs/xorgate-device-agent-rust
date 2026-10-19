@@ -3,7 +3,9 @@
 //! decisions of `xorgate_core::cli_set` in the TS order:
 //!
 //! 1. no key → USAGE (exit 1);
-//! 2. `wifi` → Phase 4 (prints [`cli_set::WIFI_LATER`], exit 1; T8);
+//! 2. `wifi` → `setWifiCommand` (`set.ts:679-717`, Phase 4 WP5, CF51):
+//!    validate, detect the adapter, the self-cutoff guard (`--force` skips),
+//!    then `setWifi` (`radios.ts:20-33`) — all before the sudo note;
 //! 3. the sudo note (`warnIfNeedlessSudo`, `:382-389`) — before every
 //!    settings.json write path, including the failing ones;
 //! 4. the key handler: validate → `loadSettings()` → mutate → `saveSettings`
@@ -31,6 +33,7 @@ use xorgate_core::cli_set::{
 use xorgate_core::config_report::ApnBlock;
 use xorgate_core::js::JsJsonMap;
 use xorgate_core::settings::AgentSettings;
+use xorgate_hal::network_io::{IfaceState, IfaceStatus, RadioResult, WifiPresence};
 
 /// Everything `set` touches outside its own logic, so tests can fake the
 /// clock, the modem daemon's file and the daemon status.
@@ -49,6 +52,36 @@ pub trait SetIo {
     fn daemon_running(&self) -> bool;
     /// One `console.log` / `console.error` call.
     fn emit(&self, line: &Line);
+    /// `detectWifi()` (`network.ts:132-142`).
+    fn detect_wifi(&self) -> WifiPresence {
+        block_on(xorgate_hal::network_io::detect_wifi())
+    }
+    /// `process.env.SSH_CONNECTION`.
+    fn ssh_connection(&self) -> Option<String> {
+        std::env::var_os("SSH_CONNECTION").map(|v| v.to_string_lossy().into_owned())
+    }
+    /// `ifaceForIp(ip)` (`network.ts:154-163`).
+    fn iface_for_ip(&self, ip: Option<&str>) -> Option<String> {
+        xorgate_hal::network_io::iface_for_ip(ip)
+    }
+    /// `await interfaceStatuses()` (`network.ts:95-98`).
+    fn interface_statuses(&self) -> Vec<IfaceStatus> {
+        block_on(xorgate_hal::network_io::interface_statuses())
+    }
+    /// `await setWifi(on)` (`radios.ts:20-33`).
+    fn set_wifi(&self, on: bool) -> RadioResult {
+        block_on(xorgate_hal::network_io::set_wifi(on))
+    }
+}
+
+/// The CLI is synchronous (`cli::main`); the network probes are async
+/// subprocess runs, so each gets a throwaway current-thread runtime.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime")
+        .block_on(f)
 }
 
 /// The production [`SetIo`].
@@ -186,8 +219,9 @@ pub fn run(rest: &[String], io: &dyn SetIo) -> i32 {
     };
     let r = route(&key);
     if r == Route::Wifi {
-        io.emit(&Line::err(cli_set::WIFI_LATER));
-        return 1;
+        // WiFi is an OS-level runtime toggle: handled before the settings.json
+        // path and the sudo note (`set.ts:405-409`).
+        return set_wifi(args.value.as_deref(), args.force, io);
     }
     let (is_root, uid, name) = io.sudo_facts();
     emit_all(io, sudo_note(is_root, uid, name.as_deref()));
@@ -224,12 +258,77 @@ pub fn run(rest: &[String], io: &dyn SetIo) -> i32 {
     }
 }
 
+/// `setWifiCommand(value, force)` (`set.ts:679-717`). Without `--force`,
+/// refuses `off` when the WiFi device carries this SSH session
+/// (`ifaceForIp(sshServerIp($SSH_CONNECTION))`) or is the only interface
+/// whose probe is `online`.
+pub fn set_wifi(value: Option<&str>, force: bool, io: &dyn SetIo) -> i32 {
+    let on = match value {
+        Some("on") => true,
+        Some("off") => false,
+        v => {
+            io.emit(&Line::err(format!(
+                "wifi must be 'on' or 'off', got '{}'",
+                v.unwrap_or("")
+            )));
+            return 1;
+        }
+    };
+    let wifi = io.detect_wifi();
+    if !wifi.present {
+        io.emit(&Line::err("wifi: no WiFi adapter detected on this device"));
+        return 1;
+    }
+    let device = wifi.device.unwrap_or_else(|| "wlan0".to_string());
+
+    if !on && !force {
+        let ssh = io.ssh_connection();
+        let ssh_iface = io.iface_for_ip(xorgate_core::network::ssh_server_ip(ssh.as_deref()));
+        let over_ssh = ssh_iface.as_deref() == Some(device.as_str());
+        let online: Vec<IfaceStatus> = io
+            .interface_statuses()
+            .into_iter()
+            .filter(|s| s.state == IfaceState::Online)
+            .collect();
+        let only_uplink = online.len() == 1 && online[0].name == device;
+        if over_ssh || only_uplink {
+            let why = if over_ssh {
+                format!("your SSH session is over {device}")
+            } else {
+                format!("{device} is currently your only internet connection")
+            };
+            io.emit(&Line::err(format!("refusing to turn WiFi off: {why}.")));
+            io.emit(&Line::err(
+                "re-run with --force if you're sure (you may lose connectivity).",
+            ));
+            return 1;
+        }
+    }
+
+    let res = io.set_wifi(on);
+    if res.ok {
+        io.emit(&Line::out(format!("✓ {}", res.message)));
+        0
+    } else {
+        io.emit(&Line::err(res.message));
+        1
+    }
+}
+
 /// `readApnBlock()` (`set.ts:541-544`).
 fn read_apn_block(io: &dyn SetIo) -> Option<ApnBlock> {
     apn_block(io.read_modem().as_ref())
 }
 
 /// `setApnCommand` (`set.ts:567-671`).
+///
+/// CF52 (Phase 4, re-examined with the clock stepper in place): the 8 min
+/// cap and the 90 s old-daemon cutoff are measured on the WALL clock
+/// (`Date.now() - started`, `set.ts:618-619,625`), and stay so — TS parity.
+/// A clock step during the watch only stretches (backward step: `elapsed`
+/// goes negative and the loop keeps polling) or shortens (forward step) the
+/// windows; nothing can underflow or panic (`i64`, [`ApnWatch::poll`] is
+/// total). Pinned by `tests/cli_set.rs::apn_watch_survives_a_clock_step`.
 fn set_apn(value: Option<&str>, no_wait: bool, io: &dyn SetIo) -> i32 {
     let value = match apn_validate(value) {
         Ok(v) => v,

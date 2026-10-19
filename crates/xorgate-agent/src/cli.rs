@@ -5,13 +5,17 @@
 //! an unknown command prints `unknown command: X` + the usage (exit 1).
 //!
 //! Verbs (README §3.3): `run` (the worker; replaces `node dist/worker.js`),
-//! `status`, `logs`, `set` (Phase 2). The TS's other verbs arrive in later
-//! phases (`pipeline`, `recording`, `led`, `sms`, `update`, `manage`); the
-//! self-managed daemon verbs `start` / `stop` / `restart` are systemd's job.
+//! `status`, `logs`, `set` (Phase 2); `pipeline`, `recording`, `manage` (+ the
+//! deprecated `monitor` alias) (Phase 4 WP5); `led` (WP1), `sms` (WP2),
+//! `update` (WP4). The self-managed daemon verbs `start` / `stop` /
+//! `restart` are systemd's job.
 
 pub mod led;
 pub mod logs;
+pub mod manage;
+pub mod pipeline;
 pub mod process_inspect;
+pub mod recording;
 pub mod set;
 pub mod status;
 pub mod update;
@@ -51,7 +55,11 @@ pub fn split_command(av: &[String]) -> (Option<String>, Vec<String>) {
     (None, av.to_vec())
 }
 
-/// `usage()` (`cli.tsx:120-162`), listing the verbs this binary has.
+/// `usage()` (`cli.tsx:120-162`), listing the verbs this binary has. The
+/// TS lines are kept where they hold for the Rust binary; `start`/`stop`/
+/// `restart` are systemd's (README §3.3), `manage` has no daemon controls
+/// (Q10), `logs` falls back to the journal (O9), `update` restarts only an
+/// active `xorgate-agent-rs` (Q5).
 pub fn usage(version: &str) -> String {
     format!(
         "xorgate-rs {version} — device telemetry agent + manager
@@ -61,10 +69,20 @@ Usage: xorgate-rs <command> [agent flags]
 Commands:
   run        Run the telemetry agent in the foreground (what xorgate-agent-rs.service runs)
   status     Show whether the daemon is running (pid, uptime, connection, telemetry)
+  manage     Open the live dashboard (status + Settings from inside; start/stop/restart
+             is systemd's: sudo systemctl restart xorgate-agent-rs)
   set        Persist a setting and apply it: 'set mode <sim|real>',
              'set wifi <on|off> [--force]' (runtime WiFi toggle via NetworkManager), or
              'set recording.<section>.<field> <value>' (on-device recording, applied live —
              e.g. 'set recording.telemetry.enabled on', 'set recording.telemetry.rateHz 10')
+  pipeline   Manage per-stream KVS pipelines: 'pipeline list|show|set|clear <streamKey> [file]'
+  recording  On-device recording maintenance: 'recording reset-counters' zeroes the
+             cumulative droppedSegments counter (applied live, no restart)
+  led        RGB status LED: 'led <colour> [pattern]', 'led off', or 'led test' to
+             walk the whole status ladder printing each label. The agent drives it
+             automatically; these are for bench work. Inert off-device.
+  sms        Read the modem's stored SMS, newest first, without marking them read:
+             'sms [--limit N] [--json]' (N 1..50, default 10). Bench tool; prints text.
   logs       Print the daemon log   (-f follow, -n N lines, --clear truncate;
              the journal of xorgate-agent-rs when there is no agent.log)
   update     Fetch the latest agent build, install it, and restart the service
@@ -82,6 +100,7 @@ Env: XORGATE_HOME (runtime dir, default ~/.xorgate), DEVICE_ID, IOT_DATA_ENDPOIN
 
 Examples:
   xorgate-rs run --offline
+  xorgate-rs manage
   xorgate-rs set mode real
   sudo systemctl restart xorgate-agent-rs
 "
@@ -102,6 +121,15 @@ pub fn main(argv: &[String]) -> i32 {
         Some("set") => set::main(&rest),
         Some("led") => led::main(&rest),
         Some("update") => update::main(&rest),
+        Some("pipeline") => pipeline::main(&rest),
+        Some("recording") => recording::main(&rest),
+        // `monitor`: deprecated alias for `manage`, kept working (cli.tsx:102-108).
+        Some(c @ ("manage" | "monitor")) => {
+            if c == "monitor" {
+                eprintln!("[xorgate] 'monitor' is deprecated; use 'manage'");
+            }
+            manage::main(&rest)
+        }
         None | Some("help") => {
             println!("{}", usage(&crate::build_info::load().format()));
             0
@@ -112,7 +140,7 @@ pub fn main(argv: &[String]) -> i32 {
             );
             1
         }
-        Some(c @ ("pipeline" | "recording" | "sms" | "manage" | "monitor")) => {
+        Some(c @ "sms") => {
             eprintln!("xorgate-rs: '{c}' arrives in a later build");
             1
         }

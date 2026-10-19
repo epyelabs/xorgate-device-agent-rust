@@ -27,6 +27,7 @@ pub mod kvs_runtime;
 pub mod led_driver;
 pub mod ledger_file;
 pub mod modem_file;
+pub mod network_io;
 pub mod nmea_tty;
 pub mod privileged;
 pub mod read_lossy;

@@ -1,0 +1,715 @@
+{
+ "jsSourceFile": "src/commands/pipeline.ts, src/commands/recording.ts",
+ "jsCommit": "89b5c64",
+ "generatedBy": "tools/replay/js/dump-cli-pipeline.mts (Phase 4 WP5)",
+ "note": "seedHex = the exact seed bytes. Rust RESTART_HINT differs by Q9 (D-row): tests map the TS hint to the Rust one.",
+ "cases": [
+  {
+   "name": "set then clear round-trips a stream pipeline",
+   "seedHex": {
+    "src.gst": "766964656f7465737473726320212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam0",
+      "src.gst",
+      "--dir",
+      "pipelines"
+     ],
+     "stdout": "✓ set cam0 pipeline → <ROOT>/pipelines/cam0.gst\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "show",
+      "cam0",
+      "--dir",
+      "pipelines"
+     ],
+     "stdout": "# <ROOT>/pipelines/cam0.gst\nvideotestsrc ! appsink name=appsink-video\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "clear",
+      "cam0",
+      "--dir",
+      "pipelines"
+     ],
+     "stdout": "✓ cleared cam0 pipeline (<ROOT>/pipelines/cam0.gst); reverts to the runtime default\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "clear",
+      "cam0",
+      "--dir",
+      "pipelines"
+     ],
+     "stdout": "cam0: no pipeline set; nothing to clear\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "pipelines": null,
+    "src.gst": "766964656f7465737473726320212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   }
+  },
+  {
+   "name": "rejects an invalid streamKey (no path traversal)",
+   "seedHex": {
+    "src.gst": "766964656f7465737473726320212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "../evil",
+      "src.gst",
+      "--dir",
+      "p2"
+     ],
+     "stdout": "",
+     "stderr": "a valid streamKey is required (letters, digits, '_' or '-'), e.g. cam0\n",
+     "exitCode": 1
+    },
+    {
+     "argv": [
+      "pipeline",
+      "show",
+      "--dir",
+      "p2"
+     ],
+     "stdout": "",
+     "stderr": "a valid streamKey is required (letters, digits, '_' or '-'), e.g. cam0\n",
+     "exitCode": 1
+    },
+    {
+     "argv": [
+      "pipeline",
+      "clear",
+      "a.b",
+      "--dir",
+      "p2"
+     ],
+     "stdout": "",
+     "stderr": "a valid streamKey is required (letters, digits, '_' or '-'), e.g. cam0\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {
+    "src.gst": "766964656f7465737473726320212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   }
+  },
+  {
+   "name": "fails when the source file is missing",
+   "seedHex": {},
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam0",
+      "nope.gst",
+      "--dir",
+      "p3"
+     ],
+     "stdout": "",
+     "stderr": "pipeline file not found: <ROOT>/nope.gst\n",
+     "exitCode": 1
+    },
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam0",
+      "--dir",
+      "p3"
+     ],
+     "stdout": "",
+     "stderr": "usage: xorgate pipeline set <streamKey> <file>\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {}
+  },
+  {
+   "name": "bridge backs up the direct .gst, writes .camera, installs shmsrc pipeline",
+   "seedHex": {
+    "src.gst": "6c696263616d6572617372632063616d6572612d6e616d653d2f626173652f63616d30403161202120766964656f2f782d72617720212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam0",
+      "src.gst",
+      "--dir",
+      "pb"
+     ],
+     "stdout": "✓ set cam0 pipeline → <ROOT>/pb/cam0.gst\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "bridge",
+      "cam0",
+      "--dir",
+      "pb"
+     ],
+     "stdout": "✓ cam0 bridged: capture daemon will own /base/cam0@1a\n  .gst → shmsrc consumer (direct pipeline saved to <ROOT>/pb/cam0.gst.direct)\n  NOTE: live streaming on this camera now requires the agent's capture\n  daemon (media on). Revert anytime with: xorgate pipeline direct cam0\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "list",
+      "--dir",
+      "pb",
+      "--manifest",
+      "kvs.json"
+     ],
+     "stdout": "pipeline dir: <ROOT>/pb\n(no manifest at kvs.json; showing pipeline files only)\npipeline files: cam0.gst\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "bridge",
+      "cam0",
+      "--dir",
+      "pb"
+     ],
+     "stdout": "cam0: already bridged (<ROOT>/pb/cam0.gst)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "direct",
+      "cam0",
+      "--dir",
+      "pb"
+     ],
+     "stdout": "✓ cam0 restored to direct mode (KVS master owns the camera again)\n  if recording.video.enabled is on, disable it or the capture daemon will\n  contend for the camera: xorgate set recording.video.enabled off\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "pb": null,
+    "pb/cam0.camera": "2f626173652f63616d304031610a",
+    "pb/cam0.gst": "6c696263616d6572617372632063616d6572612d6e616d653d2f626173652f63616d30403161202120766964656f2f782d72617720212061707073696e6b206e616d653d61707073696e6b2d766964656f0a",
+    "src.gst": "6c696263616d6572617372632063616d6572612d6e616d653d2f626173652f63616d30403161202120766964656f2f782d72617720212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   }
+  },
+  {
+   "name": "bridge fails without a resolvable camera identity",
+   "seedHex": {
+    "src.gst": "766964656f7465737473726320212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam0",
+      "src.gst",
+      "--dir",
+      "pb2"
+     ],
+     "stdout": "✓ set cam0 pipeline → <ROOT>/pb2/cam0.gst\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "bridge",
+      "cam0",
+      "--dir",
+      "pb2"
+     ],
+     "stdout": "",
+     "stderr": "cam0: cannot determine the libcamera camera-name (no <ROOT>/pb2/cam0.camera and no camera-name= in the .gst). Write the camera name to that file and retry.\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {
+    "pb2": null,
+    "pb2/cam0.gst": "766964656f7465737473726320212061707073696e6b206e616d653d61707073696e6b2d766964656f0a",
+    "src.gst": "766964656f7465737473726320212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   }
+  },
+  {
+   "name": "direct fails without a backup",
+   "seedHex": {},
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "direct",
+      "cam9",
+      "--dir",
+      "pb3"
+     ],
+     "stdout": "",
+     "stderr": "cam9: no <ROOT>/pb3/cam9.gst.direct to restore; use 'xorgate pipeline set' instead\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {}
+  },
+  {
+   "name": "bridge on a CM4 hardware block uses hw-h264; .camera file wins",
+   "seedHex": {
+    "hardware.json": "7b2276223a322c22706c6174666f726d223a227270692d636d34222c22656e636f646572223a2268772d68323634222c227261696c73223a66616c73652c227374617475734c6564223a6e756c6c2c22696d75223a22626e6f303835222c22766964656f223a5b7b226b6579223a2263616d30222c22636f6e6e6563746f72223a2263736930222c2273656e736f72223a22696d78323930222c22636f646563223a2268323634222c226c6162656c223a2246726f6e74227d5d7d",
+    "pb/cam1.camera": "20202f66726f6d2d63616d6572612d66696c65200a",
+    "pb/cam1.gst": "6c696263616d6572617372632063616d6572612d6e616d653d2f626173652f63616d30403161202120766964656f2f782d72617720212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "bridge",
+      "cam1",
+      "--dir",
+      "pb"
+     ],
+     "stdout": "✓ cam1 bridged: capture daemon will own /from-camera-file\n  .gst → shmsrc consumer (direct pipeline saved to <ROOT>/pb/cam1.gst.direct)\n  NOTE: live streaming on this camera now requires the agent's capture\n  daemon (media on). Revert anytime with: xorgate pipeline direct cam1\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "show",
+      "cam1",
+      "--dir",
+      "pb"
+     ],
+     "stdout": "# <ROOT>/pb/cam1.gst\nshmsrc socket-path=<ROOT>/home/shm/cam1.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! videoconvert ! v4l2h264enc extra-controls=controls,video_bitrate=1000000,repeat_sequence_header=1,h264_i_frame_period=30 ! video/x-h264,profile=(string)constrained-baseline,level=(string)4,stream-format=(string)byte-stream,alignment=(string)au ! appsink sync=TRUE emit-signals=TRUE name=appsink-video\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "hardware.json": "7b2276223a322c22706c6174666f726d223a227270692d636d34222c22656e636f646572223a2268772d68323634222c227261696c73223a66616c73652c227374617475734c6564223a6e756c6c2c22696d75223a22626e6f303835222c22766964656f223a5b7b226b6579223a2263616d30222c22636f6e6e6563746f72223a2263736930222c2273656e736f72223a22696d78323930222c22636f646563223a2268323634222c226c6162656c223a2246726f6e74227d5d7d",
+    "pb": null,
+    "pb/cam1.camera": "2f66726f6d2d63616d6572612d66696c650a",
+    "pb/cam1.gst": "73686d73726320736f636b65742d706174683d3c524f4f543e2f686f6d652f73686d2f63616d312e736f636b2069732d6c6976653d7472756520646f2d74696d657374616d703d74727565202120766964656f2f782d7261772c666f726d61743d493432302c77696474683d313238302c6865696768743d3732302c6672616d65726174653d31352f31202120766964656f636f6e7665727420212076346c3268323634656e632065787472612d636f6e74726f6c733d636f6e74726f6c732c766964656f5f626974726174653d313030303030302c7265706561745f73657175656e63655f6865616465723d312c683236345f695f6672616d655f706572696f643d3330202120766964656f2f782d683236342c70726f66696c653d28737472696e6729636f6e73747261696e65642d626173656c696e652c6c6576656c3d28737472696e6729342c73747265616d2d666f726d61743d28737472696e6729627974652d73747265616d2c616c69676e6d656e743d28737472696e6729617520212061707073696e6b2073796e633d5452554520656d69742d7369676e616c733d54525545206e616d653d61707073696e6b2d766964656f0a",
+    "pb/cam1.gst.direct": "6c696263616d6572617372632063616d6572612d6e616d653d2f626173652f63616d30403161202120766964656f2f782d72617720212061707073696e6b206e616d653d61707073696e6b2d766964656f0a"
+   }
+  },
+  {
+   "name": "bridge without any .gst writes only .camera + the shmsrc pipeline",
+   "seedHex": {
+    "pb/cam2.camera": "2f63616d320a"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "bridge",
+      "cam2",
+      "--dir",
+      "pb"
+     ],
+     "stdout": "✓ cam2 bridged: capture daemon will own /cam2\n  .gst → shmsrc consumer (direct pipeline saved to <ROOT>/pb/cam2.gst.direct)\n  NOTE: live streaming on this camera now requires the agent's capture\n  daemon (media on). Revert anytime with: xorgate pipeline direct cam2\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "pb": null,
+    "pb/cam2.camera": "2f63616d320a",
+    "pb/cam2.gst": "73686d73726320736f636b65742d706174683d3c524f4f543e2f686f6d652f73686d2f63616d322e736f636b2069732d6c6976653d7472756520646f2d74696d657374616d703d74727565202120766964656f2f782d7261772c666f726d61743d493432302c77696474683d313238302c6865696768743d3732302c6672616d65726174653d31352f3120212078323634656e63206e616d653d73616d706c65566964656f456e636f64657220626672616d65733d302073706565642d7072657365743d756c7472616661737420626974726174653d3130303020627974652d73747265616d3d545255452074756e653d7a65726f6c6174656e637920746872656164733d32202120766964656f2f782d683236342c73747265616d2d666f726d61743d627974652d73747265616d2c616c69676e6d656e743d61752c70726f66696c653d626173656c696e6520212061707073696e6b2073796e633d5452554520656d69742d7369676e616c733d54525545206e616d653d61707073696e6b2d766964656f0a"
+   }
+  },
+  {
+   "name": "set warns without appsink; list with a manifest",
+   "seedHex": {
+    "kvs.json": "7b226465766963654964223a226431222c22726567696f6e223a2275732d656173742d31222c2263726564656e7469616c456e64706f696e74223a22632e6578616d706c65222c22726f6c65416c696173223a2272222c226368616e6e656c73223a5b7b2273747265616d4b6579223a2263616d30222c226368616e6e656c4e616d65223a226465762d63616d30227d2c7b2273747265616d4b6579223a2263616d31222c226368616e6e656c4e616d65223a226465762d63616d31227d2c7b2273747265616d4b6579223a226c6f6e6773747265616d6b6579222c226368616e6e656c4e616d65223a2278227d5d7d",
+    "x.gst": "766964656f7465737473726320212066616b6573696e6b0a",
+    "pl/zz.gst": "612061707073696e6b",
+    "pl/10.gst": "62",
+    "pl/B.gst": "63",
+    "pl/notes.txt": "6e"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam1",
+      "x.gst",
+      "--dir",
+      "pl"
+     ],
+     "stdout": "✓ set cam1 pipeline → <ROOT>/pl/cam1.gst\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "WARN: pipeline has no 'appsink'; it should end with 'appsink ... name=appsink-video'\n",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "list",
+      "--dir",
+      "pl",
+      "--manifest",
+      "kvs.json"
+     ],
+     "stdout": "pipeline dir: <ROOT>/pl\nchannels:\n  cam0     dev-cam0  ←  (runtime default)\n  cam1     dev-cam1  ←  <ROOT>/pl/cam1.gst\n  longstreamkey x  ←  (runtime default)\npipeline files: 10.gst, B.gst, cam1.gst, zz.gst\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "--dir",
+      "pl",
+      "--manifest",
+      "kvs.json"
+     ],
+     "stdout": "pipeline dir: <ROOT>/pl\nchannels:\n  cam0     dev-cam0  ←  (runtime default)\n  cam1     dev-cam1  ←  <ROOT>/pl/cam1.gst\n  longstreamkey x  ←  (runtime default)\npipeline files: 10.gst, B.gst, cam1.gst, zz.gst\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "kvs.json": "7b226465766963654964223a226431222c22726567696f6e223a2275732d656173742d31222c2263726564656e7469616c456e64706f696e74223a22632e6578616d706c65222c22726f6c65416c696173223a2272222c226368616e6e656c73223a5b7b2273747265616d4b6579223a2263616d30222c226368616e6e656c4e616d65223a226465762d63616d30227d2c7b2273747265616d4b6579223a2263616d31222c226368616e6e656c4e616d65223a226465762d63616d31227d2c7b2273747265616d4b6579223a226c6f6e6773747265616d6b6579222c226368616e6e656c4e616d65223a2278227d5d7d",
+    "pl": null,
+    "pl/10.gst": "62",
+    "pl/B.gst": "63",
+    "pl/cam1.gst": "766964656f7465737473726320212066616b6573696e6b0a",
+    "pl/notes.txt": "6e",
+    "pl/zz.gst": "612061707073696e6b",
+    "x.gst": "766964656f7465737473726320212066616b6573696e6b0a"
+   }
+  },
+  {
+   "name": "list without a manifest or dir",
+   "seedHex": {},
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "list",
+      "--dir",
+      "nodir",
+      "--manifest",
+      "none.json"
+     ],
+     "stdout": "pipeline dir: <ROOT>/nodir\n(no manifest at none.json; showing pipeline files only)\nno per-stream pipeline files set (all channels use the runtime default)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "list",
+      "--dir",
+      "",
+      "--manifest",
+      ""
+     ],
+     "stdout": "pipeline dir: <ROOT>\n(no manifest at ; showing pipeline files only)\nno per-stream pipeline files set (all channels use the runtime default)\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {}
+  },
+  {
+   "name": "list via env defaults",
+   "seedHex": {
+    "kvs.json": "7b226465766963654964223a226431222c22726567696f6e223a2275732d656173742d31222c2263726564656e7469616c456e64706f696e74223a22632e6578616d706c65222c22726f6c65416c696173223a2272222c226368616e6e656c73223a5b7b2273747265616d4b6579223a2263616d30222c226368616e6e656c4e616d65223a226465762d63616d30227d2c7b2273747265616d4b6579223a2263616d31222c226368616e6e656c4e616d65223a226465762d63616d31227d2c7b2273747265616d4b6579223a226c6f6e6773747265616d6b6579222c226368616e6e656c4e616d65223a2278227d5d7d",
+    "envdir/cam0.gst": "73686d73726320736f636b65742d706174683d2f7820212061707073696e6b"
+   },
+   "dirs": [],
+   "env": {
+    "KVS_PIPELINE_DIR": "envdir",
+    "KVS_MANIFEST": "kvs.json"
+   },
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "list"
+     ],
+     "stdout": "pipeline dir: <ROOT>/envdir\nchannels:\n  cam0     dev-cam0  ←  <ROOT>/envdir/cam0.gst [bridged]\n  cam1     dev-cam1  ←  (runtime default)\n  longstreamkey x  ←  (runtime default)\npipeline files: cam0.gst\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "show",
+      "cam0"
+     ],
+     "stdout": "# <ROOT>/envdir/cam0.gst\nshmsrc socket-path=/x ! appsink",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "envdir": null,
+    "envdir/cam0.gst": "73686d73726320736f636b65742d706174683d2f7820212061707073696e6b",
+    "kvs.json": "7b226465766963654964223a226431222c22726567696f6e223a2275732d656173742d31222c2263726564656e7469616c456e64706f696e74223a22632e6578616d706c65222c22726f6c65416c696173223a2272222c226368616e6e656c73223a5b7b2273747265616d4b6579223a2263616d30222c226368616e6e656c4e616d65223a226465762d63616d30227d2c7b2273747265616d4b6579223a2263616d31222c226368616e6e656c4e616d65223a226465762d63616d31227d2c7b2273747265616d4b6579223a226c6f6e6773747265616d6b6579222c226368616e6e656c4e616d65223a2278227d5d7d"
+   }
+  },
+  {
+   "name": "unknown subcommand prints usage",
+   "seedHex": {},
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "frob"
+     ],
+     "stdout": "usage: xorgate pipeline <list|show|set|clear|bridge|direct> [streamKey] [file]\n\n  list                      channels (from kvs.json) + which have a pipeline\n  show  <streamKey>         print a stream's pipeline\n  set   <streamKey> <file>  install a .gst pipeline for a stream (e.g. cam0)\n  clear <streamKey>         remove a stream's pipeline (revert to default)\n  bridge <streamKey>        capture-daemon mode: agent owns the camera, KVS\n                            reads shm (required for recording.video; backs up\n                            the direct .gst)\n  direct <streamKey>        restore the backed-up direct pipeline\n\n  --dir <path>       pipeline dir (default: $KVS_PIPELINE_DIR or /etc/xorgate/pipelines)\n  --manifest <path>  kvs.json for 'list' (default: $KVS_MANIFEST or /etc/xorgate/kvs.json)\n",
+     "stderr": "unknown subcommand 'frob'\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {}
+  },
+  {
+   "name": "show a missing pipeline and a directory (throws EISDIR)",
+   "seedHex": {},
+   "dirs": [
+    "ps/cam0.gst"
+   ],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "show",
+      "cam9",
+      "--dir",
+      "ps"
+     ],
+     "stdout": "cam9: no pipeline set (uses the runtime default)\n",
+     "stderr": "",
+     "exitCode": 0
+    },
+    {
+     "argv": [
+      "pipeline",
+      "show",
+      "cam0",
+      "--dir",
+      "ps"
+     ],
+     "stdout": "# <ROOT>/ps/cam0.gst\n",
+     "stderr": "EISDIR: illegal operation on a directory, read\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {
+    "ps": null,
+    "ps/cam0.gst": null
+   }
+  },
+  {
+   "name": "set into a dir under a file throws ENOTDIR",
+   "seedHex": {
+    "src.gst": "61707073696e6b0a",
+    "afile": "78"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam0",
+      "src.gst",
+      "--dir",
+      "afile/sub"
+     ],
+     "stdout": "",
+     "stderr": "ENOTDIR: not a directory, mkdir '<ROOT>/afile/sub'\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {
+    "afile": "78",
+    "src.gst": "61707073696e6b0a"
+   }
+  },
+  {
+   "name": "clear a directory named like a pipeline throws",
+   "seedHex": {},
+   "dirs": [
+    "pc/cam0.gst"
+   ],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "clear",
+      "cam0",
+      "--dir",
+      "pc"
+     ],
+     "stdout": "",
+     "stderr": "Path is a directory: rm returned EISDIR (is a directory) <ROOT>/pc/cam0.gst\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {
+    "pc": null,
+    "pc/cam0.gst": null
+   }
+  },
+  {
+   "name": "invalid utf-8 survives set as U+FFFD",
+   "seedHex": {
+    "bad.gst": "61707073696e6b20fffe0a"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "pipeline",
+      "set",
+      "cam0",
+      "bad.gst",
+      "--dir",
+      "pu"
+     ],
+     "stdout": "✓ set cam0 pipeline → <ROOT>/pu/cam0.gst\n  restart to apply: sudo systemctl restart xorgate-agent  (or: xorgate restart)\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "bad.gst": "61707073696e6b20fffe0a",
+    "pu": null,
+    "pu/cam0.gst": "61707073696e6b20efbfbdefbfbd0a"
+   }
+  },
+  {
+   "name": "recording reset-counters without a tree",
+   "seedHex": {},
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "recording",
+      "reset-counters"
+     ],
+     "stdout": "no recordings tree — counters are already 0\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {}
+  },
+  {
+   "name": "recording reset-counters zeroes the counter",
+   "seedHex": {
+    "home/recordings/counters.json": "7b2276223a312c2264726f707065645365676d656e7473223a31377d"
+   },
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "recording",
+      "--x",
+      "reset-counters"
+     ],
+     "stdout": "✓ droppedSegments reset to 0\n  the agent reflects it in state/telemetry within ~5 s (no restart needed)\n",
+     "stderr": "",
+     "exitCode": 0
+    }
+   ],
+   "treeAfterHex": {
+    "home": null,
+    "home/recordings": null,
+    "home/recordings/counters.json": "7b2276223a312c2264726f707065645365676d656e7473223a307d"
+   }
+  },
+  {
+   "name": "recording usage",
+   "seedHex": {},
+   "dirs": [],
+   "env": {},
+   "steps": [
+    {
+     "argv": [
+      "recording"
+     ],
+     "stdout": "",
+     "stderr": "usage: xorgate recording reset-counters   (zero the droppedSegments counter)\n",
+     "exitCode": 1
+    },
+    {
+     "argv": [
+      "recording",
+      "reset"
+     ],
+     "stdout": "",
+     "stderr": "usage: xorgate recording reset-counters   (zero the droppedSegments counter)\n",
+     "exitCode": 1
+    },
+    {
+     "argv": [
+      "recording",
+      "-h"
+     ],
+     "stdout": "",
+     "stderr": "usage: xorgate recording reset-counters   (zero the droppedSegments counter)\n",
+     "exitCode": 1
+    }
+   ],
+   "treeAfterHex": {}
+  }
+ ]
+}

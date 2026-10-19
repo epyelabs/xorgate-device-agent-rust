@@ -35,6 +35,10 @@ bytes = { workspace = true }
 libc = { workspace = true }
 # Phase 4 WP4: `xorgate-rs update` verifies the tarball against its .sha256 sidecar (Q14).
 sha2 = { workspace = true }
+# Phase 4 WP5 (Q3): `xorgate-rs manage` (ratatui over crossterm).
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+futures-core = { workspace = true }
 
 [dev-dependencies]
 # `start_paused` tests of the spine (tokio::time::pause); `net` for the stub broker.
