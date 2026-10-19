@@ -122,8 +122,11 @@ jobs:
         if: always()
         with:
           name: replay-ci-smoke
+          # The whole smoke run dir (≈ 1-2 MB: releases, pairs, watch.json,
+          # player.log, per-agent captures) so a failing pair can be
+          # root-caused; the media run keeps diff.md only (its tree is large).
           path: |
-            /tmp/replay-ci-smoke/diff.md
+            /tmp/replay-ci-smoke
             /tmp/replay-ci-media/diff.md
           if-no-files-found: ignore
           retention-days: 14
