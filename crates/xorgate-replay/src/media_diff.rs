@@ -18,18 +18,20 @@
 //! | `session` | `session.json` fields | `sessionId`, `bootId`, `anchorTs`, `anchorMono` (T11) |
 //! | `sidecar` | key order; every field but the tolerated ones | `startTs` ±300 ms relative to the agent's own capture PLAYING (`New clock:`) time, `startMono` deltas within the session ±300 ms, `durationMs` ±150 ms, `sizeBytes` any (T12) |
 //! | `mp4` | per side: seq contiguity from 0, no 0-byte closed fragment | fragment count per session ±1 (T12, the run's cut) |
-//! | `rec-telemetry` | decompressed header lines minus T1/T11 fields; sample key order; per segment the groups present, each group's leaf paths and number SHAPES (T9) | segment count per session ±1 and file-name ms stamps (T13; gz bytes never compared: D24) |
+//! | `rec-telemetry` | decompressed header lines minus T1/T11 fields; sample key order; per segment the groups present, each group's leaf paths and number SHAPES (T9); per session the deduplicated VALUE sequence of every non-host leaf and per-group sample counts (G1) | segment count per session ±1 and file-name ms stamps (T13; gz bytes never compared: D24) |
 //! | `s3` | per side every SigV4 signature valid, sidecar PUT before its mp4; A vs B the normalised key multiset of successful PUTs + content types | a session's LAST fragment / LAST telemetry segment present on one side only (never a middle segment), attempt counts / timing (T14) |
 //! | `file:counters.json` | bytes as JSON | — |
 //! | `evictions` | the ordered list of fragments/segments deleted without a successful PUT | — |
 //! | `shm` | per side: orphan `shmpipe.<pid>.*` (pid of that side's dead gst child) count at the end | — |
 //!
-//! Sample VALUES of the telemetry segments are not compared pairwise: each
-//! recorder ticks on its own timer, ungated by the player, so a stream-fed
-//! value differs by one input step between the two sides at almost every
-//! tick; the live `telemetry` stream (hold-gated pairs) compares the same
-//! collector values exactly, and the shapes here catch a formatting
-//! divergence (CF42). Reviewer to confirm (wp6.md ambiguity A3).
+//! Sample VALUES of the telemetry segments (review-wp6 G1): per session and
+//! leaf (not T3's host-read paths) the run-length-deduplicated value
+//! sequence over the segments both sides hold, exactly, plus per group the
+//! count of samples carrying it (`rec_values`; rows `T4/rec-sample`, T4).
+//! Each recorder ticks on its own timer, ungated by the player, so only a
+//! step carried by one sample and missing on the side whose tick raced that
+//! input's release (or at a stretch edge) is tolerated. Stats: `rec-values`
+//! (leaf sequences), `rec-presence` (group counts).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -726,22 +728,23 @@ fn tele_segs(m: &MediaCapture) -> BTreeMap<String, BTreeSet<u64>> {
 /// Every telemetry segment of a side (decompressed), keyed `<sid>/<n>`
 /// (n = order of the file name).
 fn segments(m: &MediaCapture) -> BTreeMap<String, Vec<String>> {
-    let mut per: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    segments_by_seq(m)
+        .into_iter()
+        .map(|(sid, segs)| (sid, segs.into_values().collect()))
+        .collect()
+}
+
+/// [`segments`] keyed by the segment seq (file name), per session.
+fn segments_by_seq(m: &MediaCapture) -> BTreeMap<String, BTreeMap<u64, String>> {
+    let mut per: BTreeMap<String, BTreeMap<u64, String>> = BTreeMap::new();
     for (k, b) in m.s3_bodies.iter().chain(m.finals.iter()) {
-        if !k.contains("telemetry") || !k.ends_with(".jsonl.gz") {
+        if !k.ends_with(".jsonl.gz") {
             continue;
         }
-        let Some((dir, file)) = k.rsplit_once('/') else {
+        // `seg-<ms>-<seq>` locally, `<ms>-<seq>` in S3: key by the seq.
+        let Some((sid, seq)) = tele_seg_of(k) else {
             continue;
         };
-        let sid = dir.rsplit('/').next().unwrap_or("").to_string();
-        // `seg-<ms>-<seq>` locally, `<ms>-<seq>` in S3: key by the seq.
-        let seq = file
-            .trim_end_matches(".jsonl.gz")
-            .rsplit('-')
-            .next()
-            .unwrap_or("")
-            .to_string();
         // Decompressed + normalised at load (`norm_body`).
         if let Ok(text) = std::str::from_utf8(b) {
             per.entry(sid)
@@ -750,16 +753,7 @@ fn segments(m: &MediaCapture) -> BTreeMap<String, Vec<String>> {
                 .or_insert_with(|| text.to_string());
         }
     }
-    let mut out = BTreeMap::new();
-    for (sid, segs) in per {
-        let mut v: Vec<(u64, String)> = segs
-            .into_iter()
-            .map(|(seq, t)| (seq.parse().unwrap_or(u64::MAX), t))
-            .collect();
-        v.sort();
-        out.insert(sid, v.into_iter().map(|(_, t)| t).collect());
-    }
-    out
+    per
 }
 
 /// Leaf paths + number shapes of a JSON value: `path → shape` where shape is
@@ -827,6 +821,248 @@ fn system_presence_tol(table: &Table, ka: &str, kb: &str, la: usize, lb: usize) 
             })
         }
         _ => (la != lb).then(|| UNTOLERATED.to_string()),
+    }
+}
+
+/// Flatten `metrics` into `path → JSON text` leaves (`metrics.gps.lat.value`).
+fn leaf_texts(v: &Value, path: &str, out: &mut BTreeMap<String, String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                leaf_texts(x, &format!("{path}.{k}"), out);
+            }
+        }
+        _ => {
+            out.insert(path.to_string(), v.to_string());
+        }
+    }
+}
+
+/// One run-length-deduplicated value: `(JSON text, samples carrying it,
+/// ts of its first sample)`.
+type Step = (String, usize, i64);
+
+/// Edit script of two step sequences by LCS on the values: `(hunk start in
+/// x, only-in-x steps, only-in-y steps)` for every maximal non-equal stretch.
+fn step_hunks(x: &[Step], y: &[Step]) -> Vec<(usize, Vec<Step>, Vec<Step>)> {
+    let (n, m) = (x.len(), y.len());
+    let mut l = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            l[i][j] = if x[i].0 == y[j].0 {
+                l[i + 1][j + 1] + 1
+            } else {
+                l[i + 1][j].max(l[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j) = (0, 0);
+    let mut out: Vec<(usize, Vec<Step>, Vec<Step>)> = Vec::new();
+    let mut cur: Option<(usize, Vec<Step>, Vec<Step>)> = None;
+    while i < n || j < m {
+        if i < n && j < m && x[i].0 == y[j].0 {
+            out.extend(cur.take());
+            i += 1;
+            j += 1;
+        } else if j >= m || (i < n && l[i + 1][j] >= l[i][j + 1]) {
+            cur.get_or_insert_with(|| (i, vec![], vec![]))
+                .1
+                .push(x[i].clone());
+            i += 1;
+        } else {
+            cur.get_or_insert_with(|| (i, vec![], vec![]))
+                .2
+                .push(y[j].clone());
+            j += 1;
+        }
+    }
+    out.extend(cur);
+    out
+}
+
+/// The tape record kinds that feed a telemetry group (T4's per-group list).
+fn group_inputs(group: &str) -> &'static [&'static str] {
+    match group {
+        "gps" => &["nmea"],
+        "imu" => &["imu", "imu_spawn", "imu_exit", "i2cdetect"],
+        "lte" => &["lte_file"],
+        "system" => &["exec", "dt"],
+        _ => &[],
+    }
+}
+
+/// Recorded telemetry VALUES (review-wp6 G1, phase file "telemetry segments …
+/// sample `metrics` per T3/T4"), per telemetry session over each stretch of
+/// consecutive segment seqs present on BOTH sides:
+/// - every leaf but T3's host-read paths: the run-length-deduplicated value
+///   sequence, exactly. Tolerated (`T4/rec-sample`) only a step carried by ONE
+///   sample on one side and absent on the other, at the stretch's start/end
+///   (±1 sample at a segment boundary), or where the side without it sampled
+///   within `collisionMs` of a release of that group's input (its recorder
+///   tick raced the input — the next tick shows the following value). A
+///   stretch where both sides hold a step the other lacks (a different value)
+///   is UNTOLERATED.
+/// - per group (`system`: the `(samples without system)` check above), the
+///   count of samples carrying it: |Δ| ≤ that group's input transitions in
+///   the stretch ±1.5 s (T4, `InputFacts::groups`).
+#[allow(clippy::too_many_arguments)]
+fn rec_values(
+    sid: &str,
+    a: &BTreeMap<u64, String>,
+    b: &BTreeMap<u64, String>,
+    play: &PlayInfo,
+    facts: &crate::diff::InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
+    let id = "T4/rec-sample";
+    let collision = row_tol(table, id, "collisionMs", 0.0) as i64;
+    let has = has_row(table, id);
+    let common: Vec<u64> = a.keys().filter(|k| b.contains_key(k)).copied().collect();
+    let mut stretches: Vec<Vec<u64>> = Vec::new();
+    for q in common {
+        match stretches.last_mut() {
+            Some(s) if s.last().is_some_and(|l| l + 1 == q) => s.push(q),
+            _ => stretches.push(vec![q]),
+        }
+    }
+    let samples = |segs: &BTreeMap<u64, String>, st: &[u64]| -> Vec<Value> {
+        st.iter()
+            .flat_map(|q| segs[q].lines())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|x| x["type"] != "header" && x["metrics"].is_object())
+            .collect()
+    };
+    let walls = |group: &str| -> Vec<i64> {
+        let ks = group_inputs(group);
+        play.releases
+            .iter()
+            .filter(|r| ks.contains(&r.k.as_str()))
+            .map(|r| r.w)
+            .collect()
+    };
+    for st in stretches {
+        let at = format!("{sid}/segs{}-{}", st[0], st[st.len() - 1]);
+        let (xa, xb) = (samples(a, &st), samples(b, &st));
+        let leaves = |xs: &[Value]| -> Vec<(i64, BTreeMap<String, String>)> {
+            xs.iter()
+                .map(|x| {
+                    let mut o = BTreeMap::new();
+                    leaf_texts(&x["metrics"], "metrics", &mut o);
+                    (x["ts"].as_i64().unwrap_or(0), o)
+                })
+                .collect()
+        };
+        let (la, lb) = (leaves(&xa), leaves(&xb));
+        let paths: BTreeSet<&String> = la
+            .iter()
+            .chain(lb.iter())
+            .flat_map(|(_, o)| o.keys())
+            .collect();
+        let steps = |l: &[(i64, BTreeMap<String, String>)], p: &str| -> Vec<Step> {
+            let mut v: Vec<Step> = Vec::new();
+            for (ts, o) in l {
+                if let Some(t) = o.get(p) {
+                    match v.last_mut() {
+                        Some(s) if s.0 == *t => s.1 += 1,
+                        _ => v.push((t.clone(), 1, *ts)),
+                    }
+                }
+            }
+            v
+        };
+        for p in paths {
+            if table
+                .numeric("telemetry", p)
+                .is_some_and(|(r, _)| r == "T3")
+            {
+                continue; // host-read (T3): the live stream compares them
+            }
+            stat(rep, "rec-values").compared += 1;
+            let (sa, sb) = (steps(&la, p), steps(&lb, p));
+            if sa.iter().map(|s| &s.0).eq(sb.iter().map(|s| &s.0)) {
+                continue;
+            }
+            let group = p.split('.').nth(1).unwrap_or("");
+            let rel = walls(group);
+            let raced = |l: &[(i64, BTreeMap<String, String>)], ts: i64| {
+                l.iter()
+                    .filter(|(t, _)| (t - ts).abs() <= 1_500)
+                    .any(|(t, _)| rel.iter().any(|w| (t - w).abs() <= collision))
+            };
+            for (start, only_a, only_b) in step_hunks(&sa, &sb) {
+                let edge = start == 0 || start + only_a.len() >= sa.len();
+                let one_sided = only_a.is_empty() != only_b.is_empty();
+                let ok = has
+                    && one_sided
+                    && only_a.iter().chain(only_b.iter()).all(|s| s.1 == 1)
+                    && (if edge {
+                        only_a.len() + only_b.len() == 1
+                    } else if only_b.is_empty() {
+                        only_a.iter().all(|s| raced(&lb, s.2))
+                    } else {
+                        only_b.iter().all(|s| raced(&la, s.2))
+                    });
+                let fmt = |v: &[Step]| {
+                    v.iter()
+                        .map(|s| format!("{}×{}@{}", s.0, s.1, s.2))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+                rep.push(mm(
+                    "rec-telemetry",
+                    &at,
+                    &format!("{p}(values)"),
+                    fmt(&only_a),
+                    fmt(&only_b),
+                    if ok { id } else { UNTOLERATED },
+                ));
+            }
+        }
+        // Per-group presence (not `system`: judged per sample above).
+        let (lo, hi) = (
+            la.first()
+                .map(|x| x.0)
+                .unwrap_or(0)
+                .min(lb.first().map(|x| x.0).unwrap_or(0))
+                - 1_500,
+            la.last()
+                .map(|x| x.0)
+                .unwrap_or(0)
+                .max(lb.last().map(|x| x.0).unwrap_or(0))
+                + 1_500,
+        );
+        let groups: BTreeSet<String> = xa
+            .iter()
+            .chain(xb.iter())
+            .filter_map(|x| x["metrics"].as_object())
+            .flat_map(|m| m.keys().cloned())
+            .filter(|g| g != "system")
+            .collect();
+        for g in groups {
+            stat(rep, "rec-presence").compared += 1;
+            let n = |xs: &[Value]| xs.iter().filter(|x| x["metrics"].get(&g).is_some()).count();
+            let (na, nb) = (n(&xa), n(&xb));
+            if na == nb {
+                continue;
+            }
+            let trans = facts
+                .groups
+                .get(&g)
+                .map_or(0, |v| v.iter().filter(|w| **w >= lo && **w <= hi).count());
+            rep.push(mm(
+                "rec-telemetry",
+                &at,
+                &format!("metrics.{g}(samples carrying)"),
+                na.to_string(),
+                nb.to_string(),
+                if na.abs_diff(nb) <= trans {
+                    "T4"
+                } else {
+                    UNTOLERATED
+                },
+            ));
+        }
     }
 }
 
@@ -1458,6 +1694,15 @@ pub fn diff_media(
         }
     }
 
+    // ---- recorded telemetry VALUES + per-group presence (G1)
+    let facts = crate::diff::InputFacts::for_play(play);
+    let (va, vb) = (segments_by_seq(a), segments_by_seq(b));
+    stat(rep, "rec-values");
+    stat(rep, "rec-presence");
+    for sid in va.keys().filter(|k| vb.contains_key(*k)) {
+        rec_values(sid, &va[sid], &vb[sid], play, &facts, table, rep);
+    }
+
     // ---- S3 (T14)
     for (label, m) in [("A", a), ("B", b)] {
         for o in &m.s3 {
@@ -1895,6 +2140,104 @@ mod tests {
             vec![
                 format!("{sid}/00000 durationMs {UNTOLERATED}"),
                 format!("{sid}/00001 durationMs {UNTOLERATED}"),
+            ]
+        );
+    }
+
+    /// G1: recorded VALUES per leaf (deduplicated), per-group presence.
+    #[test]
+    fn rec_values_compare_steps_exactly_but_a_raced_tick() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        // One sample per second at `t0 + i*1000 + phase`; lat[i] (None = no gps).
+        let seg = |phase: i64, lat: &[Option<f64>]| {
+            let mut t = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (i, l) in lat.iter().enumerate() {
+                let gps = l
+                    .map(|v| format!("\"gps\":{{\"lat\":{{\"value\":{v}}}}},"))
+                    .unwrap_or_default();
+                t.push_str(&format!(
+                    "{{\"ts\":{},\"seq\":{i},\"metrics\":{{{gps}\"system\":{{\"cpu_usage\":{{\"value\":{i}}},\"throttled\":{{\"value\":0}}}}}}}}\n",
+                    100_000 + i as i64 * 1000 + phase
+                ));
+            }
+            t
+        };
+        let cap = |phase: i64, lat: &[Option<f64>]| {
+            let mut finals = BTreeMap::new();
+            finals.insert(
+                "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
+                seg(phase, lat).into_bytes(),
+            );
+            MediaCapture {
+                kind: "js".into(),
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        // NMEA bursts released at 100 650 + k*1000.
+        let play = PlayInfo {
+            releases: (0..8)
+                .map(|k| crate::diff::Release {
+                    w: 100_650 + k * 1000,
+                    due: 0,
+                    t: 0,
+                    k: "nmea".into(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let run = |a: MediaCapture, b: MediaCapture| {
+            let mut rep = Report::default();
+            diff_media(&a, &b, &play, &table, &mut rep);
+            assert!(
+                rep.stats["rec-values"].compared >= 2,
+                "lat + throttled compared"
+            );
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "rec-telemetry" && m.path != "(sample key order)")
+                .map(|m| format!("{} {}", m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let v = |x: f64| Some(x + 0.25); // always a float (T9 shapes stay equal)
+        let full = [v(1.0), v(2.0), v(3.0), v(4.0), v(5.0), v(6.0)];
+        // Equal steps at different tick phases (cpu_usage = T3 host, never compared).
+        assert!(run(cap(200, &full), cap(600, &full)).is_empty());
+        // B ticks 1 ms after each burst and once misses it: value 3 skipped.
+        let skip = [v(1.0), v(2.0), v(2.0), v(4.0), v(5.0), v(6.0)];
+        assert_eq!(
+            run(cap(200, &full), cap(651, &skip)),
+            vec!["metrics.gps.lat.value(values) T4/rec-sample".to_string()]
+        );
+        // The same skip by a tick far from any release: untolerated.
+        assert_eq!(
+            run(cap(200, &full), cap(300, &skip)),
+            vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")]
+        );
+        // A DIFFERENT value (both sides hold a step the other lacks): never.
+        let other = [v(1.0), v(2.0), v(3.5), v(4.0), v(5.0), v(6.0)];
+        assert_eq!(
+            run(cap(200, &full), cap(651, &other)),
+            vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")]
+        );
+        // A step held by two samples on one side only: not a raced tick.
+        let two = [v(1.0), v(2.0), v(9.0), v(9.0), v(5.0), v(6.0)];
+        let one = [v(1.0), v(2.0), v(2.0), v(2.0), v(5.0), v(6.0)];
+        assert!(run(cap(651, &one), cap(200, &two))
+            .contains(&format!("metrics.gps.lat.value(values) {UNTOLERATED}")));
+        // ±1 sample at the stretch edge (the cut): one step, one sample.
+        let short = [v(1.0), v(2.0), v(3.0), v(4.0), v(5.0), None];
+        assert_eq!(
+            run(cap(200, &full), cap(300, &short)),
+            vec![
+                "metrics.gps.lat.value(values) T4/rec-sample".to_string(),
+                // no tape here: 0 gps transitions to explain the count
+                format!("metrics.gps(samples carrying) {UNTOLERATED}"),
             ]
         );
     }
