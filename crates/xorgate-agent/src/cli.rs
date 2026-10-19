@@ -9,6 +9,7 @@
 //! phases (`pipeline`, `recording`, `led`, `sms`, `update`, `manage`); the
 //! self-managed daemon verbs `start` / `stop` / `restart` are systemd's job.
 
+pub mod led;
 pub mod logs;
 pub mod process_inspect;
 pub mod set;
@@ -99,6 +100,7 @@ pub fn main(argv: &[String]) -> i32 {
         Some("status") => status::main(&rest),
         Some("logs") => logs::main(&rest),
         Some("set") => set::main(&rest),
+        Some("led") => led::main(&rest),
         Some("update") => update::main(&rest),
         None | Some("help") => {
             println!("{}", usage(&crate::build_info::load().format()));
@@ -110,7 +112,7 @@ pub fn main(argv: &[String]) -> i32 {
             );
             1
         }
-        Some(c @ ("pipeline" | "recording" | "led" | "sms" | "manage" | "monitor")) => {
+        Some(c @ ("pipeline" | "recording" | "sms" | "manage" | "monitor")) => {
             eprintln!("xorgate-rs: '{c}' arrives in a later build");
             1
         }

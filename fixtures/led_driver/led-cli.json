@@ -1,0 +1,2269 @@
+{
+ "jsSourceFile": "src/commands/led.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-wp1-dump-led-cli.test.ts (vitest, fake timers) in a git-archive scratch copy of 89b5c64: the REAL ledCommand + LedDriver + probeHost; only isRaspberryPi and exec.run/commandExists faked (pinctrl records argv + virtual ms; gpioinfo answers host.gpioinfo); console.log → fd 1, console.error → fd 2; process.exit mocked (recorded, not taken)",
+ "cases": [
+  {
+   "name": "no args → usage",
+   "input": {
+    "args": [],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 1,
+      "text": "usage: xorgate led <colour> [pattern] | led off | led test\n\n  <colour>   red | green | blue | purple | cyan | white\n             (no yellow/amber: r+g reads as green on this LED and cannot be\n             told apart from it — measured, not assumed)\n  [pattern]  solid | blink-fast | blink-slow | heartbeat | flash2   (default: solid)\n\n  led off    turn the LED off\n  led test   walk every state in the status ladder, printing each label —\n             this is the one to run with someone watching the device\n\n  led boot        systemd ExecStartPre hook — white while the agent comes up\n  led exit-state  systemd ExecStopPost hook — blank on a clean stop, solid red\n                  on a crash (reads $SERVICE_RESULT)\n\n  'solid' stays lit after the command exits; every other pattern lasts as long\n  as the process (Ctrl-C leaves the LED dark). No settings, no cloud, no policy:\n  this is a manual instrument.\n\nExamples:\n  xorgate led purple blink-fast\n  xorgate led white\n  xorgate led test"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "help → usage",
+   "input": {
+    "args": [
+     "help"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 1,
+      "text": "usage: xorgate led <colour> [pattern] | led off | led test\n\n  <colour>   red | green | blue | purple | cyan | white\n             (no yellow/amber: r+g reads as green on this LED and cannot be\n             told apart from it — measured, not assumed)\n  [pattern]  solid | blink-fast | blink-slow | heartbeat | flash2   (default: solid)\n\n  led off    turn the LED off\n  led test   walk every state in the status ladder, printing each label —\n             this is the one to run with someone watching the device\n\n  led boot        systemd ExecStartPre hook — white while the agent comes up\n  led exit-state  systemd ExecStopPost hook — blank on a clean stop, solid red\n                  on a crash (reads $SERVICE_RESULT)\n\n  'solid' stays lit after the command exits; every other pattern lasts as long\n  as the process (Ctrl-C leaves the LED dark). No settings, no cloud, no policy:\n  this is a manual instrument.\n\nExamples:\n  xorgate led purple blink-fast\n  xorgate led white\n  xorgate led test"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "unknown colour",
+   "input": {
+    "args": [
+     "nope"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "unknown colour or subcommand 'nope'"
+     },
+     {
+      "fd": 1,
+      "text": "usage: xorgate led <colour> [pattern] | led off | led test\n\n  <colour>   red | green | blue | purple | cyan | white\n             (no yellow/amber: r+g reads as green on this LED and cannot be\n             told apart from it — measured, not assumed)\n  [pattern]  solid | blink-fast | blink-slow | heartbeat | flash2   (default: solid)\n\n  led off    turn the LED off\n  led test   walk every state in the status ladder, printing each label —\n             this is the one to run with someone watching the device\n\n  led boot        systemd ExecStartPre hook — white while the agent comes up\n  led exit-state  systemd ExecStopPost hook — blank on a clean stop, solid red\n                  on a crash (reads $SERVICE_RESULT)\n\n  'solid' stays lit after the command exits; every other pattern lasts as long\n  as the process (Ctrl-C leaves the LED dark). No settings, no cloud, no policy:\n  this is a manual instrument.\n\nExamples:\n  xorgate led purple blink-fast\n  xorgate led white\n  xorgate led test"
+     }
+    ],
+    "exitCode": 1,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "unknown pattern",
+   "input": {
+    "args": [
+     "red",
+     "nope"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "unknown pattern 'nope'"
+     },
+     {
+      "fd": 1,
+      "text": "usage: xorgate led <colour> [pattern] | led off | led test\n\n  <colour>   red | green | blue | purple | cyan | white\n             (no yellow/amber: r+g reads as green on this LED and cannot be\n             told apart from it — measured, not assumed)\n  [pattern]  solid | blink-fast | blink-slow | heartbeat | flash2   (default: solid)\n\n  led off    turn the LED off\n  led test   walk every state in the status ladder, printing each label —\n             this is the one to run with someone watching the device\n\n  led boot        systemd ExecStartPre hook — white while the agent comes up\n  led exit-state  systemd ExecStopPost hook — blank on a clean stop, solid red\n                  on a crash (reads $SERVICE_RESULT)\n\n  'solid' stays lit after the command exits; every other pattern lasts as long\n  as the process (Ctrl-C leaves the LED dark). No settings, no cloud, no policy:\n  this is a manual instrument.\n\nExamples:\n  xorgate led purple blink-fast\n  xorgate led white\n  xorgate led test"
+     }
+    ],
+    "exitCode": 1,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "flags are ignored when picking positionals",
+   "input": {
+    "args": [
+     "--x",
+     "off",
+     "-q"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: off"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led red (solid, latched)",
+   "input": {
+    "args": [
+     "red"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: red solid — stays on until 'xorgate led off'"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led off",
+   "input": {
+    "args": [
+     "off"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: off"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led white flash2",
+   "input": {
+    "args": [
+     "white",
+     "flash2"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: white flash2 — two flashes, then dark"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 150,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 350,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 500
+   }
+  },
+  {
+   "name": "led red blink-fast, SIGINT after the first step",
+   "input": {
+    "args": [
+     "red",
+     "blink-fast"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": 100
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: red blink-fast — Ctrl-C to stop (goes dark on exit)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": true,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 110
+   }
+  },
+  {
+   "name": "led purple heartbeat, SIGINT mid-cycle",
+   "input": {
+    "args": [
+     "purple",
+     "heartbeat"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": 400
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: purple heartbeat — Ctrl-C to stop (goes dark on exit)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": true,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 120,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 300,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 410
+   }
+  },
+  {
+   "name": "led boot",
+   "input": {
+    "args": [
+     "boot"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: boot (white)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dh"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led exit-state, SERVICE_RESULT unset",
+   "input": {
+    "args": [
+     "exit-state"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: off (clean stop)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led exit-state, SERVICE_RESULT=success",
+   "input": {
+    "args": [
+     "exit-state"
+    ],
+    "host": {},
+    "env": {
+     "SERVICE_RESULT": "success"
+    },
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: off (clean stop)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led exit-state, SERVICE_RESULT=signal",
+   "input": {
+    "args": [
+     "exit-state"
+    ],
+    "host": {},
+    "env": {
+     "SERVICE_RESULT": "signal"
+    },
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: red solid (SERVICE_RESULT=signal)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led exit-state, SERVICE_RESULT=exit-code",
+   "input": {
+    "args": [
+     "exit-state"
+    ],
+    "host": {},
+    "env": {
+     "SERVICE_RESULT": "exit-code"
+    },
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: red solid (SERVICE_RESULT=exit-code)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led exit-state, SERVICE_RESULT empty",
+   "input": {
+    "args": [
+     "exit-state"
+    ],
+    "host": {},
+    "env": {
+     "SERVICE_RESULT": ""
+    },
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: red solid (SERVICE_RESULT=)"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "led test (walk the ladder)",
+   "input": {
+    "args": [
+     "test"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "Walking the LED ladder — watch the device.\n"
+     },
+     {
+      "fd": 1,
+      "text": "  [0] white solid        Starting up (no real state yet)"
+     },
+     {
+      "fd": 1,
+      "text": "  [1] red solid          Agent not running"
+     },
+     {
+      "fd": 1,
+      "text": "  [2] red blink-fast     Power fault — undervoltage / shedding"
+     },
+     {
+      "fd": 1,
+      "text": "  [4] cyan blink-slow    Running hot — thermal shed, still recording"
+     },
+     {
+      "fd": 1,
+      "text": "  [5] purple blink-fast  Network trouble — LTE/cloud down, recovering"
+     },
+     {
+      "fd": 1,
+      "text": "  [6] blue blink-slow    Waiting for a GPS fix"
+     },
+     {
+      "fd": 1,
+      "text": "  [7] green heartbeat    Healthy"
+     },
+     {
+      "fd": 1,
+      "text": "  [—] white flash2       Settings applied / command accepted"
+     },
+     {
+      "fd": 1,
+      "text": "\nDone — LED is dark."
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 4000,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 4700,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 4700,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 8700,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 9400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 9400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 9525,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 9650,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 9775,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 9900,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 10025,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 10150,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 10275,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 10400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 10525,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 10650,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 10775,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 10900,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 11025,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 11150,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 11275,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 11400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 11525,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 11650,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 11775,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 11900,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 12025,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 12150,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 12275,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 12400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 12525,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 12650,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 12775,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 12900,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 13025,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 13150,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 13275,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 13400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 14100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 14100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 14600,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 15100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 15600,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 16100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 16600,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 17100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 17600,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 18100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 18800,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 18800,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 18925,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 19050,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 19175,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 19300,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 19425,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 19550,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 19675,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 19800,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 19925,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 20050,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 20175,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 20300,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 20425,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 20550,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 20675,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 20800,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 20925,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 21050,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 21175,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 21300,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 21425,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 21550,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 21675,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 21800,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 21925,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 22050,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 22175,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 22300,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 22425,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 22550,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 22675,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 22800,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 23500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 23500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 24000,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 24500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 25000,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 25500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 26000,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 26500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 27000,
+      "argv": [
+       "pinctrl",
+       "set",
+       "16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 27500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 28200,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 28200,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 28320,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 28500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 28620,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 33700,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 33820,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 34000,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 34120,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 39200,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 39320,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 39500,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 39620,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 40200,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 40900,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 41050,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 41250,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 41400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 43400,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     },
+     {
+      "t": 44100,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 44100
+   }
+  },
+  {
+   "name": "inert: mock mode",
+   "input": {
+    "args": [
+     "red"
+    ],
+    "host": {},
+    "env": {
+     "XORGATE_MOCK": "1"
+    },
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 1,
+      "text": "led: inert — mock mode (XORGATE_MOCK); nothing to drive"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "inert: not a Raspberry Pi",
+   "input": {
+    "args": [
+     "boot"
+    ],
+    "host": {
+     "pi": false
+    },
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 1,
+      "text": "led: inert — not a Raspberry Pi; nothing to drive"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "inert: pinctrl missing",
+   "input": {
+    "args": [
+     "exit-state"
+    ],
+    "host": {
+     "pinctrl": false
+    },
+    "env": {
+     "SERVICE_RESULT": "signal"
+    },
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 1,
+      "text": "led: inert — pinctrl is not installed; nothing to drive"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "gpioinfo all free",
+   "input": {
+    "args": [
+     "green"
+    ],
+    "host": {
+     "gpioinfo": "\tline  12:      \"GPIO12\"       unused   input  active-high \n\tline  16:      \"GPIO16\"       unused   input  active-high \n\tline  21:      \"GPIO21\"       unused   input  active-high "
+    },
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: green solid — stays on until 'xorgate led off'"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "gpioinfo",
+       "gpiochip0"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "gpioinfo fails → busy check skipped",
+   "input": {
+    "args": [
+     "green"
+    ],
+    "host": {
+     "gpioinfo": "\tline  12:      \"GPIO12\"       unused   input  active-high \n\tline  16:      \"GPIO16\"       \"sdmode\"  output  active-high [used]\n\tline  21:      \"GPIO21\"       unused   input  active-high ",
+     "gpioinfoFails": true
+    },
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 1,
+      "text": "led: green solid — stays on until 'xorgate led off'"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "gpioinfo",
+       "gpiochip0"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "inert: foreign consumer holds GPIO16",
+   "input": {
+    "args": [
+     "green"
+    ],
+    "host": {
+     "gpioinfo": "\tline  12:      \"GPIO12\"       unused   input  active-high \n\tline  16:      \"GPIO16\"       \"sdmode\"  output  active-high [used]\n\tline  21:      \"GPIO21\"       unused   input  active-high "
+    },
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 1,
+      "text": "led: inert — b=GPIO16 already held by another driver (gpioinfo: [used]); nothing to drive"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "gpioinfo",
+       "gpiochip0"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "own consumer xorgate-rs holds all three (TS refuses; Rust CF50 does not)",
+   "input": {
+    "args": [
+     "green"
+    ],
+    "host": {
+     "gpioinfo": "\tline  12:      unnamed  \"xorgate-rs\"  output  active-high [used]\n\tline  16:      unnamed  \"xorgate-rs\"  output  active-high [used]\n\tline  21:      unnamed  \"xorgate-rs\"  output  active-high [used]"
+    },
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 1,
+      "text": "led: inert — r=GPIO12, g=GPIO21, b=GPIO16 already held by another driver (gpioinfo: [used]); nothing to drive"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "gpioinfo",
+       "gpiochip0"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "pinctrl write fails → blanked, logged once",
+   "input": {
+    "args": [
+     "cyan"
+    ],
+    "host": {
+     "pinctrlFails": true
+    },
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "fd": 2,
+      "text": "[led] pin write failed — LED blanked (further failures not logged)"
+     },
+     {
+      "fd": 1,
+      "text": "led: cyan solid — stays on until 'xorgate led off'"
+     }
+    ],
+    "exitCode": 0,
+    "processExitCalled": false,
+    "calls": [
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "21,16",
+       "op",
+       "dh"
+      ]
+     },
+     {
+      "t": 0,
+      "argv": [
+       "pinctrl",
+       "set",
+       "12,21,16",
+       "op",
+       "dl"
+      ]
+     }
+    ],
+    "endMs": 0
+   }
+  },
+  {
+   "name": "valid colour, pattern off is not a pattern",
+   "input": {
+    "args": [
+     "blue",
+     "off"
+    ],
+    "host": {},
+    "env": {},
+    "signalAtMs": null
+   },
+   "expected": {
+    "lines": [
+     {
+      "fd": 2,
+      "text": "unknown pattern 'off'"
+     },
+     {
+      "fd": 1,
+      "text": "usage: xorgate led <colour> [pattern] | led off | led test\n\n  <colour>   red | green | blue | purple | cyan | white\n             (no yellow/amber: r+g reads as green on this LED and cannot be\n             told apart from it — measured, not assumed)\n  [pattern]  solid | blink-fast | blink-slow | heartbeat | flash2   (default: solid)\n\n  led off    turn the LED off\n  led test   walk every state in the status ladder, printing each label —\n             this is the one to run with someone watching the device\n\n  led boot        systemd ExecStartPre hook — white while the agent comes up\n  led exit-state  systemd ExecStopPost hook — blank on a clean stop, solid red\n                  on a crash (reads $SERVICE_RESULT)\n\n  'solid' stays lit after the command exits; every other pattern lasts as long\n  as the process (Ctrl-C leaves the LED dark). No settings, no cloud, no policy:\n  this is a manual instrument.\n\nExamples:\n  xorgate led purple blink-fast\n  xorgate led white\n  xorgate led test"
+     }
+    ],
+    "exitCode": 1,
+    "processExitCalled": false,
+    "calls": [],
+    "endMs": 0
+   }
+  }
+ ]
+}
