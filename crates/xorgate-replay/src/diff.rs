@@ -113,8 +113,8 @@ impl PlayInfo {
     }
 
     /// Closed spans extended to the moment BOTH agents publish telemetry again
-    /// (T8 `reconnect-cadence`: Rust backs off 1→60 s with jitter, mqtt.js
-    /// retries every 2 s, so one side resumes later than the span's end).
+    /// (T8 `reconnect-cadence`: both retry a fixed 2000 ms after every close,
+    /// each on its own phase, so one side can resume ≤ ~2 s after the other).
     pub fn with_reconnects(&self, a: &[&Msg], b: &[&Msg]) -> PlayInfo {
         let mut out = self.clone();
         for span in out.closed_spans.iter_mut() {
@@ -1116,8 +1116,8 @@ impl Cx<'_> {
     }
 
     /// T8 reconnect-cadence for REPORT values: after a cut each agent's
-    /// reconnect triggers a `cloud` report at its own reconnect time (the Rust
-    /// backoff resumes later), so an input that changed BETWEEN the two
+    /// reconnect triggers a `cloud` report at its own reconnect time (each
+    /// agent's 2 s retry runs on its own phase), so an input that changed BETWEEN the two
     /// reports' publish times is read differently. NARROWED (review-wp7):
     /// only a report pair inside a cut's window, and only the paths that
     /// input feeds (an LTE-file change → effective.sim / uplink / apn,
@@ -2837,9 +2837,10 @@ fn diff_reports(
             let straddle = trig.windows(2).any(|w| w[1] - w[0] <= DEBOUNCE_MS);
             // T8 reconnect-cadence, "report count after a cut" (modelled, not
             // T5): each reconnect's retained redelivery triggers a `cloud`
-            // report, and mqtt.js reconnecting sooner (2 s) can see an
-            // intermediate retained rev the Rust agent never sees (calibration
-            // period 3: JS saw rev 1 then rev 2). So in a period overlapping a
+            // report, and the agent reconnecting first (independent 2 s
+            // phases) can see an intermediate retained rev the other never
+            // sees (calibration period 3, Rust then on its old 1→60 s
+            // backoff: JS saw rev 1 then rev 2). So in a period overlapping a
             // (extended) span: |Δ| ≤ the spans it overlaps, and every report
             // the longer side has beyond the shorter's (by origin + rev) is
             // origin `cloud` with a rev the tape's config publishes carry.
@@ -3343,17 +3344,16 @@ fn diff_events(
         }) {
             r.id.clone()
         } else if let Some((rid, _)) = cadence.as_ref().filter(|(_, row)| {
-            // NARROWED (review-wp7), only in a run with a closed span:
-            // `reconnecting…` / `connection closed` — the Rust agent at most
-            // as many as mqtt.js (its backoff is slower, never faster);
+            // NARROWED (review-wp7; symmetric since fix-timer-cadence), only
+            // in a run with a closed span: `reconnecting…` / `connection
+            // closed` — |Δ| ≤ 1 per closed span EITHER way (both retry a
+            // fixed 2000 ms after every close, mqtt.js `reconnectPeriod` ↔
+            // xorgate-cloud backoff.rs `fixed`, each on its own phase from its
+            // own close, so one span's attempt counts differ by at most one);
             // the transport-error class — either way (detection differs).
             had_cut
                 && ((row.event_exact.iter().any(|e| e == k)
-                    && match js_a {
-                        Some(true) => y <= x,
-                        Some(false) => x <= y,
-                        None => true,
-                    })
+                    && x.abs_diff(y) <= play.closed_spans.len())
                     || row.event_prefixes.iter().any(|p| k.starts_with(p.as_str())))
         }) {
             format!("{rid}/reconnect-cadence")
@@ -4064,7 +4064,8 @@ mod tests {
     fn outage_seq_jump_reconnect_tail_and_gate_skip() {
         let t = table();
         let tel = |ts: i64, seq: i64| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
-        // A (JS) resumes 1 s after the cut; B (Rust, backoff) 8 s after and,
+        // A (JS) resumes 1 s after the cut; B (Rust) 8 s after (the mechanism,
+        // not today's 2 s cadence) and,
         // past the 1000-payload offline queue, dropped the oldest ticks.
         let run = |span_end: i64, extra: bool| {
             let mut play = PlayInfo {
@@ -5889,7 +5890,7 @@ mod tests {
             has(&tols, "error: unhandledRejection: boom", "T8/task-prefix"),
             "{tols:?}"
         );
-        // … with one it is the backoff cadence.
+        // … with one it is the 2 s reconnect phase (|Δ| ≤ 1 per span).
         let play = PlayInfo {
             closed_spans: vec![(0, 10)],
             ..Default::default()
@@ -5901,12 +5902,44 @@ mod tests {
             "{tols:?}"
         );
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
-        // Rust reconnecting MORE often than mqtt.js: not the backoff.
+        // Symmetric (fix-timer-cadence: both retry a fixed 2000 ms after
+        // every close): Rust ONE more than mqtt.js is the same phase skew …
         let (mut a2, mut b2) = (b.clone(), a.clone());
         a2.meta.kind = "js".into();
         b2.meta.kind = "rust".into();
         let rep = diff(&a2, &b2, &play, &[], &t);
-        assert!(has(&tols_of(&rep), "warn: reconnecting…", UNTOLERATED));
+        assert!(
+            has(
+                &tols_of(&rep),
+                "warn: reconnecting…",
+                "T8/reconnect-cadence"
+            ),
+            "{:?}",
+            tols_of(&rep)
+        );
+        // … but TWO more in one span is not a phase skew, either way (a slow
+        // or a fast reconnect loop) …
+        let b5 = b.clone();
+        let mut a5 = a.clone();
+        a5.events.push((5, "warn".into(), "reconnecting…".into()));
+        for (x, y) in [(&a5, &b5), (&b5, &a5)] {
+            let (mut x, mut y) = (x.clone(), y.clone());
+            x.meta.kind = "js".into();
+            y.meta.kind = "rust".into();
+            let rep = diff(&x, &y, &play, &[], &t);
+            assert!(has(&tols_of(&rep), "warn: reconnecting…", UNTOLERATED));
+        }
+        // … unless the run had two spans (one each).
+        let play2 = PlayInfo {
+            closed_spans: vec![(0, 10), (20, 30)],
+            ..Default::default()
+        };
+        let rep = diff(&a5, &b5, &play2, &[], &t);
+        assert!(has(
+            &tols_of(&rep),
+            "warn: reconnecting…",
+            "T8/reconnect-cadence"
+        ));
         // A transport-error COUNT difference only in a run with a cut.
         let mut b3 = b.clone();
         b3.events

@@ -189,9 +189,12 @@ const CUT_MIN_OPEN_MS: i64 = 200;
 /// until BOTH agents publish again + this settle (their retained config
 /// delivery applied and reported) …
 const POST_CUT_SETTLE_MS: i64 = 3_000;
-/// … but never longer than the worst-case reconnect (Rust backoff cap 60 s)
-/// + 15 s after the restore.
-const POST_CUT_MAX_MS: i64 = 75_000;
+/// … but never longer than the worst-case reconnect + 15 s after the
+/// restore: both agents retry a fixed 2000 ms after every close (mqtt.js
+/// `reconnectPeriod: 2000` ↔ xorgate-cloud backoff.rs `fixed`) and the proxy
+/// refuses in-span attempts at once (no attempt hangs into the restore), so
+/// the latest reconnect is 2 s + a connect after the restore.
+const POST_CUT_MAX_MS: i64 = 2_000 + 15_000;
 const PREFILL_MS: u64 = 1000;
 
 // ------------------------------------------------------------------ gate
@@ -291,8 +294,8 @@ pub struct Gate {
     /// Arrival (`now`) of each agent's last telemetry publish.
     seen_at: [Option<i64>; 2],
     /// Set when a cut ends; cleared once BOTH agents have published again.
-    /// Until then the gate stays on PREDICTED ticks (series 5: Rust, still in
-    /// its backoff 7 s after the restore, read an NMEA burst 5 ms in — GGA
+    /// Until then the gate stays on PREDICTED ticks (series 5: Rust, then
+    /// still in its old 1→60 s backoff 7 s after the restore, read an NMEA burst 5 ms in — GGA
     /// new, RMC old — because an unobserved agent left the gate open).
     restored_at: Option<i64>,
     /// When both agents had published again after the last restore.
@@ -320,7 +323,7 @@ impl Gate {
 
     /// The broker path was restored at `now`: keep holding on predicted ticks
     /// until both agents' telemetry arrives again (each reconnects on its own
-    /// cadence: mqtt.js 2 s, Rust 1→60 s backoff).
+    /// 2 s retry phase, counted from its own close).
     pub fn on_restore(&mut self, now: i64) {
         self.restored_at = Some(now);
     }
@@ -343,7 +346,7 @@ impl Gate {
     /// Must a barrier input (cli / mqtt_in / lte_file / conn) still wait
     /// after a restore? Until both agents publish again + POST_CUT_SETTLE_MS
     /// (≤ POST_CUT_MAX_MS after the restore). Series 5 calibration 193432Z:
-    /// the Rust agent, 30 s into its backoff, reconnected 50 ms after the
+    /// the Rust agent, 30 s into its (since replaced) backoff, reconnected 50 ms after the
     /// tape's CLI edit, and its retained rev 2 delivery overwrote the edit
     /// before its 5 s settings watch saw it; mqtt.js (2 s) had applied rev 2
     /// 23 s earlier and reported the edit `local`.
@@ -2086,7 +2089,7 @@ mod tests {
         let mut g = Gate::new(60);
         g.on_tick(0, 1_000, 1_000);
         g.on_tick(1, 1_300, 1_300);
-        // Cut 1500..5000; A (mqtt.js) is back at once, B (backoff) is not.
+        // Cut 1500..5000; A is back at once, B (its own 2 s phase) is not.
         assert!(!g.is_open(1_950, true));
         g.on_restore(5_000);
         g.on_tick(0, 5_000, 5_010);
@@ -2115,11 +2118,11 @@ mod tests {
         g.on_tick(1, 1_300, 1_300);
         assert!(!g.post_cut_hold(2_000), "no cut yet");
         g.on_restore(10_000);
-        g.on_tick(0, 10_000, 10_100); // JS back at once
-        assert!(g.post_cut_hold(20_000), "Rust still in its backoff");
-        g.on_tick(1, 9_300, 40_000); // Rust flushes its queue at 40 s
-        assert!(g.post_cut_hold(42_000), "settle");
-        assert!(!g.post_cut_hold(43_001));
+        g.on_tick(0, 10_000, 10_100); // one agent back at once
+        assert!(g.post_cut_hold(12_000), "the other still in its 2 s retry");
+        g.on_tick(1, 9_300, 12_500); // it flushes its queue 2.5 s in
+        assert!(g.post_cut_hold(15_000), "settle");
+        assert!(!g.post_cut_hold(15_501));
         // An agent that never returns: released POST_CUT_MAX_MS after the restore.
         let mut h = Gate::new(60);
         h.on_tick(0, 1_000, 1_000);

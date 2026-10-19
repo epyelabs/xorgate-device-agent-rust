@@ -466,10 +466,9 @@ on stderr.
   `--shm-size=512m` (2 agents × 2 shmsink bridges). Besides the diff it
   checks both sides PUT mp4 + telemetry objects with valid signatures, spawned
   gst pipelines, and that the Rust agent's tape holds the Phase 3 kinds. It is
-  a plumbing check, not parity: JS-vs-Rust stays the Docker rig's job. Like
-  the tick-drift period, the smoke lifts `T13/system-presence` (two Rust
-  agents both drop `system` on 6–8 % of samples until P-WP6-1 is fixed); the
-  rig keeps ±2. Media mode starts both agents together (`--stagger-ms 0`:
+  a plumbing check, not parity: JS-vs-Rust stays the Docker rig's job.
+  `T13/system-presence` (±2 per session) applies unchanged — its earlier
+  smoke-only lift went with the P-WP6-1 timer fix. Media mode starts both agents together (`--stagger-ms 0`:
   both are SIGTERMed together, so a start stagger shortens B's last fragment
   past T12) and cuts the tape to 58 s (the scenario's last LTE rewrite at
   59.5 s races the 60 s telemetry rotation).

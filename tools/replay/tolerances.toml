@@ -466,18 +466,20 @@ kind = "decisions"
 
   [[rule.row]]
   id = "reconnect-cadence"
-  what = "reconnect cadence (review-wp1 MUST-FIX #1 item 2; WP1 follow-up amb. 3, 5): Rust backs off 1→60 s with jitter (xorgate-cloud mqtt.rs) where mqtt.js retries every 2 s (mqtt.ts:63 reconnectPeriod 2000), and detects a dead link at the 2nd unanswered ping (~2× keepalive) vs mqtt.js ~1.5×. So in a run with a closed span: the COUNTS of `reconnecting…`, `connection closed`, `connected to …` and transport-error events differ; a telemetry/status message inside the span (extended to both reconnects) ±5 s may be unpaired (a QoS 0 tick racing the drop is lost by Rust, written to the dying socket by mqtt.js); `published`/`publishErrors` may differ by 1 per closed span + 1 (the SIGTERM race at the end); the REPORT count of a quiet period overlapping the span may differ (each reconnect's retained redelivery triggers a `cloud` report, and mqtt.js, reconnecting sooner, can see an intermediate retained rev the Rust agent never sees — the next quiet period's last report still binds both); and a report VALUE that an input fed differently because the input changed between the two agents' post-reconnect report times (a tape transition between them, report pair inside a cut's window — e.g. effective.sim.checked_at from the LTE file)"
+  what = "reconnect phase (review-wp1 MUST-FIX #1 item 2; WP1 follow-up amb. 3, 5; rewritten by fix-timer-cadence): both agents retry a FIXED 2000 ms after every close, no growth, no jitter (mqtt.js 5.15.1 `_setupReconnect` with `reconnectPeriod: 2000`, mqtt.ts:63 ↔ xorgate-cloud backoff.rs `BackoffConfig::fixed` 2000 ms, mqtt.rs `pause_before_reconnect`), but each on its OWN phase (counted from its own close), so after a restore one can reconnect up to ~2 s before the other; and a black-holed link is detected at rumqttc's 2nd unanswered ping (~2× keepalive) vs mqtt.js ~1.5× (the rig's proxy closes the sockets, so not reached there). So in a run with a closed span: the COUNTS of `reconnecting…` / `connection closed` differ by at most ONE per closed span, EITHER way; the transport-error class count differs; a telemetry/status message inside the span (extended to both reconnects) ±5 s may be unpaired (a QoS 0 tick racing the drop is lost by Rust, written to the dying socket by mqtt.js); `published`/`publishErrors` may differ by 1 per closed span + 1 (the SIGTERM race at the end); the REPORT count of a quiet period overlapping the span may differ (each reconnect's retained redelivery triggers a `cloud` report, and the agent reconnecting first can see an intermediate retained rev the other never sees — the next quiet period's last report still binds both); and a report VALUE that an input fed differently because the input changed between the two agents' post-reconnect report times (a tape transition between them, report pair inside a cut's window — e.g. effective.sim.checked_at from the LTE file)"
   streams = ["events", "telemetry", "status", "state", "report"]
   matcher = "reconnect_cadence"
   around_closed_ms = 5000
   event_exact = ["warn: reconnecting…", "warn: connection closed"]
-  # NARROWED (review-wp7): `connected to …` is NOT here — each agent must log it
-  # exactly #closed spans + 1 times; `reconnecting…` / `connection closed` only
-  # with the Rust count ≤ the JS count; the transport-error class either way;
-  # an unpaired telemetry tick at most ONE per side and span; the report COUNT
-  # of a period overlapping a span only as modelled (|Δ| ≤ spans it overlaps,
-  # every extra report origin `cloud` with a rev the tape published); a report
-  # VALUE only on a path an LTE-file change between the two reports feeds.
+  # NARROWED (review-wp7; made symmetric by fix-timer-cadence): `connected to …`
+  # is NOT here — each agent must log it exactly #closed spans + 1 times;
+  # `reconnecting…` / `connection closed` only with |Δ| ≤ #closed spans (either
+  # side may have the extra one: independent 2 s phases); the transport-error
+  # class either way; an unpaired telemetry tick at most ONE per side and span;
+  # the report COUNT of a period overlapping a span only as modelled (|Δ| ≤
+  # spans it overlaps, every extra report origin `cloud` with a rev the tape
+  # published); a report VALUE only on a path an LTE-file change between the
+  # two reports feeds.
   event_prefixes = ["error: <transport error>"]
   count_paths = ["published", "publishErrors"]
 

@@ -42,7 +42,7 @@
 //!   redelivery of the applied rev). Without the `config` track and with a
 //!   `conn-drop`, rev 3 is published during the cut, so the agents get it as a
 //!   retained delivery on reconnect, and rev 4 waits [`RECONNECT_WORST_MS`]
-//!   after the restore so BOTH agents (mqtt.js 2 s; Rust 1→60 s backoff)
+//!   after the restore so BOTH agents (each retries 2 s after a close)
 //!   have reconnected and seen rev 3 first (series 5 item 4);
 //! - `commands-sms` one `read_sms` (`args.limit` 5) and one without args;
 //! - `sim-mode`    meta env `MODE=sim`: the player runs both agents in sim mode,
@@ -182,8 +182,8 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         // subject. `lte` (the calibration track): without the daemon's LTE
         // file `gnssAntBias` (modem-poll) stays `adjusted`, so each agent
         // re-reports on its OWN 40 s settle chain (config-sync.ts:1639-1650,
-        // sync.rs:592) anchored on its post-cut report — 7 s apart after the
-        // Rust backoff — and a chain tick merging with a tape delivery on
+        // sync.rs:592) anchored on its post-cut report — 7 s apart with the
+        // old Rust 1→60 s backoff, ≤ ~2 s with the 2 s reconnect — and a chain tick merging with a tape delivery on
         // one agent only splits the report count (series 5, 175133Z).
         &["config-envelope", "conn-drop", "clock", "nmea", "lte"],
         "hardware/uploadBucket envelope (rev 3 retained across a cut), malformed, stale rev",
@@ -267,11 +267,17 @@ fn w0() -> i64 {
     W0.with(|c| c.get())
 }
 
-/// After a cut ends, the latest any agent can be reconnected: the Rust
-/// backoff's 60 s cap (`xorgate-cloud` backoff.rs; the jitter only SHORTENS a
-/// delay, to `[d/2, d]`) + 5 s for connect, resubscribe and the retained
-/// delivery. mqtt.js retries every 2 s (`mqtt.ts:63`).
-pub const RECONNECT_WORST_MS: u64 = 65_000;
+/// After a cut ends, the latest any agent can be reconnected: both retry a
+/// FIXED 2000 ms after every close (mqtt.js 5.15.1 `_setupReconnect`,
+/// `reconnectPeriod: 2000` at `mqtt.ts:63` ↔ `xorgate-cloud` backoff.rs
+/// `BackoffConfig::fixed`), and the rig's proxy refuses an attempt inside a
+/// span by closing it at once (`play.rs` `proxy`), so no attempt is still
+/// hanging at the restore (no 30 s connect timeout): the worst case is an
+/// attempt refused just before the restore → 2000 ms → a connect that
+/// succeeds. + 5 s (kept from the old bound) for TCP + TLS + CONNACK,
+/// resubscribe and the retained delivery on a loaded VM (JS measured 0.4 s
+/// from the restore to `connected`, wp6.md rec-upload-outage).
+pub const RECONNECT_WORST_MS: u64 = 2_000 + 5_000;
 
 /// `rec-boot-defer`: when the GPS fix appears (LTE turns `connected` 10 s
 /// earlier, on the 10 s rewrite cadence).

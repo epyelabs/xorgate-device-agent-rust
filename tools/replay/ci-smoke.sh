@@ -115,14 +115,6 @@ TOML
 # and the rig's JS-vs-Rust bound in tolerances.toml is untouched.
 grep -q '^  period_ms = \[999.5, 1010.0\]$' "$TOL" || { echo "ci-smoke: tick-drift period_ms row not found in tolerances.toml" >&2; exit 2; }
 sed -i 's/^  period_ms = \[999.5, 1010.0\]$/  period_ms = [995.0, 1015.0]/' "$TOL"
-# SMOKE ONLY (WP6 2026-10-19): `T13/system-presence` bounds the per-session
-# count of telemetry samples without `system` A vs B at ±2 — calibrated on
-# JS-vs-JS, where each side drops 0–3 per run. Two RUST agents each drop 6–8 %
-# of samples today (P-WP6-1, fixed-rate timers vs the 1 s sample gate), so two
-# independent counts of ~5 differ by > 2 often on a shared runner. The smoke
-# is a plumbing check; the JS-vs-Rust rig keeps the ±2 bound unchanged.
-grep -q '^tolerance = { "perSession" = 2.0 }$' "$TOL" || { echo "ci-smoke: T13/system-presence row not found in tolerances.toml" >&2; exit 2; }
-sed -i 's/^tolerance = { "perSession" = 2.0 }$/tolerance = { "perSession" = 1000.0 }/' "$TOL"
 set +e
 "$RP" diff "$OUT" --tolerances "$TOL"
 RC=$?
