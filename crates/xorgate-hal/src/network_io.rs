@@ -387,6 +387,37 @@ mod tests {
         assert_eq!(wifi_result(true, "wlan0", &r).message, "wifi on failed: exit 4");
     }
 
+    /// CF22: `network.test.ts:79-84` + recorded snapshots, against the REAL
+    /// TS `ifaceForIp` / `ipv4Of` (`fixtures/network/iface_for_ip.json`,
+    /// tsx-dumped by `tools/replay/js/dump-iface-for-ip.mts`).
+    #[test]
+    fn iface_for_ip_fixture() {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Case {
+            name: String,
+            interfaces: Interfaces,
+            iface_for_ip: Vec<(Option<String>, Option<String>)>,
+            ipv4_of: Vec<(String, Option<String>)>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Fx {
+            cases: Vec<Case>,
+        }
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/network/iface_for_ip.json");
+        let fx: Fx = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        assert_eq!(fx.cases.len(), 6);
+        for c in &fx.cases {
+            for (ip, want) in &c.iface_for_ip {
+                assert_eq!(&iface_for_ip_in(&c.interfaces, ip.as_deref()), want, "{} {ip:?}", c.name);
+            }
+            for (n, want) in &c.ipv4_of {
+                assert_eq!(&ipv4_of_in(&c.interfaces, n), want, "{} {n}", c.name);
+            }
+        }
+    }
+
     #[test]
     fn live_snapshot_has_loopback_on_linux() {
         if cfg!(target_os = "linux") {

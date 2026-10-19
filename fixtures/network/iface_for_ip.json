@@ -1,0 +1,599 @@
+{
+ "jsSourceFile": "src/hardware/network.ts",
+ "jsCommit": "89b5c64",
+ "generatedBy": "tools/replay/js/dump-iface-for-ip.mts (Phase 4 WP5, CF22)",
+ "note": "a numeric family 4 (node<18) is normalised to \"IPv4\" in `interfaces` — the Rust snapshot type carries libuv's string family",
+ "cases": [
+  {
+   "name": "bench wifi+lte",
+   "interfaces": [
+    [
+     "lo",
+     [
+      {
+       "family": "IPv4",
+       "address": "127.0.0.1",
+       "internal": true
+      },
+      {
+       "family": "IPv6",
+       "address": "::1",
+       "internal": true
+      }
+     ]
+    ],
+    [
+     "usb0",
+     [
+      {
+       "family": "IPv4",
+       "address": "192.168.225.37",
+       "internal": false
+      },
+      {
+       "family": "IPv6",
+       "address": "fe80::a8f2:1ff:fe00:1",
+       "internal": false
+      }
+     ]
+    ],
+    [
+     "wlan0",
+     [
+      {
+       "family": "IPv4",
+       "address": "192.168.8.203",
+       "internal": false
+      },
+      {
+       "family": "IPv6",
+       "address": "fe80::1:2:3:4",
+       "internal": false
+      }
+     ]
+    ]
+   ],
+   "ifaceForIp": [
+    [
+     null,
+     null
+    ],
+    [
+     "",
+     null
+    ],
+    [
+     "127.0.0.1",
+     "lo"
+    ],
+    [
+     "192.168.8.203",
+     "wlan0"
+    ],
+    [
+     "192.168.225.37",
+     "usb0"
+    ],
+    [
+     "10.0.0.113",
+     null
+    ],
+    [
+     "10.0.0.111",
+     null
+    ],
+    [
+     "2001:db8::5",
+     null
+    ],
+    [
+     "172.16.0.2",
+     null
+    ],
+    [
+     "10.9.9.9",
+     null
+    ],
+    [
+     "203.0.113.7",
+     null
+    ]
+   ],
+   "ipv4Of": [
+    [
+     "lo",
+     null
+    ],
+    [
+     "eth0",
+     null
+    ],
+    [
+     "usb0",
+     "192.168.225.37"
+    ],
+    [
+     "wlan0",
+     "192.168.8.203"
+    ],
+    [
+     "wlan1",
+     null
+    ],
+    [
+     "nope",
+     null
+    ]
+   ]
+  },
+  {
+   "name": "eth + wifi same subnet",
+   "interfaces": [
+    [
+     "lo",
+     [
+      {
+       "family": "IPv4",
+       "address": "127.0.0.1",
+       "internal": true
+      }
+     ]
+    ],
+    [
+     "eth0",
+     [
+      {
+       "family": "IPv4",
+       "address": "10.0.0.111",
+       "internal": false
+      }
+     ]
+    ],
+    [
+     "wlan0",
+     [
+      {
+       "family": "IPv4",
+       "address": "10.0.0.112",
+       "internal": false
+      },
+      {
+       "family": "IPv4",
+       "address": "10.0.0.113",
+       "internal": false
+      }
+     ]
+    ]
+   ],
+   "ifaceForIp": [
+    [
+     null,
+     null
+    ],
+    [
+     "",
+     null
+    ],
+    [
+     "127.0.0.1",
+     "lo"
+    ],
+    [
+     "192.168.8.203",
+     null
+    ],
+    [
+     "192.168.225.37",
+     null
+    ],
+    [
+     "10.0.0.113",
+     "wlan0"
+    ],
+    [
+     "10.0.0.111",
+     "eth0"
+    ],
+    [
+     "2001:db8::5",
+     null
+    ],
+    [
+     "172.16.0.2",
+     null
+    ],
+    [
+     "10.9.9.9",
+     null
+    ],
+    [
+     "203.0.113.7",
+     null
+    ]
+   ],
+   "ipv4Of": [
+    [
+     "lo",
+     null
+    ],
+    [
+     "eth0",
+     "10.0.0.111"
+    ],
+    [
+     "usb0",
+     null
+    ],
+    [
+     "wlan0",
+     "10.0.0.112"
+    ],
+    [
+     "wlan1",
+     null
+    ],
+    [
+     "nope",
+     null
+    ]
+   ]
+  },
+  {
+   "name": "ipv6 only wifi",
+   "interfaces": [
+    [
+     "lo",
+     [
+      {
+       "family": "IPv4",
+       "address": "127.0.0.1",
+       "internal": true
+      }
+     ]
+    ],
+    [
+     "wlan0",
+     [
+      {
+       "family": "IPv6",
+       "address": "2001:db8::5",
+       "internal": false
+      }
+     ]
+    ]
+   ],
+   "ifaceForIp": [
+    [
+     null,
+     null
+    ],
+    [
+     "",
+     null
+    ],
+    [
+     "127.0.0.1",
+     "lo"
+    ],
+    [
+     "192.168.8.203",
+     null
+    ],
+    [
+     "192.168.225.37",
+     null
+    ],
+    [
+     "10.0.0.113",
+     null
+    ],
+    [
+     "10.0.0.111",
+     null
+    ],
+    [
+     "2001:db8::5",
+     null
+    ],
+    [
+     "172.16.0.2",
+     null
+    ],
+    [
+     "10.9.9.9",
+     null
+    ],
+    [
+     "203.0.113.7",
+     null
+    ]
+   ],
+   "ipv4Of": [
+    [
+     "lo",
+     null
+    ],
+    [
+     "eth0",
+     null
+    ],
+    [
+     "usb0",
+     null
+    ],
+    [
+     "wlan0",
+     null
+    ],
+    [
+     "wlan1",
+     null
+    ],
+    [
+     "nope",
+     null
+    ]
+   ]
+  },
+  {
+   "name": "node<18 numeric family",
+   "interfaces": [
+    [
+     "eth0",
+     [
+      {
+       "family": "IPv4",
+       "address": "172.16.0.2",
+       "internal": false
+      }
+     ]
+    ]
+   ],
+   "ifaceForIp": [
+    [
+     null,
+     null
+    ],
+    [
+     "",
+     null
+    ],
+    [
+     "127.0.0.1",
+     null
+    ],
+    [
+     "192.168.8.203",
+     null
+    ],
+    [
+     "192.168.225.37",
+     null
+    ],
+    [
+     "10.0.0.113",
+     null
+    ],
+    [
+     "10.0.0.111",
+     null
+    ],
+    [
+     "2001:db8::5",
+     null
+    ],
+    [
+     "172.16.0.2",
+     "eth0"
+    ],
+    [
+     "10.9.9.9",
+     null
+    ],
+    [
+     "203.0.113.7",
+     null
+    ]
+   ],
+   "ipv4Of": [
+    [
+     "lo",
+     null
+    ],
+    [
+     "eth0",
+     "172.16.0.2"
+    ],
+    [
+     "usb0",
+     null
+    ],
+    [
+     "wlan0",
+     null
+    ],
+    [
+     "wlan1",
+     null
+    ],
+    [
+     "nope",
+     null
+    ]
+   ]
+  },
+  {
+   "name": "duplicate ip on two ifaces (first wins)",
+   "interfaces": [
+    [
+     "wlan0",
+     [
+      {
+       "family": "IPv4",
+       "address": "10.9.9.9",
+       "internal": false
+      }
+     ]
+    ],
+    [
+     "wlan1",
+     [
+      {
+       "family": "IPv4",
+       "address": "10.9.9.9",
+       "internal": false
+      }
+     ]
+    ]
+   ],
+   "ifaceForIp": [
+    [
+     null,
+     null
+    ],
+    [
+     "",
+     null
+    ],
+    [
+     "127.0.0.1",
+     null
+    ],
+    [
+     "192.168.8.203",
+     null
+    ],
+    [
+     "192.168.225.37",
+     null
+    ],
+    [
+     "10.0.0.113",
+     null
+    ],
+    [
+     "10.0.0.111",
+     null
+    ],
+    [
+     "2001:db8::5",
+     null
+    ],
+    [
+     "172.16.0.2",
+     null
+    ],
+    [
+     "10.9.9.9",
+     "wlan0"
+    ],
+    [
+     "203.0.113.7",
+     null
+    ]
+   ],
+   "ipv4Of": [
+    [
+     "lo",
+     null
+    ],
+    [
+     "eth0",
+     null
+    ],
+    [
+     "usb0",
+     null
+    ],
+    [
+     "wlan0",
+     "10.9.9.9"
+    ],
+    [
+     "wlan1",
+     "10.9.9.9"
+    ],
+    [
+     "nope",
+     null
+    ]
+   ]
+  },
+  {
+   "name": "empty",
+   "interfaces": [],
+   "ifaceForIp": [
+    [
+     null,
+     null
+    ],
+    [
+     "",
+     null
+    ],
+    [
+     "127.0.0.1",
+     null
+    ],
+    [
+     "192.168.8.203",
+     null
+    ],
+    [
+     "192.168.225.37",
+     null
+    ],
+    [
+     "10.0.0.113",
+     null
+    ],
+    [
+     "10.0.0.111",
+     null
+    ],
+    [
+     "2001:db8::5",
+     null
+    ],
+    [
+     "172.16.0.2",
+     null
+    ],
+    [
+     "10.9.9.9",
+     null
+    ],
+    [
+     "203.0.113.7",
+     null
+    ]
+   ],
+   "ipv4Of": [
+    [
+     "lo",
+     null
+    ],
+    [
+     "eth0",
+     null
+    ],
+    [
+     "usb0",
+     null
+    ],
+    [
+     "wlan0",
+     null
+    ],
+    [
+     "wlan1",
+     null
+    ],
+    [
+     "nope",
+     null
+    ]
+   ]
+  }
+ ]
+}

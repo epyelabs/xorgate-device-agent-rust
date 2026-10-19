@@ -39,6 +39,7 @@ sha2 = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 futures-core = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
 # `start_paused` tests of the spine (tokio::time::pause); `net` for the stub broker.
