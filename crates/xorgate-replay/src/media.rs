@@ -499,6 +499,34 @@ fn sha256_file(p: &Path) -> Option<String> {
 /// (json/jsonl/gz bodies; mp4 as size + sha256 in `final/recordings.mp4.json`)
 /// and `counters.json`.
 pub fn finish(a: &ObsAgent) -> Result<()> {
+    // The gst shim's tee logs a child's last lines (`handling interrupt.`,
+    // `Got EOS`) and then `eof` once that child's pipes close; on a loaded
+    // host it can lag the agent's own exit (CI run 39290924951: both lines
+    // missing → the child read as "kill"). Wait (≤ 5 s) until every gst spawn
+    // has its `eof` before copying the log.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let text = fs::read_to_string(a.work.join("shim.ndjson")).unwrap_or_default();
+        let (mut spawned, mut eof) = (BTreeSet::new(), BTreeSet::new());
+        for v in text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        {
+            match (v["k"].as_str(), v["tool"].as_str()) {
+                (Some("spawn"), Some("gst-launch-1.0")) => {
+                    spawned.insert(v["pid"].as_u64());
+                }
+                (Some("eof"), _) => {
+                    eof.insert(v["pid"].as_u64());
+                }
+                _ => {}
+            }
+        }
+        if spawned.is_subset(&eof) || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     if let Ok(b) = fs::read(a.work.join("shim.ndjson")) {
         fs::write(a.dir.join("shim.ndjson"), b)?;
     }
