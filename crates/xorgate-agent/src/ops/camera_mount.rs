@@ -38,6 +38,7 @@ use xorgate_hal::io::TapeSink;
 use xorgate_hal::privileged::{HelperArgv, PrivilegedRunner};
 
 use crate::ctx::BoxFut;
+use crate::ops::clock_stepper::EventSink;
 use crate::state::StateHandle;
 
 /// `OverlayProbe` (`boot-config.ts:193`): does this sensor's overlay declare
@@ -170,7 +171,7 @@ pub struct ReconcileCameraMountOptions {
     pub dt_root: PathBuf,
     /// `(opts.now ?? Date.now)()` — read once, stamps `at`.
     pub now: i64,
-    pub log: Arc<dyn Fn(EventLevel, &str) + Send + Sync>,
+    pub log: Arc<EventSink>,
     pub probe: Arc<dyn OverlayProbe>,
     pub apply_rotation: Arc<dyn RotationWriter>,
 }
@@ -393,7 +394,7 @@ pub struct CameraMountReconcilerOptions {
     pub probe: Arc<dyn OverlayProbe>,
     pub apply_rotation: Arc<dyn RotationWriter>,
     /// The worker's `log` (`worker.ts:176-181`): see [`camera_mount_event_sink`].
-    pub log: Arc<dyn Fn(EventLevel, &str) + Send + Sync>,
+    pub log: Arc<EventSink>,
     pub clock: Arc<dyn Clock + Send + Sync>,
 }
 
@@ -510,7 +511,7 @@ fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
 pub fn camera_mount_event_sink(
     state: StateHandle,
     clock: Arc<dyn Clock + Send + Sync>,
-) -> Arc<dyn Fn(EventLevel, &str) + Send + Sync> {
+) -> Arc<EventSink> {
     Arc::new(move |level, msg| {
         let t = clock.wall_ms();
         let lvl = match level {

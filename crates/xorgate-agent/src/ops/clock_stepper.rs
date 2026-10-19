@@ -43,6 +43,9 @@ use crate::ctx::BoxFut;
 use crate::state::StateHandle;
 use crate::timer::SetInterval;
 
+/// An `onEvent(level, msg)` / `log(level, msg)` sink.
+pub type EventSink = dyn Fn(EventLevel, &str) + Send + Sync;
+
 /// `ClockStepperOptions` (`clock-step.ts:155-172`) as the worker fills it
 /// (`worker.ts:537-552`). `applyStep` is not a seam here: the step always
 /// goes through `runner.run_helper` (tests inject a recording runner);
@@ -62,7 +65,7 @@ pub struct ClockStepperOptions {
     /// `void timeSource.refresh()` (`worker.ts:541-545`, CF58/D26).
     pub on_stepped: Box<dyn Fn(SteppedClockSource, f64) + Send + Sync>,
     /// `onEvent(level, msg)` — the worker: see [`agent_event_sink`].
-    pub on_event: Box<dyn Fn(EventLevel, &str) + Send + Sync>,
+    pub on_event: Box<EventSink>,
     /// `now` = `wall_ms`, `monoMs` = `mono_ms` (hold-off survives the step).
     pub clock: Arc<dyn Clock + Send + Sync>,
 }
@@ -303,10 +306,7 @@ impl Inner {
 /// The worker's `onEvent` (`worker.ts:546-551`): `[agent] <msg>` on the
 /// console (warn → `console.warn`), then `store.event(level, msg, t)` +
 /// `store.flush(t, true)` with one `Date.now()`.
-pub fn agent_event_sink(
-    state: StateHandle,
-    clock: Arc<dyn Clock + Send + Sync>,
-) -> Box<dyn Fn(EventLevel, &str) + Send + Sync> {
+pub fn agent_event_sink(state: StateHandle, clock: Arc<dyn Clock + Send + Sync>) -> Box<EventSink> {
     Box::new(move |level, msg| {
         let t = clock.wall_ms();
         let lvl = match level {
@@ -320,5 +320,37 @@ pub fn agent_event_sink(
             }
         };
         state.note(lvl, msg, t);
+    })
+}
+
+/// `defaultProbeNtpSynced` (`clock-step.ts:181-183`): one RAW
+/// `probeTimeSource()` per evaluation (`timedatectl show -p NTPSynchronized
+/// --value`, taped as an `exec`) — not the tracker's cached value — `=== "ntp"`.
+pub fn system_probe_ntp(
+    tape: Arc<dyn xorgate_hal::io::TapeSink>,
+) -> Box<dyn Fn() -> BoxFut<'static, bool> + Send + Sync> {
+    Box::new(move || {
+        let tape = tape.clone();
+        Box::pin(async move {
+            xorgate_hal::boot_id::probe_time_source_taped(&*tape).await
+                == xorgate_core::session::ProbedTimeSource::Ntp
+        })
+    })
+}
+
+/// The worker's `onStepped` (`worker.ts:541-545`, CF58 / D26):
+/// `timeSource.noteStep(stepSource)` FIRST (future finalizations are stamped
+/// honestly at once), then `void timeSource.refresh().catch(() => {})` in the
+/// background so the cached value stays coherent if NTP lands at the same
+/// time. The offset is not used (TS: `(stepSource) => …`).
+pub fn time_source_on_stepped(
+    ts: crate::recording::time_source::TimeSourceHandle,
+) -> Box<dyn Fn(SteppedClockSource, f64) + Send + Sync> {
+    Box::new(move |source, _offset_ms| {
+        ts.note_step(source);
+        let t = ts.clone();
+        tokio::spawn(async move {
+            t.refresh().await;
+        });
     })
 }

@@ -516,3 +516,43 @@ async fn single_flight_tick() {
     stepper.tick().await;
     assert_eq!(probes.load(Ordering::SeqCst), 2);
 }
+
+/// CF58 / D26: `onStepped` → `noteStep(source)` reflected at once, then ONE
+/// background `refresh()` (probe) — the TS order (`worker.ts:541-545`).
+#[tokio::test]
+async fn on_stepped_notes_the_step_then_refreshes_in_the_background() {
+    use xorgate_agent::ops::clock_stepper::time_source_on_stepped;
+    use xorgate_agent::recording::time_source::{ProbeFn, TimeSourceHandle};
+    use xorgate_core::session::ProbedTimeSource;
+    use xorgate_core::types::TimeSource;
+    let probes = Arc::new(AtomicUsize::new(0));
+    let p = probes.clone();
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let g = gate.clone();
+    let probe: ProbeFn = Arc::new(move || {
+        p.fetch_add(1, Ordering::SeqCst);
+        let g = g.clone();
+        Box::pin(async move {
+            g.notified().await;
+            ProbedTimeSource::Unsynced
+        })
+    });
+    let ts = TimeSourceHandle::create(
+        60_000,
+        probe,
+        Arc::new(xorgate_core::clock::FixedClock::new(0, 0)),
+    );
+    let on_stepped = time_source_on_stepped(ts.clone());
+    on_stepped(SteppedClockSource::Gps, 600_000.0);
+    tokio::task::yield_now().await; // the background refresh starts (probe pending)
+    assert_eq!(probes.load(Ordering::SeqCst), 1);
+    // noteStep landed synchronously: reflected while the probe is in flight.
+    assert_eq!(ts.current(), TimeSource::Gps);
+    assert_eq!(probes.load(Ordering::SeqCst), 1);
+    gate.notify_one();
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    // An unsynced probe never displaces the noted step.
+    assert_eq!(ts.current(), TimeSource::Gps);
+}
