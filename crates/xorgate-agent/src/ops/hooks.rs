@@ -255,6 +255,22 @@ impl LedControl for crate::ops::led::LedManager {
     }
 }
 
+impl StepperControl for crate::ops::clock_stepper::ClockStepper {
+    /// `clockStepper.status().armed`.
+    fn armed(&self) -> bool {
+        self.status().armed
+    }
+}
+
+impl CameraMountControl for crate::ops::camera_mount::CameraMountReconciler {
+    fn now(&self) -> BoxFut<'_, ()> {
+        crate::ops::camera_mount::CameraMountReconciler::now(self)
+    }
+    fn state(&self) -> Option<CameraMountState> {
+        crate::ops::camera_mount::CameraMountReconciler::state(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

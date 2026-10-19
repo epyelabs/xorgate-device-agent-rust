@@ -206,6 +206,7 @@ fn build_recording_manager(
     source: Arc<dyn TelemetrySource>,
     media: Option<Arc<dyn MediaControl>>,
     upload: Option<xorgate_cloud::s3::UploadOptions>,
+    time_source: crate::recording::time_source::TimeSourceHandle,
 ) -> RecordingManager {
     let cfg = &ctx.env.config;
     let real = cfg.mode == RunMode::Real;
@@ -245,10 +246,6 @@ fn build_recording_manager(
         info!("[agent] {msg}");
         state.note(level, msg, clock.wall_ms());
     });
-    let time_source = crate::recording::time_source::TimeSourceHandle::system(
-        ctx.clock.clone(),
-        ctx.tape.clone(),
-    );
     RecordingManager::new(RecordingManagerOpts {
         device_id: cfg.device_id.clone(),
         root: ctx.paths.home.join("recordings"),
@@ -274,6 +271,76 @@ fn build_recording_manager(
         poll_ms: None,
         shed_sample_ms: None,
         time_probe_timeout_ms: None,
+    })
+}
+
+/// `reconcileCameraMountNow`'s inputs (`worker.ts:171-182`): settings.json
+/// `cameraMount` and the hardware block in force, read per pass; the
+/// `[camera-mount] …` + `camera mount: …` event sink.
+fn camera_mount_reconciler(
+    ctx: &AgentCtx,
+    pipeline_dir: &str,
+    runner: Arc<dyn xorgate_hal::privileged::PrivilegedRunner>,
+    on_change: Arc<dyn Fn() + Send + Sync>,
+) -> crate::ops::camera_mount::CameraMountReconciler {
+    use crate::ops::camera_mount as cm;
+    let settings = ctx.paths.settings.clone();
+    let hw = ctx.hardware.clone();
+    cm::CameraMountReconciler::new(
+        cm::CameraMountReconcilerOptions {
+            settings: Box::new(move || {
+                xorgate_hal::settings_io::load_settings(&settings).camera_mount
+            }),
+            hardware: Box::new(move || hw.borrow().clone()),
+            pipeline_dir: pipeline_dir.to_string(),
+            boot_config_path: cm::BootConfigPath::Resolve,
+            dt_root: cm::default_dt_root(),
+            probe: Arc::new(cm::DtoverlayProbe {
+                tape: ctx.tape.clone(),
+            }),
+            apply_rotation: Arc::new(cm::HelperRotationWriter { runner }),
+            log: cm::camera_mount_event_sink(ctx.state.clone(), ctx.clock.clone()),
+            clock: ctx.clock.clone(),
+        },
+        Box::new(move || on_change()),
+    )
+}
+
+/// `createClockStepper({...})` (`worker.ts:537-552`).
+fn clock_stepper(
+    ctx: &AgentCtx,
+    source: Arc<dyn TelemetrySource>,
+    runner: Arc<dyn xorgate_hal::privileged::PrivilegedRunner>,
+    time_source: crate::recording::time_source::TimeSourceHandle,
+) -> crate::ops::clock_stepper::ClockStepper {
+    use crate::ops::clock_stepper as cs;
+    let settings = ctx.paths.settings.clone();
+    let (lte, tape) = (ctx.paths.lte_telemetry.clone(), ctx.tape.clone());
+    cs::ClockStepper::new(cs::ClockStepperOptions {
+        // `resolveTimeSyncConfig(loadSettings().timeSync)`.
+        config: Box::new(move || {
+            xorgate_core::settings::resolve_time_sync_config(
+                xorgate_hal::settings_io::load_settings(&settings)
+                    .time_sync
+                    .as_ref(),
+            )
+        }),
+        // `source.gpsClock?.() ?? null`.
+        gps_clock: Box::new(move || source.gps_clock()),
+        // `readModemClock(now)` over the daemon's file.
+        modem_clock: Box::new(move |now| {
+            let (lte, tape) = (lte.clone(), tape.clone());
+            Box::pin(async move {
+                let snap = xorgate_hal::modem_file::read(&lte, tape.as_ref()).await;
+                xorgate_core::clock_step::read_modem_clock(now, snap.typed.as_ref())
+            })
+        }),
+        probe_ntp: cs::system_probe_ntp(ctx.tape.clone()),
+        runner,
+        on_stepped: cs::time_source_on_stepped(time_source),
+        on_event: cs::agent_event_sink(ctx.state.clone(), ctx.clock.clone()),
+        clock: ctx.clock.clone(),
+        tape: ctx.tape.clone(),
     })
 }
 
@@ -602,10 +669,32 @@ async fn run(args: &[String]) -> Result<i32> {
     // (`:439`, CF33) — and `await recording.start()` (`:529`), awaited before
     // the first capture spawn. The clock stepper (`:536-570`) and the LED
     // manager (`:609`) are Phase 4.
+    //
+    // `const timeSource = createTimeSourceTracker()` (`:420`): shared by the
+    // recording manager (stamps) and the clock stepper (`noteStep`, CF58).
+    let time_source = crate::recording::time_source::TimeSourceHandle::system(
+        ctx.clock.clone(),
+        ctx.tape.clone(),
+    );
+    // The privileged runner (exact-args sudo; `sudo` tape records, I9).
+    let runner: Arc<dyn xorgate_hal::privileged::PrivilegedRunner> =
+        Arc::new(xorgate_hal::privileged::TapedRunner::new(
+            Arc::new(xorgate_hal::privileged::SudoRunner),
+            ctx.tape.clone(),
+        ));
     ctx.hooks
         .reconcile_hardware_boot()
         .await
         .map_err(|e| anyhow::anyhow!("hardware reconcile failed: {e}"))?;
+    // Camera mount (`:150-199`): real mode only (`:170`).
+    if cfg.mode == RunMode::Real {
+        ops.bind_camera(Arc::new(camera_mount_reconciler(
+            &ctx,
+            &media_cfg.pipeline_dir,
+            runner.clone(),
+            ops.camera_mount_on_change(),
+        )));
+    }
     ctx.hooks.reconcile_camera_mount_boot().await;
     let upload = config_plane::boot_upload_options(&ctx);
     hooks.install(build_recording_manager(
@@ -613,17 +702,21 @@ async fn run(args: &[String]) -> Result<i32> {
         source.clone(),
         media.clone(),
         upload,
+        time_source.clone(),
     ));
     // Errors the TS leaves uncaught in the manager (the 5 s poll, M1): exit 1.
     let mut recording_fatal = hooks.manager().and_then(|m| m.take_fatal());
     ctx.hooks.recording_start().await;
 
-    // The offline clock stepper (`:536-555`) lands with WP3.
+    // Offline clock stepper (`:536-555`): real mode only.
+    if cfg.mode == RunMode::Real {
+        let stepper = clock_stepper(&ctx, source.clone(), runner.clone(), time_source.clone());
+        stepper.start();
+        ops.bind_stepper(Arc::new(stepper));
+    }
     // RGB status LED (`:567-628`): built once from the boot hardware block
     // (CF61), signals {connection, recording (2 s cache, CF56), gnss,
-    // starting}; `void led.start()` — spawned, never awaited. Every
-    // LedManager call is made on the runtime (heartbeat tick in the select
-    // loop, `led_stop` in the async shutdown) — WP1 review S1.
+    // starting}; `void led.start()` — never awaited.
     let led = led_manager(&ctx, &ops, source.clone());
     ops.bind_led(Arc::new(led), |fut| {
         tokio::spawn(fut);
@@ -655,12 +748,16 @@ async fn run(args: &[String]) -> Result<i32> {
     // `requestConfigReport = (origin) => configSync.request(origin);` (`:746`):
     // camera-mount verdict changes request a report from here on.
     ops.set_report_requester(reports.clone());
-    let commands = command_plane::start(
+    // The command plane executes through the same taped runner (I9 `sudo`
+    // records for reboot / power_off / update). The real-mode `read_sms`
+    // reader (CF48 route) lands with WP2.
+    let commands = command_plane::start_with(
         &ctx,
         CommandPlaneDeps {
             mqtt: mqtt.clone(),
             reports: reports.clone(),
         },
+        runner.clone(),
     );
     let mut plane = MqttPlane::new(
         ctx.clone(),
