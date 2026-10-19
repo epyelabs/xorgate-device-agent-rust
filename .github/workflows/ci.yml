@@ -1,8 +1,10 @@
 name: CI
 
-# Lint + test + release-build of the Rust agent on every branch except main
-# (main is covered by device-rs-deploy-dev.yml, which runs the same checks
-# before publishing). No secrets: anything here is safe on a PR.
+# Lint + test + release-build of the Rust agent. MANUAL ONLY since 2026-10-19
+# (owner decision: GitHub Actions minutes). Branches are verified locally in
+# Docker before merge; main is covered by device-rs-deploy-dev.yml, which runs
+# the same checks before publishing. Run this on a branch on demand with
+# `gh workflow run ci.yml --ref <branch>`. No secrets: anything here is safe.
 #
 # Why an arm64 runner + a Bookworm container (plan README §7 / research
 # rust-crates-sysint-toolchain-deepdive.md "Area 11"): the agent links
@@ -26,9 +28,7 @@ name: CI
 #     fine; the container just needs glibc >= 2.28 (Bookworm: 2.36).
 
 on:
-  pull_request:
-  push:
-    branches-ignore: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
