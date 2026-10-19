@@ -587,7 +587,7 @@ kind = "strict_numbers"
 
 [[rule]]
 id = "T10"
-title = "child spawn instants ±1 s (argv/env/signals/ended exact; stagger gap ≥ cfg per side); a kvs master SIGINT-stopped within flashMs of its spawn (the capture-spawn bounce racing the master's restart) may be absent on the other side"
+title = "child spawn instants ±1 s (argv/env/signals/ended exact; stagger gap ≥ cfg per side); a kvs master SIGINT-stopped within flashMs of its spawn (the capture-spawn bounce racing the master's restart) may be absent on the other side — NARROWED (review-wp6): only when a capture of the SAME camera (the master's KVS_GST_PIPELINE camN) spawned within ±flashMs on that side, one flash per capture spawn"
 basis = "phase file T10; flash: worker.ts:455 onCaptureSpawned → media.ts:51-59 restartChannel racing setDisabledCameras' release inside ONE agent (WP6 calibration rec-cameras JS-vs-JS: 4 vs 3 kvs cam1 spawns, the extra one stopped in the same ms); flashes are dropped from both sides only when that equalises the counts"
 kind = "media"
 streams = ["children"]

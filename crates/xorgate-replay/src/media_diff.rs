@@ -792,6 +792,14 @@ fn shapes(v: &Value, path: &str, out: &mut BTreeMap<String, BTreeSet<&'static st
 
 const T1_LIKE: &[&str] = &["ts", "mono", "startTs", "endTs", "createdAt", "updatedAt"];
 
+/// The camera a kvs master serves: the stem of its `KVS_GST_PIPELINE`
+/// (`<work>/etc/pipelines/cam1.gst` → `cam1`).
+fn kvs_camera(s: &Spawn) -> Option<String> {
+    let p = s.env.get("KVS_GST_PIPELINE")?;
+    let f = p.rsplit('/').next()?;
+    Some(f.split('.').next()?.to_string())
+}
+
 /// The `(samples without system)` verdict of one telemetry session, `None` =
 /// nothing to report. `ka`/`kb` = each side's implementation (`js`/`rust`).
 /// - JS-vs-JS: `T13/system-presence` `perSession` (the TS's own spread).
@@ -1229,14 +1237,42 @@ pub fn diff_media(
             // release or the capture spawn runs first is a race inside ONE
             // agent (JS-vs-JS rec-cameras: 4 vs 3). Dropped from BOTH sides
             // only when that makes the counts equal; the rest compare as usual.
-            let flash = |s: &Spawn| {
-                s.role == "kvs"
-                    && s.end.as_deref() == Some("int")
-                    && s.end_w.is_some_and(|e| e - s.w <= flash_ms)
+            // NARROWED (review-wp6): a flash counts only when a capture of
+            // the SAME camera (the master's KVS_GST_PIPELINE `camN.gst`)
+            // spawned within ±flashMs on that side, one flash per capture
+            // spawn — a master double-bounced for any other reason is not one.
+            let flashes = |m: &MediaCapture, xs: &[Spawn]| -> BTreeSet<u32> {
+                let mut used: BTreeSet<u32> = BTreeSet::new();
+                let mut out = BTreeSet::new();
+                for s in xs {
+                    let quick = s.role == "kvs"
+                        && s.end.as_deref() == Some("int")
+                        && s.end_w.is_some_and(|e| e - s.w <= flash_ms);
+                    let Some(cam) = quick.then(|| kvs_camera(s)).flatten() else {
+                        continue;
+                    };
+                    if let Some(c) = m.spawns.iter().find(|c| {
+                        c.role == "capture"
+                            && c.key == cam
+                            && (c.w - s.w).abs() <= flash_ms
+                            && !used.contains(&c.pid)
+                    }) {
+                        used.insert(c.pid);
+                        out.insert(s.pid);
+                    }
+                }
+                out
             };
+            let (pa_f, pb_f) = (flashes(a, &xa), flashes(b, &xb));
             let (fa, fb): (Vec<Spawn>, Vec<Spawn>) = (
-                xa.iter().filter(|s| !flash(s)).cloned().collect(),
-                xb.iter().filter(|s| !flash(s)).cloned().collect(),
+                xa.iter()
+                    .filter(|s| !pa_f.contains(&s.pid))
+                    .cloned()
+                    .collect(),
+                xb.iter()
+                    .filter(|s| !pb_f.contains(&s.pid))
+                    .cloned()
+                    .collect(),
             );
             let tol = if fa.len() == fb.len() {
                 xa = fa;
@@ -1913,7 +1949,9 @@ mod tests {
     use super::*;
 
     /// T10 flash: a kvs master stopped by the capture-spawn bounce in the
-    /// same instant on one side only is tolerated; any other extra spawn is not.
+    /// same instant on one side only is tolerated — only next to a capture
+    /// spawn of the SAME camera on that side, one flash per capture spawn;
+    /// any other extra spawn is not.
     #[test]
     fn t10_flash_spawn_equalises_counts_or_fails() {
         let table = Table::load(
@@ -1921,16 +1959,32 @@ mod tests {
                 .join("../../tools/replay/tolerances.toml"),
         )
         .unwrap();
-        let kvs = |w: i64, end_after: i64, end: &str| Spawn {
+        let kvs_cam = |w: i64, end_after: i64, cam: &str| Spawn {
             w,
             role: "kvs".into(),
             key: "xorgate-{id}-cam1".into(),
             pid: w as u32,
             argv: vec!["xorgate-{id}-cam1".into(), "testsrc".into()],
+            env: BTreeMap::from([(
+                "KVS_GST_PIPELINE".to_string(),
+                format!("<work>/etc/pipelines/{cam}.gst"),
+            )]),
+            playing: None,
+            end: Some("int".into()),
+            end_w: Some(w + end_after),
+            sid: None,
+        };
+        let kvs = |w: i64, end_after: i64| kvs_cam(w, end_after, "cam1");
+        let capture = |w: i64, cam: &str| Spawn {
+            w,
+            role: "capture".into(),
+            key: cam.into(),
+            pid: w as u32 + 1,
+            argv: vec!["gst-launch-1.0".into()],
             env: BTreeMap::new(),
             playing: None,
-            end: Some(end.into()),
-            end_w: Some(w + end_after),
+            end: Some("int".into()),
+            end_w: None,
             sid: None,
         };
         let cap = |spawns: Vec<Spawn>| MediaCapture {
@@ -1940,32 +1994,50 @@ mod tests {
             ..Default::default()
         };
         let play = PlayInfo::default();
-        let run = |extra: Spawn| {
-            let a = cap(vec![
-                kvs(6_500, 44_000, "int"),
-                extra,
-                kvs(102_900, 60_000, "int"),
+        // `extra` = A's additional masters; A's/B's camera spawns `ca`/`cb`.
+        let run = |extra: Vec<Spawn>, ca: &str, cb: &str| {
+            let mut sa = vec![kvs(6_500, 44_000)];
+            sa.extend(extra);
+            sa.extend([kvs(102_900, 60_000), capture(100_905, ca)]);
+            let a = cap(sa);
+            let b = cap(vec![
+                kvs(6_500, 44_000),
+                kvs(102_920, 60_000),
+                capture(100_925, cb),
             ]);
-            let b = cap(vec![kvs(6_500, 44_000, "int"), kvs(102_920, 60_000, "int")]);
             let mut rep = Report::default();
             diff_media(&a, &b, &play, &table, &mut rep);
             rep.mismatches
                 .into_iter()
-                .filter(|m| m.stream == "children")
+                .filter(|m| m.stream == "children" && m.at.starts_with("kvs/"))
                 .map(|m| (m.path, m.tol))
                 .collect::<Vec<_>>()
         };
+        let unt = |r: Vec<(String, String)>| {
+            r.iter()
+                .any(|(p, t)| p == "(spawn count)" && t == UNTOLERATED)
+        };
         assert_eq!(
-            run(kvs(100_900, 0, "int")),
+            run(vec![kvs(100_900, 0)], "cam1", "cam1"),
             vec![
                 ("(spawn count)".to_string(), "T10".to_string()),
                 ("(spawn ms after start)".to_string(), "T10".to_string()),
             ]
         );
         // A master that ran for 2 s is a real extra start, not a bounce flash.
-        assert!(run(kvs(100_900, 2_000, "int"))
-            .iter()
-            .any(|(p, t)| p == "(spawn count)" && t == UNTOLERATED));
+        assert!(unt(run(vec![kvs(100_900, 2_000)], "cam1", "cam1")));
+        // No capture of THAT camera next to it on that side: not a flash.
+        assert!(unt(run(vec![kvs(100_900, 0)], "cam0", "cam0")));
+        assert!(
+            unt(run(vec![kvs(100_700, 0)], "cam1", "cam1")),
+            "capture 205 ms away"
+        );
+        // Two quick masters around ONE capture spawn: only one is a flash.
+        assert!(unt(run(
+            vec![kvs(100_880, 0), kvs(100_890, 0)],
+            "cam1",
+            "cam1"
+        )));
     }
 
     #[test]
