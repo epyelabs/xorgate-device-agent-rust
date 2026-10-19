@@ -32,7 +32,7 @@ use xorgate_core::clock::Clock;
 use xorgate_core::command_flow::{
     decide_command, execution_outcome, ledger_write_failed, read_sms_level, read_sms_line,
     read_sms_publish_failed_log, refresh_flag_failed_log, sms_sweep, ConsoleLevel, Effect,
-    RefreshWindow, SmsSource, AGENT_PREFIX,
+    RefreshWindow, SmsSource as SmsDecision, AGENT_PREFIX,
 };
 use xorgate_core::commands::{
     is_expired, parse_command, AckStatus, CommandAck, DeviceCommand, Ledger, ACK_FLUSH_TIMEOUT_MS,
@@ -45,6 +45,22 @@ use xorgate_hal::privileged::{PrivilegedArgv, PrivilegedRunner, SudoRunner};
 
 use crate::ctx::{AgentCtx, CommandPlane, CommandPlaneDeps, ReportRequester};
 use crate::mqtt_plane::{AckOutcome, MqttHandle, PublishFailure, QoS};
+use crate::ops::sms::SmsReader;
+
+/// Where a real-mode `read_sms` sweep comes from (I4; `worker.ts:917, 929-930`).
+/// `sim` / `replay` always answer from `fixtureSmsSweep` (core
+/// [`SmsDecision::Fixture`]); in `real` mode:
+#[derive(Clone, Default)]
+pub enum SmsSource {
+    /// No reader wired: Phase 2's O4 sweep (`sms reader not available in
+    /// this build`). Kept only until WP6 wires [`SmsSource::Real`] in the
+    /// worker (CF48 route half).
+    #[default]
+    Unavailable,
+    /// The process's one `SmsReader` (`const smsReader = new SmsReader(…)`,
+    /// `worker.ts:917`): `await smsReader.read()`.
+    Real(Arc<SmsReader>),
+}
 
 /// `ACK_FLUSH_TIMEOUT_MS` (`worker.ts:903`).
 const ACK_FLUSH: Duration = Duration::from_millis(ACK_FLUSH_TIMEOUT_MS as u64);
@@ -56,11 +72,31 @@ pub fn start(ctx: &AgentCtx, deps: CommandPlaneDeps) -> Arc<dyn CommandPlane> {
     start_with(ctx, deps, Arc::new(SudoRunner))
 }
 
+/// [`start_with`] plus the real-mode sms source (I4; WP6 passes
+/// `SmsSource::Real(reader)` from the worker).
+pub fn start_with_sms(
+    ctx: &AgentCtx,
+    deps: CommandPlaneDeps,
+    runner: Arc<dyn PrivilegedRunner>,
+    sms: SmsSource,
+) -> Arc<dyn CommandPlane> {
+    start_inner(ctx, deps, runner, sms)
+}
+
 /// [`start`] with an injected privileged runner (tests: `RecordingRunner`).
 pub fn start_with(
     ctx: &AgentCtx,
     deps: CommandPlaneDeps,
     runner: Arc<dyn PrivilegedRunner>,
+) -> Arc<dyn CommandPlane> {
+    start_inner(ctx, deps, runner, SmsSource::Unavailable)
+}
+
+fn start_inner(
+    ctx: &AgentCtx,
+    deps: CommandPlaneDeps,
+    runner: Arc<dyn PrivilegedRunner>,
+    sms: SmsSource,
 ) -> Arc<dyn CommandPlane> {
     let (tx, rx) = mpsc::unbounded_channel();
     let task = CommandTask {
@@ -69,6 +105,7 @@ pub fn start_with(
             mqtt: deps.mqtt,
             reports: deps.reports,
             runner,
+            sms,
         },
         last_refresh: None,
     };
@@ -197,6 +234,8 @@ struct Effects {
     mqtt: MqttHandle,
     reports: ReportRequester,
     runner: Arc<dyn PrivilegedRunner>,
+    /// The real-mode sweep source (I4).
+    sms: SmsSource,
 }
 
 impl Effects {
@@ -228,7 +267,7 @@ impl Effects {
                     source,
                     request_id,
                     limit,
-                } => self.run_sms_read(source, &request_id, limit),
+                } => self.run_sms_read(source, &request_id, limit).await,
                 Effect::Execute(call) => {
                     // `executeCommand(cmd.command)` (`:1102`), O3 unit.
                     let res = self
@@ -286,8 +325,12 @@ impl Effects {
     /// publish QoS 1 on `…/sms` once (mqtt.js-style offline queueing lives
     /// in the client, `xorgate_cloud::mqtt`, WP1 follow-up — no retry here;
     /// the `NotConnected` arm below is unreachable since then).
-    fn run_sms_read(&self, source: SmsSource, request_id: &str, limit: u32) {
-        let sweep = sms_sweep(source, &*self.ctx.clock);
+    async fn run_sms_read(&self, source: SmsDecision, request_id: &str, limit: u32) {
+        // `config.mode === "real" ? await smsReader.read() : fixtureSmsSweep(Date.now())`
+        let sweep = match (source, &self.sms) {
+            (SmsDecision::Reader, SmsSource::Real(reader)) => (*reader.read().await).clone(),
+            (source, _) => sms_sweep(source, &*self.ctx.clock),
+        };
         let payload = build_sms_payload(
             &sweep,
             &SmsPayloadRequest {

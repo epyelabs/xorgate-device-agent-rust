@@ -42,7 +42,8 @@ rumqttc = { version = "0.25", default-features = false, features = ["use-rustls"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "tls12", "logging", "std"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 sd-notify = "0.5"
-nix = { version = "0.31", features = ["fs", "signal", "process", "user"] }
+# Phase 4 WP2 (Q3): `term` for `nix::pty::openpty` (the AT-port pty tests).
+nix = { version = "0.31", features = ["fs", "signal", "process", "user", "term"] }
 libc = "0.2"
 gstreamer = { version = "0.25", features = ["v1_22"] }
 # WP7 (phase-2/wp7-replay): gzip tapes (pure-Rust miniz_oxide backend) and the

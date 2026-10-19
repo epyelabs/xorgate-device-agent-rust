@@ -64,6 +64,7 @@ pub mod settings_migrate;
 pub mod sidecar;
 pub mod sky_state;
 pub mod sms;
+pub mod sms_cli;
 pub mod sms_pdu;
 pub mod stream_guard;
 pub mod system;

@@ -22,5 +22,6 @@ hex = { workspace = true }
 gpiocdev = { workspace = true }
 
 [dev-dependencies]
-# `test-util`: tokio::time::pause() for the LED pattern timelines (Phase 4 WP1).
+# `test-util`: tokio::time::pause() for the LED pattern timelines (Phase 4 WP1)
+# and `start_paused` for the AT-session timeouts (Phase 4 WP2).
 tokio = { workspace = true, features = ["test-util"] }
