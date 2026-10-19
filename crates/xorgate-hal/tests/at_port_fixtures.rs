@@ -358,3 +358,38 @@ fn resolve_sms_port_cases() {
         let _ = std::fs::remove_dir_all(&home);
     }
 }
+
+// ---------------------------------------------------------------------------
+// I9 tape hooks: `at_tx` at every write (no `\r`), `at_rx` at every chunk read
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct RecTape(Mutex<Vec<String>>);
+
+impl xorgate_hal::io::TapeSink for RecTape {
+    fn at_tx(&self, port: &str, line: &str) {
+        self.0.lock().unwrap().push(format!("tx {port} {line}"));
+    }
+    fn at_rx(&self, port: &str, bytes: &[u8]) {
+        self.0.lock().unwrap().push(format!(
+            "rx {port} {}",
+            String::from_utf8_lossy(bytes).escape_debug()
+        ));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn session_reports_at_tx_and_at_rx_to_the_tape() {
+    let modem = Arc::new(Mutex::new(FakeModem::new(FakeSpec::default())));
+    let mut t = MemTransport::new(modem, None);
+    let tape = Arc::new(RecTape::default());
+    let mut at = AtSession::new(&mut t, 200).with_tape("/dev/ttyUSB3", tape.clone());
+    at.command("AT+CMGF?", Some("+CMGF:"), false).await.unwrap();
+    assert_eq!(
+        *tape.0.lock().unwrap(),
+        vec![
+            "tx /dev/ttyUSB3 AT+CMGF?".to_string(),
+            "rx /dev/ttyUSB3 +CMGF: 0\\r\\nOK\\r\\n".to_string(),
+        ]
+    );
+}

@@ -679,15 +679,14 @@ fn on_line(p: &mut Pending<'_>, line: String) -> Option<AtResponse> {
     None
 }
 
-/// I9 `at_tx{port, line}` (`line` without the trailing `\r`) — the WP6
-/// base adds the sink method; until then a no-op seam with the final shape.
+/// I9 `at_tx{port, line}` (`line` without the trailing `\r`), at the write.
 fn tape_tx(tape: &dyn TapeSink, port: &str, line: &str) {
-    let _ = (tape, port, line);
+    tape.at_tx(port, line);
 }
 
-/// I9 `at_rx{port, hex}` (see [`tape_tx`]).
+/// I9 `at_rx{port, hex}`: every raw chunk read off the port.
 fn tape_rx(tape: &dyn TapeSink, port: &str, chunk: &[u8]) {
-    let _ = (tape, port, chunk);
+    tape.at_rx(port, chunk);
 }
 
 // ---------------------------------------------------------------------------
