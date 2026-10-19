@@ -9,7 +9,9 @@
 //!   every connect attempt), QoS 0, not retained;
 //! - `set_max_packet_size(Some(150_000))` (rumqttc #1018: the 10 KiB default
 //!   would reset the connection on a large retained config);
-//! - exponential backoff with jitter between attempts (ours — rumqttc has none);
+//! - a pause between attempts (ours — rumqttc has none): mqtt.js parity by
+//!   default, a fixed `reconnectPeriod` 2000 ms after every close, no jitter
+//!   (`backoff.rs`);
 //! - a `watch` channel exposing the connection state.
 //!
 //! Phase 2 (WP1) additions:
@@ -27,7 +29,7 @@
 //!   in the TS order (`worker.ts:1157-1180`); a SUBACK failure comes back as
 //!   [`MqttEvent::SubscribeFailed`] naming the topic.
 //! - `Reconnecting` is emitted when the next attempt STARTS (after the
-//!   backoff sleep), like mqtt.js's `reconnect` event.
+//!   2 s pause), like mqtt.js's `reconnect` event.
 //!
 //! WP1 follow-up (review-wp1 #2, #3, #7, I-b) — **mqtt.js offline semantics**
 //! (`node_modules/mqtt` 5.15.1 `build/lib/client.js`):
@@ -113,7 +115,7 @@ pub enum MqttEvent {
         emits_error: bool,
     },
     /// The next connect attempt is starting (1-based attempt number; `delay`
-    /// is the backoff that preceded it).
+    /// is the pause that preceded it — 2000 ms by default).
     Reconnecting {
         attempt: u32,
         delay: Duration,
@@ -184,7 +186,8 @@ pub struct MqttConfig {
 
 impl MqttConfig {
     /// The TS defaults: port 8883, keepalive 60 s, connect timeout 30 s,
-    /// max packet 150 000, backoff 1 s → 60 s with jitter.
+    /// max packet 150 000, reconnect 2000 ms after every close (mqtt.js
+    /// `reconnectPeriod: 2000`, `mqtt.ts:63`), no jitter.
     pub fn new(client_id: &str, host: &str, tls: Arc<rustls::ClientConfig>) -> Self {
         Self {
             client_id: client_id.to_string(),
@@ -914,6 +917,23 @@ fn on_loop_event(t: &mut Tracker, ev: Event, out: &mut Vec<MqttEvent>) {
     }
 }
 
+/// The pause between a close and the next connect attempt, measured from
+/// the close (the poll error just handled): mqtt.js `_setupReconnect()` arms
+/// `setInterval(_reconnect, reconnectPeriod)` from its `close` handler and the
+/// `connect()` that fires clears it, so with the default
+/// [`BackoffConfig`] this is a fixed 2000 ms, no jitter. `None` = cancelled.
+async fn pause_before_reconnect(
+    backoff: &mut Backoff,
+    cancel: &CancellationToken,
+) -> Option<(u32, Duration)> {
+    let delay = backoff.next_delay();
+    let attempt = backoff.attempt();
+    tokio::select! {
+        _ = cancel.cancelled() => None,
+        _ = tokio::time::sleep(delay) => Some((attempt, delay)),
+    }
+}
+
 async fn run_loop(mut cx: LoopCtx) {
     let mut backoff = Backoff::new(cx.backoff.clone());
     let mut ever_connected = false;
@@ -1011,12 +1031,9 @@ async fn run_loop(mut cx: LoopCtx) {
         if cx.cancel.is_cancelled() {
             break;
         }
-        let delay = backoff.next_delay();
-        let attempt = backoff.attempt();
-        tokio::select! {
-            _ = cx.cancel.cancelled() => break,
-            _ = tokio::time::sleep(delay) => {}
-        }
+        let Some((attempt, delay)) = pause_before_reconnect(&mut backoff, &cx.cancel).await else {
+            break;
+        };
         let _ = cx.state_tx.send(if ever_connected {
             ConnectionState::Reconnecting
         } else {
@@ -1205,5 +1222,40 @@ mod tests {
     fn publish_futures_are_send(p: &MqttPublisher) {
         assert_send(&p.publish_acked("t", false, vec![], Duration::ZERO));
         assert_send(&p.publish_tracked("t", QoS::AtMostOnce, false, vec![]));
+    }
+
+    /// mqtt.js parity (`reconnectPeriod: 2000`): every close is followed by
+    /// the next attempt exactly 2000 ms later — attempt after attempt, no
+    /// growth, no jitter — and a CONNACK reset changes nothing.
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_pause_is_a_fixed_2000_ms_after_every_close() {
+        let cancel = CancellationToken::new();
+        let mut backoff = Backoff::new(BackoffConfig::default());
+        for round in 0..2 {
+            for n in 1..=12u32 {
+                let closed = tokio::time::Instant::now();
+                let (attempt, delay) = pause_before_reconnect(&mut backoff, &cancel)
+                    .await
+                    .expect("not cancelled");
+                assert_eq!(attempt, n, "round {round}");
+                assert_eq!(delay, Duration::from_millis(2000));
+                assert_eq!(closed.elapsed(), Duration::from_millis(2000));
+            }
+            backoff.reset(); // a CONNACK
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_pause_ends_on_cancel_without_an_attempt() {
+        let cancel = CancellationToken::new();
+        let mut backoff = Backoff::new(BackoffConfig::default());
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            c.cancel();
+        });
+        let t0 = tokio::time::Instant::now();
+        assert_eq!(pause_before_reconnect(&mut backoff, &cancel).await, None);
+        assert_eq!(t0.elapsed(), Duration::from_millis(500));
     }
 }
