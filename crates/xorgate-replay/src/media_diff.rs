@@ -19,7 +19,7 @@
 //! | `sidecar` | key order; every field but the tolerated ones | `startTs` ±300 ms relative to the agent's own capture PLAYING (`New clock:`) time, `startMono` deltas within the session ±300 ms, `durationMs` ±150 ms, `sizeBytes` any (T12) |
 //! | `mp4` | per side: seq contiguity from 0, no 0-byte closed fragment | fragment count per session ±1 (T12, the run's cut) |
 //! | `rec-telemetry` | decompressed header lines minus T1/T11 fields; sample key order; per segment the groups present, each group's leaf paths and number SHAPES (T9); per session the deduplicated VALUE sequence of every non-host leaf and per-group sample counts (G1) | segment count per session ±1 and file-name ms stamps (T13; gz bytes never compared: D24) |
-//! | `s3` | per side every SigV4 signature valid, sidecar PUT before its mp4; A vs B the normalised key multiset of successful PUTs + content types | a session's LAST fragment / LAST telemetry segment present on one side only (never a middle segment), attempt counts / timing (T14) |
+//! | `s3` | per side every SigV4 signature valid, sidecar PUT before its mp4, each source's first successful PUTs oldest-first; A vs B the normalised key multiset of successful PUTs + content types, and each source's order of the keys both PUT | a session's LAST fragment / LAST telemetry segment present on one side only (never a middle segment), attempt counts / timing (T14) |
 //! | `file:counters.json` | bytes as JSON | — |
 //! | `evictions` | the ordered list of fragments/segments deleted without a successful PUT | — |
 //! | `shm` | per side: orphan `shmpipe.<pid>.*` (pid of that side's dead gst child) count at the end | — |
@@ -783,9 +783,18 @@ fn shapes(v: &Value, path: &str, out: &mut BTreeMap<String, BTreeSet<&'static st
         }
         Value::Number(n) => {
             let s = n.to_string();
+            // `float-integral` (review-wp6): an f64 printed with a zero
+            // fraction (`5.0`) — JSON.stringify never writes one, so it is
+            // never a live-value int/float flip (always UNTOLERATED).
+            let integral = s.contains('.')
+                && s.split('.')
+                    .nth(1)
+                    .is_some_and(|f| f.bytes().all(|c| c == b'0'));
             out.entry(path.to_string())
                 .or_default()
-                .insert(if s.contains(['.', 'e', 'E']) {
+                .insert(if integral {
+                    "float-integral"
+                } else if s.contains(['.', 'e', 'E']) {
                     "float"
                 } else {
                     "int"
@@ -804,6 +813,16 @@ fn shapes(v: &Value, path: &str, out: &mut BTreeMap<String, BTreeSet<&'static st
 }
 
 const T1_LIKE: &[&str] = &["ts", "mono", "startTs", "endTs", "createdAt", "updatedAt"];
+
+/// The source of a fragment's session label: `<sid:video:cam1#0>` → `cam1`.
+fn dir_label(sid: &str) -> String {
+    sid.trim_start_matches("<sid:")
+        .trim_start_matches("video:")
+        .split('#')
+        .next()
+        .unwrap_or(sid)
+        .to_string()
+}
 
 /// The camera a kvs master serves: the stem of its `KVS_GST_PIPELINE`
 /// (`<work>/etc/pipelines/cam1.gst` → `cam1`).
@@ -1858,14 +1877,75 @@ pub fn diff_media(
         ),
     );
     if attempts(a) != attempts(b) {
+        // NARROWED (review-wp6): |Δ| ≤ 1 per `meta.rig.s3Faults` window edge
+        // (a PUT straddling the open/close); no fault window → exact.
+        let edges = xorgate_hal::tape::Tape::read(Path::new(&play.tape))
+            .map(|t| 2 * crate::aws::faults_of(t.meta.rig.as_ref()).len())
+            .unwrap_or(0);
         rep.push(mm(
             "s3",
             "run",
             "(failed attempts)",
             attempts(a).to_string(),
             attempts(b).to_string(),
-            t14,
+            if attempts(a).abs_diff(attempts(b)) <= edges {
+                t14
+            } else {
+                UNTOLERATED
+            },
         ));
+    }
+    // S3 ORDER (review-wp6, TS uploader.ts:7-8,39,91: by source priority,
+    // then oldest-first within a source): per side each source's first
+    // successful PUTs run monotonic in (session, seq); across sides the
+    // per-source order of the keys BOTH sides PUT is equal.
+    let order = |m: &MediaCapture| -> BTreeMap<String, Vec<(String, u64)>> {
+        let mut out: BTreeMap<String, Vec<(String, u64)>> = BTreeMap::new();
+        let mut seen = BTreeSet::new();
+        for o in m.s3.iter().filter(|o| o.status == 200) {
+            let (src, sid, seq) = if let Some((sid, seq, _)) = frag_of(&o.key) {
+                (dir_label(&sid), sid, seq)
+            } else if let Some((sid, seq)) = tele_seg_of(&o.key) {
+                ("telemetry".to_string(), sid, seq)
+            } else {
+                continue;
+            };
+            if seen.insert((sid.clone(), seq)) {
+                out.entry(src).or_default().push((sid, seq));
+            }
+        }
+        out
+    };
+    let (qa, qb) = (order(a), order(b));
+    for (label, q) in [("A", &qa), ("B", &qb)] {
+        for (src, v) in q {
+            if let Some(w) = v.windows(2).find(|w| w[1] < w[0]) {
+                rep.push(mm(
+                    "s3",
+                    &format!("{label} {src}"),
+                    "(PUT order)",
+                    format!("{:?} after {:?}", w[1], w[0]),
+                    "oldest first".into(),
+                    UNTOLERATED,
+                ));
+            }
+        }
+    }
+    for src in qa.keys().filter(|k| qb.contains_key(*k)) {
+        let both = |v: &Vec<(String, u64)>, o: &Vec<(String, u64)>| -> Vec<(String, u64)> {
+            v.iter().filter(|x| o.contains(x)).cloned().collect()
+        };
+        let (x, y) = (both(&qa[src], &qb[src]), both(&qb[src], &qa[src]));
+        if x != y {
+            rep.push(mm(
+                "s3",
+                src,
+                "(PUT order A vs B)",
+                format!("{x:?}"),
+                format!("{y:?}"),
+                UNTOLERATED,
+            ));
+        }
     }
 
     // ---- counters.json
@@ -2488,6 +2568,24 @@ mod tests {
             run(&[0, 1, 2], &[0, 2]),
             vec![(key(1), UNTOLERATED.to_string())]
         );
+        // S3 ORDER: oldest-first within a source, per side and A vs B.
+        let order_rows = |a: &[u64], b: &[u64]| {
+            let mut rep = Report::default();
+            diff_media(&cap(a), &cap(b), &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("(PUT order"))
+                .map(|m| format!("{} {} {}", m.at, m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        assert!(order_rows(&[0, 1, 2], &[0, 1, 2]).is_empty());
+        assert_eq!(
+            order_rows(&[0, 2, 1], &[0, 1, 2]),
+            vec![
+                format!("A telemetry (PUT order) {UNTOLERATED}"),
+                format!("telemetry (PUT order A vs B) {UNTOLERATED}"),
+            ]
+        );
         // The side without the PUT skipped that segment and wrote a newer
         // one: lost, not cut short.
         let mut b = cap(&[0, 1]);
@@ -2540,6 +2638,15 @@ mod tests {
         );
         assert_eq!(s["m.a"], BTreeSet::from(["int"]));
         assert_eq!(s["m.b"], BTreeSet::from(["float"]));
+        let mut s = BTreeMap::new();
+        shapes(
+            &serde_json::from_str::<Value>(r#"{"a": 5.0, "b": 5.25, "c": 5}"#).unwrap(),
+            "m",
+            &mut s,
+        );
+        assert_eq!(s["m.a"], BTreeSet::from(["float-integral"]));
+        assert_eq!(s["m.b"], BTreeSet::from(["float"]));
+        assert_eq!(s["m.c"], BTreeSet::from(["int"]));
         let n = Norm {
             work: "/tmp/rig-work/a".into(),
             id: "00000000-0000-4000-8000-00000000000a".into(),
