@@ -267,6 +267,120 @@ async fn a_dropped_caller_does_not_cancel_the_sweep() {
     assert!(closed.load(Ordering::SeqCst));
 }
 
+/// Review WP2 S1: a panic inside the sweep task must not wedge the reader.
+/// The TS clears `inflight` in `.finally` (`sms-modem.ts:498-500`) however
+/// the sweep ends; Rust clears it from a drop guard. The panicking call's
+/// joiners get the catch-all `error "unknown"`, and the NEXT `read()` runs a
+/// fresh sweep against the modem (it does not join the dead one).
+#[tokio::test(start_paused = true)]
+async fn a_panicking_sweep_clears_inflight_and_the_next_read_runs_a_fresh_sweep() {
+    let c = io_cases("sweep").remove(0);
+    let spec: FakeSpec = serde_json::from_value(c["input"]["fake"].clone()).unwrap();
+    let opened: Opened = Default::default();
+    let good = opener(spec, None, opened.clone());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls2 = calls.clone();
+    let open: OpenTransportFn = Box::new(move |p: PathBuf| {
+        if calls2.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("injected open panic (S1 test)");
+        }
+        good(p)
+    });
+    let reader = SmsReader::new(SmsReaderDeps::with(
+        Box::new(|| Some(PathBuf::from("/dev/fake"))),
+        open,
+        TestClock::new(1_000),
+    ));
+    let (a, b) = tokio::join!(reader.read(), reader.read());
+    assert_eq!(a.status, SmsReadStatus::Error);
+    assert_eq!(a.error.as_deref(), Some("unknown"));
+    assert_eq!(
+        b.status,
+        SmsReadStatus::Error,
+        "the joiner sees the same end"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(reader.last().is_none(), "no finish() ran: nothing to reuse");
+    // Same mono instant (inside any reuse window): still a fresh sweep.
+    let r = reader.read().await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "a fresh sweep, not the dead one"
+    );
+    assert_eq!(r.status, SmsReadStatus::Ok);
+    assert_eq!(r.messages.len(), 30);
+    let (m, closed) = opened.lock().unwrap()[0].clone();
+    assert_eq!(m.lock().unwrap().mem1, "SR");
+    assert!(closed.load(Ordering::SeqCst));
+}
+
+/// A clock whose wall and monotonic halves move independently (a stepper
+/// `settimeofday` moves only the wall).
+struct SplitClock {
+    wall: std::sync::atomic::AtomicI64,
+    mono: std::sync::atomic::AtomicU64,
+}
+
+impl xorgate_core::clock::Clock for SplitClock {
+    fn wall_ms(&self) -> i64 {
+        self.wall.load(Ordering::SeqCst)
+    }
+    fn mono_ms(&self) -> u64 {
+        self.mono.load(Ordering::SeqCst)
+    }
+}
+
+/// Accepted divergence D32: the TS gates the 5 s reuse window on
+/// `Date.now()` (`sms-modem.ts:495-497`, `finishedAt` from `:510-518`); Rust
+/// gates it on the monotonic clock (invariant 2). A BACKWARD wall step of an
+/// hour would make the TS reuse the stale sweep for that hour (`now -
+/// finishedAt` negative < 5000); Rust re-sweeps once 5 s of mono pass. A
+/// FORWARD wall step would make the TS re-sweep at once; Rust reuses inside
+/// 5 s of mono. `finishedAt` stays a wall stamp, `durationMs` mono.
+#[tokio::test(start_paused = true)]
+async fn d32_reuse_window_runs_on_mono_across_wall_steps() {
+    let c = io_cases("sweep").remove(0);
+    let spec: FakeSpec = serde_json::from_value(c["input"]["fake"].clone()).unwrap();
+    let opened: Opened = Default::default();
+    let t0 = 1_760_000_000_000_i64;
+    let clock = Arc::new(SplitClock {
+        wall: std::sync::atomic::AtomicI64::new(t0),
+        mono: std::sync::atomic::AtomicU64::new(50_000),
+    });
+    let reader = SmsReader::new(SmsReaderDeps::with(
+        Box::new(|| Some(PathBuf::from("/dev/fake"))),
+        opener(spec, None, opened.clone()),
+        clock.clone(),
+    ));
+    let first = reader.read().await;
+    assert_eq!(first.finished_at, t0, "finishedAt is the wall stamp");
+    assert_eq!(first.duration_ms, 0, "durationMs on mono (no mono elapsed)");
+    assert_eq!(opened.lock().unwrap().len(), 1);
+
+    // Forward wall step of an hour, 1 s of mono: the TS would re-sweep
+    // (wall gap 3 601 000 ≥ 5000); Rust reuses (mono gap 1000 < 5000).
+    clock.wall.fetch_add(3_600_000, Ordering::SeqCst);
+    clock.mono.fetch_add(1_000, Ordering::SeqCst);
+    let fwd = reader.read().await;
+    assert!(Arc::ptr_eq(&fwd, &first), "forward step: reused on mono");
+    assert_eq!(opened.lock().unwrap().len(), 1);
+
+    // Backward wall step of two hours (now an hour BEFORE finishedAt), 5 s
+    // more of mono: the TS would reuse (wall gap −3 594 000 < 5000) until
+    // wall time catches up; Rust re-sweeps (mono gap 6000 ≥ 5000).
+    clock.wall.fetch_sub(7_200_000, Ordering::SeqCst);
+    clock.mono.fetch_add(5_000, Ordering::SeqCst);
+    let back = reader.read().await;
+    assert!(
+        !Arc::ptr_eq(&back, &first),
+        "backward step: fresh sweep on mono"
+    );
+    assert_eq!(opened.lock().unwrap().len(), 2);
+    assert_eq!(back.status, SmsReadStatus::Ok);
+    assert_eq!(back.finished_at, t0 - 3_600_000, "the stepped wall stamp");
+}
+
 // ---------------------------------------------------------------------------
 // command_plane: real mode → the reader (`worker.ts:924-945`, CF48 variant)
 // ---------------------------------------------------------------------------

@@ -7,7 +7,12 @@
 //!
 //! Invariant 2: the reuse window and `durationMs` are measured on the
 //! MONOTONIC clock (`Clock::mono_ms`); only `finishedAt` is a wall stamp
-//! (`Date.now()` in the TS, which uses one clock for both).
+//! (`Date.now()` in the TS, which uses one clock for both:
+//! `sms-modem.ts:495-497, 505-519`). Accepted divergence **D32**
+//! (`phase-1/evidence/accepted-divergences.md`): across a wall step the TS
+//! reuses a stale sweep after a backward step and re-sweeps at once after a
+//! forward one; Rust does neither. Pinned by `tests/sms_reader.rs`
+//! `d32_reuse_window_runs_on_mono_across_wall_steps`.
 //!
 //! The sweep runs on its own task: a caller that goes away (a dropped
 //! future) does not cancel it, as a TS promise keeps running — the joiners
@@ -144,14 +149,22 @@ impl SmsReader {
                     st.inflight = Some(rx.clone());
                     let me = self.clone();
                     tokio::spawn(async move {
+                        // `.finally(() => { this.inflight = null })`
+                        // (`sms-modem.ts:498-500`): the guard clears
+                        // `inflight` however the sweep ends — normally, by a
+                        // panic in `run_sweep` (unwinding drops it; the
+                        // joiners see the sender gone → the catch-all
+                        // `error "unknown"`), or by the task being dropped
+                        // (runtime shutdown). Without it a panic would leave
+                        // every later `read()` joining a dead sweep for the
+                        // life of the process (review WP2 S1).
+                        let guard = ClearInflight(me.clone());
                         let sweep = me.run_sweep().await;
-                        // `.finally(() => { this.inflight = null })` — `last`
-                        // was set by `finish()` inside the sweep, before the
-                        // transport closed; here both land together.
-                        {
-                            let mut st = me.state.lock().unwrap_or_else(|e| e.into_inner());
-                            st.inflight = None;
-                        }
+                        // `last` was set by `finish()` inside the sweep,
+                        // before the transport closed; clear `inflight`
+                        // before the joiners wake, as `.finally` runs before
+                        // the awaiting callers resume.
+                        drop(guard);
                         let _ = tx.send(Some(sweep));
                     });
                     rx
@@ -165,6 +178,10 @@ impl SmsReader {
                 }
                 if rx.changed().await.is_err() {
                     // The sweep task died (panic): the TS catch-all shape.
+                    // (A TS throw past `runSweep`'s own catch would take
+                    // `worker.ts`'s "crashed" path and publish nothing; Rust
+                    // publishes this `error` payload. Both are unreachable in
+                    // practice — review WP2 S1 side note, no D-row.)
                     return Arc::new(empty_sweep(SmsReadStatus::Error, "unknown", 0, 0));
                 }
             }
@@ -231,7 +248,13 @@ impl SmsReader {
         let r = sweep_transport(&mut *transport, opts).await;
         let sweep = finish(r);
         // `finally { await transport?.close().catch(() => {}); release(); }`
+        // (`sms-modem.ts:536-538`, with `close()` = `closed = true; await
+        // loop; await fh.close()` at `:184-189`): the tty fd is closed
+        // BEFORE the lock is released. `close()` stops the reader thread
+        // (which drops its handle); dropping the transport drops the last
+        // `Arc<File>`, i.e. closes the fd; only then is the lock unlinked.
         transport.close().await;
+        drop(transport);
         drop(lock);
         sweep
     }
@@ -240,6 +263,17 @@ impl SmsReader {
     pub fn last(&self) -> Option<Arc<SmsSweep>> {
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         st.last.as_ref().map(|(s, _)| s.clone())
+    }
+}
+
+/// Clears `SmsReader::inflight` on drop — the `.finally` of
+/// `sms-modem.ts:498-500`, run on success, panic and cancellation alike.
+struct ClearInflight(Arc<SmsReader>);
+
+impl Drop for ClearInflight {
+    fn drop(&mut self) {
+        let mut st = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.inflight = None;
     }
 }
 
