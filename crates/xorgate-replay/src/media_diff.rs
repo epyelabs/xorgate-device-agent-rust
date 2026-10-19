@@ -92,6 +92,11 @@ pub struct MediaCapture {
     /// `recording.powerShed` / `recording.liveBlock` differs from the
     /// previous tick's (`mqtt.ndjson`; T7/D30 `d30_shed_tick_session_end` (d)).
     pub shed_changes: Vec<i64>,
+    /// `recording.backlogSegments` of the agent's LAST telemetry tick and
+    /// of its final state.json (written at shutdown) — the end-snapshot
+    /// per-side bound (review-wp6 FLAG 3).
+    pub last_tick_backlog: Option<i64>,
+    pub end_backlog: Option<i64>,
     /// Anything media-related captured at all.
     pub present: bool,
 }
@@ -522,6 +527,11 @@ impl MediaCapture {
             .count();
         let present = !spawns.is_empty() || !rec.is_empty() || !s3.is_empty();
         let mut shed_changes = Vec::new();
+        let mut last_tick_backlog = None;
+        let end_backlog = std::fs::read(dir.join("final/state.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v["recording"]["backlogSegments"].as_i64());
         let mut prev: Option<(Value, Value)> = None;
         for v in lines(&dir.join("mqtt.ndjson")) {
             if !v["topic"]
@@ -540,6 +550,7 @@ impl MediaCapture {
                 p["recording"]["powerShed"].clone(),
                 p["recording"]["liveBlock"].clone(),
             );
+            last_tick_backlog = p["recording"]["backlogSegments"].as_i64();
             if prev.as_ref().is_some_and(|q| *q != cur) {
                 shed_changes.push(v["w"].as_i64().unwrap_or(0));
             }
@@ -555,6 +566,8 @@ impl MediaCapture {
             s3_bodies,
             shm_orphans,
             shed_changes,
+            last_tick_backlog,
+            end_backlog,
             present,
         }
     }
@@ -1925,6 +1938,58 @@ pub fn diff_media(
         ));
     }
 
+    // ---- end-snapshot `recording.backlogSegments` (T8/end-snapshot,
+    // NARROWED per review-wp6 FLAG 3): no cross-side bound. Each side's
+    // shutdown value must lie in [its own last telemetry tick − 1, the
+    // unuploaded pieces left on its disk (mp4 fragments + telemetry
+    // segments of the final tree)]: the shutdown write may land before or
+    // after the last fragments' EOS + finalize (TS worker.ts shutdown →
+    // recording.stop(); JS-vs-JS 1/3), never below what the last tick saw
+    // nor above what exists. (A camera can close TWO fragments at the stop —
+    // the open one + an EOS-born one, replay-20261019T151944Z cam1 #9/#10 on
+    // both sides — so "live sessions + 1" would undercount.) The cross-side
+    // row is tolerated only when BOTH sides pass.
+    let mut in_bound = true;
+    for (label, m) in [("A", a), ("B", b)] {
+        let Some(end) = m.end_backlog else {
+            continue;
+        };
+        let disk = m.mp4_final.len() + m.finals.keys().filter(|k| tele_seg_of(k).is_some()).count();
+        let lo = m.last_tick_backlog.unwrap_or(0) - 1;
+        let hi = disk as i64;
+        rep.inputs.insert(
+            format!("end backlogSegments {label}"),
+            format!("{end} (bound [{lo}, {hi}]: last tick − 1, pieces on disk)"),
+        );
+        if end < lo || end > hi {
+            in_bound = false;
+            rep.push(mm(
+                "state",
+                &format!("end {label}"),
+                "recording.backlogSegments (own bound)",
+                end.to_string(),
+                format!("[{lo}, {hi}]"),
+                UNTOLERATED,
+            ));
+        }
+    }
+    if let Some((rid, _)) = table.decision_row("end-snapshot") {
+        let id = format!("{rid}/end-snapshot");
+        let Report {
+            mismatches, stats, ..
+        } = rep;
+        for x in mismatches.iter_mut().filter(|x| {
+            x.stream == "state" && x.path == "recording.backlogSegments" && x.tol == UNTOLERATED
+        }) {
+            if in_bound && a.end_backlog.is_some() && b.end_backlog.is_some() {
+                x.tol = id.clone();
+                let st = stats.entry(x.stream.clone()).or_default();
+                st.untolerated = st.untolerated.saturating_sub(1);
+                st.tolerated += 1;
+            }
+        }
+    }
+
     // ---- shm orphans
     stat(rep, "shm").compared += 1;
     rep.inputs.insert(
@@ -2312,6 +2377,64 @@ mod tests {
                 format!("metrics.gps(samples carrying) {UNTOLERATED}"),
             ]
         );
+    }
+
+    /// End-snapshot `recording.backlogSegments` (review-wp6 FLAG 3): no
+    /// cross-side bound; each side within [its last tick − 1, pieces on disk].
+    #[test]
+    fn end_backlog_is_a_per_side_bound() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let side = |end: i64, last: i64, mp4s: usize| MediaCapture {
+            kind: "js".into(),
+            end_backlog: Some(end),
+            last_tick_backlog: Some(last),
+            mp4_final: (0..mp4s).map(|i| (format!("v/s/{i:05}.mp4"), 1)).collect(),
+            finals: BTreeMap::from([(
+                "recordings/telemetry/<sid:telemetry#0>/seg-<ms>-00002.jsonl.gz".to_string(),
+                b"{}".to_vec(),
+            )]),
+            present: true,
+            ..Default::default()
+        };
+        let run = |a: MediaCapture, b: MediaCapture| {
+            let mut rep = Report::default();
+            // The cross-side row diff.rs leaves (no numeric bound any more).
+            rep.push(mm(
+                "state",
+                "end",
+                "recording.backlogSegments",
+                a.end_backlog.unwrap().to_string(),
+                b.end_backlog.unwrap().to_string(),
+                UNTOLERATED,
+            ));
+            diff_media(&a, &b, &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "state")
+                .map(|m| format!("{} {} {}", m.at, m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        // 1 vs 4 (3 fragments + 1 segment on B's disk): both in bound.
+        assert_eq!(
+            run(side(1, 0, 3), side(4, 0, 3)),
+            vec!["end recording.backlogSegments T8/end-snapshot".to_string()]
+        );
+        // B claims more than exists on its disk: its own row + the cross row fail.
+        assert_eq!(
+            run(side(1, 0, 3), side(5, 0, 3)),
+            vec![
+                format!("end recording.backlogSegments {UNTOLERATED}"),
+                format!("end B recording.backlogSegments (own bound) {UNTOLERATED}"),
+            ]
+        );
+        // A below its own last tick − 1.
+        assert!(run(side(70, 78, 80), side(79, 78, 80)).contains(&format!(
+            "end A recording.backlogSegments (own bound) {UNTOLERATED}"
+        )));
     }
 
     /// T14: a telemetry object PUT on one side only is tolerated only when it

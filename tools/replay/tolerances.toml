@@ -467,13 +467,12 @@ kind = "decisions"
   # key structure of `latest` is compared under the telemetry rules (T4/T6 …)
   # and only the VALUES are this row.
   matcher = "end_snapshot"
-  # Phase 3 (WP6, rig calibration rec-shed-uv JS-vs-JS: 1 vs 3): state.json's
-  # `recording` block is written at SHUTDOWN, after SIGTERM — each agent's gst
-  # children close their last fragment (EOS) and the recorder finalizes its
-  # segment at slightly different instants, so the final write sees 0..3 more
-  # unuploaded files (one per camera + the telemetry segment). Every tick's
-  # `recording.backlogSegments` is still compared EXACTLY in the telemetry stream.
-  numeric = { "recording.backlogSegments" = 3.0 }
+  # Phase 3: state.json's `recording` block is written at SHUTDOWN, racing the
+  # last fragments' EOS + finalize (JS-vs-JS 1 vs 3). NARROWED (review-wp6
+  # FLAG 3): NO cross-side bound — media_diff.rs checks each side's value
+  # against [its own last tick − 1, the unuploaded pieces on its disk] and
+  # only then cites this row for `recording.backlogSegments` (any Δ). Every
+  # tick's `recording.backlogSegments` is still compared EXACTLY in telemetry.
 
   [[rule.row]]
   id = "mqtt-error-text"
