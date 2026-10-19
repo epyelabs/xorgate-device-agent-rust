@@ -20,6 +20,7 @@ pub mod recording;
 pub mod scope;
 pub mod shutdown;
 pub mod state;
+pub mod timer;
 pub mod worker;
 
 /// `Date.now()`: wall-clock epoch ms — used ONLY to stamp and name things

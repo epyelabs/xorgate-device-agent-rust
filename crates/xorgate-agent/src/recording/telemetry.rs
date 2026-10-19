@@ -256,8 +256,8 @@ impl TelemetryRecorder {
         let period = Duration::from_millis(tick_interval_ms(self.inner.opts.rate_hz as f64).max(1));
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
         *timer = Some(tokio::spawn(async move {
-            let mut iv = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Re-armed from each fire like Node's setInterval (P-WP6-1).
+            let mut iv = crate::timer::SetInterval::new(period);
             loop {
                 iv.tick().await;
                 let Some(inner) = weak.upgrade() else {
