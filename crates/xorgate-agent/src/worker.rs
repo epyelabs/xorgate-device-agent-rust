@@ -38,6 +38,7 @@ use crate::ctx::{
 };
 use crate::env::{AgentEnv, Creds};
 use crate::mqtt_plane::{MqttHandle, MqttPlane, OfflineTransport, RealTransport};
+use crate::ops::hooks::OpsHooks;
 use crate::recording::hooks::{stream_guard_fn, MediaReconciler, StreamHardware};
 use crate::recording::{policy_sources, RecordingHooks, RecordingManager, RecordingManagerOpts};
 use crate::scope::ScopeHandle;
@@ -509,7 +510,11 @@ async fn run(args: &[String]) -> Result<i32> {
         config_plane::upload_options_builder(&ctx),
         ctx.clock.clone(),
     ));
-    ctx.hooks = hooks.clone();
+    // Phase 4 (WP6): `OpsHooks` composes the Phase 3 hooks with the LED,
+    // clock-stepper and camera-mount call sites (`worker.ts:150-199, 427-432,
+    // 536-651, 713-726, 866-889, 1296-1302`).
+    let ops = Arc::new(OpsHooks::new(hooks.clone(), None));
+    ctx.hooks = ops.clone();
 
     // `source` (`worker.ts:270-326`): real collectors, or the empty sim source (O7).
     let source: Arc<dyn TelemetrySource> = match cfg.mode {
@@ -585,6 +590,9 @@ async fn run(args: &[String]) -> Result<i32> {
             report_rx,
         },
     );
+    // `requestConfigReport = (origin) => configSync.request(origin);` (`:746`):
+    // camera-mount verdict changes request a report from here on.
+    ops.set_report_requester(reports.clone());
     let commands = command_plane::start(
         &ctx,
         CommandPlaneDeps {

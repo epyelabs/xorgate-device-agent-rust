@@ -8,5 +8,6 @@
 
 pub mod camera_mount;
 pub mod clock_stepper;
+pub mod hooks;
 pub mod led;
 pub mod sms;
