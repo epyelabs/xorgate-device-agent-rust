@@ -123,8 +123,14 @@ pub struct Group {
 }
 
 pub fn groups(writes: &[PinWrite]) -> Vec<Group> {
+    // One `apply()` writes at most ONE rise group then at most ONE fall group,
+    // on disjoint pins (`led.ts` apply → writeGroup(rise) && writeGroup(fall)):
+    // a write joins the previous one only in exactly that shape (a lone rise
+    // followed within GROUP_GAP_MS by a fall on other pins). Two rises, or a
+    // fall then anything, are two applies — e.g. a blink step's `+12,16` and
+    // the next state's `+21 -12,16` 30 ms later (WP6 JS-vs-Rust p4-led-ladder).
     let mut out: Vec<Group> = Vec::new();
-    let mut last_w: Option<i64> = None;
+    let mut open: Option<(i64, bool)> = None; // (last w, group is a lone rise)
     for wr in writes {
         let part = format!(
             "{}{}",
@@ -135,19 +141,29 @@ pub fn groups(writes: &[PinWrite]) -> Vec<Group> {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        match (out.last_mut(), last_w) {
-            (Some(g), Some(lw)) if wr.w - lw < GROUP_GAP_MS => {
-                g.text.push(' ');
-                g.text.push_str(&part);
-                g.pins.extend(&wr.pins);
+        let joins = match (out.last(), open) {
+            (Some(g), Some((lw, lone_rise))) => {
+                lone_rise
+                    && !wr.high
+                    && wr.w - lw < GROUP_GAP_MS
+                    && !wr.pins.iter().any(|p| g.pins.contains(p))
             }
-            _ => out.push(Group {
+            _ => false,
+        };
+        if joins {
+            let g = out.last_mut().expect("group");
+            g.text.push(' ');
+            g.text.push_str(&part);
+            g.pins.extend(&wr.pins);
+            open = Some((wr.w, false));
+        } else {
+            out.push(Group {
                 w: wr.w,
                 text: part,
                 pins: wr.pins.clone(),
-            }),
+            });
+            open = Some((wr.w, wr.high));
         }
-        last_w = Some(wr.w);
     }
     out
 }
@@ -445,6 +461,18 @@ mod tests {
         assert_eq!(
             g.iter().map(|g| g.text.as_str()).collect::<Vec<_>>(),
             ["+12,16 -21", "-12,16", "+12,16", "+21 -12,16", "-21"]
+        );
+        // A blink step right before the next state's start stays apart.
+        let tight = groups(&[
+            w(0, &[12, 16], true),
+            w(30, &[21], true),
+            w(35, &[12, 16], false),
+            w(500, &[16], true),
+            w(520, &[12, 21, 16], false),
+        ]);
+        assert_eq!(
+            tight.iter().map(|g| g.text.as_str()).collect::<Vec<_>>(),
+            ["+12,16", "+21 -12,16", "+16", "-12,21,16"]
         );
         let r = runs(&g);
         assert_eq!(r.len(), 2);

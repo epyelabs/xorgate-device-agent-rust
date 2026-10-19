@@ -215,6 +215,9 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
             // the telemetry recorder off (not this tape's subject).
             let mut rec = rec_namespace("rec-shed-uv");
             rec["telemetry"]["enabled"] = json!(false);
+            // One camera (half the x264 load: a JS-vs-Rust run on a loaded VM
+            // showed Node's 125 ms blink legs landing up to 300 ms late).
+            rec["video"]["cameras"] = json!({"cam1": false});
             cfg(b, 400, &json!({"v": 1, "rev": 1, "recording": rec}));
             b.push(
                 40_300,
