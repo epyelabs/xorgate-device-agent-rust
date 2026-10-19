@@ -241,5 +241,58 @@ grep -q "would: systemctl stop xorgate-rs-gate-seam\|would: rm -f /run/systemd/s
 [ "$(cat "$STATE/xorgate-rs-soak")" = active ]; expect $? "soak stop dry run left the unit running"
 bash "$B/exclusive.sh" end >/dev/null 2>&1
 
+echo "== case (g): the exclusive-window DEAD-MAN (review-wp6 B1): begin arms, it fires without end, end cancels"
+DM=xorgate-rs-window-deadman
+reset
+(cd / && sha256sum /etc/xorgate/agent.env /etc/xorgate/kvs.json /etc/xorgate/hardware.json) > "$C15"
+bash "$B/exclusive.sh" begin --deadman-min 95 >"$LOGS/g1.log" 2>&1; rc=$?
+expect $((rc != 0)) "begin rc=0 (rc=$rc)"
+[ "$(cat "$STATE/$DM.timer" 2>/dev/null)" = active ] && grep -q -- "--unit=$DM --on-active=5700s" "$STATE/systemd-run.log" && [ -x /run/$DM.sh ]
+expect $? "begin armed $DM.timer (--on-active = 95 min) with its restore script"
+grep -n "== 2b. dead-man\|== 3. stop" "$LOGS/g1.log" | head -1 | grep -q "2b. dead-man"; expect $? "the dead-man is armed BEFORE the JS stop"
+[ "$(js_state)" = inactive ] && [ -f /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf ]; expect $? "window open (JS stopped)"
+# end never runs: the timer fires.
+WING=$(ls -1d /var/lib/xorgate-rs/evidence/window-* | tail -n1)
+eval "$(cat "$STATE/$DM.cmd")" >"$LOGS/g-fire.log" 2>&1; rc=$?
+expect $((rc != 0)) "the fired dead-man exits 0 (rc=$rc)"
+check active "the fired dead-man restored the PROD JS agent"
+[ "$(cat "$STATE/xorgate-agent-rs")" = inactive ] && [ ! -e /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf ] \
+  && [ ! -e /run/systemd/system/xorgate-agent-rs.service.d/98-tape.conf ] && [ ! -e /run/xorgate-agent-rs-exclusive.env ] && [ -f "$WING/deadman-fired" ]
+expect $? "fire: Rust stopped, runtime drop-ins + exclusive env gone, window records deadman-fired"
+grep -q "systemctl daemon-reload" "$STATE/systemctl.log"; expect $? "fire: daemon-reload before the JS start"
+eval "$(cat "$STATE/$DM.cmd")" >"$LOGS/g-fire2.log" 2>&1; rc=$?
+expect $((rc != 0)) "a second fire is a no-op success (idempotent, rc=$rc)"; check active "after the second fire"
+echo inactive > "$STATE/xorgate-agent"; touch "$STATE/FAIL_START_xorgate-agent"
+timeout 120 bash -c "eval \"\$(cat '$STATE/$DM.cmd')\"" >"$LOGS/g-fire3.log" 2>&1; rc=$?
+rm -f "$STATE/FAIL_START_xorgate-agent"
+expect $((rc == 0)) "a fire whose JS start keeps failing exits non-zero and says so (rc=$rc)"
+grep -q "FAILED TO START" "$LOGS/g-fire3.log"; expect $? "…naming the PROD agent DOWN"
+bash "$B/exclusive.sh" end >"$LOGS/g-end0.log" 2>&1
+# Normal path: begin re-arms, end cancels; a second end changes nothing.
+reset
+bash "$B/exclusive.sh" begin >"$LOGS/g2.log" 2>&1
+[ "$(cat "$STATE/$DM.timer" 2>/dev/null)" = active ] && grep -q -- "--on-active=10800s" "$STATE/systemd-run.log"; expect $? "default dead-man = 180 min"
+bash "$B/exclusive.sh" begin >"$LOGS/g2b.log" 2>&1 || true
+grep -q "systemctl stop $DM.timer" "$STATE/systemctl.log" && [ "$(cat "$STATE/$DM.timer")" = active ]; expect $? "a second begin replaces (re-arms) the armed timer"
+bash "$B/exclusive.sh" end >"$LOGS/g3.log" 2>&1
+[ "$(cat "$STATE/$DM.timer")" = inactive ] && [ ! -e /run/$DM.sh ] && grep -q "$DM cancelled" "$LOGS/g3.log"; expect $? "end cancelled the dead-man (timer stopped, script removed)"
+check active "end after the cancel"
+bash "$B/exclusive.sh" end >"$LOGS/g4.log" 2>&1
+grep -q "= $DM not armed" "$LOGS/g4.log" && grep -q "== done: 0 change(s)" "$LOGS/g4.log"; expect $? "a second end: dead-man not armed, 0 changes"
+# end whose JS start fails leaves the dead-man ARMED (it retries later).
+reset; bash "$B/exclusive.sh" begin >"$LOGS/g5.log" 2>&1; touch "$STATE/FAIL_START_xorgate-agent"
+timeout 200 bash "$B/exclusive.sh" end >"$LOGS/g6.log" 2>&1
+rm -f "$STATE/FAIL_START_xorgate-agent"
+[ "$(cat "$STATE/$DM.timer")" = active ] && grep -q "dead-man left ARMED" "$LOGS/g6.log"; expect $? "end with JS failing to start leaves the dead-man armed"
+bash "$B/exclusive.sh" end >/dev/null 2>&1
+# An aborted begin (the trap) cancels it: nothing fires hours later.
+reset; touch "$STATE/FAIL_RELOAD"
+bash "$B/exclusive.sh" begin >"$LOGS/g7.log" 2>&1; rm -f "$STATE/FAIL_RELOAD"
+grep -q "begin aborted" "$LOGS/g7.log" && [ "$(cat "$STATE/$DM.timer")" = inactive ] && [ ! -e /run/$DM.sh ]; expect $? "an aborted begin cancels the dead-man"
+check active "after the aborted begin"
+bash "$B/exclusive.sh" begin --deadman-min 5 >"$LOGS/g8.log" 2>&1; rc=$?
+expect $((rc != 2)) "begin refuses --deadman-min < 10 (rc=$rc)"; check active "the refused begin touched nothing"
+bash "$B/exclusive.sh" end >/dev/null 2>&1
+
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)  (logs in $LOGS)"
 exit $fail

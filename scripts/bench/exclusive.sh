@@ -2,7 +2,7 @@
 # The Phase 2 EXCLUSIVE WINDOW on the bench (plan phase-2-cloud-plane.md
 # §Bench recipe step 3/4). The gate runner alone runs this for real.
 #
-#   scripts/bench/exclusive.sh begin [--dry-run]
+#   scripts/bench/exclusive.sh begin [--dry-run] [--deadman-min N]   # N = 180
 #   scripts/bench/exclusive.sh end   [--dry-run]      # idempotent; run after the reboot or on ANY abort
 #   scripts/bench/exclusive.sh status
 #
@@ -15,6 +15,13 @@
 #      98-tape.conf (XORGATE_RS_TAPE=/var/lib/xorgate-rs/tapes/<ts>.ndjson.gz);
 #   5. daemon-reload + restart xorgate-agent-rs.
 #   From step 3 until the window is open an EXIT/INT/TERM trap restores the JS agent.
+#   DEAD-MAN (review-wp6 B1): before step 3 begin arms a transient systemd timer
+#   `xorgate-rs-window-deadman` (systemd-run --on-active = N min, default 180 =
+#   the longest window, D15 soak included, + margin). If `end` never runs it
+#   fires and restores the PROD JS agent on its own (stop Rust + window helpers,
+#   drop the runtime drop-ins + exclusive env, daemon-reload, start + verify
+#   xorgate-agent; idempotent). `end` (and the begin trap) cancel it; re-running
+#   begin re-arms it. A soak longer than N needs a larger --deadman-min.
 #   Order inside the window (phase file): C4 → C5 → C6 → C7 → C12 bench half →
 #   tape ≥ 10 min → `exclusive.sh tape-off` (closes the tape) → C14 → C8 → C7
 #   reboot LAST. The reboot ends the window: JS starts itself, /run drop-ins vanish.
@@ -47,12 +54,20 @@ set -euo pipefail
 # shellcheck source=scripts/bench/_lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 VERB="${1:-}"; shift || true
-DRY=0
-for a in "$@"; do case "$a" in --dry-run) DRY=1 ;; *) echo "unknown arg $a" >&2; exit 2 ;; esac; done
-case "$VERB" in begin|end|tape-off|status) ;; *) sed -n '2,46p' "$0"; exit 2 ;; esac
+DRY=0; DEADMAN_MIN=180
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    --deadman-min) DEADMAN_MIN="${2:-}"; shift 2 || { echo "--deadman-min needs N" >&2; exit 2; } ;;
+    *) echo "unknown arg $1" >&2; exit 2 ;;
+  esac
+done
+case "$DEADMAN_MIN" in ''|*[!0-9]*) echo "--deadman-min: minutes, got '$DEADMAN_MIN'" >&2; exit 2 ;; esac
+[ "$DEADMAN_MIN" -ge 10 ] || { echo "--deadman-min must be >= 10" >&2; exit 2; }
+case "$VERB" in begin|end|tape-off|status) ;; *) sed -n '2,54p' "$0"; exit 2 ;; esac
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 log "exclusive $VERB on $BENCH$([ $DRY = 1 ] && echo ' (DRY RUN)')"
-{ echo "DRY=$DRY VERB=$VERB TS=$TS"; bench_remote_lib; cat <<'REMOTE'
+{ echo "DRY=$DRY VERB=$VERB TS=$TS DEADMAN_SECS=$((DEADMAN_MIN * 60))"; bench_remote_lib; cat <<'REMOTE'
 [ "$(id -u)" -eq 0 ] || { echo "must run as root"; exit 1; }
 WIN_ROOT=$RS_HOME/evidence
 latest_window() { ls -1d "$WIN_ROOT"/window-* 2>/dev/null | tail -n1; }
@@ -117,6 +132,7 @@ status)
   units_report
   ls -l "$DROPIN_DIR" "$RUN_DROPIN_DIR" 2>/dev/null | sed 's/^/  /' || true
   echo "  latest window: $(latest_window || echo none)"
+  echo "  dead-man $DEADMAN_UNIT.timer: $(deadman_state)"
   for hw in "$HW_SHARED" "$HW_EXCLUSIVE"; do
     if [ -f "$hw" ]; then echo "  $(basename "$hw"): imu=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("imu")))' "$hw" 2>/dev/null || echo '?')"; fi
   done
@@ -174,6 +190,8 @@ PY
     echo "  shm-before: $(tail -n1 "$WIN/shm-before.txt" | sed 's/^ *//')"
     chown -R pi:pi "$WIN"
   fi
+  echo "== 2b. dead-man timer (restores $JS_UNIT in $((DEADMAN_SECS / 60)) min unless end runs)"
+  deadman_arm "$DEADMAN_SECS" "$WIN"
   echo "== 3. stop $JS_UNIT (never disable)"
   # From here until the window is fully open, ANY exit (error, signal) must give
   # the PROD JS agent back: stop Rust (it may already hold the exclusive inputs),
@@ -185,7 +203,7 @@ PY
     systemctl stop "$UNIT" 2>/dev/null || true
     rm -f "$EXCLUSIVE_DROPIN" "$TAPE_DROPIN" "$EXCLUSIVE_ENV" 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
-    start_js_verified || true
+    start_js_verified && deadman_cancel || true
     echo "!! run scripts/bench/exclusive.sh end to re-apply the shared profile and restart Rust" >&2
     exit "$rc"
   }
@@ -249,6 +267,9 @@ end)
   else
     echo "  = $JS_UNIT active"
   fi
+  echo "== 2b. dead-man timer"
+  if [ "$JS_OK" = 1 ]; then deadman_cancel || true
+  else echo "  ! $JS_UNIT not active: dead-man left ARMED ($(deadman_state)) — it retries the restore when it fires"; fi
   echo "== 3. runtime drop-ins + window helpers (gate seam, soak, filler)"
   remove_if_present "$EXCLUSIVE_DROPIN" || true
   remove_if_present "$TAPE_DROPIN" || true

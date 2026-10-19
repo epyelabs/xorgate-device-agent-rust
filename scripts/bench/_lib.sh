@@ -519,6 +519,58 @@ gate_seam_off() {
     case "$GATE_DIR" in /run/xorgate-rs-lte) act rm -rf -- "$GATE_DIR"; note "$GATE_DIR removed" ;; *) echo "  refusing to remove $GATE_DIR" ;; esac
   else echo "  = $GATE_DIR absent"; fi
 }
+# --- exclusive-window dead-man (review-wp6 B1). `exclusive.sh begin` arms a
+# transient timer; if `exclusive.sh end` never runs (gate runner died, usage
+# cut, laptop asleep) it fires after DEADMAN_SECS and gives the PROD JS agent
+# back: stops the Rust agent + window helpers, drops the runtime drop-ins and
+# the exclusive env, daemon-reload, start + verify xorgate-agent. Idempotent
+# (every step tolerates "already done"). `end` cancels it; a reboot clears it.
+DEADMAN_UNIT=xorgate-rs-window-deadman
+DEADMAN_SCRIPT=/run/xorgate-rs-window-deadman.sh
+deadman_state() { systemctl is-active "$DEADMAN_UNIT.timer" 2>/dev/null || true; }
+# deadman_arm <seconds> <window dir>: (re)arms; an armed timer is replaced.
+deadman_arm() {
+  local secs=$1 win=$2
+  deadman_cancel quiet
+  write_if_changed "$DEADMAN_SCRIPT" 0700 <<SCRIPT || true
+#!/bin/bash
+# xorgate-rs exclusive-window dead-man, armed by scripts/bench/exclusive.sh begin
+# (window $win). Fires only when \`exclusive.sh end\` never ran. Idempotent.
+set -u
+say() { echo "[$DEADMAN_UNIT] \$*"; }
+say "exclusive window never ended — restoring the PROD JS agent ($JS_UNIT)"
+for u in $UNIT $GATE_UNIT $SOAK_UNIT; do systemctl stop "\$u" 2>/dev/null || true; done
+rm -f $EXCLUSIVE_DROPIN $TAPE_DROPIN $GATE_DROPIN $EXCLUSIVE_ENV
+systemctl daemon-reload || true
+for i in 1 2 3; do
+  systemctl start $JS_UNIT || true
+  for s in 1 2 3 4 5 6 7 8 9 10; do
+    if [ "\$(systemctl is-active $JS_UNIT 2>/dev/null)" = active ]; then
+      say "$JS_UNIT active"
+      date -u +%Y-%m-%dT%H:%M:%SZ > "$win/deadman-fired" 2>/dev/null || true
+      exit 0
+    fi
+    sleep 1
+  done
+done
+say "$JS_UNIT FAILED TO START — the PROD agent is DOWN: sudo systemctl start $JS_UNIT"
+exit 1
+SCRIPT
+  act systemd-run --unit="$DEADMAN_UNIT" --on-active="${secs}s" --timer-property=AccuracySec=1s \
+    --description="xorgate-rs exclusive-window dead-man (scripts/bench/exclusive.sh)" /bin/bash "$DEADMAN_SCRIPT"
+  note "$DEADMAN_UNIT armed: restores $JS_UNIT in ${secs}s unless exclusive.sh end runs"
+}
+# deadman_cancel [quiet]: stops the timer (never a restore already firing),
+# removes the script. No-op when not armed.
+deadman_cancel() {
+  local st
+  st=$(deadman_state)
+  if [ "$st" = active ] || [ "$st" = activating ]; then act systemctl stop "$DEADMAN_UNIT.timer"; note "$DEADMAN_UNIT cancelled"
+  elif [ "${1:-}" != quiet ]; then echo "  = $DEADMAN_UNIT not armed ($st)"; fi
+  act systemctl reset-failed "$DEADMAN_UNIT.timer" "$DEADMAN_UNIT.service" 2>/dev/null || true
+  if [ -e "$DEADMAN_SCRIPT" ]; then act rm -f "$DEADMAN_SCRIPT"; [ "${1:-}" = quiet ] || note "$DEADMAN_SCRIPT removed"; fi
+  return 0
+}
 soak_stop() {
   local st
   st=$(systemctl is-active "$SOAK_UNIT" 2>/dev/null || true)

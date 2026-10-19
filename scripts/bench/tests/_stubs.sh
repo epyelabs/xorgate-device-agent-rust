@@ -43,9 +43,24 @@ esac
 S
 cat > "$STUB/systemd-run" <<'S'
 #!/usr/bin/env bash
-# record the transient unit; do not run it (tests drive the scripts directly)
+# record the transient unit; do not run it (tests drive the scripts directly).
+# With --on-active the unit is a TIMER (`<unit>.timer` active, like systemd);
+# the command (first non-option argument on) goes to $SYSD_STATE/<unit>.cmd so
+# a test can "fire" it.
 echo "systemd-run $*" >> "$SYSD_STATE/systemd-run.log"
-for a in "$@"; do case "$a" in --unit=*) echo active > "$SYSD_STATE/${a#--unit=}";; esac; done
+unit=""; timer=0; cmd=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --unit=*) unit=${1#--unit=}; shift ;;
+    --on-active=*) timer=1; shift ;;
+    --*) shift ;;
+    *) cmd=("$@"); break ;;
+  esac
+done
+if [ -n "$unit" ]; then
+  if [ "$timer" = 1 ]; then echo active > "$SYSD_STATE/$unit.timer"; else echo active > "$SYSD_STATE/$unit"; fi
+  printf '%q ' "${cmd[@]}" > "$SYSD_STATE/$unit.cmd"
+fi
 S
 cat > "$STUB/vcgencmd" <<'S'
 #!/usr/bin/env bash
