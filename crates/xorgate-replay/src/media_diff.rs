@@ -1053,10 +1053,33 @@ fn rec_values(
             }
             let group = p.split('.').nth(1).unwrap_or("");
             let rel = walls(group);
+            // NARROWED (review-wp6 re-check): the colliding release is THE
+            // one that brought the step on the side holding it (the last
+            // release of the group at or before that sample, ≤ 1.1 s before
+            // it), and the colliding sample is the OTHER side's sample
+            // nearest that release — at 1 Hz input a phase sitting near the
+            // releases must not excuse every step it passes.
+            // A release = one input BURST (an NMEA epoch is ~8 lines over
+            // ~60 ms): releases ≤ 200 ms apart form one `(first, last)`.
+            let mut bursts: Vec<(i64, i64)> = Vec::new();
+            let mut ws = rel.clone();
+            ws.sort();
+            for w in ws {
+                match bursts.last_mut() {
+                    Some(b) if w - b.1 <= 200 => b.1 = w,
+                    _ => bursts.push((w, w)),
+                }
+            }
             let raced = |l: &[(i64, BTreeMap<String, String>)], ts: i64| {
-                l.iter()
-                    .filter(|(t, _)| (t - ts).abs() <= 1_500)
-                    .any(|(t, _)| rel.iter().any(|w| (t - w).abs() <= collision))
+                let Some(&(r0, r1)) = bursts.iter().rfind(|b| b.0 <= ts) else {
+                    return false;
+                };
+                let off = |t: i64| (r0 - t).max(t - r1).max(0);
+                ts - r0 <= 1_100
+                    && l.iter()
+                        .map(|(t, _)| *t)
+                        .min_by_key(|t| off(*t))
+                        .is_some_and(|t| off(t) <= collision)
             };
             for (start, only_a, only_b) in step_hunks(&sa, &sb) {
                 let edge = start == 0 || start + only_a.len() >= sa.len();
@@ -1064,8 +1087,11 @@ fn rec_values(
                 let ok = has
                     && one_sided
                     && only_a.iter().chain(only_b.iter()).all(|s| s.1 == 1)
+                    // One race skips ONE value; two or more consecutive
+                    // missing steps need a ≥ 2 s gap, not a raced tick.
+                    && only_a.len() + only_b.len() == 1
                     && (if edge {
-                        only_a.len() + only_b.len() == 1
+                        true
                     } else if only_b.is_empty() {
                         only_a.iter().all(|s| raced(&lb, s.2))
                     } else {
@@ -2674,6 +2700,19 @@ mod tests {
         // The same skip by a tick far from any release: untolerated.
         assert_eq!(
             run(cap(200, &full), cap(300, &skip)),
+            vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")]
+        );
+        // Three CONSECUTIVE steps missing, even with B's every tick 1 ms
+        // after a release: never a raced tick.
+        let three = [v(1.0), v(2.0), v(2.0), v(2.0), v(2.0), v(6.0)];
+        assert_eq!(
+            run(cap(200, &full), cap(651, &three)),
+            vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")]
+        );
+        // The collision must be with the release that BROUGHT the step: B
+        // ticks 60 ms off it (and 1 ms off nothing) → untolerated.
+        assert_eq!(
+            run(cap(200, &full), cap(710, &skip)),
             vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")]
         );
         // A DIFFERENT value (both sides hold a step the other lacks): never.
