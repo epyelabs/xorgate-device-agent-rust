@@ -263,6 +263,11 @@ thread_local! {
     static W0: std::cell::Cell<i64> = const { std::cell::Cell::new(SYNTH_START_WALL) };
 }
 
+/// exec-rail: the rail goes low here (≥ 3 s after boot: no shed crossing in
+/// the boot sequence) and clean again at RAIL_CLEAN_FROM_MS.
+const RAIL_LOW_FROM_MS: u64 = 10_000;
+const RAIL_CLEAN_FROM_MS: u64 = 110_000;
+
 fn w0() -> i64 {
     W0.with(|c| c.get())
 }
@@ -1165,6 +1170,7 @@ fn build_inner(
             k += 1;
         }
     }
+    let mut crossings: Vec<u64> = Vec::new();
     let exec_kind = ["exec-quiet", "exec-rail", "exec-thermal"]
         .into_iter()
         .find(|k| has(k));
@@ -1176,14 +1182,38 @@ fn build_inner(
             "exec-thermal" if t >= 110_000 => "throttled=0x80000\n",
             _ => "throttled=0x0\n",
         };
+        // exec-rail (review-wp6 re-check, orchestrator: a RIG knife edge, like
+        // rec-disk's trimLastBytes): a shed decision reads a 1 s cache whose
+        // owner (shed tick or recorder) flips at random in the TS (D30), so a
+        // read may be up to one tick stale. The rail is therefore CONSTANT on
+        // each side of a threshold (no ±0.03 V wobble: a stale read returns
+        // the same value and the same event text), clean (5.30 V) for the
+        // first RAIL_LOW_FROM_MS (no crossing at boot), low (5.10 V) until
+        // RAIL_CLEAN_FROM_MS, clean after. Every crossing record is listed in
+        // `meta.rig.powerCrossings`; the player releases it mid-period (≥ 300
+        // ms from both agents' predicted ticks, play.rs).
         let volts = |t: u64, k: u64| match kind {
-            "exec-rail" if t < 110_000 => 5.10,
+            "exec-rail" if (RAIL_LOW_FROM_MS..RAIL_CLEAN_FROM_MS).contains(&t) => 5.10,
             "exec-rail" => 5.30,
-            _ => 5.10,
-        } + (k % 4) as f64 * 0.01;
+            _ => 5.10 + (k % 4) as f64 * 0.01,
+        };
         let mut t = 60;
         let mut k = 0u64;
+        let (mut last_thr, mut last_v) = (None, None);
         while t < dur_ms {
+            // A record whose value differs from the previous one of a
+            // threshold-crossing kind = a crossing (exec-rail: the rail,
+            // exec-thermal: the throttled bits).
+            if kind != "exec-quiet" {
+                let (th, v) = (throttled(t), format!("{:.2}", volts(t, k)));
+                if kind == "exec-thermal" && last_thr.is_some_and(|l| l != th) {
+                    crossings.push(t);
+                }
+                if kind == "exec-rail" && last_v.as_ref().is_some_and(|l: &String| *l != v) {
+                    crossings.push(t + 10);
+                }
+                (last_thr, last_v) = (Some(th), Some(v));
+            }
             b.push(
                 t,
                 TapeEvent::Exec {
@@ -1242,6 +1272,10 @@ fn build_inner(
             channels: vec![],
             upload: false,
         };
+    }
+    if !crossings.is_empty() {
+        let r = rig.get_or_insert_with(|| json!({}));
+        r["powerCrossings"] = json!(crossings);
     }
     meta.rig = rig;
     meta.home = home;
@@ -1345,6 +1379,45 @@ mod tests {
         assert_eq!(seeded["recording"]["retention"]["maxBytes"], 536_870_912u64);
         let outage = build("rec-upload-outage", None, &fixtures()).unwrap();
         assert_eq!(crate::aws::faults_of(outage.meta.rig.as_ref()).len(), 1);
+        // Power-threshold crossings (review-wp6 re-check): listed for the
+        // player, none in the first 3 s, inputs stable ≥ 2.5 s around each.
+        let crossings = |name: &str| {
+            let t = build(name, None, &fixtures()).unwrap();
+            t.meta
+                .rig
+                .as_ref()
+                .and_then(|r| r.get("powerCrossings"))
+                .cloned()
+        };
+        assert_eq!(crossings("rec-shed-uv"), Some(json!([10_070, 110_070])));
+        assert_eq!(
+            crossings("rec-shed-thermal"),
+            Some(json!([20_060, 110_060]))
+        );
+        assert_eq!(crossings("media"), None);
+        let uv = build("rec-shed-uv", None, &fixtures()).unwrap();
+        let rails: Vec<(u64, String)> = uv
+            .records
+            .iter()
+            .filter_map(|r| match &r.ev {
+                TapeEvent::Exec { argv, stdout, .. } if argv[1] == "pmic_read_adc" => {
+                    Some((r.t, stdout.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for w in rails.windows(2) {
+            if w[0].1 != w[1].1 {
+                assert!(w[1].0 >= 3_000, "no crossing at boot");
+                let around = rails
+                    .iter()
+                    .filter(|(t, _)| t.abs_diff(w[1].0) <= 2_500 && *t != w[1].0);
+                for (t, v) in around {
+                    let want = if *t < w[1].0 { &w[0].1 } else { &w[1].1 };
+                    assert_eq!(v, want, "stable ±2.5 s around the crossing at {}", w[1].0);
+                }
+            }
+        }
         assert!(outage.records.iter().any(|r| r.t == 50_000
             && matches!(
                 r.ev,

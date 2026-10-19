@@ -196,6 +196,9 @@ const POST_CUT_SETTLE_MS: i64 = 3_000;
 /// the latest reconnect is 2 s + a connect after the restore.
 const POST_CUT_MAX_MS: i64 = 2_000 + 15_000;
 const PREFILL_MS: u64 = 1000;
+/// A power-threshold crossing lands at least this far from both agents'
+/// predicted 1 Hz ticks (`meta.rig.powerCrossings`).
+const CROSSING_CLEAR_MS: i64 = 300;
 
 // ------------------------------------------------------------------ gate
 
@@ -370,6 +373,18 @@ impl Gate {
 
     /// Have both agents published telemetry at least once (booted,
     /// connected, ticking)?
+    /// Is `now` at least `ms` away (circular, mod the 1 s tick) from BOTH
+    /// agents' predicted next tick? Unknown phase (< 2 ticks seen) = yes.
+    pub fn mid_period(&self, now: i64, ms: i64) -> bool {
+        self.track.iter().all(|t| match t.tick_at(t.k) {
+            Some(tick) => {
+                let ph = (now - tick).rem_euclid(INTERVAL_MS);
+                ph.min(INTERVAL_MS - ph) >= ms
+            }
+            None => true,
+        })
+    }
+
     pub fn both_ticking(&self) -> bool {
         self.track.iter().all(|t| t.last_ts.is_some())
     }
@@ -1595,6 +1610,27 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 .map(|mut g| g.post_cut_hold(now))
                 .unwrap_or(false)
     };
+    // POWER CROSSINGS (`meta.rig.powerCrossings`, synth exec-rail /
+    // exec-thermal): a record that moves a power input across a shed /
+    // restore threshold is released mid-period — ≥ CROSSING_CLEAR_MS from
+    // both agents' predicted 1 Hz ticks (held ≤ 1 s, then released).
+    let crossing_ts: BTreeSet<u64> = tape
+        .meta
+        .rig
+        .as_ref()
+        .and_then(|r| r.get("powerCrossings"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .collect();
+    let mut deferred: Option<(usize, i64)> = None;
+    let mid_now = |now: i64| {
+        caps.gate
+            .lock()
+            .map(|g| g.mid_period(now, CROSSING_CLEAR_MS))
+            .unwrap_or(true)
+    };
     let mut pending: std::collections::VecDeque<(usize, i64)> = Default::default();
     let mut next = 0usize;
     let n_rec = tape.records.len();
@@ -1607,7 +1643,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             if next < n_rec && tape.records[next].t > cutoff {
                 next = n_rec;
             }
-            if next >= n_rec && pending.is_empty() {
+            if next >= n_rec && pending.is_empty() && deferred.is_none() {
                 break None;
             }
             let now = wall_now_ms();
@@ -1625,6 +1661,18 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
             let _ = tel_open(now);
+            if let Some((ci, since)) = deferred {
+                let mid = mid_now(now);
+                if (mid || now - since >= 1_000) && tel_open(now) {
+                    deferred = None;
+                    plog(format!(
+                        "power crossing t={} released {} ms after due (mid-period: {mid})",
+                        tape.records[ci].t,
+                        now - since
+                    ));
+                    break Some((ci, since, false));
+                }
+            }
             if let Some(&(pi, due_w)) = pending.front() {
                 let ev = &tape.records[pi].ev;
                 let fence = fenced_at(ev, due_w, now) == Some(true);
@@ -1652,6 +1700,18 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                             || fenced_at(&r.ev, now, now) == Some(true))
                     {
                         pending.push_back((next, now));
+                        next += 1;
+                        continue;
+                    }
+                    if crossing_ts.contains(&r.t)
+                        && matches!(r.ev, TapeEvent::Exec { .. })
+                        && !args.no_gate
+                        && deferred.is_none()
+                        && !mid_now(now)
+                    {
+                        // Only this record waits; the other inputs keep
+                        // their timing (exec is not a barrier kind).
+                        deferred = Some((next, now));
                         next += 1;
                         continue;
                     }
