@@ -58,8 +58,8 @@ pub fn split_command(av: &[String]) -> (Option<String>, Vec<String>) {
 /// `usage()` (`cli.tsx:120-162`), listing the verbs this binary has. The
 /// TS lines are kept where they hold for the Rust binary; `start`/`stop`/
 /// `restart` are systemd's (README §3.3), `manage` has no daemon controls
-/// (Q10), `logs` falls back to the journal (O9), `update` restarts only an
-/// active `xorgate-agent-rs` (Q5).
+/// (Q10), `logs` falls back to the journal (O9); the `update` lines are
+/// WP4's.
 pub fn usage(version: &str) -> String {
     format!(
         "xorgate-rs {version} — device telemetry agent + manager
