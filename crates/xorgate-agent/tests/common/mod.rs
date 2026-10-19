@@ -315,8 +315,9 @@ impl PhaseHooks for FakeHooks {
     fn led_stop(&self) {
         push(&self.0, "hooks.led_stop");
     }
-    fn recording_stop(&self) {
+    fn recording_stop(&self) -> Result<(), String> {
         push(&self.0, "hooks.recording_stop");
+        Ok(())
     }
     fn final_recording_status(&self) -> Option<xorgate_core::telemetry::RecordingStatus> {
         push(&self.0, "hooks.final_recording_status");

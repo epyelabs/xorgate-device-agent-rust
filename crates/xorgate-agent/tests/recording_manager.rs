@@ -490,7 +490,7 @@ async fn hooks_wire_every_call_site() {
         serde_json::to_string(&out).unwrap(),
         r#"{"kvs":{"value":true},"recording":{"value":false},"streams":[{"streamKey":"cam0","channelName":"dev-1-cam0","state":"running","recording":false},{"streamKey":"cam9","channelName":"dev-1-cam9","state":"running"}]}"#
     );
-    hooks.recording_stop();
+    hooks.recording_stop().unwrap();
     let fin = hooks.final_recording_status().unwrap();
     assert!(!fin.enabled);
     assert_eq!(fin.session_id, None);
@@ -1057,6 +1057,8 @@ async fn a_failed_finalize_after_a_hardware_change_is_caught() {
 /// exits 1 before `videoCapture.stop()` and the offline publish. Rust logs
 /// `[agent] fatal: <msg>` and still SIGINTs capture and finishes `stop()`.
 /// The process is exiting anyway, and capture still stops cleanly.
+/// `stop_checked` (the `recording_stop` hook) returns the error so the
+/// shutdown ends the MQTT link the crash way (review-wp1 X1).
 #[tokio::test(start_paused = true)]
 async fn a_failed_finalize_at_shutdown_still_stops_capture() {
     let rig = Rig::new("finfail-stop");
@@ -1069,8 +1071,9 @@ async fn a_failed_finalize_at_shutdown_still_stops_capture() {
     assert_eq!(rig.live_cams(), vec!["cam0"]);
     rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
     let (logs, guard) = capture_logs();
-    m.stop();
+    let res = m.stop_checked();
     drop(guard);
+    assert_eq!(res, Err(ENOSPC.to_string()));
     let logs = logs.lock().unwrap().clone();
     assert_eq!(logs, vec![format!("[agent] fatal: {ENOSPC}")]);
     assert_eq!(rig.live_cams(), Vec::<String>::new(), "capture stopped");

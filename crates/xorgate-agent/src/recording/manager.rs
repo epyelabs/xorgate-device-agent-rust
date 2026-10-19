@@ -666,6 +666,15 @@ impl RecordingManager {
     /// `stop()` (`manager.ts:351-372`): sync shutdown — timers off, uploader
     /// stopped, the active segment finalized, capture SIGINTed.
     pub fn stop(&self) {
+        let _ = self.stop_checked();
+    }
+
+    /// [`stop`](Self::stop), returning the finalize error (D29, review-wp1
+    /// X1): `Err` = the TS `recording.stop()` threw at `worker.ts:1306`, so
+    /// the TS process crashed before its `online:false` publish and the
+    /// shutdown must end the MQTT link the crash way (Last-Will). Capture is
+    /// still stopped and the snapshot published either way.
+    pub fn stop_checked(&self) -> Result<(), String> {
         let inner = &self.inner;
         let mut st = lock(&inner.state);
         st.stop_requested = true;
@@ -680,12 +689,14 @@ impl RecordingManager {
         if let Some(u) = uploader {
             u.stop();
         }
-        if let Err(e) = inner.stop_recorder(&mut st, flow::STOP_SHUTDOWN) {
+        let finalized = inner.stop_recorder(&mut st, flow::STOP_SHUTDOWN);
+        if let Err(e) = &finalized {
             // D29 (wp1.md): in the TS the throw escapes `stop()` and the
             // signal handler, so Node exits 1 before `videoCapture.stop()`.
             // Rust logs the same stand-in line as the poll path (`[agent]
             // fatal: <msg>`, in place of Node's uncaught dump) and still
-            // stops capture and finishes the shutdown.
+            // stops capture and finishes the local shutdown; the caller ends
+            // the MQTT link the crash way (X1).
             tracing::error!("[agent] fatal: {e}");
         }
         let capture = lock(&inner.slots).capture.take();
@@ -695,6 +706,7 @@ impl RecordingManager {
         st.video_key.clear();
         st.video_cameras_key.clear();
         inner.publish(&st);
+        finalized
     }
 
     /// `videoStatus()` (`manager.ts:390-395`).

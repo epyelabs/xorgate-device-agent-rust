@@ -805,6 +805,18 @@ impl MqttShutdown {
         }
         clean
     }
+
+    /// Crash-equivalent stop (review-wp1 X1): end the loop task WITHOUT a
+    /// DISCONNECT. Dropping the event loop closes the TCP/TLS connection with
+    /// no MQTT goodbye, so the broker publishes the Last-Will — what happens
+    /// to mqtt.js's socket when Node dies on an uncaught throw (`mqtt.ts:44-47`
+    /// carries the connect-time `ts`). Nothing still queued is flushed.
+    /// Returns once the task, and with it the socket, is gone.
+    pub async fn abort(self) {
+        self.cancel.cancel();
+        self.task.abort();
+        let _ = self.task.await;
+    }
 }
 
 fn to_last_will(w: Will) -> LastWill {

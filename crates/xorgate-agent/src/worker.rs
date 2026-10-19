@@ -41,7 +41,7 @@ use crate::mqtt_plane::{MqttHandle, MqttPlane, OfflineTransport, RealTransport};
 use crate::recording::hooks::{stream_guard_fn, MediaReconciler, StreamHardware};
 use crate::recording::{policy_sources, RecordingHooks, RecordingManager, RecordingManagerOpts};
 use crate::scope::ScopeHandle;
-use crate::shutdown::Shutdown;
+use crate::shutdown::{ClientEnd, Shutdown};
 use crate::state::StateHandle;
 use crate::{build_info, collectors, command_plane, config_plane, env, logging, pidfile};
 
@@ -661,10 +661,15 @@ async fn run(args: &[String]) -> Result<i32> {
         // A dead loop has no stream left to close (no `disconnected cleanly`).
         link_closes: mqtt_end.is_some() && sig != crate::shutdown::LOOP_ENDED,
     }
-    .run(sig, exit_code, |budget| async move {
-        match mqtt_end {
-            Some(end) => end.shutdown(budget).await,
-            None => true,
+    .run_with(sig, exit_code, |how| async move {
+        match (mqtt_end, how) {
+            (Some(end), ClientEnd::Graceful(budget)) => end.shutdown(budget).await,
+            // X1: the TS would have crashed — no DISCONNECT, the will fires.
+            (Some(end), ClientEnd::Abort) => {
+                end.abort().await;
+                true
+            }
+            (None, _) => true,
         }
     })
     .await;

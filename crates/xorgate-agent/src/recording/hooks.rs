@@ -15,7 +15,7 @@
 //! | `note_recording_status` | `noteRecordingStatus(…)` (`:577-579`, the LED cache) |
 //! | `final_recording_status` | `store.setRecording(recording.status())` (`:1307`) |
 //! | `report_hints` | ConfigSync `hints()` (`:719-726`) |
-//! | `recording_stop` | `recording.stop()` (`:1306`) |
+//! | `recording_stop` (fallible — a failed finalize ends the link the crash way, X1) | `recording.stop()` (`:1306`) |
 //!
 //! P9: nothing here takes the manager's state lock — `report_hints` (called
 //! under ConfigSync's mutex) reads only the manager's published `watch`
@@ -368,9 +368,10 @@ impl PhaseHooks for RecordingHooks {
         }
     }
 
-    fn recording_stop(&self) {
-        if let Some(m) = self.manager() {
-            m.stop();
+    fn recording_stop(&self) -> Result<(), String> {
+        match self.manager() {
+            Some(m) => m.stop_checked(),
+            None => Ok(()),
         }
     }
 }

@@ -391,7 +391,13 @@ pub trait PhaseHooks: Send + Sync + 'static {
     fn led_config_applied(&self) {}
     /// Shutdown steps `led.stop()` (`:1299`) and `recording.stop()` (`:1308`).
     fn led_stop(&self) {}
-    fn recording_stop(&self) {}
+    /// `Err` = the telemetry finalize threw (D29): the TS crashed at
+    /// `worker.ts:1306`, so [`crate::shutdown::Shutdown`] skips `online:false`
+    /// and drops the link without a DISCONNECT, firing the Last-Will
+    /// (review-wp1 X1). The local teardown still runs.
+    fn recording_stop(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The Phase 2 hooks: every call site inert.

@@ -1,6 +1,8 @@
 //! A local MQTT 5 stub broker over mTLS (`fixtures/s3/tls/`, test-only PKI)
 //! for driving the REAL client (`xorgate_cloud::mqtt`): per-connection kill /
-//! DISCONNECT / held CONNACK, selective PUBACKs, ignored pings. Shared by
+//! DISCONNECT / held CONNACK, selective PUBACKs, ignored pings, and the
+//! Last-Will rule (a client DISCONNECT discards the will; a client-side close
+//! without one fires it, review-wp1 X1). Shared by
 //! `xorgate-cloud/tests/mqtt_offline.rs` and the agent's `tests/commands.rs`
 //! (`#[path]` include), on real time (sockets + paused tokio time don't mix).
 
@@ -60,6 +62,12 @@ pub struct Ctl {
     pub conns: Mutex<Vec<mpsc::UnboundedSender<Cmd>>>,
     /// Publishes received so far, all connections.
     pub publishes: AtomicUsize,
+    /// Client DISCONNECT packets received, all connections.
+    pub disconnects: AtomicUsize,
+    /// Wills fired (topic, payload): the client closed without a DISCONNECT.
+    pub wills: Mutex<Vec<(String, String)>>,
+    /// Connections whose serve loop has ended.
+    pub closed: AtomicUsize,
 }
 
 pub struct Broker {
@@ -134,7 +142,8 @@ pub async fn broker() -> Broker {
                 let Ok(stream) = acceptor.accept(tcp).await else {
                     return;
                 };
-                serve(n, stream, ctl, seen_tx, cmd_rx).await;
+                serve(n, stream, ctl.clone(), seen_tx, cmd_rx).await;
+                ctl.closed.fetch_add(1, Ordering::SeqCst);
             });
         }
     });
@@ -150,6 +159,7 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 ) {
     let (mut rd, mut wr) = tokio::io::split(stream);
     let mut buf = BytesMut::new();
+    let mut will: Option<(String, String)> = None;
     let connack = || {
         Packet::ConnAck(ConnAck {
             session_present: false,
@@ -176,16 +186,33 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             },
             r = rd.read_buf(&mut buf) => {
                 if !matches!(r, Ok(k) if k > 0) {
+                    // The client closed without a DISCONNECT: publish the will.
+                    if let Some(w) = will.take() {
+                        ctl.wills.lock().unwrap().push(w);
+                    }
                     return;
                 }
                 loop {
+                    // A Normal-Disconnection DISCONNECT with no properties is
+                    // `E0 00`, which rumqttc's decoder rejects (PayloadRequired).
+                    if buf.starts_with(&[0xE0, 0x00]) {
+                        // A normal DISCONNECT discards the will.
+                        ctl.disconnects.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
                     let p = match Packet::read(&mut buf, None) {
                         Ok(p) => p,
                         Err(WireError::InsufficientBytes(_)) => break,
                         Err(_) => return,
                     };
                     match p {
-                        Packet::Connect(..) => {
+                        Packet::Connect(_, w, _) => {
+                            will = w.map(|w| {
+                                (
+                                    String::from_utf8_lossy(&w.topic).into_owned(),
+                                    String::from_utf8_lossy(&w.message).into_owned(),
+                                )
+                            });
                             if !ctl.hold_connack.load(Ordering::SeqCst) {
                                 write(&mut wr, connack()).await;
                             }
@@ -222,7 +249,11 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                                 write(&mut wr, Packet::PingResp(PingResp)).await;
                             }
                         }
-                        Packet::Disconnect(_) => return,
+                        Packet::Disconnect(_) => {
+                            // A normal DISCONNECT discards the will.
+                            ctl.disconnects.fetch_add(1, Ordering::SeqCst);
+                            return;
+                        }
                         _ => {}
                     }
                 }
@@ -232,6 +263,11 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 }
 
 pub fn client(port: u16, keep_alive_s: u64) -> MqttClient {
+    MqttClient::connect(client_config(port, keep_alive_s))
+}
+
+/// The test client's config (mTLS, fast backoff), before `connect`.
+pub fn client_config(port: u16, keep_alive_s: u64) -> MqttConfig {
     let read = |n: &str| std::fs::read(tls(n)).unwrap();
     let tls = xorgate_cloud::tls::client_config(
         Some(&read("ca.pem")),
@@ -249,7 +285,7 @@ pub fn client(port: u16, keep_alive_s: u64) -> MqttClient {
         factor: 2.0,
         jitter: false,
     };
-    MqttClient::connect(cfg)
+    cfg
 }
 
 /// The next event that is not a `Reconnecting` (those depend on timing).

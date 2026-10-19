@@ -10,6 +10,15 @@
 //! - `store.setRecording(recording.status())` (`:1307`) is the
 //!   `final_recording_status` hook: `None` in Phase 2, so state.json
 //!   `recording` stays absent (T6).
+//! - Crash-equivalent exits (review-wp1 X1): where the TS process dies on an
+//!   uncaught throw — the 5 s poll's finalize ([`RECORDING_FATAL`],
+//!   `manager.ts:319`) or `recording.stop()` throwing in the signal handler
+//!   (D29, `worker.ts:1306`) — it never reaches the `online:false` publish
+//!   (`:1317-1321`) and its socket closes without a DISCONNECT, so the broker
+//!   fires the Last-Will (`mqtt.ts:44-47`). Rust runs the local teardown but
+//!   skips the publish and ends the client with [`ClientEnd::Abort`]. The
+//!   rule is keyed on "the TS would have crashed", not on the exit code
+//!   (D29 exits 0; the TS replay `shutdown(cmd, code)` is a graceful non-zero).
 
 use std::future::Future;
 use std::time::Duration;
@@ -38,7 +47,9 @@ pub const RECORDING_FATAL: &str = "recording settings apply failed";
 /// `Restart=always` restarts the agent, and the boot `finalizeOrphanSegments`
 /// completes the stranded segment. Rust logs `[agent] fatal: <msg>`, the
 /// stand-in for Node's uncaught dump (as A7 does for the boot reconcile),
-/// then runs the normal [`Shutdown`] and exits with this code.
+/// then runs the [`Shutdown`] local teardown and exits with this code. Like
+/// the TS crash it sends no `online:false` and no DISCONNECT: the link is
+/// dropped and the broker fires the Last-Will (review-wp1 X1).
 pub fn on_recording_fatal(msg: &str) -> i32 {
     error!("[agent] fatal: {msg}");
     1
@@ -71,6 +82,17 @@ pub fn on_sighup(ctx: &AgentCtx) {
     );
 }
 
+/// How [`Shutdown::run_with`] asks the caller to end the MQTT client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientEnd {
+    /// `client.end()` (`worker.ts:1322`): queue DISCONNECT behind the final
+    /// `online:false`, wait ≤ the budget; the broker discards the will.
+    Graceful(Duration),
+    /// The TS would have crashed (X1): drop the connection WITHOUT a
+    /// DISCONNECT so the broker publishes the Last-Will.
+    Abort,
+}
+
 /// What `shutdown` touches, borrowed from the worker.
 pub struct Shutdown<'a> {
     pub ctx: &'a AgentCtx,
@@ -85,12 +107,29 @@ pub struct Shutdown<'a> {
 }
 
 impl Shutdown<'_> {
-    /// Run the TS shutdown sequence; `end` is the client's graceful end
-    /// (queue DISCONNECT behind the final publish, wait ≤ `budget`; returns
-    /// whether it completed). Returns the process exit code.
+    /// [`run_with`](Self::run_with) for a caller whose `end` is the graceful
+    /// end only (budget in, completed out). On a crash-equivalent exit `end`
+    /// is not called; dropping it leaves the link to close with the process.
     pub async fn run<F, Fut>(self, sig: &str, exit_code: i32, end: F) -> i32
     where
         F: FnOnce(Duration) -> Fut,
+        Fut: Future<Output = bool>,
+    {
+        self.run_with(sig, exit_code, |how| async move {
+            match how {
+                ClientEnd::Graceful(budget) => end(budget).await,
+                ClientEnd::Abort => true,
+            }
+        })
+        .await
+    }
+
+    /// Run the TS shutdown sequence; `end` ends the client as asked (see
+    /// [`ClientEnd`]; returns whether a graceful end completed in budget).
+    /// Returns the process exit code.
+    pub async fn run_with<F, Fut>(self, sig: &str, exit_code: i32, end: F) -> i32
+    where
+        F: FnOnce(ClientEnd) -> Fut,
         Fut: Future<Output = bool>,
     {
         let ctx = self.ctx;
@@ -101,7 +140,11 @@ impl Shutdown<'_> {
         info!("[agent] shutting down ({sig})…");
         ctx.hooks.led_stop();
         self.config.stop();
-        ctx.hooks.recording_stop();
+        // X1: graceful only when the TS reaches `:1317` — not after an
+        // uncaught recording throw (RECORDING_FATAL) and not when the
+        // finalize here throws (D29; the hook already logged `[agent] fatal:`).
+        let finalized = ctx.hooks.recording_stop().is_ok();
+        let graceful = finalized && sig != RECORDING_FATAL;
         if let Some(status) = ctx.hooks.final_recording_status() {
             ctx.state.set_recording(status);
         }
@@ -116,7 +159,7 @@ impl Shutdown<'_> {
             .note(ActivityLevel::Info, format!("shutting down ({sig})"), now);
 
         let was_connected = self.plane.is_connected() && self.mqtt.connected();
-        if was_connected {
+        if was_connected && graceful {
             let cfg = &ctx.env.config;
             let offline = serde_json::to_vec(&StatusPayload::new(&cfg.device_id, now, false))
                 .unwrap_or_default();
@@ -127,11 +170,20 @@ impl Shutdown<'_> {
                 warn!("[agent] final status publish not queued: {e}");
             }
         }
-        let clean = end(EXIT_BUDGET).await;
+        let clean = end(if graceful {
+            ClientEnd::Graceful(EXIT_BUDGET)
+        } else {
+            ClientEnd::Abort
+        })
+        .await;
         if was_connected && self.link_closes {
             // mqtt.js emits `close` when end() closes the stream.
             self.plane.on_close();
-            if clean {
+            if !graceful {
+                warn!(
+                    "[agent] connection dropped without DISCONNECT (Last-Will left to the broker)"
+                );
+            } else if clean {
                 info!("[agent] disconnected cleanly (online:false sent)");
             } else {
                 warn!(
