@@ -397,6 +397,28 @@ ro-sudoers)
   check "no .old/.new left" bash -c '[ ! -e /opt/xorgate-rs.old ] && [ ! -e /opt/xorgate-rs.new ]'
   check "sudoers draft dir removed" no_tmp_left
   ;;
+old-busy)
+  # D-WP4-8: moving the live tree aside fails. `.old` is an (empty, read-only)
+  # mountpoint: rm -rf of it fails silently (EBUSY), then rename(live → .old)
+  # fails with EBUSY → staged tree dropped, live tree untouched, one fail line.
+  agent_env
+  fake_js
+  bootstrap
+  touch "$E/active-xorgate-agent-rs"
+  mkdir -p /opt/xorgate-rs.old
+  mount -t tmpfs -o ro,size=1m tmpfs /opt/xorgate-rs.old
+  check "injection armed (.old is a mountpoint)" mountpoint -q /opt/xorgate-rs.old
+  snap "$E/before" "${DEVICE[@]}"
+  upd
+  snap "$E/after" "${DEVICE[@]}"
+  check "exit 1" rc_is 1
+  check "stderr exact (one fail line, no uncaught throw)" err_is "${F}Device or resource busy (os error 16), rename '/opt/xorgate-rs' -> '/opt/xorgate-rs.old'"
+  check "device byte-unchanged" diff -u "$E/before" "$E/after"
+  check "staged tree removed" absent /opt/xorgate-rs.new
+  check "live build still v1" grep -q '"version": "v1"' /opt/xorgate-rs/build-info.json
+  check "no reload/restart (only the pre-swap is-active)" sc_log_is "is-active --quiet xorgate-agent-rs"
+  check "scratch dirs removed" no_tmp_left
+  ;;
 *)
   echo "unknown case $CASE" >&2
   exit 2

@@ -316,6 +316,11 @@ pub async fn update(
     rm_rf(&backup);
     let had_prev = exists(&live);
     if had_prev {
+        // D-WP4-8: the TS `renameSync(INSTALL_PREFIX, BACKUP)` sits OUTSIDE
+        // its try (`update.ts:293-295`), so a failure there is an uncaught
+        // throw (stack, exit 1). Here: drop the staged tree, leave the live
+        // one where it is, print one `update failed:` line (exit 1).
+        // Pinned by E9 `old-busy` (`.old` is a busy mountpoint → EBUSY).
         if let Err(e) = fs::rename(&live, &backup) {
             rm_rf(&staging);
             return Err(format!(

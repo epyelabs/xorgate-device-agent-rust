@@ -26,7 +26,7 @@ IMAGE=xorgate-update-e2e:bookworm
 BUILD_IMAGE=xorgate-rs-build:1.99.0-c813d06bc873
 ALL_CASES=(happy-coexist rust-only rust-only-root-no-modem rust-only-no-user restart-fails
   visudo-refuses bad-sha missing-sidecar sidecar-wrong-name missing-member wrong-arch
-  truncated-binary not-a-tarball download-404 no-bucket not-root ro-systemd ro-sudoers)
+  truncated-binary not-a-tarball download-404 no-bucket not-root ro-systemd ro-sudoers old-busy)
 CASES=("$@")
 [ ${#CASES[@]} -gt 0 ] || CASES=("${ALL_CASES[@]}")
 
@@ -70,7 +70,7 @@ fail=0
 failed=()
 for c in "${CASES[@]}"; do
   extra=()
-  case "$c" in ro-*) extra=(--privileged) ;; esac
+  case "$c" in ro-* | old-busy) extra=(--privileged) ;; esac
   if docker run --rm --platform linux/arm64 ${extra[@]+"${extra[@]}"} \
     -v "$WORK/bucket:/bucket:ro" -v "$HERE:/e2e:ro" -v "$REPO/fixtures:/fixtures:ro" \
     -v "$WORK/in/jsys:/in/jsys:ro" "$IMAGE" /e2e/case.sh "$c"; then
