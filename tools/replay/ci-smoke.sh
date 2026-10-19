@@ -20,7 +20,7 @@
 # writes /etc/hosts `broker` → 127.0.0.1 when it is missing). The JS-vs-Rust
 # parity run stays the Docker rig's job (run-rig.sh).
 #
-# `media` (Phase 3, WP6): the 60 s synthetic `media` scenario (`xorgate-replay
+# `media` (Phase 3, WP6): the synthetic `media` scenario (cut to 58 s) (`xorgate-replay
 # synth media`: both cameras record 720p15 10 s fragments, two fake KVS
 # masters, telemetry + video uploads to the fake S3) Rust-vs-Rust through the
 # same knobs. Extra needs: gstreamer1.0-tools + -plugins-{base,good,bad,ugly}
@@ -38,11 +38,22 @@ RP=$(realpath "${2:?usage: ci-smoke.sh <xorgate-rs> <xorgate-replay> [out]}")
 OUT=${3:-/tmp/replay-ci-smoke}
 MODE=${4:-smoke}
 case "$MODE" in
-  smoke) TAPE="$REPO/fixtures/replay/smoke.ndjson.gz"; MEDIA_ARGS=() ;;
+  smoke) TAPE="$REPO/fixtures/replay/smoke.ndjson.gz"; MEDIA_ARGS=(); STAGGER_MS=300 ;;
   media)
     TAPE=/tmp/replay-ci-media.ndjson.gz
-    "$RP" synth media -o "$TAPE" --fixtures "$REPO/fixtures"
+    # 58 s, not the scenario's 60: its last LTE-file rewrite (t = 59.5 s)
+    # lands on the telemetry segment's 60 s rotation, so whether that
+    # sample's `lte` group falls in segment 0 or 1 is a coin flip per agent
+    # (local run 2026-10-19: seg 1 lte on B only). Cut at 58 s the last
+    # rewrite is 49.5 s; the rotation (and the telemetry PUT) still happen
+    # inside the 10 s settle.
+    "$RP" synth media --duration-s 58 -o "$TAPE" --fixtures "$REPO/fixtures"
     MEDIA_ARGS=(--media-dir "$HERE/media" --aws-listen 127.0.0.1:443)
+    # Both agents are SIGTERMed together at the end, so a start stagger
+    # shortens B's LAST fragment by the stagger (CI run 39267397686: sidecar
+    # 00006 durationMs 7465 vs 7186, > T12's ±150 ms). The rig starts both
+    # at once too (play.rs default 0).
+    STAGGER_MS=0
     ;;
   *) echo "ci-smoke: unknown mode $MODE (smoke|media)" >&2; exit 2 ;;
 esac
@@ -77,7 +88,7 @@ rm -rf "$OUT"
 "$RP" play --tape "$TAPE" --out "$OUT" --a rust --b rust --rs-bin "$RS" \
   --broker-host localhost --broker-port 8884 --proxy-listen 127.0.0.1:8883 \
   --certs "$CERTS" --shims "$HERE/shims" --fake-python "$HERE/fake-python" \
-  --work "/tmp/replay-ci-work-$MODE" --settle-s 10 --stagger-ms 300 ${MEDIA_ARGS[@]+"${MEDIA_ARGS[@]}"}
+  --work "/tmp/replay-ci-work-$MODE" --settle-s 10 --stagger-ms "$STAGGER_MS" ${MEDIA_ARGS[@]+"${MEDIA_ARGS[@]}"}
 # SMOKE ONLY: the host-load-dependent system fields are excluded. Both agents
 # read the CI runner's live /proc/stat, /proc/meminfo and statfs, so under a
 # loaded shared runner cpu_usage swings by tens of points between the two

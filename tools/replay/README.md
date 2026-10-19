@@ -456,7 +456,7 @@ on stderr.
   compares the same collector values under the hold gate.
 - A capture child that exited with a CODE on the device is re-enacted as a
   signal kill (gst cannot be told to exit with a code); both agents get the same.
-- CI: besides the Phase 2 smoke, `ci-smoke.sh … media` replays the 60 s
+- CI: besides the Phase 2 smoke, `ci-smoke.sh … media` replays the (58 s cut of the)
   synthetic `media` scenario Rust-vs-Rust in the CI container (no Docker:
   real gst-launch-1.0 behind the shim from the apt `gstreamer1.0-*` packages,
   the fake masters, the fake IoT creds + SigV4-checked fake S3 on
@@ -469,5 +469,8 @@ on stderr.
   a plumbing check, not parity: JS-vs-Rust stays the Docker rig's job. Like
   the tick-drift period, the smoke lifts `T13/system-presence` (two Rust
   agents both drop `system` on 6–8 % of samples until P-WP6-1 is fixed); the
-  rig keeps ±2.
+  rig keeps ±2. Media mode starts both agents together (`--stagger-ms 0`:
+  both are SIGTERMed together, so a start stagger shortens B's last fragment
+  past T12) and cuts the tape to 58 s (the scenario's last LTE rewrite at
+  59.5 s races the 60 s telemetry rotation).
 

@@ -106,7 +106,7 @@ jobs:
           cargo build -p xorgate-agent -p xorgate-replay
           tools/replay/ci-smoke.sh target/debug/xorgate-rs target/debug/xorgate-replay /tmp/replay-ci-smoke
 
-      # Phase 3 WP6: the 60 s synthetic `media` scenario Rust-vs-Rust (real
+      # Phase 3 WP6: the synthetic `media` scenario (58 s) Rust-vs-Rust (real
       # gst-launch-1.0 behind the shim with videotestsrc, fake KVS masters,
       # fake IoT creds + SigV4-checked fake S3 on 127.0.0.1:443 — the job is
       # root in a throwaway container, so the player's /etc/hosts and CA-store
