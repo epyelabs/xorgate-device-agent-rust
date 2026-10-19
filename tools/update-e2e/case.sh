@@ -397,6 +397,21 @@ ro-sudoers)
   check "no .old/.new left" bash -c '[ ! -e /opt/xorgate-rs.old ] && [ ! -e /opt/xorgate-rs.new ]'
   check "sudoers draft dir removed" no_tmp_left
   ;;
+uid501-tarball)
+  # D-WP4-11: a tarball whose entries are owned by uid 501 (a Mac/bsdtar pack)
+  # still installs a root-owned /opt/xorgate-rs (tar --no-same-owner).
+  agent_env
+  fake_js
+  bootstrap
+  L=/bucket/xorgate-agent-rs-uid501.tar.gz
+  check "precondition: the tarball's entries are owned by 501/20" bash -c "tar -tvzf $L --numeric-owner | awk '{print \$2}' | sort -u | grep -qx 501/20 && [ \$(tar -tvzf $L --numeric-owner | awk '{print \$2}' | sort -u | wc -l) = 1 ]"
+  upd --tag uid501
+  check "exit 0" rc_is 0
+  check "installed build is uid501" grep -q '"version": "uid501"' /opt/xorgate-rs/build-info.json
+  check "/opt/xorgate-rs is root:root throughout (no uid 501 left)" bash -c '[ -z "$(find /opt/xorgate-rs \( ! -user 0 -o ! -group 0 \))" ]'
+  check "content == tarball" tree_is_tarball /opt/xorgate-rs "$L"
+  check "modes kept (bin 0755, unit 0644)" bash -c '[ $(stat -c %a /opt/xorgate-rs/bin/xorgate-rs) = 755 ] && [ $(stat -c %a /opt/xorgate-rs/systemd/xorgate-agent-rs.service) = 644 ]'
+  ;;
 old-busy)
   # D-WP4-8: moving the live tree aside fails. `.old` is an (empty, read-only)
   # mountpoint: rm -rf of it fails silently (EBUSY), then rename(live → .old)

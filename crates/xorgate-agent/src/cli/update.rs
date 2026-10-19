@@ -264,9 +264,15 @@ pub async fn update(
         rm_rf(&dl);
         return Err(format!("{e}, mkdir '{}'", staging.display()));
     }
+    // D-WP4-11: `--no-same-owner` — the TS ran plain `tar -xzf` (`update.ts:265`),
+    // which as root restores the archive's owners; CI packs 0:0, but a Mac
+    // (bsdtar) pack records the packing uid and would leave /opt/xorgate-rs
+    // owned by uid 501. Modes are still restored (root's default). E9
+    // `uid501-tarball` pins it.
     let untar = run_s(
         &p.tools.tar,
         &[
+            "--no-same-owner".into(),
             "-xzf".into(),
             path_str(&tgz),
             "-C".into(),

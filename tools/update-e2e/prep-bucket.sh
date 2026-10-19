@@ -66,6 +66,12 @@ variant nomember same
 mkdir "$T/nm" && tar -xzf "$B/xorgate-agent-rs-nomember.tar.gz" -C "$T/nm" && rm "$T/nm/build-info.json"
 (cd "$T/nm" && tar -czf "$B/xorgate-agent-rs-nomember.tar.gz" --owner=0 --group=0 --numeric-owner $(ls -A))
 sidecar xorgate-agent-rs-nomember.tar.gz
+# packed as a Mac/bsdtar pack would record it: entries owned by uid 501, gid 20
+# (D-WP4-11: the update extracts with --no-same-owner → root-owned tree).
+cp -a "$T/v2" "$T/uid501"
+sed -i 's/"version": *"[^"]*"/"version": "uid501"/' "$T/uid501/build-info.json"
+(cd "$T/uid501" && tar -czf "$B/xorgate-agent-rs-uid501.tar.gz" --owner=501 --group=20 --numeric-owner $(ls -A))
+sidecar xorgate-agent-rs-uid501.tar.gz
 # not a tarball at all
 echo "this is not gzip" > "$B/xorgate-agent-rs-garbage.tar.gz"; sidecar xorgate-agent-rs-garbage.tar.gz
 rm -rf "$T"
