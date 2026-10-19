@@ -86,6 +86,10 @@ pub struct MediaCapture {
     pub s3_bodies: BTreeMap<String, Vec<u8>>,
     /// Orphan shmpipe names at the end (pid = a dead gst child of this side).
     pub shm_orphans: usize,
+    /// Wall ms (publish `w`) of every telemetry tick whose
+    /// `recording.powerShed` / `recording.liveBlock` differs from the
+    /// previous tick's (`mqtt.ndjson`; T7/D30 `d30_shed_tick_session_end` (d)).
+    pub shed_changes: Vec<i64>,
     /// Anything media-related captured at all.
     pub present: bool,
 }
@@ -515,6 +519,30 @@ impl MediaCapture {
             .filter(|p| mine.contains(p) && gone.contains(p))
             .count();
         let present = !spawns.is_empty() || !rec.is_empty() || !s3.is_empty();
+        let mut shed_changes = Vec::new();
+        let mut prev: Option<(Value, Value)> = None;
+        for v in lines(&dir.join("mqtt.ndjson")) {
+            if !v["topic"]
+                .as_str()
+                .is_some_and(|t| t.ends_with("/telemetry"))
+            {
+                continue;
+            }
+            let Some(p) = v["payload"]
+                .as_str()
+                .and_then(|t| serde_json::from_str::<Value>(t).ok())
+            else {
+                continue;
+            };
+            let cur = (
+                p["recording"]["powerShed"].clone(),
+                p["recording"]["liveBlock"].clone(),
+            );
+            if prev.as_ref().is_some_and(|q| *q != cur) {
+                shed_changes.push(v["w"].as_i64().unwrap_or(0));
+            }
+            prev = Some(cur);
+        }
         Self {
             kind: meta["kind"].as_str().unwrap_or("").to_string(),
             spawns,
@@ -524,6 +552,7 @@ impl MediaCapture {
             s3,
             s3_bodies,
             shm_orphans,
+            shed_changes,
             present,
         }
     }
@@ -801,6 +830,95 @@ fn system_presence_tol(table: &Table, ka: &str, kb: &str, la: usize, lb: usize) 
     }
 }
 
+/// T7/D30 `d30_shed_tick_session_end` (review-wp6 §3) for the sidecar `key`
+/// (`(session, seq)`), every condition but (e) (the caller's):
+/// (a) `seq` is the LAST fragment of the session on BOTH sides, and on each
+///     side the session's capture child ended at the agent's stop (`int` /
+///     `eos`, no later capture spawn of that camera);
+/// (b) δ = first-fragment `startTs` JS − Rust in [850, 1150] ms (JS LATER;
+///     JS-vs-JS |δ| in that band; Rust-vs-Rust never);
+/// (c) the end instants (`startTs + durationMs` of this fragment) agree
+///     within `end_ms` (T12's durationMs bound: one SIGTERM cuts both);
+/// (d) on each side the session's capture spawn lags that side's last
+///     `recording.powerShed`/`liveBlock` change (telemetry, publish `w`, at
+///     most one tick after the spawn) by the same ±300 ms.
+#[allow(clippy::too_many_arguments)]
+fn d30_session_end(
+    a: &MediaCapture,
+    b: &MediaCapture,
+    ca: &BTreeMap<(String, u64), Value>,
+    cb: &BTreeMap<(String, u64), Value>,
+    fa: &BTreeMap<String, BTreeMap<u64, u64>>,
+    fb: &BTreeMap<String, BTreeMap<u64, u64>>,
+    key: &(String, u64),
+    end_ms: f64,
+) -> bool {
+    const DELTA: (f64, f64) = (850.0, 1150.0);
+    const LAG_MS: i64 = 300;
+    /// A telemetry tick publishes a shed change at most ~1 tick after it.
+    const TICK_MS: i64 = 1_100;
+    let (sid, seq) = (&key.0, key.1);
+    let last = |f: &BTreeMap<String, BTreeMap<u64, u64>>, c: &BTreeMap<(String, u64), Value>| {
+        let fl = f.get(sid).and_then(|m| m.keys().next_back().copied());
+        let cl = c
+            .range((sid.clone(), 0)..=(sid.clone(), u64::MAX))
+            .next_back()
+            .map(|((_, q), _)| *q);
+        fl.max(cl) == Some(seq)
+    };
+    if !last(fa, ca) || !last(fb, cb) {
+        return false;
+    }
+    // The session's capture spawn, ended at the stop, never respawned.
+    let spawn_at = |m: &MediaCapture| -> Option<i64> {
+        let s = m
+            .spawns
+            .iter()
+            .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid.as_str()))?;
+        let at_stop = matches!(s.end.as_deref(), Some("int") | Some("eos"));
+        let respawned = m
+            .spawns
+            .iter()
+            .any(|o| o.role == "capture" && o.key == s.key && o.w > s.w);
+        (at_stop && !respawned).then_some(s.w)
+    };
+    let (Some(wa), Some(wb)) = (spawn_at(a), spawn_at(b)) else {
+        return false;
+    };
+    let f64_at = |c: &BTreeMap<(String, u64), Value>, q: u64, k: &str| {
+        c.get(&(sid.clone(), q)).and_then(|v| v[k].as_f64())
+    };
+    let (Some(s0a), Some(s0b)) = (f64_at(ca, 0, "startTs"), f64_at(cb, 0, "startTs")) else {
+        return false;
+    };
+    let delta = match (a.kind.as_str(), b.kind.as_str()) {
+        ("js", "rust") => s0a - s0b,
+        ("rust", "js") => s0b - s0a,
+        ("js", "js") => (s0a - s0b).abs(),
+        _ => return false,
+    };
+    if !(DELTA.0..=DELTA.1).contains(&delta) {
+        return false;
+    }
+    let end = |c: &BTreeMap<(String, u64), Value>| {
+        Some(f64_at(c, seq, "startTs")? + f64_at(c, seq, "durationMs")?)
+    };
+    let (Some(ea), Some(eb)) = (end(ca), end(cb)) else {
+        return false;
+    };
+    if (ea - eb).abs() > end_ms {
+        return false;
+    }
+    let lag = |m: &MediaCapture, w: i64| {
+        m.shed_changes
+            .iter()
+            .filter(|c| **c <= w + TICK_MS)
+            .next_back()
+            .map(|c| w - c)
+    };
+    matches!((lag(a, wa), lag(b, wb)), (Some(x), Some(y)) if (x - y).abs() <= LAG_MS)
+}
+
 /// The Phase 3 comparison. `a`/`b` absent of any media artifact on BOTH
 /// sides = nothing to compare (a Phase 2 tape): the streams are listed with 0.
 pub fn diff_media(
@@ -1013,6 +1131,28 @@ pub fn diff_media(
         }
     }
 
+    // Fragments per session (mp4 stream below; the D30 last-seq test).
+    let frags = |m: &MediaCapture| -> BTreeMap<String, BTreeMap<u64, u64>> {
+        let mut out: BTreeMap<String, BTreeMap<u64, u64>> = BTreeMap::new();
+        for (k, s) in &m.rec {
+            if let Some((sid, seq, "mp4")) = frag_of(k) {
+                out.entry(sid).or_default().insert(seq, s.size);
+            }
+        }
+        for o in &m.s3 {
+            if let Some((sid, seq, "mp4")) = frag_of(&o.key) {
+                out.entry(sid).or_default().entry(seq).or_insert(0);
+            }
+        }
+        for (k, size) in &m.mp4_final {
+            if let Some((sid, seq, "mp4")) = frag_of(k) {
+                out.entry(sid).or_default().insert(seq, *size);
+            }
+        }
+        out
+    };
+    let (fa, fb) = (frags(a), frags(b));
+
     // ---- sidecars (T12) + D8 lag figures
     let (ca, cb) = (sidecars(a), sidecars(b));
     let start_ms = row_tol(table, "T12", "startTs", 300.0);
@@ -1053,6 +1193,13 @@ pub fn diff_media(
         c.get(&(sid.to_string(), 0))
             .and_then(|v| v["startMono"].as_f64())
     };
+    // T7/D30 `d30_shed_tick_session_end` (review-wp6 §3): the sessions
+    // whose earlier fragments left an UNTOLERATED sidecar row (condition (e)).
+    let d30_end = table
+        .matcher_rows("d30_shed_tick_session_end", "sidecar")
+        .into_iter()
+        .next();
+    let mut sid_failed: BTreeSet<String> = BTreeSet::new();
     for key in ca.keys().chain(cb.keys()).collect::<BTreeSet<_>>() {
         let at = format!("{}/{:05}", key.0, key.1);
         let (Some(x), Some(y)) = (ca.get(key), cb.get(key)) else {
@@ -1060,6 +1207,9 @@ pub fn diff_media(
         };
         stat(rep, "sidecar").compared += 1;
         let (pa, pb) = (playing(a, &key.0), playing(b, &key.0));
+        let d30_ok = d30_end.is_some()
+            && !sid_failed.contains(&key.0)
+            && d30_session_end(a, b, &ca, &cb, &fa, &fb, key, dur_ms);
         let skip = |p: &str| -> Option<String> {
             match p {
                 "sizeBytes" => Some(t12.to_string()),
@@ -1075,35 +1225,25 @@ pub fn diff_media(
                 }
                 "durationMs" => {
                     let d = (x["durationMs"].as_f64()? - y["durationMs"].as_f64()?).abs();
-                    (d <= dur_ms).then(|| t12.to_string())
+                    if d <= dur_ms {
+                        Some(t12.to_string())
+                    } else if d30_ok {
+                        d30_end.clone()
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             }
         };
+        let before = rep.untolerated();
         json_cmp("sidecar", &at, "", x, y, &skip, rep);
+        if rep.untolerated() > before {
+            sid_failed.insert(key.0.clone());
+        }
     }
 
     // ---- mp4: contiguity + zero-byte per side, count ±1 (T12)
-    let frags = |m: &MediaCapture| -> BTreeMap<String, BTreeMap<u64, u64>> {
-        let mut out: BTreeMap<String, BTreeMap<u64, u64>> = BTreeMap::new();
-        for (k, s) in &m.rec {
-            if let Some((sid, seq, "mp4")) = frag_of(k) {
-                out.entry(sid).or_default().insert(seq, s.size);
-            }
-        }
-        for o in &m.s3 {
-            if let Some((sid, seq, "mp4")) = frag_of(&o.key) {
-                out.entry(sid).or_default().entry(seq).or_insert(0);
-            }
-        }
-        for (k, size) in &m.mp4_final {
-            if let Some((sid, seq, "mp4")) = frag_of(k) {
-                out.entry(sid).or_default().insert(seq, *size);
-            }
-        }
-        out
-    };
-    let (fa, fb) = (frags(a), frags(b));
     for (label, f, m) in [("A", &fa, a), ("B", &fb, b)] {
         for (sid, seqs) in f {
             let n = seqs.len() as u64;
@@ -1652,6 +1792,111 @@ mod tests {
         // Rust-vs-Rust: exact.
         assert!(run_k("rust", 1, "rust", 1).is_empty());
         assert_eq!(run_k("rust", 0, "rust", 1), unt);
+    }
+
+    /// T7/D30 `d30_shed_tick_session_end`: the shape of
+    /// replay-20261019T152309Z cam1#1 (JS restore one tick late → the last
+    /// fragment 3451 vs 4350 ms); every condition of review-wp6 §3 flips it.
+    #[test]
+    fn d30_shed_tick_session_end_only_for_a_late_js_restore() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam1#1>";
+        // (kind, spawn w, first startTs, last durationMs, shed change w)
+        let side = |kind: &str, w: i64, st0: i64, last_dur: i64, change: i64| {
+            let mut finals = BTreeMap::new();
+            for (seq, st, dur) in [(0u64, st0, 10_000), (1, st0 + 10_000, last_dur)] {
+                finals.insert(
+                    format!("recordings/video/cam1/{sid}/{seq:05}.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "seq": seq, "startTs": st, "startMono": (st - st0) + 5,
+                        "durationMs": dur, "sizeBytes": 100,
+                    }))
+                    .unwrap(),
+                );
+            }
+            MediaCapture {
+                kind: kind.into(),
+                spawns: vec![Spawn {
+                    w,
+                    role: "capture".into(),
+                    key: "cam1".into(),
+                    pid: 7,
+                    argv: vec!["gst".into()],
+                    env: BTreeMap::new(),
+                    playing: Some(st0 - 2_000),
+                    end: Some("int".into()),
+                    end_w: None,
+                    sid: Some(sid.into()),
+                }],
+                finals,
+                shed_changes: vec![change],
+                present: true,
+                ..Default::default()
+            }
+        };
+        let js = || side("js", 526_868, 528_886, 3_451, 522_939);
+        let rs = || side("rust", 525_962, 527_978, 4_350, 521_949);
+        let run = |a: MediaCapture, b: MediaCapture| {
+            let mut rep = Report::default();
+            diff_media(&a, &b, &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                // startTs differs by δ everywhere (T12, own PLAYING basis).
+                .filter(|m| m.stream == "sidecar" && m.path != "startTs")
+                .map(|m| format!("{} {} {}", m.at, m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let row = |tol: &str| vec![format!("{sid}/00001 durationMs {tol}")];
+        assert_eq!(run(js(), rs()), row("T7/D30"));
+        assert_eq!(run(rs(), js()), row("T7/D30"), "either column order");
+        // (b) Rust LATER (a P-WP6-1 regression shape): never.
+        let rs_late = side("rust", 527_774, 529_790, 2_540, 523_845);
+        assert_eq!(run(js(), rs_late), row(UNTOLERATED));
+        // Rust-vs-Rust: never.
+        let mut r2 = js();
+        r2.kind = "rust".into();
+        assert_eq!(run(r2, rs()), row(UNTOLERATED));
+        // (c) the ends disagree by > 150 ms.
+        assert_eq!(
+            run(js(), side("rust", 525_962, 527_978, 4_600, 521_949)),
+            row(UNTOLERATED)
+        );
+        // (a) a capture respawn of that camera after the session.
+        let mut j = js();
+        let mut again = j.spawns[0].clone();
+        again.w += 20_000;
+        again.sid = None;
+        j.spawns.push(again);
+        assert!(run(j, rs()).contains(&format!("{sid}/00001 durationMs {UNTOLERATED}")));
+        // (a) the child did not end at the stop (an external kill).
+        let mut j = js();
+        j.spawns[0].end = Some("external".into());
+        assert_eq!(run(j, rs()), row(UNTOLERATED));
+        // (d) the spawn-to-restore lags differ by > 300 ms.
+        assert_eq!(
+            run(side("js", 526_868, 528_886, 3_451, 522_400), rs()),
+            row(UNTOLERATED)
+        );
+        // (e) an earlier fragment of the session failed T12.
+        let mut j = js();
+        j.finals.insert(
+            format!("recordings/video/cam1/{sid}/00000.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "seq": 0, "startTs": 528_886, "startMono": 5, "durationMs": 9_000, "sizeBytes": 100,
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            run(j, rs()),
+            vec![
+                format!("{sid}/00000 durationMs {UNTOLERATED}"),
+                format!("{sid}/00001 durationMs {UNTOLERATED}"),
+            ]
+        );
     }
 
     /// T14: a telemetry object PUT on one side only is tolerated only when it

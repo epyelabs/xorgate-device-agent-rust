@@ -516,6 +516,37 @@ async fn registry_order_omission_and_idle_media() {
     src.stop();
 }
 
+/// D30 pin (review-wp6 §2): `sample()` holds the recorder-side cache across
+/// its compute (`collectors/system.rs`), so a second `sample()` issued while
+/// the first one's compute is in flight waits and returns the NEW cache. (The
+/// TS sets `recLastAt` BEFORE `await compute()` without holding anything,
+/// `system.ts:107-108`, so its second caller gets the PREVIOUS `recCache`.)
+/// Deterministic: the first future always parks inside its compute
+/// (`tokio::fs` → spawn_blocking), and `join!` polls the second right then.
+#[tokio::test(start_paused = true)]
+async fn system_sample_during_an_in_flight_compute_returns_the_new_cache() {
+    use xorgate_agent::collectors::system::SystemCollector;
+    let home = scratch("system-d30");
+    let (ctx, _) = ctx_at(&home, 1_781_000_000_000);
+    let c = SystemCollector::new(&ctx, false).await;
+    let first = c.sample().await.expect("first sample computes");
+    tokio::time::advance(Duration::from_millis(1000)).await;
+    let (a, b) = tokio::join!(c.sample(), c.sample());
+    let (a, b) = (a.expect("a"), b.expect("b"));
+    assert!(
+        a.updated_mono > first.updated_mono,
+        "a recomputed (gate due)"
+    );
+    assert_eq!(
+        b.updated_mono, a.updated_mono,
+        "b got the NEW cache, not the previous one"
+    );
+    assert_eq!(b, a);
+    // …and a caller after it inside the same second gets that cache too.
+    tokio::time::advance(Duration::from_millis(999)).await;
+    assert_eq!(c.sample().await.expect("c").updated_mono, a.updated_mono);
+}
+
 // ---------------------------------------------------------------------------
 // IMU shutdown (WP2 review MUST-FIX 1 + NIT 5): `stop()` signals a running
 // helper's group, and nothing at all once the helper has exited.

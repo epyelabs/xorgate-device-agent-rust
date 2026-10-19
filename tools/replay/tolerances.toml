@@ -312,6 +312,13 @@ source = "phase-1/evidence/accepted-divergences.md"
   matcher = "d30_system_presence"
   pinned_by = "D30 (accepted-divergences.md); media_diff::tests::rec_telemetry_system_presence_per_sample; timer.rs re_arms_from_the_fire_instant…; collectors/system.rs concurrent sample test"
 
+  [[rule.row]]
+  id = "D30"
+  what = "the same D30 cache ownership seen on a power-shed restore: a stale JS shed read lands the restore transition one tick LATER, so the restored video session starts ~1 s later on the JS side and its LAST fragment (cut by the same SIGTERM on both sides) is ~1 s shorter. Matched ONLY sidecar `durationMs` of a fragment that (a) is the LAST seq of its session on BOTH sides, whose capture child ended at the agent's stop (int/eos, no respawn); (b) δ = first-fragment startTs JS − Rust in [850, 1150] ms (JS later; JS-vs-JS |δ| in that band; never Rust-vs-Rust); (c) end instants (startTs + durationMs) agree within T12's 150 ms; (d) on each side the session's capture spawn lags that side's last telemetry recording.powerShed/liveBlock change by the same ±300 ms; (e) every earlier fragment of the session passed T12. NOT covered: a shed-event text difference, a T10 spawn instant past ±1 s. Orchestrator 2026-10-19 (P-WP6-2, review-wp6 §3; covers replay-20261019T152309Z cam1#1/00006 3451/4350)"
+  streams = ["sidecar"]
+  matcher = "d30_shed_tick_session_end"
+  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::d30_shed_tick_session_end_only_for_a_late_js_restore"
+
 [[rule]]
 id = "T8"
 title = "Phase 2 orchestrator decisions"
