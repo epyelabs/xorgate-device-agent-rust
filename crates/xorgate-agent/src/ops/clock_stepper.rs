@@ -68,6 +68,9 @@ pub struct ClockStepperOptions {
     pub on_event: Box<EventSink>,
     /// `now` = `wall_ms`, `monoMs` = `mono_ms` (hold-off survives the step).
     pub clock: Arc<dyn Clock + Send + Sync>,
+    /// I9 `ntp_probe{synced}` after every probe (addition to the frozen I6
+    /// field list; `NullTape` when no tape is configured).
+    pub tape: Arc<dyn xorgate_hal::io::TapeSink>,
 }
 
 /// `createClockStepper(opts)` (`clock-step.ts:194-316`). Cheap to clone (one
@@ -201,7 +204,9 @@ impl Inner {
         if !st.armed {
             return;
         }
-        if (self.opts.probe_ntp)().await {
+        let synced = (self.opts.probe_ntp)().await;
+        self.opts.tape.ntp_probe(synced);
+        if synced {
             // decide() returns before reading cfg on this branch; the TS does
             // not call `config()` here either.
             let d = decide(

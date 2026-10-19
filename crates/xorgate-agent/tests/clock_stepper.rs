@@ -31,6 +31,15 @@ use xorgate_core::telemetry::JsNumber;
 use xorgate_core::types::{GpsClockReading, ModemTelemetry, SteppedClockSource};
 use xorgate_hal::privileged::{HelperArgv, PrivilegedArgv, PrivilegedRunner, RunFut};
 
+/// Records the I9 `ntp_probe` verdicts.
+#[derive(Default)]
+struct ProbeTape(Mutex<Vec<bool>>);
+impl xorgate_hal::io::TapeSink for ProbeTape {
+    fn ntp_probe(&self, synced: bool) {
+        self.0.lock().unwrap().push(synced);
+    }
+}
+
 /// A settable wall/mono clock (the TS harness's `now`/`monoMs` seams).
 #[derive(Default)]
 struct FakeClock {
@@ -128,6 +137,7 @@ struct Counters {
 }
 
 struct Harness {
+    tape: Arc<ProbeTape>,
     stepper: ClockStepper,
     clock: Arc<FakeClock>,
     runner: Arc<StepRunner>,
@@ -160,6 +170,7 @@ fn harness_with(gps_panics: bool) -> Harness {
         counters.clone(),
     );
     let (ev, st) = (events.clone(), stepped.clone());
+    let tape = Arc::new(ProbeTape::default());
     let stepper = ClockStepper::new(ClockStepperOptions {
         config: Box::new(move || {
             c1.configs.fetch_add(1, Ordering::SeqCst);
@@ -190,8 +201,10 @@ fn harness_with(gps_panics: bool) -> Harness {
         on_stepped: Box::new(move |s, o| st.lock().unwrap().push((s, o))),
         on_event: Box::new(move |l, m| ev.lock().unwrap().push((l, m.to_string()))),
         clock: clock.clone(),
+        tape: tape.clone(),
     });
     Harness {
+        tape,
         stepper,
         clock,
         runner,
@@ -370,6 +383,8 @@ async fn cf20_probe_skipped_when_disarmed_and_one_config_read() {
     }
     assert_eq!(h.counters.probes.load(Ordering::SeqCst), 2);
     assert_eq!(h.events.lock().unwrap().len(), 1);
+    // I9: one `ntp_probe` per probe actually run, none while disarmed.
+    assert_eq!(*h.tape.0.lock().unwrap(), [false, true]);
 }
 
 /// NITZ is read only when there is no valid GPS time, and only past the
@@ -504,6 +519,7 @@ async fn single_flight_tick() {
         on_stepped: Box::new(|_, _| {}),
         on_event: Box::new(|_, _| {}),
         clock,
+        tape: Arc::new(xorgate_hal::io::NullTape),
     });
     let slow = tokio::spawn({
         let s = stepper.clone();

@@ -235,6 +235,52 @@ async fn run_argv(program: &str, args: &[&str]) -> RunResult {
     }
 }
 
+/// Reports every settled run to the tape as a `sudo` record (I9: "every
+/// `PrivilegedRunner` run — `PrivilegedArgv` + `HelperArgv` — when it
+/// settles"): full argv (`["sudo","-n",…]`) + code/stdout/stderr/not-found.
+/// Wrap the production [`SudoRunner`] with it; with no tape configured the
+/// hook is a no-op.
+pub struct TapedRunner {
+    inner: Arc<dyn PrivilegedRunner>,
+    tape: Arc<dyn crate::io::TapeSink>,
+}
+
+impl TapedRunner {
+    pub fn new(inner: Arc<dyn PrivilegedRunner>, tape: Arc<dyn crate::io::TapeSink>) -> Self {
+        Self { inner, tape }
+    }
+}
+
+fn tape_result(r: &RunResult) -> crate::exec::RunResult {
+    crate::exec::RunResult {
+        stdout: r.stdout.clone(),
+        stderr: r.stderr.clone(),
+        exit_code: r.exit_code.map(|c| c as i32),
+        failed: r.failed,
+        not_found: r.not_found,
+        spawn_failed: false,
+    }
+}
+
+impl PrivilegedRunner for TapedRunner {
+    fn run<'a>(&'a self, call: &'a PrivilegedArgv) -> RunFut<'a> {
+        Box::pin(async move {
+            let r = self.inner.run(call).await;
+            self.tape.sudo(call.argv(), &tape_result(&r));
+            r
+        })
+    }
+
+    fn run_helper<'a>(&'a self, call: &'a HelperArgv) -> RunFut<'a> {
+        Box::pin(async move {
+            let r = self.inner.run_helper(call).await;
+            let argv: Vec<&str> = call.argv().iter().map(String::as_str).collect();
+            self.tape.sudo(&argv, &tape_result(&r));
+            r
+        })
+    }
+}
+
 /// Test runner: records every argv and answers from a script (default: ok).
 /// Helper runs ([`PrivilegedRunner::run_helper`]) are recorded separately
 /// ([`RecordingRunner::helper_calls`]) and answer from the SAME FIFO queue.
@@ -421,6 +467,59 @@ mod tests {
         assert!(!r.run_helper(&b).await.failed); // queue empty → ok
         assert_eq!(r.helper_calls(), [a.argv().to_vec(), b.argv().to_vec()]);
         assert!(r.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn taped_runner_records_every_settled_run() {
+        type SudoRec = (Vec<String>, Option<i32>, String);
+        #[derive(Default)]
+        struct Rec(Mutex<Vec<SudoRec>>);
+        impl crate::io::TapeSink for Rec {
+            fn sudo(&self, argv: &[&str], res: &crate::exec::RunResult) {
+                self.0.lock().unwrap().push((
+                    argv.iter().map(|a| a.to_string()).collect(),
+                    res.exit_code,
+                    res.stderr.clone(),
+                ));
+            }
+        }
+        let inner = Arc::new(RecordingRunner::new());
+        inner.answer(RunResult {
+            failed: true,
+            not_found: false,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: "sudo: a password is required\n".into(),
+        });
+        let tape = Arc::new(Rec::default());
+        let r = TapedRunner::new(inner.clone(), tape.clone());
+        let clock = xorgate_core::clock_step::setclock_call(1_785_326_700_000.0).unwrap();
+        assert!(r.run_helper(&HelperArgv::from(&clock)).await.failed);
+        assert!(
+            !r.run(&PrivilegedArgv::for_rust_agent(&call(
+                DeviceCommandName::Update
+            )))
+            .await
+            .failed
+        );
+        let got = tape.0.lock().unwrap().clone();
+        assert_eq!(got.len(), 2);
+        assert_eq!(
+            got[0],
+            (
+                vec![
+                    "sudo".to_string(),
+                    "-n".into(),
+                    "/usr/local/bin/xorgate-setclock".into(),
+                    "1785326700".into()
+                ],
+                Some(1),
+                "sudo: a password is required\n".to_string()
+            )
+        );
+        assert_eq!(got[1].0.last().unwrap(), "xorgate-updater-rs.service");
+        assert_eq!(inner.helper_calls().len(), 1);
+        assert_eq!(inner.calls().len(), 1);
     }
 
     #[tokio::test]
