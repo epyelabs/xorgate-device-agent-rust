@@ -610,6 +610,14 @@ kind = "media"
 streams = ["rec-telemetry"]
 
 [[rule]]
+id = "T13/system-presence"
+title = "telemetry segments: per segment, the number of samples WITHOUT the agent-sampled `system` group may differ by perSegment"
+basis = "WP6 2026-10-19 (the per-segment group union hid a recorder that drops `system` on ~8 % of ticks). TS: system.ts:104-113 recomputes the recorder-side cache at most once per 1000 ms (Date.now gate) and telemetry-recorder.ts:102 skips a group whose updatedMono did not advance, so a tick landing just under 1000 ms after the last recompute writes no `system` — rare under Node setInterval, which re-arms from each fire. JS-vs-JS calibrations 2026-10-17 (replay-20261017T221027Z … T224409Z, 9 runs, every segment): max |Δ| = 1"
+kind = "media"
+streams = ["rec-telemetry"]
+tolerance = { "perSegment" = 1.0 }
+
+[[rule]]
 id = "T14"
 title = "S3 PUT timing / failed-attempt counts, and a session's LAST fragment present on one side only; telemetry bodies compared decompressed (rec-telemetry), mp4 body hash not compared"
 basis = "phase file T14"

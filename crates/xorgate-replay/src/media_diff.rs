@@ -1212,6 +1212,41 @@ pub fn diff_media(
                     ));
                 }
             }
+            // Per-SAMPLE `system` presence (rig fix 2026-10-19). The groups
+            // above are a per-segment union, so a recorder that drops the
+            // group on some ticks passed unseen. `system` is sampled by the
+            // agent itself (system.ts:104-113, a 1 s recompute gate shared
+            // by the recorder and the shed tick; telemetry-recorder.ts:102
+            // skips a group not refreshed since its last written sample),
+            // so a missing `system` is the agent's timer behaviour, not a
+            // tape input. JS-vs-JS (9 calibrations 2026-10-17): ≤ 1 per
+            // segment apart → `T13/system-presence` (`perSegment`).
+            let lacking = |v: &[Value]| {
+                v.iter()
+                    .filter(|x| x["metrics"].is_object() && x["metrics"].get("system").is_none())
+                    .count()
+            };
+            let carries = |v: &[Value]| v.iter().any(|x| x["metrics"].get("system").is_some());
+            if carries(&pa) || carries(&pb) {
+                let (na, nb) = (lacking(&pa), lacking(&pb));
+                if na != nb {
+                    let id = "T13/system-presence";
+                    let max = row_tol(table, id, "perSegment", 0.0) as usize;
+                    let tol = if has_row(table, id) && na.abs_diff(nb) <= max {
+                        id
+                    } else {
+                        UNTOLERATED
+                    };
+                    rep.push(mm(
+                        "rec-telemetry",
+                        &at,
+                        "(samples without system)",
+                        na.to_string(),
+                        nb.to_string(),
+                        tol,
+                    ));
+                }
+            }
             rep.inputs
                 .entry(format!("rec-telemetry samples {sid}"))
                 .or_default()
@@ -1462,6 +1497,54 @@ mod tests {
         assert!(run(kvs(100_900, 2_000, "int"))
             .iter()
             .any(|(p, t)| p == "(spawn count)" && t == UNTOLERATED));
+    }
+
+    #[test]
+    fn rec_telemetry_system_presence_per_sample() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let seg = |missing: usize| {
+            let mut t = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for i in 0..10 {
+                let sys = if i < missing {
+                    String::new()
+                } else {
+                    ",\"system\":{\"throttled\":{\"value\":0}}".to_string()
+                };
+                t.push_str(&format!(
+                    "{{\"ts\":{i},\"mono\":{i},\"seq\":{i},\"metrics\":{{\"gps\":{{\"hdop\":{{\"value\":1.3}}}}{sys}}}}}\n"
+                ));
+            }
+            t
+        };
+        let cap = |missing: usize| {
+            let mut finals = BTreeMap::new();
+            finals.insert(
+                "recordings/telemetry/sid-1/seg-1-00000.jsonl.gz".to_string(),
+                seg(missing).into_bytes(),
+            );
+            MediaCapture {
+                kind: "js".into(),
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        let run = |ma: usize, mb: usize| {
+            let mut rep = Report::default();
+            diff_media(&cap(ma), &cap(mb), &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "rec-telemetry" && m.path == "(samples without system)")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        assert!(run(2, 2).is_empty());
+        assert_eq!(run(0, 1), vec!["T13/system-presence".to_string()]);
+        assert_eq!(run(0, 3), vec![UNTOLERATED.to_string()]);
     }
 
     #[test]
