@@ -467,7 +467,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "d30-js-late-shed"
-  what = "D30 (accepted-divergences.md) as seen JS-vs-Rust, orchestrator option (b) 2026-10-19: at a power crossing the JS shed tick may REUSE its recorder's ≤ 1 s old reading (TS system.ts:104-113, Node setInterval re-arm), so ONE shed/restore transition lands one shed period LATER on the JS side; Rust never reuses (collectors/system.rs:61-79). Matcher `d30_js_late_shed` (media_diff.rs; HARD GUARD in code: JS-vs-Rust with the JS side later, or JS-vs-JS with either side later — the later side must be JS and carry the evidence itself; review-wp6 re-check extension 2026-10-19): per transition Δ = JS − Rust ∈ [850, 1150] ms AND evidence of stale reuse from the tape's released vcgencmd values + the JS recorder's own samples (a release before the decisive tick that its previous sample lacked and its next carried), or the next transition of the same chain shifted by the same Δ ±150; then ONLY that transition's downstream rows — kvs/capture spawn instants within 6 s after it, sidecar durationMs of the session it started (JS shorter by Δ) or of a fragment ending at it (JS longer by Δ) — by the same Δ ±150; one shift per transition. Rust-later, |Δ| outside the band, missing evidence on the later side, and rust/rust: UNTOLERATED. (powerShed string instants are T4 transition, liveBlock.since T1)"
+  what = "D30 (accepted-divergences.md) as seen JS-vs-Rust, orchestrator option (b) 2026-10-19: at a power crossing the JS shed tick may REUSE its recorder's ≤ 1 s old reading (TS system.ts:104-113, Node setInterval re-arm), so ONE shed/restore transition lands one shed period LATER on the JS side; Rust never reuses (collectors/system.rs:61-79). Matcher `d30_js_late_shed` (media_diff.rs; HARD GUARD in code: JS-vs-Rust with the JS side later, or JS-vs-JS with either side later — the later side must be JS and carry the evidence itself; review-wp6 re-check extension 2026-10-19): per transition Δ = JS − Rust ∈ [850, 1150] ms AND evidence of stale reuse from the tape's released vcgencmd values + the JS recorder's own samples (a release before the decisive tick that its previous sample lacked and its next carried), or the next transition of the same chain shifted by the same Δ ±150; then ONLY that transition's downstream rows — kvs/capture spawn instants within 6 s after it, sidecar durationMs of the session it started (JS shorter by Δ) or of a fragment ending at it (JS longer by Δ), and the startTs/startMono of the fragment that STARTS at it (orchestrator 2026-10-19) — by the same Δ ±150; one shift per transition. Rust-later, |Δ| outside the band, missing evidence on the later side, and rust/rust: UNTOLERATED. (powerShed string instants are T4 transition, liveBlock.since T1)"
   streams = ["children", "sidecar"]
   matcher = "d30_js_late_shed"
   pinned_by = "D30 (accepted-divergences.md); media_diff::tests::d30_js_late_shed_only_js_later_with_evidence"
@@ -645,11 +645,14 @@ streams = ["rec-telemetry"]
 
 [[rule]]
 id = "T13/system-presence"
-title = "telemetry segments, JS-vs-JS pairs ONLY (calibration): per telemetry session, the number of samples WITHOUT the agent-sampled `system` group may differ by perSession. JS-vs-Rust → T7/D30 (d30_system_presence); Rust-vs-Rust exact"
+title = "telemetry segments, JS-vs-JS pairs ONLY (calibration): per telemetry session, the number of samples WITHOUT the agent-sampled `system` group may differ by perSession (5, the review limit; observed JS-vs-JS per-instance spread 0–4, the TS D30 drops). JS-vs-Rust → T7/D30 (d30_system_presence, Rust must be 0); Rust-vs-Rust exact"
 basis = "WP6 2026-10-19 (the per-segment group union hid a recorder that drops `system` on 6-8 % of ticks). TS: system.ts:104-113 recomputes the recorder-side cache at most once per 1000 ms (Date.now gate) and telemetry-recorder.ts:102 skips a group whose updatedMono did not advance, so a tick landing under 1000 ms after the last recompute writes no `system` — 0-5 per run under Node setInterval. JS-vs-JS calibrations (replay-20261017T221027Z … T224409Z + replay-20261019T140703Z, 10 runs): max |Δ| per session = 2 (JS-vs-Rust 2026-10-19: 5-16)"
 kind = "media"
 streams = ["rec-telemetry"]
-tolerance = { "perSession" = 2.0 }
+# Raised 2 → 5 (orchestrator 2026-10-19, the review's limit): JS-vs-JS
+# per-instance spread observed 0–4 (replay-20261019T201533Z: A 4 / B 0, the
+# D30 drops of one JS instance). JS-vs-Rust is d30_system_presence (Rust 0).
+tolerance = { "perSession" = 5.0 }
 
 [[rule]]
 id = "T4/rec-sample"

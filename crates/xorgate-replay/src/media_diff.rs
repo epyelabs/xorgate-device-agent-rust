@@ -2343,6 +2343,26 @@ fn d30_js_late_shed(
             let (vl, ve) = if side == 0 { (x, y) } else { (y, x) };
             let hit = if m.stream == "children" && m.path == "(spawn ms after start)" {
                 owner(side, start_wall + vl).is_some_and(|(_, _, d)| (vl - ve - d).abs() <= SAME)
+            } else if m.stream == "sidecar" && (m.path == "startTs" || m.path == "startMono") {
+                // The fragment that STARTS at the tolerated transition (the
+                // one after the fragment it cut): its start shifts by Δ.
+                let Some((sid, seq)) = m.at.rsplit_once('/') else {
+                    continue;
+                };
+                let Ok(seq) = seq.parse::<u64>() else {
+                    continue;
+                };
+                let st = sidecars(sides[side])
+                    .get(&(sid.to_string(), seq))
+                    .and_then(|v| v["startTs"].as_f64())
+                    .map(|v| v as i64);
+                st.and_then(|st| {
+                    shifted
+                        .iter()
+                        .find(|(s, t, _)| *s == side && (st - t).abs() <= 1_500)
+                        .copied()
+                })
+                .is_some_and(|(_, _, d)| (vl - ve - d).abs() <= SAME)
             } else if m.stream == "sidecar" && m.path == "durationMs" {
                 let Some((sid, seq)) = m.at.rsplit_once('/') else {
                     continue;
@@ -2751,7 +2771,8 @@ mod tests {
         // JS-vs-JS: the calibrated spread.
         assert!(run(2, 2).is_empty());
         assert_eq!(run(0, 2), vec!["T13/system-presence".to_string()]);
-        assert_eq!(run(0, 3), unt);
+        assert_eq!(run(0, 5), vec!["T13/system-presence".to_string()]);
+        assert_eq!(run(0, 6), unt);
         // JS-vs-Rust: D30 only — Rust 0 and JS ≥ 1, either column order, no
         // JS cap; T13/system-presence never applies.
         assert_eq!(run_k("js", 5, "rust", 0), d30);
@@ -3174,10 +3195,17 @@ mod tests {
                     end_w: None,
                     sid: Some(sid.into()),
                 }],
-                finals: BTreeMap::from([(
-                    "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
-                    seg.into_bytes(),
-                )]),
+                finals: BTreeMap::from([
+                    (
+                        "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
+                        seg.into_bytes(),
+                    ),
+                    (
+                        // The fragment that STARTS at the restore.
+                        format!("recordings/video/cam0/{sid}/00000.json"),
+                        format!("{{\"startTs\":{}}}", 130_700 - shift).into_bytes(),
+                    ),
+                ]),
                 present: true,
                 ..Default::default()
             }
@@ -3213,8 +3241,9 @@ mod tests {
                     150_695 - d,
                 ),
                 (&format!("{sid}/00006")[..], "durationMs", 7_423, 7_423 + d),
+                (&format!("{sid}/00000")[..], "startTs", 130_700, 130_700 - d),
             ] {
-                let st = if path == "durationMs" {
+                let st = if path == "durationMs" || path == "startTs" {
                     "sidecar"
                 } else {
                     "children"
@@ -3227,8 +3256,8 @@ mod tests {
                 .map(|m| m.tol)
                 .collect::<Vec<_>>()
         };
-        let ok = vec!["T8/d30-js-late-shed".to_string(); 3];
-        let unt = vec![UNTOLERATED.to_string(); 3];
+        let ok = vec!["T8/d30-js-late-shed".to_string(); 4];
+        let unt = vec![UNTOLERATED.to_string(); 4];
         // JS (later by 1013) vs Rust: tolerated, in either column order.
         assert_eq!(
             run(side("js", 0, &stale), side("rust", 1_013, &fresh), 1_013),
