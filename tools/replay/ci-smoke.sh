@@ -78,7 +78,20 @@ allow_anonymous true
 EOF
 mosquitto -c "$CONF" > /tmp/replay-ci-mosquitto.log 2>&1 &
 MQ=$!
-trap 'kill $MQ 2>/dev/null || true' EXIT
+# WP6 (the load-only media flake): CI_SMOKE_KEEP=<host dir> keeps the run's
+# diff + small logs on EVERY exit (a `docker run --rm` loses $OUT otherwise):
+# <keep>/<basename $OUT>-<UTC ts>-rc<code>/ (recordings/s3 trees left out).
+keep_run() {
+  local rc=$1 d
+  [ -n "${CI_SMOKE_KEEP:-}" ] && [ -d "$OUT" ] || return 0
+  d="$CI_SMOKE_KEEP/$(basename "$OUT")-$(date -u +%Y%m%dT%H%M%SZ)-rc$rc"
+  mkdir -p "$d"
+  (cd "$OUT" && find . -maxdepth 2 \( -name '*.md' -o -name '*.json' -o -name '*.ndjson' -o -name '*.log' \) \
+     ! -name 'mqtt.ndjson' -print0 | xargs -0 -I{} cp --parents {} "$d/") 2>/dev/null || true
+  [ -f "$OUT/a/mqtt.ndjson" ] && [ "$MODE" = smoke ] && cp --parents "$OUT"/*/mqtt.ndjson "$d/" 2>/dev/null
+  echo "ci-smoke: run kept in $d" >&2
+}
+trap 'rc=$?; kill $MQ 2>/dev/null || true; keep_run $rc' EXIT
 for _ in $(seq 1 50); do
   (exec 3<>/dev/tcp/127.0.0.1/8884) 2>/dev/null && break
   sleep 0.1

@@ -218,6 +218,13 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
             // One camera (half the x264 load: a JS-vs-Rust run on a loaded VM
             // showed Node's 125 ms blink legs landing up to 300 ms late).
             rec["video"]["cameras"] = json!({"cam1": false});
+            // Rung 1 only (live parked, liveBlock "undervoltage" — the LED's
+            // input, CF57); no escalation to the bridge-only rung, so the
+            // capture is never restarted on a shed transition (a session that
+            // starts on each agent's own shed-tick phase ends in a last
+            // fragment cut by the run's stop: a Phase 3 T12 matter, not this
+            // tape's subject — flagged in wp6.md).
+            rec["powerShedding"]["escalateDwellSecs"] = json!(600);
             cfg(b, 400, &json!({"v": 1, "rev": 1, "recording": rec}));
             b.push(
                 40_300,
