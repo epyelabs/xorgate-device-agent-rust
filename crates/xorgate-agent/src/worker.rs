@@ -748,16 +748,31 @@ async fn run(args: &[String]) -> Result<i32> {
     // `requestConfigReport = (origin) => configSync.request(origin);` (`:746`):
     // camera-mount verdict changes request a report from here on.
     ops.set_report_requester(reports.clone());
-    // The command plane executes through the same taped runner (I9 `sudo`
-    // records for reboot / power_off / update). The real-mode `read_sms`
-    // reader (CF48 route) lands with WP2.
-    let commands = command_plane::start_with(
+    // `read_sms` (`worker.ts:917`, CF48 route): real mode → the process's ONE
+    // SmsReader (lock `$XORGATE_HOME/sms-reader.lock`) — `config.mode ===
+    // "real"` only, `--offline` included (the TS does not look at offline);
+    // sim / replay answer from the fixture sweep (core `SmsSource::Fixture`), so
+    // `SMS_READER_UNAVAILABLE` is unreachable from the worker. The command plane executes through the same
+    // taped runner (I9 `sudo` records for reboot / power_off / update).
+    let sms = if cfg.mode == RunMode::Real {
+        command_plane::SmsSource::Real(crate::ops::sms::SmsReader::new(
+            crate::ops::sms::SmsReaderDeps::system(
+                Some(paths.sms_lock.clone()),
+                ctx.clock.clone(),
+                ctx.tape.clone(),
+            ),
+        ))
+    } else {
+        command_plane::SmsSource::Unavailable
+    };
+    let commands = command_plane::start_with_sms(
         &ctx,
         CommandPlaneDeps {
             mqtt: mqtt.clone(),
             reports: reports.clone(),
         },
         runner.clone(),
+        sms,
     );
     let mut plane = MqttPlane::new(
         ctx.clone(),

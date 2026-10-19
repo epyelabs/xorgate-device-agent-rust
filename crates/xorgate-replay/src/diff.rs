@@ -4240,7 +4240,9 @@ mod tests {
         };
         let latch =
             "in force, but the clock stepper stood down for this boot (NTP is synchronized)";
-        assert_eq!(run(Some(latch), None), vec!["T6".to_string()]);
+        // CF54 (Phase 4 WP6): T6 is deleted — the stood-down latch on one
+        // side only now FAILS.
+        assert_eq!(run(Some(latch), None), vec![UNTOLERATED.to_string()]);
         // Any other detail is compared.
         assert_eq!(
             run(
@@ -5624,34 +5626,21 @@ mod tests {
             ];
             c
         };
-        let rs = |dur: Value| {
+        // CF48 (Phase 4): the Rust real-mode reader answers like the TS; the
+        // Phase 2 O4 pair is kept only to prove it now FAILS (`o4_rs`).
+        let rs_with = |dur: Value, status: &str, error: &str| {
             let mut c = cap(
                 "rust",
-                vec![msg(
-                    5_001,
-                    "sms",
-                    sms(
-                        "error",
-                        "sms reader not available in this build",
-                        dur.clone(),
-                        0,
-                    ),
-                )],
+                vec![msg(5_001, "sms", sms(status, error, dur.clone(), 0))],
             );
             c.events = vec![
-                (
-                    5_001,
-                    "warn".into(),
-                    line(
-                        "error",
-                        &dur.to_string(),
-                        "sms reader not available in this build",
-                    ),
-                ),
+                (5_001, "warn".into(), line(status, &dur.to_string(), error)),
                 (0, "info".into(), "connected to broker".into()),
             ];
             c
         };
+        let rs = |dur: Value| rs_with(dur, "no_modem", "no SIMCom interface 05 tty");
+        let o4_rs = |dur: Value| rs_with(dur, "error", "sms reader not available in this build");
         let real = InputFacts {
             mode: Some("real".into()),
             ..Default::default()
@@ -5660,11 +5649,15 @@ mod tests {
             diff_with(a, b, &PlayInfo::default(), f, &[], &t)
         };
         let hits = |rep: &Report, id: &str| rep.mismatches.iter().filter(|m| m.tol == id).count();
-        // Real mode, JS vs Rust, 1 ms vs 0 ms: O4 (2 sms leaves + the event
-        // line) and sms-duration (sms + event line), nothing untolerated.
+        // Real mode, JS vs Rust, 1 ms vs 0 ms: sms-duration (sms + event
+        // line), nothing untolerated.
         let rep = run(&js(1, 0), &rs(0.into()), &real);
         assert_eq!(rep.untolerated(), 0, "{:?}", rep.mismatches);
-        assert_eq!(hits(&rep, "T8/O4"), 3, "{:?}", rep.mismatches);
+        assert_eq!(hits(&rep, "T8/O4"), 0, "{:?}", rep.mismatches);
+        // CF48: the T8/O4 row is DELETED — the Phase 2 placeholder answer FAILS.
+        let old = run(&js(0, 0), &o4_rs(0.into()), &real);
+        assert!(old.untolerated() >= 2, "{:?}", old.mismatches);
+        assert_eq!(hits(&old, "T8/O4"), 0);
         assert_eq!(hits(&rep, "T8/sms-duration"), 2, "{:?}", rep.mismatches);
         assert_eq!(
             rep.stats["sms"].leaves,
@@ -5683,11 +5676,11 @@ mod tests {
             mode: Some("sim".into()),
             ..Default::default()
         };
-        let rep = run(&js(0, 0), &rs(0.into()), &sim);
+        let rep = run(&js(0, 0), &o4_rs(0.into()), &sim);
         assert_eq!(hits(&rep, "T8/O4"), 0);
         assert!(rep.untolerated() >= 3, "{:?}", rep.mismatches);
         // JS vs JS: O4 never applies, even with the Rust words on one side.
-        let mut b = rs(0.into());
+        let mut b = o4_rs(0.into());
         b.meta.kind = "js".into();
         assert_eq!(hits(&run(&js(0, 0), &b, &real), "T8/O4"), 0);
         // Durations > 50 ms apart, negative, or non-integer: UNTOLERATED.
@@ -5889,6 +5882,43 @@ mod tests {
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
 
+    /// CF54 (Phase 4 WP6): with T6 deleted, the Phase 4 report fields are
+    /// compared like any other — `effective.cameraMount` and the
+    /// `clockStepperArmed` hint present on one side only FAIL.
+    #[test]
+    fn cf54_phase4_report_fields_are_compared() {
+        let t = table();
+        let doc = |extra: bool| {
+            let mut d = serde_json::json!({"v":1,"origin":"boot","effective":{"mode":"real"}});
+            if extra {
+                d["effective"]["cameraMount"] = serde_json::json!({"rebootRequired": true});
+                d["hints"] = serde_json::json!({"clockStepperArmed": true});
+            }
+            d
+        };
+        let a = cap("js", vec![msg(10_000, "config/reported", doc(true))]);
+        let mut bare = doc(false);
+        bare["hints"] = serde_json::json!({});
+        let b = cap("rust", vec![msg(10_000, "config/reported", bare)]);
+        let rep = diff(&a, &b, &PlayInfo::default(), &[], &t);
+        let unt: Vec<&str> = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.tol == UNTOLERATED)
+            .map(|m| m.path.as_str())
+            .collect();
+        assert!(
+            unt.iter().any(|p| p.contains("cameraMount")),
+            "{:?}",
+            rep.mismatches
+        );
+        assert!(
+            unt.iter().any(|p| p.contains("clockStepperArmed")),
+            "{:?}",
+            rep.mismatches
+        );
+    }
+
     #[test]
     fn events_multiset_with_t6_prefixes() {
         let t = table();
@@ -5908,8 +5938,9 @@ mod tests {
             .iter()
             .map(|m| (m.path.as_str(), m.tol.as_str()))
             .collect();
+        // CF54: a camera-mount event missing on the Rust side FAILS (T6 deleted).
         assert!(
-            tols.contains(&("info: camera mount: cam0 0°", "T6")),
+            tols.contains(&("info: camera mount: cam0 0°", UNTOLERATED)),
             "{tols:?}"
         );
         assert!(
@@ -5948,9 +5979,10 @@ mod tests {
             ("warn: uploadBucket persist failed: EACCES", UNTOLERATED),
             // Phase 3 (CF45): recording/media/hardware events must match.
             ("info: upload paused (offline)", UNTOLERATED),
+            // CF54: Phase 4 events are compared too (T6 deleted).
             (
                 "info: [clock] NTP synchronized — offline clock stepping stood down for this boot",
-                "T6",
+                UNTOLERATED,
             ),
             ("info: hardware: cam0 ok", UNTOLERATED),
             ("info: hardware block updated: cm5/v4l2", UNTOLERATED),
@@ -5979,8 +6011,8 @@ mod tests {
         // B = js, A = rust: the direction follows the kinds, not the labels.
         let clock =
             "info: [clock] NTP synchronized — offline clock stepping stood down for this boot";
-        assert_eq!(tol_of(&rust, &js, clock).as_deref(), Some("T6"));
-        // JS vs JS: never tolerated by T6.
+        assert_eq!(tol_of(&rust, &js, clock).as_deref(), Some(UNTOLERATED));
+        // JS vs JS: never tolerated either.
         assert_eq!(
             tol_of(&js, &cap("js", vec![]), "info: hardware: cam0 ok").as_deref(),
             Some(UNTOLERATED)

@@ -116,36 +116,13 @@ streams = ["report"]
 max_count_delta = 1
 quiet_ms = 10000
 
-[[rule]]
-id = "T6"
-title = "phase-owned gaps until Phase 4 (LED, camera mount, clock stepper)"
-basis = "phase file T6; scope boundary table; CF30; SHRUNK by Phase 3 (phase-3-recording-media.md §Record/replay, CF45): every recording/media matcher deleted, so a missing recording/media field or event FAILS"
-kind = "phase_owned"
-streams = ["telemetry", "report", "state", "events", "sudo"]
-paths = [
-  "**.clockStepperArmed",
-  "effective.cameraMount", "effective.cameraMount.**",
-]
-# state.json `recentEvents` msg prefixes owned by Phase 4 — EXACT texts of
-# the TS emitters. ONE-DIRECTIONAL: tolerated only when the JS side has the
-# event and the Rust side has none of it.
-#   camera mount: …        worker.ts:181 (boot-config reconciler, cam-sensor-level-rotate)
-#   [clock] …              clock-step.ts:232-307 (offline clock stepper, CF20 → Phase 4)
-# (Phase 3 deleted: `hardware: `, the recording manager / boot policy / video
-# capture / uploader prefixes.)
-event_prefixes = [
-  "camera mount: ",
-  "[clock] ",
-]
-# Report detail produced ONLY by the Phase 4 hint `clockStepperArmed === false`
-# (config-sync.ts:1007-1024). The recording latch parts (boot power staging,
-# GPS/LTE gate, load shedding) are Phase 3 and compared exactly now.
-latch_detail_paths = ["status.*.detail"]
-latch_detail_prefix = "in force, but "
-latch_detail_parts = []
-latch_detail_exact = ["in force, but the clock stepper stood down for this boot (NTP is synchronized)"]
-# sudo argv owned by Phase 4 (camera-mount helper, set-clock helper).
-sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
+# T6 (phase-owned gaps: LED, camera mount, clock stepper) DELETED by Phase 4
+# WP6 (CF54, phase-4-operations.md §8): every Phase 4 field and event is
+# compared — a missing `camera mount: …` / `[clock] …` event, a `clockStepperArmed`
+# hint, `effective.cameraMount`, the stood-down latch detail or a set-clock /
+# camrotate sudo argv on one side only FAILS. Pinned by diff.rs tests
+# `cf54_phase4_report_fields_are_compared`, `latch_detail_only_when_hint_text_is_one_sided`,
+# `events_multiset_with_t6_prefixes`, `t6_events_exact_phase_prefixes_js_only`.
 
 [[rule]]
 id = "T7"
@@ -357,12 +334,6 @@ kind = "decisions"
   what = "`update` sudo argv names xorgate-updater-rs.service"
   streams = ["sudo"]
   normalize = { "xorgate-updater-rs.service" = "xorgate-updater.service" }
-
-  [[rule.row]]
-  id = "O4"
-  what = "real-mode read_sms (tape meta.env.MODE = real, JS vs Rust only): the TS sweep finds no SIMCom interface-05 tty and answers status \"no_modem\", error \"no SIMCom interface 05 tty\" (sms-modem.ts:524); the Rust agent has no SMS reader until Phase 4 and answers status \"error\", error \"sms reader not available in this build\" (command_flow.rs:63, :511-516 — the O4 decision). Matched ONLY when the JS result carries exactly the TS pair and the Rust result exactly the O4 pair, and ONLY the `status` and `error` fields of that result: on `…/sms` those two leaves, and in the `read_sms <id>: status=… error=…` event line that renders the same result (worker.ts:930-937) those two words. Every other field (and the rest of the line) is compared as usual"
-  streams = ["sms", "events"]
-  matcher = "read_sms_unavailable"
 
   [[rule.row]]
   id = "sms-duration"
