@@ -47,7 +47,11 @@ jobs:
   build-test:
     name: fmt + clippy + test + release build (arm64 / bookworm)
     runs-on: ubuntu-24.04-arm
-    container: debian:bookworm
+    container:
+      image: debian:bookworm
+      # Phase 3 media smoke: two Rust agents × two 20 MiB shmsink bridges do
+      # not fit Docker's 64 MiB default /dev/shm (tools/replay/ci-smoke.sh).
+      options: --shm-size=512m
     timeout-minutes: 60
     steps:
       # Keep the apt list in sync with Dockerfile.build and the deploy workflows.
@@ -102,11 +106,25 @@ jobs:
           cargo build -p xorgate-agent -p xorgate-replay
           tools/replay/ci-smoke.sh target/debug/xorgate-rs target/debug/xorgate-replay /tmp/replay-ci-smoke
 
+      # Phase 3 WP6: the 60 s synthetic `media` scenario Rust-vs-Rust (real
+      # gst-launch-1.0 behind the shim with videotestsrc, fake KVS masters,
+      # fake IoT creds + SigV4-checked fake S3 on 127.0.0.1:443 — the job is
+      # root in a throwaway container, so the player's /etc/hosts and CA-store
+      # edits are safe here). JS-vs-Rust media parity stays the Docker rig's job.
+      - name: Replay media tape (Rust-only, tools/replay/ci-smoke.sh media)
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+          tools/replay/ci-smoke.sh target/debug/xorgate-rs target/debug/xorgate-replay /tmp/replay-ci-media media
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: replay-ci-smoke
-          path: /tmp/replay-ci-smoke/diff.md
+          path: |
+            /tmp/replay-ci-smoke/diff.md
+            /tmp/replay-ci-media/diff.md
           if-no-files-found: ignore
           retention-days: 14
 

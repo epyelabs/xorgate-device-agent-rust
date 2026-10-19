@@ -295,7 +295,8 @@ Docker, so it replays `fixtures/replay/smoke.ndjson.gz` Rust-vs-Rust through
 the same OS-boundary knobs with a local TLS mosquitto, diffs under
 `tolerances.toml`, and checks that the telemetry carried gps/imu/lte/system
 and that the agent's own re-recorded tape holds nmea/imu/lte_file/exec/
-i2cdetect. Also:
+i2cdetect. A second step runs `ci-smoke.sh … media` (Phase 3, see
+"Limits (Phase 3)"). Also:
 
 `cargo test -p xorgate-replay` covers the tape round trip, synth determinism,
 the gate state machine, the rewrite rules and the diff/tolerance engine; a
@@ -369,7 +370,7 @@ unrouted PUTs).
 | `rec-boot-defer` | 150 | `bootDefer`/`gpsGate` `always`: video held (LTE `connecting`, no fix), released at 80 s (LTE connected at 70 s + fix) |
 | `rec-shed-uv` | 180 | rail 5.10 V < `railLowVolts` 5.2 → rung 1 (live parked) → rung 2 (bridge-only), restore from 110 s (5.30 V ≥ `railRestoreVolts` 5.25) |
 | `rec-shed-thermal` | 150 | firmware soft-temp bit `0x8` 20→110 s: rung 1 only, recording continues |
-| `rec-disk` | 120 | 600 MiB filler + `maxBytes` 512 MiB, uploads off: oldest-first eviction, counters |
+| `rec-disk` | 120 | 600 MiB filler + `maxBytes` 512 MiB, uploads off: oldest-first eviction, counters. `meta.home` seeds `settings.json` with the scenario's recording namespace, so both agents BOOT with uploads off (without it the boot defaults upload the filler until the rev-1 config lands at 400 ms, and how much depends on each agent's boot speed) |
 | `rec-upload-outage` | 180 | MQTT cut 50→90 s (uploader pause), S3 503 window 100→130 s (backoff), resume |
 | `rec-cameras` | 150 | `cameras.cam1:false` at 50 s (capture + master parked), `true` at 100 s |
 | `rec-preset` | 150 | cam0 capture SIGKILL (external) at 35 s, cam1 master exit 1 at 45 s, preset → `1080p15-2mbps` at 70 s (`stopAndWait`) |
@@ -393,7 +394,7 @@ appearance), telemetry file-name ms stamps → `<ms>`.
 | `session` | `session.json` | `sessionId`, `bootId`, `anchorTs`, `anchorMono` (T11) |
 | `sidecar` | key order + every field | `startTs` ±300 ms vs the agent's OWN capture PLAYING (`New clock:`) time, `startMono` deltas ±300 ms, `durationMs` ±150 ms, `sizeBytes` (T12); diff.md prints the D8 rig figure (fragment-0 `startTs` − PLAYING, median per side) |
 | `mp4` | per side: seq contiguity, no 0-byte closed fragment | fragment count per session ±1 (T12) |
-| `rec-telemetry` | decompressed header lines (minus T1/T11), sample key order, per segment each group's leaf paths + number shapes | segment count ±1, file-name stamps (T13); gz bytes never compared (D24) |
+| `rec-telemetry` | decompressed header lines (minus T1/T11), sample key order, per segment each group's leaf paths + number shapes; per telemetry session the number of samples WITHOUT the agent-sampled `system` group | segment count ±1, file-name stamps (T13); `system`-less samples ±2 per session (`T13/system-presence`, calibrated on 10 JS-vs-JS runs); gz bytes never compared (D24) |
 | `s3` | per side: every signature valid, sidecar before its mp4; A vs B: key multiset + content types of the successful PUTs | the last fragment of a session on one side only, failed-attempt counts (T14) |
 | `file:counters.json` | as JSON | — |
 | `evictions` | the ordered list of fragments deleted without a successful PUT | — |
@@ -455,8 +456,18 @@ on stderr.
   compares the same collector values under the hold gate.
 - A capture child that exited with a CODE on the device is re-enacted as a
   signal kill (gst cannot be told to exit with a code); both agents get the same.
-- CI: the Phase 2 smoke tape stays the CI replay (Rust-vs-Rust, no Docker in
-  the CI container). A Rust-only media smoke is deferred to WP6's close-out:
-  until WP1 merges the Rust agent records nothing, so it would prove only that
-  both sides are empty.
+- CI: besides the Phase 2 smoke, `ci-smoke.sh … media` replays the 60 s
+  synthetic `media` scenario Rust-vs-Rust in the CI container (no Docker:
+  real gst-launch-1.0 behind the shim from the apt `gstreamer1.0-*` packages,
+  the fake masters, the fake IoT creds + SigV4-checked fake S3 on
+  127.0.0.1:443). The job is root in a throwaway `debian:bookworm` container,
+  so the player's `update-ca-certificates` + `/etc/hosts` edits are safe there
+  (never run it as root on a workstation); the container gets
+  `--shm-size=512m` (2 agents × 2 shmsink bridges). Besides the diff it
+  checks both sides PUT mp4 + telemetry objects with valid signatures, spawned
+  gst pipelines, and that the Rust agent's tape holds the Phase 3 kinds. It is
+  a plumbing check, not parity: JS-vs-Rust stays the Docker rig's job. Like
+  the tick-drift period, the smoke lifts `T13/system-presence` (two Rust
+  agents both drop `system` on 6–8 % of samples until P-WP6-1 is fixed); the
+  rig keeps ±2.
 
