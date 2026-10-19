@@ -513,7 +513,7 @@ async fn run(args: &[String]) -> Result<i32> {
     // Phase 4 (WP6): `OpsHooks` composes the Phase 3 hooks with the LED,
     // clock-stepper and camera-mount call sites (`worker.ts:150-199, 427-432,
     // 536-651, 713-726, 866-889, 1296-1302`).
-    let ops = Arc::new(OpsHooks::new(hooks.clone(), None));
+    let ops = Arc::new(OpsHooks::new(hooks.clone()));
     ctx.hooks = ops.clone();
 
     // `source` (`worker.ts:270-326`): real collectors, or the empty sim source (O7).

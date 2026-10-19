@@ -73,26 +73,33 @@ pub struct OpsHooks {
     led_starting: Arc<AtomicBool>,
     /// `clockStepper` (`:536`): bound in real mode only (else `null`).
     stepper: OnceLock<Arc<dyn StepperControl>>,
-    /// The reconciler; `None` off real mode (`reconcileCameraMountNow`'s
-    /// `if (config.mode !== "real") return;`, `:170`).
-    camera: Option<Arc<dyn CameraMountControl>>,
+    /// The reconciler; unbound off real mode (`reconcileCameraMountNow`'s
+    /// `if (config.mode !== "real") return;`, `:170`). Bound before the boot
+    /// pass; its change callback is [`OpsHooks::camera_mount_on_change`].
+    camera: OnceLock<Arc<dyn CameraMountControl>>,
     /// `requestConfigReport` (`:168`): `null` until the report plane exists
     /// (`:746`) — a change seen before that (the boot pass) requests nothing.
     reports: Arc<OnceLock<ReportRequester>>,
 }
 
 impl OpsHooks {
-    /// The hooks exist before the LED / stepper (bound later) and before the
-    /// report plane; `camera` is built by the worker in real mode only.
-    pub fn new(rec: Arc<RecordingHooks>, camera: Option<Arc<dyn CameraMountControl>>) -> Self {
+    /// The hooks exist before the camera reconciler, the LED and the
+    /// stepper (each bound later, at its TS position) and before the report
+    /// plane.
+    pub fn new(rec: Arc<RecordingHooks>) -> Self {
         Self {
             rec,
             led: OnceLock::new(),
             led_starting: Arc::new(AtomicBool::new(true)),
             stepper: OnceLock::new(),
-            camera,
+            camera: OnceLock::new(),
             reports: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// The camera-mount reconciler (real mode only), before the boot pass.
+    pub fn bind_camera(&self, camera: Arc<dyn CameraMountControl>) {
+        let _ = self.camera.set(camera);
     }
 
     /// The composed Phase 3 hooks (`recording` and its LED status cache).
@@ -181,7 +188,7 @@ impl PhaseHooks for OpsHooks {
     /// `void reconcileCameraMountNow()` (`:648-651` poll, `:889` config):
     /// fire-and-forget; a no-op off real mode.
     fn reconcile_camera_mount(&self) {
-        if let Some(cam) = self.camera.clone() {
+        if let Some(cam) = self.camera.get().cloned() {
             tokio::spawn(async move { cam.now().await });
         }
     }
@@ -189,7 +196,7 @@ impl PhaseHooks for OpsHooks {
     /// `await reconcileCameraMountNow()` (`:432`).
     fn reconcile_camera_mount_boot(&self) -> BoxFut<'_, ()> {
         Box::pin(async move {
-            if let Some(cam) = &self.camera {
+            if let Some(cam) = self.camera.get() {
                 cam.now().await;
             }
         })
@@ -197,7 +204,7 @@ impl PhaseHooks for OpsHooks {
 
     /// `cameraMount: () => cameraMountState` (`:713`).
     fn camera_mount_state(&self) -> Option<CameraMountState> {
-        self.camera.as_ref().and_then(|c| c.state())
+        self.camera.get().and_then(|c| c.state())
     }
 
     /// `hints()` (`:719-726`): Phase 3's bootDefer/powerShed halves unchanged,
@@ -311,7 +318,7 @@ mod tests {
     /// Unbound LED (not built yet) = inert, the flag still drops.
     #[test]
     fn led_tick_then_starting_false() {
-        let h = OpsHooks::new(rec(), None);
+        let h = OpsHooks::new(rec());
         let flag = h.led_starting_flag();
         assert!(flag.load(Ordering::SeqCst));
         let led = Arc::new(FakeLed::default());
@@ -327,7 +334,7 @@ mod tests {
         h.bind_led(Arc::new(FakeLed::default()), |_| spawned += 1);
         assert_eq!(spawned, 1);
 
-        let h2 = OpsHooks::new(rec(), None);
+        let h2 = OpsHooks::new(rec());
         h2.led_tick();
         h2.led_config_applied();
         h2.led_stop();
@@ -339,7 +346,7 @@ mod tests {
     /// halves stay as RecordingHooks reports them (no manager → defaults).
     #[test]
     fn report_hints_add_clock_stepper_armed() {
-        let h = OpsHooks::new(rec(), None);
+        let h = OpsHooks::new(rec());
         assert_eq!(h.report_hints(), ReportHints::default());
         let s = Arc::new(FakeStepper(AtomicBool::new(true)));
         h.bind_stepper(s.clone());
@@ -355,7 +362,7 @@ mod tests {
     /// (`if (config.mode !== "real") return;`) and the state stays `null`.
     #[tokio::test]
     async fn camera_mount_inert_without_reconciler() {
-        let h = OpsHooks::new(rec(), None);
+        let h = OpsHooks::new(rec());
         h.reconcile_camera_mount_boot().await;
         h.reconcile_camera_mount();
         assert!(h.camera_mount_state().is_none());
@@ -366,7 +373,8 @@ mod tests {
     #[tokio::test]
     async fn camera_mount_boot_awaited_and_kick_spawned() {
         let cam = Arc::new(FakeCam::default());
-        let h = OpsHooks::new(rec(), Some(cam.clone()));
+        let h = OpsHooks::new(rec());
+        h.bind_camera(cam.clone());
         assert!(h.camera_mount_state().is_none());
         h.reconcile_camera_mount_boot().await;
         assert_eq!(*cam.passes.lock().unwrap(), 1);
@@ -385,7 +393,7 @@ mod tests {
     /// seen by the boot pass requests nothing; after binding, `boot`.
     #[tokio::test]
     async fn camera_mount_change_requests_boot_report_once_plane_is_up() {
-        let h = OpsHooks::new(rec(), None);
+        let h = OpsHooks::new(rec());
         let on_change = h.camera_mount_on_change();
         on_change(); // before the plane: dropped (TS: requestConfigReport === null)
         let (req, mut rx) = ReportRequester::channel();
