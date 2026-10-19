@@ -34,7 +34,7 @@ use xorgate_core::config_report::{
     modem_bias_from_telemetry, parse_config_sync_state, ReportOrigin, SyncPatch,
 };
 use xorgate_core::hardware_block::parse_hardware_block;
-use xorgate_core::telemetry::ConnectionState;
+use xorgate_core::telemetry::{ActivityLevel, ConnectionState};
 use xorgate_hal::config_sync_file::{ensure_config_sync_baseline, save_config_sync_state};
 use xorgate_hal::hardware_file::{read_hardware_file, save_hardware_block, HardwareFile};
 use xorgate_hal::io::NullTape;
@@ -263,10 +263,18 @@ async fn read_modem_bias_over_the_tolerance_fixture() {
 
 // --- handleConfigMessage ORDER ----------------------------------------------------
 
-struct RecHooks(Timeline);
+/// `Some(msg)` = the next `reapply_recording` fails with `msg` (a throwing
+/// telemetry finalize, review-wp1 M1).
+type ReapplyErr = Arc<Mutex<Option<String>>>;
+
+struct RecHooks(Timeline, ReapplyErr);
 impl PhaseHooks for RecHooks {
-    fn reapply_recording(&self) {
+    fn reapply_recording(&self) -> Result<(), String> {
         push(&self.0, "hooks.reapply_recording");
+        match self.1.lock().unwrap().take() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
     fn rearm_upload(&self) {
         push(&self.0, "hooks.rearm_upload");
@@ -289,12 +297,17 @@ struct Rig {
     sync: ConfigSync,
     handler: MessageHandler,
     sent: Arc<Mutex<Vec<Value>>>,
+    reapply_err: ReapplyErr,
     _reports: tokio::sync::mpsc::UnboundedReceiver<ReportOrigin>,
 }
 
 fn rig(tag: &str) -> Rig {
     let timeline: Timeline = Arc::new(Mutex::new(vec![]));
-    let (ctx, home) = ctx_in(tag, Arc::new(RecHooks(timeline.clone())));
+    let reapply_err: ReapplyErr = Arc::new(Mutex::new(None));
+    let (ctx, home) = ctx_in(
+        tag,
+        Arc::new(RecHooks(timeline.clone(), reapply_err.clone())),
+    );
     let (requester, reports) = ReportRequester::channel();
     let scope = ScopeHandle::new(
         "dev-wp3",
@@ -336,6 +349,7 @@ fn rig(tag: &str) -> Rig {
         sync,
         handler,
         sent,
+        reapply_err,
         _reports: reports,
     }
 }
@@ -466,6 +480,42 @@ async fn handle_config_message_order() {
     r.sync.stop();
     let _ = std::fs::remove_dir_all(&r.home);
     assert_eq!(r.sent.lock().unwrap().len(), 4);
+}
+
+/// review-wp1 M1, config-message call site: `recording.reapply()` throws inside
+/// the try of `worker.ts:864-893` (a failed telemetry finalize). The catch logs
+/// `[agent] cloud config apply failed <msg>` and records the warn event
+/// `cloud config apply failed: <msg>`. `reconcileCameraMountNow` is skipped.
+/// The rev still advances (the apply ran before the throw), and the cloud
+/// still hears.
+#[tokio::test(start_paused = true)]
+async fn a_throwing_recording_reapply_lands_in_cloud_config_apply_failed() {
+    let r = rig("wp1-m1-config");
+    let ctx = &r.ctx;
+    std::fs::write(&ctx.paths.settings, r#"{"mode":"real"}"#).unwrap();
+    *r.reapply_err.lock().unwrap() = Some("ENOSPC: no space left on device, write".into());
+    r.handler.handle(br#"{"v":1,"rev":21,"gnssAntBias":true}"#);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        r.take(),
+        vec![
+            "hooks.led_config_applied",
+            "hooks.reapply_recording",
+            "report cloud rev=21"
+        ],
+        "the camera-mount reconcile is skipped"
+    );
+    let events = state_events(ctx);
+    assert_eq!(
+        events.last().unwrap(),
+        "cloud config apply failed: ENOSPC: no space left on device, write"
+    );
+    let snap = ctx.state.snapshot();
+    let last = snap.recent_events.last().unwrap();
+    assert_eq!(last.level, ActivityLevel::Warn);
+    assert_eq!(r.sync.last_applied_rev(), 21);
+    r.sync.stop();
+    let _ = std::fs::remove_dir_all(&r.home);
 }
 
 /// Offline (`--offline`): `uploadBucket` is never persisted (`worker.ts:796`).

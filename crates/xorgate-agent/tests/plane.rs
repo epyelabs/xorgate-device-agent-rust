@@ -20,10 +20,12 @@ use std::time::Duration;
 
 use common::*;
 use serde::Deserialize;
-use xorgate_agent::ctx::{AgentCtx, NoopHooks, ReportRequester, TelemetrySource};
+use xorgate_agent::ctx::{AgentCtx, NoopHooks, PhaseHooks, ReportRequester, TelemetrySource};
 use xorgate_agent::mqtt_plane::{AckOutcome, MqttHandle, MqttPlane, PublishTick};
 use xorgate_agent::scope::ScopeHandle;
-use xorgate_agent::shutdown::{on_mqtt_loop_ended, Shutdown, LOOP_ENDED};
+use xorgate_agent::shutdown::{
+    on_mqtt_loop_ended, on_recording_fatal, Shutdown, LOOP_ENDED, RECORDING_FATAL,
+};
 use xorgate_cloud::mqtt::{ConnectionState as LinkState, Message, MqttEvent, QoS};
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::telemetry_scope::TenantScope;
@@ -42,15 +44,14 @@ struct Rig {
 }
 
 fn rig(tag: &str, device: &str) -> Rig {
+    rig_with(tag, device, |t| Arc::new(FakeHooks(t)))
+}
+
+fn rig_with(tag: &str, device: &str, hooks: impl FnOnce(Timeline) -> Arc<dyn PhaseHooks>) -> Rig {
     let timeline: Timeline = Arc::new(Mutex::new(vec![]));
     let home = scratch(tag);
     let tape = Arc::new(FakeTape::default());
-    let ctx = test_ctx(
-        &home,
-        device,
-        Arc::new(FakeHooks(timeline.clone())),
-        tape.clone(),
-    );
+    let ctx = test_ctx(&home, device, hooks(timeline.clone()), tape.clone());
     let link = FakeLink::new(timeline.clone());
     let mqtt = MqttHandle::new(link.clone());
     let (requester, reports) = ReportRequester::channel();
@@ -84,6 +85,26 @@ fn rig(tag: &str, device: &str) -> Rig {
         timeline,
         reports,
         tape,
+    }
+}
+
+/// [`FakeHooks`] whose `recording_stop` fails like a throwing telemetry
+/// finalize (D29: the TS `recording.stop()` throws at `worker.ts:1306`).
+struct FailingStopHooks(Timeline);
+impl PhaseHooks for FailingStopHooks {
+    fn notify_connectivity(&self, online: bool) {
+        push(&self.0, format!("hooks.notify_connectivity {online}"));
+    }
+    fn led_stop(&self) {
+        push(&self.0, "hooks.led_stop");
+    }
+    fn recording_stop(&self) -> Result<(), String> {
+        push(&self.0, "hooks.recording_stop");
+        Err("ENOSPC: no space left on device, write".into())
+    }
+    fn final_recording_status(&self) -> Option<xorgate_core::telemetry::RecordingStatus> {
+        push(&self.0, "hooks.final_recording_status");
+        None
     }
 }
 
@@ -311,13 +332,17 @@ async fn shutdown_order() {
         source: source.as_ref(),
         link_closes: true,
     }
-    .run("SIGTERM", 0, |budget| async move {
-        assert_eq!(budget, Duration::from_millis(2000));
-        push(&t2, format!("end (pidfile present: {})", pid.exists()));
+    .run_with("SIGTERM", 0, |how| async move {
+        push(
+            &t2,
+            format!("end {how:?} (pidfile present: {})", pid.exists()),
+        );
         true
     })
     .await;
     assert_eq!(code, 0);
+    // Graceful (review-wp1 X1): `online:false`, then the DISCONNECT end
+    // (`MqttShutdown::shutdown`, which makes the broker discard the will).
     assert_eq!(
         r.take_timeline(),
         [
@@ -327,7 +352,7 @@ async fn shutdown_order() {
             "hooks.final_recording_status",
             "source.stop",
             "publish status online:false",
-            "end (pidfile present: false)",
+            "end Graceful(2s) (pidfile present: false)",
             "hooks.notify_connectivity false",
         ]
     );
@@ -385,6 +410,140 @@ async fn loop_task_end_runs_the_shutdown_path_with_exit_1() {
         "shutting down (mqtt event loop ended)"
     );
     assert!(r.ctx.shutting_down());
+}
+
+/// review-wp1 M1, 5 s poll path: the recording manager's fatal channel
+/// carries a failed telemetry finalize. The TS crashes there (an uncaught
+/// exception, exit 1). The worker logs `[agent] fatal: <msg>` and runs the
+/// shutdown's local teardown with exit 1 so systemd restarts it and the boot
+/// orphan finalize completes the segment. Like the TS crash (review-wp1 X1)
+/// it sends NO `online:false` and ends the client with `Abort` (no
+/// DISCONNECT), so the broker fires the Last-Will. The local `close` still
+/// runs.
+#[tokio::test(start_paused = true)]
+async fn recording_fatal_runs_the_normal_shutdown_with_exit_1() {
+    let mut r = rig("rec-fatal", "dev-f");
+    std::fs::write(&r.ctx.paths.pid, "{}").unwrap();
+    r.connect();
+    r.take_timeline();
+    let t2 = r.timeline.clone();
+    let ctx = r.ctx.clone();
+    let source: Arc<dyn TelemetrySource> = r.source.clone();
+    let code = on_recording_fatal("ENOSPC: no space left on device, write");
+    assert_eq!(code, 1);
+    let code = Shutdown {
+        ctx: &ctx,
+        mqtt: &r.mqtt,
+        plane: &mut r.plane,
+        config: r.config.as_ref(),
+        source: source.as_ref(),
+        link_closes: true,
+    }
+    .run_with(RECORDING_FATAL, code, |how| {
+        push(&t2, format!("end {how:?}"));
+        async { true }
+    })
+    .await;
+    assert_eq!(code, 1);
+    assert!(!r.ctx.paths.pid.exists(), "pidfile removed");
+    assert_eq!(
+        r.take_timeline(),
+        [
+            "hooks.led_stop",
+            "config.stop",
+            "hooks.recording_stop",
+            "hooks.final_recording_status",
+            "source.stop",
+            "end Abort",
+            "hooks.notify_connectivity false",
+        ]
+    );
+    let ev = state_events(&r.ctx);
+    assert_eq!(
+        &ev[ev.len() - 2..],
+        [
+            "shutting down (recording settings apply failed)",
+            "connection closed"
+        ]
+    );
+}
+
+/// D29 + review-wp1 X1: a SIGTERM whose `recording.stop()` finalize throws.
+/// The TS crashes at `worker.ts:1306`, before the `online:false` publish
+/// (`:1317`), so the broker fires the Last-Will. Rust keeps the local
+/// teardown and the signal path's exit code (0), but like the TS sends no
+/// `online:false` and ends the client with `Abort` (no DISCONNECT). The rule
+/// is keyed on the crash, not on the exit code.
+#[tokio::test(start_paused = true)]
+async fn a_failed_finalize_at_sigterm_leaves_the_offline_to_the_will() {
+    let mut r = rig_with("d29-lwt", "dev-d", |t| Arc::new(FailingStopHooks(t)));
+    std::fs::write(&r.ctx.paths.pid, "{}").unwrap();
+    r.connect();
+    r.take_timeline();
+    let t2 = r.timeline.clone();
+    let ctx = r.ctx.clone();
+    let source: Arc<dyn TelemetrySource> = r.source.clone();
+    let code = Shutdown {
+        ctx: &ctx,
+        mqtt: &r.mqtt,
+        plane: &mut r.plane,
+        config: r.config.as_ref(),
+        source: source.as_ref(),
+        link_closes: true,
+    }
+    .run_with("SIGTERM", 0, |how| {
+        push(&t2, format!("end {how:?}"));
+        async { true }
+    })
+    .await;
+    assert_eq!(code, 0);
+    assert!(!r.ctx.paths.pid.exists(), "pidfile removed");
+    assert_eq!(
+        r.take_timeline(),
+        [
+            "hooks.led_stop",
+            "config.stop",
+            "hooks.recording_stop",
+            "hooks.final_recording_status",
+            "source.stop",
+            "end Abort",
+            "hooks.notify_connectivity false",
+        ]
+    );
+    let ev = state_events(&r.ctx);
+    assert_eq!(
+        &ev[ev.len() - 2..],
+        ["shutting down (SIGTERM)", "connection closed"]
+    );
+}
+
+/// `run` (the budget-only form) never calls `end` on a crash-equivalent exit:
+/// no `online:false`, no graceful end.
+#[tokio::test(start_paused = true)]
+async fn run_skips_the_graceful_end_on_a_crash_equivalent_exit() {
+    let mut r = rig("rec-fatal-run", "dev-g");
+    r.connect();
+    r.take_timeline();
+    let t2 = r.timeline.clone();
+    let ctx = r.ctx.clone();
+    let source: Arc<dyn TelemetrySource> = r.source.clone();
+    let code = Shutdown {
+        ctx: &ctx,
+        mqtt: &r.mqtt,
+        plane: &mut r.plane,
+        config: r.config.as_ref(),
+        source: source.as_ref(),
+        link_closes: true,
+    }
+    .run(RECORDING_FATAL, 1, |_| {
+        push(&t2, "end graceful");
+        async { true }
+    })
+    .await;
+    assert_eq!(code, 1);
+    let tl = r.take_timeline();
+    assert!(!tl.iter().any(|l| l.starts_with("publish")), "{tl:?}");
+    assert!(!tl.contains(&"end graceful".to_string()), "{tl:?}");
 }
 
 /// Shutting down while the link is down: no `online:false`, no `close`.

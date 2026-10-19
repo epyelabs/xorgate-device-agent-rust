@@ -8,7 +8,10 @@
 //! - the ack-tracker race (review-wp1 #2): publishes racing a link drop never
 //!   bind to the wrong PUBACK;
 //! - a broker DISCONNECT surfaces before the close (#7);
-//! - an unanswered ping ends as `Keepalive timeout` (#3).
+//! - an unanswered ping ends as `Keepalive timeout` (#3);
+//! - the two ends (review-wp1 X1): the graceful `shutdown` sends DISCONNECT
+//!   (the broker discards the will); `abort` drops the link without one, so
+//!   the broker publishes the Last-Will — the TS crash path (`mqtt.ts:44-47`).
 
 #[path = "support/stub_broker.rs"]
 mod stub_broker;
@@ -17,8 +20,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rumqttc::v5::mqttbytes::v5::DisconnectReasonCode;
+use std::sync::Arc;
 use stub_broker::*;
-use xorgate_cloud::mqtt::{AckOutcome, MqttEvent, MqttPublisher, QoS};
+
+use xorgate_cloud::mqtt::{AckOutcome, MqttClient, MqttEvent, MqttPublisher, QoS, Will};
 
 #[tokio::test]
 async fn unacked_and_offline_publishes_are_resent_after_reconnect() {
@@ -185,4 +190,58 @@ async fn unanswered_ping_is_a_keepalive_timeout() {
         ev => panic!("{ev:?}"),
     }
     assert!(end.shutdown(Duration::from_secs(2)).await);
+}
+
+const WILL_TOPIC: &str = "xorgate/devices/dev-test/status";
+const WILL_PAYLOAD: &str = r#"{"deviceId":"dev-test","ts":1,"online":false}"#;
+
+fn client_with_will(port: u16) -> MqttClient {
+    let mut cfg = client_config(port, 60);
+    cfg.will = Some(Arc::new(|| Will {
+        topic: WILL_TOPIC.into(),
+        payload: WILL_PAYLOAD.as_bytes().to_vec(),
+        qos: QoS::AtLeastOnce,
+        retain: false,
+    }));
+    MqttClient::connect(cfg)
+}
+
+async fn broker_closed(b: &Broker, n: usize) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while b.ctl.closed.load(Ordering::SeqCst) < n {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the broker never saw the connection close");
+}
+
+/// review-wp1 X1, graceful exit (SIGTERM with a good finalize): `shutdown`
+/// sends DISCONNECT, so the broker discards the will.
+#[tokio::test]
+async fn graceful_shutdown_disconnects_and_the_will_is_discarded() {
+    let b = broker().await;
+    let (_p, mut events, end) = client_with_will(b.port).split();
+    connected(&mut events).await;
+    assert!(end.shutdown(Duration::from_secs(2)).await);
+    broker_closed(&b, 1).await;
+    assert_eq!(b.ctl.disconnects.load(Ordering::SeqCst), 1);
+    assert!(b.ctl.wills.lock().unwrap().is_empty());
+}
+
+/// review-wp1 X1, crash-equivalent exit (RECORDING_FATAL, D29): `abort` drops
+/// the TCP/TLS connection with no DISCONNECT, so the broker publishes the
+/// Last-Will as it does when Node dies on an uncaught throw.
+#[tokio::test]
+async fn abort_drops_the_link_without_disconnect_and_the_will_fires() {
+    let b = broker().await;
+    let (_p, mut events, end) = client_with_will(b.port).split();
+    connected(&mut events).await;
+    end.abort().await;
+    broker_closed(&b, 1).await;
+    assert_eq!(b.ctl.disconnects.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *b.ctl.wills.lock().unwrap(),
+        vec![(WILL_TOPIC.to_string(), WILL_PAYLOAD.to_string())]
+    );
 }

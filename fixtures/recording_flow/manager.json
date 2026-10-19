@@ -1,0 +1,3696 @@
+{
+ "jsSourceFile": "src/recording/manager.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "tsx wp1-dump-recording-flow.ts (phase-3/evidence/wp1-tools) in a scratch `git archive 89b5c64` copy: the real RecordingManager + VideoCaptureSupervisor (fake spawn) + BootDeferPolicy/LoadShedPolicy on one fake clock, scenarios mirroring test/recording-video-capture.test.ts RecordingManager it()s; capture-supervisor events (`video capture …`, `video bridge …`) are WP4's and listed separately",
+ "cases": [
+  {
+   "name": "starts capture in bridge-only mode with recording off, record mode when on",
+   "it": "starts capture in bridge-only mode with recording off, record mode when on",
+   "describe": "RecordingManager video wiring",
+   "budgetMa": null,
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer armed (psu budget unknown < 5000) — bridge-only until the modem settles (cap 90s)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": true,
+       "bootDefer": "off"
+      }
+     },
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": false,
+       "bootDefer": "off"
+      }
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)",
+    "video bridge started: cam0 (streaming only, recording off)"
+   ]
+  },
+  {
+   "name": "never spawns capture when media is disabled",
+   "it": "never spawns capture when media is disabled",
+   "describe": "RecordingManager video wiring",
+   "mediaEnabled": false,
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "recording.video.enabled is on but no bridged camera is available (media off, every camera disabled, or no `xorgate pipeline bridge <streamKey>` run) — video recording idle"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": []
+  },
+  {
+   "name": "preset change restarts capture with new args (new session)",
+   "it": "preset change restarts capture with new args (new session)",
+   "describe": "RecordingManager video wiring",
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": true,
+       "preset": "720p30-2mbps",
+       "bootDefer": "off"
+      }
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p30-2mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)",
+    "video capture started: cam0 720p30-2mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "first video session.json carries the probed time source (badge-bug fix)",
+   "it": "first video session.json carries the probed time source (badge-bug fix)",
+   "describe": "RecordingManager video wiring",
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "a disabled camera gets no pipeline; the other camera keeps its session",
+   "it": "a disabled camera gets no pipeline; the other camera keeps its session",
+   "describe": "per-camera enables (Phase 6 capacity control)",
+   "cameras": [
+    "cam0",
+    "cam1"
+   ],
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "spawnStaggerSecs": 0
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       },
+       {
+        "cam": "cam1",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0",
+       "cam1"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":0,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": true,
+       "bootDefer": "off",
+       "spawnStaggerSecs": 0,
+       "cameras": {
+        "cam1": false
+       }
+      }
+     },
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "camera(s) disabled by settings: cam1 — no capture, bridge or live stream"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [
+       [
+        "cam1"
+       ]
+      ],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":0,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": true,
+       "bootDefer": "off",
+       "spawnStaggerSecs": 0,
+       "cameras": {
+        "cam1": true
+       }
+      }
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [
+       []
+      ],
+      "spawns": [
+       {
+        "cam": "cam1",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0",
+       "cam1"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":0,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)",
+    "video capture started: cam1 720p15-1mbps (session 0199c82c…)",
+    "video capture stopped: cam1 (camera disabled)",
+    "video capture started: cam1 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "disabling every camera leaves no capture at all",
+   "it": "disabling every camera leaves no capture at all",
+   "describe": "per-camera enables (Phase 6 capacity control)",
+   "cameras": [
+    "cam0",
+    "cam1"
+   ],
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "spawnStaggerSecs": 0,
+     "cameras": {
+      "cam0": false,
+      "cam1": false
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "camera(s) disabled by settings: cam0, cam1 — no capture, bridge or live stream"
+       },
+       {
+        "level": "warn",
+        "msg": "recording.video.enabled is on but no bridged camera is available (media off, every camera disabled, or no `xorgate pipeline bridge <streamKey>` run) — video recording idle"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [
+       [
+        "cam0",
+        "cam1"
+       ]
+      ],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":0,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": []
+  },
+  {
+   "name": "an unknown/absent camera key is inert (a camera unplugged since is just gone)",
+   "it": "an unknown/absent camera key is inert (a camera unplugged since is just gone)",
+   "describe": "per-camera enables (Phase 6 capacity control)",
+   "cameras": [
+    "cam0",
+    "cam1"
+   ],
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "spawnStaggerSecs": 0,
+     "cameras": {
+      "cam2": true
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       },
+       {
+        "cam": "cam1",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0",
+       "cam1"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":0,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)",
+    "video capture started: cam1 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "a camera-set change while recording keeps recording (no shape change)",
+   "it": "a camera-set change while recording keeps recording (no shape change)",
+   "describe": "per-camera enables (Phase 6 capacity control)",
+   "cameras": [
+    "cam0",
+    "cam1"
+   ],
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "spawnStaggerSecs": 0
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       },
+       {
+        "cam": "cam1",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0",
+       "cam1"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":0,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": true,
+       "bootDefer": "off",
+       "spawnStaggerSecs": 0,
+       "cameras": {
+        "cam0": false
+       }
+      }
+     },
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "camera(s) disabled by settings: cam0 — no capture, bridge or live stream"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [
+       [
+        "cam0"
+       ]
+      ],
+      "spawns": [],
+      "live": [
+       "cam1"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":0,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)",
+    "video capture started: cam1 720p15-1mbps (session 0199c82c…)",
+    "video capture stopped: cam0 (camera disabled)"
+   ]
+  },
+  {
+   "name": "defers to bridge-only, then flips to full capture when the modem settles",
+   "it": "defers to bridge-only, then flips to full capture when the modem settles",
+   "describe": "RecordingManager boot power staging (Phase 2)",
+   "budgetMa": 3000,
+   "settings": {
+    "video": {
+     "enabled": true
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connecting",
+      "reg": 0
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connecting\",\"reg\":0}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer armed (psu budget 3000mA < 5000) — bridge-only until the modem settles (cap 90s)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer released (connected) — starting full capture"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "released:connected"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "skips the defer outright on a 5 A budget in auto mode",
+   "it": "skips the defer outright on a 5 A budget in auto mode",
+   "describe": "RecordingManager boot power staging (Phase 2)",
+   "budgetMa": 5000,
+   "settings": {
+    "video": {
+     "enabled": true
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer skipped: psu budget 5000mA >= 5000"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "skipped"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "bootDefer=always arms even on a 5 A budget",
+   "it": "bootDefer=always arms even on a 5 A budget",
+   "describe": "RecordingManager boot power staging (Phase 2)",
+   "budgetMa": 5000,
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "always"
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer armed (mode=always) — bridge-only until the modem settles (cap 90s)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)"
+   ]
+  },
+  {
+   "name": "shortening bootDeferMaxSecs via settings releases an active defer (timeout)",
+   "it": "shortening bootDeferMaxSecs via settings releases an active defer (timeout)",
+   "describe": "RecordingManager boot power staging (Phase 2)",
+   "budgetMa": 3000,
+   "settings": {
+    "video": {
+     "enabled": true
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connecting",
+      "reg": 0
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connecting\",\"reg\":0}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer armed (psu budget 3000mA < 5000) — bridge-only until the modem settles (cap 90s)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "advance",
+     "ms": 2000,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000002000,
+       "mono": 5002000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": true,
+       "bootDeferMaxSecs": 1
+      }
+     },
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer released (timeout) — starting full capture"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "released:timeout"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000002000,
+       "mono": 5002000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "the GPS gate parks live streaming too, and releases both on a fix",
+   "it": "the GPS gate parks live streaming too, and releases both on a fix",
+   "describe": "RecordingManager boot power staging (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "gpsGate": "auto"
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video gps gate armed (psu budget 3000mA < 5000) — bridge-only + live parked until LTE is up with a GPS fix (cap 600s, no-progress escape 120s)"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (psu budget 3000mA < 5000)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "gnss",
+     "value": {
+      "fix": true,
+      "sky": "clear"
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (psu budget 3000mA < 5000)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (psu budget 3000mA < 5000)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer released (gps-fix) — starting full capture"
+       }
+      ],
+      "liveShed": [
+       false
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "released:gps-fix"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "a no-RF sky releases the gate without a fix",
+   "it": "a no-RF sky releases the gate without a fix",
+   "describe": "RecordingManager boot power staging (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "gpsGate": "always"
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video gps gate armed (mode=always) — bridge-only + live parked until LTE is up with a GPS fix (cap 600s, no-progress escape 120s)"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "gnss",
+     "value": {
+      "fix": false,
+      "sky": "no-rf"
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer released (no-rf) — starting full capture"
+       }
+      ],
+      "liveShed": [
+       false
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "released:no-rf"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "telemetry recording is never deferred or gated",
+   "it": "telemetry recording is never deferred or gated",
+   "describe": "RecordingManager boot power staging (Phase 2)",
+   "budgetMa": 3000,
+   "settings": {
+    "telemetry": {
+     "enabled": true,
+     "rateHz": 20
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "telemetry recording started (session 0199c82c…, 20 Hz)"
+       },
+       {
+        "level": "info",
+        "msg": "video boot-defer armed (psu budget 3000mA < 5000) — bridge-only until the modem settles (cap 90s)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": true,
+       "session": true,
+       "bootDefer": "deferring"
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)"
+   ]
+  },
+  {
+   "name": "walks the ladder down (live first, recording second) and back up",
+   "it": "walks the ladder down (live first, recording second) and back up",
+   "describe": "RecordingManager power load shedding (Phase 3)",
+   "reading": {
+    "uv": true,
+    "railV": 4.7
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    },
+    "powerShedding": {
+     "uvWindowSecs": 5,
+     "escalateDwellSecs": 5,
+     "restoreSecs": 10
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 3,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 5s): live streaming off, recording continues"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000003000,
+       "mono": 5003000
+      },
+      "sampleCalls": 3
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 3,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000006000,
+       "mono": 5006000
+      },
+      "sampleCalls": 6
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 3,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → bridge-only (undervoltage 6x in 5s, triggered 100% of the last 5s past no-live): video recording off, telemetry recording continues"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "bridge-only",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000009000,
+       "mono": 5009000
+      },
+      "sampleCalls": 9
+     }
+    },
+    {
+     "op": "reading",
+     "value": {
+      "uv": false,
+      "railV": 5.05
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "bridge-only",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000009000,
+       "mono": 5009000
+      },
+      "sampleCalls": 9
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 6,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "bridge-only",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000015000,
+       "mono": 5015000
+      },
+      "sampleCalls": 15
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 6,
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "power shed restore → no-live (clean for 10s)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000021000,
+       "mono": 5021000
+      },
+      "sampleCalls": 21
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 6,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000027000,
+       "mono": 5027000
+      },
+      "sampleCalls": 27
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 6,
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "power shed restore → full (clean for 10s)"
+       }
+      ],
+      "liveShed": [
+       false
+      ],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000033000,
+       "mono": 5033000
+      },
+      "sampleCalls": 33
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)",
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82d…)"
+   ]
+  },
+  {
+   "name": "cycle cap parks; a powerShedding settings change resets and restores",
+   "it": "cycle cap parks; a powerShedding settings change resets and restores",
+   "describe": "RecordingManager power load shedding (Phase 3)",
+   "reading": {
+    "uv": true,
+    "railV": 5
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    },
+    "powerShedding": {
+     "uvWindowSecs": 5,
+     "restoreSecs": 10,
+     "maxShedsPerHour": 0
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 4,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 5s): live streaming off, recording continues; shed-cycle cap (0/h) exhausted — parked until reboot or settings change"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "parked:no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004000,
+       "mono": 5004000
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "reading",
+     "value": {
+      "uv": false,
+      "railV": 5.05
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "parked:no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004000,
+       "mono": 5004000
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 120,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "parked:no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000124000,
+       "mono": 5124000
+      },
+      "sampleCalls": 124
+     }
+    },
+    {
+     "op": "settings",
+     "recording": {
+      "video": {
+       "enabled": true,
+       "bootDefer": "off"
+      },
+      "powerShedding": {
+       "uvWindowSecs": 5,
+       "restoreSecs": 10,
+       "maxShedsPerHour": 4
+      }
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [
+       false
+      ],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000124000,
+       "mono": 5124000
+      },
+      "sampleCalls": 124
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 2,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000126000,
+       "mono": 5126000
+      },
+      "sampleCalls": 126
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "feature disabled: monitor never arms, zero behavior change",
+   "it": "feature disabled: monitor never arms, zero behavior change",
+   "describe": "RecordingManager power load shedding (Phase 3)",
+   "reading": {
+    "uv": true,
+    "railV": 4.5
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    },
+    "powerShedding": {
+     "enabled": false
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 0,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "no power sampler (sim/dev host): feature inert",
+   "it": "no power sampler (sim/dev host): feature inert",
+   "describe": "RecordingManager power load shedding (Phase 3)",
+   "powerSample": false,
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    }
+   },
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "no block: the field is ABSENT entirely — not null, not {}",
+   "it": "no block: the field is ABSENT entirely — not null, not {}",
+   "describe": "RecordingManager liveBlock contract (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "reading": {
+    "uv": false,
+    "railV": 5.05,
+    "tempC": 55
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "gpsGate": "off"
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 5,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000005000,
+       "mono": 5005000
+      },
+      "sampleCalls": 5
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "the armed gate publishes gps-gate, and releasing drops the field",
+   "it": "the armed gate publishes gps-gate, and releasing drops the field",
+   "describe": "RecordingManager liveBlock contract (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "reading": {
+    "uv": false,
+    "railV": 5.05,
+    "tempC": 55
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "gpsGate": "always"
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video gps gate armed (mode=always) — bridge-only + live parked until LTE is up with a GPS fix (cap 600s, no-progress escape 120s)"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "gnss",
+     "value": {
+      "fix": true,
+      "sky": "clear"
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer released (gps-fix) — starting full capture"
+       }
+      ],
+      "liveShed": [
+       false
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "released:gps-fix"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "`since` is stamped once and holds steady while the block does",
+   "it": "`since` is stamped once and holds steady while the block does",
+   "describe": "RecordingManager liveBlock contract (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "reading": {
+    "uv": false,
+    "railV": 5.05,
+    "tempC": 55
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "gpsGate": "always"
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video gps gate armed (mode=always) — bridge-only + live parked until LTE is up with a GPS fix (cap 600s, no-progress escape 120s)"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "advance",
+     "ms": 15,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000015,
+       "mono": 5000015
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000015,
+       "mono": 5000015
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "advance",
+     "ms": 15,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000030,
+       "mono": 5000030
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000030,
+       "mono": 5000030
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "advance",
+     "ms": 15,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000045,
+       "mono": 5000045
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000045,
+       "mono": 5000045
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "advance",
+     "ms": 15,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000060,
+       "mono": 5000060
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000060,
+       "mono": 5000060
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "advance",
+     "ms": 15,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000075,
+       "mono": 5000075
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000075,
+       "mono": 5000075
+      },
+      "sampleCalls": 0
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)"
+   ]
+  },
+  {
+   "name": "a rail shed publishes undervoltage with the rail in the detail",
+   "it": "a rail shed publishes undervoltage with the rail in the detail",
+   "describe": "RecordingManager liveBlock contract (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "reading": {
+    "uv": false,
+    "railV": 4.7,
+    "tempC": 55
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "gpsGate": "off"
+    },
+    "powerShedding": {
+     "railLowSecs": 3,
+     "restoreSecs": 5
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 4,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.70V < 4.85V for 3s): live streaming off, recording continues"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "rail 4.70V < 4.85V for 3s",
+        "since": 1760000004000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004000,
+       "mono": 5004000
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "reading",
+     "value": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 55
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "rail 4.70V < 4.85V for 3s",
+        "since": 1760000004000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004000,
+       "mono": 5004000
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 8,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "rail 4.70V < 4.85V for 3s",
+        "since": 1760000004000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000012000,
+       "mono": 5012000
+      },
+      "sampleCalls": 12
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "a thermal shed publishes thermal, and HOLDS it after the trigger clears",
+   "it": "a thermal shed publishes thermal, and HOLDS it after the trigger clears",
+   "describe": "RecordingManager liveBlock contract (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "reading": {
+    "uv": false,
+    "railV": 5.05,
+    "tempC": 85
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "gpsGate": "off"
+    },
+    "powerShedding": {
+     "cpuTempSecs": 5,
+     "restoreSecs": 600
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 6,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 5s): live streaming off, recording continues"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "cpu 85.0°C >= 80°C for 5s",
+        "since": 1760000006000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000006000,
+       "mono": 5006000
+      },
+      "sampleCalls": 6
+     }
+    },
+    {
+     "op": "reading",
+     "value": {
+      "uv": false,
+      "railV": 5.05,
+      "tempC": 75
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "cpu 85.0°C >= 80°C for 5s",
+        "since": 1760000006000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000006000,
+       "mono": 5006000
+      },
+      "sampleCalls": 6
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 121,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "cpu 85.0°C >= 80°C for 5s",
+        "since": 1760000006000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000127000,
+       "mono": 5127000
+      },
+      "sampleCalls": 127
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "the gate wins when both the gate and a shed are blocking live",
+   "it": "the gate wins when both the gate and a shed are blocking live",
+   "describe": "RecordingManager liveBlock contract (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "reading": {
+    "uv": false,
+    "railV": 4.7,
+    "tempC": 55
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "gpsGate": "always"
+    },
+    "powerShedding": {
+     "railLowSecs": 3,
+     "restoreSecs": 5
+    }
+   },
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video gps gate armed (mode=always) — bridge-only + live parked until LTE is up with a GPS fix (cap 600s, no-progress escape 120s)"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 4,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → no-live (rail 4.70V < 4.85V for 3s): live streaming off, recording continues"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004000,
+       "mono": 5004000
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "gnss",
+     "value": {
+      "fix": true,
+      "sky": "clear"
+     },
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004000,
+       "mono": 5004000
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "advance",
+     "ms": 5,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "gating",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "gps-gate",
+        "detail": "waiting for LTE attach + GPS fix (mode=always)",
+        "since": 1760000000000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004005,
+       "mono": 5004005
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "reapply",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer released (gps-fix) — starting full capture"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "released:gps-fix",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "rail 4.70V < 4.85V for 3s",
+        "since": 1760000004005
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000004005,
+       "mono": 5004005
+      },
+      "sampleCalls": 4
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 1,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "released:gps-fix",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "rail 4.70V < 4.85V for 3s",
+        "since": 1760000004005
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000005005,
+       "mono": 5005005
+      },
+      "sampleCalls": 5
+     }
+    }
+   ],
+   "captureEvents": [
+    "video bridge started: cam0 (streaming only, recording off)",
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "thermal caps at rung 1 even when held past escalateDwellSecs (invariant 7)",
+   "it": "thermal caps at rung 1 even when held past escalateDwellSecs (invariant 7)",
+   "describe": "RecordingManager liveBlock contract (Phase 2)",
+   "budgetMa": 3000,
+   "gnss": {
+    "fix": false,
+    "sky": "clear"
+   },
+   "reading": {
+    "uv": false,
+    "railV": 5.05,
+    "tempC": 85
+   },
+   "settings": {
+    "video": {
+     "enabled": true,
+     "bootDefer": "off",
+     "gpsGate": "off"
+    },
+    "powerShedding": {
+     "cpuTempSecs": 5,
+     "restoreSecs": 600,
+     "escalateDwellSecs": 30
+    }
+   },
+   "extra": true,
+   "steps": [
+    {
+     "op": "telemetry",
+     "value": {
+      "status": "connected",
+      "reg": 1
+     },
+     "wrote": "{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"status\":\"connected\",\"reg\":1}",
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [],
+      "status": {
+       "enabled": false,
+       "session": false
+      },
+      "videoKey": "",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 6,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → no-live (cpu 85.0°C >= 80°C for 5s): live streaming off, recording continues"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "cpu 85.0°C >= 80°C for 5s",
+        "since": 1760000006000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000006000,
+       "mono": 5006000
+      },
+      "sampleCalls": 6
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 200,
+     "expected": {
+      "events": [],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": false,
+       "session": false,
+       "bootDefer": "off",
+       "powerShed": "no-live",
+       "liveBlock": {
+        "reason": "thermal",
+        "detail": "cpu 85.0°C >= 80°C for 5s",
+        "since": 1760000006000
+       }
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000206000,
+       "mono": 5206000
+      },
+      "sampleCalls": 206
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)"
+   ]
+  },
+  {
+   "name": "telemetry recording keeps running through a rung-2 power shed (invariant 7)",
+   "it": "telemetry recording keeps running through a rung-2 power shed (invariant 7)",
+   "describe": "RecordingManager power load shedding (Phase 3)",
+   "reading": {
+    "uv": true,
+    "railV": 4.7
+   },
+   "settings": {
+    "telemetry": {
+     "enabled": true
+    },
+    "video": {
+     "enabled": true,
+     "bootDefer": "off"
+    },
+    "powerShedding": {
+     "uvWindowSecs": 5,
+     "escalateDwellSecs": 5,
+     "restoreSecs": 10
+    }
+   },
+   "extra": true,
+   "steps": [
+    {
+     "op": "start",
+     "expected": {
+      "events": [
+       {
+        "level": "info",
+        "msg": "telemetry recording started (session 0199c82c…, 1 Hz)"
+       },
+       {
+        "level": "info",
+        "msg": "video boot-defer off (disabled)"
+       }
+      ],
+      "liveShed": [],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": true
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": true,
+       "session": true,
+       "bootDefer": "off"
+      },
+      "videoKey": "{\"record\":true,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000000000,
+       "mono": 5000000
+      },
+      "sampleCalls": 0
+     }
+    },
+    {
+     "op": "shedTicks",
+     "n": 12,
+     "expected": {
+      "events": [
+       {
+        "level": "warn",
+        "msg": "power shed → no-live (undervoltage 3x in 5s): live streaming off, recording continues"
+       },
+       {
+        "level": "warn",
+        "msg": "power shed → bridge-only (undervoltage 6x in 5s, triggered 100% of the last 5s past no-live): video recording off, telemetry recording continues"
+       }
+      ],
+      "liveShed": [
+       true
+      ],
+      "disabled": [],
+      "spawns": [
+       {
+        "cam": "cam0",
+        "record": false
+       }
+      ],
+      "live": [
+       "cam0"
+      ],
+      "status": {
+       "enabled": true,
+       "session": true,
+       "bootDefer": "off",
+       "powerShed": "bridge-only",
+       "liveBlock": {
+        "reason": "undervoltage",
+        "detail": "undervoltage 3x in 5s",
+        "since": 1760000003000
+       }
+      },
+      "videoKey": "{\"record\":false,\"preset\":\"720p15-1mbps\",\"seg\":60,\"stagger\":4,\"encoder\":\"sw-h264\"}",
+      "clock": {
+       "wall": 1760000012000,
+       "mono": 5012000
+      },
+      "sampleCalls": 12
+     }
+    }
+   ],
+   "captureEvents": [
+    "video capture started: cam0 720p15-1mbps (session 0199c82c…)",
+    "video bridge started: cam0 (streaming only, recording off)"
+   ]
+  }
+ ]
+}

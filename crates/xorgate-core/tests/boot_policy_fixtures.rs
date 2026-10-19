@@ -10,6 +10,12 @@ use xorgate_core::boot_policy::*;
 use xorgate_core::clock::FixedClock;
 use xorgate_core::types::{GnssView, PowerSampleReading, ShedConfig};
 
+/// The fixture's monotonic stamp as a clock (P8: the policy reads `&dyn Clock`;
+/// the wall half is never consulted by `LoadShedPolicy`).
+fn at_mono(mono: u64) -> FixedClock {
+    FixedClock::new(0, mono)
+}
+
 #[derive(Deserialize)]
 struct Call {
     cfg: BootDeferConfig,
@@ -126,7 +132,7 @@ fn load_shed_test_ts() {
             match op["op"].as_str().unwrap() {
                 "new" => {
                     assert_eq!(inst, Some(policies.len()), "{at}");
-                    policies.push(LoadShedPolicy::new(op["mono"].as_u64().unwrap()));
+                    policies.push(LoadShedPolicy::new(&at_mono(op["mono"].as_u64().unwrap())));
                 }
                 "tick" => {
                     let p = &mut policies[inst.unwrap()];
@@ -137,8 +143,8 @@ fn load_shed_test_ts() {
                     let mut last = None;
                     for i in 0..n {
                         let mono = first + i * 1000;
-                        p.push(&reading, mono);
-                        let v = p.evaluate(&cfg, mono);
+                        p.push(&reading, &at_mono(mono));
+                        let v = p.evaluate(&cfg, &at_mono(mono));
                         if let Some(e) = &v.event {
                             events.push(serde_json::json!({ "i": i, "event": e }));
                         }
@@ -153,13 +159,15 @@ fn load_shed_test_ts() {
                     );
                 }
                 "push" => {
-                    policies[inst.unwrap()].push(&reading(), op["mono"].as_u64().unwrap());
+                    policies[inst.unwrap()]
+                        .push(&reading(), &at_mono(op["mono"].as_u64().unwrap()));
                 }
                 "evaluate" => {
-                    let v = policies[inst.unwrap()].evaluate(&cfg(), op["mono"].as_u64().unwrap());
+                    let v = policies[inst.unwrap()]
+                        .evaluate(&cfg(), &at_mono(op["mono"].as_u64().unwrap()));
                     assert_eq!(serde_json::to_value(v).unwrap(), op["expected"], "{at}");
                 }
-                "reset" => policies[inst.unwrap()].reset(op["mono"].as_u64().unwrap()),
+                "reset" => policies[inst.unwrap()].reset(&at_mono(op["mono"].as_u64().unwrap())),
                 "statusString" => {
                     let got =
                         serde_json::to_value(policies[inst.unwrap()].status_string()).unwrap();

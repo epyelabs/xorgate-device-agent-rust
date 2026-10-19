@@ -221,6 +221,24 @@ pub trait TelemetrySource: Send + Sync + 'static {
     fn stop(&self);
 }
 
+/// The KVS media supervisor as the collectors and the recording spine use it
+/// (`MediaSupervisor`, `collectors/media.ts`; WP5's `media::MediaSupervisor`).
+/// Phase 3 addition. `set_shed` is called ONLY from the recording manager's
+/// live choke point (invariant 6).
+pub trait MediaControl: Send + Sync + 'static {
+    /// `media.read()`: the `media` block; the FIRST call starts the masters
+    /// (lazy start from the publish tick, TS parity).
+    fn read(&self) -> TelemetryMedia;
+    /// `media.stop()` (shutdown: SIGINT every master).
+    fn stop(&self);
+    /// `restartChannel(key)` — bounce a master onto a respawned capture's socket.
+    fn restart_channel(&self, key: &str);
+    /// `setShed(shed)` — park/release every live master.
+    fn set_shed(&self, shed: bool);
+    /// `setDisabledStreams(keys)` — hold down disabled cameras' masters.
+    fn set_disabled_streams(&self, keys: &[String]);
+}
+
 /// The config plane (WP3): `ConfigSync` + `handleConfigMessage`. Every method
 /// is non-blocking — an implementation pushes onto a LOSSLESS (unbounded)
 /// queue drained by its own task, which handles config messages strictly in
@@ -312,7 +330,12 @@ pub trait PhaseHooks: Send + Sync + 'static {
         media
     }
     /// `recording.reapply()` + `replay?.reapply()` (config path, both branches, `:878-881`).
-    fn reapply_recording(&self) {}
+    /// `Err` = the reapply threw inside the config message's try: the caller
+    /// skips the camera-mount reconcile and logs `cloud config apply failed`
+    /// (Phase 3 widening, review-wp1 M1).
+    fn reapply_recording(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// `recording.setUpload(buildUploadOptions())` after an `uploadBucket`
     /// backfill (`:801`).
     fn rearm_upload(&self) {}
@@ -323,9 +346,11 @@ pub trait PhaseHooks: Send + Sync + 'static {
     /// (`:889`, WP3) and the worker's 60 s poll (`:648-651`).
     fn reconcile_camera_mount(&self) {}
     /// `await reconcileHardwareNow()` at boot (`:427`), before anything reads
-    /// the pipelines. Awaited by the worker.
-    fn reconcile_hardware_boot(&self) -> BoxFut<'_, ()> {
-        Box::pin(async {})
+    /// the pipelines. Awaited by the worker. `Err` = the pass threw (a
+    /// top-level-await rejection in the TS, before the `:656` net): the
+    /// worker exits non-zero (Phase 3 widening, review-wp5 M1).
+    fn reconcile_hardware_boot(&self) -> BoxFut<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
     }
     /// `await reconcileCameraMountNow()` at boot (`:432`), after the hardware
     /// reconcile and before the report plane. Awaited by the worker.
@@ -366,7 +391,13 @@ pub trait PhaseHooks: Send + Sync + 'static {
     fn led_config_applied(&self) {}
     /// Shutdown steps `led.stop()` (`:1299`) and `recording.stop()` (`:1308`).
     fn led_stop(&self) {}
-    fn recording_stop(&self) {}
+    /// `Err` = the telemetry finalize threw (D29): the TS crashed at
+    /// `worker.ts:1306`, so [`crate::shutdown::Shutdown`] skips `online:false`
+    /// and drops the link without a DISCONNECT, firing the Last-Will
+    /// (review-wp1 X1). The local teardown still runs.
+    fn recording_stop(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The Phase 2 hooks: every call site inert.
