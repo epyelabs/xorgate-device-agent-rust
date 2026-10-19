@@ -2140,6 +2140,232 @@ pub fn diff_media(
         ));
     }
     d30_js_reference(a, b, &pmic_series(play), table, rep);
+    d30_js_late_shed(a, b, play.start_wall, &power_changes(play), table, rep);
+}
+
+/// Release instants (wall ms) where a power input changed: the pmic EXT5V
+/// rail (`%.2f`) or the `vcgencmd get_throttled` answer.
+fn power_changes(play: &PlayInfo) -> Vec<i64> {
+    use xorgate_hal::tape::TapeEvent;
+    let Ok(t) = xorgate_hal::tape::Tape::read(Path::new(&play.tape)) else {
+        return Vec::new();
+    };
+    let walls = crate::diff::release_walls(&t.records, &play.releases);
+    let mut last: BTreeMap<String, String> = BTreeMap::new();
+    let mut out = Vec::new();
+    for (r, w) in t.records.iter().zip(walls) {
+        let (TapeEvent::Exec { argv, stdout, .. }, Some(w)) = (&r.ev, w) else {
+            continue;
+        };
+        let v = match argv.get(1).map(String::as_str) {
+            Some("pmic_read_adc") => xorgate_core::system::parse_pmic_adc(stdout)
+                .and_then(|adc| xorgate_core::system::rail_5v_from(&adc))
+                .map(|v| format!("{v:.2}")),
+            Some("get_throttled") => Some(stdout.trim().to_string()),
+            _ => None,
+        };
+        let (Some(v), Some(k)) = (v, argv.get(1)) else {
+            continue;
+        };
+        if last.get(k).is_some_and(|l| *l != v) {
+            out.push(w);
+        }
+        last.insert(k.clone(), v);
+    }
+    out.sort();
+    out
+}
+
+/// Each recorded sample's power reading: `(ts, "<rail_5v>|<throttled>")`.
+fn rec_power(m: &MediaCapture) -> Vec<(i64, String)> {
+    let mut v: Vec<(i64, String)> = segments_by_seq(m)
+        .values()
+        .flat_map(|segs| segs.values())
+        .flat_map(|t| t.lines())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|x| x["metrics"]["system"].is_object())
+        .map(|x| {
+            let sys = &x["metrics"]["system"];
+            (
+                x["ts"].as_i64().unwrap_or(0),
+                format!("{}|{}", sys["rail_5v"]["value"], sys["throttled"]["value"]),
+            )
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// A shed event text with its rail value masked (the pairing key).
+fn shed_key(msg: &str) -> String {
+    match shed_text(msg) {
+        Some((_, masked)) => masked,
+        None => msg.to_string(),
+    }
+}
+
+/// The `N` of `for Ns` / `clean for Ns` in a shed event (0 = immediate).
+fn shed_secs(msg: &str) -> i64 {
+    msg.split(" for ")
+        .nth(1)
+        .and_then(|r| r.split('s').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// EVIDENCE (row `T8/d30-js-late-shed` (3)) that the JS shed tick deciding
+/// `msg` at `ts` was one tick late because it REUSED its recorder's previous
+/// computation: the decisive tick D (a restore: the last dirty read, `ts −
+/// N s`; an escalation: the read before the first low one, `ts − (N+1) s`)
+/// lies after a power-input release (≥ 50 ms before D) that its recorder's
+/// previous sample (< 1 s before D) did not yet carry and its next sample
+/// (< 1.1 s after D) did — so a fresh read at D would have decided on time.
+fn js_stale_evidence(rec: &[(i64, String)], changes: &[i64], ts: i64, msg: &str) -> bool {
+    let n = shed_secs(msg);
+    let d = if msg.contains("restore") {
+        ts - n * 1000
+    } else {
+        ts - (n + 1) * 1000
+    };
+    let prev = rec.iter().rfind(|(t, _)| *t < d && d - *t < 1000);
+    let next = rec.iter().find(|(t, _)| *t > d && *t - d < 1100);
+    let (Some(p), Some(q)) = (prev, next) else {
+        return false;
+    };
+    p.1 != q.1 && changes.iter().any(|c| *c > p.0 && *c <= d - 50)
+}
+
+/// Row `T8/d30-js-late-shed` (orchestrator, option (b)): D30 as seen
+/// JS-vs-Rust — the JS shed tick reused its recorder's ≤ 1 s old reading at
+/// a power crossing (TS system.ts:104-113), so ONE shed/restore transition
+/// lands one shed period LATER on the JS side; Rust is never stale.
+/// - JS-vs-Rust ONLY (first statement), JS the LATER side.
+/// - Per transition (shed events paired by masked text + occurrence):
+///   Δ = JS − Rust ∈ [850, 1150] ms AND `js_stale_evidence`; a transition
+///   right after a tolerated one (dwell/restore chain) that shifts by the
+///   same Δ ±150 is its downstream effect. One shift per transition.
+/// - Downstream rows re-judged (same Δ ±150): child spawn instants (kvs and
+///   capture) within 6 s after the JS transition; sidecar `durationMs` of the
+///   session that capture started (JS shorter by Δ) or of a fragment ending
+///   within ±1.5 s of the JS transition (JS longer by Δ). Nothing else.
+fn d30_js_late_shed(
+    a: &MediaCapture,
+    b: &MediaCapture,
+    start_wall: i64,
+    changes: &[i64],
+    table: &Table,
+    rep: &mut Report,
+) {
+    let (js, rs, js_is_a) = match (a.kind.as_str(), b.kind.as_str()) {
+        ("js", "rust") => (a, b, true),
+        ("rust", "js") => (b, a, false),
+        _ => return,
+    };
+    let Some((rid, _)) = table.decision_row("d30-js-late-shed") else {
+        return;
+    };
+    let id = format!("{rid}/d30-js-late-shed");
+    const BAND: (i64, i64) = (850, 1150);
+    const SAME: i64 = 150;
+    // Pair the transitions.
+    let keyed = |m: &MediaCapture| {
+        let mut ev = m.shed_events.clone();
+        ev.sort();
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        ev.into_iter()
+            .map(|(ts, msg)| {
+                let k = shed_key(&msg);
+                let n = seen.entry(k.clone()).or_default();
+                *n += 1;
+                ((k, *n), (ts, msg))
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let (kj, kr) = (keyed(js), keyed(rs));
+    let rec = rec_power(js);
+    let mut pairs: Vec<(i64, i64, String)> = kj
+        .iter()
+        .filter_map(|(k, (tj, msg))| kr.get(k).map(|(tr, _)| (*tj, *tr, msg.clone())))
+        .collect();
+    pairs.sort();
+    // Tolerated transitions: (JS instant, Δ).
+    let mut shifted: Vec<(i64, i64)> = Vec::new();
+    let mut prev: Option<(i64, i64)> = None; // the previous transition's (JS ts, Δ) if tolerated
+    for (tj, tr, msg) in &pairs {
+        let d = tj - tr;
+        let in_band = (BAND.0..=BAND.1).contains(&d);
+        let own = in_band && js_stale_evidence(&rec, changes, *tj, msg);
+        let chained = in_band && prev.is_some_and(|(_, pd)| (d - pd).abs() <= SAME);
+        if own || chained {
+            shifted.push((*tj, d));
+            prev = Some((*tj, d));
+        } else {
+            prev = None;
+        }
+    }
+    if shifted.is_empty() {
+        return;
+    }
+    let owner = |w: i64| {
+        shifted
+            .iter()
+            .rfind(|(t, _)| *t <= w && w - *t <= 6_000)
+            .copied()
+    };
+    let mut ok = BTreeSet::new();
+    for (i, m) in rep.mismatches.iter().enumerate() {
+        if m.tol != UNTOLERATED {
+            continue;
+        }
+        let (Ok(x), Ok(y)) = (m.a.parse::<i64>(), m.b.parse::<i64>()) else {
+            continue;
+        };
+        let (vj, vr) = if js_is_a { (x, y) } else { (y, x) };
+        if m.stream == "children" && m.path == "(spawn ms after start)" {
+            if let Some((_, d)) = owner(start_wall + vj) {
+                if (vj - vr - d).abs() <= SAME {
+                    ok.insert(i);
+                }
+            }
+        } else if m.stream == "sidecar" && m.path == "durationMs" {
+            let Some((sid, seq)) = m.at.rsplit_once('/') else {
+                continue;
+            };
+            let Ok(seq) = seq.parse::<u64>() else {
+                continue;
+            };
+            let started = js
+                .spawns
+                .iter()
+                .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid))
+                .and_then(|s| owner(s.w));
+            let end = sidecars(js).get(&(sid.to_string(), seq)).and_then(|v| {
+                Some(v["startTs"].as_f64()? as i64 + v["durationMs"].as_f64()? as i64)
+            });
+            let ended = end.and_then(|e| {
+                shifted
+                    .iter()
+                    .find(|(t, _)| (e - t).abs() <= 1_500)
+                    .copied()
+            });
+            if started.is_some_and(|(_, d)| (vj - vr + d).abs() <= SAME)
+                || ended.is_some_and(|(_, d)| (vj - vr - d).abs() <= SAME)
+            {
+                ok.insert(i);
+            }
+        }
+    }
+    let Report {
+        mismatches, stats, ..
+    } = rep;
+    for i in ok {
+        let x = &mut mismatches[i];
+        x.tol = id.clone();
+        let st = stats.entry(x.stream.clone()).or_default();
+        st.untolerated = st.untolerated.saturating_sub(1);
+        st.tolerated += 1;
+    }
 }
 
 /// The rail value of a TS shed event and its text with it masked: `…(rail
@@ -2882,6 +3108,141 @@ mod tests {
         // A shift beyond one shed period + 150: spawns fail.
         let r = run("js", "js", 367_109, 1_200);
         assert_eq!(r[2..], [UNTOLERATED.to_string(), UNTOLERATED.to_string()]);
+    }
+
+    /// T8/d30-js-late-shed: the replay-20261019T190757Z shape (JS restore
+    /// one shed period late after reusing its recorder's dirty reading) is
+    /// tolerated ONLY JS-vs-Rust with JS later, Δ in the band and the stale
+    /// evidence; swapped sides, Δ 1300, no evidence, js/js, rust/rust fail.
+    #[test]
+    fn d30_js_late_shed_only_js_later_with_evidence() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam0#1>";
+        // `late` = this side's transitions/spawns at the JS instants of the
+        // run; the other side `d` ms earlier. `rails` = (ts, V) samples.
+        let side = |kind: &str, shift: i64, rails: &[(i64, f64)]| {
+            let mut seg = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (ts, v) in rails {
+                seg.push_str(&format!(
+                    "{{\"ts\":{ts},\"metrics\":{{\"system\":{{\"rail_5v\":{{\"value\":{v}}},\"throttled\":{{\"value\":0}}}}}}}}\n"
+                ));
+            }
+            MediaCapture {
+                kind: kind.into(),
+                shed_events: vec![
+                    (
+                        130_607 - shift,
+                        "info: power shed restore → no-live (clean for 20s)".into(),
+                    ),
+                    (
+                        150_679 - shift,
+                        "info: power shed restore → full (clean for 20s)".into(),
+                    ),
+                ],
+                spawns: vec![Spawn {
+                    w: 130_628 - shift,
+                    role: "capture".into(),
+                    key: "cam0".into(),
+                    pid: 9,
+                    argv: vec![],
+                    env: BTreeMap::new(),
+                    playing: None,
+                    end: Some("int".into()),
+                    end_w: None,
+                    sid: Some(sid.into()),
+                }],
+                finals: BTreeMap::from([(
+                    "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
+                    seg.into_bytes(),
+                )]),
+                present: true,
+                ..Default::default()
+            }
+        };
+        let stale = [
+            (108_710, 5.1),
+            (109_715, 5.1),
+            (110_732, 5.3),
+            (111_729, 5.3),
+        ];
+        let fresh = [
+            (108_710, 5.1),
+            (109_715, 5.3),
+            (110_732, 5.3),
+            (111_729, 5.3),
+        ];
+        let changes = [110_073];
+        // Rows as diff.rs writes them: column A = side `a`. `d` = how much
+        // EARLIER side b's instants are than side a's.
+        let run = |a: MediaCapture, b: MediaCapture, d: i64| {
+            let mut rep = Report::default();
+            for (at, path, x, y) in [
+                (
+                    "capture/cam0#0",
+                    "(spawn ms after start)",
+                    130_628,
+                    130_628 - d,
+                ),
+                (
+                    "kvs/xorgate-{id}-cam0#1",
+                    "(spawn ms after start)",
+                    150_695,
+                    150_695 - d,
+                ),
+                (&format!("{sid}/00006")[..], "durationMs", 7_423, 7_423 + d),
+            ] {
+                let st = if path == "durationMs" {
+                    "sidecar"
+                } else {
+                    "children"
+                };
+                rep.push(mm(st, at, path, x.to_string(), y.to_string(), UNTOLERATED));
+            }
+            d30_js_late_shed(&a, &b, 0, &changes, &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        let ok = vec!["T8/d30-js-late-shed".to_string(); 3];
+        let unt = vec![UNTOLERATED.to_string(); 3];
+        // JS (later by 1013) vs Rust: tolerated, in either column order.
+        assert_eq!(
+            run(side("js", 0, &stale), side("rust", 1_013, &fresh), 1_013),
+            ok
+        );
+        assert_eq!(
+            run(side("rust", 1_013, &fresh), side("js", 0, &stale), -1_013),
+            ok
+        );
+        // Sides swapped: the RUST side is the later one.
+        assert_eq!(
+            run(side("rust", 0, &stale), side("js", 1_013, &fresh), 1_013),
+            unt
+        );
+        // Δ outside one shed period.
+        assert_eq!(
+            run(side("js", 0, &stale), side("rust", 1_300, &fresh), 1_300),
+            unt
+        );
+        // No stale-reuse evidence: the JS recorder already carried 5.30.
+        assert_eq!(
+            run(side("js", 0, &fresh), side("rust", 1_013, &fresh), 1_013),
+            unt
+        );
+        // js/js and rust/rust: never.
+        assert_eq!(
+            run(side("js", 0, &stale), side("js", 1_013, &stale), 1_013),
+            unt
+        );
+        assert_eq!(
+            run(side("rust", 0, &stale), side("rust", 1_013, &fresh), 1_013),
+            unt
+        );
     }
 
     /// T14: a telemetry object PUT on one side only is tolerated only when it
