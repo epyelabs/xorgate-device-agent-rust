@@ -13,6 +13,7 @@ pub mod logs;
 pub mod process_inspect;
 pub mod set;
 pub mod status;
+pub mod update;
 pub mod version;
 
 /// `VALUE_FLAGS` (`cli.tsx:28-39`).
@@ -65,6 +66,8 @@ Commands:
              e.g. 'set recording.telemetry.enabled on', 'set recording.telemetry.rateHz 10')
   logs       Print the daemon log   (-f follow, -n N lines, --clear truncate;
              the journal of xorgate-agent-rs when there is no agent.log)
+  update     Fetch the latest agent build, install it, and restart the service
+             (sudo; --tag <version> pins a build, --from <url> overrides the bucket)
 
 Agent flags (forwarded to run):
   --offline              Run without AWS (stub mqtt + simulator) — no creds needed
@@ -96,6 +99,7 @@ pub fn main(argv: &[String]) -> i32 {
         Some("status") => status::main(&rest),
         Some("logs") => logs::main(&rest),
         Some("set") => set::main(&rest),
+        Some("update") => update::main(&rest),
         None | Some("help") => {
             println!("{}", usage(&crate::build_info::load().format()));
             0
@@ -106,7 +110,7 @@ pub fn main(argv: &[String]) -> i32 {
             );
             1
         }
-        Some(c @ ("update" | "pipeline" | "recording" | "led" | "sms" | "manage" | "monitor")) => {
+        Some(c @ ("pipeline" | "recording" | "led" | "sms" | "manage" | "monitor")) => {
             eprintln!("xorgate-rs: '{c}' arrives in a later build");
             1
         }

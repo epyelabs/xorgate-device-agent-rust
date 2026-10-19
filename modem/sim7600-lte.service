@@ -1,0 +1,70 @@
+[Unit]
+Description=SIM7600 Resilient LTE Connection Manager (xorgate)
+Documentation=https://github.com/xorgate/xorgate-device-agent
+# Start after basic system init, but before most network-dependent services
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+# Prevent conflict with ModemManager if installed
+Conflicts=ModemManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sim7600-lte.sh
+Restart=always
+RestartSec=10
+
+# Configurable overrides via environment (or drop-in override file)
+# Create /etc/systemd/system/sim7600-lte.service.d/override.conf to customize:
+#   [Service]
+#   Environment="SIM7600_SERIAL=/dev/ttyUSB2"
+#   Environment="SIM7600_IFACE=usb0"
+#   Environment="SIM7600_PING_HOST=8.8.8.8"
+#   Environment="SIM7600_MIN_CSQ=10"
+#   Environment="SIM7600_GOOD_CSQ=15"
+#   Environment="SIM7600_ENABLE_GPS=1"
+# GNSS tuning (defaults live in the script):
+#   Environment="SIM7600_GNSS_MODE=15"        # extra constellations bitmask (GLO|BDS|GAL|QZSS)
+#   Environment="SIM7600_GNSS_DPO=0"          # 1 = duty-cycled power saving
+#   Environment="SIM7600_GNSS_XTRA=1"         # XTRA predicted-ephemeris assistance
+#   Environment="SIM7600_SUPL_URL=supl.google.com:7276"   # "" = plain standalone
+#   Environment="SIM7600_GNSS_ACCURACY=100"   # AT+CGPSHOR meters
+# Recovery tuning (defaults live in the script). NOTE: with a second ping
+# target, driving the ladder by blackholing PING_HOST needs BOTH overridden.
+#   Environment="SIM7600_PING_HOST2=1.1.1.1"  # 2nd WAN probe; down = both fail; "" = single-target
+#   Environment="SIM7600_CRESET_MIN_RADIO_CYCLES=2"   # radio cycles that must fire before a reset may
+#   Environment="SIM7600_CRESET_FIX_DEFER_SECS=1800"  # with a live GNSS fix, LTE must be down this long
+#   Environment="SIM7600_CRESET_BUDGET_MAX=6"         # resets allowed per rolling window
+#   Environment="SIM7600_CRESET_BUDGET_WINDOW_SECS=86400"
+# GNSS wedge self-healing (health loop; restart is engine-only, never CRESET):
+#   Environment="SIM7600_GNSS_WEDGE_RESTART_SECS=1200"       # engine on but fixless this long -> clean engine restart
+#   Environment="SIM7600_GNSS_WEDGE_RESTART_MAX_PER_HOUR=1"  # restart cap per rolling hour; 0 = detect/log only
+# Dead-zone nudge raw values (override the deadZoneProfile preset — dev only):
+#   Environment="SIM7600_DEADZONE_NUDGE_SECS=600"     # base interval before first nudge
+#   Environment="SIM7600_DEADZONE_NUDGE_CAP_SECS=3600" # backoff ceiling
+#   Environment="SIM7600_DEADZONE_CYCLES_BEFORE_RESET=3" # failed radio cycles before reset; -1 = never
+# Recovery *policy* is NOT env: lteRecovery.gpsFixResetPolicy ("defer" |
+# "veto-deadzone") and lteRecovery.deadZoneProfile ("conservative" |
+# "balanced" | "aggressive") come from the agent's settings.json (cloud
+# device settings), read live; missing/invalid = defer/balanced.
+# GNSS antenna bias (active vs passive antenna) is NOT an env knob: it comes
+# from the agent's settings.json (web device settings page or
+# `xorgate set gps-antenna <active|passive>`); missing key = passive/bias off.
+#   Environment="SIM7600_SETTINGS_FILE=/var/lib/xorgate/settings.json"  # dev relocation only
+Environment="SIM7600_SERIAL=/dev/ttyUSB2"
+Environment="SIM7600_IFACE=usb0"
+Environment="SIM7600_PING_HOST=8.8.8.8"
+Environment="SIM7600_MIN_CSQ=10"
+Environment="SIM7600_GOOD_CSQ=15"
+Environment="SIM7600_ENABLE_GPS=1"
+
+# Output goes to journald (use: journalctl -u sim7600-lte -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sim7600-lte
+
+# Give the script enough time to wait for signal on startup
+TimeoutStartSec=120
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

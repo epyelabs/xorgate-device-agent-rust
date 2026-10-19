@@ -1,0 +1,1082 @@
+{
+  "jsSourceFile": "src/commands/update.ts",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "npx tsx tools/replay/js/dump-update-plan.mts (Phase 4 WP4) in a git-archive 89b5c64 scratch copy; REAL update.ts with only its absolute path constants re-rooted into a temp dir + an export line; fake visudo/curl on PATH",
+  "cases": [
+    {
+      "name": "plain",
+      "op": "parseEnvFile",
+      "input": "DEVICE_ID=abc\nDEVICE_DIST_BUCKET_URL=https://dist.example.com/b\n",
+      "expected": {
+        "DEVICE_ID": "abc",
+        "DEVICE_DIST_BUCKET_URL": "https://dist.example.com/b"
+      }
+    },
+    {
+      "name": "double quotes",
+      "op": "parseEnvFile",
+      "input": "A=\"quoted value\"\n",
+      "expected": {
+        "A": "quoted value"
+      }
+    },
+    {
+      "name": "single quotes",
+      "op": "parseEnvFile",
+      "input": "A='single'\n",
+      "expected": {
+        "A": "single"
+      }
+    },
+    {
+      "name": "mismatched quotes strip independently",
+      "op": "parseEnvFile",
+      "input": "A=\"x'\nB='y\nC=z\"\n",
+      "expected": {
+        "A": "x",
+        "B": "y",
+        "C": "z"
+      }
+    },
+    {
+      "name": "lone quote",
+      "op": "parseEnvFile",
+      "input": "A=\"\nB=''\n",
+      "expected": {
+        "A": "",
+        "B": ""
+      }
+    },
+    {
+      "name": "inner quotes kept",
+      "op": "parseEnvFile",
+      "input": "A=\"a\"b\"\n",
+      "expected": {
+        "A": "a\"b"
+      }
+    },
+    {
+      "name": "whitespace around key and =",
+      "op": "parseEnvFile",
+      "input": "   KEY   =   spaced value   \n",
+      "expected": {
+        "KEY": "spaced value"
+      }
+    },
+    {
+      "name": "tabs",
+      "op": "parseEnvFile",
+      "input": "\tT\t=\tv\t\n",
+      "expected": {
+        "T": "v"
+      }
+    },
+    {
+      "name": "export prefix does not match",
+      "op": "parseEnvFile",
+      "input": "export A=1\nB=2\n",
+      "expected": {
+        "B": "2"
+      }
+    },
+    {
+      "name": "comments and blanks skipped",
+      "op": "parseEnvFile",
+      "input": "# a comment\n\n   # indented\nA=1 # trailing comment kept\n",
+      "expected": {
+        "A": "1 # trailing comment kept"
+      }
+    },
+    {
+      "name": "= in value",
+      "op": "parseEnvFile",
+      "input": "URL=https://x/y?a=b&c=d\n",
+      "expected": {
+        "URL": "https://x/y?a=b&c=d"
+      }
+    },
+    {
+      "name": "empty value",
+      "op": "parseEnvFile",
+      "input": "A=\nB= \n",
+      "expected": {
+        "A": "",
+        "B": ""
+      }
+    },
+    {
+      "name": "CRLF lines with values are skipped, empty ones kept",
+      "op": "parseEnvFile",
+      "input": "A=1\r\nB=\r\nC=3\n",
+      "expected": {
+        "B": "",
+        "C": "3"
+      }
+    },
+    {
+      "name": "CR only line",
+      "op": "parseEnvFile",
+      "input": "A=1\rB=2\n",
+      "expected": {}
+    },
+    {
+      "name": "key rules",
+      "op": "parseEnvFile",
+      "input": "1A=no\n_A=yes\nA-B=no\nAB9=yes\n=novalue\n",
+      "expected": {
+        "_A": "yes",
+        "AB9": "yes"
+      }
+    },
+    {
+      "name": "duplicate keys keep first position, last value",
+      "op": "parseEnvFile",
+      "input": "A=1\nB=2\nA=3\n",
+      "expected": {
+        "A": "3",
+        "B": "2"
+      }
+    },
+    {
+      "name": "no trailing newline",
+      "op": "parseEnvFile",
+      "input": "A=1",
+      "expected": {
+        "A": "1"
+      }
+    },
+    {
+      "name": "BOM before first key",
+      "op": "parseEnvFile",
+      "input": "﻿A=1\n",
+      "expected": {
+        "A": "1"
+      }
+    },
+    {
+      "name": "unicode whitespace",
+      "op": "parseEnvFile",
+      "input": " A =　v \n",
+      "expected": {
+        "A": "v"
+      }
+    },
+    {
+      "name": "line separator in value",
+      "op": "parseEnvFile",
+      "input": "A=x y\nB=ok\n",
+      "expected": {
+        "B": "ok"
+      }
+    },
+    {
+      "name": "nbsp value trimmed then quotes",
+      "op": "parseEnvFile",
+      "input": "A=  \"v\"  \n",
+      "expected": {
+        "A": "v"
+      }
+    },
+    {
+      "name": "value with spaces inside quotes",
+      "op": "parseEnvFile",
+      "input": "A=\"  padded  \"\n",
+      "expected": {
+        "A": "  padded  "
+      }
+    },
+    {
+      "name": "empty file",
+      "op": "parseEnvFile",
+      "input": "",
+      "expected": {}
+    },
+    {
+      "name": "missing file",
+      "op": "parseEnvFile",
+      "input": null,
+      "expected": {}
+    },
+    {
+      "name": "install.sh drop-in",
+      "op": "serviceUser",
+      "input": "[Service]\nUser=pi\n",
+      "expected": "pi"
+    },
+    {
+      "name": "spaces",
+      "op": "serviceUser",
+      "input": "[Service]\n  User = vynci  \n",
+      "expected": "vynci"
+    },
+    {
+      "name": "Group line first",
+      "op": "serviceUser",
+      "input": "[Service]\nGroup=pi\nUser=alice\n",
+      "expected": "alice"
+    },
+    {
+      "name": "first User wins",
+      "op": "serviceUser",
+      "input": "User=a\nUser=b\n",
+      "expected": "a"
+    },
+    {
+      "name": "root",
+      "op": "serviceUser",
+      "input": "[Service]\nUser=root\n",
+      "expected": "root"
+    },
+    {
+      "name": "no User",
+      "op": "serviceUser",
+      "input": "[Service]\nGroup=pi\n",
+      "expected": null
+    },
+    {
+      "name": "Username does not match",
+      "op": "serviceUser",
+      "input": "Username=pi\n",
+      "expected": null
+    },
+    {
+      "name": "empty value then next line",
+      "op": "serviceUser",
+      "input": "User=\npi\n",
+      "expected": "pi"
+    },
+    {
+      "name": "commented",
+      "op": "serviceUser",
+      "input": "#User=pi\n",
+      "expected": null
+    },
+    {
+      "name": "CR line start",
+      "op": "serviceUser",
+      "input": "[Service]\rUser=cr\n",
+      "expected": "cr"
+    },
+    {
+      "name": "value stops at whitespace",
+      "op": "serviceUser",
+      "input": "User=pi extra\n",
+      "expected": "pi"
+    },
+    {
+      "name": "missing drop-in",
+      "op": "serviceUser",
+      "input": null,
+      "expected": null
+    },
+    {
+      "name": "clock grant, user pi, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": "pi",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": "# Installed by xorgate. Allows the agent (running as pi) to apply an\n# offline GPS/NITZ clock step. See device-agent src/agent/clock-step.ts.\npi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-setclock\n",
+        "logs": []
+      }
+    },
+    {
+      "name": "clock grant, user pi, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": "pi",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": [
+          "[xorgate] warning: clock sudoers drop-in failed visudo validation; offline clock steps will not work"
+        ]
+      }
+    },
+    {
+      "name": "update grant, user pi, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": "pi",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": "# Installed by xorgate. Allows the agent (running as pi) to start the\n# one-shot self-update unit on a cloud-issued 'update' command, and nothing\n# else. See device-agent src/agent/commands.ts + systemd/xorgate-updater.service.\npi ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater.service\n",
+        "logs": []
+      }
+    },
+    {
+      "name": "update grant, user pi, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": "pi",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": [
+          "[xorgate] warning: update sudoers drop-in failed visudo validation; remote updates will not work"
+        ]
+      }
+    },
+    {
+      "name": "camrotate grant, user pi, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": "pi",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": "# Installed by xorgate. Allows the agent (running as pi) to set the\n# camera overlay's rotation parameter in the boot config, and nothing else.\n# See device-agent src/hardware/boot-config.ts + system/xorgate-camrotate.\npi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camrotate\n",
+        "logs": []
+      }
+    },
+    {
+      "name": "camrotate grant, user pi, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": "pi",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": [
+          "[xorgate] warning: camrotate sudoers drop-in failed visudo validation; camera rotation will not apply"
+        ]
+      }
+    },
+    {
+      "name": "clock grant, user vynci, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": "vynci",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": "# Installed by xorgate. Allows the agent (running as vynci) to apply an\n# offline GPS/NITZ clock step. See device-agent src/agent/clock-step.ts.\nvynci ALL=(root) NOPASSWD: /usr/local/bin/xorgate-setclock\n",
+        "logs": []
+      }
+    },
+    {
+      "name": "clock grant, user vynci, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": "vynci",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": [
+          "[xorgate] warning: clock sudoers drop-in failed visudo validation; offline clock steps will not work"
+        ]
+      }
+    },
+    {
+      "name": "update grant, user vynci, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": "vynci",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": "# Installed by xorgate. Allows the agent (running as vynci) to start the\n# one-shot self-update unit on a cloud-issued 'update' command, and nothing\n# else. See device-agent src/agent/commands.ts + systemd/xorgate-updater.service.\nvynci ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater.service\n",
+        "logs": []
+      }
+    },
+    {
+      "name": "update grant, user vynci, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": "vynci",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": [
+          "[xorgate] warning: update sudoers drop-in failed visudo validation; remote updates will not work"
+        ]
+      }
+    },
+    {
+      "name": "camrotate grant, user vynci, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": "vynci",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": "# Installed by xorgate. Allows the agent (running as vynci) to set the\n# camera overlay's rotation parameter in the boot config, and nothing else.\n# See device-agent src/hardware/boot-config.ts + system/xorgate-camrotate.\nvynci ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camrotate\n",
+        "logs": []
+      }
+    },
+    {
+      "name": "camrotate grant, user vynci, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": "vynci",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": [
+          "[xorgate] warning: camrotate sudoers drop-in failed visudo validation; camera rotation will not apply"
+        ]
+      }
+    },
+    {
+      "name": "clock grant, user root, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": "root",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "clock grant, user root, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": "root",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "update grant, user root, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": "root",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "update grant, user root, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": "root",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "camrotate grant, user root, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": "root",
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "camrotate grant, user root, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": "root",
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "clock grant, user null, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": null,
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "clock grant, user null, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "clock",
+        "user": null,
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "update grant, user null, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": null,
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "update grant, user null, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "update",
+        "user": null,
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "camrotate grant, user null, visudo exit 0",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": null,
+        "visudoExit": 0
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "camrotate grant, user null, visudo exit 1",
+      "op": "sudoers",
+      "input": {
+        "grant": "camrotate",
+        "user": null,
+        "visudoExit": 1
+      },
+      "expected": {
+        "body": null,
+        "logs": []
+      }
+    },
+    {
+      "name": "not root",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {},
+        "agentEnv": null,
+        "uid": 1000,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [],
+        "err": [
+          "[xorgate] update failed: run with sudo (writes /opt, /usr/local/bin, /etc/systemd): sudo xorgate update"
+        ],
+        "exit": 1,
+        "curlArgv": null
+      }
+    },
+    {
+      "name": "no bucket anywhere",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {},
+        "agentEnv": null,
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [],
+        "err": [
+          "[xorgate] update failed: no dist bucket URL — set DEVICE_DIST_BUCKET_URL in /etc/xorgate/agent.env or pass --from <url>"
+        ],
+        "exit": 1,
+        "curlArgv": null
+      }
+    },
+    {
+      "name": "agent.env bucket, default latest",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {},
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://file.example/dist/xorgate-agent-latest.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://file.example/dist/xorgate-agent-latest.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "agent.env bucket trailing slash stripped once",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {},
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist//\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://file.example/dist//xorgate-agent-latest.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://file.example/dist//xorgate-agent-latest.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "agent.env version pin",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {},
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\nDEVICE_DIST_VERSION=v0.1.2\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://file.example/dist/xorgate-agent-v0.1.2.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://file.example/dist/xorgate-agent-v0.1.2.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "env beats agent.env",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {
+          "DEVICE_DIST_BUCKET_URL": "https://env.example/d/",
+          "DEVICE_DIST_VERSION": "abc1234"
+        },
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\nDEVICE_DIST_VERSION=v0.1.2\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://env.example/d/xorgate-agent-abc1234.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://env.example/d/xorgate-agent-abc1234.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "--from beats env",
+      "op": "updateCommand",
+      "input": {
+        "argv": [
+          "--from",
+          "https://flag.example/x/"
+        ],
+        "env": {
+          "DEVICE_DIST_BUCKET_URL": "https://env.example/d"
+        },
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://flag.example/x/xorgate-agent-latest.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://flag.example/x/xorgate-agent-latest.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "--tag beats env + agent.env",
+      "op": "updateCommand",
+      "input": {
+        "argv": [
+          "--tag",
+          "deadbee"
+        ],
+        "env": {
+          "DEVICE_DIST_BUCKET_URL": "https://env.example/d",
+          "DEVICE_DIST_VERSION": "abc1234"
+        },
+        "agentEnv": "DEVICE_DIST_VERSION=v0.1.2\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://env.example/d/xorgate-agent-deadbee.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://env.example/d/xorgate-agent-deadbee.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "empty env bucket is not nullish",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {
+          "DEVICE_DIST_BUCKET_URL": ""
+        },
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [],
+        "err": [
+          "[xorgate] update failed: no dist bucket URL — set DEVICE_DIST_BUCKET_URL in /etc/xorgate/agent.env or pass --from <url>"
+        ],
+        "exit": 1,
+        "curlArgv": null
+      }
+    },
+    {
+      "name": "empty env version is used as-is",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {
+          "DEVICE_DIST_VERSION": ""
+        },
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\nDEVICE_DIST_VERSION=v9\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://file.example/dist/xorgate-agent-.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://file.example/dist/xorgate-agent-.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "bucket of just a slash",
+      "op": "updateCommand",
+      "input": {
+        "argv": [
+          "--from",
+          "/"
+        ],
+        "env": {},
+        "agentEnv": null,
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [],
+        "err": [
+          "[xorgate] update failed: no dist bucket URL — set DEVICE_DIST_BUCKET_URL in /etc/xorgate/agent.env or pass --from <url>"
+        ],
+        "exit": 1,
+        "curlArgv": null
+      }
+    },
+    {
+      "name": "--from without a value falls through",
+      "op": "updateCommand",
+      "input": {
+        "argv": [
+          "--from"
+        ],
+        "env": {},
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://file.example/dist/xorgate-agent-latest.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://file.example/dist/xorgate-agent-latest.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "--tag followed by another flag takes it as the value",
+      "op": "updateCommand",
+      "input": {
+        "argv": [
+          "--tag",
+          "--from",
+          "https://flag.example/x"
+        ],
+        "env": {},
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=https://file.example/dist\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://flag.example/x/xorgate-agent---from.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://flag.example/x/xorgate-agent---from.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "quoted agent.env values",
+      "op": "updateCommand",
+      "input": {
+        "argv": [],
+        "env": {},
+        "agentEnv": "DEVICE_DIST_BUCKET_URL=\"https://file.example/q\"\nDEVICE_DIST_VERSION='v1'\n",
+        "uid": 0,
+        "curlStderr": "curl: (22) The requested URL returned error: 404",
+        "curlExit": 22
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://file.example/q/xorgate-agent-v1.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (22) The requested URL returned error: 404); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://file.example/q/xorgate-agent-v1.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "curl fails with empty stderr",
+      "op": "updateCommand",
+      "input": {
+        "argv": [
+          "--from",
+          "https://flag.example/x"
+        ],
+        "env": {},
+        "agentEnv": null,
+        "uid": 0,
+        "curlStderr": "",
+        "curlExit": 7
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://flag.example/x/xorgate-agent-latest.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (7); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://flag.example/x/xorgate-agent-latest.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    },
+    {
+      "name": "curl stderr trimmed",
+      "op": "updateCommand",
+      "input": {
+        "argv": [
+          "--from",
+          "https://flag.example/x"
+        ],
+        "env": {},
+        "agentEnv": null,
+        "uid": 0,
+        "curlStderr": "  curl: (6) Could not resolve host: flag.example\n",
+        "curlExit": 6
+      },
+      "expected": {
+        "out": [
+          "[xorgate] downloading https://flag.example/x/xorgate-agent-latest.tar.gz"
+        ],
+        "err": [
+          "[xorgate] update failed: download failed (curl: (6) Could not resolve host: flag.example); check the version/tag and bucket"
+        ],
+        "exit": 1,
+        "curlArgv": [
+          "-fsSL",
+          "--retry",
+          "3",
+          "--retry-delay",
+          "2",
+          "https://flag.example/x/xorgate-agent-latest.tar.gz",
+          "-o",
+          "<tgz>"
+        ]
+      }
+    }
+  ]
+}

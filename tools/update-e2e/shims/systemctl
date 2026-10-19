@@ -1,0 +1,21 @@
+#!/bin/sh
+# systemctl shim (tools/update-e2e): logs every call to /run/e2e/systemctl.log.
+#   is-active --quiet <unit>  → 0 iff /run/e2e/active-<unit> exists, else 3
+#   restart <unit>            → fails (exit 1 + systemd-like stderr) iff
+#                               /run/e2e/restart-fails exists
+#   anything else             → 0
+mkdir -p /run/e2e
+echo "$*" >> /run/e2e/systemctl.log
+case "$1" in
+  is-active)
+    unit=$3
+    [ -e "/run/e2e/active-$unit" ] && exit 0
+    exit 3 ;;
+  restart)
+    if [ -e /run/e2e/restart-fails ]; then
+      echo "Job for $2.service failed because the control process exited with error code." >&2
+      exit 1
+    fi
+    exit 0 ;;
+esac
+exit 0
