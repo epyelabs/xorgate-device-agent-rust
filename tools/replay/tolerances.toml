@@ -69,6 +69,11 @@ tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage
 # phases differ): the player samples /proc/stat, and a cpu difference beyond
 # ±10 is `T3/host` only if the host's own busy share over the two agents' 1 s
 # windows (ending at each `ts`) differs by at least the excess.
+# BIAS GUARD (review-wp6 FLAG 1, narrowed): per run and host-referenced field,
+# if the median signed A − B over ALL telemetry pairs exceeds ½·tol, or
+# T3/host covers more than 5 % of the pairs, every T3/host row of that field
+# is UNTOLERATED (host swing explains noise, never a systematic formula error);
+# diff.md prints both figures (`T3/host bias guard …`).
 host_reference = { "metrics.system.ram_usage.value" = "ram", "metrics.system.cpu_usage.value" = "cpu" }
 
 [[rule]]

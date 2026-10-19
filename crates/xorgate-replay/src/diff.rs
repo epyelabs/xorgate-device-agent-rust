@@ -826,6 +826,10 @@ pub struct Report {
     pub inputs: BTreeMap<String, String>,
     /// Hits per tolerance row, every row of the table (0 included).
     pub hits: Vec<(String, usize)>,
+    /// Signed A − B of every telemetry pair of a host-referenced T3 field
+    /// (equal pairs = 0): the T3/host bias guard's input.
+    #[serde(skip)]
+    pub host_diffs: BTreeMap<String, Vec<f64>>,
 }
 
 impl Report {
@@ -1275,6 +1279,19 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
         // Per-kind comparison counts: the leaves of the larger document.
         let n = a.map_or(0, leaf_count).max(b.map_or(0, leaf_count));
         out.stats.entry(cx.stream.clone()).or_default().leaves += n;
+        // T3/host bias guard input: every pair's signed A − B (0 = equal).
+        if let (Some(x), Some(y)) = (a, b) {
+            for r in cx.table.of_kind("numeric", &cx.stream) {
+                for hp in r.host_reference.keys() {
+                    if let (Some(p), Some(q)) = (
+                        lookup(x, hp).and_then(Value::as_f64),
+                        lookup(y, hp).and_then(Value::as_f64),
+                    ) {
+                        out.host_diffs.entry(hp.clone()).or_default().push(p - q);
+                    }
+                }
+            }
+        }
     }
     if a == b && num_strict_eq(a, b) {
         return;
@@ -2527,6 +2544,7 @@ pub fn diff_with(
     diff_sudo(a, b, table, &mut rep);
 
     cap_row_hits(&mut rep, table, play, "input-edge");
+    host_bias_guard(&mut rep, table);
 
     // Per-kind comparison counts (review-wp7): every kind is listed.
     for k in EXPECTED_KINDS {
@@ -2564,6 +2582,56 @@ const CORE_KINDS: &[&str] = &["telemetry", "report", "events", "state", "mqtt-fl
 /// A row with `max_hits_per_10min`: above that many distinct ticks per 10 min
 /// of run every hit of the row becomes UNTOLERATED (a systematic shift is a
 /// bug, not timing); the count is printed either way.
+/// T3/host BIAS GUARD (review-wp6 FLAG 1, narrowed): host attribution may
+/// only explain rig noise, never a systematic Rust formula error (MemFree vs
+/// MemAvailable, cache counting). Per run and host-referenced field: if the
+/// median signed A − B over ALL telemetry pairs exceeds ½·tol, or `T3/host`
+/// covers more than 5 % of the pairs, every `T3/host` row of that field
+/// becomes UNTOLERATED. Figures in diff.md either way.
+fn host_bias_guard(rep: &mut Report, table: &Table) {
+    let Report {
+        mismatches,
+        stats,
+        inputs,
+        host_diffs,
+        ..
+    } = rep;
+    for (path, d) in host_diffs.iter() {
+        let Some((_, tol)) = table.numeric("telemetry", path) else {
+            continue;
+        };
+        let mut v = d.clone();
+        v.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        let med = v.get(v.len() / 2).copied().unwrap_or(0.0);
+        let host = mismatches
+            .iter()
+            .filter(|m| m.stream == "telemetry" && m.path == *path && m.tol.ends_with("/host"))
+            .count();
+        let share = host as f64 * 100.0 / v.len().max(1) as f64;
+        let biased = med.abs() > tol / 2.0 || share > 5.0;
+        inputs.insert(
+            format!("T3/host bias guard {path}"),
+            format!(
+                "{} pairs, median A−B {med:+.3} (limit ±{:.3}), T3/host {host} ({share:.1} %, limit 5 %){}",
+                v.len(),
+                tol / 2.0,
+                if biased { " → BIASED: every T3/host row of this field UNTOLERATED" } else { "" }
+            ),
+        );
+        if biased {
+            for m in mismatches
+                .iter_mut()
+                .filter(|m| m.stream == "telemetry" && m.path == *path && m.tol.ends_with("/host"))
+            {
+                m.tol = UNTOLERATED.into();
+                let st = stats.entry(m.stream.clone()).or_default();
+                st.tolerated = st.tolerated.saturating_sub(1);
+                st.untolerated += 1;
+            }
+        }
+    }
+}
+
 fn cap_row_hits(rep: &mut Report, table: &Table, play: &PlayInfo, row_id: &str) {
     let Some((rid, row)) = table.decision_row(row_id) else {
         return;
@@ -4626,6 +4694,22 @@ mod tests {
         assert!(rep.untolerated() > 0);
     }
 
+    /// 40 more telemetry ticks with an EQUAL ram value on both sides (ts
+    /// 40 s + k s, B `off` ms later): a run's pairs are mostly equal, so the
+    /// T3/host bias guard (≤ 5 % host rows, |median| ≤ ½·tol) stays quiet.
+    fn pad_ram(mut v: Vec<Msg>, off: i64) -> Vec<Msg> {
+        for k in 0..40 {
+            let ts = 40_000 + k * 1000 + off;
+            v.push(msg(
+                ts,
+                "telemetry",
+                serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":100 + k,
+                    "metrics":{"system":{"ram_usage":{"value":20.0,"unit":"%"}}}}),
+            ));
+        }
+        v
+    }
+
     #[test]
     fn ram_beyond_t3_is_host_only_where_the_host_moved() {
         let t = table();
@@ -4649,17 +4733,23 @@ mod tests {
         };
         let a = cap(
             "js",
-            vec![
-                msg(10_000, "telemetry", ram(10_000, 1, 20.0)),
-                msg(20_000, "telemetry", ram(20_000, 2, 20.0)),
-            ],
+            pad_ram(
+                vec![
+                    msg(10_000, "telemetry", ram(10_000, 1, 20.0)),
+                    msg(20_000, "telemetry", ram(20_000, 2, 20.0)),
+                ],
+                0,
+            ),
         );
         let b = cap(
             "rust",
-            vec![
-                msg(10_200, "telemetry", ram(10_200, 1, 25.0)),
-                msg(20_200, "telemetry", ram(20_200, 2, 25.0)),
-            ],
+            pad_ram(
+                vec![
+                    msg(10_200, "telemetry", ram(10_200, 1, 25.0)),
+                    msg(20_200, "telemetry", ram(20_200, 2, 25.0)),
+                ],
+                200,
+            ),
         );
         let rep = diff(&a, &b, &play, &[], &t);
         let got: Vec<(&str, &str)> = rep
@@ -4675,8 +4765,40 @@ mod tests {
                 ("ts A 20000 / B 20200", UNTOLERATED),
             ],
             "{:?}",
-            rep.mismatches
+            rep.inputs
         );
+        // BIAS GUARD (review-wp6): a Rust formula that reads 0.6 points high
+        // on EVERY tick (within T3's ±1 each, median > ½·tol) turns every
+        // T3/host row of the field UNTOLERATED.
+        let biased = |v: Vec<Msg>| -> Vec<Msg> {
+            v.into_iter()
+                .map(|mut m| {
+                    if let Some(x) = m.payload.pointer_mut("/metrics/system/ram_usage/value") {
+                        *x = serde_json::json!(x.as_f64().unwrap() + 0.6);
+                    }
+                    m
+                })
+                .collect()
+        };
+        let b2 = cap("rust", biased(b.msgs.clone()));
+        let rep = diff(&a, &b2, &play, &[], &t);
+        let host_rows: Vec<&str> = rep
+            .mismatches
+            .iter()
+            .filter(|m| {
+                m.path == "metrics.system.ram_usage.value" && m.at == "ts A 10000 / B 10200"
+            })
+            .map(|m| m.tol.as_str())
+            .collect();
+        assert_eq!(host_rows, vec![UNTOLERATED], "{:?}", rep.inputs);
+        // …and T3/host on > 5 % of the pairs does too (1 host row of 1 pair).
+        let few_a = cap("js", vec![msg(10_000, "telemetry", ram(10_000, 1, 20.0))]);
+        let few_b = cap("rust", vec![msg(10_200, "telemetry", ram(10_200, 1, 25.0))]);
+        let rep = diff(&few_a, &few_b, &play, &[], &t);
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "metrics.system.ram_usage.value" && m.tol == UNTOLERATED));
     }
 
     #[test]
@@ -4695,8 +4817,14 @@ mod tests {
             ..Default::default()
         };
         let tol_ram = |bv: f64| {
-            let a = cap("js", vec![msg(10_000, "telemetry", ram(10_000, 20.0))]);
-            let b = cap("rust", vec![msg(10_200, "telemetry", ram(10_200, bv))]);
+            let a = cap(
+                "js",
+                pad_ram(vec![msg(10_000, "telemetry", ram(10_000, 20.0))], 0),
+            );
+            let b = cap(
+                "rust",
+                pad_ram(vec![msg(10_200, "telemetry", ram(10_200, bv))], 200),
+            );
             diff(&a, &b, &play, &[], &t)
                 .mismatches
                 .into_iter()
@@ -4720,8 +4848,14 @@ mod tests {
             ..Default::default()
         };
         let tol_osc = |bv: f64| {
-            let a = cap("js", vec![msg(20_000, "telemetry", ram(20_000, 23.0))]);
-            let b = cap("rust", vec![msg(20_200, "telemetry", ram(20_200, bv))]);
+            let a = cap(
+                "js",
+                pad_ram(vec![msg(20_000, "telemetry", ram(20_000, 23.0))], 0),
+            );
+            let b = cap(
+                "rust",
+                pad_ram(vec![msg(20_200, "telemetry", ram(20_200, bv))], 200),
+            );
             diff(&a, &b, &play_osc, &[], &t)
                 .mismatches
                 .into_iter()
