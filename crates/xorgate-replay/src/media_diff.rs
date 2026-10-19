@@ -2236,19 +2236,23 @@ fn js_stale_evidence(rec: &[(i64, String)], changes: &[i64], ts: i64, msg: &str)
     p.1 != q.1 && changes.iter().any(|c| *c > p.0 && *c <= d - 50)
 }
 
-/// Row `T8/d30-js-late-shed` (orchestrator, option (b)): D30 as seen
-/// JS-vs-Rust — the JS shed tick reused its recorder's ≤ 1 s old reading at
-/// a power crossing (TS system.ts:104-113), so ONE shed/restore transition
-/// lands one shed period LATER on the JS side; Rust is never stale.
-/// - JS-vs-Rust ONLY (first statement), JS the LATER side.
-/// - Per transition (shed events paired by masked text + occurrence):
-///   Δ = JS − Rust ∈ [850, 1150] ms AND `js_stale_evidence`; a transition
-///   right after a tolerated one (dwell/restore chain) that shifts by the
-///   same Δ ±150 is its downstream effect. One shift per transition.
-/// - Downstream rows re-judged (same Δ ±150): child spawn instants (kvs and
-///   capture) within 6 s after the JS transition; sidecar `durationMs` of the
-///   session that capture started (JS shorter by Δ) or of a fragment ending
-///   within ±1.5 s of the JS transition (JS longer by Δ). Nothing else.
+/// Row `T8/d30-js-late-shed`: D30 — at a power crossing a JS shed tick may
+/// REUSE its recorder's ≤ 1 s old reading (TS system.ts:104-113), so ONE
+/// shed/restore transition lands one shed period LATER on that JS side;
+/// Rust never reuses.
+/// - Pairs (first statement): JS-vs-Rust with the JS side LATER, or JS-vs-JS
+///   with EITHER side later; anything else (rust-vs-rust, a Rust-later
+///   transition) never applies.
+/// - Per transition (shed events paired by masked text + occurrence): the
+///   later side is a JS side, Δ = later − earlier ∈ [850, 1150] ms AND
+///   `js_stale_evidence` on THAT side; or it is the next transition of the
+///   same chain shifted the same way by the same Δ ±150. One shift per
+///   transition.
+/// - Downstream rows re-judged (same direction, same Δ ±150): child spawn
+///   instants within 6 s after the later side's transition; sidecar
+///   `durationMs` of the session that capture started (later side shorter by
+///   Δ) or of a fragment ending within ±1.5 s of it (later side longer by
+///   Δ). Nothing else.
 fn d30_js_late_shed(
     a: &MediaCapture,
     b: &MediaCapture,
@@ -2257,9 +2261,12 @@ fn d30_js_late_shed(
     table: &Table,
     rep: &mut Report,
 ) {
-    let (js, rs, js_is_a) = match (a.kind.as_str(), b.kind.as_str()) {
-        ("js", "rust") => (a, b, true),
-        ("rust", "js") => (b, a, false),
+    // Which columns may be the LATER (stale) side: only a JS one, and
+    // against Rust only the JS side.
+    let may_lag: [bool; 2] = match (a.kind.as_str(), b.kind.as_str()) {
+        ("js", "rust") => [true, false],
+        ("rust", "js") => [false, true],
+        ("js", "js") => [true, true],
         _ => return,
     };
     let Some((rid, _)) = table.decision_row("d30-js-late-shed") else {
@@ -2268,7 +2275,7 @@ fn d30_js_late_shed(
     let id = format!("{rid}/d30-js-late-shed");
     const BAND: (i64, i64) = (850, 1150);
     const SAME: i64 = 150;
-    // Pair the transitions.
+    let sides = [a, b];
     let keyed = |m: &MediaCapture| {
         let mut ev = m.shed_events.clone();
         ev.sort();
@@ -2282,35 +2289,41 @@ fn d30_js_late_shed(
             })
             .collect::<BTreeMap<_, _>>()
     };
-    let (kj, kr) = (keyed(js), keyed(rs));
-    let rec = rec_power(js);
-    let mut pairs: Vec<(i64, i64, String)> = kj
+    let (ka, kb) = (keyed(a), keyed(b));
+    let recs = [rec_power(a), rec_power(b)];
+    // (A instant, B instant, A's msg, B's msg)
+    let mut pairs: Vec<(i64, i64, String, String)> = ka
         .iter()
-        .filter_map(|(k, (tj, msg))| kr.get(k).map(|(tr, _)| (*tj, *tr, msg.clone())))
+        .filter_map(|(k, (ta, ma))| kb.get(k).map(|(tb, mb)| (*ta, *tb, ma.clone(), mb.clone())))
         .collect();
     pairs.sort();
-    // Tolerated transitions: (JS instant, Δ).
-    let mut shifted: Vec<(i64, i64)> = Vec::new();
-    let mut prev: Option<(i64, i64)> = None; // the previous transition's (JS ts, Δ) if tolerated
-    for (tj, tr, msg) in &pairs {
-        let d = tj - tr;
-        let in_band = (BAND.0..=BAND.1).contains(&d);
-        let own = in_band && js_stale_evidence(&rec, changes, *tj, msg);
-        let chained = in_band && prev.is_some_and(|(_, pd)| (d - pd).abs() <= SAME);
-        if own || chained {
-            shifted.push((*tj, d));
-            prev = Some((*tj, d));
-        } else {
-            prev = None;
+    // Tolerated transitions: (later side index, later side's instant, Δ > 0).
+    let mut shifted: Vec<(usize, i64, i64)> = Vec::new();
+    let mut prev: Option<(usize, i64)> = None;
+    for (ta, tb, ma, mb) in &pairs {
+        let pick = [(0usize, ta - tb, *ta, ma), (1, tb - ta, *tb, mb)]
+            .into_iter()
+            .find(|(side, d, t, msg)| {
+                may_lag[*side]
+                    && (BAND.0..=BAND.1).contains(d)
+                    && (js_stale_evidence(&recs[*side], changes, *t, msg)
+                        || prev.is_some_and(|(ps, pd)| ps == *side && (d - pd).abs() <= SAME))
+            });
+        match pick {
+            Some((side, d, t, _)) => {
+                shifted.push((side, t, d));
+                prev = Some((side, d));
+            }
+            None => prev = None,
         }
     }
     if shifted.is_empty() {
         return;
     }
-    let owner = |w: i64| {
+    let owner = |side: usize, w: i64| {
         shifted
             .iter()
-            .rfind(|(t, _)| *t <= w && w - *t <= 6_000)
+            .rfind(|(s, t, _)| *s == side && *t <= w && w - *t <= 6_000)
             .copied()
     };
     let mut ok = BTreeSet::new();
@@ -2321,37 +2334,41 @@ fn d30_js_late_shed(
         let (Ok(x), Ok(y)) = (m.a.parse::<i64>(), m.b.parse::<i64>()) else {
             continue;
         };
-        let (vj, vr) = if js_is_a { (x, y) } else { (y, x) };
-        if m.stream == "children" && m.path == "(spawn ms after start)" {
-            if let Some((_, d)) = owner(start_wall + vj) {
-                if (vj - vr - d).abs() <= SAME {
-                    ok.insert(i);
-                }
+        for side in [0usize, 1] {
+            if !may_lag[side] {
+                continue;
             }
-        } else if m.stream == "sidecar" && m.path == "durationMs" {
-            let Some((sid, seq)) = m.at.rsplit_once('/') else {
-                continue;
-            };
-            let Ok(seq) = seq.parse::<u64>() else {
-                continue;
-            };
-            let started = js
-                .spawns
-                .iter()
-                .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid))
-                .and_then(|s| owner(s.w));
-            let end = sidecars(js).get(&(sid.to_string(), seq)).and_then(|v| {
-                Some(v["startTs"].as_f64()? as i64 + v["durationMs"].as_f64()? as i64)
-            });
-            let ended = end.and_then(|e| {
-                shifted
+            let (vl, ve) = if side == 0 { (x, y) } else { (y, x) };
+            let hit = if m.stream == "children" && m.path == "(spawn ms after start)" {
+                owner(side, start_wall + vl).is_some_and(|(_, _, d)| (vl - ve - d).abs() <= SAME)
+            } else if m.stream == "sidecar" && m.path == "durationMs" {
+                let Some((sid, seq)) = m.at.rsplit_once('/') else {
+                    continue;
+                };
+                let Ok(seq) = seq.parse::<u64>() else {
+                    continue;
+                };
+                let lm = sides[side];
+                let started = lm
+                    .spawns
                     .iter()
-                    .find(|(t, _)| (e - t).abs() <= 1_500)
-                    .copied()
-            });
-            if started.is_some_and(|(_, d)| (vj - vr + d).abs() <= SAME)
-                || ended.is_some_and(|(_, d)| (vj - vr - d).abs() <= SAME)
-            {
+                    .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid))
+                    .and_then(|s| owner(side, s.w));
+                let end = sidecars(lm).get(&(sid.to_string(), seq)).and_then(|v| {
+                    Some(v["startTs"].as_f64()? as i64 + v["durationMs"].as_f64()? as i64)
+                });
+                let ended = end.and_then(|e| {
+                    shifted
+                        .iter()
+                        .find(|(s, t, _)| *s == side && (e - t).abs() <= 1_500)
+                        .copied()
+                });
+                started.is_some_and(|(_, _, d)| (vl - ve + d).abs() <= SAME)
+                    || ended.is_some_and(|(_, _, d)| (vl - ve - d).abs() <= SAME)
+            } else {
+                false
+            };
+            if hit {
                 ok.insert(i);
             }
         }
@@ -3234,9 +3251,28 @@ mod tests {
             run(side("js", 0, &fresh), side("rust", 1_013, &fresh), 1_013),
             unt
         );
-        // js/js and rust/rust: never.
+        // js/js (re-check extension): EITHER side may be the later one, if
+        // THAT side carries the stale-reuse evidence.
         assert_eq!(
-            run(side("js", 0, &stale), side("js", 1_013, &stale), 1_013),
+            run(side("js", 0, &stale), side("js", 1_013, &fresh), 1_013),
+            ok
+        );
+        assert_eq!(
+            run(side("js", 1_013, &fresh), side("js", 0, &stale), -1_013),
+            ok
+        );
+        // js/js without evidence on the later side: fails.
+        assert_eq!(
+            run(side("js", 0, &fresh), side("js", 1_013, &stale), 1_013),
+            unt
+        );
+        assert_eq!(
+            run(side("js", 0, &fresh), side("js", 1_013, &fresh), 1_013),
+            unt
+        );
+        // Anything with Rust the later side, and rust/rust: never.
+        assert_eq!(
+            run(side("rust", 0, &stale), side("js", 1_013, &stale), 1_013),
             unt
         );
         assert_eq!(
