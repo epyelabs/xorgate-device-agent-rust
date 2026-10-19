@@ -11,7 +11,8 @@
 # device). Steps run as the unprivileged `node` user unless marked `root`
 # (root against a node-owned home = the "you don't need sudo" note). Rows
 # tagged `expect:<rule>/<row>` differ BY DESIGN and cite a row of
-# tolerances.toml (T8 logs-journal / cli-banner / set-wifi / set-mode-running;
+# tolerances.toml (T8 logs-journal / cli-banner / set-mode-running / cli-systemd-verbs /
+# cli-tui-no-tty; `map:T8/<row>` = cli-q9-names / cli-sms-duration: mapped, then exact;
 # the script refuses an id the table lacks); for those only the settings.json
 # bytes must still match. Exit 1 on any other difference.
 #
@@ -72,17 +73,17 @@ node|expect:T8/cli-banner|-v
 node|expect:T8/cli-banner|help
 node|expect:T8/cli-banner|
 node|expect:T8/cli-banner|frobnicate
-node|expect:T8/set-wifi|set wifi on
+node|-|set wifi on
 node|expect:T8/cli-systemd-verbs|start
 node|expect:T8/cli-systemd-verbs|stop
 node|expect:T8/cli-systemd-verbs|restart
-node|expect:T8/cli-later-verbs|update
-node|expect:T8/cli-later-verbs|pipeline
-node|expect:T8/cli-later-verbs|recording
-node|expect:T8/cli-later-verbs|led
-node|expect:T8/cli-later-verbs|sms
-node|expect:T8/cli-later-verbs|manage
-node|expect:T8/cli-later-verbs|monitor
+node|map:T8/cli-q9-names|update
+node|-|pipeline
+node|-|recording
+node|map:T8/cli-q9-names|led
+node|map:T8/cli-sms-duration|sms
+node|expect:T8/cli-tui-no-tty|manage
+node|expect:T8/cli-tui-no-tty|monitor
 LIST
 )
 
@@ -108,6 +109,18 @@ run_side() { # label kind
 }
 
 strip() { sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' "$1"; }
+# `map:T8/<row>` cases (Phase 4 WP6, review-wp5 M1): the row's ONE mapping is
+# applied, then stdout/stderr/exit/settings must be IDENTICAL — never a free pass.
+#   cli-q9-names      Q9 local hints naming the Rust binary (D34, D-WP4-6, WP1 Q9 strings):
+#                     the Rust side's `xorgate-rs` → `xorgate`
+#   cli-sms-duration  the sweep's own `· <N> ms` (both sides, a timing)
+mapped() { # <row> <file> <side a|b>
+  case "$1" in
+    cli-q9-names) if [ "$3" = b ]; then strip "$2" | sed -e 's/xorgate-rs/xorgate/g'; else strip "$2"; fi ;;
+    cli-sms-duration) strip "$2" | sed -E 's/ · [0-9]+ ms$/ · <n> ms/' ;;
+    *) strip "$2" ;;
+  esac
+}
 if [ "$FRESH" -eq 1 ]; then
   # WP6's per-case layout <n>/{case,out,err,code,settings} → this script's flat one.
   for side in a b; do
@@ -138,11 +151,16 @@ for i in $(seq 1 "$n"); do
   IFS='|' read -r expect who argv < "$OUT/a/$i.case"
   ca=$(cat "$OUT/a/$i.code"); cb=$(cat "$OUT/b/$i.code")
   so=same; se=same; st=same
-  diff -q <(strip "$OUT/a/$i.out") <(strip "$OUT/b/$i.out") >/dev/null || so=DIFF
-  diff -q <(strip "$OUT/a/$i.err") <(strip "$OUT/b/$i.err") >/dev/null || se=DIFF
+  row=-; case "$expect" in map:*) row=${expect#map:} ;; esac
+  diff -q <(mapped "${row#*/}" "$OUT/a/$i.out" a) <(mapped "${row#*/}" "$OUT/b/$i.out" b) >/dev/null || so=DIFF
+  diff -q <(mapped "${row#*/}" "$OUT/a/$i.err" a) <(mapped "${row#*/}" "$OUT/b/$i.err" b) >/dev/null || se=DIFF
   cmp -s "$OUT/a/$i.settings" "$OUT/b/$i.settings" || st=DIFF
   verdict=ok
-  if [ "$ca" != "$cb" ] || [ $so = DIFF ] || [ $se = DIFF ] || [ $st = DIFF ]; then
+  if [ "$row" != - ] && ! known_row "$row"; then verdict="FAIL (map row $row not in tolerances.toml)"; fail=$((fail + 1))
+  elif [ "$row" != - ] && { [ "$ca" != "$cb" ] || [ $so = DIFF ] || [ $se = DIFF ] || [ $st = DIFF ]; }; then
+    verdict="FAIL (differs after the $row mapping)"; fail=$((fail + 1))
+  elif [ "$row" != - ]; then verdict="identical after the $row mapping"; expected=$((expected + 1))
+  elif [ "$ca" != "$cb" ] || [ $so = DIFF ] || [ $se = DIFF ] || [ $st = DIFF ]; then
     id=${expect#expect:}
     if [ "$expect" = "-" ]; then verdict=FAIL; fail=$((fail + 1))
     elif ! known_row "$id"; then verdict="FAIL (expect id $id not in tolerances.toml)"; fail=$((fail + 1))

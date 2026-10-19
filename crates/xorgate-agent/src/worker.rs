@@ -277,6 +277,57 @@ fn build_recording_manager(
     })
 }
 
+/// `new LedManager({...})` (`worker.ts:596-622`): the driver from the boot
+/// hardware block (`led_wiring::led_driver_choice`, CF61; the Rust writer
+/// choice `XORGATE_LED_WRITER`, chip override `XORGATE_LED_GPIOCHIP`, Q6).
+fn led_manager(
+    ctx: &AgentCtx,
+    ops: &Arc<OpsHooks>,
+    source: Arc<dyn TelemetrySource>,
+) -> crate::ops::led::LedManager {
+    use xorgate_core::led_wiring::{led_driver_choice, LedDriverChoice};
+    use xorgate_hal::led_driver as ld;
+    let block = ctx.hardware.borrow().clone();
+    let driver = match led_driver_choice(block.as_ref()) {
+        LedDriverChoice::Probe(map) => ld::agent_driver(
+            map,
+            ld::WriterChoice::from_env(),
+            ld::chip_override_from_env(),
+            ctx.tape.clone(),
+            None,
+        ),
+        LedDriverChoice::Inert(reason) => ld::LedDriver::new(ld::LedDriverOptions {
+            map: None,
+            writer: None,
+            probe: Some(Box::new(move || {
+                Box::pin(async move {
+                    xorgate_core::led::PinMapCheck {
+                        ok: false,
+                        reason: Some(reason.to_string()),
+                    }
+                })
+            })),
+            log: None,
+        }),
+    };
+    let (state, rec, starting) = (
+        ctx.state.clone(),
+        ops.recording().clone(),
+        ops.led_starting_flag(),
+    );
+    crate::ops::led::LedManager::new(
+        driver,
+        Box::new(move || crate::ops::led::LedSignalsOwned {
+            connection: state.connection(),
+            recording: rec.recording_status_for_led(),
+            gnss: source.gnss_view(),
+            starting: starting.load(std::sync::atomic::Ordering::SeqCst),
+        }),
+        crate::ops::led::file_read_lte(ctx.paths.lte_telemetry.clone(), ctx.tape.clone()),
+        None,
+    )
+}
+
 /// The home files a replay instance starts from (settings.json,
 /// config-sync.json, commands.json) — captured BEFORE the boot baseline /
 /// migration can rewrite them (review-wp1 #5), so the JS replay starts from
@@ -566,6 +617,17 @@ async fn run(args: &[String]) -> Result<i32> {
     // Errors the TS leaves uncaught in the manager (the 5 s poll, M1): exit 1.
     let mut recording_fatal = hooks.manager().and_then(|m| m.take_fatal());
     ctx.hooks.recording_start().await;
+
+    // The offline clock stepper (`:536-555`) lands with WP3.
+    // RGB status LED (`:567-628`): built once from the boot hardware block
+    // (CF61), signals {connection, recording (2 s cache, CF56), gnss,
+    // starting}; `void led.start()` — spawned, never awaited. Every
+    // LedManager call is made on the runtime (heartbeat tick in the select
+    // loop, `led_stop` in the async shutdown) — WP1 review S1.
+    let led = led_manager(&ctx, &ops, source.clone());
+    ops.bind_led(Arc::new(led), |fut| {
+        tokio::spawn(fut);
+    });
 
     // MQTT (`worker.ts:664`), scope (`:684`), config plane (`:700-746`), commands.
     let link = connect(&env, creds)?;

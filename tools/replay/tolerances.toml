@@ -393,13 +393,8 @@ kind = "decisions"
   values_only = true
 
   [[rule.row]]
-  id = "set-wifi"
-  what = "`set wifi` is Phase 4 (CF22; WP6 T8): Rust prints `xorgate-rs: 'set wifi' arrives in a later build` and exits 1 before the sudo note (cli_set.rs:44) where the TS runs set.ts:679-717. C11: stdout/stderr/exit differ; settings.json must still be identical (untouched)"
-  streams = ["cli"]
-
-  [[rule.row]]
   id = "cli-banner"
-  what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the SHORTER Rust usage (only this binary's verbs: run/status/set/logs; cli.rs usage()) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
+  what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the Rust usage (cli.rs usage(): this binary's verbs, the systemd hint for start/stop/restart, `manage` without daemon control — Q10/D35) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
   streams = ["cli"]
 
   [[rule.row]]
@@ -408,8 +403,18 @@ kind = "decisions"
   streams = ["cli"]
 
   [[rule.row]]
-  id = "cli-later-verbs"
-  what = "verbs owned by Phase 3/4 (`update`, `pipeline`, `recording`, `led`, `sms`, `manage`, `monitor`; WP6 A5): Rust prints `xorgate-rs: '<verb>' arrives in a later build` and exits 1 (cli.rs) — the TS has these verbs, so `unknown command` would be wrong. C11: stdout/stderr/exit differ; settings.json must match. Retire each verb's row when its phase lands"
+  id = "cli-q9-names"
+  what = "MAPPING row (cli-matrix.sh `map:`), not a free pass: Q9 local-only CLI hints name the Rust binary — `[xorgate-rs] update failed: … sudo xorgate-rs update` (D-WP4-6), the `xorgate-rs led` usage block + `'xorgate-rs led off'` (WP1 Q9 strings), `xorgate-rs sms` help (D34). The Rust side's `xorgate-rs` → `xorgate`, then stdout/stderr/exit/settings.json must be identical"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-sms-duration"
+  what = "MAPPING row: `xorgate-rs sms` prints the sweep's own duration (`· <N> ms`), a timing — normalised on both sides, everything else identical (the T8/sms-duration rule of the …/sms payload, for the CLI)"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-tui-no-tty"
+  what = "`manage` / `monitor` without a terminal (the matrix runs with stdin </dev/null): ink renders its first frame then fails `Raw mode is not supported…` (exit 1) where crossterm fails `No such device or address (os error 6)` (exit 1) before drawing. The TUI itself is compared on ratatui TestBackend frames vs the TS monitor.test.tsx its (D35, tests/manage_tui.rs) and on the bench over `ssh -t` (E15); exit code and settings.json must match"
   streams = ["cli"]
 
   [[rule.row]]

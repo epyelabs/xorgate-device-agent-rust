@@ -238,6 +238,23 @@ impl PhaseHooks for OpsHooks {
     }
 }
 
+// ---- the leaves behind the three traits (WP1 I2, WP3 I6/I7) ----
+
+impl LedControl for crate::ops::led::LedManager {
+    fn start(&self) -> BoxFut<'_, ()> {
+        crate::ops::led::LedManager::start(self)
+    }
+    fn tick(&self) {
+        crate::ops::led::LedManager::tick(self)
+    }
+    fn config_applied(&self) {
+        crate::ops::led::LedManager::config_applied(self)
+    }
+    fn stop(&self) {
+        crate::ops::led::LedManager::stop(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
