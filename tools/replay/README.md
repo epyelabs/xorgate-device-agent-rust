@@ -1,4 +1,4 @@
-# Record/replay harness (Phase 2, WP7)
+# Record/replay harness (Phase 2 WP7; Phase 3 WP6 media additions)
 
 Parity evidence for the Rust port: the JS agent @ `89b5c64` and the Rust agent
 run side by side on the **same recorded inputs**, and everything they publish
@@ -8,6 +8,12 @@ and write is diffed under a tolerance table whose every row has an id. Design:
 
 - **C3a calibration** — two JS instances on one tape diff clean;
 - **C3b parity** — JS vs Rust on the ≥10 min bench tape: zero UNTOLERATED rows.
+
+Phase 3 (`phase-3-recording-media.md` §Record/replay, acceptance check D3)
+adds recording + media: real `gst-launch-1.0` capture on `videotestsrc`, a fake
+KVS master, a fake IoT credentials endpoint and a SigV4-verifying fake S3 in
+the player, eight synthetic media scenarios and the media streams of the diff
+— see **Phase 3: recording + media** below.
 
 ## Quick start (Mac, Docker Desktop)
 
@@ -289,9 +295,181 @@ Docker, so it replays `fixtures/replay/smoke.ndjson.gz` Rust-vs-Rust through
 the same OS-boundary knobs with a local TLS mosquitto, diffs under
 `tolerances.toml`, and checks that the telemetry carried gps/imu/lte/system
 and that the agent's own re-recorded tape holds nmea/imu/lte_file/exec/
-i2cdetect. Also:
+i2cdetect. A second step runs `ci-smoke.sh … media` (Phase 3, see
+"Limits (Phase 3)"). Also:
 
 `cargo test -p xorgate-replay` covers the tape round trip, synth determinism,
 the gate state machine, the rewrite rules and the diff/tolerance engine; a
 smoke test reads `fixtures/replay/smoke.ndjson.gz`. The JS-vs-Rust run is the
 gate runner's C3 in the Docker rig on the Mac.
+
+## Phase 3: recording + media (WP6)
+
+### Quick start
+
+```sh
+tools/replay/gen-certs.sh            # regenerates a Phase 2 cert dir (adds the `aws` server cert)
+docker compose -f tools/replay/docker-compose.yml run --rm -T --no-deps rig \
+  synth media -o /rig/out/media.ndjson.gz --fixtures /rig/fixtures
+mv tools/replay/.cache/runs/media.ndjson.gz tools/replay/.cache/tapes/
+tools/replay/run-rig.sh tools/replay/.cache/tapes/media.ndjson.gz --calibrate   # D3a (JS vs JS)
+tools/replay/run-rig.sh tools/replay/.cache/tapes/media.ndjson.gz               # D3b (JS vs Rust)
+```
+
+The rig image now carries `gstreamer1.0-tools` + `-plugins-{base,good,bad,ugly}`
+and `ca-certificates`; the compose network is **internal** (no egress: no
+agent request can reach real AWS or KVS), `init: true` (tini reaps the gst
+shim's tee) and `shm_size: 512m` (four 20 MiB shmsink bridges do not fit
+Docker's 64 MiB default). Media runs are heavy (two agents × two x264
+encoders): ONE rig run at a time on a QUIET Docker VM (WP6 schedules rig runs
+in Phase 3; other WPs run unit/integration tests only).
+
+### New tape kinds (`xorgate-hal::tape`, Rust agent only)
+
+| `k` | payload | written |
+|---|---|---|
+| `child_spawn` | `role` (`capture`/`kvs`), `key`, `argv`, `env` (the master's 11 contract keys only), `pid`, `nice` | after spawn |
+| `child_line` | `role`, `key`, `fd`, `line` (capture: only `New clock:` / `Got EOS` / `ERROR` lines) or `count` (kvs: lines per 10 s) | every drained line (the writer filters) |
+| `child_signal` | `role`, `key`, `pid`, `sig` | every agent-sent signal |
+| `child_exit` | `role`, `key`, `pid`, `code`, `signal`, `external` | waiter |
+| `fs_out` | `rel` (under the home), `op` `create`/`close`/`sidecar`/`delete`/`gz`, `size` | recorder, sweep, disk manager, uploader |
+| `s3_put` | `key`, `contentType`, `size`, `sha256`, `status` / `error` | uploader, when a PUT settles |
+| `shm` | `names` | every 60 s + at each capture exit |
+
+`rpicam-hello --list-cameras` reuses `exec`, the UV / thermal series reuse
+`exec` (`vcgencmd`), settings come through `mqtt_in`, the D12 gate seam
+reuses `lte_file`. Meta: `kvs.upload` (the manifest had the upload identity)
+and, on synthetic tapes only, `rig` (`s3Faults`, `filler`).
+
+### What the player adds (`media.rs`, `aws.rs`)
+
+| Input | Rig value |
+|---|---|
+| `kvs.json` | tape channels + (when the tape has channels / `kvs.upload` / Phase 3 output records) a COMPLETE manifest with the rig's fake-AWS identity: region `ca-central-1`, credentialEndpoint `c0rig00000000.credentials.iot.ca-central-1.amazonaws.com`, roleAlias `xorgate-rig-role-alias`, uploadBucket `xorgate-rig-media`, deviceId = the rig id. Phase 2 tapes keep the `{"channels": …}` stub |
+| `gst-launch-1.0` (PATH) | `shims/gst-launch-1.0`: logs argv verbatim to `<work>/shim.ndjson`, replaces ONLY `libcamerasrc camera-name=<cam>` with `videotestsrc is-live=true pattern=ball`, tees stdout/stderr (so the rig sees `New clock:` / `handling interrupt.` / `Got EOS` for the JS agent too) and `exec`s the real binary — same pid, real x264enc + splitmuxsink + shmsink, so the ~2.1 s sidecar GOP lag is reproduced (D8 rig half) |
+| `KVS_RUNTIME_BIN` | `<work>/kvs/xorgate-kvs-webrtc` = `media/xorgate-kvs-webrtc` (fake master: logs argv + contract env, a line every 5 s, exit 0 on SIGINT, the tape's code on an `external` exit) when the tape has channels; else a missing path (Phase 2) |
+| `rpicam-hello` (PATH) | present when the tape answers `--list-cameras` (`exec`), or with `--with-rpicam` |
+| TLS trust | rig CA → the container's system store (`update-ca-certificates`, Rust's platform verifier) and `NODE_EXTRA_CA_CERTS` (Node) — no agent knob (P5) |
+| fake IoT creds | `:443`, SNI `*.credentials.iot.ca-central-1.amazonaws.com` → mTLS (rig CA); thing name must be a rig deviceId; fixed creds, 1 h expiry |
+| fake S3 | `:443`, `<bucket>.s3.ca-central-1.amazonaws.com` → SigV4 recomputed independently with the fixed rig secret (bad signature = 403 + a FAIL row); bodies stored (`<run>/<label>/s3/<key>`, mp4 as size + sha256), every PUT logged in order (`s3.ndjson`); `meta.rig.s3Faults` windows answer 503 |
+| filler (D9) | `meta.rig.filler {mib, fragmentMib, ageDays, key, trimLastBytes?}` → a 7-day-old closed session of SPARSE fragments + finalized sidecars seeded into both homes (`trimLastBytes` shortens the newest fragment: `rec-disk` uses 40 KiB so its 10th eviction is not decided by the open-file bytes at a rotation, see `synth.rs`) |
+| external exits | tape `child_exit {external: true}` at tape time: kvs → the fake exits with the code; capture → the key's live gst is killed with the tape's signal (SIGKILL when it exited with a code) |
+
+Run dir additions per agent: `shim.ndjson`, `procs.ndjson` (pid gone /
+external), `recordings.json` (every file seen under `recordings/`, 1 s poll:
+first/last/size/gone), `final/recordings/**` (json + telemetry bodies),
+`final/recordings.mp4.json`, `s3.ndjson`, `s3/**`; per run `shm.ndjson`
+(`/dev/shm/shmpipe.*`, 5 s), `aws.ndjson` (creds requests, TLS errors,
+unrouted PUTs).
+
+### Synthetic media scenarios (D3)
+
+| scenario | s | exercises |
+|---|---|---|
+| `media` | 60 | both cameras record (720p15-1mbps, 10 s fragments), masters, uploads — the ≤60 s calibration tape |
+| `rec-boot-defer` | 150 | `bootDefer`/`gpsGate` `always`: video held (LTE `connecting`, no fix), released at 80 s (LTE connected at 70 s + fix) |
+| `rec-shed-uv` | 180 | rail 5.10 V < `railLowVolts` 5.2 → rung 1 (live parked) → rung 2 (bridge-only), restore from 110 s (5.30 V ≥ `railRestoreVolts` 5.25) |
+| `rec-shed-thermal` | 150 | firmware soft-temp bit `0x8` 20→110 s: rung 1 only, recording continues |
+| `rec-disk` | 120 | 600 MiB filler + `maxBytes` 512 MiB, uploads off: oldest-first eviction, counters. `meta.home` seeds `settings.json` with the scenario's recording namespace, so both agents BOOT with uploads off (without it the boot defaults upload the filler until the rev-1 config lands at 400 ms, and how much depends on each agent's boot speed) |
+| `rec-upload-outage` | 180 | MQTT cut 50→90 s (uploader pause), S3 503 window 100→130 s (backoff), resume |
+| `rec-cameras` | 150 | `cameras.cam1:false` at 50 s (capture + master parked), `true` at 100 s |
+| `rec-preset` | 150 | cam0 capture SIGKILL (external) at 35 s, cam1 master exit 1 at 45 s, preset → `1080p15-2mbps` at 70 s (`stopAndWait`) |
+
+Every scenario carries the CM5 dual-imx290 hardware block (no IMU), channels
+cam0/cam1 and the bench's `rpicam-hello --list-cameras` listing (fixtures).
+`rpicam-hello` and the PSU device tree cannot be faked for the SoC
+temperature (`/sys/class/thermal` is not redirectable in a container), so
+thermal shedding is driven by the firmware bit `0x8` of `get_throttled`.
+
+### The media diff (`media_diff.rs`)
+
+Normalisation: the agent's work dir → `<work>` (also in the end files, so the
+`etc/pipelines/*` renders compare byte-exact), deviceId → `{id}`, session
+uuids → `<sid:video:<key>#n>` / `<sid:telemetry#n>` (order of first
+appearance), telemetry file-name ms stamps → `<ms>`.
+
+| stream | exact | tolerated |
+|---|---|---|
+| `children` | per (role, key): spawn count, argv, kvs env, how each child ended (`int`/`eos`/`kill`/`external`/`exit:<code>`); per side: cam0→cam1 stagger ≥ 4 s | spawn instant ±1 s (T10) |
+| `session` | `session.json` | `sessionId`, `bootId`, `anchorTs`, `anchorMono` (T11) |
+| `sidecar` | key order + every field | `startTs` ±300 ms vs the agent's OWN capture PLAYING (`New clock:`) time, `startMono` deltas ±300 ms, `durationMs` ±150 ms, `sizeBytes` (T12); diff.md prints the D8 rig figure (fragment-0 `startTs` − PLAYING, median per side) |
+| `mp4` | per side: seq contiguity, no 0-byte closed fragment | fragment count per session ±1 (T12) |
+| `rec-telemetry` | decompressed header lines (minus T1/T11), sample key order, per segment each group's leaf paths + number shapes; per telemetry session the number of samples WITHOUT the agent-sampled `system` group | segment count ±1, file-name stamps (T13); `system`-less samples ±2 per session (`T13/system-presence`, calibrated on 10 JS-vs-JS runs); gz bytes never compared (D24) |
+| `s3` | per side: every signature valid, sidecar before its mp4; A vs B: key multiset + content types of the successful PUTs | the last fragment of a session on one side only, failed-attempt counts (T14) |
+| `file:counters.json` | as JSON | — |
+| `evictions` | the ordered list of fragments deleted without a successful PUT | — |
+| `shm` | orphan `shmpipe.<pid>.*` of dead gst children at the end, per side | — |
+
+T6 is SHRUNK to the Phase 4 gaps (LED, camera mount, clock stepper): the
+payload's `media`/`recording` blocks, `bootDefer`/`powerShed`/`liveBlock`, the
+recording/hardware/uploader events and the recording latch details are
+compared now, so a missing recording/media event FAILS. T1 adds
+`recording.backlogBytes` and `liveBlock.since`; T11 excludes the payload's
+`recording.sessionId`; T8 `s3-error-text` folds ONLY WP3's unmapped transport
+texts (`fold_texts`, node side: unknown issuer / self-signed, SAN mismatch,
+corrupt PEM body, key/cert mismatch, the empty multi-address `AggregateError`;
+Rust side: the raw `error_chain` fallback). The agent's own `S3 PUT failed:
+HTTP …` / timeout / creds texts (`own_prefixes`) and every transport text WP3
+maps to node's wording (`mapped_prefixes`: `getaddrinfo …`, `connect E…`,
+`socket hang up`, the PEM `no start line` / DECODER `unsupported` …) are exact.
+
+### Phase 3 tsx drivers (`js/`)
+
+WP1–WP5's fixture dumpers, copied verbatim from `phase-3/evidence/wp<N>-tools/`
+and run through `js/run-tsx.sh <driver> [args]` against the scratch JS copy:
+`wp1-dump-recording-flow.ts` (+ `wp1-scenarios.json`, `wp1-rate-quirk.ts`),
+`dump-recorder.mts`, `dump-disk.mts` (WP2), `dump-upload-keys.mts`,
+`dump-upload-step.mts` (WP3), `dump-capture-ladder.mts` (WP4),
+`dump-media-ladder.mts`, `dump-kvs-runtime.mts`, `dump-hardware-reconcile.mts`,
+`dump-stream-guard.mts` (WP5). The fixture each one writes is listed in
+`js/run-tsx.sh`.
+
+Rig-only refinements found by the media calibration (JS-vs-JS, synth `media`):
+telemetry segment bodies are compared decompressed AND normalised (header
+`deviceId` → `{id}`, `sessionId` → its label); the kvs env's per-agent
+`/rig/certs/<label>.crt|.key` → `<cert>`/`<key>`; T4 `transition` covers array
+paths (`media.streams.<i>.state`); a live-read T3 metric's int-vs-float shape
+inside segments is T3 (an integral value prints as an int in both runtimes);
+T3/host also accepts a host sample pair from each agent's read window
+[ts − 150, ts + 250] ms (the run's own encoders swing the host ram ~3 points
+per 50 ms); T10 `flash`: a kvs master SIGINT-stopped within 100 ms of its
+spawn (the capture-spawn bounce racing the master's restart inside one agent,
+worker.ts:455 → media.ts:51-59) may be absent on the other side, dropped from
+both sides only when that equalises the spawn counts; T8 `end-snapshot`:
+state.json's shutdown-time `recording.backlogSegments` ±3 (each camera's final
+EOS fragment + the telemetry segment land before or after the last write —
+every tick's value is still exact in the telemetry stream). All eight synth
+scenarios calibrate clean JS-vs-JS (`phase-3/evidence/replay-20261017T22*`).
+The CI smoke (`ci-smoke.sh`, Rust-vs-Rust) additionally widens the
+tick-drift per-side period bound to [995, 1015] ms for shared runners; the
+rig bound stays [999.5, 1010].
+
+The `exec` record carries `stderr` when the caller reports one
+(`TapeSink::exec_with_stderr`, e.g. rpicam-hello's zero-camera `No cameras
+available!`); the player writes `<state>/exec/<key>.err` and the shims print it
+on stderr.
+
+### Limits (Phase 3)
+
+- Sample VALUES inside telemetry segments are not compared pairwise (each
+  recorder ticks on its own timer, ungated); the live `telemetry` stream
+  compares the same collector values under the hold gate.
+- A capture child that exited with a CODE on the device is re-enacted as a
+  signal kill (gst cannot be told to exit with a code); both agents get the same.
+- CI: besides the Phase 2 smoke, `ci-smoke.sh … media` replays the (58 s cut of the)
+  synthetic `media` scenario Rust-vs-Rust in the CI container (no Docker:
+  real gst-launch-1.0 behind the shim from the apt `gstreamer1.0-*` packages,
+  the fake masters, the fake IoT creds + SigV4-checked fake S3 on
+  127.0.0.1:443). The job is root in a throwaway `debian:bookworm` container,
+  so the player's `update-ca-certificates` + `/etc/hosts` edits are safe there
+  (never run it as root on a workstation); the container gets
+  `--shm-size=512m` (2 agents × 2 shmsink bridges). Besides the diff it
+  checks both sides PUT mp4 + telemetry objects with valid signatures, spawned
+  gst pipelines, and that the Rust agent's tape holds the Phase 3 kinds. It is
+  a plumbing check, not parity: JS-vs-Rust stays the Docker rig's job.
+  `T13/system-presence` (±2 per session) applies unchanged — its earlier
+  smoke-only lift went with the P-WP6-1 timer fix. Media mode starts both agents together (`--stagger-ms 0`:
+  both are SIGTERMed together, so a start stagger shortens B's last fragment
+  past T12) and cuts the tape to 58 s (the scenario's last LTE rewrite at
+  59.5 s races the 60 s telemetry rotation).
+

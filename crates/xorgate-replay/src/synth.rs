@@ -42,7 +42,7 @@
 //!   redelivery of the applied rev). Without the `config` track and with a
 //!   `conn-drop`, rev 3 is published during the cut, so the agents get it as a
 //!   retained delivery on reconnect, and rev 4 waits [`RECONNECT_WORST_MS`]
-//!   after the restore so BOTH agents (mqtt.js 2 s; Rust 1→60 s backoff)
+//!   after the restore so BOTH agents (each retries 2 s after a close)
 //!   have reconnected and seen rev 3 first (series 5 item 4);
 //! - `commands-sms` one `read_sms` (`args.limit` 5) and one without args;
 //! - `sim-mode`    meta env `MODE=sim`: the player runs both agents in sim mode,
@@ -182,8 +182,8 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         // subject. `lte` (the calibration track): without the daemon's LTE
         // file `gnssAntBias` (modem-poll) stays `adjusted`, so each agent
         // re-reports on its OWN 40 s settle chain (config-sync.ts:1639-1650,
-        // sync.rs:592) anchored on its post-cut report — 7 s apart after the
-        // Rust backoff — and a chain tick merging with a tape delivery on
+        // sync.rs:592) anchored on its post-cut report — 7 s apart with the
+        // old Rust 1→60 s backoff, ≤ ~2 s with the 2 s reconnect — and a chain tick merging with a tape delivery on
         // one agent only splits the report count (series 5, 175133Z).
         &["config-envelope", "conn-drop", "clock", "nmea", "lte"],
         "hardware/uploadBucket envelope (rev 3 retained across a cut), malformed, stale rev",
@@ -194,7 +194,67 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &["sim-mode", "commands-sms", "clock"],
         "read_sms in MODE=sim: the fixture sweep on …/sms (telemetry is O7 sim)",
     ),
+    // ---- Phase 3 (WP6): recording + media. Every one carries `media-hw`
+    // (CM5 dual-imx290 hardware block, KVS channels cam0/cam1, the upload
+    // identity, the `rpicam-hello --list-cameras` answer) and `rec` (the
+    // recording config, retained, at t = 400 ms; scenario variants below).
+    (
+        "media",
+        60,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "≤60 s media tape: both cameras record (720p15, 10 s fragments) + KVS masters + uploads",
+    ),
+    (
+        "rec-boot-defer",
+        150,
+        &["media-hw", "rec", "nmea-late-fix", "lte-gate", "exec-quiet", "clock"],
+        "boot defer + GPS/LTE gate held (LTE connecting, no fix) then released at 80 s",
+    ),
+    (
+        "rec-shed-uv",
+        180,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-rail", "clock"],
+        "rail 5.10 V < railLowVolts 5.2 → rung 1 → rung 2 (bridge-only), restored from 110 s",
+    ),
+    (
+        "rec-shed-thermal",
+        150,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-thermal", "clock"],
+        "firmware soft-temp bit 0x8 held 90 s: rung 1 only, recording never stops",
+    ),
+    (
+        "rec-disk",
+        120,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "600 MiB filler session + maxBytes 512 MiB, uploads off: oldest-first eviction",
+    ),
+    (
+        "rec-upload-outage",
+        180,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "rec-cut", "clock"],
+        "MQTT cut 50→90 s (uploader pauses) + S3 503 window 100→130 s (backoff), then resume",
+    ),
+    (
+        "rec-cameras",
+        150,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "cam1 disabled by settings at 50 s (capture + master parked), re-enabled at 100 s",
+    ),
+    (
+        "rec-preset",
+        150,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "cam0 capture SIGKILLed (external) at 35 s, cam1 master exits 1 at 45 s, preset → 1080p15 at 70 s",
+    ),
 ];
+
+/// The Phase 3 scenarios (all carry `media-hw`).
+#[cfg(test)]
+pub fn is_phase3(scenario: &str) -> bool {
+    SCENARIOS
+        .iter()
+        .any(|s| s.0 == scenario && s.2.contains(&"media-hw"))
+}
 
 thread_local! {
     /// Start wall of the tape being built: [`SYNTH_START_WALL`], or the base
@@ -203,15 +263,30 @@ thread_local! {
     static W0: std::cell::Cell<i64> = const { std::cell::Cell::new(SYNTH_START_WALL) };
 }
 
+/// exec-rail: the rail goes low here (≥ 3 s after boot: no shed crossing in
+/// the boot sequence) and clean again at RAIL_CLEAN_FROM_MS.
+const RAIL_LOW_FROM_MS: u64 = 10_000;
+const RAIL_CLEAN_FROM_MS: u64 = 110_000;
+
 fn w0() -> i64 {
     W0.with(|c| c.get())
 }
 
-/// After a cut ends, the latest any agent can be reconnected: the Rust
-/// backoff's 60 s cap (`xorgate-cloud` backoff.rs; the jitter only SHORTENS a
-/// delay, to `[d/2, d]`) + 5 s for connect, resubscribe and the retained
-/// delivery. mqtt.js retries every 2 s (`mqtt.ts:63`).
-pub const RECONNECT_WORST_MS: u64 = 65_000;
+/// After a cut ends, the latest any agent can be reconnected: both retry a
+/// FIXED 2000 ms after every close (mqtt.js 5.15.1 `_setupReconnect`,
+/// `reconnectPeriod: 2000` at `mqtt.ts:63` ↔ `xorgate-cloud` backoff.rs
+/// `BackoffConfig::fixed`), and the rig's proxy refuses an attempt inside a
+/// span by closing it at once (`play.rs` `proxy`), so no attempt is still
+/// hanging at the restore (no 30 s connect timeout): the worst case is an
+/// attempt refused just before the restore → 2000 ms → a connect that
+/// succeeds. + 5 s (kept from the old bound) for TCP + TLS + CONNACK,
+/// resubscribe and the retained delivery on a loaded VM (JS measured 0.4 s
+/// from the restore to `connected`, wp6.md rec-upload-outage).
+pub const RECONNECT_WORST_MS: u64 = 2_000 + 5_000;
+
+/// `rec-boot-defer`: when the GPS fix appears (LTE turns `connected` 10 s
+/// earlier, on the 10 s rewrite cadence).
+pub const REC_GATE_RELEASE_MS: u64 = 80_000;
 
 /// Builder: events are pushed in any order and sorted (stably) by `t`.
 struct Builder {
@@ -430,6 +505,77 @@ fn config_doc_with(rev: i64, step: u32, enabled_mount: bool, extra: Value) -> St
     v.to_string()
 }
 
+/// The CM5 bench's `rpicam-hello --list-cameras` (fixtures/cameras
+/// enumeration.json case 0: RP1 i2c@88000 = csi0, i2c@70000 = csi1).
+pub const CM5_CAMERA_LIST: &str = "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps]\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps]\n";
+
+/// The bench's hardware block (dual imx290 on the CM5, sw encoder, no IMU so
+/// the media tapes never probe I2C).
+pub fn media_hardware_block() -> Value {
+    json!({
+        "v": 2, "platform": "rpi-cm5", "encoder": "sw-h264", "rails": true,
+        "statusLed": null, "imu": null,
+        "video": [
+            {"key": "cam0", "connector": "csi0", "sensor": "imx290"},
+            {"key": "cam1", "connector": "csi1", "sensor": "imx290"},
+        ],
+    })
+}
+
+/// The tape's KVS channels (the player substitutes the rig deviceId).
+pub fn media_channels() -> Vec<Value> {
+    ["cam0", "cam1"]
+        .iter()
+        .map(|k| json!({"streamKey": k, "channelName": format!("xorgate-{SYNTH_DEVICE_ID}-{k}")}))
+        .collect()
+}
+
+/// The Phase 3 base recording config (cloud `recording` namespace): both
+/// recorders on, 10 s fragments (the clamp floor) so a short tape closes
+/// several, no boot defer / gate, uploads on, retention never triggered by
+/// the rig VM's own free space (`minFreeBytes: 0`).
+pub fn rec_namespace(scenario: &str) -> Value {
+    let mut rec = json!({
+        "telemetry": {"enabled": true, "rateHz": 1},
+        "video": {
+            "enabled": true, "preset": "720p15-1mbps", "segmentSeconds": 10,
+            "bootDefer": "off", "gpsGate": "off", "spawnStaggerSecs": 4,
+        },
+        "upload": {"mode": "auto"},
+        "retention": {"minFreeBytes": 0},
+    });
+    match scenario {
+        "rec-boot-defer" => {
+            rec["video"]["bootDefer"] = json!("always");
+            rec["video"]["bootDeferMaxSecs"] = json!(20);
+            rec["video"]["gpsGate"] = json!("always");
+            rec["video"]["gpsGateNoProgressSecs"] = json!(120);
+        }
+        "rec-shed-uv" => {
+            rec["powerShedding"] = json!({
+                "enabled": true, "railLowVolts": 5.2, "railLowSecs": 5,
+                "escalateDwellSecs": 20, "escalateDutyPct": 70, "restoreSecs": 20,
+                "railRestoreVolts": 5.25,
+            });
+        }
+        "rec-shed-thermal" => {
+            rec["powerShedding"] = json!({
+                "enabled": true, "escalateDwellSecs": 20, "restoreSecs": 20,
+            });
+        }
+        "rec-disk" => {
+            rec["upload"] = json!({"mode": "off"});
+            rec["retention"] = json!({"maxBytes": 536_870_912u64, "minFreeBytes": 0});
+        }
+        _ => {}
+    }
+    rec
+}
+
+fn rec_doc(rev: i64, rec: &Value) -> String {
+    json!({"v": 1, "rev": rev, "recording": rec}).to_string()
+}
+
 fn command(id: &str, cmd: &str, t: u64, ttl_ms: i64) -> String {
     let ts = w0() + t as i64;
     json!({"v": 1, "requestId": id, "command": cmd, "ts": ts, "expiresAt": ts + ttl_ms}).to_string()
@@ -591,6 +737,7 @@ fn build_inner(
                 argv: thr.clone(),
                 stdout: "throttled=0x0\n".into(),
                 code: Some(0),
+                stderr: None,
             },
         );
         b.push(
@@ -599,6 +746,7 @@ fn build_inner(
                 argv: thr.clone(),
                 stdout: "throttled=0x50005\n".into(),
                 code: Some(0),
+                stderr: None,
             },
         );
         b.push(
@@ -607,6 +755,7 @@ fn build_inner(
                 argv: thr,
                 stdout: "throttled=0x50000\n".into(),
                 code: Some(0),
+                stderr: None,
             },
         );
         let mut t = 70;
@@ -620,6 +769,7 @@ fn build_inner(
                     argv: pmic.clone(),
                     stdout: PMIC_TEMPLATE.replace("@EXT5V@", &format!("{volts:.8}")),
                     code: Some(0),
+                    stderr: None,
                 },
             );
             t += 5_000;
@@ -675,6 +825,8 @@ fn build_inner(
         Some("fix")
     } else if has("nmea-nofix") {
         Some("nofix")
+    } else if has("nmea-late-fix") {
+        Some("late")
     } else {
         None
     };
@@ -682,6 +834,8 @@ fn build_inner(
         let fix_from = match mode {
             "fix" => 0,
             "nofix" => u64::MAX,
+            // rec-boot-defer: the GPS half of the gate's release.
+            "late" => REC_GATE_RELEASE_MS,
             _ => pct(25),
         };
         let (silent_from, silent_to) = if has("nmea-silence") {
@@ -876,6 +1030,213 @@ fn build_inner(
         );
     }
 
+    // ---- Phase 3 tracks
+    let mut rig: Option<Value> = None;
+    let mut home: Option<serde_json::Map<String, Value>> = None;
+    if has("media-hw") {
+        b.push(
+            40,
+            TapeEvent::Exec {
+                argv: vec!["rpicam-hello".into(), "--list-cameras".into()],
+                stdout: CM5_CAMERA_LIST.into(),
+                code: Some(0),
+                stderr: None,
+            },
+        );
+    }
+    if has("rec") {
+        let rec = rec_namespace(name);
+        b.push(
+            400,
+            TapeEvent::mqtt_in(&topic("config"), rec_doc(1, &rec).as_bytes(), true, 1),
+        );
+        let later = |b: &mut Builder, t: u64, rev: i64, f: &dyn Fn(&mut Value)| {
+            let mut r = rec.clone();
+            f(&mut r);
+            b.push(
+                t,
+                TapeEvent::mqtt_in(&topic("config"), rec_doc(rev, &r).as_bytes(), true, 1),
+            );
+        };
+        match name {
+            "rec-cameras" => {
+                later(&mut b, 50_000, 2, &|r| {
+                    r["video"]["cameras"] = json!({"cam1": false})
+                });
+                later(&mut b, 100_000, 3, &|r| {
+                    r["video"]["cameras"] = json!({"cam1": true})
+                });
+            }
+            "rec-preset" => {
+                later(&mut b, 70_000, 2, &|r| {
+                    r["video"]["preset"] = json!("1080p15-2mbps")
+                });
+                b.push(
+                    35_000,
+                    TapeEvent::ChildExit(xorgate_hal::tape::ChildExitRec {
+                        role: xorgate_hal::tape::ROLE_CAPTURE.into(),
+                        key: "cam0".into(),
+                        pid: 0,
+                        code: None,
+                        signal: Some(9),
+                        external: true,
+                    }),
+                );
+                b.push(
+                    45_000,
+                    TapeEvent::ChildExit(xorgate_hal::tape::ChildExitRec {
+                        role: xorgate_hal::tape::ROLE_KVS.into(),
+                        key: "cam1".into(),
+                        pid: 0,
+                        code: Some(1),
+                        signal: None,
+                        external: true,
+                    }),
+                );
+            }
+            "rec-disk" => {
+                // `trimLastBytes` (2026-10-19, JS-vs-Rust `replay-20261019T153028Z`
+                // + `…T134429Z`): with the full 600 MiB the 10th eviction's
+                // decisive scan is the cam0 rotation at ~t 92 s, where the
+                // closed backlog sits 72 946 B under maxBytes and the OPEN
+                // files decide — mostly cam1's growing mp4 (~6.0 s old,
+                // ≤ ~71 KB of content, flushed in filesink blocks) + the
+                // active telemetry .jsonl (~19 KB). JS (cam1 6.07 s old)
+                // went over, Rust (5.98 s) did not, and evicted one rotation
+                // later (TS `disk.ts:113-168` ↔ `disk_plan.rs:120-176` sum
+                // every scanned file, a faithful port): ~0.1 s of gst
+                // pipeline start jitter decided a contract value. 40 KiB off
+                // the newest filler fragment moves the crossing to the next
+                // (cam1) rotation: the cam0 one stays ≥ ~21 KB under even
+                // with all of cam1's content on disk, the cam1 one is over on
+                // its closed backlog alone (+3 KB) plus the active telemetry
+                // segment (~22 KB). Eviction ORDER / counts are unchanged in
+                // kind; only the instant moves off the knife edge.
+                rig = Some(
+                    json!({"filler": {"mib": 600, "fragmentMib": 10, "ageDays": 7, "key": "cam0", "trimLastBytes": 40_960}}),
+                );
+                // Both agents BOOT with the scenario's recording namespace
+                // already in settings.json (as a fielded device does after
+                // its first config). Without it the boot runs on the
+                // defaults (upload auto) until the rev-1 config lands at
+                // t = 400 ms, and how many filler fragments get uploaded in
+                // that window depends on each agent's boot speed (JS-vs-Rust
+                // 2026-10-19 `replay-20261019T133846Z`: JS 1 pair, Rust 5 —
+                // a race, not a parity difference), which then shifts the
+                // eviction set and `droppedSegments`.
+                let mut files = serde_json::Map::new();
+                files.insert(
+                    "settings.json".into(),
+                    Value::String(json!({ "recording": rec }).to_string()),
+                );
+                home = Some(files);
+            }
+            "rec-upload-outage" => {
+                rig = Some(
+                    json!({"s3Faults": [{"fromMs": 100_000, "toMs": 130_000, "status": 503}]}),
+                );
+            }
+            _ => {}
+        }
+    }
+    if has("rec-cut") {
+        b.push(
+            50_000,
+            TapeEvent::Conn {
+                state: ConnState::Closed,
+            },
+        );
+        b.push(
+            90_000,
+            TapeEvent::Conn {
+                state: ConnState::Connected,
+            },
+        );
+    }
+    if has("lte-gate") {
+        // LTE `connecting` until the release, `connected` after (the LTE half
+        // of the gate; D12's seam on the bench).
+        let mut t = 80;
+        let mut k = 0i64;
+        while t < dur_ms {
+            let ok = t >= REC_GATE_RELEASE_MS - 10_000;
+            b.push(
+                t,
+                TapeEvent::lte_file(Some(
+                    lte_doc(t, 18 + k % 7, ok, &cellular_block(None)).as_bytes(),
+                )),
+            );
+            t += 10_000;
+            k += 1;
+        }
+    }
+    let mut crossings: Vec<u64> = Vec::new();
+    let exec_kind = ["exec-quiet", "exec-rail", "exec-thermal"]
+        .into_iter()
+        .find(|k| has(k));
+    if let Some(kind) = exec_kind {
+        let thr = vec!["vcgencmd".to_string(), "get_throttled".to_string()];
+        let pmic = vec!["vcgencmd".to_string(), "pmic_read_adc".to_string()];
+        let throttled = |t: u64| match kind {
+            "exec-thermal" if (20_000..110_000).contains(&t) => "throttled=0x80008\n",
+            "exec-thermal" if t >= 110_000 => "throttled=0x80000\n",
+            _ => "throttled=0x0\n",
+        };
+        // exec-rail (review-wp6 re-check, orchestrator: a RIG knife edge, like
+        // rec-disk's trimLastBytes): a shed decision reads a 1 s cache whose
+        // owner (shed tick or recorder) flips at random in the TS (D30), so a
+        // read may be up to one tick stale. The rail is therefore CONSTANT on
+        // each side of a threshold (no ±0.03 V wobble: a stale read returns
+        // the same value and the same event text), clean (5.30 V) for the
+        // first RAIL_LOW_FROM_MS (no crossing at boot), low (5.10 V) until
+        // RAIL_CLEAN_FROM_MS, clean after. Every crossing record is listed in
+        // `meta.rig.powerCrossings`; the player releases it mid-period (≥ 300
+        // ms from both agents' predicted ticks, play.rs).
+        let volts = |t: u64, k: u64| match kind {
+            "exec-rail" if (RAIL_LOW_FROM_MS..RAIL_CLEAN_FROM_MS).contains(&t) => 5.10,
+            "exec-rail" => 5.30,
+            _ => 5.10 + (k % 4) as f64 * 0.01,
+        };
+        let mut t = 60;
+        let mut k = 0u64;
+        let (mut last_thr, mut last_v) = (None, None);
+        while t < dur_ms {
+            // A record whose value differs from the previous one of a
+            // threshold-crossing kind = a crossing (exec-rail: the rail,
+            // exec-thermal: the throttled bits).
+            if kind != "exec-quiet" {
+                let (th, v) = (throttled(t), format!("{:.2}", volts(t, k)));
+                if kind == "exec-thermal" && last_thr.is_some_and(|l| l != th) {
+                    crossings.push(t);
+                }
+                if kind == "exec-rail" && last_v.as_ref().is_some_and(|l: &String| *l != v) {
+                    crossings.push(t + 10);
+                }
+                (last_thr, last_v) = (Some(th), Some(v));
+            }
+            b.push(
+                t,
+                TapeEvent::Exec {
+                    argv: thr.clone(),
+                    stdout: throttled(t).into(),
+                    code: Some(0),
+                    stderr: None,
+                },
+            );
+            b.push(
+                t + 10,
+                TapeEvent::Exec {
+                    argv: pmic.clone(),
+                    stdout: PMIC_TEMPLATE.replace("@EXT5V@", &format!("{:.8}", volts(t, k))),
+                    code: Some(0),
+                    stderr: None,
+                },
+            );
+            t += 2_000;
+            k += 1;
+        }
+    }
+
     // ---- clock
     if has("clock") {
         let mut t = 10_000;
@@ -900,7 +1261,24 @@ fn build_inner(
     }
     b.recs.sort_by_key(|r| r.t);
     let mut meta = TapeMeta::new(SYNTH_DEVICE_ID, "synth", w0());
-    meta.kvs = KvsInfo { channels: vec![] };
+    if has("media-hw") {
+        meta.hardware = media_hardware_block();
+        meta.kvs = KvsInfo {
+            channels: media_channels(),
+            upload: true,
+        };
+    } else {
+        meta.kvs = KvsInfo {
+            channels: vec![],
+            upload: false,
+        };
+    }
+    if !crossings.is_empty() {
+        let r = rig.get_or_insert_with(|| json!({}));
+        r["powerCrossings"] = json!(crossings);
+    }
+    meta.rig = rig;
+    meta.home = home;
     meta.source = Some(match base {
         Some(b) => format!(
             "{}+synth:{name}",
@@ -946,6 +1324,119 @@ mod tests {
             assert_eq!(tape.meta.source.as_deref(), Some(&*format!("synth:{name}")));
         }
         assert!(build("nope", None, &fixtures()).is_err());
+    }
+
+    #[test]
+    fn phase3_scenarios_carry_the_media_inputs() {
+        let p3: Vec<&str> = SCENARIOS
+            .iter()
+            .map(|s| s.0)
+            .filter(|n| is_phase3(n))
+            .collect();
+        assert_eq!(p3.len(), 8, "{p3:?}");
+        for name in p3 {
+            let tape = build(name, None, &fixtures()).unwrap();
+            assert_eq!(tape.meta.hardware, media_hardware_block(), "{name}");
+            assert!(
+                tape.meta.kvs.upload && tape.meta.kvs.channels.len() == 2,
+                "{name}"
+            );
+            let rpicam = tape.records.iter().find(
+                |r| matches!(&r.ev, TapeEvent::Exec { argv, .. } if argv[0] == "rpicam-hello"),
+            );
+            assert!(
+                rpicam.is_some_and(|r| r.t < 1000),
+                "{name}: prefilled camera list"
+            );
+            let cfg = mqtt_ins(&tape, "/config");
+            let first: Value = serde_json::from_str(&cfg[0].1).unwrap();
+            assert_eq!(cfg[0].0, 400, "{name}");
+            assert!(cfg[0].2, "{name}: retained");
+            assert_eq!(first["recording"], rec_namespace(name), "{name}");
+            assert_eq!(first["recording"]["video"]["segmentSeconds"], 10);
+        }
+        let preset = build("rec-preset", None, &fixtures()).unwrap();
+        let ext: Vec<(u64, &str, &str)> = preset
+            .records
+            .iter()
+            .filter_map(|r| match &r.ev {
+                TapeEvent::ChildExit(x) if x.external => {
+                    Some((r.t, x.role.as_str(), x.key.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ext, [(35_000, "capture", "cam0"), (45_000, "kvs", "cam1")]);
+        let disk = build("rec-disk", None, &fixtures()).unwrap();
+        assert_eq!(disk.meta.rig.as_ref().unwrap()["filler"]["mib"], 600);
+        let seeded: Value = serde_json::from_str(
+            disk.meta.home.as_ref().unwrap()["settings.json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(seeded["recording"]["upload"]["mode"], "off");
+        assert_eq!(seeded["recording"]["retention"]["maxBytes"], 536_870_912u64);
+        let outage = build("rec-upload-outage", None, &fixtures()).unwrap();
+        assert_eq!(crate::aws::faults_of(outage.meta.rig.as_ref()).len(), 1);
+        // Power-threshold crossings (review-wp6 re-check): listed for the
+        // player, none in the first 3 s, inputs stable ≥ 2.5 s around each.
+        let crossings = |name: &str| {
+            let t = build(name, None, &fixtures()).unwrap();
+            t.meta
+                .rig
+                .as_ref()
+                .and_then(|r| r.get("powerCrossings"))
+                .cloned()
+        };
+        assert_eq!(crossings("rec-shed-uv"), Some(json!([10_070, 110_070])));
+        assert_eq!(
+            crossings("rec-shed-thermal"),
+            Some(json!([20_060, 110_060]))
+        );
+        assert_eq!(crossings("media"), None);
+        let uv = build("rec-shed-uv", None, &fixtures()).unwrap();
+        let rails: Vec<(u64, String)> = uv
+            .records
+            .iter()
+            .filter_map(|r| match &r.ev {
+                TapeEvent::Exec { argv, stdout, .. } if argv[1] == "pmic_read_adc" => {
+                    Some((r.t, stdout.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for w in rails.windows(2) {
+            if w[0].1 != w[1].1 {
+                assert!(w[1].0 >= 3_000, "no crossing at boot");
+                let around = rails
+                    .iter()
+                    .filter(|(t, _)| t.abs_diff(w[1].0) <= 2_500 && *t != w[1].0);
+                for (t, v) in around {
+                    let want = if *t < w[1].0 { &w[0].1 } else { &w[1].1 };
+                    assert_eq!(v, want, "stable ±2.5 s around the crossing at {}", w[1].0);
+                }
+            }
+        }
+        assert!(outage.records.iter().any(|r| r.t == 50_000
+            && matches!(
+                r.ev,
+                TapeEvent::Conn {
+                    state: ConnState::Closed
+                }
+            )));
+        let gate = build("rec-boot-defer", None, &fixtures()).unwrap();
+        let first_fix = gate.records.iter().find(|r| {
+            matches!(&r.ev, TapeEvent::Nmea { line } if line.starts_with("$GPGGA") && line.contains(",1,08,"))
+        });
+        assert!(first_fix.is_some_and(|r| r.t >= REC_GATE_RELEASE_MS));
+        // Phase 2 scenarios are unchanged: no media inputs.
+        let smoke = build("smoke", None, &fixtures()).unwrap();
+        assert!(
+            !smoke.meta.kvs.upload
+                && smoke.meta.rig.is_none()
+                && smoke.meta.kvs.channels.is_empty()
+        );
     }
 
     /// `(t, payload)` of every config / command `mqtt_in` record.

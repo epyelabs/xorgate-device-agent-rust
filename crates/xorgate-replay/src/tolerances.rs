@@ -94,6 +94,15 @@ pub struct Row {
     /// Error texts that must match exactly (not folded into the class).
     #[serde(default)]
     pub exact_texts: Vec<String>,
+    /// `s3-error-text` (CF32, WP3 hand-over): a node-side tail is folded only
+    /// when it CONTAINS one of these texts (`""` = the empty message of node
+    /// 20's multi-address `AggregateError`).
+    #[serde(default)]
+    pub fold_texts: Vec<String>,
+    /// `s3-error-text`: the transport texts WP3 maps to node wording; a tail
+    /// starting with one of these is never folded on either side.
+    #[serde(default)]
+    pub mapped_prefixes: Vec<String>,
     /// Counter paths allowed to differ by 1 + the number of closed spans.
     #[serde(default)]
     pub count_paths: Vec<String>,
@@ -137,6 +146,12 @@ const KINDS: &[&str] = &[
     "import",
     "decisions",
     "strict_numbers",
+    // Phase 3 (WP6): the media streams' rows T10/T12/T13/T14, read by
+    // media_diff.rs (`tolerance` = the ± bounds).
+    "media",
+    // Phase 3: T4's media/recording state transitions ±1 tick (diff.rs
+    // `Cx::transition`).
+    "transition",
 ];
 
 impl Table {
@@ -330,9 +345,11 @@ mod tests {
             .join("../../tools/replay/tolerances.toml");
         let t = Table::load(&path).unwrap();
         assert_eq!(t.excluded("telemetry", "ts").as_deref(), Some("T1"));
+        // Phase 3 (CF45): the media/recording blocks are compared now.
+        assert_eq!(t.excluded("telemetry", "media.kvs.value"), None);
         assert_eq!(
-            t.excluded("telemetry", "media.kvs.value").as_deref(),
-            Some("T6")
+            t.excluded("telemetry", "recording.sessionId").as_deref(),
+            Some("T11")
         );
         assert_eq!(
             t.excluded("state", "writtenBy").as_deref(),

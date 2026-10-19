@@ -113,8 +113,8 @@ impl PlayInfo {
     }
 
     /// Closed spans extended to the moment BOTH agents publish telemetry again
-    /// (T8 `reconnect-cadence`: Rust backs off 1→60 s with jitter, mqtt.js
-    /// retries every 2 s, so one side resumes later than the span's end).
+    /// (T8 `reconnect-cadence`: both retry a fixed 2000 ms after every close,
+    /// each on its own phase, so one side can resume ≤ ~2 s after the other).
     pub fn with_reconnects(&self, a: &[&Msg], b: &[&Msg]) -> PlayInfo {
         let mut out = self.clone();
         for span in out.closed_spans.iter_mut() {
@@ -128,6 +128,15 @@ impl PlayInfo {
     }
 
     /// The host series `name` at wall `w` (nearest sample within `within` ms).
+    /// Every host sample of `name` in `[w - before, w + after]`.
+    pub fn host_in(&self, name: &str, w: i64, before: i64, after: i64) -> Vec<f64> {
+        self.host
+            .iter()
+            .filter(|(t, m)| *t >= w - before && *t <= w + after && m.contains_key(name))
+            .map(|(_, m)| m[name])
+            .collect()
+    }
+
     pub fn host_at(&self, name: &str, w: i64, within: i64) -> Option<f64> {
         self.host
             .iter()
@@ -610,7 +619,26 @@ fn parse_payload(raw: &str) -> Value {
 /// bytes as base64, `{"present":false}` when absent) when the capture has
 /// one, else the legacy `final/<name>` copies of [`FILES`].
 fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
-    let text = |b: &[u8]| norm_id(&String::from_utf8_lossy(b), id);
+    // Phase 3: renders (`etc/pipelines/<key>.gst`) name the agent's own shm
+    // socket under its work dir (`/tmp/rig-work/<label>/home/shm/…`): the
+    // work dir is normalised to `<work>` like the deviceId (phase file
+    // "`.gst/.camera/.gst.direct` renders: bytes after the home normalisation").
+    let work = std::fs::read(dir.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|m| {
+            Path::new(m["home"].as_str()?)
+                .parent()
+                .map(|p| p.display().to_string())
+        })
+        .filter(|w| !w.is_empty());
+    let text = |b: &[u8]| {
+        let t = norm_id(&String::from_utf8_lossy(b), id);
+        match &work {
+            Some(w) => t.replace(w.as_str(), "<work>"),
+            None => t,
+        }
+    };
     let mut finals = BTreeMap::new();
     let snap: Option<Value> = std::fs::read(dir.join("final.json"))
         .ok()
@@ -798,6 +826,10 @@ pub struct Report {
     pub inputs: BTreeMap<String, String>,
     /// Hits per tolerance row, every row of the table (0 included).
     pub hits: Vec<(String, usize)>,
+    /// Signed A − B of every telemetry pair of a host-referenced T3 field
+    /// (equal pairs = 0): the T3/host bias guard's input.
+    #[serde(skip)]
+    pub host_diffs: BTreeMap<String, Vec<f64>>,
 }
 
 impl Report {
@@ -808,7 +840,7 @@ impl Report {
             .count()
     }
 
-    fn push(&mut self, m: Mismatch) {
+    pub(crate) fn push(&mut self, m: Mismatch) {
         let st = self.stats.entry(m.stream.clone()).or_default();
         if m.tol == UNTOLERATED {
             st.untolerated += 1;
@@ -985,15 +1017,32 @@ impl Cx<'_> {
         // NARROWED (review-wp7): the HOST's own difference between the two
         // agents' instants must explain the agents' difference with the same
         // sign, within the agents' tolerance: |(A−B) − (host(tsA) − host(tsB))| ≤ tol.
-        let hd = if series == "cpu" {
+        let d = p - q;
+        let explains =
+            |hd: f64| d.signum() == hd.signum() && hd != 0.0 && (d - hd).abs() <= tol + 1e-9;
+        if series == "cpu" {
             // Each agent's cpu_usage is the busy share since its previous tick
             // (1 s at RATE_HZ=1) ending at its read (≈ `ts`).
-            self.play.host_cpu(a, 1000)? - self.play.host_cpu(b, 1000)?
-        } else {
-            self.play.host_at(&series, a, 250)? - self.play.host_at(&series, b, 250)?
-        };
-        let d = p - q;
-        (d.signum() == hd.signum() && hd != 0.0 && (d - hd).abs() <= tol + 1e-9)
+            let hd = self.play.host_cpu(a, 1000)? - self.play.host_cpu(b, 1000)?;
+            return explains(hd).then(|| format!("{id}/host"));
+        }
+        let hd = self.play.host_at(&series, a, 250)? - self.play.host_at(&series, b, 250)?;
+        if explains(hd) {
+            return Some(format!("{id}/host"));
+        }
+        // Phase 3 (media runs): with four x264 encoders + shmsink segments in
+        // the VM the host's ram swings by ~3 points within 50 ms, so the
+        // sample NEAREST `ts` is not the one an agent read (its collectors
+        // read meminfo around the tick, before or after the payload's `ts` is
+        // stamped: rec-shed-uv calibration, 38 → 27 % within 50 ms). Accept a
+        // host sample pair from each agent's read window [ts − 150, ts + 250]
+        // ms that explains the difference under the same rule.
+        let (ha, hb) = (
+            self.play.host_in(&series, a, 150, 250),
+            self.play.host_in(&series, b, 150, 250),
+        );
+        ha.iter()
+            .any(|x| hb.iter().any(|y| explains(x - y)))
             .then(|| format!("{id}/host"))
     }
 
@@ -1002,6 +1051,32 @@ impl Cx<'_> {
     /// satellites-in-view change, a metrics.gps value where the JS side reads
     /// Rust's PREVIOUS sample and the JS NEXT sample is Rust's value (Node
     /// handles a pty chunk late). A Rust value one tick late is not covered.
+    /// T4 `transition` (Phase 3, phase file table row "payload
+    /// media/recording blocks": transitions ±1 tick): a media/recording
+    /// value (or its presence) that differs at this pair while the OTHER
+    /// side shows this side's value one tick earlier or later — the same
+    /// transition landing on adjacent ticks (stream states, `uploading`,
+    /// `powerShed`, `liveBlock` …), either direction (JS-vs-JS too).
+    fn transition(&self, path: &str, x: Option<&Value>, y: Option<&Value>) -> Option<String> {
+        let r = self.table.of_kind("transition", &self.stream).find(|r| {
+            r.paths
+                .iter()
+                .any(|p| crate::tolerances::path_matches(p, path))
+        })?;
+        fn at_path<'v>(v: Option<&'v Value>, path: &str) -> Option<&'v Value> {
+            v.and_then(|v| lookup(v, path))
+        }
+        let at = |v| at_path(v, path);
+        let [pa, na, pb, nb] = self.neighbors;
+        let (has_a, has_b) = (pa.is_some() || na.is_some(), pb.is_some() || nb.is_some());
+        if !has_a && !has_b {
+            return None;
+        }
+        let b_moves = (pb.is_some() && at(pb) == x) || (nb.is_some() && at(nb) == x);
+        let a_moves = (pa.is_some() && at(pa) == y) || (na.is_some() && at(na) == y);
+        (b_moves || a_moves).then(|| r.id.clone())
+    }
+
     fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let (rid, row) = self.table.decision_row("input-edge")?;
         if !crate::tolerances::stream_matches(&row.streams, &self.stream)
@@ -1045,8 +1120,8 @@ impl Cx<'_> {
     }
 
     /// T8 reconnect-cadence for REPORT values: after a cut each agent's
-    /// reconnect triggers a `cloud` report at its own reconnect time (the Rust
-    /// backoff resumes later), so an input that changed BETWEEN the two
+    /// reconnect triggers a `cloud` report at its own reconnect time (each
+    /// agent's 2 s retry runs on its own phase), so an input that changed BETWEEN the two
     /// reports' publish times is read differently. NARROWED (review-wp7):
     /// only a report pair inside a cut's window, and only the paths that
     /// input feeds (an LTE-file change → effective.sim / uplink / apn,
@@ -1204,6 +1279,19 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
         // Per-kind comparison counts: the leaves of the larger document.
         let n = a.map_or(0, leaf_count).max(b.map_or(0, leaf_count));
         out.stats.entry(cx.stream.clone()).or_default().leaves += n;
+        // T3/host bias guard input: every pair's signed A − B (0 = equal).
+        if let (Some(x), Some(y)) = (a, b) {
+            for r in cx.table.of_kind("numeric", &cx.stream) {
+                for hp in r.host_reference.keys() {
+                    if let (Some(p), Some(q)) = (
+                        lookup(x, hp).and_then(Value::as_f64),
+                        lookup(y, hp).and_then(Value::as_f64),
+                    ) {
+                        out.host_diffs.entry(hp.clone()).or_default().push(p - q);
+                    }
+                }
+            }
+        }
     }
     if a == b && num_strict_eq(a, b) {
         return;
@@ -1312,6 +1400,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             let tol = cx
                 .d23(path)
+                .or_else(|| cx.transition(path, a, b))
                 .or_else(|| cx.cut_input(path, x, y))
                 .or_else(|| cx.input_edge(path, x, y))
                 .or_else(|| cx.report_input_between(path))
@@ -1353,7 +1442,8 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             }
             // Presence (or array length / type) mismatch.
             let tol = cx
-                .near_transition(path)
+                .transition(path, a, b)
+                .or_else(|| cx.near_transition(path))
                 .or_else(|| cx.near_wall_step(path))
                 .unwrap_or_else(|| UNTOLERATED.into());
             out.push(cx.mismatch(path, a, b, tol));
@@ -1885,8 +1975,13 @@ fn first_values(
     out
 }
 
+/// A value by its diff path (`a.b.0.c`): numeric segments index arrays (the
+/// paths `cmp` builds for array elements, e.g. `media.streams.1.state`).
 fn lookup<'v>(v: &'v Value, path: &str) -> Option<&'v Value> {
-    path.split('.').try_fold(v, |cur, seg| cur.get(seg))
+    path.split('.').try_fold(v, |cur, seg| match cur {
+        Value::Array(a) => seg.parse::<usize>().ok().and_then(|i| a.get(i)),
+        _ => cur.get(seg),
+    })
 }
 
 /// Which side is the js agent when the other is rust (one-directional rows).
@@ -2449,6 +2544,7 @@ pub fn diff_with(
     diff_sudo(a, b, table, &mut rep);
 
     cap_row_hits(&mut rep, table, play, "input-edge");
+    host_bias_guard(&mut rep, table);
 
     // Per-kind comparison counts (review-wp7): every kind is listed.
     for k in EXPECTED_KINDS {
@@ -2486,6 +2582,56 @@ const CORE_KINDS: &[&str] = &["telemetry", "report", "events", "state", "mqtt-fl
 /// A row with `max_hits_per_10min`: above that many distinct ticks per 10 min
 /// of run every hit of the row becomes UNTOLERATED (a systematic shift is a
 /// bug, not timing); the count is printed either way.
+/// T3/host BIAS GUARD (review-wp6 FLAG 1, narrowed): host attribution may
+/// only explain rig noise, never a systematic Rust formula error (MemFree vs
+/// MemAvailable, cache counting). Per run and host-referenced field: if the
+/// median signed A − B over ALL telemetry pairs exceeds ½·tol, or `T3/host`
+/// covers more than 5 % of the pairs, every `T3/host` row of that field
+/// becomes UNTOLERATED. Figures in diff.md either way.
+fn host_bias_guard(rep: &mut Report, table: &Table) {
+    let Report {
+        mismatches,
+        stats,
+        inputs,
+        host_diffs,
+        ..
+    } = rep;
+    for (path, d) in host_diffs.iter() {
+        let Some((_, tol)) = table.numeric("telemetry", path) else {
+            continue;
+        };
+        let mut v = d.clone();
+        v.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        let med = v.get(v.len() / 2).copied().unwrap_or(0.0);
+        let host = mismatches
+            .iter()
+            .filter(|m| m.stream == "telemetry" && m.path == *path && m.tol.ends_with("/host"))
+            .count();
+        let share = host as f64 * 100.0 / v.len().max(1) as f64;
+        let biased = med.abs() > tol / 2.0 || share > 5.0;
+        inputs.insert(
+            format!("T3/host bias guard {path}"),
+            format!(
+                "{} pairs, median A−B {med:+.3} (limit ±{:.3}), T3/host {host} ({share:.1} %, limit 5 %){}",
+                v.len(),
+                tol / 2.0,
+                if biased { " → BIASED: every T3/host row of this field UNTOLERATED" } else { "" }
+            ),
+        );
+        if biased {
+            for m in mismatches
+                .iter_mut()
+                .filter(|m| m.stream == "telemetry" && m.path == *path && m.tol.ends_with("/host"))
+            {
+                m.tol = UNTOLERATED.into();
+                let st = stats.entry(m.stream.clone()).or_default();
+                st.tolerated = st.tolerated.saturating_sub(1);
+                st.untolerated += 1;
+            }
+        }
+    }
+}
+
 fn cap_row_hits(rep: &mut Report, table: &Table, play: &PlayInfo, row_id: &str) {
     let Some((rid, row)) = table.decision_row(row_id) else {
         return;
@@ -2759,9 +2905,10 @@ fn diff_reports(
             let straddle = trig.windows(2).any(|w| w[1] - w[0] <= DEBOUNCE_MS);
             // T8 reconnect-cadence, "report count after a cut" (modelled, not
             // T5): each reconnect's retained redelivery triggers a `cloud`
-            // report, and mqtt.js reconnecting sooner (2 s) can see an
-            // intermediate retained rev the Rust agent never sees (calibration
-            // period 3: JS saw rev 1 then rev 2). So in a period overlapping a
+            // report, and the agent reconnecting first (independent 2 s
+            // phases) can see an intermediate retained rev the other never
+            // sees (calibration period 3, Rust then on its old 1→60 s
+            // backoff: JS saw rev 1 then rev 2). So in a period overlapping a
             // (extended) span: |Δ| ≤ the spans it overlaps, and every report
             // the longer side has beyond the shorter's (by origin + rev) is
             // origin `cloud` with a rev the tape's config publishes carry.
@@ -2889,9 +3036,11 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
     if let Some((rid, row)) = table.decision_row("s3-error-text") {
         for p in &row.event_prefixes {
             if let Some(rest) = msg.strip_prefix(p.as_str()) {
-                if let Some((secs, _)) = rest.split_once(": ") {
-                    msg = format!("{p}{secs}: <transport error>");
-                    hit = Some(format!("{rid}/s3-error-text"));
+                if let Some((secs, tail)) = rest.split_once(": ") {
+                    if s3_error_folds(row, kind, tail) {
+                        msg = format!("{p}{secs}: <transport error>");
+                        hit = Some(format!("{rid}/s3-error-text"));
+                    }
                 }
             }
         }
@@ -2918,6 +3067,39 @@ fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Opti
         }
     }
     (format!("{level}: {msg}"), hit)
+}
+
+/// CF32 shrink (WP6 over WP3's mapping, `s3.rs::node_transport_error` /
+/// `iot_creds.rs::node_pem_error`): the agent's OWN texts (`own_prefixes`:
+/// HTTP status errors, timeouts, creds parse failures — the TS strings of
+/// s3-put.ts / iot-creds.ts) and every transport text WP3 maps to node's
+/// wording (`mapped_prefixes`) are compared exactly. What is left is folded:
+/// on the node side only the texts of WP3's unmapped list (`fold_texts`:
+/// unknown issuer, SAN mismatch, corrupt PEM body, key/cert mismatch, the
+/// empty `AggregateError`), on the Rust side the raw `error_chain` fallback
+/// (anything not own and not mapped).
+fn s3_error_folds(row: &crate::tolerances::Row, kind: &str, tail: &str) -> bool {
+    if row
+        .own_prefixes
+        .iter()
+        .any(|o| tail.starts_with(o.as_str()))
+        || row
+            .mapped_prefixes
+            .iter()
+            .any(|o| tail.starts_with(o.as_str()))
+    {
+        return false;
+    }
+    if kind == "rust" {
+        return true;
+    }
+    row.fold_texts.iter().any(|f| {
+        if f.is_empty() {
+            tail.is_empty()
+        } else {
+            tail.contains(f.as_str())
+        }
+    })
 }
 
 /// Failed atomic-write text after phase-2/integration: both agents name Node's
@@ -3230,17 +3412,16 @@ fn diff_events(
         }) {
             r.id.clone()
         } else if let Some((rid, _)) = cadence.as_ref().filter(|(_, row)| {
-            // NARROWED (review-wp7), only in a run with a closed span:
-            // `reconnecting…` / `connection closed` — the Rust agent at most
-            // as many as mqtt.js (its backoff is slower, never faster);
+            // NARROWED (review-wp7; symmetric since fix-timer-cadence), only
+            // in a run with a closed span: `reconnecting…` / `connection
+            // closed` — |Δ| ≤ 1 per closed span EITHER way (both retry a
+            // fixed 2000 ms after every close, mqtt.js `reconnectPeriod` ↔
+            // xorgate-cloud backoff.rs `fixed`, each on its own phase from its
+            // own close, so one span's attempt counts differ by at most one);
             // the transport-error class — either way (detection differs).
             had_cut
                 && ((row.event_exact.iter().any(|e| e == k)
-                    && match js_a {
-                        Some(true) => y <= x,
-                        Some(false) => x <= y,
-                        None => true,
-                    })
+                    && x.abs_diff(y) <= play.closed_spans.len())
                     || row.event_prefixes.iter().any(|p| k.starts_with(p.as_str())))
         }) {
             format!("{rid}/reconnect-cadence")
@@ -3889,10 +4070,70 @@ mod tests {
     }
 
     #[test]
+    fn lookup_indexes_arrays() {
+        let v = serde_json::json!({"media": {"streams": [{"state": "a"}, {"state": "b"}]}});
+        assert_eq!(
+            lookup(&v, "media.streams.1.state"),
+            Some(&serde_json::json!("b"))
+        );
+        assert_eq!(lookup(&v, "media.streams.2.state"), None);
+        assert_eq!(lookup(&v, "media.streams.x"), None);
+    }
+
+    /// CF32 shrink (WP3 hand-over): only WP3's unmapped transport texts fold.
+    #[test]
+    fn s3_error_text_folds_only_the_unmapped_list() {
+        let t = table();
+        let k = |msg: &str, kind: &str| {
+            event_key(
+                "warn",
+                &format!("upload failed, retrying in 2s: {msg}"),
+                kind,
+                &t,
+            )
+        };
+        let folded = "warn: upload failed, retrying in 2s: <transport error>";
+        // Unmapped categories: node text vs the Rust error chain.
+        for js in [
+            "self-signed certificate",
+            "unable to get local issuer certificate",
+            "Hostname/IP does not match certificate's altnames: Host: a. is not in the cert's altnames: DNS:b",
+            "error:05800074:x509 certificate routines::key values mismatch",
+            "error:04800064:PEM routines::bad base64 decode",
+            "",
+        ] {
+            let (ka, ha) = k(js, "js");
+            assert_eq!(ka, folded, "{js:?}");
+            assert_eq!(ha.as_deref(), Some("T8/s3-error-text"));
+        }
+        let (kr, _) = k("error sending request: client error (Connect): invalid peer certificate: UnknownIssuer", "rust");
+        assert_eq!(kr, folded);
+        // Mapped and own texts compare exactly on both sides.
+        for m in [
+            "connect ECONNREFUSED 10.0.0.1:443",
+            "getaddrinfo ENOTFOUND b.s3.ca-central-1.amazonaws.com",
+            "socket hang up",
+            "error:0480006C:PEM routines::no start line",
+            "S3 PUT failed: HTTP 503 Slow Down",
+        ] {
+            for kind in ["js", "rust"] {
+                let (key, hit) = k(m, kind);
+                assert_eq!(key, format!("warn: upload failed, retrying in 2s: {m}"));
+                assert_eq!(hit, None);
+            }
+        }
+        // A node text outside the list (an unexpected wording) is NOT folded,
+        // so a mapped-vs-chain divergence stays UNTOLERATED.
+        let (kx, _) = k("some new node text", "js");
+        assert_ne!(kx, folded);
+    }
+
+    #[test]
     fn outage_seq_jump_reconnect_tail_and_gate_skip() {
         let t = table();
         let tel = |ts: i64, seq: i64| serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,"metrics":{}});
-        // A (JS) resumes 1 s after the cut; B (Rust, backoff) 8 s after and,
+        // A (JS) resumes 1 s after the cut; B (Rust) 8 s after (the mechanism,
+        // not today's 2 s cadence) and,
         // past the 1000-payload offline queue, dropped the oldest ticks.
         let run = |span_end: i64, extra: bool| {
             let mut play = PlayInfo {
@@ -4004,10 +4245,10 @@ mod tests {
             run(Some("in force, but something else"), None),
             vec![UNTOLERATED.to_string()]
         );
-        // recording: the prefix + `; `-joined known parts.
+        // Phase 3 (CF45): the recording latch parts are compared exactly now.
         let rec = "in force, but video is held by the GPS/LTE gate and starts when it releases; \
                    load shedding is active (bridge-only)";
-        assert_eq!(run(Some(rec), None), vec!["T6".to_string()]);
+        assert_eq!(run(Some(rec), None), vec![UNTOLERATED.to_string()]);
         assert_eq!(
             run(Some("in force, but load shedding is active ()"), None),
             vec![UNTOLERATED.to_string()]
@@ -4453,6 +4694,22 @@ mod tests {
         assert!(rep.untolerated() > 0);
     }
 
+    /// 40 more telemetry ticks with an EQUAL ram value on both sides (ts
+    /// 40 s + k s, B `off` ms later): a run's pairs are mostly equal, so the
+    /// T3/host bias guard (≤ 5 % host rows, |median| ≤ ½·tol) stays quiet.
+    fn pad_ram(mut v: Vec<Msg>, off: i64) -> Vec<Msg> {
+        for k in 0..40 {
+            let ts = 40_000 + k * 1000 + off;
+            v.push(msg(
+                ts,
+                "telemetry",
+                serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":100 + k,
+                    "metrics":{"system":{"ram_usage":{"value":20.0,"unit":"%"}}}}),
+            ));
+        }
+        v
+    }
+
     #[test]
     fn ram_beyond_t3_is_host_only_where_the_host_moved() {
         let t = table();
@@ -4476,17 +4733,23 @@ mod tests {
         };
         let a = cap(
             "js",
-            vec![
-                msg(10_000, "telemetry", ram(10_000, 1, 20.0)),
-                msg(20_000, "telemetry", ram(20_000, 2, 20.0)),
-            ],
+            pad_ram(
+                vec![
+                    msg(10_000, "telemetry", ram(10_000, 1, 20.0)),
+                    msg(20_000, "telemetry", ram(20_000, 2, 20.0)),
+                ],
+                0,
+            ),
         );
         let b = cap(
             "rust",
-            vec![
-                msg(10_200, "telemetry", ram(10_200, 1, 25.0)),
-                msg(20_200, "telemetry", ram(20_200, 2, 25.0)),
-            ],
+            pad_ram(
+                vec![
+                    msg(10_200, "telemetry", ram(10_200, 1, 25.0)),
+                    msg(20_200, "telemetry", ram(20_200, 2, 25.0)),
+                ],
+                200,
+            ),
         );
         let rep = diff(&a, &b, &play, &[], &t);
         let got: Vec<(&str, &str)> = rep
@@ -4502,8 +4765,40 @@ mod tests {
                 ("ts A 20000 / B 20200", UNTOLERATED),
             ],
             "{:?}",
-            rep.mismatches
+            rep.inputs
         );
+        // BIAS GUARD (review-wp6): a Rust formula that reads 0.6 points high
+        // on EVERY tick (within T3's ±1 each, median > ½·tol) turns every
+        // T3/host row of the field UNTOLERATED.
+        let biased = |v: Vec<Msg>| -> Vec<Msg> {
+            v.into_iter()
+                .map(|mut m| {
+                    if let Some(x) = m.payload.pointer_mut("/metrics/system/ram_usage/value") {
+                        *x = serde_json::json!(x.as_f64().unwrap() + 0.6);
+                    }
+                    m
+                })
+                .collect()
+        };
+        let b2 = cap("rust", biased(b.msgs.clone()));
+        let rep = diff(&a, &b2, &play, &[], &t);
+        let host_rows: Vec<&str> = rep
+            .mismatches
+            .iter()
+            .filter(|m| {
+                m.path == "metrics.system.ram_usage.value" && m.at == "ts A 10000 / B 10200"
+            })
+            .map(|m| m.tol.as_str())
+            .collect();
+        assert_eq!(host_rows, vec![UNTOLERATED], "{:?}", rep.inputs);
+        // …and T3/host on > 5 % of the pairs does too (1 host row of 1 pair).
+        let few_a = cap("js", vec![msg(10_000, "telemetry", ram(10_000, 1, 20.0))]);
+        let few_b = cap("rust", vec![msg(10_200, "telemetry", ram(10_200, 1, 25.0))]);
+        let rep = diff(&few_a, &few_b, &play, &[], &t);
+        assert!(rep
+            .mismatches
+            .iter()
+            .any(|m| m.path == "metrics.system.ram_usage.value" && m.tol == UNTOLERATED));
     }
 
     #[test]
@@ -4522,8 +4817,14 @@ mod tests {
             ..Default::default()
         };
         let tol_ram = |bv: f64| {
-            let a = cap("js", vec![msg(10_000, "telemetry", ram(10_000, 20.0))]);
-            let b = cap("rust", vec![msg(10_200, "telemetry", ram(10_200, bv))]);
+            let a = cap(
+                "js",
+                pad_ram(vec![msg(10_000, "telemetry", ram(10_000, 20.0))], 0),
+            );
+            let b = cap(
+                "rust",
+                pad_ram(vec![msg(10_200, "telemetry", ram(10_200, bv))], 200),
+            );
             diff(&a, &b, &play, &[], &t)
                 .mismatches
                 .into_iter()
@@ -4533,6 +4834,37 @@ mod tests {
         assert_eq!(tol_ram(25.0).as_deref(), Some("T3/host"));
         // The host rose 5.5 points, Rust reports 5 points LOWER: a formula bug.
         assert_eq!(tol_ram(15.0).as_deref(), Some(UNTOLERATED));
+        // Phase 3: an oscillating host (media load) — the sample nearest each
+        // ts does not explain A − B, a pair from the read windows does.
+        let play_osc = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            host: vec![
+                host(19_950, 23.1),
+                host(20_000, 20.5),
+                host(20_150, 20.0),
+                host(20_200, 22.0),
+            ],
+            ..Default::default()
+        };
+        let tol_osc = |bv: f64| {
+            let a = cap(
+                "js",
+                pad_ram(vec![msg(20_000, "telemetry", ram(20_000, 23.0))], 0),
+            );
+            let b = cap(
+                "rust",
+                pad_ram(vec![msg(20_200, "telemetry", ram(20_200, bv))], 200),
+            );
+            diff(&a, &b, &play_osc, &[], &t)
+                .mismatches
+                .into_iter()
+                .find(|m| m.path == "metrics.system.ram_usage.value")
+                .map(|m| m.tol)
+        };
+        assert_eq!(tol_osc(20.0).as_deref(), Some("T3/host"));
+        // Beyond what any host pair in the read windows explains.
+        assert_eq!(tol_osc(28.0).as_deref(), Some(UNTOLERATED));
 
         // build: the four leaf values are each agent's own; the key set is not.
         let rep_b = |build: Value| serde_json::json!({"v":1,"origin":"boot","rev":1,"effective":{"agent":{"build":build}}});
@@ -4725,6 +5057,7 @@ mod tests {
                     argv: vec!["vcgencmd".into(), "get_throttled".into()],
                     stdout: "x".into(),
                     code: Some(0),
+                    stderr: None,
                 },
             ),
             rec(65_000, TapeEvent::dt(Some(&[0, 0, 0x0b, 0xb8]))),
@@ -5552,7 +5885,7 @@ mod tests {
         let mut b = cap("rust", vec![]);
         a.events = vec![
             (1, "info".into(), "connected".into()),
-            (2, "info".into(), "hardware: cam0 ok".into()),
+            (2, "info".into(), "camera mount: cam0 0°".into()),
         ];
         b.events = vec![
             (1, "info".into(), "connected".into()),
@@ -5565,7 +5898,7 @@ mod tests {
             .map(|m| (m.path.as_str(), m.tol.as_str()))
             .collect();
         assert!(
-            tols.contains(&("info: hardware: cam0 ok", "T6")),
+            tols.contains(&("info: camera mount: cam0 0°", "T6")),
             "{tols:?}"
         );
         assert!(
@@ -5602,12 +5935,13 @@ mod tests {
         for (k, want) in [
             ("info: uploadBucket backfilled: my-bucket", UNTOLERATED),
             ("warn: uploadBucket persist failed: EACCES", UNTOLERATED),
-            ("info: upload paused (offline)", "T6"),
+            // Phase 3 (CF45): recording/media/hardware events must match.
+            ("info: upload paused (offline)", UNTOLERATED),
             (
                 "info: [clock] NTP synchronized — offline clock stepping stood down for this boot",
                 "T6",
             ),
-            ("info: hardware: cam0 ok", "T6"),
+            ("info: hardware: cam0 ok", UNTOLERATED),
             ("info: hardware block updated: cm5/v4l2", UNTOLERATED),
         ] {
             assert_eq!(tol_of(&js, &rust, k).as_deref(), Some(want), "{k}");
@@ -5632,10 +5966,9 @@ mod tests {
             Some(UNTOLERATED)
         );
         // B = js, A = rust: the direction follows the kinds, not the labels.
-        assert_eq!(
-            tol_of(&rust, &js, "info: hardware: cam0 ok").as_deref(),
-            Some("T6")
-        );
+        let clock =
+            "info: [clock] NTP synchronized — offline clock stepping stood down for this boot";
+        assert_eq!(tol_of(&rust, &js, clock).as_deref(), Some("T6"));
         // JS vs JS: never tolerated by T6.
         assert_eq!(
             tol_of(&js, &cap("js", vec![]), "info: hardware: cam0 ok").as_deref(),
@@ -5691,7 +6024,7 @@ mod tests {
             has(&tols, "error: unhandledRejection: boom", "T8/task-prefix"),
             "{tols:?}"
         );
-        // … with one it is the backoff cadence.
+        // … with one it is the 2 s reconnect phase (|Δ| ≤ 1 per span).
         let play = PlayInfo {
             closed_spans: vec![(0, 10)],
             ..Default::default()
@@ -5703,12 +6036,44 @@ mod tests {
             "{tols:?}"
         );
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
-        // Rust reconnecting MORE often than mqtt.js: not the backoff.
+        // Symmetric (fix-timer-cadence: both retry a fixed 2000 ms after
+        // every close): Rust ONE more than mqtt.js is the same phase skew …
         let (mut a2, mut b2) = (b.clone(), a.clone());
         a2.meta.kind = "js".into();
         b2.meta.kind = "rust".into();
         let rep = diff(&a2, &b2, &play, &[], &t);
-        assert!(has(&tols_of(&rep), "warn: reconnecting…", UNTOLERATED));
+        assert!(
+            has(
+                &tols_of(&rep),
+                "warn: reconnecting…",
+                "T8/reconnect-cadence"
+            ),
+            "{:?}",
+            tols_of(&rep)
+        );
+        // … but TWO more in one span is not a phase skew, either way (a slow
+        // or a fast reconnect loop) …
+        let b5 = b.clone();
+        let mut a5 = a.clone();
+        a5.events.push((5, "warn".into(), "reconnecting…".into()));
+        for (x, y) in [(&a5, &b5), (&b5, &a5)] {
+            let (mut x, mut y) = (x.clone(), y.clone());
+            x.meta.kind = "js".into();
+            y.meta.kind = "rust".into();
+            let rep = diff(&x, &y, &play, &[], &t);
+            assert!(has(&tols_of(&rep), "warn: reconnecting…", UNTOLERATED));
+        }
+        // … unless the run had two spans (one each).
+        let play2 = PlayInfo {
+            closed_spans: vec![(0, 10), (20, 30)],
+            ..Default::default()
+        };
+        let rep = diff(&a5, &b5, &play2, &[], &t);
+        assert!(has(
+            &tols_of(&rep),
+            "warn: reconnecting…",
+            "T8/reconnect-cadence"
+        ));
         // A transport-error COUNT difference only in a run with a cut.
         let mut b3 = b.clone();
         b3.events

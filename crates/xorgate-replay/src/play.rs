@@ -41,7 +41,7 @@
 //! 800) the roles flip and the one lead tick in between is recorded as a
 //! `skip` (it has no partner that saw the same inputs).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -60,8 +60,9 @@ use tokio_util::sync::CancellationToken;
 use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 
 use crate::diff::PlayInfo;
-use crate::rewrite;
+use crate::media::{self, MediaPlan, ObsAgent};
 use crate::watch::{self, WatchGate};
+use crate::{aws, rewrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AgentKind {
@@ -140,6 +141,12 @@ pub struct PlayArgs {
     /// default the tool is ABSENT (phase file).
     #[arg(long)]
     pub with_rpicam: bool,
+    /// The rig's media dir (the fake KVS master, `tools/replay/media/`).
+    #[arg(long, default_value = "/rig/tools/media")]
+    pub media_dir: PathBuf,
+    /// Where the fake IoT credentials + S3 listen (`aws.rs`).
+    #[arg(long, default_value = "0.0.0.0:443")]
+    pub aws_listen: String,
     /// Start agent B this many ms after A (calibration: forces the two tick
     /// phases apart so the hold gate is exercised like JS vs Rust).
     #[arg(long, default_value_t = 0)]
@@ -182,10 +189,18 @@ const CUT_MIN_OPEN_MS: i64 = 200;
 /// until BOTH agents publish again + this settle (their retained config
 /// delivery applied and reported) …
 const POST_CUT_SETTLE_MS: i64 = 3_000;
-/// … but never longer than the worst-case reconnect (Rust backoff cap 60 s)
-/// + 15 s after the restore.
-const POST_CUT_MAX_MS: i64 = 75_000;
+/// … but never longer than the worst-case reconnect + 15 s after the
+/// restore: both agents retry a fixed 2000 ms after every close (mqtt.js
+/// `reconnectPeriod: 2000` ↔ xorgate-cloud backoff.rs `fixed`) and the proxy
+/// refuses in-span attempts at once (no attempt hangs into the restore), so
+/// the latest reconnect is 2 s + a connect after the restore.
+const POST_CUT_MAX_MS: i64 = 2_000 + 15_000;
 const PREFILL_MS: u64 = 1000;
+/// A power-threshold crossing lands at least this far from both agents'
+/// predicted 1 Hz ticks (`meta.rig.powerCrossings`).
+const CROSSING_CLEAR_MS: i64 = 300;
+/// The power-read fence never holds a `vcgencmd` answer longer than this.
+const EXEC_FENCE_CAP_MS: i64 = 1_500;
 
 // ------------------------------------------------------------------ gate
 
@@ -284,8 +299,8 @@ pub struct Gate {
     /// Arrival (`now`) of each agent's last telemetry publish.
     seen_at: [Option<i64>; 2],
     /// Set when a cut ends; cleared once BOTH agents have published again.
-    /// Until then the gate stays on PREDICTED ticks (series 5: Rust, still in
-    /// its backoff 7 s after the restore, read an NMEA burst 5 ms in — GGA
+    /// Until then the gate stays on PREDICTED ticks (series 5: Rust, then
+    /// still in its old 1→60 s backoff 7 s after the restore, read an NMEA burst 5 ms in — GGA
     /// new, RMC old — because an unobserved agent left the gate open).
     restored_at: Option<i64>,
     /// When both agents had published again after the last restore.
@@ -313,7 +328,7 @@ impl Gate {
 
     /// The broker path was restored at `now`: keep holding on predicted ticks
     /// until both agents' telemetry arrives again (each reconnects on its own
-    /// cadence: mqtt.js 2 s, Rust 1→60 s backoff).
+    /// 2 s retry phase, counted from its own close).
     pub fn on_restore(&mut self, now: i64) {
         self.restored_at = Some(now);
     }
@@ -336,7 +351,7 @@ impl Gate {
     /// Must a barrier input (cli / mqtt_in / lte_file / conn) still wait
     /// after a restore? Until both agents publish again + POST_CUT_SETTLE_MS
     /// (≤ POST_CUT_MAX_MS after the restore). Series 5 calibration 193432Z:
-    /// the Rust agent, 30 s into its backoff, reconnected 50 ms after the
+    /// the Rust agent, 30 s into its (since replaced) backoff, reconnected 50 ms after the
     /// tape's CLI edit, and its retained rev 2 delivery overwrote the edit
     /// before its 5 s settings watch saw it; mqtt.js (2 s) had applied rev 2
     /// 23 s earlier and reported the edit `local`.
@@ -360,6 +375,18 @@ impl Gate {
 
     /// Have both agents published telemetry at least once (booted,
     /// connected, ticking)?
+    /// Is `now` at least `ms` away (circular, mod the 1 s tick) from BOTH
+    /// agents' predicted next tick? Unknown phase (< 2 ticks seen) = yes.
+    pub fn mid_period(&self, now: i64, ms: i64) -> bool {
+        self.track.iter().all(|t| match t.tick_at(t.k) {
+            Some(tick) => {
+                let ph = (now - tick).rem_euclid(INTERVAL_MS);
+                ph.min(INTERVAL_MS - ph) >= ms
+            }
+            None => true,
+        })
+    }
+
     pub fn both_ticking(&self) -> bool {
         self.track.iter().all(|t| t.last_ts.is_some())
     }
@@ -676,6 +703,7 @@ impl Agent {
         args: &PlayArgs,
         tape: &Tape,
         i2c_absent: bool,
+        plan: &MediaPlan,
     ) -> Result<Self> {
         let dir = args.out.join(label);
         let work = args.work.join(label);
@@ -699,7 +727,8 @@ impl Agent {
         {
             let entry = entry?;
             let name = entry.file_name();
-            if (i2c_absent && name == "i2cdetect") || (!args.with_rpicam && name == "rpicam-hello")
+            if (i2c_absent && name == "i2cdetect")
+                || (!args.with_rpicam && !plan.rpicam && name == "rpicam-hello")
             {
                 continue;
             }
@@ -710,7 +739,7 @@ impl Agent {
         // Manifests.
         fs::write(
             etc.join("kvs.json"),
-            json!({"channels": tape.meta.kvs.channels}).to_string(),
+            media::kvs_manifest(plan, tape, device_id).to_string(),
         )?;
         let hw_path = etc.join("hardware.json");
         if !tape.meta.hardware.is_null() {
@@ -735,7 +764,7 @@ impl Agent {
             bin.display()
         );
         let cert = |n: &str| args.certs.join(n).display().to_string();
-        let env: Vec<(String, String)> = vec![
+        let mut env: Vec<(String, String)> = vec![
             ("PATH", path_env),
             ("HOME", work.display().to_string()),
             ("TZ", "UTC".into()),
@@ -779,6 +808,14 @@ impl Agent {
             }),
         )
         .collect();
+        // Phase 3 media side (media.rs): fake KVS master, rig CA for Node,
+        // filler tree. Later entries replace earlier ones of the same key.
+        for (k, v) in
+            media::prepare_agent(plan, &work, &home, device_id, &args.certs, &args.media_dir)?
+        {
+            env.retain(|(ek, _)| *ek != k);
+            env.push((k, v));
+        }
         fs::write(
             dir.join("meta.json"),
             serde_json::to_vec_pretty(&json!({
@@ -805,6 +842,14 @@ impl Agent {
             pty_unopened: 0,
             pty_open_cache: None,
         })
+    }
+
+    fn obs(&self) -> ObsAgent {
+        ObsAgent {
+            work: self.work.clone(),
+            home: self.home.clone(),
+            dir: self.dir.clone(),
+        }
     }
 
     fn command(&self, args: &PlayArgs, argv: &[String], worker: bool) -> Command {
@@ -894,13 +939,23 @@ impl Agent {
         }
     }
 
-    fn exec(&self, argv: &[String], stdout: &str, code: Option<i32>) -> Result<()> {
+    /// The shims (`vcgencmd`, `rpicam-hello`) answer from these per-argv
+    /// files: `.out` → stdout, `.err` → stderr (the tape's `stderr`, absent =
+    /// none; review-wp5 S1), `.code` → exit code.
+    fn exec(
+        &self,
+        argv: &[String],
+        stdout: &str,
+        stderr: Option<&str>,
+        code: Option<i32>,
+    ) -> Result<()> {
         let key = argv.join(" ").replace([' ', '/'], "_");
         let key = match key.split_once('_') {
             Some((tool, rest)) => format!("{tool}__{rest}"),
             None => key,
         };
         let base = self.state.join("exec").join(key);
+        write_atomic(&base.with_extension("err"), stderr.unwrap_or("").as_bytes())?;
         write_atomic(&base.with_extension("out"), stdout.as_bytes())?;
         write_atomic(
             &base.with_extension("code"),
@@ -1291,9 +1346,10 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         TapeEvent::I2cdetect { not_found, .. } => Some(*not_found),
         _ => None,
     }) == Some(true);
+    let plan = MediaPlan::of(&tape);
     let mut agents = vec![
-        Agent::prepare("a", args.a, DEVICE_A, &args, &tape, first_i2c_absent)?,
-        Agent::prepare("b", args.b, DEVICE_B, &args, &tape, first_i2c_absent)?,
+        Agent::prepare("a", args.a, DEVICE_A, &args, &tape, first_i2c_absent, &plan)?,
+        Agent::prepare("b", args.b, DEVICE_B, &args, &tape, first_i2c_absent, &plan)?,
     ];
     let log = Arc::new(Mutex::new(File::create(args.out.join("player.log"))?));
     let plog = |msg: String| {
@@ -1353,6 +1409,46 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         Arc::new(Mutex::new(Some(CancellationToken::new())));
     let upstream = format!("{}:{}", args.broker_host, args.broker_port);
     tokio::spawn(proxy(args.proxy_listen.clone(), upstream, cut.clone()));
+
+    // Phase 3: fake IoT credentials + S3 (aws.rs), trusted via the rig CA.
+    let aws_fake = aws::AwsFake::new(
+        agents
+            .iter()
+            .map(|a| (a.device_id.to_string(), a.label.to_string(), a.dir.clone()))
+            .collect(),
+        aws::faults_of(tape.meta.rig.as_ref()),
+        &args.out,
+    )?;
+    if plan.full_manifest {
+        match aws::trust_rig_ca(&args.certs) {
+            Ok(m) => plog(format!("rig CA added to the system store: {m}")),
+            Err(e) => plog(format!(
+                "WARNING: rig CA not installed ({e:#}); Rust uploads will fail TLS"
+            )),
+        }
+        let hosts: Vec<String> = plan
+            .buckets
+            .iter()
+            .map(|b| format!("{b}.s3.{}.amazonaws.com", aws::RIG_REGION))
+            .chain(std::iter::once(aws::RIG_CREDS_HOST.to_string()))
+            .collect();
+        if let Err(e) = aws::add_hosts(&hosts) {
+            plog(format!("WARNING: /etc/hosts not updated ({e:#})"));
+        }
+        let (fake, listen, certs) = (
+            aws_fake.clone(),
+            args.aws_listen.clone(),
+            args.certs.clone(),
+        );
+        let alog = log.clone();
+        tokio::spawn(async move {
+            if let Err(e) = aws::serve(fake, listen, certs).await {
+                if let Ok(mut f) = alog.lock() {
+                    let _ = writeln!(f, "{} aws fake stopped: {e:#}", wall_now_ms());
+                }
+            }
+        });
+    }
 
     // Clear any retained config from a previous run.
     for a in &agents {
@@ -1445,6 +1541,15 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         "agents started (B staggered {} ms); prefilled {idx} records",
         args.stagger_ms
     ));
+    if let Ok(mut g) = aws_fake.start_wall.lock() {
+        *g = play_start_wall;
+    }
+    let obs_stop = CancellationToken::new();
+    let obs_task = tokio::spawn(media::observe(
+        agents.iter().map(Agent::obs).collect(),
+        args.out.clone(),
+        obs_stop.clone(),
+    ));
 
     let mut closed_spans: Vec<(i64, i64)> = Vec::new();
     let mut closed_since: Option<i64> = None;
@@ -1488,6 +1593,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 .unwrap_or(false)
         })
     };
+    // REPORT FENCE (`watch.rs` FENCE_WINDOW_MS): an LTE rewrite due inside a
+    // report trigger's debounce window waits for BOTH agents' report.
+    let fenced_at = |ev: &TapeEvent, due: i64, now: i64| -> Option<bool> {
+        if args.no_gate {
+            return None;
+        }
+        let (input, _) = watch::gated(ev)?;
+        caps.watch.lock().ok()?.fence(input, due, now)
+    };
+    let mut fenced: BTreeSet<usize> = BTreeSet::new();
     // Barrier inputs wait out both agents' reconnect after a cut.
     let post_cut = |now: i64| {
         !args.no_gate
@@ -1496,6 +1611,36 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 .lock()
                 .map(|mut g| g.post_cut_hold(now))
                 .unwrap_or(false)
+    };
+    // POWER CROSSINGS (`meta.rig.powerCrossings`, synth exec-rail /
+    // exec-thermal): a record that moves a power input across a shed /
+    // restore threshold is released mid-period — ≥ CROSSING_CLEAR_MS from
+    // both agents' predicted 1 Hz ticks (held ≤ 1 s, then released).
+    let crossing_ts: BTreeSet<u64> = tape
+        .meta
+        .rig
+        .as_ref()
+        .and_then(|r| r.get("powerCrossings"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .collect();
+    // POWER-READ FENCE (CI smoke flake, runs 39311147277 #1/#2): every
+    // `vcgencmd` answer (pmic rail, throttled bits — the system group's taped
+    // power inputs) waits in `exec_q` (order kept, only those records wait)
+    // while one agent has READ those answers (inotify open of
+    // `<state>/exec/vcgencmd__*.out`, watch.rs `exec_holds`) and the other
+    // has not read since — a release then would split that read pair — and
+    // while a report trigger's debounce window is open (the report fence,
+    // `fence`). Bounded (EXEC_FENCE_CAP_MS) and logged.
+    let mut exec_q: std::collections::VecDeque<(usize, i64)> = Default::default();
+    let is_power = |ev: &TapeEvent| matches!(ev, TapeEvent::Exec { argv, .. } if argv.first().map(String::as_str) == Some("vcgencmd"));
+    let mid_now = |now: i64| {
+        caps.gate
+            .lock()
+            .map(|g| g.mid_period(now, CROSSING_CLEAR_MS))
+            .unwrap_or(true)
     };
     let mut pending: std::collections::VecDeque<(usize, i64)> = Default::default();
     let mut next = 0usize;
@@ -1509,7 +1654,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             if next < n_rec && tape.records[next].t > cutoff {
                 next = n_rec;
             }
-            if next >= n_rec && pending.is_empty() {
+            if next >= n_rec && pending.is_empty() && exec_q.is_empty() {
                 break None;
             }
             let now = wall_now_ms();
@@ -1527,9 +1672,40 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
             let _ = tel_open(now);
+            if let Some(&(ci, since)) = exec_q.front() {
+                let r = &tape.records[ci];
+                let crossing = crossing_ts.contains(&r.t);
+                let mid = !crossing || mid_now(now);
+                let (read_split, report) = caps
+                    .watch
+                    .lock()
+                    .map(|w| (w.exec_holds(now), w.report_open(since, now)))
+                    .unwrap_or((false, false));
+                let waited = now - since;
+                let capped = waited >= EXEC_FENCE_CAP_MS;
+                if ((mid && !read_split && !report) || capped) && tel_open(now) {
+                    exec_q.pop_front();
+                    if waited >= 50 {
+                        plog(format!(
+                            "power-read fence: exec t={} released {waited} ms after due{}{}",
+                            r.t,
+                            if crossing { " (crossing)" } else { "" },
+                            if capped { " (CAPPED)" } else { "" }
+                        ));
+                    }
+                    if let Ok(mut w) = caps.watch.lock() {
+                        w.note_exec_fence(since, now, capped);
+                    }
+                    break Some((ci, since, false));
+                }
+            }
             if let Some(&(pi, due_w)) = pending.front() {
                 let ev = &tape.records[pi].ev;
-                let held = watch_holds(ev, now);
+                let fence = fenced_at(ev, due_w, now) == Some(true);
+                if fence {
+                    fenced.insert(pi);
+                }
+                let held = watch_holds(ev, now) || fence;
                 let timeout = held && now - due_w > watch::MAX_HOLD_MS;
                 if (!held || timeout) && !post_cut(now) && tel_open(now) {
                     pending.pop_front();
@@ -1544,9 +1720,19 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 if left.is_zero() {
                     if !args.no_gate
                         && barrier(&r.ev)
-                        && (!pending.is_empty() || watch_holds(&r.ev, now) || post_cut(now))
+                        && (!pending.is_empty()
+                            || watch_holds(&r.ev, now)
+                            || post_cut(now)
+                            || fenced_at(&r.ev, now, now) == Some(true))
                     {
                         pending.push_back((next, now));
+                        next += 1;
+                        continue;
+                    }
+                    if !args.no_gate && is_power(&r.ev) {
+                        // Only the power answers wait (in order); the other
+                        // inputs keep their timing (exec is not a barrier).
+                        exec_q.push_back((next, now));
                         next += 1;
                         continue;
                     }
@@ -1571,7 +1757,27 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         }
         if let Some((input, _)) = watch::gated(&r.ev) {
             if let Ok(mut w) = caps.watch.lock() {
-                w.note_release(input, due_w, wall_now_ms(), timeout);
+                let at = wall_now_ms();
+                w.note_release(input, due_w, at, timeout);
+                if fenced.remove(&i) {
+                    let capped = w.fence(input, due_w, at).is_some();
+                    w.note_fenced(due_w, at, capped);
+                    plog(format!(
+                        "report fence: lte_file t={} held {} ms{}",
+                        r.t,
+                        at - due_w,
+                        if capped {
+                            " (CAPPED: a report never came)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+            }
+        }
+        if matches!(r.ev, TapeEvent::MqttIn { .. } | TapeEvent::Cli { .. }) {
+            if let Ok(mut w) = caps.watch.lock() {
+                w.on_trigger(wall_now_ms());
             }
         }
         let now = wall_now_ms();
@@ -1776,8 +1982,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 }
             }
             TapeEvent::Clock { .. } | TapeEvent::Proc { .. } => {}
-            // Phase 3 output/child kinds: compared by the diff, not replayed
-            // as inputs (the external-exit re-enactment lands with the rig).
+            // A child the agent did NOT signal exited on the recording device
+            // (crash, EOF): re-enacted on both agents at tape time (media.rs).
+            TapeEvent::ChildExit(x) if x.external => {
+                transitions.push(now);
+                for a in &agents {
+                    let rec = media::external_exit(&a.obs(), &plan, x);
+                    plog(format!("external child exit at t={}: {}", r.t, rec));
+                }
+            }
+            // Phase 3 output kinds: compared by the diff, not replayed.
             TapeEvent::ChildSpawn(_)
             | TapeEvent::ChildLine { .. }
             | TapeEvent::ChildSignal { .. }
@@ -1816,6 +2030,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     }
     let (first, second) = agents.split_at_mut(1);
     tokio::join!(first[0].wait_stopped(), second[0].wait_stopped());
+    // Children outlive their agent by up to a moment (SIGINT → EOS): one more
+    // observer pass sees them gone, then the final media copies.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    obs_stop.cancel();
+    let _ = obs_task.await;
+    for a in &agents {
+        if let Err(e) = media::finish(&a.obs()) {
+            plog(format!("agent {}: media finish failed: {e:#}", a.label));
+        }
+    }
     // Final file copies (`final/<key>`, raw bytes) + `final.json`: every
     // [`snapshot_targets`] file with base64 bytes, or `present: false`.
     for a in &agents {
@@ -1902,7 +2126,12 @@ fn apply_state(agents: &[Agent], ev: &TapeEvent, shift_s: i64) -> Result<()> {
                 });
                 a.lte(bytes.as_deref())?;
             }
-            TapeEvent::Exec { argv, stdout, code } => a.exec(argv, stdout, *code)?,
+            TapeEvent::Exec {
+                argv,
+                stdout,
+                code,
+                stderr,
+            } => a.exec(argv, stdout, stderr.as_deref(), *code)?,
             TapeEvent::I2cdetect { stdout, .. } => a.i2c(stdout.as_deref())?,
             TapeEvent::Dt { .. } => {
                 // /proc/device-tree is a fixed path in both agents and cannot
@@ -1978,7 +2207,7 @@ mod tests {
         let mut g = Gate::new(60);
         g.on_tick(0, 1_000, 1_000);
         g.on_tick(1, 1_300, 1_300);
-        // Cut 1500..5000; A (mqtt.js) is back at once, B (backoff) is not.
+        // Cut 1500..5000; A is back at once, B (its own 2 s phase) is not.
         assert!(!g.is_open(1_950, true));
         g.on_restore(5_000);
         g.on_tick(0, 5_000, 5_010);
@@ -2007,11 +2236,11 @@ mod tests {
         g.on_tick(1, 1_300, 1_300);
         assert!(!g.post_cut_hold(2_000), "no cut yet");
         g.on_restore(10_000);
-        g.on_tick(0, 10_000, 10_100); // JS back at once
-        assert!(g.post_cut_hold(20_000), "Rust still in its backoff");
-        g.on_tick(1, 9_300, 40_000); // Rust flushes its queue at 40 s
-        assert!(g.post_cut_hold(42_000), "settle");
-        assert!(!g.post_cut_hold(43_001));
+        g.on_tick(0, 10_000, 10_100); // one agent back at once
+        assert!(g.post_cut_hold(12_000), "the other still in its 2 s retry");
+        g.on_tick(1, 9_300, 12_500); // it flushes its queue 2.5 s in
+        assert!(g.post_cut_hold(15_000), "settle");
+        assert!(!g.post_cut_hold(15_501));
         // An agent that never returns: released POST_CUT_MAX_MS after the restore.
         let mut h = Gate::new(60);
         h.on_tick(0, 1_000, 1_000);

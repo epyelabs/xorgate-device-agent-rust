@@ -7,7 +7,7 @@
 #   --a js|rust        agent A (default js)
 #   --b js|rust        agent B (default rust)
 #   --out DIR          copy the run + diff.md there (default
-#                      plans/…/phase-2/evidence/replay-<UTC ts>/)
+#                      plans/…/phase-3/evidence/replay-<UTC ts>/; EVIDENCE_ROOT overrides)
 #   --no-build         skip build-bins.sh (use the binaries in .cache/bin)
 #
 # Compose project: per run, `xorgate-replay-<ts>-<a>-<b>` (override with
@@ -20,7 +20,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-EVIDENCE_ROOT="${EVIDENCE_ROOT:-$(cd "$REPO/../../plans/device-agent-js-to-rust/phase-2/evidence" 2>/dev/null && pwd || echo "$HERE/.cache/evidence")}"
+EVIDENCE_ROOT="${EVIDENCE_ROOT:-$(cd "$REPO/../../plans/device-agent-js-to-rust/phase-3/evidence" 2>/dev/null && pwd || echo "$HERE/.cache/evidence")}"
 
 usage() { sed -n '2,17p' "$0"; exit 2; }
 [ $# -ge 1 ] || usage

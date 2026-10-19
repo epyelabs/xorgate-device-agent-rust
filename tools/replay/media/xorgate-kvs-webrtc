@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+# Rig fake of the KVS WebRTC master (phase-3-recording-media.md §Record/replay).
+# The player points KVS_RUNTIME_BIN at a copy in <work>/kvs/. It logs argv +
+# the contract env keys (kvs-webrtc.ts:94-106) to <work>/shim.ndjson, prints a
+# line every 5 s (so the agent's stdout drain is exercised), exits 0 on SIGINT
+# (the agent's stop), and exits with the tape's code when the player drops
+# <work>/state/kvs/<channel>.exit (a tape `child_exit` with `external:true`).
+# Paths come from this file's location, not the env.
+import json, os, signal, sys, time
+
+WORK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG = os.path.join(WORK, "shim.ndjson")
+KEYS = [
+    "AWS_DEFAULT_REGION", "AWS_IOT_CORE_CREDENTIAL_ENDPOINT", "AWS_IOT_CORE_CERT",
+    "AWS_IOT_CORE_PRIVATE_KEY", "AWS_IOT_CORE_ROLE_ALIAS", "AWS_IOT_CORE_THING_NAME",
+    "AWS_KVS_CACERT_PATH", "AWS_KVS_LOG_LEVEL", "LD_LIBRARY_PATH", "KVS_GST_PIPELINE",
+    "KVS_IDLE_TEARDOWN_SECS",
+]
+pid = os.getpid()
+channel = sys.argv[1] if len(sys.argv) > 1 else ""
+
+
+def log(rec):
+    rec["w"] = int(time.time() * 1000)
+    rec["pid"] = pid
+    line = json.dumps(rec, separators=(",", ":")) + "\n"
+    fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line.encode())
+    finally:
+        os.close(fd)
+
+
+def on_signal(sig, _frame):
+    log({"k": "signal", "tool": "xorgate-kvs-webrtc", "channel": channel, "sig": sig})
+    if sig == signal.SIGINT:
+        log({"k": "exit", "tool": "xorgate-kvs-webrtc", "channel": channel, "code": 0})
+        sys.stdout.flush()
+        os._exit(0)
+    os._exit(128 + sig)
+
+
+log({
+    "k": "spawn", "tool": "xorgate-kvs-webrtc", "channel": channel, "argv": sys.argv[1:],
+    "env": {k: os.environ[k] for k in KEYS if k in os.environ},
+    "envKeys": sorted(os.environ.keys()),
+})
+signal.signal(signal.SIGINT, on_signal)
+signal.signal(signal.SIGTERM, on_signal)
+ctl = os.path.join(WORK, "state", "kvs", channel + ".exit")
+n = 0
+next_line = time.monotonic()
+while True:
+    now = time.monotonic()
+    if now >= next_line:
+        print(f"[rig-kvs] {channel} master alive #{n}", flush=True)
+        n += 1
+        next_line += 5.0
+    try:
+        with open(ctl) as f:
+            code = int((f.read().strip() or "1"))
+        os.unlink(ctl)
+        log({"k": "exit", "tool": "xorgate-kvs-webrtc", "channel": channel, "code": code, "external": True})
+        sys.stdout.flush()
+        os._exit(code)
+    except FileNotFoundError:
+        pass
+    except ValueError:
+        pass
+    time.sleep(0.2)

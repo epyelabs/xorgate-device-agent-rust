@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+# Rig shim: gst-launch-1.0 (phase-3-recording-media.md §Record/replay "Rig
+# additions"). Logs its argv VERBATIM to <work>/shim.ndjson (this file lives in
+# <work>/bin, so no env var is needed: an agent that clears its child's env
+# still reaches the log), then execs the REAL /usr/bin/gst-launch-1.0 with ONLY
+# `libcamerasrc camera-name=<cam>` replaced by `videotestsrc is-live=true
+# pattern=ball` — real x264enc + splitmuxsink + shmsink, so the ~2.1 s GOP
+# sidecar lag is reproduced in the rig. The exec keeps THIS pid, so the agent's
+# child pid, the shmpipe.<pid>.* segments and the log agree.
+#
+# stdout/stderr are teed by a detached grandchild (the agent still reads every
+# line, a few µs later): the rig's only window on gst's own progress lines
+# (`New clock:` = PLAYING, `handling interrupt.` = SIGINT, `Got EOS`, `ERROR`)
+# for the JS agent, which writes no tape.
+import json, os, select, sys, time
+
+REAL = os.environ.get("RIG_REAL_GST", "/usr/bin/gst-launch-1.0")
+WORK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG = os.path.join(WORK, "shim.ndjson")
+
+
+def log(rec):
+    rec["w"] = int(time.time() * 1000)
+    line = json.dumps(rec, separators=(",", ":")) + "\n"
+    fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line.encode())
+    finally:
+        os.close(fd)
+
+
+argv = sys.argv[1:]
+out = []
+i = 0
+while i < len(argv):
+    if argv[i] == "libcamerasrc" and i + 1 < len(argv) and argv[i + 1].startswith("camera-name="):
+        out += ["videotestsrc", "is-live=true", "pattern=ball"]
+        i += 2
+        continue
+    out.append(argv[i])
+    i += 1
+
+pid = os.getpid()
+log({"k": "spawn", "tool": "gst-launch-1.0", "pid": pid, "argv": argv, "exec": out})
+
+r1, w1 = os.pipe()
+r2, w2 = os.pipe()
+child = os.fork()
+if child == 0:
+    # Intermediate child: fork the tee and exit, so the tee is reparented to
+    # the rig's init (compose `init: true`) instead of lingering under gst.
+    if os.fork() != 0:
+        os._exit(0)
+    # Own session: the player's end-of-run killpg of the AGENT's group must
+    # not cut the tee before it logged gst's last lines + `eof` (CI run
+    # 39290924951: `handling interrupt.`/`Got EOS` lost → "kill").
+    os.setsid()
+    os.close(w1)
+    os.close(w2)
+    bufs = {r1: b"", r2: b""}
+    dst = {r1: 1, r2: 2}
+    fdno = {r1: 1, r2: 2}
+    open_fds = [r1, r2]
+    while open_fds:
+        ready, _, _ = select.select(open_fds, [], [])
+        for r in ready:
+            chunk = os.read(r, 65536)
+            if not chunk:
+                open_fds.remove(r)
+                if bufs[r]:
+                    log({"k": "line", "pid": pid, "fd": fdno[r], "line": bufs[r].decode("utf-8", "replace")})
+                continue
+            try:
+                os.write(dst[r], chunk)
+            except OSError:
+                pass
+            bufs[r] += chunk
+            while b"\n" in bufs[r]:
+                line, bufs[r] = bufs[r].split(b"\n", 1)
+                log({"k": "line", "pid": pid, "fd": fdno[r], "line": line.decode("utf-8", "replace")})
+    log({"k": "eof", "pid": pid})
+    os._exit(0)
+os.waitpid(child, 0)
+os.close(r1)
+os.close(r2)
+os.dup2(w1, 1)
+os.dup2(w2, 2)
+os.close(w1)
+os.close(w2)
+os.execv(REAL, [REAL] + out)

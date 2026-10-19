@@ -1,10 +1,11 @@
 #!/bin/sh
 # Rig shim: vcgencmd. Answers from the per-argv files the player writes from
-# the tape's `exec` events ($RIG_STATE/exec/vcgencmd__<args joined by _>.{out,code}).
+# the tape's `exec` events ($RIG_STATE/exec/vcgencmd__<args joined by _>.{out,err,code}).
 key="vcgencmd__$(printf '%s' "$*" | tr ' /' '__')"
 f="$RIG_STATE/exec/$key"
 if [ -f "$f.out" ]; then
   cat "$f.out"
+  [ -s "$f.err" ] && cat "$f.err" >&2
   exit "$(cat "$f.code" 2>/dev/null || echo 0)"
 fi
 echo "vcgencmd (rig): no tape answer for '$*'" >&2

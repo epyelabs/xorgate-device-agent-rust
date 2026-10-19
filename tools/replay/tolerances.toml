@@ -10,7 +10,9 @@
 #
 # Path syntax: dot-separated JSON paths; `*` matches one segment (or part of
 # one: `*At`), `**` any number of segments. Streams: telemetry, report, ack,
-# status, sms, file:<name>, state, events, sudo, pidfile.
+# status, sms, file:<name>, state, events, sudo, pidfile; Phase 3 (WP6,
+# media_diff.rs): children, session, sidecar, mp4, rec-telemetry, s3,
+# file:counters.json, evictions, shm.
 
 version = 1
 
@@ -20,7 +22,11 @@ title = "ts-like fields are excluded; order is still checked"
 basis = "phase file T1"
 kind = "exclude"
 streams = ["telemetry", "report", "ack", "status", "sms", "state", "file:config-sync.json", "file:commands.json", "file:gnss-sky.json", "pidfile"]
-paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts", "*Ts", "**.*Ts", "timestamp"]
+paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "startedAt", "latest.ts", "entries.*.at", "**.ts", "*Ts", "**.*Ts", "timestamp",
+  # Phase 3 (phase-3-recording-media.md table "payload media/recording blocks"):
+  # backlogBytes counts mp4 sizes (encoder-dependent), `since` is the shed
+  # start instant (lastUploadAt is covered by `*At`).
+  "recording.backlogBytes", "**.recording.backlogBytes", "recording.liveBlock.since", "**.liveBlock.since"]
 
 [[rule]]
 id = "T2"
@@ -54,11 +60,20 @@ tolerance = { "metrics.system.cpu_usage.value" = 10.0, "metrics.system.ram_usage
 # samples the same formula every 50 ms (`host.ndjson`); a ram difference beyond
 # ±1 is cited as `T3/host` ONLY if the host's own series swung by at least the
 # excess between the two `ts` (±250 ms), else it stays UNTOLERATED. On the bench
-# tape replay in a quiet VM this never fires.
+# tape replay in a quiet VM this never fires. Phase 3 (WP6): a media run's own
+# load (four x264 encoders + shmsink segments) swings the host ram by ~3 points
+# within 50 ms, so the host sample nearest `ts` is not the one an agent read;
+# a host pair from each agent's read window [ts − 150, ts + 250] ms that
+# explains the difference (same sign, within ±1) is also `T3/host`.
 # cpu_usage likewise (JS-vs-Rust, pairs up to ~0.9 s apart while the two tick
 # phases differ): the player samples /proc/stat, and a cpu difference beyond
 # ±10 is `T3/host` only if the host's own busy share over the two agents' 1 s
 # windows (ending at each `ts`) differs by at least the excess.
+# BIAS GUARD (review-wp6 FLAG 1, narrowed): per run and host-referenced field,
+# if the median signed A − B over ALL telemetry pairs exceeds ½·tol, or
+# T3/host covers more than 5 % of the pairs, every T3/host row of that field
+# is UNTOLERATED (host swing explains noise, never a systematic formula error);
+# diff.md prints both figures (`T3/host bias guard …`).
 host_reference = { "metrics.system.ram_usage.value" = "ram", "metrics.system.cpu_usage.value" = "cpu" }
 
 [[rule]]
@@ -85,6 +100,14 @@ window_ms = 1500
 # All instants are the player's ACTUAL releases (releases.ndjson, re-review R1).
 
 [[rule]]
+id = "T4"
+title = "media/recording state transitions may land one tick apart (the other side shows this value at the adjacent tick)"
+basis = "phase-3-recording-media.md §Record/replay table, row `payload media/recording blocks`: transitions ±1 tick (T4)"
+kind = "transition"
+streams = ["telemetry"]
+paths = ["media", "media.**", "recording", "recording.**"]
+
+[[rule]]
 id = "T5"
 title = "report count may differ by ±1 where two triggers straddle the 2 s debounce; the last report of every quiet period must be identical"
 basis = "phase file T5"
@@ -95,74 +118,38 @@ quiet_ms = 10000
 
 [[rule]]
 id = "T6"
-title = "phase-owned gaps until Phase 3/4"
-basis = "phase file T6; scope boundary table; CF30"
+title = "phase-owned gaps until Phase 4 (LED, camera mount, clock stepper)"
+basis = "phase file T6; scope boundary table; CF30; SHRUNK by Phase 3 (phase-3-recording-media.md §Record/replay, CF45): every recording/media matcher deleted, so a missing recording/media field or event FAILS"
 kind = "phase_owned"
 streams = ["telemetry", "report", "state", "events", "sudo"]
 paths = [
-  "media", "media.**",
-  "recording", "recording.**",
-  "status.bootDefer", "status.bootDefer.**", "status.powerShed", "status.powerShed.**",
-  "effective.recording.bootDefer", "effective.recording.bootDefer.**",
-  "effective.recording.powerShed", "effective.recording.powerShed.**",
   "**.clockStepperArmed",
   "effective.cameraMount", "effective.cameraMount.**",
 ]
-# state.json `recentEvents` msg prefixes owned by Phase 3/4 — EXACT texts of
-# the TS emitters (review-wp7 finding 2: the old bare `upload` hid the Phase 2
-# `uploadBucket backfilled:` / `uploadBucket persist failed:`, worker.ts:800/806).
-# ONE-DIRECTIONAL: tolerated only when the JS side has the event and the Rust
-# side has none of it (Rust emitting one of these before Phase 3/4 is a bug).
-#   hardware: …            worker.ts:140 (hardware reconciler log)
+# state.json `recentEvents` msg prefixes owned by Phase 4 — EXACT texts of
+# the TS emitters. ONE-DIRECTIONAL: tolerated only when the JS side has the
+# event and the Rust side has none of it.
 #   camera mount: …        worker.ts:181 (boot-config reconciler, cam-sensor-level-rotate)
 #   [clock] …              clock-step.ts:232-307 (offline clock stepper, CF20 → Phase 4)
-#   recording manager      recording/manager.ts:300/306/473/558/607/696/774/782,
-#                          boot-policy.ts:800/830/906 (power shed), video-capture.ts (video capture …)
-#   uploader               recording/uploader.ts:148/202/204
-# The LED renderer and the media supervisor journal no events.
+# (Phase 3 deleted: `hardware: `, the recording manager / boot policy / video
+# capture / uploader prefixes.)
 event_prefixes = [
-  "hardware: ",
   "camera mount: ",
   "[clock] ",
-  "recording: ",
-  "camera(s) disabled by settings: ",
-  "recording.video.enabled is on but no bridged camera is available ",
-  "power shed → ",
-  "power shed restore → ",
-  "power shedding disarmed — restoring full operation",
-  "power shedding disabled by settings — restoring full operation",
-  "telemetry recording started (",
-  "telemetry recording stopped (",
-  "video capture ",
-  "video boot-defer ",
-  "video gps gate armed (",
-  "upload: skipping unrecognized segment ",
-  "upload paused (offline)",
-  "upload failed, retrying in ",
 ]
-# Report details produced ONLY by those hints: latchDetail (config-sync.ts:1007-1024)
-# returns "in force, but …" from bootDefer/powerShed (recording) and
-# `clockStepperArmed === false` (timeSync: "in force, but the clock stepper stood
-# down for this boot (NTP is synchronized)"); the hints are None until Phase 3/4
-# (CF20/CF30), so Rust omits the detail. Tolerated only when one side is absent
-# and the other starts with the latch prefix — every other detail is compared.
+# Report detail produced ONLY by the Phase 4 hint `clockStepperArmed === false`
+# (config-sync.ts:1007-1024). The recording latch parts (boot power staging,
+# GPS/LTE gate, load shedding) are Phase 3 and compared exactly now.
 latch_detail_paths = ["status.*.detail"]
 latch_detail_prefix = "in force, but "
-# NARROWED (review-wp7): only the exact latchDetail texts, and only JS present /
-# Rust absent. recording: "in force, but " + `; `-joined parts below;
-# timeSync: the one exact text.
-latch_detail_parts = [
-  "video is held by the boot power staging gate and starts when it releases",
-  "video is held by the GPS/LTE gate and starts when it releases",
-  "load shedding is active (*)",
-]
+latch_detail_parts = []
 latch_detail_exact = ["in force, but the clock stepper stood down for this boot (NTP is synchronized)"]
-# sudo argv owned by Phase 3/4 (camera-mount helper, set-clock helper).
+# sudo argv owned by Phase 4 (camera-mount helper, set-clock helper).
 sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
 
 [[rule]]
 id = "T7"
-title = "accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20, D22, D23)"
+title = "accepted divergences (phase-1/evidence/accepted-divergences.md D1-D20, D22-D25, D30)"
 basis = "phase file T7; accepted-divergences.md"
 kind = "import"
 source = "phase-1/evidence/accepted-divergences.md"
@@ -309,6 +296,34 @@ source = "phase-1/evidence/accepted-divergences.md"
   matcher = "nmea_reopen_first_chunk"
   pinned_by = "review-wp7 finding 1 (Node 20 experiment 3/3; accepted-divergences.md D23)"
 
+  [[rule.row]]
+  id = "D24"
+  what = "telemetry segment gzip BYTES: TS zlib (gzipSync, level 6, mtime 0, OS 3) vs Rust flate2 at the same level and header fields — the deflate stream may differ; the DECOMPRESSED bytes are identical and the backend reads only those (P6). The rig never compares gz bytes (rec-telemetry / s3 compare decompressed text; T13)"
+  streams = ["rec-telemetry", "s3"]
+  matcher = "doc_only"
+  pinned_by = "WP2 gzip finalize test (decompressed bytes equal the TS fixture); phase-3 P6"
+
+  [[rule.row]]
+  id = "D25"
+  what = "default media paths: with KVS_RUNTIME_BIN / KVS_RUNTIME_LIB_DIR / KVS_CACERT_PATH unset the TS defaults are /opt/xorgate/media/…, the Rust agent's resolve under its install root (/opt/xorgate-rs/media/…, like XORGATE_PYTHON_DIR); every env key is honoured identically and no wire/file shape changes (P4). The rig always sets the knobs, so it never shows"
+  streams = ["children"]
+  matcher = "doc_only"
+  pinned_by = "WP5 MediaConfig::from_env default-path test; phase-3 P4"
+
+  [[rule.row]]
+  id = "D30"
+  what = "which consumer recomputes the shared 1 s system.sample() cache (TS: random — Node re-arms a repeat from the ms-floored libuv time and system.ts:107 sets recLastAt before the await; Rust: the first-armed shed tick, deterministically) → a JS recorder sample may lack `system`, a Rust one never does. Matched ONLY JS-vs-Rust, per telemetry session, `(samples without system)` with the Rust count 0 and the JS count ≥ 1 (either column order; no JS cap). A Rust count > 0 is UNTOLERATED even when the counts agree (evidence against D30). JS-vs-JS stays T13/system-presence; Rust-vs-Rust exact. Orchestrator 2026-10-19 (P-WP6-2, review-wp6 §2-§3)"
+  streams = ["rec-telemetry"]
+  matcher = "d30_system_presence"
+  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::rec_telemetry_system_presence_per_sample; timer.rs re_arms_from_the_fire_instant…; collectors/system.rs concurrent sample test"
+
+  [[rule.row]]
+  id = "D30"
+  what = "the same D30 cache ownership seen on a power-shed restore: a stale JS shed read lands the restore transition one tick LATER, so the restored video session starts ~1 s later on the JS side and its LAST fragment (cut by the same SIGTERM on both sides) is ~1 s shorter. Matched ONLY sidecar `durationMs` of a fragment that (a) is the LAST seq of its session on BOTH sides, whose capture child ended at the agent's stop (int/eos, no respawn); (b) δ = first-fragment startTs JS − Rust in [850, 1150] ms (JS later; JS-vs-JS |δ| in that band; never Rust-vs-Rust); (c) end instants (startTs + durationMs) agree within T12's 150 ms; (d) on each side the session's capture spawn lags that side's last telemetry recording.powerShed/liveBlock change by the same ±300 ms; (e) every earlier fragment of the session passed T12. NOT covered: a shed-event text difference, a T10 spawn instant past ±1 s. Orchestrator 2026-10-19 (P-WP6-2, review-wp6 §3; covers replay-20261019T152309Z cam1#1/00006 3451/4350)"
+  streams = ["sidecar"]
+  matcher = "d30_shed_tick_session_end"
+  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::d30_shed_tick_session_end_only_for_a_late_js_restore"
+
 [[rule]]
 id = "T8"
 title = "Phase 2 orchestrator decisions"
@@ -444,6 +459,20 @@ kind = "decisions"
   streams = ["file:gnss-sky.json"]
 
   [[rule.row]]
+  id = "d30-js-reference"
+  what = "CALIBRATION ONLY (JS-vs-JS): D30 inside the reference — a JS shed tick deciding on its recorder's ≤ 1 s old cached power reading (TS system.ts:104-113 + Node setInterval re-arm), so one JS logs the previous rail value and its restore lands one shed tick later. Matchers (media_diff.rs, HARD GUARD in code: both return false unless BOTH sides are js; nothing here can widen them): `d30_js_shed_text` — exactly one A+1 and one B+1 `power shed → …(rail <V>V < …)` message, identical with V masked, the two V consecutive distinct values of the tape's released pmic series, the stale side's event in [release of the fresher value, +1100 ms], one pair per masked template; `d30_js_spawn_tick` — kvs `(spawn ms after start)` only, 1000 < |Δ| ≤ 1150, each side's spawn lagging its own last powerShed/liveBlock change by the same ±300 ms, every kvs spawn of that restore shifted by the same Δ ±150, at most channels × shed changes rows. JS-vs-Rust / Rust-vs-JS / Rust-vs-Rust: the same rows stay UNTOLERATED (Rust is never stale). Orchestrator 2026-10-19 (replay-20261019T173537Z)"
+  streams = ["events", "children"]
+  matcher = "d30_js_shed_text"
+  pinned_by = "D30 (accepted-divergences.md); review-wp6 re-check; media_diff::tests::d30_js_reference_only_for_js_vs_js"
+
+  [[rule.row]]
+  id = "d30-js-late-shed"
+  what = "D30 (accepted-divergences.md) as seen JS-vs-Rust, orchestrator option (b) 2026-10-19: at a power crossing the JS shed tick may REUSE its recorder's ≤ 1 s old reading (TS system.ts:104-113, Node setInterval re-arm), so ONE shed/restore transition lands one shed period LATER on the JS side; Rust never reuses (collectors/system.rs:61-79). Matcher `d30_js_late_shed` (media_diff.rs; HARD GUARD in code: JS-vs-Rust with the JS side later, or JS-vs-JS with either side later — the later side must be JS and carry the evidence itself; review-wp6 re-check extension 2026-10-19): per transition Δ = JS − Rust ∈ [850, 1150] ms AND evidence of stale reuse from the tape's released vcgencmd values + the JS recorder's own samples (a release before the decisive tick that its previous sample lacked and its next carried), or the next transition of the same chain shifted by the same Δ ±150; then ONLY that transition's downstream rows — kvs/capture spawn instants within 6 s after it, sidecar durationMs of the session it started (JS shorter by Δ) or of a fragment ending at it (JS longer by Δ), and the startTs/startMono of the fragment that STARTS at it (orchestrator 2026-10-19) — by the same Δ ±150; one shift per transition. Rust-later, |Δ| outside the band, missing evidence on the later side, and rust/rust: UNTOLERATED. (powerShed string instants are T4 transition, liveBlock.since T1)"
+  streams = ["children", "sidecar"]
+  matcher = "d30_js_late_shed"
+  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::d30_js_late_shed_only_js_later_with_evidence"
+
+  [[rule.row]]
   id = "end-snapshot"
   what = "RIG: state.json `latest` at the end — both agents get SIGTERM together, but their last ticks before it are up to one tick apart (different phases), so the final payload's values may be one sample apart; `seq` there is T2, `ts` T1. Every published payload is compared in the telemetry stream"
   streams = ["state"]
@@ -452,6 +481,12 @@ kind = "decisions"
   # key structure of `latest` is compared under the telemetry rules (T4/T6 …)
   # and only the VALUES are this row.
   matcher = "end_snapshot"
+  # Phase 3: state.json's `recording` block is written at SHUTDOWN, racing the
+  # last fragments' EOS + finalize (JS-vs-JS 1 vs 3). NARROWED (review-wp6
+  # FLAG 3): NO cross-side bound — media_diff.rs checks each side's value
+  # against [its own last tick − 1, the unuploaded pieces on its disk] and
+  # only then cites this row for `recording.backlogSegments` (any Δ). Every
+  # tick's `recording.backlogSegments` is still compared EXACTLY in telemetry.
 
   [[rule.row]]
   id = "mqtt-error-text"
@@ -463,18 +498,20 @@ kind = "decisions"
 
   [[rule.row]]
   id = "reconnect-cadence"
-  what = "reconnect cadence (review-wp1 MUST-FIX #1 item 2; WP1 follow-up amb. 3, 5): Rust backs off 1→60 s with jitter (xorgate-cloud mqtt.rs) where mqtt.js retries every 2 s (mqtt.ts:63 reconnectPeriod 2000), and detects a dead link at the 2nd unanswered ping (~2× keepalive) vs mqtt.js ~1.5×. So in a run with a closed span: the COUNTS of `reconnecting…`, `connection closed`, `connected to …` and transport-error events differ; a telemetry/status message inside the span (extended to both reconnects) ±5 s may be unpaired (a QoS 0 tick racing the drop is lost by Rust, written to the dying socket by mqtt.js); `published`/`publishErrors` may differ by 1 per closed span + 1 (the SIGTERM race at the end); the REPORT count of a quiet period overlapping the span may differ (each reconnect's retained redelivery triggers a `cloud` report, and mqtt.js, reconnecting sooner, can see an intermediate retained rev the Rust agent never sees — the next quiet period's last report still binds both); and a report VALUE that an input fed differently because the input changed between the two agents' post-reconnect report times (a tape transition between them, report pair inside a cut's window — e.g. effective.sim.checked_at from the LTE file)"
+  what = "reconnect phase (review-wp1 MUST-FIX #1 item 2; WP1 follow-up amb. 3, 5; rewritten by fix-timer-cadence): both agents retry a FIXED 2000 ms after every close, no growth, no jitter (mqtt.js 5.15.1 `_setupReconnect` with `reconnectPeriod: 2000`, mqtt.ts:63 ↔ xorgate-cloud backoff.rs `BackoffConfig::fixed` 2000 ms, mqtt.rs `pause_before_reconnect`), but each on its OWN phase (counted from its own close), so after a restore one can reconnect up to ~2 s before the other; and a black-holed link is detected at rumqttc's 2nd unanswered ping (~2× keepalive) vs mqtt.js ~1.5× (the rig's proxy closes the sockets, so not reached there). So in a run with a closed span: the COUNTS of `reconnecting…` / `connection closed` differ by at most ONE per closed span, EITHER way; the transport-error class count differs; a telemetry/status message inside the span (extended to both reconnects) ±5 s may be unpaired (a QoS 0 tick racing the drop is lost by Rust, written to the dying socket by mqtt.js); `published`/`publishErrors` may differ by 1 per closed span + 1 (the SIGTERM race at the end); the REPORT count of a quiet period overlapping the span may differ (each reconnect's retained redelivery triggers a `cloud` report, and the agent reconnecting first can see an intermediate retained rev the other never sees — the next quiet period's last report still binds both); and a report VALUE that an input fed differently because the input changed between the two agents' post-reconnect report times (a tape transition between them, report pair inside a cut's window — e.g. effective.sim.checked_at from the LTE file)"
   streams = ["events", "telemetry", "status", "state", "report"]
   matcher = "reconnect_cadence"
   around_closed_ms = 5000
   event_exact = ["warn: reconnecting…", "warn: connection closed"]
-  # NARROWED (review-wp7): `connected to …` is NOT here — each agent must log it
-  # exactly #closed spans + 1 times; `reconnecting…` / `connection closed` only
-  # with the Rust count ≤ the JS count; the transport-error class either way;
-  # an unpaired telemetry tick at most ONE per side and span; the report COUNT
-  # of a period overlapping a span only as modelled (|Δ| ≤ spans it overlaps,
-  # every extra report origin `cloud` with a rev the tape published); a report
-  # VALUE only on a path an LTE-file change between the two reports feeds.
+  # NARROWED (review-wp7; made symmetric by fix-timer-cadence): `connected to …`
+  # is NOT here — each agent must log it exactly #closed spans + 1 times;
+  # `reconnecting…` / `connection closed` only with |Δ| ≤ #closed spans (either
+  # side may have the extra one: independent 2 s phases); the transport-error
+  # class either way; an unpaired telemetry tick at most ONE per side and span;
+  # the report COUNT of a period overlapping a span only as modelled (|Δ| ≤
+  # spans it overlaps, every extra report origin `cloud` with a rev the tape
+  # published); a report VALUE only on a path an LTE-file change between the
+  # two reports feeds.
   event_prefixes = ["error: <transport error>"]
   count_paths = ["published", "publishErrors"]
 
@@ -490,7 +527,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "tick-drift"
-  what = "FLAG (rig, reviewer to confirm; A2): Node's setInterval re-arms after each callback and drifts a few ms per tick, tokio's interval keeps its phase, so the two agents' tick phases slide past each other; when the pair gap exceeds the rig's flip gap (`--flip-gap-ms`, 500 ms since series 5 = the nearest alignment; was 800) the hold gate flips roles and logs ONE lead tick as `skip` (pairs.ndjson). That tick's message is unpaired (within ±400 ms of the logged tick) and not value-compared; the values of every paired tick still are. CAPPED (re-review R5): at most ceil(run_s × |P_A − P_B| / 1000) + 1 such ticks per run, from each side's own mean tick period P (the phases slide |ΔP| ms per tick; one flip per 1000 ms of slide), else every hit is UNTOLERATED — JS-vs-JS (15 runs, series 4/5): |ΔP| ≤ 1.13 ms → cap 2 per 260 s, 0 skips observed (the pre-hysteresis 195214Z flapping, 25 skips, would fail). CADENCE (re-review R5): each agent re-arms its 1 s tick from the fire time (Node setInterval; tokio MissedTickBehavior::Delay past its 5 ms grace), so its mean period is 1000 ms + its wake-up lateness — measured in the rig: JS 1003.4–1007.4 ms, Rust 1001.7–1005.0 ms; |ΔP| JS-vs-JS ≤ 1.13 ms, JS-vs-Rust ≤ 3.12 ms (33 runs). Each mean must lie in period_ms and |ΔP| ≤ max_period_delta_ms; a 1 % period error (10 ms) fails both. A |ΔP| ≥ 0.5 ms inside the bounds is listed as this row"
+  what = "FLAG (rig, reviewer to confirm; A2): each agent re-arms from its own fire and drifts by its own wake-up lateness (Node setInterval; Rust `timer::SetInterval` since fix-timer-cadence — was tokio's fixed-rate interval), so the two agents' tick phases slide past each other; when the pair gap exceeds the rig's flip gap (`--flip-gap-ms`, 500 ms since series 5 = the nearest alignment; was 800) the hold gate flips roles and logs ONE lead tick as `skip` (pairs.ndjson). That tick's message is unpaired (within ±400 ms of the logged tick) and not value-compared; the values of every paired tick still are. CAPPED (re-review R5): at most ceil(run_s × |P_A − P_B| / 1000) + 1 such ticks per run, from each side's own mean tick period P (the phases slide |ΔP| ms per tick; one flip per 1000 ms of slide), else every hit is UNTOLERATED — JS-vs-JS (15 runs, series 4/5): |ΔP| ≤ 1.13 ms → cap 2 per 260 s, 0 skips observed (the pre-hysteresis 195214Z flapping, 25 skips, would fail). CADENCE (re-review R5): each agent re-arms its 1 s tick from the fire time (Node setInterval `listOnTimeout`; Rust `xorgate-agent` timer.rs `SetInterval`, every tick since fix-timer-cadence), so its mean period is 1000 ms + its wake-up lateness — measured in the rig: JS 1003.4–1007.4 ms, Rust 1001.7–1005.0 ms; |ΔP| JS-vs-JS ≤ 1.13 ms, JS-vs-Rust ≤ 3.12 ms (33 runs); re-measured after fix-timer-cadence (8 Phase 3 JS-vs-Rust runs 2026-10-19): JS 1001.68–1003.77, Rust 1002.68–1003.53, |ΔP| ≤ 1.24 ms — bounds unchanged. Each mean must lie in period_ms and |ΔP| ≤ max_period_delta_ms; a 1 % period error (10 ms) fails both. A |ΔP| ≥ 0.5 ms inside the bounds is listed as this row"
   streams = ["telemetry"]
   period_ms = [999.5, 1010.0]
   max_period_delta_ms = 4.0
@@ -520,13 +557,114 @@ kind = "decisions"
 
   [[rule.row]]
   id = "s3-error-text"
-  what = "PENDING Phase 3 (CF32, review-wp5 MUST-FIX 1): S3 / IoT-creds transport error TEXT (s3.rs:381-393, iot_creds.rs:252-316 vs node) reaches state.json via `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) once the uploader is wired; the suffix after the prefix is not compared for non-HTTP failures. Not reachable in Phase 2 (recording off)"
+  what = "CF32 (review-wp5 MUST-FIX 1), shrunk by WP6 to WP3's unmapped list (wp3.md CF32 mapping table, last row): the suffix of `upload failed, retrying in Ns: <msg>` (uploader.ts:203 → manager.ts:265 → worker.ts:488-492) is folded ONLY for webpki UnknownIssuer (node: self-signed / unable to get local issuer), a SAN mismatch (node embeds the altnames), a corrupt-but-present PEM block, a key/cert mismatch, and node 20's multi-address AggregateError (empty message) — node side `fold_texts`, Rust side the raw `error_chain` fallback. The agent's own texts (`own_prefixes`, the TS strings of s3-put.ts / iot-creds.ts) and every text WP3 maps to node wording (`mapped_prefixes`: s3.rs node_transport_error, iot_creds.rs node_pem_error) are compared exactly"
   streams = ["events"]
   matcher = "suffix_after_prefix"
   event_prefixes = ["upload failed, retrying in "]
+  own_prefixes = [
+    "S3 PUT failed: HTTP ",
+    "S3 PUT timed out",
+    "IoT credentials fetch failed: HTTP ",
+    "IoT credentials fetch timed out",
+    "IoT credentials response missing fields",
+    "IoT credentials response unparseable: ",
+  ]
+  mapped_prefixes = [
+    "getaddrinfo ",
+    "connect E",
+    "socket hang up",
+    "read ECONNRESET",
+    "write EPIPE",
+    "Client network socket disconnected before secure TLS connection was established",
+    "certificate has expired",
+    "certificate is not yet valid",
+    "error:0480006C:PEM routines::no start line",
+    "error:1E08010C:DECODER routines::unsupported",
+  ]
+  fold_texts = [
+    "self-signed certificate",
+    "unable to get local issuer certificate",
+    "unable to verify the first certificate",
+    "Hostname/IP does not match certificate's altnames",
+    "PEM routines::",
+    "asn1 encoding routines::",
+    "DECODER routines::",
+    "x509 certificate routines::key values mismatch",
+    "",
+  ]
 
 [[rule]]
 id = "T9"
 title = "NO numeric-format tolerance: numbers are compared as their JSON text (1 vs 1.0 is a FAIL)"
 basis = "phase file T9"
 kind = "strict_numbers"
+
+# ---------------------------------------------------------------- Phase 3
+# T10–T14: phase-3-recording-media.md §Record/replay "What is compared, and
+# how" (read by media_diff.rs; `tolerance` = the ± bounds in ms / counts).
+
+[[rule]]
+id = "T10"
+title = "child spawn instants ±1 s (argv/env/signals/ended exact; stagger gap ≥ cfg per side); a kvs master SIGINT-stopped within flashMs of its spawn (the capture-spawn bounce racing the master's restart) may be absent on the other side — NARROWED (review-wp6): only when a capture of the SAME camera (the master's KVS_GST_PIPELINE camN) spawned within ±flashMs on that side, one flash per capture spawn"
+basis = "phase file T10; flash: worker.ts:455 onCaptureSpawned → media.ts:51-59 restartChannel racing setDisabledCameras' release inside ONE agent (WP6 calibration rec-cameras JS-vs-JS: 4 vs 3 kvs cam1 spawns, the extra one stopped in the same ms); flashes are dropped from both sides only when that equalises the counts"
+kind = "media"
+streams = ["children"]
+tolerance = { "spawnMs" = 1000.0, "flashMs" = 100.0 }
+
+[[rule]]
+id = "T11"
+title = "session identity + anchor: sessionId, bootId, anchorTs, anchorMono"
+basis = "phase file T11"
+kind = "exclude"
+streams = ["session", "rec-telemetry"]
+paths = ["sessionId", "bootId", "anchorTs", "anchorMono"]
+
+[[rule]]
+id = "T11"
+title = "the payload's recording.sessionId (the telemetry session uuid, minted per agent like T11's session ids)"
+basis = "phase file T11 (session ids are per-instance); phase file table row `payload media/recording blocks`"
+kind = "exclude"
+streams = ["telemetry", "state", "report"]
+paths = ["recording.sessionId", "latest.recording.sessionId", "**.recording.sessionId"]
+
+[[rule]]
+id = "T12"
+title = "sidecar timing: startTs ±300 ms vs the agent's own capture PLAYING time, startMono (within the session) ±300 ms, durationMs ±150 ms, sizeBytes any; mp4 count per session ±1 (the run's cut)"
+basis = "phase file T12"
+kind = "media"
+streams = ["sidecar", "mp4"]
+tolerance = { "startTs" = 300.0, "startMono" = 300.0, "durationMs" = 150.0 }
+paths = ["sizeBytes"]
+
+[[rule]]
+id = "T13"
+title = "telemetry segments: file-name ms stamps and rotation count ±1; gz bytes never compared (D24)"
+basis = "phase file T13; P6"
+kind = "media"
+streams = ["rec-telemetry"]
+
+[[rule]]
+id = "T13/system-presence"
+title = "telemetry segments, JS-vs-JS pairs ONLY (calibration): per telemetry session, the number of samples WITHOUT the agent-sampled `system` group may differ by perSession (5, the review limit; observed JS-vs-JS per-instance spread 0–4, the TS D30 drops). JS-vs-Rust → T7/D30 (d30_system_presence, Rust must be 0); Rust-vs-Rust exact"
+basis = "WP6 2026-10-19 (the per-segment group union hid a recorder that drops `system` on 6-8 % of ticks). TS: system.ts:104-113 recomputes the recorder-side cache at most once per 1000 ms (Date.now gate) and telemetry-recorder.ts:102 skips a group whose updatedMono did not advance, so a tick landing under 1000 ms after the last recompute writes no `system` — 0-5 per run under Node setInterval. JS-vs-JS calibrations (replay-20261017T221027Z … T224409Z + replay-20261019T140703Z, 10 runs): max |Δ| per session = 2 (JS-vs-Rust 2026-10-19: 5-16)"
+kind = "media"
+streams = ["rec-telemetry"]
+# Raised 2 → 5 (orchestrator 2026-10-19, the review's limit): JS-vs-JS
+# per-instance spread observed 0–4 (replay-20261019T201533Z: A 4 / B 0, the
+# D30 drops of one JS instance). JS-vs-Rust is d30_system_presence (Rust 0).
+tolerance = { "perSession" = 5.0 }
+
+[[rule]]
+id = "T4/rec-sample"
+title = "recorded telemetry VALUES (review-wp6 G1): per telemetry session and leaf (not T3's host-read paths), the run-length-deduplicated value sequences over the segments both sides hold are compared EXACTLY; one step carried by ONE sample may be absent on the other side only at a segment-stretch edge (±1 sample) or (NARROWED, review-wp6 re-check) where the OTHER side's sample nearest THE release that brought the step (the group's last input burst — releases ≤ 200 ms apart, an NMEA epoch spans ~60 ms — starting ≤ the step's sample and ≤ 1.1 s before it) lies within collisionMs of that burst (its tick raced that input); a hunk of ≥ 2 missing steps is never a race. Per group (not system), the count of samples carrying it may differ by the group's T4 input transitions in the stretch (cited T4)"
+basis = "phase file row `telemetry segments … sample metrics per T3/T4`; the recorder ticks on its own timer, ungated by the player (telemetry-recorder.ts:67-72 ↔ recording/telemetry.rs), so a 1 Hz input released within a few ms of a recorder tick lands on that tick or the next. WP6 2026-10-19 runs: JS-vs-JS 8/8 exact; JS-vs-Rust media/rec-shed-uv/rec-cameras each skip 1-2 NMEA steps where that side's tick fell 1-5 ms from the burst release (e.g. replay-20261019T151749Z Rust tick 29.655 vs burst 29.654). A step present on BOTH sides as different values is never tolerated"
+kind = "media"
+streams = ["rec-telemetry"]
+tolerance = { "collisionMs" = 50.0 }
+
+[[rule]]
+id = "T14"
+title = "S3 PUT timing / failed-attempt counts (NARROWED review-wp6: |Δ| ≤ 1 per meta.rig.s3Faults window edge, exact without faults), and a session's LAST fragment or LAST telemetry segment (newest seq of that session on either side, and the side without the PUT holds it or never got that far) present on one side only — never a middle segment; telemetry bodies compared decompressed (rec-telemetry), mp4 body hash not compared"
+basis = "phase file T14"
+kind = "media"
+streams = ["s3"]

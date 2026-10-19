@@ -83,6 +83,12 @@ pub enum MetaTag {
 pub struct KvsInfo {
     #[serde(default)]
     pub channels: Vec<Value>,
+    /// Phase 3: the manifest carried the upload identity (credential
+    /// endpoint, role alias, region, uploadBucket). The rig then writes a
+    /// COMPLETE manifest with its own fake-AWS values (`xorgate-replay`
+    /// `aws.rs`); absent = the Phase 2 `{"channels": …}` stub.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub upload: bool,
 }
 
 /// First line of every tape.
@@ -116,6 +122,11 @@ pub struct TapeMeta {
     /// Labels of spliced/synthetic content (O8 "labelled `synthetic`").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub synthetic: Vec<String>,
+    /// Phase 3, synthetic tapes only: rig directives that are not agent
+    /// inputs on a device (`s3Faults` windows, the `filler` tree seeded into
+    /// both homes before start). The Rust agent never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rig: Option<Value>,
 }
 
 impl TapeMeta {
@@ -133,6 +144,7 @@ impl TapeMeta {
             home: None,
             source: None,
             synthetic: Vec::new(),
+            rig: None,
         }
     }
 
@@ -313,6 +325,11 @@ pub enum TapeEvent {
         argv: Vec<String>,
         stdout: String,
         code: Option<i32>,
+        /// Phase 3 (review-wp5 S1): the run's stderr when the caller reports
+        /// it (`TapeSink::exec_with_stderr`) and it is non-empty; omitted
+        /// otherwise, so Phase 2 tapes and stdout-only tools are unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stderr: Option<String>,
     },
     /// `/proc/device-tree/chosen/power/max_current` bytes as lowercase hex, or
     /// `absent:true`. Recorded once.
@@ -630,7 +647,7 @@ impl TapeClock for SystemTapeClock {
 struct WriterState<W: Write> {
     out: Option<W>,
     last_lte: Option<Option<Vec<u8>>>,
-    last_exec: HashMap<Vec<String>, (String, Option<i32>)>,
+    last_exec: HashMap<Vec<String>, (String, Option<String>, Option<i32>)>,
     dt_done: bool,
     last_flush_t: u64,
     records: u64,
@@ -753,8 +770,21 @@ impl<W: Write + Send> TapeWriter<W> {
 
     /// Report EVERY tool run; only a changed (stdout, code) per argv is taped.
     pub fn exec_argv(&self, argv: &[String], stdout: &str, code: Option<i32>) {
+        self.exec_argv_stderr(argv, stdout, None, code);
+    }
+
+    /// [`Self::exec_argv`] with the run's stderr (kept when non-empty; part
+    /// of the change key).
+    pub fn exec_argv_stderr(
+        &self,
+        argv: &[String],
+        stdout: &str,
+        stderr: Option<&str>,
+        code: Option<i32>,
+    ) {
+        let stderr = stderr.filter(|e| !e.is_empty()).map(str::to_string);
         if let Ok(mut st) = self.state.lock() {
-            let cur = (stdout.to_string(), code);
+            let cur = (stdout.to_string(), stderr.clone(), code);
             if st.last_exec.get(argv) == Some(&cur) {
                 return;
             }
@@ -765,6 +795,7 @@ impl<W: Write + Send> TapeWriter<W> {
                     argv: argv.to_vec(),
                     stdout: stdout.to_string(),
                     code,
+                    stderr,
                 },
                 false,
             );
@@ -1020,6 +1051,7 @@ pub fn meta_from_start(
     meta.hardware = start.hardware.clone();
     meta.kvs = KvsInfo {
         channels: start.kvs_channels.clone(),
+        upload: false,
     };
     meta.env = TapeMeta::redacted_env(env);
     meta.home = start.home_files.clone();
@@ -1055,6 +1087,11 @@ impl crate::io::TapeSink for FileTape {
     fn exec(&self, argv: &[&str], stdout: &str, code: Option<i32>) {
         let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
         self.inner.exec_argv(&argv, stdout, code);
+    }
+    fn exec_with_stderr(&self, argv: &[&str], stdout: &str, stderr: &str, code: Option<i32>) {
+        let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+        self.inner
+            .exec_argv_stderr(&argv, stdout, Some(stderr), code);
     }
     fn dt(&self, max_current: Option<&[u8]>) {
         self.inner.dt(max_current);
@@ -1548,6 +1585,13 @@ mod tests {
                 argv: vec!["vcgencmd".into(), "get_throttled".into()],
                 stdout: "throttled=0x0\n".into(),
                 code: Some(0),
+                stderr: None,
+            },
+            TapeEvent::Exec {
+                argv: vec!["rpicam-hello".into(), "--list-cameras".into()],
+                stdout: String::new(),
+                code: Some(255),
+                stderr: Some("No cameras available!\n".into()),
             },
             TapeEvent::dt(Some(&[0, 0, 0x13, 0x88])),
             TapeEvent::dt(None),
@@ -1652,6 +1696,47 @@ mod tests {
                 mono: 3_500
             }
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// review-wp5 S1: `exec` keeps a non-empty stderr (rpicam-hello's
+    /// zero-camera answer); a stdout-only record's line is unchanged.
+    #[test]
+    fn exec_stderr_line_shape_and_dedupe() {
+        use crate::io::TapeSink;
+        let plain = TapeEvent::Exec {
+            argv: vec!["vcgencmd".into(), "get_throttled".into()],
+            stdout: "throttled=0x0\n".into(),
+            code: Some(0),
+            stderr: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"k":"exec","argv":["vcgencmd","get_throttled"],"stdout":"throttled=0x0\n","code":0}"#
+        );
+        let dir = std::env::temp_dir().join(format!("xorgate-tape-err-{}", std::process::id()));
+        let path = dir.join("t.ndjson.gz");
+        let (clock, _t) = manual(1_760_000_000_000);
+        let meta = TapeMeta::new("dev", "test", 1_760_000_000_000);
+        {
+            let tape = FileTape::create_with_clock(&path, &meta, clock).unwrap();
+            let argv = ["rpicam-hello", "--list-cameras"];
+            tape.exec_with_stderr(&argv, "", "No cameras available!\n", Some(255));
+            tape.exec_with_stderr(&argv, "", "No cameras available!\n", Some(255)); // same
+            tape.exec_with_stderr(&argv, "", "", Some(255)); // stderr changed → taped, omitted
+            tape.exec(&argv, "", Some(255)); // = the previous record
+            tape.close().unwrap();
+        }
+        let read = Tape::read(&path).unwrap();
+        let errs: Vec<_> = read
+            .records
+            .iter()
+            .filter_map(|r| match &r.ev {
+                TapeEvent::Exec { stderr, .. } => Some(stderr.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errs, [Some("No cameras available!\n".to_string()), None]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

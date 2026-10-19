@@ -3,10 +3,20 @@
 # (GStreamer 1.22). Nothing is baked in: the JS build, the Rust binaries, the
 # certs, the tapes and this directory are bind-mounted by docker-compose.yml,
 # so a rebuild of either agent needs no image rebuild.
+#
+# Phase 3 (WP6): the REAL gst-launch-1.0 + the plugins the capture argv uses
+# (videotestsrc/videorate/videoscale: base; splitmuxsink/mp4mux: good;
+# h264parse/shmsink: bad; x264enc: ugly) — the `gst-launch-1.0` shim swaps
+# only the camera source for videotestsrc; ca-certificates so the player can
+# add the rig CA to the system store the Rust agent's TLS verifier reads
+# (P5: no new agent knob; Node gets NODE_EXTRA_CA_CERTS).
 FROM --platform=linux/arm64 node:20-bookworm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
+      gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+      gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+      ca-certificates \
       python3 procps mosquitto-clients \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /rig/tools

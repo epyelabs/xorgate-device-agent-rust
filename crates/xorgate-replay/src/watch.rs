@@ -114,6 +114,22 @@ pub const LTE_WRITE_MS: i64 = 30;
 pub const REPORT_PAIR_MS: i64 = 3_000;
 /// Never hold one release longer than this (logged as a timeout).
 pub const MAX_HOLD_MS: i64 = 10_000;
+/// REPORT FENCE (CI run 39276719573): a report trigger (a released `mqtt_in`
+/// / `cli`) arms each agent's 2 s report debounce (`config-sync.ts:1435-1448`
+/// ↔ `sync.rs`); an LTE rewrite falling due inside [trigger, trigger +
+/// `FENCE_WINDOW_MS`] would land before one agent's report build and after
+/// the other's (delivery lag up to ~0.8 s on a loaded runner), so it waits
+/// until BOTH agents published a report captured after the trigger — at most
+/// `FENCE_CAP_MS` past its due time (then released and logged). One release
+/// still writes both agents' LTE files in one step (`play.rs` apply_state).
+pub const FENCE_WINDOW_MS: i64 = 2_000 + 500;
+pub const FENCE_CAP_MS: i64 = 5_000;
+/// Power-read fence: one agent's `vcgencmd` read waits this long for the
+/// other's (one pair's reads are ≤ the flip gap apart).
+pub const EXEC_PAIR_MS: i64 = 800;
+/// One agent's reads of one tick (shed sample, publish read, recorder
+/// sample) lie within this of each other.
+pub const EXEC_CLUSTER_MS: i64 = 250;
 
 /// Which watch a track predicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +288,19 @@ pub struct WatchGate {
     unmatched: [Vec<i64>; 2],
     /// Releases that waited for a report pair.
     report_holds: usize,
+    /// Report-fence triggers: `(release wall ms, [A reported, B reported])`.
+    triggers: Vec<(i64, [bool; 2])>,
+    /// Every release the report fence held: `{due, released, capped}`.
+    fenced: Vec<Value>,
+    /// Power-read fence: each agent's last read of its `vcgencmd` answers
+    /// (reads ≤ EXEC_CLUSTER_MS apart = one tick's read cluster: publish
+    /// read, shed / recorder sample), the cluster still waiting for the other
+    /// agent's, and the tail after a pair completed.
+    exec_read: [Option<i64>; 2],
+    exec_unmatched: Option<(usize, i64)>,
+    exec_tail_until: i64,
+    /// Every `vcgencmd` release the power-read fence delayed.
+    exec_fenced: Vec<Value>,
 }
 
 impl WatchGate {
@@ -307,6 +336,11 @@ impl WatchGate {
     /// `effective` carries `sim` or `uplink` (`watchForModemArrival`,
     /// `config-sync.ts:1622-1629`).
     pub fn on_report(&mut self, idx: usize, now: i64, has_modem: bool) {
+        for (t, done) in self.triggers.iter_mut() {
+            if now > *t {
+                done[idx] = true;
+            }
+        }
         // Report pairing: a report build reads the LTE file and settings.json
         // (effective) at each agent's own instant, tens of ms apart; a release
         // between them splits the pair (CI smoke 9abb559 attempt 2: an LTE
@@ -480,6 +514,80 @@ impl WatchGate {
             .any(|&(lo, hi)| lo <= end && now <= hi)
     }
 
+    /// Agent `idx` read its `vcgencmd` answers at `now` (one tick's reads
+    /// within 50 ms count once).
+    pub fn on_exec_open(&mut self, idx: usize, now: i64) {
+        let in_cluster = self.exec_read[idx].is_some_and(|t| now - t <= EXEC_CLUSTER_MS);
+        self.exec_read[idx] = Some(now);
+        if in_cluster {
+            return;
+        }
+        // A new read cluster of `idx`: it completes the other agent's
+        // waiting one (the pair), or starts waiting itself.
+        match self.exec_unmatched {
+            Some((o, t)) if o != idx && now - t <= EXEC_PAIR_MS => {
+                self.exec_unmatched = None;
+                self.exec_tail_until = now + EXEC_CLUSTER_MS;
+            }
+            Some((o, t)) if o == idx && now - t <= EXEC_PAIR_MS => {}
+            _ => self.exec_unmatched = Some((idx, now)),
+        }
+    }
+
+    /// Power-read fence: would a `vcgencmd` release at `now` split a read
+    /// pair? Yes from one agent's read cluster until the other agent's
+    /// cluster (≤ EXEC_PAIR_MS later) plus its tail.
+    pub fn exec_holds(&self, now: i64) -> bool {
+        now <= self.exec_tail_until
+            || self
+                .exec_unmatched
+                .is_some_and(|(_, t)| now - t <= EXEC_PAIR_MS)
+    }
+
+    /// The report fence for any input: a record due at `due` inside an open
+    /// report trigger window waits until both agents reported (≤ cap).
+    pub fn report_open(&self, due: i64, now: i64) -> bool {
+        now - due <= FENCE_CAP_MS
+            && self
+                .triggers
+                .iter()
+                .any(|(t, d)| *t <= due && due - t <= FENCE_WINDOW_MS && !(d[0] && d[1]))
+    }
+
+    pub fn note_exec_fence(&mut self, due: i64, released: i64, capped: bool) {
+        if released > due {
+            self.exec_fenced
+                .push(json!({"due": due, "released": released, "held_ms": released - due, "capped": capped}));
+        }
+    }
+
+    /// A report trigger (a `mqtt_in` / `cli` record) was released at `now`.
+    pub fn on_trigger(&mut self, now: i64) {
+        self.triggers
+            .retain(|(t, d)| !(d[0] && d[1]) && now - t <= FENCE_WINDOW_MS + FENCE_CAP_MS);
+        self.triggers.push((now, [false, false]));
+    }
+
+    /// Report fence: must an LTE release that fell due at `due` still wait at
+    /// `now`? `Some(false)` = fenced but capped (release it; logged once by
+    /// [`Self::note_fenced`]), `Some(true)` = wait, `None` = not fenced.
+    pub fn fence(&self, input: Input, due: i64, now: i64) -> Option<bool> {
+        if input != Input::Lte {
+            return None;
+        }
+        self.triggers
+            .iter()
+            .any(|(t, d)| *t <= due && due - t <= FENCE_WINDOW_MS && !(d[0] && d[1]))
+            .then_some(now - due <= FENCE_CAP_MS)
+    }
+
+    /// The fence held a release due at `due` until `released`.
+    pub fn note_fenced(&mut self, due: i64, released: i64, capped: bool) {
+        self.fenced.push(
+            json!({"due": due, "released": released, "held_ms": released - due, "capped": capped}),
+        );
+    }
+
     /// A release of `input` happened at `released` (due at `due`).
     pub fn note_release(&mut self, input: Input, due: i64, released: i64, timeout: bool) {
         if self
@@ -542,6 +650,8 @@ impl WatchGate {
             "holds": self.holds,
             "timeouts": timeouts,
             "report_pair_holds": self.report_holds,
+            "report_fence": self.fenced,
+            "power_read_fence": self.exec_fenced,
             "ticks": self.ticks,
             "opens": self.agents.iter().map(|a| a.opens.len()).collect::<Vec<_>>(),
             "writes": self.agents.iter().map(|a| a.writes.iter().map(|(i, w)| json!({"input": i.as_str(), "w": w})).collect::<Vec<_>>()).collect::<Vec<_>>(),
@@ -595,6 +705,7 @@ pub fn observe(
     let ino = Inotify::init(InitFlags::empty())?;
     let flags = AddWatchFlags::IN_OPEN | AddWatchFlags::IN_MOVED_TO | AddWatchFlags::IN_CLOSE_WRITE;
     let mut map = Vec::new();
+    let mut exec_wds = Vec::new();
     let mut logs = Vec::new();
     for (i, (home, state, log)) in dirs.iter().enumerate() {
         map.push((
@@ -609,6 +720,9 @@ pub fn observe(
             Input::Lte,
             "telemetry.json",
         ));
+        let exec = state.join("exec");
+        let _ = std::fs::create_dir_all(&exec);
+        exec_wds.push((ino.add_watch(&exec, AddWatchFlags::IN_OPEN)?, i));
         logs.push(std::fs::File::create(log)?);
     }
     std::thread::spawn(move || {
@@ -618,6 +732,15 @@ pub fn observe(
             };
             let now = xorgate_hal::tape::wall_now_ms();
             for e in events {
+                if let Some(&(_, idx)) = exec_wds.iter().find(|m| m.0 == e.wd) {
+                    let name = e.name.as_deref().and_then(|n| n.to_str()).unwrap_or("");
+                    if name.starts_with("vcgencmd__") && name.ends_with(".out") {
+                        if let Ok(mut g) = gate.lock() {
+                            g.on_exec_open(idx, now);
+                        }
+                    }
+                    continue;
+                }
                 let Some(&(_, idx, input, name)) = map.iter().find(|m| m.0 == e.wd) else {
                     continue;
                 };
@@ -646,6 +769,81 @@ pub fn observe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Power-read fence: a `vcgencmd` release waits while one agent read its
+    /// answers and the other has not read since (CI smoke runs 39311147277).
+    #[test]
+    fn power_read_fence_holds_between_the_two_agents_reads() {
+        let mut g = WatchGate::new();
+        assert!(!g.exec_holds(1_000), "nobody read yet");
+        g.on_exec_open(0, 1_000);
+        g.on_exec_open(0, 1_020); // the same tick's second answer
+        assert!(
+            g.exec_holds(1_100),
+            "A read, B not yet: a release would split the pair"
+        );
+        g.on_exec_open(1, 1_128);
+        assert!(g.exec_holds(1_200), "B's read cluster still running");
+        assert!(
+            !g.exec_holds(1_128 + EXEC_CLUSTER_MS + 1),
+            "pair complete: free"
+        );
+        g.on_exec_open(1, 2_100);
+        assert!(g.exec_holds(2_500));
+        assert!(!g.exec_holds(2_100 + EXEC_PAIR_MS + 1), "bounded");
+        // Report fence for any input.
+        g.on_trigger(10_000);
+        assert!(g.report_open(11_000, 11_000));
+        g.on_report(0, 12_000, true);
+        g.on_report(1, 12_010, true);
+        assert!(!g.report_open(11_000, 12_020));
+    }
+
+    /// The CI run 39276719573 shape: a `refresh` at t = 18.1 s arms both
+    /// agents' 2 s report debounce; the tape's LTE rewrite falls due at
+    /// 20.08 s, ~20 ms before the reports (A 20.12, B 20.9 with delivery lag).
+    /// The fence holds it until BOTH reported, never past FENCE_CAP_MS.
+    #[test]
+    fn report_fence_holds_an_lte_rewrite_until_both_reports() {
+        let mut g = WatchGate::new();
+        g.on_trigger(18_100);
+        let due = 20_080;
+        assert_eq!(g.fence(Input::Lte, due, due), Some(true));
+        assert_eq!(g.fence(Input::Settings, due, due), None, "LTE only");
+        g.on_report(0, 20_120, true);
+        assert_eq!(
+            g.fence(Input::Lte, due, 20_500),
+            Some(true),
+            "one report is not enough"
+        );
+        g.on_report(1, 20_900, true);
+        assert_eq!(
+            g.fence(Input::Lte, due, 20_901),
+            None,
+            "both reported: released"
+        );
+        // Outside the trigger's window [T, T + 2.5 s]: never fenced.
+        let mut g = WatchGate::new();
+        g.on_trigger(18_100);
+        assert_eq!(g.fence(Input::Lte, 20_700, 20_700), None);
+        assert_eq!(
+            g.fence(Input::Lte, 18_000, 18_100),
+            None,
+            "due before the trigger"
+        );
+        // No report ever comes (a command that triggers none): capped.
+        assert_eq!(g.fence(Input::Lte, due, due + FENCE_CAP_MS), Some(true));
+        assert_eq!(
+            g.fence(Input::Lte, due, due + FENCE_CAP_MS + 1),
+            Some(false)
+        );
+        // A report captured BEFORE the trigger does not count.
+        let mut g = WatchGate::new();
+        g.on_report(0, 18_000, true);
+        g.on_report(1, 18_050, true);
+        g.on_trigger(18_100);
+        assert_eq!(g.fence(Input::Lte, due, due), Some(true));
+    }
 
     /// Release an input due at `due`: step 5 ms until the gate lets it go.
     fn release(g: &mut WatchGate, input: Input, due: i64, look: i64) -> i64 {
