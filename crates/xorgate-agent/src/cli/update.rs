@@ -413,7 +413,7 @@ async fn smoke_exec(staging: &Path, out: &mut dyn UpdateLog) -> Result<(), Strin
     let r = run(&path_str(&bin), &["-v"], Some(SMOKE_TIMEOUT)).await;
     let line = xorgate_core::js::trim(&r.stdout);
     if r.failed {
-        return Err(plan::smoke_failed_message(&plan::failure_detail(
+        return Err(plan::smoke_failed_message(&plan::smoke_detail(
             &r.stderr,
             r.exit_code,
         )));

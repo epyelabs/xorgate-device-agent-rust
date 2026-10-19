@@ -1,0 +1,4 @@
+#!/bin/sh
+# visudo shim that refuses every file (the "visudo-refuses" case).
+echo "$2: syntax error near line 4 <<<" >&2
+exit 1

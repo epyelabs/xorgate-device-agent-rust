@@ -194,6 +194,17 @@ pub fn checksum_ok_log(digest: &[u8; 32]) -> String {
 /// Q13: logged where the TS logged `installing node modules` (`update.ts:281`).
 pub const SMOKE_LOG: &str = "checking the staged build runs on this device";
 
+/// Q13: why the smoke-exec failed — stderr if any, else the exit code, else
+/// (no code, no stderr: the kernel/loader killed it) `killed by a signal`.
+pub fn smoke_detail(stderr: &str, exit_code: Option<i32>) -> String {
+    let t = trim(stderr);
+    match (t.is_empty(), exit_code) {
+        (false, _) => t.to_string(),
+        (true, Some(c)) => format!("exit {c}"),
+        (true, None) => "killed by a signal".to_string(),
+    }
+}
+
 /// Q13: the smoke-exec failure (`npm ci failed: …`'s slot, `update.ts:289`).
 pub fn smoke_failed_message(detail: &str) -> String {
     format!("staged build does not run on this device ({detail}); not installed")
@@ -681,6 +692,9 @@ mod tests {
         assert_eq!(failure_detail("", None), "null");
         assert_eq!(failure_detail(" curl: (22) x\n", Some(22)), "curl: (22) x");
         assert_eq!(tarball_name("latest"), "xorgate-agent-rs-latest.tar.gz");
+        assert_eq!(smoke_detail("", None), "killed by a signal");
+        assert_eq!(smoke_detail("", Some(126)), "exit 126");
+        assert_eq!(smoke_detail(" bad ELF\n", None), "bad ELF");
         let a: Vec<String> = ["--tag", "v1", "--from"]
             .iter()
             .map(|s| s.to_string())
