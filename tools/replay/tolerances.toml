@@ -459,6 +459,13 @@ kind = "decisions"
   streams = ["file:gnss-sky.json"]
 
   [[rule.row]]
+  id = "d30-js-reference"
+  what = "CALIBRATION ONLY (JS-vs-JS): D30 inside the reference — a JS shed tick deciding on its recorder's ≤ 1 s old cached power reading (TS system.ts:104-113 + Node setInterval re-arm), so one JS logs the previous rail value and its restore lands one shed tick later. Matchers (media_diff.rs, HARD GUARD in code: both return false unless BOTH sides are js; nothing here can widen them): `d30_js_shed_text` — exactly one A+1 and one B+1 `power shed → …(rail <V>V < …)` message, identical with V masked, the two V consecutive distinct values of the tape's released pmic series, the stale side's event in [release of the fresher value, +1100 ms], one pair per masked template; `d30_js_spawn_tick` — kvs `(spawn ms after start)` only, 1000 < |Δ| ≤ 1150, each side's spawn lagging its own last powerShed/liveBlock change by the same ±300 ms, every kvs spawn of that restore shifted by the same Δ ±150, at most channels × shed changes rows. JS-vs-Rust / Rust-vs-JS / Rust-vs-Rust: the same rows stay UNTOLERATED (Rust is never stale). Orchestrator 2026-10-19 (replay-20261019T173537Z)"
+  streams = ["events", "children"]
+  matcher = "d30_js_shed_text"
+  pinned_by = "D30 (accepted-divergences.md); review-wp6 re-check; media_diff::tests::d30_js_reference_only_for_js_vs_js"
+
+  [[rule.row]]
   id = "end-snapshot"
   what = "RIG: state.json `latest` at the end — both agents get SIGTERM together, but their last ticks before it are up to one tick apart (different phases), so the final payload's values may be one sample apart; `seq` there is T2, `ts` T1. Every published payload is compared in the telemetry stream"
   streams = ["state"]
