@@ -444,19 +444,25 @@ impl CameraMountReconciler {
     pub fn now(&self) -> BoxFut<'static, ()> {
         let inner = self.inner.clone();
         Box::pin(async move {
-            let o = &inner.opts;
-            let opts = ReconcileCameraMountOptions {
-                settings: (o.settings)(),
-                hardware: (o.hardware)(),
-                pipeline_dir: o.pipeline_dir.clone(),
-                boot_config_path: o.boot_config_path.clone(),
-                dt_root: o.dt_root.clone(),
-                now: o.clock.wall_ms(),
-                log: o.log.clone(),
-                probe: o.probe.clone(),
-                apply_rotation: o.apply_rotation.clone(),
-            };
-            let next = match tokio::spawn(reconcile_camera_mount(opts)).await {
+            // Everything inside the TS `try` — the settings read included —
+            // runs in its own task so a panic is observable (`JoinError`).
+            let task = inner.clone();
+            let pass = tokio::spawn(async move {
+                let o = &task.opts;
+                let opts = ReconcileCameraMountOptions {
+                    settings: (o.settings)(),
+                    hardware: (o.hardware)(),
+                    pipeline_dir: o.pipeline_dir.clone(),
+                    boot_config_path: o.boot_config_path.clone(),
+                    dt_root: o.dt_root.clone(),
+                    now: o.clock.wall_ms(),
+                    log: o.log.clone(),
+                    probe: o.probe.clone(),
+                    apply_rotation: o.apply_rotation.clone(),
+                };
+                reconcile_camera_mount(opts).await
+            });
+            let next = match pass.await {
                 Ok(n) => n,
                 Err(e) => {
                     let msg = if e.is_panic() {
