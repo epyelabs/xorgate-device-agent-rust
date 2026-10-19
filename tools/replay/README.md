@@ -352,7 +352,7 @@ and, on synthetic tapes only, `rig` (`s3Faults`, `filler`).
 | TLS trust | rig CA → the container's system store (`update-ca-certificates`, Rust's platform verifier) and `NODE_EXTRA_CA_CERTS` (Node) — no agent knob (P5) |
 | fake IoT creds | `:443`, SNI `*.credentials.iot.ca-central-1.amazonaws.com` → mTLS (rig CA); thing name must be a rig deviceId; fixed creds, 1 h expiry |
 | fake S3 | `:443`, `<bucket>.s3.ca-central-1.amazonaws.com` → SigV4 recomputed independently with the fixed rig secret (bad signature = 403 + a FAIL row); bodies stored (`<run>/<label>/s3/<key>`, mp4 as size + sha256), every PUT logged in order (`s3.ndjson`); `meta.rig.s3Faults` windows answer 503 |
-| filler (D9) | `meta.rig.filler {mib, fragmentMib, ageDays, key}` → a 7-day-old closed session of SPARSE fragments + finalized sidecars seeded into both homes |
+| filler (D9) | `meta.rig.filler {mib, fragmentMib, ageDays, key, trimLastBytes?}` → a 7-day-old closed session of SPARSE fragments + finalized sidecars seeded into both homes (`trimLastBytes` shortens the newest fragment: `rec-disk` uses 40 KiB so its 10th eviction is not decided by the open-file bytes at a rotation, see `synth.rs`) |
 | external exits | tape `child_exit {external: true}` at tape time: kvs → the fake exits with the code; capture → the key's live gst is killed with the tape's signal (SIGKILL when it exited with a code) |
 
 Run dir additions per agent: `shim.ndjson`, `procs.ndjson` (pid gone /

@@ -1090,8 +1090,25 @@ fn build_inner(
                 );
             }
             "rec-disk" => {
+                // `trimLastBytes` (2026-10-19, JS-vs-Rust `replay-20261019T153028Z`
+                // + `…T134429Z`): with the full 600 MiB the 10th eviction's
+                // decisive scan is the cam0 rotation at ~t 92 s, where the
+                // closed backlog sits 72 946 B under maxBytes and the OPEN
+                // files decide — mostly cam1's growing mp4 (~6.0 s old,
+                // ≤ ~71 KB of content, flushed in filesink blocks) + the
+                // active telemetry .jsonl (~19 KB). JS (cam1 6.07 s old)
+                // went over, Rust (5.98 s) did not, and evicted one rotation
+                // later (TS `disk.ts:113-168` ↔ `disk_plan.rs:120-176` sum
+                // every scanned file, a faithful port): ~0.1 s of gst
+                // pipeline start jitter decided a contract value. 40 KiB off
+                // the newest filler fragment moves the crossing to the next
+                // (cam1) rotation: the cam0 one stays ≥ ~21 KB under even
+                // with all of cam1's content on disk, the cam1 one is over on
+                // its closed backlog alone (+3 KB) plus the active telemetry
+                // segment (~22 KB). Eviction ORDER / counts are unchanged in
+                // kind; only the instant moves off the knife edge.
                 rig = Some(
-                    json!({"filler": {"mib": 600, "fragmentMib": 10, "ageDays": 7, "key": "cam0"}}),
+                    json!({"filler": {"mib": 600, "fragmentMib": 10, "ageDays": 7, "key": "cam0", "trimLastBytes": 40_960}}),
                 );
                 // Both agents BOOT with the scenario's recording namespace
                 // already in settings.json (as a fielded device does after

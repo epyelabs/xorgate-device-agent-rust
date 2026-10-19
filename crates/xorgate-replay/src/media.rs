@@ -206,10 +206,12 @@ pub fn uuidv7_at(ms: i64, tail: u64) -> String {
     format!("{a:08x}-{b:04x}-{c:04x}-{d:04x}-{e:012x}")
 }
 
-/// D9's filler: `{mib, fragmentMib, ageDays, key}` → one closed old session
-/// `recordings/video/<key>/<uuidv7 ageDays ago>/` with `session.json`,
-/// SPARSE `NNNNN.mp4` fragments (apparent size counts, like `stat().size`)
-/// and a finalized sidecar each, mtimes `ageDays` in the past. Same tree in
+/// D9's filler: `{mib, fragmentMib, ageDays, key, trimLastBytes?}` → one
+/// closed old session `recordings/video/<key>/<uuidv7 ageDays ago>/` with
+/// `session.json`, SPARSE `NNNNN.mp4` fragments (apparent size counts, like
+/// `stat().size`) and a finalized sidecar each, mtimes `ageDays` in the past.
+/// `trimLastBytes` shortens the NEWEST fragment (evicted last) so a scenario
+/// can place its eviction threshold away from a knife edge. Same tree in
 /// both homes (deviceId substituted).
 pub fn seed_filler(home: &Path, device_id: &str, f: &Value) -> Result<()> {
     let mib = f.get("mib").and_then(Value::as_u64).unwrap_or(600);
@@ -219,6 +221,7 @@ pub fn seed_filler(home: &Path, device_id: &str, f: &Value) -> Result<()> {
         .unwrap_or(10)
         .max(1);
     let age_days = f.get("ageDays").and_then(Value::as_i64).unwrap_or(7);
+    let trim_last = f.get("trimLastBytes").and_then(Value::as_u64).unwrap_or(0);
     let key = f.get("key").and_then(Value::as_str).unwrap_or("cam0");
     let start = wall_now_ms() - age_days * 86_400_000;
     let start = start - start.rem_euclid(1000);
@@ -239,7 +242,12 @@ pub fn seed_filler(home: &Path, device_id: &str, f: &Value) -> Result<()> {
         std::time::SystemTime::UNIX_EPOCH + Duration::from_millis((start + 3_600_000) as u64);
     for seq in 0..n {
         let mp4 = dir.join(format!("{seq:05}.mp4"));
-        let size = frag_mib * 1024 * 1024;
+        let full = frag_mib * 1024 * 1024;
+        let size = if seq + 1 == n {
+            full.saturating_sub(trim_last)
+        } else {
+            full
+        };
         let file = fs::File::create(&mp4)?;
         file.set_len(size)?;
         file.set_modified(mtime)?;
@@ -564,6 +572,33 @@ mod tests {
         assert_eq!(mp4.len(), 3);
         assert!(mp4.iter().all(|(_, s)| **s == 10 * 1024 * 1024));
         assert_eq!(cur.iter().filter(|(k, _)| k.ends_with(".json")).count(), 4);
+        // `trimLastBytes` shortens only the newest fragment (+ its sidecar).
+        let home2 = std::env::temp_dir().join(format!("rig-filler-trim-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home2);
+        seed_filler(
+            &home2,
+            "dev",
+            &json!({"mib": 30, "fragmentMib": 10, "ageDays": 7, "trimLastBytes": 40960}),
+        )
+        .unwrap();
+        let mut cur2 = BTreeMap::new();
+        let root2 = home2.join("recordings");
+        walk(&root2, &root2, &mut cur2);
+        let sizes: Vec<u64> = cur2
+            .iter()
+            .filter(|(k, _)| k.ends_with(".mp4"))
+            .map(|(_, s)| *s)
+            .collect();
+        assert_eq!(sizes, vec![10 << 20, 10 << 20, (10 << 20) - 40960]);
+        let side2 = cur2
+            .keys()
+            .find(|k| k.ends_with("00002.json"))
+            .unwrap()
+            .clone();
+        let side2: Value =
+            serde_json::from_str(&fs::read_to_string(root2.join(&side2)).unwrap()).unwrap();
+        assert_eq!(side2["sizeBytes"], (10u64 << 20) - 40960);
+        let _ = fs::remove_dir_all(&home2);
         let md = fs::metadata(
             home.join("recordings/video/cam0")
                 .read_dir()
