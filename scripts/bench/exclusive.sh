@@ -278,7 +278,9 @@ end)
   filler_clear || echo "  ! filler clear refused (see above)"
   echo "== 4. shared profile + restart $UNIT"
   profile_shared
-  reload_restart_rs
+  # JS is already back (step 2); a refused Rust restart (bench flavour lost
+  # after an `xorgate-rs update`, Phase 4) must not skip the audits below.
+  reload_restart_rs || echo "  ! $UNIT not restarted (see above) — $JS_UNIT stays up; fix with install.sh then profile.sh shared"
   if [ "$DRY" != 1 ]; then
     for _ in $(seq 1 30); do
       ok=1; for u in $JS_UNIT $UNIT $MODEM_UNIT; do [ "$(systemctl is-active $u || true)" = active ] || ok=0; done
