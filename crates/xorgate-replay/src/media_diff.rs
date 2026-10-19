@@ -2220,7 +2220,7 @@ fn shed_secs(msg: &str) -> i64 {
 /// N s`; an escalation: the read before the first low one, `ts − (N+1) s`)
 /// lies after a power-input release (≥ 50 ms before D) that its recorder's
 /// previous sample (< 1 s before D) did not yet carry and its next sample
-/// (< 1.1 s after D) did — so a fresh read at D would have decided on time.
+/// carrying `system` (< 2.1 s after D) did — so a fresh read at D would have decided on time.
 fn js_stale_evidence(rec: &[(i64, String)], changes: &[i64], ts: i64, msg: &str) -> bool {
     let n = shed_secs(msg);
     let d = if msg.contains("restore") {
@@ -2229,7 +2229,9 @@ fn js_stale_evidence(rec: &[(i64, String)], changes: &[i64], ts: i64, msg: &str)
         ts - (n + 1) * 1000
     };
     let prev = rec.iter().rfind(|(t, _)| *t < d && d - *t < 1000);
-    let next = rec.iter().find(|(t, _)| *t > d && *t - d < 1100);
+    // The next sample CARRYING system (a D30 recorder tick may write none:
+    // the same stale cache, telemetry-recorder.ts:102) — ≤ 2 ticks on.
+    let next = rec.iter().find(|(t, _)| *t > d && *t - d < 2_100);
     let (Some(p), Some(q)) = (prev, next) else {
         return false;
     };
