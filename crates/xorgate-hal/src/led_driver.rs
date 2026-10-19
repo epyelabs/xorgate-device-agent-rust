@@ -37,7 +37,7 @@ use xorgate_core::led::{
     PinMapCheck,
 };
 
-use crate::io::{NullTape, TapeSink};
+use crate::io::{GpioVia, NullTape, TapeSink};
 
 /// Same shape as `xorgate_agent::ctx::BoxFut` (a type alias, so the two are
 /// interchangeable).
@@ -74,10 +74,9 @@ pub const ENV_LED_GPIOCHIP: &str = "XORGATE_LED_GPIOCHIP";
 /// only when some channels rise while others fall).
 pub trait PinWriter: Send + Sync + 'static {
     fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool>;
-    /// The tape `gpio.via` tag (`pinctrl` | `gpiocdev`; anything else = an
-    /// injected test writer).
-    fn via(&self) -> &'static str {
-        "custom"
+    /// The tape `gpio.via` tag; `None` = an injected test writer.
+    fn via(&self) -> Option<GpioVia> {
+        None
     }
 }
 
@@ -112,8 +111,8 @@ impl PinWriter for PinctrlWriter {
             !res.failed
         })
     }
-    fn via(&self) -> &'static str {
-        "pinctrl"
+    fn via(&self) -> Option<GpioVia> {
+        Some(GpioVia::Pinctrl)
     }
 }
 
@@ -197,8 +196,8 @@ impl PinWriter for GpiocdevWriter {
         };
         Box::pin(async move { ok })
     }
-    fn via(&self) -> &'static str {
-        "gpiocdev"
+    fn via(&self) -> Option<GpioVia> {
+        Some(GpioVia::Gpiocdev)
     }
 }
 
@@ -801,7 +800,8 @@ fn fail(reason: &str) -> PinMapCheck {
 ///   failure is the inert reason (no retry). The request is held by the
 ///   returned driver until it is dropped.
 ///
-/// `tape` receives the probe's `gpioinfo` run.
+/// `tape` receives the probe's `gpioinfo` run and every pin write
+/// ([`TapedWriter`]).
 pub fn agent_driver(
     map: LedPinMap,
     choice: WriterChoice,
@@ -809,13 +809,16 @@ pub fn agent_driver(
     tape: Arc<dyn TapeSink>,
     log: Option<LedLog>,
 ) -> LedDriver {
-    let host = Arc::new(SystemHost { tape });
+    let host = Arc::new(SystemHost { tape: tape.clone() });
     match choice {
         WriterChoice::Pinctrl => {
             let m = map.clone();
             LedDriver::new(LedDriverOptions {
                 map: Some(map),
-                writer: Some(Arc::new(PinctrlWriter)),
+                writer: Some(Arc::new(TapedWriter {
+                    inner: Arc::new(PinctrlWriter),
+                    tape,
+                })),
                 probe: Some(Box::new(move || {
                     let (m, host) = (m.clone(), host.clone());
                     Box::pin(async move { probe_host_with(&m, host.as_ref()).await })
@@ -829,7 +832,7 @@ pub fn agent_driver(
             let s = slot.clone();
             LedDriver::new(LedDriverOptions {
                 map: Some(map),
-                writer: Some(slot),
+                writer: Some(Arc::new(TapedWriter { inner: slot, tape })),
                 probe: Some(Box::new(move || {
                     let (m, host, s, chip) =
                         (m.clone(), host.clone(), s.clone(), chip_override.clone());
@@ -856,6 +859,27 @@ pub fn agent_driver(
     }
 }
 
+/// Reports every write to the tape (`gpio {pins, high, via}`, phase-4 §8)
+/// at the moment the writer is called, then delegates. A writer without a
+/// `via` tag (test fakes) is recorded as `gpiocdev`.
+pub struct TapedWriter {
+    pub inner: Arc<dyn PinWriter>,
+    pub tape: Arc<dyn TapeSink>,
+}
+
+impl PinWriter for TapedWriter {
+    fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
+        if !pins.is_empty() {
+            let via = self.inner.via().unwrap_or(GpioVia::Gpiocdev);
+            self.tape.gpio(pins, high, via);
+        }
+        self.inner.write(pins, high)
+    }
+    fn via(&self) -> Option<GpioVia> {
+        self.inner.via()
+    }
+}
+
 /// A writer filled in by the probe (the gpiocdev request is opened only once
 /// the host probe passed). Unfilled = every write fails (unreachable: the
 /// driver writes only after a successful probe).
@@ -877,8 +901,10 @@ impl PinWriter for LazyWriter {
             None => Box::pin(async { false }),
         }
     }
-    fn via(&self) -> &'static str {
-        self.inner.get().map_or("gpiocdev", |w| w.via())
+    fn via(&self) -> Option<GpioVia> {
+        self.inner
+            .get()
+            .map_or(Some(GpioVia::Gpiocdev), |w| w.via())
     }
 }
 
@@ -929,6 +955,50 @@ mod tests {
         assert!(is_raspberry_pi_model(Some(b"  RASPBERRY PI 4 Model B\n")));
         assert!(!is_raspberry_pi_model(Some(b"Generic ARM board\0")));
         assert!(!is_raspberry_pi_model(None));
+    }
+
+    #[derive(Default)]
+    struct GpioTape(Mutex<Vec<(Vec<u32>, bool, GpioVia)>>);
+    impl TapeSink for GpioTape {
+        fn gpio(&self, pins: &[u32], high: bool, via: GpioVia) {
+            self.0.lock().unwrap().push((pins.to_vec(), high, via));
+        }
+    }
+    struct Ok_;
+    impl PinWriter for Ok_ {
+        fn write(&self, _pins: &[u32], _high: bool) -> BoxFut<'static, bool> {
+            Box::pin(async { true })
+        }
+        fn via(&self) -> Option<GpioVia> {
+            Some(GpioVia::Pinctrl)
+        }
+    }
+
+    #[tokio::test]
+    async fn taped_writer_reports_every_non_empty_write_at_call_time() {
+        let tape = Arc::new(GpioTape::default());
+        let w = TapedWriter {
+            inner: Arc::new(Ok_),
+            tape: tape.clone(),
+        };
+        let fut = w.write(&[12, 16], true);
+        assert_eq!(
+            tape.0.lock().unwrap().len(),
+            1,
+            "recorded before the future runs"
+        );
+        assert!(fut.await);
+        assert!(w.write(&[], false).await);
+        assert_eq!(
+            *tape.0.lock().unwrap(),
+            vec![(vec![12, 16], true, GpioVia::Pinctrl)]
+        );
+        let lazy = LazyWriter::default();
+        assert_eq!(lazy.via(), Some(GpioVia::Gpiocdev));
+        assert!(
+            !lazy.write(&[12], true).await,
+            "unfilled lazy writer fails closed"
+        );
     }
 
     #[test]
