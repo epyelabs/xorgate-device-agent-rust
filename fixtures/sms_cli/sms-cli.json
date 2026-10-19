@@ -1,0 +1,709 @@
+{
+  "jsSourceFile": "src/commands/sms.ts:1-93 (smsCommand, flagValue, oneLine) over src/hardware/sms-modem.ts buildSmsPayload/clampSmsLimit",
+  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "generatedBy": "tools/replay/js/run-tsx.sh tools/replay/js/dump-sms-cli.mts (phase-4 WP2; SmsReader.prototype.read replaced by the case's sweep)",
+  "sweeps": {
+    "fixture": {
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1790858096000,
+      "durationMs": 1234,
+      "storage": {
+        "SM": {
+          "used": 3,
+          "total": 40
+        },
+        "ME": {
+          "used": 2,
+          "total": 23
+        }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [
+        {
+          "id": "SM:2",
+          "storage": "SM",
+          "indexes": [
+            2
+          ],
+          "from": "XORGATE",
+          "fromType": "alphanumeric",
+          "sentAt": "2026-10-01T12:04:56+00:00",
+          "unread": true,
+          "text": "Simulated device: this is a fixture inbox, not a real modem.",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        },
+        {
+          "id": "SM:0+SM:1",
+          "storage": "SM",
+          "indexes": [
+            0,
+            1
+          ],
+          "from": "+15550100001",
+          "fromType": "international",
+          "sentAt": "2026-09-30T10:34:56+00:00",
+          "unread": false,
+          "text": "Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        },
+        {
+          "id": "ME:4",
+          "storage": "ME",
+          "indexes": [
+            4
+          ],
+          "from": "5550100",
+          "fromType": "national",
+          "sentAt": "2026-09-22T12:34:56+00:00",
+          "unread": false,
+          "text": "Fixture with unicode: café, 東京, 👍",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        },
+        {
+          "id": "ME:1",
+          "storage": "ME",
+          "indexes": [
+            1
+          ],
+          "from": "+15550100002",
+          "fromType": "international",
+          "sentAt": "2026-08-22T12:34:56+00:00",
+          "unread": false,
+          "text": "Oldest fixture message.",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        }
+      ]
+    },
+    "rich": {
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1790858096000,
+      "durationMs": 87,
+      "storage": {
+        "ME": {
+          "used": 5,
+          "total": 23
+        },
+        "SM": {
+          "used": 0,
+          "total": 40
+        }
+      },
+      "skipped": 2,
+      "partial": true,
+      "messages": [
+        {
+          "id": "ME:0",
+          "storage": "ME",
+          "indexes": [
+            0
+          ],
+          "from": "VERYLONGALPHANUMERICSENDER",
+          "fromType": "alphanumeric",
+          "sentAt": "2026-10-01T12:04:56+00:00",
+          "unread": false,
+          "text": "line one\r\nline two\tTAB\fff",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        },
+        {
+          "id": "ME:1",
+          "storage": "ME",
+          "indexes": [
+            1
+          ],
+          "from": "+15550100001",
+          "fromType": "alphanumeric",
+          "sentAt": null,
+          "unread": true,
+          "text": "\u0001\u0002 bytes",
+          "binary": true,
+          "incomplete": false,
+          "truncated": false
+        },
+        {
+          "id": "ME:2+ME:3",
+          "storage": "ME",
+          "indexes": [
+            2,
+            3
+          ],
+          "from": "XORGATE",
+          "fromType": "alphanumeric",
+          "sentAt": "2026-10-01T12:04:56+00:00",
+          "unread": true,
+          "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "binary": false,
+          "incomplete": true,
+          "truncated": true
+        },
+        {
+          "id": "ME:4",
+          "storage": "ME",
+          "indexes": [
+            4
+          ],
+          "from": "東京👍",
+          "fromType": "alphanumeric",
+          "sentAt": "2026-10-01T12:04:56+00:00",
+          "unread": true,
+          "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍👍 emoji at the cut",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        },
+        {
+          "id": "ME:5",
+          "storage": "ME",
+          "indexes": [
+            5
+          ],
+          "from": "",
+          "fromType": "alphanumeric",
+          "sentAt": "2026-10-01T12:04:56+00:00",
+          "unread": true,
+          "text": "",
+          "binary": false,
+          "incomplete": false,
+          "truncated": false
+        }
+      ]
+    },
+    "empty_ok": {
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1790858096000,
+      "durationMs": 3,
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": []
+    },
+    "no_modem": {
+      "status": "no_modem",
+      "error": "no SIMCom interface 05 tty",
+      "finishedAt": 1790858096000,
+      "durationMs": 0,
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": []
+    },
+    "no_sim_null_error": {
+      "status": "no_sim",
+      "error": null,
+      "finishedAt": 1790858096000,
+      "durationMs": 12,
+      "storage": {
+        "SM": {
+          "used": 1,
+          "total": 2
+        }
+      },
+      "skipped": 1,
+      "partial": false,
+      "messages": []
+    }
+  },
+  "cases": [
+    {
+      "name": "fixture []",
+      "input": {
+        "sweep": "fixture",
+        "argv": [],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "ME:4       read    2026-09-22T12:34:56+00:00  5550100       Fixture with unicode: café, 東京, 👍",
+          "ME:1       read    2026-08-22T12:34:56+00:00  +15550100002  Oldest fixture message."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--json\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--json"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 1234,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 3,\n      \"total\": 40\n    },\n    \"ME\": {\n      \"used\": 2,\n      \"total\": 23\n    }\n  },\n  \"total\": 4,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": [\n    {\n      \"id\": \"SM:2\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        2\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"Simulated device: this is a fixture inbox, not a real modem.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"SM:0+SM:1\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        0,\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-09-30T10:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:4\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        4\n      ],\n      \"from\": \"5550100\",\n      \"fromType\": \"national\",\n      \"sentAt\": \"2026-09-22T12:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Fixture with unicode: café, 東京, 👍\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:1\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        1\n      ],\n      \"from\": \"+15550100002\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-08-22T12:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Oldest fixture message.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"0\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          "0"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID    STATUS  SENT                       FROM     TEXT",
+          "SM:2  unread  2026-10-01T12:04:56+00:00  XORGATE  Simulated device: this is a fixture inbox, not a …",
+          "(3 older not shown; --limit up to 50)"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit=51\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit=51"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "ME:4       read    2026-09-22T12:34:56+00:00  5550100       Fixture with unicode: café, 東京, 👍",
+          "ME:1       read    2026-08-22T12:34:56+00:00  +15550100002  Oldest fixture message."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"abc\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          "abc"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "ME:4       read    2026-09-22T12:34:56+00:00  5550100       Fixture with unicode: café, 東京, 👍",
+          "ME:1       read    2026-08-22T12:34:56+00:00  +15550100002  Oldest fixture message."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"2\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          "2"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "(2 older not shown; --limit up to 50)"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"2\",\"--json\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          "2",
+          "--json"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 1234,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 3,\n      \"total\": 40\n    },\n    \"ME\": {\n      \"used\": 2,\n      \"total\": 23\n    }\n  },\n  \"total\": 4,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": [\n    {\n      \"id\": \"SM:2\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        2\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"Simulated device: this is a fixture inbox, not a real modem.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"SM:0+SM:1\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        0,\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-09-30T10:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "ME:4       read    2026-09-22T12:34:56+00:00  5550100       Fixture with unicode: café, 東京, 👍",
+          "ME:1       read    2026-08-22T12:34:56+00:00  +15550100002  Oldest fixture message."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          ""
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID    STATUS  SENT                       FROM     TEXT",
+          "SM:2  unread  2026-10-01T12:04:56+00:00  XORGATE  Simulated device: this is a fixture inbox, not a …",
+          "(3 older not shown; --limit up to 50)"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"0x3\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          "0x3"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "ME:4       read    2026-09-22T12:34:56+00:00  5550100       Fixture with unicode: café, 東京, 👍",
+          "(1 older not shown; --limit up to 50)"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"2.9\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          "2.9"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "(2 older not shown; --limit up to 50)"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--limit\",\"Infinity\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--limit",
+          "Infinity"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "ME:4       read    2026-09-22T12:34:56+00:00  5550100       Fixture with unicode: café, 東京, 👍",
+          "ME:1       read    2026-08-22T12:34:56+00:00  +15550100002  Oldest fixture message."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"--help\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--help"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "Usage: xorgate sms [--limit N] [--json]\n\nRead the SIM7600's stored SMS (SIM + modem storage), newest first, without\nmarking anything read. N is 1..50 (default 10). --json prints the exact\npayload the agent publishes for a cloud read_sms request.\nPort: the SIMCom interface-05 tty (override with XORGATE_SMS_PORT)."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "fixture [\"-h\",\"--json\"]",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "-h",
+          "--json"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "Usage: xorgate sms [--limit N] [--json]\n\nRead the SIM7600's stored SMS (SIM + modem storage), newest first, without\nmarking anything read. N is 1..50 (default 10). --json prints the exact\npayload the agent publishes for a cloud read_sms request.\nPort: the SIMCom interface-05 tty (override with XORGATE_SMS_PORT)."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "rich []",
+      "input": {
+        "sweep": "rich",
+        "argv": [],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · ME 5/23, SM 0/40 · 5 message(s), 2 skipped · PARTIAL (budget ran out) · 87 ms",
+          "ID         STATUS  SENT                       FROM                TEXT",
+          "ME:0       read    2026-10-01T12:04:56+00:00  VERYLONGALPHANUME…  line one line two TAB ff",
+          "ME:1       unread  ?                          +15550100001        [binary] \u0001\u0002 bytes",
+          "ME:2+ME:3  unread  2026-10-01T12:04:56+00:00  XORGATE             [incomplete] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+          "ME:4       unread  2026-10-01T12:04:56+00:00  東京👍                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa�…",
+          "ME:5       unread  2026-10-01T12:04:56+00:00                      "
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "rich [--json]",
+      "input": {
+        "sweep": "rich",
+        "argv": [
+          "--json"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 87,\n  \"storage\": {\n    \"ME\": {\n      \"used\": 5,\n      \"total\": 23\n    },\n    \"SM\": {\n      \"used\": 0,\n      \"total\": 40\n    }\n  },\n  \"total\": 5,\n  \"skipped\": 2,\n  \"partial\": true,\n  \"messages\": [\n    {\n      \"id\": \"ME:0\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        0\n      ],\n      \"from\": \"VERYLONGALPHANUMERICSENDER\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": false,\n      \"text\": \"line one\\r\\nline two\\tTAB\\fff\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:1\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": null,\n      \"unread\": true,\n      \"text\": \"\\u0001\\u0002 bytes\",\n      \"binary\": true,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:2+ME:3\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        2,\n        3\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\n      \"binary\": false,\n      \"incomplete\": true,\n      \"truncated\": true\n    },\n    {\n      \"id\": \"ME:4\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        4\n      ],\n      \"from\": \"東京👍\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍👍 emoji at the cut\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:5\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        5\n      ],\n      \"from\": \"\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "empty_ok []",
+      "input": {
+        "sweep": "empty_ok",
+        "argv": [],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · no stores · 0 message(s) · 3 ms"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "empty_ok [--json]",
+      "input": {
+        "sweep": "empty_ok",
+        "argv": [
+          "--json"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 3,\n  \"storage\": {},\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": []\n}"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "no_modem []",
+      "input": {
+        "sweep": "no_modem",
+        "argv": [],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: no_modem (no SIMCom interface 05 tty) · port /dev/ttyUSB3 · no stores · 0 message(s) · 0 ms"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "no_modem [--json]",
+      "input": {
+        "sweep": "no_modem",
+        "argv": [
+          "--json"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"no_modem\",\n  \"error\": \"no SIMCom interface 05 tty\",\n  \"durationMs\": 0,\n  \"storage\": {},\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": []\n}"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "no_sim_null_error []",
+      "input": {
+        "sweep": "no_sim_null_error",
+        "argv": [],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: no_sim (no_sim) · port /dev/ttyUSB3 · SM 1/2 · 0 message(s), 1 skipped · 12 ms"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "no_sim_null_error [--json]",
+      "input": {
+        "sweep": "no_sim_null_error",
+        "argv": [
+          "--json"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"no_sim\",\n  \"error\": \"no_sim\",\n  \"durationMs\": 12,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 1,\n      \"total\": 2\n    }\n  },\n  \"total\": 0,\n  \"skipped\": 1,\n  \"partial\": false,\n  \"messages\": []\n}"
+        ],
+        "exitCode": 1
+      }
+    },
+    {
+      "name": "rich [--limit 2] no port resolvable",
+      "input": {
+        "sweep": "rich",
+        "argv": [
+          "--limit",
+          "2"
+        ],
+        "port": null,
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port (none) · ME 5/23, SM 0/40 · 5 message(s), 2 skipped · PARTIAL (budget ran out) · 87 ms",
+          "ID    STATUS  SENT                       FROM                TEXT",
+          "ME:0  read    2026-10-01T12:04:56+00:00  VERYLONGALPHANUME…  line one line two TAB ff",
+          "ME:1  unread  ?                          +15550100001        [binary] \u0001\u0002 bytes",
+          "(3 older not shown; --limit up to 50)"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "rich [] columns 200",
+      "input": {
+        "sweep": "rich",
+        "argv": [],
+        "port": "/dev/ttyUSB3",
+        "columns": 200
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · ME 5/23, SM 0/40 · 5 message(s), 2 skipped · PARTIAL (budget ran out) · 87 ms",
+          "ID         STATUS  SENT                       FROM                TEXT",
+          "ME:0       read    2026-10-01T12:04:56+00:00  VERYLONGALPHANUME…  line one line two TAB ff",
+          "ME:1       unread  ?                          +15550100001        [binary] \u0001\u0002 bytes",
+          "ME:2+ME:3  unread  2026-10-01T12:04:56+00:00  XORGATE             [incomplete] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [truncated]",
+          "ME:4       unread  2026-10-01T12:04:56+00:00  東京👍                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍👍 emoji at the cut",
+          "ME:5       unread  2026-10-01T12:04:56+00:00                      "
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "rich [] columns 80 (width floor 40)",
+      "input": {
+        "sweep": "rich",
+        "argv": [],
+        "port": "/dev/ttyUSB3",
+        "columns": 80
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · ME 5/23, SM 0/40 · 5 message(s), 2 skipped · PARTIAL (budget ran out) · 87 ms",
+          "ID         STATUS  SENT                       FROM                TEXT",
+          "ME:0       read    2026-10-01T12:04:56+00:00  VERYLONGALPHANUME…  line one line two TAB ff",
+          "ME:1       unread  ?                          +15550100001        [binary] \u0001\u0002 bytes",
+          "ME:2+ME:3  unread  2026-10-01T12:04:56+00:00  XORGATE             [incomplete] xxxxxxxxxxxxxxxxxxxxxxxxxx…",
+          "ME:4       unread  2026-10-01T12:04:56+00:00  東京👍                aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…",
+          "ME:5       unread  2026-10-01T12:04:56+00:00                      "
+        ],
+        "exitCode": 0
+      }
+    }
+  ]
+}
