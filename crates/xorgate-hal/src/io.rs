@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
+/// Phase 4 record type (I9).
+pub use crate::tape::GpioVia;
 /// Phase 3 record types (P16); serde + writer live in [`crate::tape`].
 pub use crate::tape::{ChildExitRec, ChildSpawnRec, FsOp, S3PutRec, ROLE_CAPTURE, ROLE_KVS};
 
@@ -46,6 +48,10 @@ pub use crate::tape::{ChildExitRec, ChildSpawnRec, FsOp, S3PutRec, ROLE_CAPTURE,
 /// | [`fs_out`](Self::fs_out) | `fs_out` | WP2 recorder/disk, WP4 sweep, WP3 uploader (`rel` under the home) |
 /// | [`s3_put`](Self::s3_put) | `s3_put` | WP3 uploader, when a PUT settles |
 /// | [`shm`](Self::shm) | `shm` | WP4, every 60 s + at each capture child exit |
+/// | [`at_tx`](Self::at_tx) / [`at_rx`](Self::at_rx) | `at_tx`, `at_rx` | Phase 4 WP2 `AtSession`, every line written / chunk read |
+/// | [`gpio`](Self::gpio) | `gpio` | Phase 4 WP1 `PinWriter::write`, every write |
+/// | [`sudo`](Self::sudo) | `sudo` | Phase 4 every `PrivilegedRunner` run (`PrivilegedArgv` + `HelperArgv`), when it settles |
+/// | [`ntp_probe`](Self::ntp_probe) | `ntp_probe` | Phase 4 WP3 clock stepper, every NTP probe |
 pub trait TapeSink: Send + Sync + 'static {
     /// True when a tape is being written (lets a caller skip building an
     /// expensive argument; never needed for correctness).
@@ -102,6 +108,17 @@ pub trait TapeSink: Send + Sync + 'static {
     fn s3_put(&self, _r: &S3PutRec) {}
     /// The `/dev/shm/shmpipe.*` names present now.
     fn shm(&self, _names: &[String]) {}
+    /// Phase 4: one AT command line written to `port` (no trailing `\r`).
+    fn at_tx(&self, _port: &str, _line: &str) {}
+    /// Phase 4: one raw chunk read from `port` (the writer hex-encodes it).
+    fn at_rx(&self, _port: &str, _bytes: &[u8]) {}
+    /// Phase 4: one LED pin write — BCM lines, level, writer.
+    fn gpio(&self, _pins: &[u32], _high: bool, _via: GpioVia) {}
+    /// Phase 4: one settled privileged run — full argv (`["sudo","-n",…]`)
+    /// and its result (code, stdout/stderr, not-found).
+    fn sudo(&self, _argv: &[&str], _res: &crate::exec::RunResult) {}
+    /// Phase 4: one clock-stepper NTP probe verdict.
+    fn ntp_probe(&self, _synced: bool) {}
     /// Flush and close (graceful shutdown). Idempotent.
     fn close(&self) {}
 }

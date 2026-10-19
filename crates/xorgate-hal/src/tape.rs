@@ -290,6 +290,27 @@ pub struct S3PutRec {
     pub error: Option<String>,
 }
 
+// ------------------------------------------------- Phase 4 record types (I9)
+
+/// `gpio.via`: which writer drove the LED pins (`phase-4-operations.md` §8).
+/// The JS agent always drives `pinctrl`; the Rust agent's default is the
+/// gpiocdev line request (`XORGATE_LED_WRITER`, Q6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpioVia {
+    Gpiocdev,
+    Pinctrl,
+}
+
+impl GpioVia {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GpioVia::Gpiocdev => "gpiocdev",
+            GpioVia::Pinctrl => "pinctrl",
+        }
+    }
+}
+
 /// One input event. `k` is the kind; see the table in the module doc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "snake_case")]
@@ -389,6 +410,36 @@ pub enum TapeEvent {
     S3Put(S3PutRec),
     /// `/dev/shm/shmpipe.*` names present (every 60 s + at child exit).
     Shm { names: Vec<String> },
+    // ---- Phase 4 (I9, `phase-4-operations.md` §8) ----
+    /// One AT command line written to the SMS port (`AtSession` write;
+    /// `line` without the trailing `\r`).
+    AtTx { port: String, line: String },
+    /// One chunk read back from the SMS port, as lowercase hex (the modem
+    /// may answer with any bytes; replay feeds them back verbatim).
+    AtRx { port: String, hex: String },
+    /// One LED pin write (`PinWriter::write`): the BCM lines and the level.
+    Gpio {
+        pins: Vec<u32>,
+        high: bool,
+        via: GpioVia,
+    },
+    /// One privileged run (`PrivilegedRunner` / `HelperArgv`): the full argv
+    /// (`["sudo","-n",…]`), exit code (`null` = timeout / spawn failure /
+    /// not found) and the outputs the TS folds into its `detail` text
+    /// (`boot-config.ts:291`, `clock-step.ts:189`: stderr, else stdout).
+    Sudo {
+        argv: Vec<String>,
+        code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdout: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stderr: Option<String>,
+        #[serde(rename = "notFound", default, skip_serializing_if = "is_false")]
+        not_found: bool,
+    },
+    /// The clock stepper's NTP probe verdict (`timedatectl show -p
+    /// NTPSynchronized --value`, `clock-step.ts` `probeNtp`).
+    NtpProbe { synced: bool },
 }
 
 impl TapeEvent {
@@ -415,6 +466,69 @@ impl TapeEvent {
             TapeEvent::FsOut { .. } => "fs_out",
             TapeEvent::S3Put(_) => "s3_put",
             TapeEvent::Shm { .. } => "shm",
+            TapeEvent::AtTx { .. } => "at_tx",
+            TapeEvent::AtRx { .. } => "at_rx",
+            TapeEvent::Gpio { .. } => "gpio",
+            TapeEvent::Sudo { .. } => "sudo",
+            TapeEvent::NtpProbe { .. } => "ntp_probe",
+        }
+    }
+
+    /// Every kind string, in declaration order (Phase 2–4). `xorgate-replay`
+    /// and tests use it to tell "known but not replayed" from a typo.
+    pub const KINDS: &'static [&'static str] = &[
+        "nmea",
+        "imu",
+        "imu_spawn",
+        "imu_exit",
+        "i2cdetect",
+        "lte_file",
+        "exec",
+        "dt",
+        "mqtt_in",
+        "conn",
+        "cli",
+        "clock",
+        "proc",
+        "child_spawn",
+        "child_line",
+        "child_signal",
+        "child_exit",
+        "fs_out",
+        "s3_put",
+        "shm",
+        "at_tx",
+        "at_rx",
+        "gpio",
+        "sudo",
+        "ntp_probe",
+    ];
+
+    /// `at_rx` from the raw chunk read off the port.
+    pub fn at_rx(port: &str, bytes: &[u8]) -> Self {
+        TapeEvent::AtRx {
+            port: port.to_string(),
+            hex: hex_encode(bytes),
+        }
+    }
+
+    /// The raw bytes of an `at_rx` event (`None` = not an `at_rx` / bad hex).
+    pub fn at_rx_bytes(&self) -> Option<Vec<u8>> {
+        match self {
+            TapeEvent::AtRx { hex, .. } => hex_decode(hex),
+            _ => None,
+        }
+    }
+
+    /// `sudo` from the argv and the run's result (empty outputs omitted).
+    pub fn sudo(argv: &[&str], res: &crate::exec::RunResult) -> Self {
+        let keep = |s: &str| (!s.is_empty()).then(|| s.to_string());
+        TapeEvent::Sudo {
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+            code: res.exit_code,
+            stdout: keep(&res.stdout),
+            stderr: keep(&res.stderr),
+            not_found: res.not_found,
         }
     }
 
@@ -970,6 +1084,38 @@ impl<W: Write + Send> TapeWriter<W> {
         });
     }
 
+    /// One AT command line written to `port` (Phase 4, I9).
+    pub fn at_tx(&self, port: &str, line: &str) {
+        self.record(TapeEvent::AtTx {
+            port: port.to_string(),
+            line: line.to_string(),
+        });
+    }
+
+    /// One chunk read from `port` (recorded as hex).
+    pub fn at_rx(&self, port: &str, bytes: &[u8]) {
+        self.record(TapeEvent::at_rx(port, bytes));
+    }
+
+    /// One LED pin write.
+    pub fn gpio(&self, pins: &[u32], high: bool, via: GpioVia) {
+        self.record(TapeEvent::Gpio {
+            pins: pins.to_vec(),
+            high,
+            via,
+        });
+    }
+
+    /// One privileged run and its result.
+    pub fn sudo(&self, argv: &[&str], res: &crate::exec::RunResult) {
+        self.record(TapeEvent::sudo(argv, res));
+    }
+
+    /// One NTP probe verdict.
+    pub fn ntp_probe(&self, synced: bool) {
+        self.record(TapeEvent::NtpProbe { synced });
+    }
+
     /// Stop writing and hand back the sink (flushed). `None` if it failed.
     pub fn into_inner(self) -> Option<W> {
         if let Ok(mut st) = self.state.lock() {
@@ -1135,6 +1281,21 @@ impl crate::io::TapeSink for FileTape {
     }
     fn shm(&self, names: &[String]) {
         self.inner.shm(names);
+    }
+    fn at_tx(&self, port: &str, line: &str) {
+        self.inner.at_tx(port, line);
+    }
+    fn at_rx(&self, port: &str, bytes: &[u8]) {
+        self.inner.at_rx(port, bytes);
+    }
+    fn gpio(&self, pins: &[u32], high: bool, via: GpioVia) {
+        self.inner.gpio(pins, high, via);
+    }
+    fn sudo(&self, argv: &[&str], res: &crate::exec::RunResult) {
+        self.inner.sudo(argv, res);
+    }
+    fn ntp_probe(&self, synced: bool) {
+        self.inner.ntp_probe(synced);
     }
     fn close(&self) {
         if let Err(e) = FileTape::close(self) {
@@ -1737,6 +1898,178 @@ mod tests {
             })
             .collect();
         assert_eq!(errs, [Some("No cameras available!\n".to_string()), None]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Phase 4 (I9): exact line shapes of the five new kinds, serde round
+    /// trip, `kind()` strings, and the `FileTape` sink forwarding each one to
+    /// the gz stream (every call taped — no de-duplication for these kinds).
+    #[test]
+    fn phase4_kinds_line_shape_round_trip_and_sink() {
+        use crate::exec::RunResult;
+        use crate::io::{NullTape, TapeSink};
+        let line = |ev: TapeEvent| serde_json::to_string(&TapeRecord { t: 1, w: 2, ev }).unwrap();
+        assert_eq!(
+            line(TapeEvent::AtTx {
+                port: "/dev/ttyUSB3".into(),
+                line: "AT+CPMS?".into(),
+            }),
+            r#"{"t":1,"w":2,"k":"at_tx","port":"/dev/ttyUSB3","line":"AT+CPMS?"}"#
+        );
+        assert_eq!(
+            line(TapeEvent::at_rx("/dev/ttyUSB3", b"\r\nOK\r\n")),
+            r#"{"t":1,"w":2,"k":"at_rx","port":"/dev/ttyUSB3","hex":"0d0a4f4b0d0a"}"#
+        );
+        assert_eq!(
+            line(TapeEvent::Gpio {
+                pins: vec![12, 16, 21],
+                high: false,
+                via: GpioVia::Pinctrl,
+            }),
+            r#"{"t":1,"w":2,"k":"gpio","pins":[12,16,21],"high":false,"via":"pinctrl"}"#
+        );
+        let ok = RunResult {
+            exit_code: Some(0),
+            ..Default::default()
+        };
+        let argv = [
+            "sudo",
+            "-n",
+            "/usr/local/bin/xorgate-setclock",
+            "1760000600",
+        ];
+        assert_eq!(
+            line(TapeEvent::sudo(&argv, &ok)),
+            r#"{"t":1,"w":2,"k":"sudo","argv":["sudo","-n","/usr/local/bin/xorgate-setclock","1760000600"],"code":0}"#
+        );
+        let refused = RunResult {
+            stderr: "sudo: a password is required\n".into(),
+            exit_code: Some(1),
+            failed: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            line(TapeEvent::sudo(&argv, &refused)),
+            r#"{"t":1,"w":2,"k":"sudo","argv":["sudo","-n","/usr/local/bin/xorgate-setclock","1760000600"],"code":1,"stderr":"sudo: a password is required\n"}"#
+        );
+        let missing = RunResult {
+            failed: true,
+            not_found: true,
+            spawn_failed: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            line(TapeEvent::sudo(&argv, &missing)),
+            r#"{"t":1,"w":2,"k":"sudo","argv":["sudo","-n","/usr/local/bin/xorgate-setclock","1760000600"],"code":null,"notFound":true}"#
+        );
+        let cam = RunResult {
+            stdout: "changed\n".into(),
+            exit_code: Some(2),
+            ..Default::default()
+        };
+        let cam_argv = [
+            "sudo",
+            "-n",
+            "/usr/local/bin/xorgate-camrotate",
+            "imx708",
+            "cam0",
+            "180",
+        ];
+        assert_eq!(
+            line(TapeEvent::sudo(&cam_argv, &cam)),
+            r#"{"t":1,"w":2,"k":"sudo","argv":["sudo","-n","/usr/local/bin/xorgate-camrotate","imx708","cam0","180"],"code":2,"stdout":"changed\n"}"#
+        );
+        assert_eq!(
+            line(TapeEvent::NtpProbe { synced: true }),
+            r#"{"t":1,"w":2,"k":"ntp_probe","synced":true}"#
+        );
+
+        // Round trip + kind() + KINDS lists every kind once.
+        let evs = vec![
+            TapeEvent::AtTx {
+                port: "p".into(),
+                line: "AT".into(),
+            },
+            TapeEvent::at_rx("p", &[0xff, 0x00, b'O']),
+            TapeEvent::Gpio {
+                pins: vec![12],
+                high: true,
+                via: GpioVia::Gpiocdev,
+            },
+            TapeEvent::sudo(&argv, &refused),
+            TapeEvent::sudo(&argv, &missing),
+            TapeEvent::sudo(&cam_argv, &cam),
+            TapeEvent::NtpProbe { synced: false },
+        ];
+        for ev in &evs {
+            let rec = TapeRecord {
+                t: 3,
+                w: 4,
+                ev: ev.clone(),
+            };
+            let s = serde_json::to_string(&rec).unwrap();
+            let back: TapeRecord = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, rec, "{s}");
+            assert!(s.contains(&format!("\"k\":\"{}\"", rec.ev.kind())), "{s}");
+            assert!(TapeEvent::KINDS.contains(&rec.ev.kind()));
+        }
+        assert_eq!(
+            TapeEvent::at_rx("p", &[0xff, 0x00, b'O']).at_rx_bytes(),
+            Some(vec![0xff, 0x00, b'O'])
+        );
+        assert_eq!(TapeEvent::NtpProbe { synced: true }.at_rx_bytes(), None);
+        let mut uniq = TapeEvent::KINDS.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), TapeEvent::KINDS.len());
+        assert_eq!(GpioVia::Gpiocdev.as_str(), "gpiocdev");
+        assert_eq!(GpioVia::Pinctrl.as_str(), "pinctrl");
+
+        // The null sink accepts every new hook (default no-ops).
+        let null = NullTape;
+        null.at_tx("p", "AT");
+        null.at_rx("p", b"OK");
+        null.gpio(&[12], true, GpioVia::Gpiocdev);
+        null.sudo(&argv, &ok);
+        null.ntp_probe(true);
+
+        // FileTape forwards each hook; repeats are all taped (no dedupe).
+        let dir = std::env::temp_dir().join(format!("xorgate-tape-p4-{}", std::process::id()));
+        let path = dir.join("t.ndjson.gz");
+        let (clock, _t) = manual(1_760_000_000_000);
+        let meta = TapeMeta::new("dev", "test", 1_760_000_000_000);
+        {
+            let tape = FileTape::create_with_clock(&path, &meta, clock).unwrap();
+            let sink: &dyn TapeSink = &tape;
+            sink.at_tx("/dev/ttyUSB3", "AT+CPMS?");
+            sink.at_tx("/dev/ttyUSB3", "AT+CPMS?");
+            sink.at_rx("/dev/ttyUSB3", b"+CPMS: \"SM\",0,30\r\nOK\r\n");
+            sink.gpio(&[12, 16, 21], false, GpioVia::Pinctrl);
+            sink.gpio(&[12, 16, 21], false, GpioVia::Pinctrl);
+            sink.sudo(&argv, &ok);
+            sink.ntp_probe(false);
+            sink.ntp_probe(false);
+            sink.close();
+        }
+        let read = Tape::read(&path).unwrap();
+        let kinds: Vec<&str> = read.records.iter().map(|r| r.ev.kind()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "at_tx",
+                "at_tx",
+                "at_rx",
+                "gpio",
+                "gpio",
+                "sudo",
+                "ntp_probe",
+                "ntp_probe"
+            ]
+        );
+        assert_eq!(
+            read.records[2].ev.at_rx_bytes().unwrap(),
+            b"+CPMS: \"SM\",0,30\r\nOK\r\n".to_vec()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

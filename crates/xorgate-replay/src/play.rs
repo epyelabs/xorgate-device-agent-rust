@@ -1999,6 +1999,14 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             | TapeEvent::FsOut { .. }
             | TapeEvent::S3Put(_)
             | TapeEvent::Shm { .. } => {}
+            // Phase 4 kinds (I9): known to the reader, not replayed yet — the
+            // shims (fake-modem pty, pinctrl, sudo, timedatectl) consume them
+            // from WP6 step 2 on. Tolerated so a Phase 4 tape still plays.
+            TapeEvent::AtTx { .. }
+            | TapeEvent::AtRx { .. }
+            | TapeEvent::Gpio { .. }
+            | TapeEvent::Sudo { .. }
+            | TapeEvent::NtpProbe { .. } => {}
         }
     }
     if let Some(s) = closed_since.take() {
