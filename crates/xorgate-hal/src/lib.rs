@@ -23,6 +23,7 @@ pub mod imu_detect;
 pub mod io;
 pub mod kvs_manifest_io;
 pub mod kvs_runtime;
+pub mod led_driver;
 pub mod ledger_file;
 pub mod modem_file;
 pub mod nmea_tty;

@@ -19,6 +19,8 @@ thiserror = { workspace = true }
 flate2 = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+gpiocdev = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+# `test-util`: tokio::time::pause() for the LED pattern timelines (Phase 4 WP1).
+tokio = { workspace = true, features = ["test-util"] }

@@ -1,0 +1,845 @@
+{
+ "jsSourceFile": "test/led.test.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-wp1-dump-led-traces.test.ts (vitest fake timers) in a git-archive scratch copy of 89b5c64: each it() re-run step by step against the REAL LedDriver/LedManager with a recording writer; setTimeout/settle waits → advanceTimersByTimeAsync; trace = writer calls {t,pins,high} + log lines {t,msg} in virtual ms",
+ "cases": [
+  {
+   "name": "colour red on the Argus pins, active high",
+   "ts": "led.test.ts:72",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "colour green on the Argus pins, active high",
+   "ts": "led.test.ts:72",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "colour blue on the Argus pins, active high",
+   "ts": "led.test.ts:72",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "colour purple on the Argus pins, active high",
+   "ts": "led.test.ts:72",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "colour cyan on the Argus pins, active high",
+   "ts": "led.test.ts:72",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "colour white on the Argus pins, active high",
+   "ts": "led.test.ts:72",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "colour off on the Argus pins, active high",
+   "ts": "led.test.ts:72",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "active low inverts the channels",
+   "ts": "led.test.ts:81",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12
+      ],
+      "high": false
+     },
+     {
+      "t": 0,
+      "pins": [
+       21,
+       16
+      ],
+      "high": true
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active low)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "non-repeating pattern ends dark",
+   "ts": "led.test.ts:126",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 150,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 350,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 500,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 500
+    }
+   }
+  },
+  {
+   "name": "solid stays lit until stop()",
+   "ts": "led.test.ts:133",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 10
+    }
+   }
+  },
+  {
+   "name": "stop a repeating pattern, then blank",
+   "ts": "led.test.ts:143",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 125,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 250,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 300,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 300
+    }
+   }
+  },
+  {
+   "name": "only changing channels are written within a pattern",
+   "ts": "led.test.ts:157",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 500,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 1000,
+      "pins": [
+       21
+      ],
+      "high": true
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 1300
+    }
+   }
+  },
+  {
+   "name": "one call per transition for a two-channel colour",
+   "ts": "led.test.ts:175",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 125,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 250,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 375,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 500,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 625,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "endMs": 700
+    }
+   }
+  },
+  {
+   "name": "a new state re-drives all three",
+   "ts": "led.test.ts:197",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {
+     "cleared": 2
+    },
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "fail-safe blank writes all three",
+   "ts": "led.test.ts:209",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 0,
+      "pins": [
+       12
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "t": 0,
+      "msg": "pin write failed — LED blanked (further failures not logged)"
+     }
+    ],
+    "marks": {
+     "cleared": 1
+    },
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "a failed write blanks all three, logged once",
+   "ts": "led.test.ts:280",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "t": 0,
+      "msg": "pin write failed — LED blanked (further failures not logged)"
+     }
+    ],
+    "marks": {
+     "firstSet": 2
+    },
+    "extra": {
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "a write failure aborts a running pattern",
+   "ts": "led.test.ts:304",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 125,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 125,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "t": 125,
+      "msg": "pin write failed — LED blanked (further failures not logged)"
+     }
+    ],
+    "marks": {
+     "after": 4
+    },
+    "extra": {
+     "resolvedAt": 125,
+     "endMs": 525
+    }
+   }
+  },
+  {
+   "name": "a throwing writer is survived",
+   "ts": "led.test.ts:327",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     },
+     {
+      "t": 0,
+      "msg": "pin write failed — LED blanked (further failures not logged)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "resolved": true,
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "inert when the probe fails: writes nothing",
+   "ts": "led.test.ts:342",
+   "expected": {
+    "calls": [],
+    "logs": [],
+    "marks": {},
+    "extra": {
+     "init": {
+      "ok": false,
+      "reason": "not a Raspberry Pi",
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      }
+     },
+     "available": false,
+     "endMs": 500
+    }
+   }
+  },
+  {
+   "name": "logs the resolved map exactly once",
+   "ts": "led.test.ts:362",
+   "expected": {
+    "calls": [],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "init1": {
+      "ok": true,
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      }
+     },
+     "init2": {
+      "ok": true,
+      "map": {
+       "kind": "rgb-gpio",
+       "pins": {
+        "r": 12,
+        "g": 21,
+        "b": 16
+       },
+       "activeHigh": true
+      }
+     },
+     "endMs": 0
+    }
+   }
+  }
+ ]
+}
