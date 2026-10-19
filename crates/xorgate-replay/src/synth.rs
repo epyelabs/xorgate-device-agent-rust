@@ -1021,6 +1021,7 @@ fn build_inner(
 
     // ---- Phase 3 tracks
     let mut rig: Option<Value> = None;
+    let mut home: Option<serde_json::Map<String, Value>> = None;
     if has("media-hw") {
         b.push(
             40,
@@ -1086,6 +1087,21 @@ fn build_inner(
                 rig = Some(
                     json!({"filler": {"mib": 600, "fragmentMib": 10, "ageDays": 7, "key": "cam0"}}),
                 );
+                // Both agents BOOT with the scenario's recording namespace
+                // already in settings.json (as a fielded device does after
+                // its first config). Without it the boot runs on the
+                // defaults (upload auto) until the rev-1 config lands at
+                // t = 400 ms, and how many filler fragments get uploaded in
+                // that window depends on each agent's boot speed (JS-vs-Rust
+                // 2026-10-19 `replay-20261019T133846Z`: JS 1 pair, Rust 5 —
+                // a race, not a parity difference), which then shifts the
+                // eviction set and `droppedSegments`.
+                let mut files = serde_json::Map::new();
+                files.insert(
+                    "settings.json".into(),
+                    Value::String(json!({ "recording": rec }).to_string()),
+                );
+                home = Some(files);
             }
             "rec-upload-outage" => {
                 rig = Some(
@@ -1205,6 +1221,7 @@ fn build_inner(
         };
     }
     meta.rig = rig;
+    meta.home = home;
     meta.source = Some(match base {
         Some(b) => format!(
             "{}+synth:{name}",
@@ -1295,6 +1312,14 @@ mod tests {
         assert_eq!(ext, [(35_000, "capture", "cam0"), (45_000, "kvs", "cam1")]);
         let disk = build("rec-disk", None, &fixtures()).unwrap();
         assert_eq!(disk.meta.rig.as_ref().unwrap()["filler"]["mib"], 600);
+        let seeded: Value = serde_json::from_str(
+            disk.meta.home.as_ref().unwrap()["settings.json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(seeded["recording"]["upload"]["mode"], "off");
+        assert_eq!(seeded["recording"]["retention"]["maxBytes"], 536_870_912u64);
         let outage = build("rec-upload-outage", None, &fixtures()).unwrap();
         assert_eq!(crate::aws::faults_of(outage.meta.rig.as_ref()).len(), 1);
         assert!(outage.records.iter().any(|r| r.t == 50_000
