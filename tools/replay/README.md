@@ -473,3 +473,61 @@ on stderr.
   past T12) and cuts the tape to 58 s (the scenario's last LTE rewrite at
   59.5 s races the 60 s telemetry rotation).
 
+
+## Phase 4: LED, SMS, clock stepper, camera mount, remote rail (WP6)
+
+Plan: `phase-4-operations.md` §8. Same doctrine: both agents on the same
+inputs, every difference cited by a row of `tolerances.toml` or UNTOLERATED.
+
+### New tape kinds (`xorgate-hal::tape`, I9 — recorded by the Rust agent)
+
+| `k` | payload | written |
+|---|---|---|
+| `at_tx` / `at_rx` | `port`, `line` (no `\r`) / `hex` (raw chunk) | `AtSession` write / read |
+| `gpio` | `pins`, `high`, `via` (`gpiocdev`/`pinctrl`) | every `PinWriter::write` |
+| `sudo` | `argv` (`["sudo","-n",…]`), `code`, `stdout`?, `stderr`?, `notFound`? | every privileged run, when it settles |
+| `ntp_probe` | `synced` | the clock stepper's NTP probe |
+
+The player replays `ntp_probe` (the `timedatectl` shim's NTPSynchronized,
+`<state>/ntp`, default `yes`), `sudo` (the shim's answer per helper, applied up
+front — the record is the answer the device got) and `at_tx`/`at_rx` (the fake
+modem's transcript mode). `gpio` is compared through the pinctrl shim, not
+replayed.
+
+### What the player adds (`src/p4.rs`)
+
+| Input | Rig value |
+|---|---|
+| A Raspberry Pi of its own (`meta.rig.pi`) | each agent runs in a PRIVATE mount namespace: `unshare -m --propagation private -- pi-ns.sh <work>/pi <agent…>` binds `/boot/firmware` (its own `config.txt`) and `/sys/firmware/devicetree/base` = `/proc/device-tree` (`model` "Raspberry Pi Compute Module 5 Rev 1.0", camera `rotation` bytes). `exec` keeps the pid. `meta.rig.pi.dtWrites [{t, rel, hex}]` rewrites DT files at tape time (the simulated reboot). Needs `cap_add: SYS_ADMIN` + AppArmor unconfined (compose) |
+| `pinctrl`, `gpioinfo`, `dtoverlay` (PATH, Pi tapes only) | `pinctrl` logs `<wall ms> <argv>` to `<run>/<label>/led.log`; `gpioinfo` / `dtoverlay` answer from `exec` records (`gpioinfo` default: 54 unused lines) |
+| `XORGATE_LED_WRITER=pinctrl` | both agents (Q6: the JS agent always drives pinctrl; the Rust agent's runtime choice), so both hit one shim |
+| SMS port (`meta.rig.modem` or a transcript) | a pty per agent, `XORGATE_SMS_PORT=<work>/sms-tty`; a thread answers with the FakeModem semantics of `test/sms-modem.test.ts:46-111` @89b5c64 (`ATE0`, `CMGF?/=`, `CPMS?`, `CPMS="m"`, `CMGRO=i`, else `ERROR`; `\r\n<line>\r\n` framing), or the recorded `at_rx` bytes per `at_tx`; every command → `<run>/<label>/at.ndjson` (`forbidden` / `fault` flagged) |
+| `sudo` | logs as before and answers from the tape; `xorgate-camrotate` EXECUTES the real vendored helper (`/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy; `--camrotate`) with a clean env, inside the agent's namespace — the ONE executing shim mode |
+
+### Synthetic scenarios
+
+| scenario | s | exercises (gate rows) |
+|---|---|---|
+| `p4-led-ladder` | 180 | starting → gps-wait → healthy → network (cut 40→60 s) → flash2 on a REAL config change (75.7 s; the 85.7 s redelivery must not flash) → undervoltage via the Phase 3 rail seam (100→140 s; `liveBlock.reason` first, CF57) → healthy (E2, E3) |
+| `p4-sms` | 60 | FakeModem with the bench inbox (SM 7/40 unread, ME 23/23) + a 2-part UCS2 concat + a stored SUBMIT, text mode at start (→ PDU → restored); read_sms limit 10, a reuse inside 5 s, limit 3 later (E2, E5) |
+| `p4-clock-gps` | 120 | NTP unsynced; GPS +600 s with a fix → one gps step; NTP synced at 90 s → stood down (E2, E7) |
+| `p4-clock-nitz` | 120 | no GPS fix; NITZ +600 s unregistered (reg 0, fail-closed) then reg 5 → one nitz step; NTP at 100 s (E2, E7) |
+| `p4-clock-cap` | 700 | `maxStepsPerBoot: 1` (seeded settings.json); implausible NITZ 80/01/06 → warn + 5 min hold-off; GPS +600 s from 200 s → step 1/1; the cap warning after the next hold-off (E2, E7) |
+| `p4-cam-mount` | 300 | cameraMount cam0 0→180 (real helper edits the agent's config.txt → pending-reboot, rebootRequired), DT 180 at 100 s → applied (60 s poll), →0 at 170.7 s, DT 0 at 230 s (E2, E12) |
+| `p4-update-cmd` | 60 | cloud update / reboot / power_off → sudo argv (T8/O3 for the updater unit name) (E2, E10, E16) |
+
+The clock tapes move the SOURCES +600 s (the container clock cannot move); the
+bench recipe (§9 E8) moves the clock −600 s instead. The SMS store contents
+are `fixtures/replay/p4-sms-modem.json`, dumped by
+`js/dump-sms-modem.mts` with the TS test's PDU builder (no hand-typed PDU).
+
+### The Phase 4 diff (`src/diff_p4.rs`)
+
+| stream | exact | tolerated |
+|---|---|---|
+| `led` | the ordered `[led] a → b (colour pattern)` lines (stdout+stderr); the multiset of the other `[led] …` lines; the run count; per run, the pin groups (one `apply()` = its rise + fall writes, `+12,16 -21`) of the common prefix | T15: per-step interval ±50 ms; a run's start ±1150 ms; its length where the two durations differ ≤ 2300 ms (each agent changes rung on its own 1 s heartbeat) |
+| `at` | the command sequence; the modem end state | — (a forbidden command — `CMGR=`, `CMGL`, `CMGD`, `CMGW`, `CMSS`, `CMGS`, 2-arg `CPMS` — or a text-mode `CMGRO` FAILS on either side) |
+| `sudo` | argv sequence | T16: `xorgate-setclock <epoch>` compared as the offset from the call time ±1 s (each agent ticks on its own 30 s phase) |
+
+A run starts at every pin group that drives all three channels (each new
+colour/pattern starts from "levels unknown", `led.ts` `stop()`).
