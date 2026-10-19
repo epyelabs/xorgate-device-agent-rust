@@ -203,33 +203,28 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
         // (cloud cut) → healthy → config-applied flash2 → undervoltage (the
         // Phase 3 power seam: liveBlock.reason first) → healthy.
         "p4-led-ladder" => {
+            // The bench's LED wiring declared (a block without `statusLed` is
+            // the inert "model declares no status LED", worker.ts:611, CF61).
+            let mut hw = media_hardware_block();
+            hw["statusLed"] = json!({"r": 12, "g": 21, "b": 16});
+            m.hardware = Some(hw);
             m.rig.insert("pi".into(), pi_rig(vec![]));
             camera_inputs(b);
             nmea(b, dur_ms, 15_000, 0);
+            // The rec-shed-uv recording namespace (video + the rail ladder);
+            // the telemetry recorder off (not this tape's subject).
             let mut rec = rec_namespace("rec-shed-uv");
+            rec["telemetry"]["enabled"] = json!(false);
             cfg(b, 400, &json!({"v": 1, "rev": 1, "recording": rec}));
-            b.push(
-                40_300,
-                TapeEvent::Conn {
-                    state: ConnState::Closed,
-                },
-            );
-            b.push(
-                60_300,
-                TapeEvent::Conn {
-                    state: ConnState::Connected,
-                },
-            );
-            // A REAL change (the flash is gated on `changed`, worker.ts:866-872):
-            // the telemetry recorder rate.
-            rec["telemetry"]["rateHz"] = json!(2);
-            cfg(
-                b,
-                75_700,
-                &json!({"v": 1, "rev": 2, "recording": rec.clone()}),
-            );
+            b.push(40_300, TapeEvent::Conn { state: ConnState::Closed });
+            b.push(60_300, TapeEvent::Conn { state: ConnState::Connected });
+            // A REAL change (the flash is gated on `changed`, worker.ts:866-872)
+            // in a namespace nothing else on this tape reads (no IMU).
+            let mount = json!({"enabled": true, "rollDeg": 90, "pitchDeg": 0, "yawDeg": 0});
+            let rev2 = json!({"v": 1, "rev": 2, "recording": rec, "imuMount": mount});
+            cfg(b, 75_700, &rev2);
             // The same rev again (a retained redelivery: no flash).
-            cfg(b, 85_700, &json!({"v": 1, "rev": 2, "recording": rec}));
+            cfg(b, 85_700, &rev2);
             let crossings = rail(b, dur_ms, 100_000..140_000);
             m.rig.insert("powerCrossings".into(), json!(crossings));
         }
