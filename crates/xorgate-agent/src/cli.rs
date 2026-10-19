@@ -13,6 +13,7 @@ pub mod led;
 pub mod logs;
 pub mod process_inspect;
 pub mod set;
+pub mod sms;
 pub mod status;
 pub mod update;
 pub mod version;
@@ -101,6 +102,7 @@ pub fn main(argv: &[String]) -> i32 {
         Some("logs") => logs::main(&rest),
         Some("set") => set::main(&rest),
         Some("led") => led::main(&rest),
+        Some("sms") => sms::main(&rest),
         Some("update") => update::main(&rest),
         None | Some("help") => {
             println!("{}", usage(&crate::build_info::load().format()));
@@ -112,7 +114,7 @@ pub fn main(argv: &[String]) -> i32 {
             );
             1
         }
-        Some(c @ ("pipeline" | "recording" | "sms" | "manage" | "monitor")) => {
+        Some(c @ ("pipeline" | "recording" | "manage" | "monitor")) => {
             eprintln!("xorgate-rs: '{c}' arrives in a later build");
             1
         }
