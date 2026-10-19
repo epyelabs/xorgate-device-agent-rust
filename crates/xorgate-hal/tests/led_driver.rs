@@ -17,9 +17,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::Instant;
 use xorgate_core::led::{LedColour, LedPattern, LedPinMap, PinMapCheck};
+use xorgate_hal::io::{GpioVia, TapeSink};
 use xorgate_hal::led_driver::{
     probe_host_with, strip_own_consumer, BoxFut, HostProbe, LedDriver, LedDriverOptions, PinWriter,
-    LED_CONSUMER,
+    TapedWriter, LED_CONSUMER,
 };
 
 #[derive(Deserialize)]
@@ -635,4 +636,192 @@ async fn our_own_consumer_is_not_busy_but_a_foreign_one_still_is() {
     assert_eq!(strip_own_consumer(lookalike), lookalike);
     let named_own = "\tline  12:      \"LED R\"  \"xorgate-rs\"  output  active-high [used]";
     assert_eq!(strip_own_consumer(named_own), "");
+}
+
+// ---------------------------------------------------------------------------
+// D31 (review-wp1 M1): supersession before vs after the play task is polled.
+// `fixtures/led_driver/led-supersede.json` = the reviewer's TS dump
+// (`phase-4/evidence/wp1-tools/zz-review-supersede.test.ts`, REAL LedDriver
+// @ 89b5c64, writer calls `{t, pins, high}` from one shared t0).
+
+#[derive(Deserialize)]
+struct SupersedeFixture {
+    cases: Vec<SupersedeCase>,
+}
+
+#[derive(Deserialize)]
+struct SupersedeCase {
+    expected: SupersedeTrace,
+}
+
+#[derive(Deserialize)]
+struct SupersedeTrace {
+    calls: Vec<Call>,
+}
+
+/// Lazy writer (the [`PinWriter`] contract): records the CALL at call time
+/// (what the TS writer records — the TS spawns `pinctrl` synchronously) and
+/// the WRITE when the future is first polled (what reaches the pins and the
+/// rig's `pinctrl` shim). Resolves `true` after `delay_ms`.
+struct RunRec {
+    t0: Instant,
+    delay_ms: u64,
+    calls: Arc<Mutex<Vec<Call>>>,
+    ran: Arc<Mutex<Vec<Call>>>,
+}
+
+impl PinWriter for RunRec {
+    fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
+        let call = Call {
+            t: ms_since(self.t0),
+            pins: pins.to_vec(),
+            high,
+        };
+        self.calls.lock().unwrap().push(call);
+        let (t0, delay, ran, pins) = (self.t0, self.delay_ms, self.ran.clone(), pins.to_vec());
+        Box::pin(async move {
+            ran.lock().unwrap().push(Call {
+                t: ms_since(t0),
+                pins,
+                high,
+            });
+            if delay > 0 {
+                adv(delay).await;
+            }
+            true
+        })
+    }
+}
+
+#[derive(Default)]
+struct GpioTape(Mutex<Vec<Call>>, Mutex<Option<Instant>>);
+impl TapeSink for GpioTape {
+    fn gpio(&self, pins: &[u32], high: bool, _via: GpioVia) {
+        let t0 = self.1.lock().unwrap().expect("t0 set");
+        self.0.lock().unwrap().push(Call {
+            t: ms_since(t0),
+            pins: pins.to_vec(),
+            high,
+        });
+    }
+}
+
+struct Rig {
+    driver: LedDriver,
+    calls: Arc<Mutex<Vec<Call>>>,
+    ran: Arc<Mutex<Vec<Call>>>,
+    tape: Arc<GpioTape>,
+}
+
+fn supersede_rig(t0: Instant, delay_ms: u64) -> Rig {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    let tape = Arc::new(GpioTape::default());
+    *tape.1.lock().unwrap() = Some(t0);
+    let driver = LedDriver::new(LedDriverOptions {
+        map: Some(LedPinMap::status_led_map()),
+        writer: Some(Arc::new(TapedWriter {
+            inner: Arc::new(RunRec {
+                t0,
+                delay_ms,
+                calls: calls.clone(),
+                ran: ran.clone(),
+            }),
+            tape: tape.clone(),
+        })),
+        probe: Some(Box::new(|| {
+            Box::pin(async {
+                PinMapCheck {
+                    ok: true,
+                    reason: None,
+                }
+            })
+        })),
+        log: Some(Box::new(|_| {})),
+    });
+    Rig {
+        driver,
+        calls,
+        ran,
+        tape,
+    }
+}
+
+fn c(t: u64, pins: &[u32], high: bool) -> Call {
+    Call {
+        t,
+        pins: pins.to_vec(),
+        high,
+    }
+}
+
+/// D31 pinning test: the reviewer's exact TS scenario, both cases.
+/// - Immediate (`void play(red, blink-fast); void play(green, solid)` in one
+///   tick): the TS finishes red's first step after green's rise and ends
+///   DARK; Rust drops red's unpolled first step — its rise is CALLED (TS
+///   synchronous prefix) but never RUNS, is not taped, and its fall group is
+///   never called — and ends GREEN. This is the accepted divergence.
+/// - Running (green heartbeat polled, superseded 2 ms later while its 5 ms
+///   rise is in flight): the step finishes as in the TS — byte-equal calls.
+#[tokio::test(start_paused = true)]
+async fn d31_superseded_first_step_is_dropped_only_before_its_task_runs() {
+    let p = format!(
+        "{}/../../fixtures/led_driver/led-supersede.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let fx: SupersedeFixture = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+    assert_eq!(fx.cases.len(), 2);
+    let t0 = Instant::now();
+
+    // Immediate supersede.
+    let ts = &fx.cases[0].expected.calls;
+    assert_eq!(
+        *ts,
+        vec![
+            c(0, &[12], true),
+            c(0, &[21], true),
+            c(0, &[21, 16], false),
+            c(0, &[12, 16], false),
+        ],
+        "TS trace (fixture)"
+    );
+    assert_eq!(levels(ts), triple(LedColour::Off), "the TS race ends DARK");
+    let r = supersede_rig(t0, 0);
+    r.driver.init().await;
+    tokio::spawn(r.driver.play(LedColour::Red, LedPattern::BlinkFast));
+    tokio::spawn(r.driver.play(LedColour::Green, LedPattern::Solid));
+    adv(50).await;
+    let calls = r.calls.lock().unwrap().clone();
+    let ran = r.ran.lock().unwrap().clone();
+    let taped = r.tape.0.lock().unwrap().clone();
+    assert_eq!(
+        calls,
+        vec![c(0, &[12], true), c(0, &[21], true), c(0, &[12, 16], false)],
+        "Rust writer calls: red's rise called, its fall never"
+    );
+    assert_eq!(
+        ran,
+        vec![c(0, &[21], true), c(0, &[12, 16], false)],
+        "only green's writes run"
+    );
+    assert_eq!(taped, ran, "the tape records exactly the writes that ran");
+    assert_eq!(levels(&ran), triple(LedColour::Green), "Rust ends green");
+
+    // Running supersede: parity.
+    let ts = &fx.cases[1].expected.calls;
+    let r = supersede_rig(t0, 5);
+    r.driver.init().await;
+    tokio::spawn(r.driver.play(LedColour::Green, LedPattern::Heartbeat));
+    adv(2).await;
+    tokio::spawn(r.driver.play(LedColour::White, LedPattern::Flash2));
+    adv(50).await;
+    let calls = r.calls.lock().unwrap().clone();
+    let ran = r.ran.lock().unwrap().clone();
+    let taped = r.tape.0.lock().unwrap().clone();
+    assert_eq!(
+        calls, *ts,
+        "a running superseded step finishes as in the TS"
+    );
+    assert_eq!(ran, calls, "every called write ran");
+    assert_eq!(taped, ran);
 }

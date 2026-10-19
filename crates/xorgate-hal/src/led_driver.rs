@@ -70,6 +70,11 @@ pub const ENV_LED_GPIOCHIP: &str = "XORGATE_LED_GPIOCHIP";
 /// `led.ts:383-390`). `write` is called at the moment the TS calls
 /// `this.write` (synchronously), so the returned future must own its data.
 ///
+/// **Lazy contract:** `write` itself must not touch a pin; the write is
+/// issued when the returned future is first polled. A future dropped
+/// unpolled is a write that never ran, and [`TapedWriter`] does not tape it
+/// (D31: a pattern superseded before its task is first polled).
+///
 /// Batched deliberately (`led.ts:206-216`): a transition is one call (two
 /// only when some channels rise while others fall).
 pub trait PinWriter: Send + Sync + 'static {
@@ -120,7 +125,7 @@ impl PinWriter for PinctrlWriter {
 /// writer's lifetime (released on drop = process exit, so the systemd hooks
 /// that run after the agent never see it). Rust-only (Q11).
 pub struct GpiocdevWriter {
-    req: gpiocdev::Request,
+    req: Arc<gpiocdev::Request>,
     chip: PathBuf,
 }
 
@@ -170,7 +175,10 @@ impl GpiocdevWriter {
         cfg.with_output_lines(&current);
         req.reconfigure(&cfg)
             .map_err(|e| format!("gpio line output config on {} failed: {e}", chip.display()))?;
-        Ok(Self { req, chip })
+        Ok(Self {
+            req: Arc::new(req),
+            chip,
+        })
     }
 
     /// The chip the lines were requested on.
@@ -181,20 +189,23 @@ impl GpiocdevWriter {
 
 impl PinWriter for GpiocdevWriter {
     /// One `set_values` for the group (= one TS `pinctrl` call). The ioctl is
-    /// immediate, so it runs inline.
+    /// immediate, but it is issued only when the future is polled (lazy
+    /// contract of [`PinWriter`]), like the `pinctrl` spawn.
     fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
-        let ok = if pins.is_empty() {
-            true
-        } else {
+        let req = self.req.clone();
+        let pins = pins.to_vec();
+        Box::pin(async move {
+            if pins.is_empty() {
+                return true;
+            }
             let value = if high {
                 gpiocdev::line::Value::Active
             } else {
                 gpiocdev::line::Value::Inactive
             };
             let values: gpiocdev::line::Values = pins.iter().map(|p| (*p, value)).collect();
-            self.req.set_values(&values).is_ok()
-        };
-        Box::pin(async move { ok })
+            req.set_values(&values).is_ok()
+        })
     }
     fn via(&self) -> Option<GpioVia> {
         Some(GpioVia::Gpiocdev)
@@ -451,8 +462,21 @@ impl LedDriver {
     /// never finish on their own. A non-repeating timeline ends dark.
     ///
     /// The first step's `apply` starts at call time, as in the TS (the loop
-    /// runs synchronously up to the first writer call): a pattern superseded
-    /// before its task is first polled has still drawn its first step.
+    /// runs synchronously up to the first writer call), so the writer is
+    /// CALLED for the first step's rise group at once — but under the lazy
+    /// [`PinWriter`] contract nothing is written until this future is
+    /// polled.
+    ///
+    /// **Accepted divergence D31** (review-wp1 M1): a pattern superseded
+    /// before its task is first polled drops its first step — the pending
+    /// rise never runs (and is not taped) and its fall group is never
+    /// called. The TS (`led.ts:339-381`) always finishes that step: its fall
+    /// group lands AFTER the new pattern's rise, so `play(red, blink-fast)`
+    /// immediately followed by `play(green, solid)` ends DARK (writes
+    /// `[12]H, [21]H, [21,16]L, [12,16]L`); Rust calls `[12]H, [21]H,
+    /// [12,16]L`, runs `[21]H, [12,16]L` and ends green. A superseded step
+    /// that is already running (its task polled) still finishes exactly as
+    /// in the TS. Pinned by `tests/led_driver.rs::d31_*`.
     pub fn play(&self, colour: LedColour, pattern: LedPattern) -> BoxFut<'static, ()> {
         self.stop();
         let inner = self.inner.clone();
@@ -860,8 +884,12 @@ pub fn agent_driver(
 }
 
 /// Reports every write to the tape (`gpio {pins, high, via}`, phase-4 §8)
-/// at the moment the writer is called, then delegates. A writer without a
-/// `via` tag (test fakes) is recorded as `gpiocdev`.
+/// when the write actually RUNS — the first poll of the returned future,
+/// which is when the (lazy, see [`PinWriter`]) inner writer issues it, the
+/// same instant the rig's `pinctrl` shim logs the spawn. A write whose
+/// future is dropped unpolled (D31) never ran and is not taped. Empty groups
+/// are never taped. A writer without a `via` tag (test fakes) is recorded as
+/// `gpiocdev`.
 pub struct TapedWriter {
     pub inner: Arc<dyn PinWriter>,
     pub tape: Arc<dyn TapeSink>,
@@ -869,11 +897,17 @@ pub struct TapedWriter {
 
 impl PinWriter for TapedWriter {
     fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
-        if !pins.is_empty() {
-            let via = self.inner.via().unwrap_or(GpioVia::Gpiocdev);
-            self.tape.gpio(pins, high, via);
+        let fut = self.inner.write(pins, high);
+        if pins.is_empty() {
+            return fut;
         }
-        self.inner.write(pins, high)
+        let via = self.inner.via().unwrap_or(GpioVia::Gpiocdev);
+        let tape = self.tape.clone();
+        let pins = pins.to_vec();
+        Box::pin(async move {
+            tape.gpio(&pins, high, via);
+            fut.await
+        })
     }
     fn via(&self) -> Option<GpioVia> {
         self.inner.via()
@@ -975,17 +1009,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn taped_writer_reports_every_non_empty_write_at_call_time() {
+    async fn taped_writer_reports_every_non_empty_write_when_it_runs() {
         let tape = Arc::new(GpioTape::default());
         let w = TapedWriter {
             inner: Arc::new(Ok_),
             tape: tape.clone(),
         };
         let fut = w.write(&[12, 16], true);
-        assert_eq!(
-            tape.0.lock().unwrap().len(),
-            1,
-            "recorded before the future runs"
+        assert!(
+            tape.0.lock().unwrap().is_empty(),
+            "not taped until the write runs"
         );
         assert!(fut.await);
         assert!(w.write(&[], false).await);
@@ -999,6 +1032,19 @@ mod tests {
             !lazy.write(&[12], true).await,
             "unfilled lazy writer fails closed"
         );
+    }
+
+    /// D31: a write whose future is dropped unpolled (a superseded first
+    /// step) never ran — the tape must not claim it did.
+    #[test]
+    fn taped_writer_leaves_no_entry_for_a_dropped_write() {
+        let tape = Arc::new(GpioTape::default());
+        let w = TapedWriter {
+            inner: Arc::new(PinctrlWriter),
+            tape: tape.clone(),
+        };
+        drop(w.write(&[12], true));
+        assert!(tape.0.lock().unwrap().is_empty());
     }
 
     #[test]

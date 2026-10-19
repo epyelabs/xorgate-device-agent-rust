@@ -1,0 +1,77 @@
+{
+ "jsSourceFile": "src/hardware/led.ts",
+ "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-review-supersede.test.ts (review-wp1 M1; vitest fake timers) in a git-archive scratch copy of 89b5c64, run against the REAL LedDriver with a recording writer; writer calls {t,pins,high} in virtual ms from one t0 shared by both cases",
+ "cases": [
+  {
+   "name": "immediate supersede: play(red, blink-fast) then play(green, solid) in the same tick, writer resolves at once",
+   "ts": "led.ts:339-381",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 0,
+      "pins": [
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 0,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ]
+   }
+  },
+  {
+   "name": "running supersede: play(green, heartbeat) at 50 ms, play(white, flash2) at 52 ms, writer resolves after 5 ms",
+   "ts": "led.ts:339-381",
+   "expected": {
+    "calls": [
+     {
+      "t": 50,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 52,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 55,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ]
+   }
+  }
+ ]
+}
