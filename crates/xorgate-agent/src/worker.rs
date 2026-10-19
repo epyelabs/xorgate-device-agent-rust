@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::{interval_at, Instant, Interval, MissedTickBehavior};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
@@ -43,6 +43,7 @@ use crate::recording::{policy_sources, RecordingHooks, RecordingManager, Recordi
 use crate::scope::ScopeHandle;
 use crate::shutdown::{ClientEnd, Shutdown};
 use crate::state::StateHandle;
+use crate::timer::SetInterval;
 use crate::{build_info, collectors, command_plane, config_plane, env, logging, pidfile};
 
 /// `WRITTEN_BY` (`worker.ts:77`), Rust-flavoured (tolerated, T8).
@@ -119,11 +120,10 @@ async fn next_fatal(
     }
 }
 
-/// A `setInterval(fn, period)`: first fire one period from now.
-fn every(period: Duration) -> Interval {
-    let mut i = interval_at(Instant::now() + period, period);
-    i.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    i
+/// A `setInterval(fn, period)`: first fire one period from now, re-armed
+/// from each fire (P-WP6-1, [`SetInterval`]).
+fn every(period: Duration) -> SetInterval {
+    SetInterval::new(period)
 }
 
 /// `ensureHome()` (`runtime.ts:37-41`): mkdir -p, 0700.

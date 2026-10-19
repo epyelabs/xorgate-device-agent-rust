@@ -730,8 +730,8 @@ fn tape_shm_audit(s: &Arc<Shared>) {
     let weak = Arc::downgrade(s);
     let period = Duration::from_millis(SHM_TAPE_PERIOD_MS);
     tokio::spawn(async move {
-        let mut iv = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Rust-only (tape) — same re-arm-from-fire model as every agent timer.
+        let mut iv = crate::timer::SetInterval::new(period);
         loop {
             iv.tick().await;
             let Some(s) = weak.upgrade() else { break };
@@ -1183,9 +1183,9 @@ fn watch_session(s: &Arc<Shared>, counter: &mut u64, key: &str, run: &mut Run) {
     let weak = Arc::downgrade(s);
     let k = key.to_string();
     let task = tokio::spawn(async move {
-        // setInterval: the first tick one period after arming.
-        let mut iv = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-        iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // setInterval: the first tick one period after arming, then one
+        // period after each fire (P-WP6-1).
+        let mut iv = crate::timer::SetInterval::new(period);
         loop {
             iv.tick().await;
             let Some(s) = weak.upgrade() else { break };

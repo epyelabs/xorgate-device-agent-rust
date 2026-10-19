@@ -42,7 +42,6 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tokio::task::AbortHandle;
-use tokio::time::{interval_at, Instant, MissedTickBehavior};
 use xorgate_core::boot_config::CameraMountState;
 use xorgate_core::build_info::BuildInfo;
 use xorgate_core::cloud_config::CloudConfig;
@@ -60,6 +59,7 @@ use xorgate_hal::settings_io::{read_settings_file, sha256_file};
 
 use crate::ctx::BoxFut;
 use crate::mqtt_plane::PublishFailure;
+use crate::timer::SetInterval;
 
 /// `publish: (topic, payload) => client.publish(topic, payload, { qos: 1, retain: false })`.
 pub type PublishFn = Arc<dyn Fn(&str, Vec<u8>) -> Result<(), PublishFailure> + Send + Sync>;
@@ -307,8 +307,7 @@ impl ConfigSync {
         let me = self.clone();
         let period = ms(self.opts().watch_ms);
         let h = tokio::spawn(async move {
-            let mut iv = interval_at(Instant::now() + period, period);
-            iv.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut iv = SetInterval::new(period); // setInterval (P-WP6-1)
             loop {
                 iv.tick().await;
                 me.check_local_change();
@@ -400,8 +399,7 @@ impl ConfigSync {
         let me = self.clone();
         let period = ms(self.opts().heartbeat_ms);
         let h = tokio::spawn(async move {
-            let mut iv = interval_at(Instant::now() + period, period);
-            iv.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut iv = SetInterval::new(period); // setInterval (P-WP6-1)
             loop {
                 iv.tick().await;
                 me.request(ReportOrigin::Boot);
@@ -438,8 +436,7 @@ impl ConfigSync {
         let me = self.clone();
         let period = ms(self.opts().apn_watch_ms);
         let h = tokio::spawn(async move {
-            let mut iv = interval_at(Instant::now() + period, period);
-            iv.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut iv = SetInterval::new(period); // setInterval (P-WP6-1)
             loop {
                 iv.tick().await;
                 me.check_apn_change().await;

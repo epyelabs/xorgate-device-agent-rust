@@ -1,10 +1,19 @@
-//! Exponential backoff with jitter — ours, because rumqttc has none
+//! The pacing between MQTT connect attempts — ours, because rumqttc has none
 //! (issues #703/#918): the event loop simply errors and reconnects on the
-//! next `poll()`, so the pacing between attempts is this module's job.
+//! next `poll()`, so the pause between attempts is this module's job.
 //!
-//! The JS agent used mqtt.js's fixed `reconnectPeriod: 2000`. Phase 0 (A6)
-//! deliberately upgrades that to 1 s → 2 → 4 → … → 60 s with full-range
-//! jitter in `[delay/2, delay]`, reset on every successful CONNACK.
+//! DEFAULT = mqtt.js parity (orchestrator decision 2026-10-19, superseding
+//! Phase 0 A6's 1 s → 60 s jittered backoff): the TS client sets
+//! `reconnectPeriod: 2000` (`src/agent/mqtt.ts:63`), and mqtt.js 5.15.1 arms
+//! `setInterval(_reconnect, reconnectPeriod)` in `_setupReconnect()` from the
+//! client's `close` handler (or from `_cleanUp` when it kills a live link),
+//! clearing it in the `connect()` it triggers (`build/lib/client.js:214-224,
+//! 249,849-889`). So every close is followed by the next attempt exactly
+//! 2000 ms later — no growth, no jitter, no cap — and a hung attempt is
+//! bounded by `connectTimeout: 30_000` (the connack timer) before ITS close
+//! starts the next 2 s. The mechanism stays configurable (README §4) — an
+//! exponential/jittered ladder is one `BackoffConfig` away — but the
+//! default is the fixed [`MQTT_JS_RECONNECT_PERIOD`].
 
 use std::time::Duration;
 
@@ -16,13 +25,24 @@ pub struct BackoffConfig {
     pub jitter: bool,
 }
 
+/// mqtt.js `reconnectPeriod` as the TS sets it (`mqtt.ts:63`).
+pub const MQTT_JS_RECONNECT_PERIOD: Duration = Duration::from_millis(2000);
+
 impl Default for BackoffConfig {
+    /// mqtt.js parity: a fixed 2000 ms after every close, no jitter.
     fn default() -> Self {
+        Self::fixed(MQTT_JS_RECONNECT_PERIOD)
+    }
+}
+
+impl BackoffConfig {
+    /// A constant pause, no growth, no jitter.
+    pub fn fixed(period: Duration) -> Self {
         Self {
-            initial: Duration::from_secs(1),
-            max: Duration::from_secs(60),
-            factor: 2.0,
-            jitter: true,
+            initial: period,
+            max: period,
+            factor: 1.0,
+            jitter: false,
         }
     }
 }
@@ -84,12 +104,31 @@ impl Backoff {
 mod tests {
     use super::*;
 
+    /// The Phase 0 ladder, still expressible (README §4).
+    fn ladder(jitter: bool) -> BackoffConfig {
+        BackoffConfig {
+            initial: Duration::from_secs(1),
+            max: Duration::from_secs(60),
+            factor: 2.0,
+            jitter,
+        }
+    }
+
+    #[test]
+    fn default_is_mqtt_js_fixed_2000_ms_without_jitter() {
+        let mut b = Backoff::new(BackoffConfig::default());
+        for n in 1..=50u32 {
+            assert_eq!(b.next_delay(), Duration::from_millis(2000), "attempt {n}");
+            assert_eq!(b.attempt(), n);
+        }
+        b.reset();
+        assert_eq!(b.attempt(), 0);
+        assert_eq!(b.next_delay(), Duration::from_millis(2000));
+    }
+
     #[test]
     fn grows_exponentially_and_caps_without_jitter() {
-        let mut b = Backoff::new(BackoffConfig {
-            jitter: false,
-            ..Default::default()
-        });
+        let mut b = Backoff::new(ladder(false));
         let d: Vec<u64> = (0..8).map(|_| b.next_delay().as_secs()).collect();
         assert_eq!(d, [1, 2, 4, 8, 16, 32, 60, 60]);
         b.reset();
@@ -98,7 +137,7 @@ mod tests {
 
     #[test]
     fn jitter_stays_within_half_to_full() {
-        let mut b = Backoff::new(BackoffConfig::default());
+        let mut b = Backoff::new(ladder(true));
         for expected in [1.0, 2.0, 4.0, 8.0] {
             let d = b.next_delay().as_secs_f64();
             assert!(

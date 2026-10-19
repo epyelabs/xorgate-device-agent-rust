@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
-use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{error, info};
 use xorgate_cloud::mqtt::{ConnectionState as LinkState, MqttEvent, MqttPublisher};
 use xorgate_core::telemetry::{ActivityLevel, ConnectionState, StatusPayload, TelemetryPayload};
@@ -18,6 +17,7 @@ pub use xorgate_cloud::mqtt::{AckOutcome, QoS};
 
 use crate::ctx::{AgentCtx, BoxFut, CommandPlane, ConfigPlane, TelemetrySource};
 use crate::scope::ScopeHandle;
+use crate::timer::SetInterval;
 
 /// Why a fire-and-forget publish did not go out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -453,8 +453,8 @@ impl MqttPlane {
         let period = Duration::from_millis(self.ctx.env.config.interval_ms.max(1.0) as u64);
         let cancel = self.ctx.cancel.clone();
         self.ctx.spawn("publish_loop", async move {
-            let mut iv = tokio::time::interval_at(Instant::now() + period, period);
-            iv.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            // setInterval: re-armed from each fire (P-WP6-1).
+            let mut iv = SetInterval::new(period);
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,

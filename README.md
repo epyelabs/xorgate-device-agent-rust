@@ -39,7 +39,7 @@ crates/xorgate-core/       PURE (no I/O, no tokio, no clocks): payload types + s
 crates/xorgate-hal/        Linux edges: procfs/sysfs readers, statvfs, bounded `vcgencmd` runs,
                            atomic JSON writer (port of atomicWriteJson).
 crates/xorgate-cloud/      rumqttc 0.25 (v5) + rustls mTLS wrapper: LWT re-stamped per connect,
-                           resubscribe on CONNACK, exponential backoff with jitter, state watch,
+                           resubscribe on CONNACK, 2 s mqtt.js reconnect pause, state watch,
                            bounded graceful shutdown, mqtt.js offline queue + resend; Amazon Root
                            CA 1 bundled for no-CA callers (the agent requires CA_PATH, like the TS).
 crates/xorgate-agent/      the `xorgate-rs` binary: clap CLI, env (agent.env keys), tracing

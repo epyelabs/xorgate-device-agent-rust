@@ -66,7 +66,6 @@ use std::time::Duration;
 
 use indexmap::IndexMap;
 use tokio::sync::{mpsc, watch};
-use tokio::time::{interval_at, Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use xorgate_cloud::s3::UploadOptions;
 use xorgate_core::boot_policy::{
@@ -88,6 +87,7 @@ use xorgate_core::video_presets::{resolve_video_preset, VideoPreset};
 use xorgate_hal::settings_io::load_settings;
 
 use crate::ctx::{BoxFut, GroupSample};
+use crate::timer::SetInterval;
 
 // ---------------------------------------------------------------------------
 // Component seams
@@ -463,7 +463,13 @@ fn random16() -> [u8; 16] {
     b
 }
 
-/// A `setInterval(fn, period)` loop on `token`: first fire one period from now.
+/// A `setInterval(fn, period)` loop on `token`: first fire one period from
+/// now, every next one a period after the previous FIRE (P-WP6-1: Node
+/// re-arms from the fire instant; a fixed-rate tokio interval let a 999 ms
+/// gap hand the shared 1 s `system.sample()` gate to the recorder). The work
+/// is awaited before the next tick is polled; its duration does not move the
+/// deadline (only a body longer than the period delays that fire — the TS
+/// would overlap it, `void this.shedTick()`).
 fn spawn_every(
     period_ms: u64,
     token: CancellationToken,
@@ -471,8 +477,7 @@ fn spawn_every(
 ) {
     tokio::spawn(async move {
         let period = Duration::from_millis(period_ms.max(1));
-        let mut i = interval_at(Instant::now() + period, period);
-        i.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut i = SetInterval::new(period);
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
