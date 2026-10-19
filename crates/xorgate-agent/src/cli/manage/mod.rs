@@ -632,8 +632,26 @@ fn map_key(k: crossterm::event::KeyEvent) -> Option<Key> {
     })
 }
 
-/// Forward crossterm events + termination signals into the loop's channel.
-fn spawn_inputs(tx: mpsc::UnboundedSender<Input>) {
+/// SIGTERM/SIGINT/SIGHUP, registered BEFORE the terminal goes raw so a
+/// signal in the init window is not lost (review-wp5 N1).
+type Signals = (
+    tokio::signal::unix::Signal,
+    tokio::signal::unix::Signal,
+    tokio::signal::unix::Signal,
+);
+
+fn register_signals() -> Option<Signals> {
+    use tokio::signal::unix::{signal, SignalKind};
+    Some((
+        signal(SignalKind::terminate()).ok()?,
+        signal(SignalKind::interrupt()).ok()?,
+        signal(SignalKind::hangup()).ok()?,
+    ))
+}
+
+/// Forward crossterm events + the registered termination signals into the
+/// loop's channel.
+fn spawn_inputs(tx: mpsc::UnboundedSender<Input>, signals: Option<Signals>) {
     let ev_tx = tx.clone();
     tokio::spawn(async move {
         use crossterm::event::{Event, EventStream};
@@ -657,15 +675,10 @@ fn spawn_inputs(tx: mpsc::UnboundedSender<Input>) {
             }
         }
     });
+    let Some((mut term, mut int, mut hup)) = signals else {
+        return;
+    };
     tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
-        let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
-            signal(SignalKind::terminate()),
-            signal(SignalKind::interrupt()),
-            signal(SignalKind::hangup()),
-        ) else {
-            return;
-        };
         tokio::select! {
             _ = term.recv() => {}
             _ = int.recv() => {}
@@ -691,9 +704,10 @@ pub fn main(_args: &[String]) -> i32 {
     };
     let host = host_info();
     let res = rt.block_on(async move {
+        let signals = register_signals();
         let mut term = ratatui::try_init().map_err(|e| e.to_string())?;
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_inputs(tx);
+        spawn_inputs(tx, signals);
         let out = run_loop(Arc::new(SystemIo::new()), rx, host, |app, host, spin| {
             draw_to(&mut term, app, host, spin)
         })

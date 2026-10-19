@@ -306,3 +306,181 @@ async fn shows_the_not_running_call_to_action() {
         .contains("run: sudo systemctl start xorgate-agent-rs"));
     h.quit().await;
 }
+
+// --- review-wp5 S1: the TUI's settings write (CF40) and its failure path (A11) ---
+
+/// A minimal `SetIo` for driving `xorgate-rs set mode … --no-restart`.
+struct SetWorld {
+    home: std::path::PathBuf,
+    lines: Mutex<Vec<String>>,
+}
+
+impl xorgate_agent::cli::set::SetIo for SetWorld {
+    fn home(&self) -> std::path::PathBuf {
+        self.home.clone()
+    }
+    fn now_ms(&self) -> i64 {
+        NOW as i64
+    }
+    fn sleep_ms(&self, _ms: i64) {}
+    fn read_modem(&self) -> Option<Value> {
+        None
+    }
+    fn sudo_facts(&self) -> (bool, Option<u32>, Option<String>) {
+        (false, None, None)
+    }
+    fn daemon_running(&self) -> bool {
+        false
+    }
+    fn emit(&self, line: &xorgate_core::cli_set::Line) {
+        self.lines.lock().unwrap().push(line.text.clone());
+    }
+}
+
+fn scratch(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("xg-wp5-tui-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// `saveSettings({ ...loadSettings(), mode })` (`MonitorApp.tsx:143`) is the
+/// SAME document + bytes as `xorgate-rs set mode <m>` (`set.ts:391-531`, the
+/// Phase 2 fixture-pinned writer): equal settings.json bytes for every seed
+/// shape (absent, empty, mode present, mode absent, mode last, unknown keys
+/// dropped by the allowlist, a non-default namespace order).
+#[test]
+fn save_mode_in_writes_the_same_bytes_as_set_mode() {
+    let seeds: [Option<&str>; 7] = [
+        None,
+        Some("{}"),
+        Some(r#"{"mode":"sim","gnssAntBias":true}"#),
+        Some(r#"{"cellular":{"apn":"old"},"recording":{"telemetry":{"enabled":false}}}"#),
+        Some(r#"{"recording":{"telemetry":{"enabled":true,"rateHz":5}},"mode":"real"}"#),
+        Some(r#"{"bogus":1,"timeSync":{"enabled":false},"mode":"replay"}"#),
+        Some(r#"{"cameraMount":{"cameras":{"cam0":{"rotationDeg":180}}},"cellular":{"apn":""}}"#),
+    ];
+    for (i, seed) in seeds.iter().enumerate() {
+        for mode in ["real", "sim"] {
+            let a = scratch(&format!("set-{i}-{mode}"));
+            let b = scratch(&format!("tui-{i}-{mode}"));
+            if let Some(s) = seed {
+                std::fs::write(a.join("settings.json"), s).unwrap();
+                std::fs::write(b.join("settings.json"), s).unwrap();
+            }
+            let world = SetWorld {
+                home: a.clone(),
+                lines: Mutex::new(Vec::new()),
+            };
+            let args: Vec<String> = ["mode", mode, "--no-restart"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            assert_eq!(xorgate_agent::cli::set::run(&args, &world), 0, "{seed:?}");
+            xorgate_agent::cli::manage::save_mode_in(&b, mode).unwrap();
+            let want = std::fs::read(a.join("settings.json")).unwrap();
+            let got = std::fs::read(b.join("settings.json")).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&got),
+                String::from_utf8_lossy(&want),
+                "seed {seed:?} mode {mode}"
+            );
+        }
+    }
+}
+
+/// A11 (D35): a failed save does not crash the TUI (the TS `saveSettings`
+/// throws inside the ink input handler and the app dies); Rust shows Node's
+/// `err.message` in the message line, stays out of operating, and keeps
+/// running (↓ still navigates, q still quits).
+#[tokio::test(start_paused = true)]
+async fn a_failed_mode_save_is_shown_and_the_tui_keeps_running() {
+    let missing = scratch("fail").join("no-such-dir");
+    let direct = xorgate_agent::cli::manage::save_mode_in(&missing, "real").unwrap_err();
+    assert!(
+        direct.starts_with(&format!(
+            "ENOENT: no such file or directory, open '{}/.settings.json.tmp.",
+            missing.display()
+        )),
+        "{direct}"
+    );
+
+    struct FailingSave(Fake, std::path::PathBuf);
+    impl ManageIo for FailingSave {
+        fn inspect(&self) -> BoxFut<'static, (DaemonStatus, f64)> {
+            self.0.inspect()
+        }
+        fn interfaces(&self) -> BoxFut<'static, Vec<IfaceStatus>> {
+            self.0.interfaces()
+        }
+        fn detect_wifi(&self) -> BoxFut<'static, WifiPresence> {
+            self.0.detect_wifi()
+        }
+        fn set_wifi(&self, on: bool) -> BoxFut<'static, ()> {
+            self.0.set_wifi(on)
+        }
+        fn log_tail(&self) -> BoxFut<'static, Vec<String>> {
+            self.0.log_tail()
+        }
+        fn detect_modem(&self) -> BoxFut<'static, ModemPresence> {
+            self.0.detect_modem()
+        }
+        fn read_link(&self) -> BoxFut<'static, Option<Value>> {
+            self.0.read_link()
+        }
+        fn detect_imu(&self) -> BoxFut<'static, ImuDetect> {
+            self.0.detect_imu()
+        }
+        fn save_mode(&self, mode: &str) -> Result<(), String> {
+            xorgate_agent::cli::manage::save_mode_in(&self.1, mode)
+        }
+        fn ssh_iface(&self) -> Option<String> {
+            None
+        }
+        fn settings_mode(&self) -> Option<String> {
+            None
+        }
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let frame = Arc::new(Mutex::new(String::new()));
+    let f2 = frame.clone();
+    let io = Arc::new(FailingSave(
+        Fake {
+            status: running(),
+            saved: Mutex::new(Vec::new()),
+        },
+        missing.clone(),
+    ));
+    let task = tokio::spawn(async move {
+        let mut term = Terminal::new(TestBackend::new(120, 48)).unwrap();
+        run_loop(io, rx, host(), move |app, host, spin| {
+            draw_to(&mut term, app, host, spin)?;
+            *f2.lock().unwrap() = text(&term);
+            Ok(())
+        })
+        .await
+    });
+    delay(150).await;
+    for _ in 0..6 {
+        tx.send(Input::Key(Key::Char('j'))).unwrap();
+    }
+    tx.send(Input::Key(Key::Enter)).unwrap(); // operating on Settings
+    tx.send(Input::Key(Key::Char(' '))).unwrap(); // sim → real
+    tx.send(Input::Key(Key::Enter)).unwrap(); // save → fails
+    delay(80).await;
+    let f = frame.lock().unwrap().clone();
+    assert!(f.contains("ENOENT: no such file or directory, open"), "{f}");
+    assert!(!f.contains("✓ mode ="));
+    assert!(!f.contains("▶ run mode"), "left operating\n{f}");
+    assert!(!missing.exists(), "nothing written");
+    tx.send(Input::Key(Key::Char('j'))).unwrap(); // wraps to Activity: still alive
+    delay(60).await;
+    assert!(frame.lock().unwrap().contains("recent events"));
+    tx.send(Input::Key(Key::Char('q'))).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("q still quits")
+        .unwrap()
+        .unwrap();
+}
