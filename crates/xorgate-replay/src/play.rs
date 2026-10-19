@@ -199,6 +199,8 @@ const PREFILL_MS: u64 = 1000;
 /// A power-threshold crossing lands at least this far from both agents'
 /// predicted 1 Hz ticks (`meta.rig.powerCrossings`).
 const CROSSING_CLEAR_MS: i64 = 300;
+/// The power-read fence never holds a `vcgencmd` answer longer than this.
+const EXEC_FENCE_CAP_MS: i64 = 1_500;
 
 // ------------------------------------------------------------------ gate
 
@@ -1624,7 +1626,16 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         .flatten()
         .filter_map(Value::as_u64)
         .collect();
-    let mut deferred: Option<(usize, i64)> = None;
+    // POWER-READ FENCE (CI smoke flake, runs 39311147277 #1/#2): every
+    // `vcgencmd` answer (pmic rail, throttled bits — the system group's taped
+    // power inputs) waits in `exec_q` (order kept, only those records wait)
+    // while one agent has READ those answers (inotify open of
+    // `<state>/exec/vcgencmd__*.out`, watch.rs `exec_holds`) and the other
+    // has not read since — a release then would split that read pair — and
+    // while a report trigger's debounce window is open (the report fence,
+    // `fence`). Bounded (EXEC_FENCE_CAP_MS) and logged.
+    let mut exec_q: std::collections::VecDeque<(usize, i64)> = Default::default();
+    let is_power = |ev: &TapeEvent| matches!(ev, TapeEvent::Exec { argv, .. } if argv.first().map(String::as_str) == Some("vcgencmd"));
     let mid_now = |now: i64| {
         caps.gate
             .lock()
@@ -1643,7 +1654,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             if next < n_rec && tape.records[next].t > cutoff {
                 next = n_rec;
             }
-            if next >= n_rec && pending.is_empty() && deferred.is_none() {
+            if next >= n_rec && pending.is_empty() && exec_q.is_empty() {
                 break None;
             }
             let now = wall_now_ms();
@@ -1661,15 +1672,30 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
             let _ = tel_open(now);
-            if let Some((ci, since)) = deferred {
-                let mid = mid_now(now);
-                if (mid || now - since >= 1_000) && tel_open(now) {
-                    deferred = None;
-                    plog(format!(
-                        "power crossing t={} released {} ms after due (mid-period: {mid})",
-                        tape.records[ci].t,
-                        now - since
-                    ));
+            if let Some(&(ci, since)) = exec_q.front() {
+                let r = &tape.records[ci];
+                let crossing = crossing_ts.contains(&r.t);
+                let mid = !crossing || mid_now(now);
+                let (read_split, report) = caps
+                    .watch
+                    .lock()
+                    .map(|w| (w.exec_holds(now), w.report_open(since, now)))
+                    .unwrap_or((false, false));
+                let waited = now - since;
+                let capped = waited >= EXEC_FENCE_CAP_MS;
+                if ((mid && !read_split && !report) || capped) && tel_open(now) {
+                    exec_q.pop_front();
+                    if waited >= 50 {
+                        plog(format!(
+                            "power-read fence: exec t={} released {waited} ms after due{}{}",
+                            r.t,
+                            if crossing { " (crossing)" } else { "" },
+                            if capped { " (CAPPED)" } else { "" }
+                        ));
+                    }
+                    if let Ok(mut w) = caps.watch.lock() {
+                        w.note_exec_fence(since, now, capped);
+                    }
                     break Some((ci, since, false));
                 }
             }
@@ -1703,15 +1729,10 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                         next += 1;
                         continue;
                     }
-                    if crossing_ts.contains(&r.t)
-                        && matches!(r.ev, TapeEvent::Exec { .. })
-                        && !args.no_gate
-                        && deferred.is_none()
-                        && !mid_now(now)
-                    {
-                        // Only this record waits; the other inputs keep
-                        // their timing (exec is not a barrier kind).
-                        deferred = Some((next, now));
+                    if !args.no_gate && is_power(&r.ev) {
+                        // Only the power answers wait (in order); the other
+                        // inputs keep their timing (exec is not a barrier).
+                        exec_q.push_back((next, now));
                         next += 1;
                         continue;
                     }
