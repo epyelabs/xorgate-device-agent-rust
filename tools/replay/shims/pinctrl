@@ -1,0 +1,7 @@
+#!/bin/sh
+# Rig shim: pinctrl (Phase 4, LED). Both agents drive it: the JS agent always
+# (`led.ts:219-225`), the Rust agent with XORGATE_LED_WRITER=pinctrl (Q6, a
+# runtime choice, not rig-only code). Logs "<wall ms> <argv…>" to $RIG_LED_LOG
+# (the diff's `led` stream) and succeeds; `pinctrl get …` prints nothing.
+printf '%s %s\n' "$(date +%s%3N)" "$*" >> "${RIG_LED_LOG:-/dev/null}"
+exit 0

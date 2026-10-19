@@ -58,6 +58,10 @@ use xorgate_hal::tape::{ConnState, KvsInfo, Tape, TapeEvent, TapeMeta, TapeRecor
 
 use crate::rewrite::{civil_from_epoch, iso_z, nmea_sentence};
 
+/// Phase 4 scenarios (WP6): records added by scenario name for the `p4` track.
+#[path = "synth_p4.rs"]
+mod p4tracks;
+
 /// 2026-07-29T19:30:00Z — `now` of the modem telemetry-tolerance fixture.
 pub const SYNTH_START_WALL: i64 = 1_785_353_400_000;
 /// The tape's deviceId (the player substitutes the rig ids).
@@ -246,6 +250,50 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
         "cam0 capture SIGKILLed (external) at 35 s, cam1 master exits 1 at 45 s, preset → 1080p15 at 70 s",
     ),
+    // ---- Phase 4 (WP6, phase-4-operations.md §8): every one carries `p4`
+    // (records by scenario name, synth_p4.rs); the rig side is play.rs/p4.rs.
+    (
+        "p4-led-ladder",
+        180,
+        &["media-hw", "p4", "lte", "clock"],
+        "LED: starting → gps-wait → healthy → network (cut 40→60 s) → flash2 (real config change at 75.7 s; the 85.7 s redelivery does not flash) → undervoltage (rail 100→140 s, liveBlock first) → healthy",
+    ),
+    (
+        "p4-sms",
+        60,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "read_sms on a FakeModem pty: bench inbox + concat UCS2 + SUBMIT, text mode → PDU → restored; reuse window; limit",
+    ),
+    (
+        "p4-clock-gps",
+        120,
+        &["p4", "clock"],
+        "clock stepper: NTP unsynced, GPS +600 s with a fix → one gps step; NTP synced at 90 s → stood down",
+    ),
+    (
+        "p4-clock-nitz",
+        120,
+        &["p4", "clock"],
+        "clock stepper: no GPS fix, NITZ +600 s unregistered (reg 0) then registered (reg 5) → one nitz step; NTP at 100 s",
+    ),
+    (
+        "p4-clock-cap",
+        700,
+        &["p4", "clock"],
+        "clock stepper: implausible NITZ (80/01/06) → warn + hold-off, GPS +600 s from 200 s → step 1/1 (maxStepsPerBoot 1), then the cap warning",
+    ),
+    (
+        "p4-cam-mount",
+        300,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "camera mount: cameraMount cam0 0→180 (pending-reboot), DT rotation 180 at 100 s (applied), →0 at 170.7 s, DT 0 at 230 s",
+    ),
+    (
+        "p4-update-cmd",
+        60,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "remote rail: cloud update / reboot / power_off → sudo argv (the shim never runs them)",
+    ),
 ];
 
 /// The Phase 3 scenarios (all carry `media-hw`).
@@ -253,7 +301,7 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
 pub fn is_phase3(scenario: &str) -> bool {
     SCENARIOS
         .iter()
-        .any(|s| s.0 == scenario && s.2.contains(&"media-hw"))
+        .any(|s| s.0 == scenario && s.2.contains(&"media-hw") && !s.2.contains(&"p4"))
 }
 
 thread_local! {
@@ -1252,6 +1300,13 @@ fn build_inner(
         }
     }
 
+    // ---- Phase 4 (synth_p4.rs)
+    let p4m = if has("p4") {
+        Some(p4tracks::add(name, &mut b, dur_ms, fixtures)?)
+    } else {
+        None
+    };
+
     if let Some(base) = base {
         for r in &base.records {
             if r.t <= dur_ms && BASE_KINDS.contains(&r.ev.kind()) {
@@ -1276,6 +1331,26 @@ fn build_inner(
     if !crossings.is_empty() {
         let r = rig.get_or_insert_with(|| json!({}));
         r["powerCrossings"] = json!(crossings);
+    }
+    if let Some(p) = p4m {
+        if !p.rig.is_empty() {
+            let r = rig.get_or_insert_with(|| json!({}));
+            for (k, v) in p.rig {
+                r[k] = v;
+            }
+        }
+        if let Some(h) = p.home {
+            home.get_or_insert_with(serde_json::Map::new).extend(h);
+        }
+        if let Some(hw) = p.hardware {
+            meta.hardware = hw;
+        }
+        if p.no_channels {
+            meta.kvs = KvsInfo {
+                channels: vec![],
+                upload: false,
+            };
+        }
     }
     meta.rig = rig;
     meta.home = home;

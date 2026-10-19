@@ -668,3 +668,24 @@ title = "S3 PUT timing / failed-attempt counts (NARROWED review-wp6: |Δ| ≤ 1 
 basis = "phase file T14"
 kind = "media"
 streams = ["s3"]
+
+# ---------------------------------------------------------------- Phase 4
+# T15–T16: phase-4-operations.md §8 "Diff streams added" (read by
+# crates/xorgate-replay/src/diff_p4.rs; `tolerance` = the ± bounds). PROVISIONAL
+# until the WP6 JS-vs-JS calibration + the adversarial review cite runs.
+
+[[rule]]
+id = "T15"
+title = "LED pin timeline: per-step interval ±step_ms; a run's start ±phase_ms and its length (groups) where the two runs' durations differ by ≤ 2·phase_ms — the pin/level SEQUENCE of every compared group and the ordered `[led] a → b (colour pattern)` transitions are exact"
+basis = "phase file §8 `led-jitter` (per-step ±50 ms: led.ts:356-396 awaits the pinctrl spawn then setTimeout(step.ms) — Node timers vs tokio + one process spawn per leg); phase: led-manager.ts:56-73 resolves the state on tick(), which the worker drives from its OWN 1 s heartbeat setInterval (worker.ts:633-638), so each agent starts a new rung up to one heartbeat period (+ the hold-gate guard 150 ms) after the input; a repeating pattern (blink-fast/blink-slow/heartbeat) then runs until the next state, so its group count follows the run's duration"
+kind = "p4"
+streams = ["led"]
+tolerance = { "step_ms" = 50.0, "phase_ms" = 1150.0 }
+
+[[rule]]
+id = "T16"
+title = "set-clock argv: `xorgate-setclock <epoch>` compared as the offset epoch − (the shim's call time, rounded s), ±epoch_s"
+basis = "clock-step.ts:186 `String(Math.round(targetMs / 1000))` with targetMs = gps.utcMs + gps.ageMs (or now + modem.offsetMs) evaluated at THAT agent's 30 s tick (clock-step.ts:291 setInterval from its own start), so the absolute epoch differs by the two tick phases; the offset from the call's own time is the comparable value, and two roundings (the target's and the call time's) put it within ±1 s"
+kind = "p4"
+streams = ["sudo"]
+tolerance = { "epoch_s" = 1.0 }

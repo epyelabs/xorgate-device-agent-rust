@@ -1,0 +1,19 @@
+#!/bin/sh
+# Rig shim: gpioinfo (Phase 4, LED busy-pin probe `led.ts:428-431`). Answers
+# from the tape's `exec` record ($RIG_STATE/exec/gpioinfo__<args>.{out,err,code},
+# like vcgencmd); without one, a bench-shaped gpiochip0 listing with every
+# line unused (nothing busy).
+key="gpioinfo__$(printf '%s' "$*" | tr ' /' '__')"
+f="$RIG_STATE/exec/$key"
+if [ -f "$f.out" ]; then
+  cat "$f.out"
+  [ -s "$f.err" ] && cat "$f.err" >&2
+  exit "$(cat "$f.code" 2>/dev/null || echo 0)"
+fi
+echo "gpiochip0 - 54 lines:"
+i=0
+while [ "$i" -lt 54 ]; do
+  printf '\tline %3d:      "GPIO%d"       unused   input  active-high \n' "$i" "$i"
+  i=$((i + 1))
+done
+exit 0

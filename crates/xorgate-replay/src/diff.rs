@@ -774,7 +774,13 @@ impl Capture {
         let sudo = std::fs::read_to_string(dir.join("sudo.log"))
             .unwrap_or_default()
             .lines()
-            .filter_map(|l| l.split_once(' ').map(|(_, argv)| argv.to_string()))
+            // Phase 4: the set-clock epoch becomes its offset from the
+            // call's own time (`diff_p4::normalize_setclock`).
+            .filter_map(|l| {
+                l.split_once(' ').map(|(w, argv)| {
+                    crate::diff_p4::normalize_setclock(w.parse().unwrap_or(0), argv)
+                })
+            })
             .collect();
         Ok(Self {
             meta,
@@ -2565,6 +2571,9 @@ const EXPECTED_KINDS: &[&str] = &[
     "sms",
     "events",
     "sudo",
+    // Phase 4 (diff_p4.rs).
+    "led",
+    "at",
     "mqtt-flags",
     "state",
     "pidfile",
@@ -3494,7 +3503,9 @@ fn diff_sudo(a: &Capture, b: &Capture, table: &Table, rep: &mut Report) {
             (Some(x), Some(y)) if x == y => continue,
             (Some(x), Some(y)) => {
                 let ((nx, hx), (ny, hy)) = (norm(x), norm(y));
-                if nx == ny && (hx || hy) {
+                if let Some(id) = crate::diff_p4::setclock_tolerated(table, x, y) {
+                    id
+                } else if nx == ny && (hx || hy) {
                     o3.as_ref()
                         .map(|(r, _)| format!("{r}/O3"))
                         .unwrap_or_else(|| UNTOLERATED.into())

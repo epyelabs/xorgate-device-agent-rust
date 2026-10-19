@@ -152,6 +152,8 @@ const KINDS: &[&str] = &[
     // Phase 3: T4's media/recording state transitions ±1 tick (diff.rs
     // `Cx::transition`).
     "transition",
+    // Phase 4 (WP6): the `led` / set-clock bounds of diff_p4.rs (`tolerance`).
+    "p4",
 ];
 
 impl Table {

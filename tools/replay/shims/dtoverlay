@@ -1,0 +1,14 @@
+#!/bin/sh
+# Rig shim: dtoverlay (Phase 4, camera mount `boot-config.ts:209` probe
+# `dtoverlay -h <sensor>`). Answers from the tape's `exec` record
+# ($RIG_STATE/exec/dtoverlay__<args>.{out,err,code}); no answer = the probe
+# could not run (exit 1, "overlay not found").
+key="dtoverlay__$(printf '%s' "$*" | tr ' /' '__')"
+f="$RIG_STATE/exec/$key"
+if [ -f "$f.out" ]; then
+  cat "$f.out"
+  [ -s "$f.err" ] && cat "$f.err" >&2
+  exit "$(cat "$f.code" 2>/dev/null || echo 0)"
+fi
+echo "* Failed to find overlay '${2:-}'" >&2
+exit 1

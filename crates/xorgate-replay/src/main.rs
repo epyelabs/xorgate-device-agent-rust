@@ -11,9 +11,11 @@
 
 mod aws;
 mod diff;
+mod diff_p4;
 mod inspect;
 mod media;
 mod media_diff;
+mod p4;
 mod play;
 mod record;
 mod rewrite;
@@ -154,6 +156,10 @@ fn main() -> Result<()> {
             let ma = media_diff::MediaCapture::load(&run.join("a"), &shm);
             let mb = media_diff::MediaCapture::load(&run.join("b"), &shm);
             media_diff::diff_media(&ma, &mb, &info, &table, &mut rep);
+            // Phase 4 streams (diff_p4.rs): led, at.
+            let pa = diff_p4::P4Capture::load(&run.join("a"));
+            let pb = diff_p4::P4Capture::load(&run.join("b"));
+            diff_p4::diff_p4(&pa, &pb, &table, &mut rep);
             rep.hits = diff::row_hits(&rep, &table);
             let md = diff::render(&rep, &a, &b, &info, &table, &run);
             let out = out.unwrap_or_else(|| run.join("diff.md"));

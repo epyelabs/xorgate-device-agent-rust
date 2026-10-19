@@ -62,7 +62,7 @@ use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 use crate::diff::PlayInfo;
 use crate::media::{self, MediaPlan, ObsAgent};
 use crate::watch::{self, WatchGate};
-use crate::{aws, rewrite};
+use crate::{aws, p4, rewrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AgentKind {
@@ -156,6 +156,15 @@ pub struct PlayArgs {
     /// pair outlived a 5 s sky_state dwell between its two reads).
     #[arg(long, default_value_t = DEFAULT_FLIP_GAP_MS)]
     pub flip_gap_ms: i64,
+    /// Phase 4: the private-mount-namespace entry for Pi-namespaced tapes
+    /// (`meta.rig.pi`, `p4.rs`).
+    #[arg(long, default_value = "/rig/tools/pi-ns.sh")]
+    pub ns_script: PathBuf,
+    /// Phase 4 (E12): the REAL camera-rotation helper the `sudo` shim executes
+    /// for `xorgate-camrotate` (default: the Rust repo's vendored
+    /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
+    #[arg(long)]
+    pub camrotate: Option<PathBuf>,
 }
 
 pub const DEVICE_A: &str = "00000000-0000-4000-8000-00000000000a";
@@ -565,6 +574,8 @@ struct Agent {
     /// NMEA lines not written because the agent did not hold the port open.
     pty_unopened: u64,
     pty_open_cache: Option<(std::time::Instant, bool)>,
+    /// Phase 4: Pi namespace dir + the SMS pty kept open (`p4.rs`).
+    p4: p4::AgentP4,
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -696,6 +707,7 @@ fn tape_mode(tape: &Tape) -> &'static str {
 }
 
 impl Agent {
+    #[allow(clippy::too_many_arguments)]
     fn prepare(
         label: &'static str,
         kind: AgentKind,
@@ -704,6 +716,7 @@ impl Agent {
         tape: &Tape,
         i2c_absent: bool,
         plan: &MediaPlan,
+        p4plan: &p4::P4Plan,
     ) -> Result<Self> {
         let dir = args.out.join(label);
         let work = args.work.join(label);
@@ -729,6 +742,7 @@ impl Agent {
             let name = entry.file_name();
             if (i2c_absent && name == "i2cdetect")
                 || (!args.with_rpicam && !plan.rpicam && name == "rpicam-hello")
+                || name.to_str().is_some_and(|n| p4plan.skip_shim(n))
             {
                 continue;
             }
@@ -816,6 +830,20 @@ impl Agent {
             env.retain(|(ek, _)| *ek != k);
             env.push((k, v));
         }
+        // Phase 4 (p4.rs): Pi namespace, SMS pty + fake modem, LED log, writer knob.
+        let camrotate = args.camrotate.clone().or_else(|| {
+            [
+                PathBuf::from("/rig/system/xorgate-camrotate"),
+                args.js_dir.join("system/xorgate-camrotate"),
+            ]
+            .into_iter()
+            .find(|p| p.is_file())
+        });
+        let (p4_state, p4_env) = p4::prepare_agent(p4plan, &work, &dir, camrotate.as_deref())?;
+        for (k, v) in p4_env {
+            env.retain(|(ek, _)| *ek != k);
+            env.push((k, v));
+        }
         fs::write(
             dir.join("meta.json"),
             serde_json::to_vec_pretty(&json!({
@@ -841,6 +869,7 @@ impl Agent {
             pty_drops: 0,
             pty_unopened: 0,
             pty_open_cache: None,
+            p4: p4_state,
         })
     }
 
@@ -853,26 +882,34 @@ impl Agent {
     }
 
     fn command(&self, args: &PlayArgs, argv: &[String], worker: bool) -> Command {
-        let mut cmd = match self.kind {
+        let (program, mut full): (String, Vec<String>) = match self.kind {
             AgentKind::Js => {
-                let mut c = Command::new(&args.node);
                 let entry = if worker {
                     "dist/worker.js"
                 } else {
                     "dist/cli.js"
                 };
-                c.arg(args.js_dir.join(entry));
-                c
+                (
+                    args.node.clone(),
+                    vec![args.js_dir.join(entry).display().to_string()],
+                )
             }
-            AgentKind::Rust => {
-                let mut c = Command::new(&args.rs_bin);
+            AgentKind::Rust => (
+                args.rs_bin.display().to_string(),
                 if worker {
-                    c.arg("run");
-                }
-                c
-            }
+                    vec!["run".to_string()]
+                } else {
+                    vec![]
+                },
+            ),
         };
-        cmd.args(argv);
+        full.extend(argv.iter().cloned());
+        // Phase 4: a Pi-namespaced tape runs the agent in its own mount
+        // namespace (same pid: `unshare` and pi-ns.sh exec).
+        let (program, full) =
+            p4::wrap_command(self.p4.pi_dir.as_deref(), &args.ns_script, &program, &full);
+        let mut cmd = Command::new(program);
+        cmd.args(full);
         cmd.env_clear();
         for (k, v) in &self.env {
             cmd.env(k, v);
@@ -1347,9 +1384,32 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         _ => None,
     }) == Some(true);
     let plan = MediaPlan::of(&tape);
+    let p4plan = p4::P4Plan::of(&tape);
+    if p4plan.pi.is_some() {
+        // The bind-mount target of each agent's namespace (pi-ns.sh).
+        fs::create_dir_all("/boot/firmware").context("mkdir /boot/firmware (rig container)")?;
+    }
     let mut agents = vec![
-        Agent::prepare("a", args.a, DEVICE_A, &args, &tape, first_i2c_absent, &plan)?,
-        Agent::prepare("b", args.b, DEVICE_B, &args, &tape, first_i2c_absent, &plan)?,
+        Agent::prepare(
+            "a",
+            args.a,
+            DEVICE_A,
+            &args,
+            &tape,
+            first_i2c_absent,
+            &plan,
+            &p4plan,
+        )?,
+        Agent::prepare(
+            "b",
+            args.b,
+            DEVICE_B,
+            &args,
+            &tape,
+            first_i2c_absent,
+            &plan,
+            &p4plan,
+        )?,
     ];
     let log = Arc::new(Mutex::new(File::create(args.out.join("player.log"))?));
     let plog = |msg: String| {
@@ -1487,9 +1547,17 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 | TapeEvent::Exec { .. }
                 | TapeEvent::I2cdetect { .. }
                 | TapeEvent::Dt { .. }
+                | TapeEvent::NtpProbe { .. }
         ) {
             apply_state(&agents, &r.ev, shift_s)?;
             prefilled[i] = true;
+        }
+    }
+    // Phase 4: a recorded `sudo` record is the ANSWER the device gave; the
+    // shim needs it before the call, so every one is applied up front.
+    for r in &tape.records {
+        if matches!(r.ev, TapeEvent::Sudo { .. }) {
+            apply_state(&agents, &r.ev, shift_s)?;
         }
     }
     let idx = prefilled.iter().filter(|p| **p).count();
@@ -1541,6 +1609,18 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         "agents started (B staggered {} ms); prefilled {idx} records",
         args.stagger_ms
     ));
+    {
+        let dts: Vec<PathBuf> = agents
+            .iter()
+            .filter_map(|a| a.p4.pi_dir.as_ref().map(|d| d.join("dt")))
+            .collect();
+        let dlog = log.clone();
+        tokio::spawn(p4::run_dt_writes(p4plan.clone(), dts, t0, move |m| {
+            if let Ok(mut f) = dlog.lock() {
+                let _ = writeln!(f, "{} {m}", wall_now_ms());
+            }
+        }));
+    }
     if let Ok(mut g) = aws_fake.start_wall.lock() {
         *g = play_start_wall;
     }
@@ -2002,11 +2082,18 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // Phase 4 kinds (I9): known to the reader, not replayed yet — the
             // shims (fake-modem pty, pinctrl, sudo, timedatectl) consume them
             // from WP6 step 2 on. Tolerated so a Phase 4 tape still plays.
+            // Phase 4: the NTP verdict is an input (timedatectl shim).
+            TapeEvent::NtpProbe { .. } => {
+                transitions.push(now);
+                apply_state(&agents, &r.ev, shift_s)?;
+            }
+            // Phase 4 outputs / answers: the fake modem answers from the
+            // transcript, the shims log `gpio`, `sudo` answers were applied
+            // up front.
             TapeEvent::AtTx { .. }
             | TapeEvent::AtRx { .. }
             | TapeEvent::Gpio { .. }
-            | TapeEvent::Sudo { .. }
-            | TapeEvent::NtpProbe { .. } => {}
+            | TapeEvent::Sudo { .. } => {}
         }
     }
     if let Some(s) = closed_since.take() {
@@ -2145,6 +2232,41 @@ fn apply_state(agents: &[Agent], ev: &TapeEvent, shift_s: i64) -> Result<()> {
                 // /proc/device-tree is a fixed path in both agents and cannot
                 // be redirected in a container: psu_max_current is absent on
                 // both sides of the rig (README "Limits").
+            }
+            // Phase 4: the timedatectl shim's NTPSynchronized answer.
+            TapeEvent::NtpProbe { synced } => write_atomic(
+                &a.state.join("ntp"),
+                if *synced { b"yes\n" } else { b"no\n" },
+            )?,
+            // Phase 4: the sudo shim's answer for that helper.
+            TapeEvent::Sudo {
+                argv,
+                code,
+                stdout,
+                stderr,
+                ..
+            } => {
+                let helper = argv
+                    .iter()
+                    .skip(1)
+                    .find(|x| !x.starts_with('-'))
+                    .and_then(|x| x.rsplit('/').next())
+                    .unwrap_or("sudo");
+                let dir = a.state.join("sudo");
+                fs::create_dir_all(&dir)?;
+                let base = dir.join(helper);
+                write_atomic(
+                    &base.with_extension("out"),
+                    stdout.as_deref().unwrap_or("").as_bytes(),
+                )?;
+                write_atomic(
+                    &base.with_extension("err"),
+                    stderr.as_deref().unwrap_or("").as_bytes(),
+                )?;
+                write_atomic(
+                    &base.with_extension("code"),
+                    code.unwrap_or(1).to_string().as_bytes(),
+                )?;
             }
             _ => {}
         }
