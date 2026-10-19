@@ -463,6 +463,48 @@ pub fn tick_failed_message(err: &str) -> String {
     format!("[clock] tick failed: {err}")
 }
 
+/// `system/xorgate-setclock:17` — its usage line (stderr, exit 2).
+pub const SETCLOCK_USAGE: &str = "usage: xorgate-setclock <epoch-seconds>";
+/// The helper's own lower bound (`system/xorgate-setclock:20`), epoch s.
+pub const SETCLOCK_MIN_EPOCH_S: u64 = 1_735_689_600;
+/// The helper's own upper bound, exclusive (`system/xorgate-setclock:21`).
+pub const SETCLOCK_MAX_EPOCH_S: u64 = 4_102_444_800;
+
+/// The ONLY mint of a `xorgate-setclock` [`HelperCall`] (I5):
+/// `defaultApplyStep(targetMs)` (`clock-step.ts:185-186`) with the helper's
+/// own validation (`system/xorgate-setclock:15-21`) applied first.
+///
+/// The epoch is `String(Math.round(targetMs / 1000))`, exactly the argument
+/// the TS passes. `Err` = what the helper would print on stderr (exit 2) for
+/// that argument — the caller turns it into the same
+/// `[clock] step from <src> failed: <detail>` the TS logs after the helper
+/// refused it. Only reachable at the rounding edge of the plausibility window
+/// ([`decide`] already refuses targets outside [2025, 2100)): e.g. a target
+/// 400 ms before 2100 rounds to 4102444800 and the helper says
+/// `refusing epoch 4102444800 (after 2100)`. The sudo call itself is skipped
+/// (no journal line) — the detail is identical.
+pub fn setclock_call(target_ms: f64) -> Result<crate::commands::HelperCall, String> {
+    let secs = crate::round::js_math_round(target_ms / 1000.0);
+    // `case "$epoch" in ''|*[!0-9]*)`: NaN, a minus sign, or an exponent
+    // (JS prints integers >= 1e21 as `1e+21`) are not all-digits.
+    if !secs.is_finite() || secs < 0.0 || secs >= 1e21 {
+        return Err(SETCLOCK_USAGE.to_string());
+    }
+    // An integral f64 < 1e21 is exact in u128 and prints as JS `String()` does.
+    let digits = secs as u128;
+    if digits < u128::from(SETCLOCK_MIN_EPOCH_S) {
+        return Err(format!("refusing epoch {digits} (before 2025)"));
+    }
+    if digits >= u128::from(SETCLOCK_MAX_EPOCH_S) {
+        return Err(format!("refusing epoch {digits} (after 2100)"));
+    }
+    Ok(crate::commands::HelperCall::mint(
+        crate::commands::HelperKind::SetClock {
+            epoch_s: digits as u64,
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +550,34 @@ mod tests {
             ["-n", SETCLOCK_HELPER, "1785326700"]
         );
         assert_eq!(setclock_argv(1_500.0)[2], "2");
+    }
+
+    #[test]
+    fn setclock_call_applies_the_helpers_own_window() {
+        // Inside the window: the TS argument, `sudo -n` first.
+        let c = setclock_call(MIN_PLAUSIBLE_MS).unwrap();
+        assert_eq!(c.argv(), ["sudo", "-n", SETCLOCK_HELPER, "1735689600"]);
+        assert_eq!(
+            setclock_call(MAX_PLAUSIBLE_MS - 501.0)
+                .unwrap()
+                .helper_args(),
+            ["4102444799"]
+        );
+        // Rounding edge: decide() lets it through, the helper refuses it.
+        assert_eq!(
+            setclock_call(MAX_PLAUSIBLE_MS - 400.0).unwrap_err(),
+            "refusing epoch 4102444800 (after 2100)"
+        );
+        assert_eq!(
+            setclock_call(MIN_PLAUSIBLE_MS - 501.0).unwrap_err(),
+            "refusing epoch 1735689599 (before 2025)"
+        );
+        assert_eq!(
+            setclock_call(-400.0).unwrap_err(),
+            "refusing epoch 0 (before 2025)"
+        ); // Math.round(-0.4) = -0, String(-0) = "0"
+        assert_eq!(setclock_call(-1_000.0).unwrap_err(), SETCLOCK_USAGE);
+        assert_eq!(setclock_call(f64::NAN).unwrap_err(), SETCLOCK_USAGE);
+        assert_eq!(setclock_call(1e24).unwrap_err(), SETCLOCK_USAGE);
     }
 }
