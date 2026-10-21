@@ -1,0 +1,20 @@
+#!/bin/bash
+# visudo shim (convert-e2e): the image moves Debian's real visudo to
+# /usr/sbin/visudo.real; this logs every call to /run/e2e/visudo.log as
+#   <argv> | sha256=<checked file's digest> | 024=<present|absent at call time>
+# then runs the real visudo. With /run/e2e/visudo-refuse present it REFUSES
+# (exit 1, visudo-like stderr) any file that grants xorgate-updater-rs — the
+# `visudo-refuses` case (a refusal must warn, never be fatal: TS update.ts).
+set -uo pipefail
+mkdir -p /run/e2e
+f=""
+for a in "$@"; do case "$a" in -*) ;; *) f=$a ;; esac; done
+d=-
+[ -n "$f" ] && [ -r "$f" ] && d=$(sha256sum <"$f" | cut -d' ' -f1)
+p=absent; [ -e /etc/sudoers.d/024_xorgate-update-rs ] && p=present
+echo "$* | sha256=$d | 024=$p" >>/run/e2e/visudo.log
+if [ -e /run/e2e/visudo-refuse ] && [ -n "$f" ] && grep -q 'xorgate-updater-rs' "$f" 2>/dev/null; then
+  echo "$f:3:1: syntax error (refused by the e2e)" >&2
+  exit 1
+fi
+exec /usr/sbin/visudo.real "$@"
