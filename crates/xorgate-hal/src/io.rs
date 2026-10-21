@@ -100,6 +100,12 @@ pub trait TapeSink: Send + Sync + 'static {
     fn child_line(&self, _role: &str, _key: &str, _fd: u8, _line: &str) {}
     /// The agent sent signal `sig` to the child `pid`.
     fn child_signal(&self, _role: &str, _key: &str, _pid: u32, _sig: i32) {}
+    /// The agent's `kill(2)` of `sig` to the child `pid` RETURNED `errno`
+    /// (0 = sent), recorded after the syscall (review-wp6 M5). A sink that
+    /// does not tell the two apart sees a plain [`Self::child_signal`].
+    fn child_signal_sent(&self, role: &str, key: &str, pid: u32, sig: i32, _errno: i32) {
+        self.child_signal(role, key, pid, sig);
+    }
     /// A child exited: code, signal, `external` (not agent-sent).
     fn child_exit(&self, _r: &ChildExitRec) {}
     /// An output file operation; `rel` is relative to the agent home.

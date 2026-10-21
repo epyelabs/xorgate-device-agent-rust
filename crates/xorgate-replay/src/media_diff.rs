@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | `children` | per (role, key): spawn count, argv, kvs env, how each child ended (`int` / `eos` / `kill` / `external` / `exit:<code>`) | spawn instant ±1 s (T10); stagger gap ≥ 4 s is a contract check per side |
 //! | `session` | `session.json` fields | `sessionId`, `bootId`, `anchorTs`, `anchorMono` (T11) |
-//! | `sidecar` | key order; every field but the tolerated ones | `startTs` ±300 ms relative to the agent's own capture PLAYING (`New clock:`) time, `startMono` deltas within the session ±300 ms, `durationMs` ±150 ms, `sizeBytes` any (T12) |
+//! | `sidecar` | key order; every field but the tolerated ones | `startTs` ±300 ms relative to the agent's own capture PLAYING (`New clock:`) time, `startMono` deltas within the session ±300 ms, `durationMs` ±150 ms (an INTERIOR fragment: its end boundary like its start, `T12/interior-boundaries`; the session's last: `T12/cut-fragment`), `sizeBytes` any (T12) |
 //! | `mp4` | per side: seq contiguity from 0, no 0-byte closed fragment | fragment count per session ±1 (T12, the run's cut) |
 //! | `rec-telemetry` | decompressed header lines minus T1/T11 fields; sample key order; per segment the groups present, each group's leaf paths and number SHAPES (T9); per session the deduplicated VALUE sequence of every non-host leaf and per-group sample counts (G1) | segment count per session ±1 and file-name ms stamps (T13; gz bytes never compared: D24) |
 //! | `s3` | per side every SigV4 signature valid, sidecar PUT before its mp4, each source's first successful PUTs oldest-first; A vs B the normalised key multiset of successful PUTs + content types, and each source's order of the keys both PUT | a session's LAST fragment / LAST telemetry segment present on one side only (never a middle segment), attempt counts / timing (T14) |
@@ -250,12 +250,41 @@ impl MediaCapture {
         let shim = lines(&dir.join("shim.ndjson"));
         let procs = lines(&dir.join("procs.ndjson"));
         // The agent's own tape (Rust only): its NMEA reads and the capture
-        // children IT SIGINTed (`child_signal`).
+        // children IT SIGINTed — counted only from a record that proves the
+        // SIGINT was DELIVERED to a live child (review-wp6 M5): written after
+        // the kill(2) returned (`errno` present) with sig 2 and errno 0;
+        // stamped before the child died (the shim's `eof`, else the
+        // player's `gone`); and the agent never reaped that child
+        // (`child_exit`): it died with its agent, the A3 race. Anything else
+        // falls back to gst's own `handling interrupt.` line.
         let tape = tape_recs(&dir.join("agent-tape.ndjson.gz"));
+        let death: BTreeMap<u32, i64> = shim
+            .iter()
+            .filter(|v| v["k"] == "eof")
+            .chain(procs.iter().filter(|v| v["k"] == "gone"))
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["w"].as_i64()?)))
+            .fold(BTreeMap::new(), |mut m, (p, w)| {
+                m.entry(p)
+                    .and_modify(|x: &mut i64| *x = (*x).min(w))
+                    .or_insert(w);
+                m
+            });
+        let reaped: BTreeSet<u32> = tape
+            .iter()
+            .filter(|v| v["k"] == "child_exit")
+            .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
+            .collect();
         let agent_int: BTreeSet<u32> = tape
             .iter()
-            .filter(|v| v["k"] == "child_signal" && v["role"] == "capture" && v["sig"] == 2)
-            .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
+            .filter(|v| {
+                v["k"] == "child_signal"
+                    && v["role"] == "capture"
+                    && v["sig"] == 2
+                    && v["errno"] == 0
+            })
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["w"].as_i64()?)))
+            .filter(|(p, w)| death.get(p).is_some_and(|d| w < d) && !reaped.contains(p))
+            .map(|(p, _)| p)
             .collect();
         let rec_json: Value = std::fs::read(dir.join("recordings.json"))
             .ok()
@@ -669,18 +698,48 @@ fn nmea_lines(recs: &[Value], releases: Option<&[crate::diff::Release]>) -> Vec<
 /// current on THAT side — position at its GGA/RMC, `snr_max`/`sats_heard`
 /// at the talker's last GSV of the cycle.
 pub(crate) type Timeline = BTreeMap<String, Changes>;
-/// One leaf's `(instant, value)` changes on one side.
-pub(crate) type Changes = Vec<(i64, f64)>;
+/// One leaf's `(instant, value, anchored)` changes on one side; `anchored`
+/// = the read that made it current is bounded by the player's release
+/// (S-F4, [`bound_reads`]).
+pub(crate) type Changes = Vec<(i64, f64, bool)>;
 
-fn gps_timeline(reads: &[(i64, String)]) -> Timeline {
+/// review-wp6 S-F4: each self-reported read `(w, line)` matched, in order,
+/// to the player's release of the same line (`feed`); `true` when
+/// `0 ≤ read − release ≤ max_lag`. Unmatched (no player tape, a line the
+/// player never released) → `false`. Also returns the matched lags.
+fn bound_reads(
+    reads: &[(i64, String)],
+    feed: &[(i64, String)],
+    max_lag: i64,
+) -> (Vec<(i64, String, bool)>, Vec<i64>) {
+    let mut j = 0;
+    let mut lags = Vec::new();
+    let out = reads
+        .iter()
+        .map(|(w, line)| {
+            let l = line.trim_end();
+            let hit = (j..feed.len().min(j + 64)).find(|&k| feed[k].1.trim_end() == l);
+            let ok = hit.is_some_and(|k| {
+                j = k + 1;
+                let lag = w - feed[k].0;
+                lags.push(lag);
+                (0..=max_lag).contains(&lag)
+            });
+            (*w, line.clone(), ok)
+        })
+        .collect();
+    (out, lags)
+}
+
+fn gps_timeline(reads: &[(i64, String, bool)]) -> Timeline {
     let mut out: Timeline = BTreeMap::new();
-    let Some(&(t0, _)) = reads.first() else {
+    let Some(&(t0, _, _)) = reads.first() else {
         return out;
     };
     let mut agg = xorgate_core::nmea::FixAggregator::new();
     let mut sky = xorgate_core::sky_state::SkyTracker::with_defaults(t0.max(0) as u64);
     let mut latest: Option<xorgate_core::nmea::GpsFix> = None;
-    for (w, line) in reads {
+    for (w, line, bounded) in reads {
         let now = (*w).max(0) as u64;
         if agg.update(line) {
             latest = Some(agg.fix.clone());
@@ -702,8 +761,8 @@ fn gps_timeline(reads: &[(i64, String)]) -> Timeline {
         for (path, text) in leaves {
             let Ok(v) = text.parse::<f64>() else { continue };
             let tl = out.entry(path).or_default();
-            if tl.last().is_none_or(|&(_, last)| last != v) {
-                tl.push((*w, v));
+            if tl.last().is_none_or(|&(_, last, _)| last != v) {
+                tl.push((*w, v, *bounded));
             }
         }
     }
@@ -1126,16 +1185,16 @@ fn adjacent_races(
         return false;
     };
     // The holder's change to `v`: the last at or before its sample, ≤ 1.1 s.
-    let held = |e: &[(i64, f64)], v: f64, ts: i64| -> Option<usize> {
-        let i = e.iter().rposition(|&(w, u)| w <= ts && u == v)?;
+    let held = |e: &[(i64, f64, bool)], v: f64, ts: i64| -> Option<usize> {
+        let i = e.iter().rposition(|&(w, u, _)| w <= ts && u == v)?;
         (ts - e[i].0 <= 1_100).then_some(i)
     };
     // The same change on the other side: to `v`, within 500 ms.
-    let peer = |e: &[(i64, f64)], v: f64, at: i64| -> Option<usize> {
+    let peer = |e: &[(i64, f64, bool)], v: f64, at: i64| -> Option<usize> {
         e.iter()
             .enumerate()
-            .filter(|(_, &(w, u))| u == v && (w - at).abs() <= 500)
-            .min_by_key(|(_, &(w, _))| (w - at).abs())
+            .filter(|(_, &(w, u, _))| u == v && (w - at).abs() <= 500)
+            .min_by_key(|(_, &(w, _, _))| (w - at).abs())
             .map(|(i, _)| i)
     };
     let raced = |l: &Leaves, at: i64| {
@@ -1151,10 +1210,23 @@ fn adjacent_races(
         return false;
     };
     let (da, db) = (iay as i64 - iax as i64, iby as i64 - ibx as i64);
-    da.abs() == 1 && da == db && raced(la, ea[iay].0) && raced(lb, eb[ibx].0)
+    // S-F4: every instant used is a release-bounded read.
+    let anchored = [ea[iax].2, ea[iay].2, eb[iby].2, eb[ibx].2]
+        .iter()
+        .all(|b| *b);
+    anchored && da.abs() == 1 && da == db && raced(la, ea[iay].0) && raced(lb, eb[ibx].0)
 }
 
 type Leaves = [(i64, BTreeMap<String, String>)];
+
+/// review-wp6 F5: the fragments' END instants (`startTs + durationMs`),
+/// each relative to its own side's capture PLAYING, agree within `bound`.
+fn ends_agree(x: &Value, y: &Value, (pa, pb): (Option<i64>, Option<i64>), bound: f64) -> bool {
+    let end = |v: &Value, p: Option<i64>| {
+        Some(v["startTs"].as_f64()? + v["durationMs"].as_f64()? - p? as f64)
+    };
+    matches!((end(x, pa), end(y, pb)), (Some(rx), Some(ry)) if (rx - ry).abs() <= bound)
+}
 
 /// The tape record kinds that feed a telemetry group (T4's per-group list).
 fn group_inputs(group: &str) -> &'static [&'static str] {
@@ -1884,6 +1956,18 @@ pub fn diff_media(
                 row_tol(table, "T12/cut-fragment", "endMs", 0.0),
                 row_tol(table, "T12/cut-fragment", "tickMs", 0.0) as i64,
             );
+        // review-wp6 F5: an INTERIOR fragment (its successor exists on both
+        // sides) has no duration of its own — `durationMs` = mtime − birthtime
+        // (video-segments.ts:178-182) and its mtime IS the rotation to the next
+        // file (end = next startTs ±3 ms per side, measured), so it is the
+        // difference of two boundaries, each a per-process fs instant. Its END
+        // is judged like its start: relative to each side's own PLAYING within
+        // T12's startTs bound.
+        let interior = has_row(table, "T12/interior-boundaries")
+            && [&ca, &cb]
+                .iter()
+                .all(|c| c.contains_key(&(key.0.clone(), key.1 + 1)))
+            && ends_agree(x, y, (pa, pb), start_ms);
         let skip = |p: &str| -> Option<String> {
             match p {
                 "sizeBytes" => Some(t12.to_string()),
@@ -1901,6 +1985,8 @@ pub fn diff_media(
                     let d = (x["durationMs"].as_f64()? - y["durationMs"].as_f64()?).abs();
                     if d <= dur_ms {
                         Some(t12.to_string())
+                    } else if interior {
+                        Some("T12/interior-boundaries".to_string())
                     } else if cut_ok {
                         Some("T12/cut-fragment".to_string())
                     } else if d30_ok {
@@ -2182,19 +2268,34 @@ pub fn diff_media(
     stat(rep, "rec-presence");
     // Each side's NMEA epochs at its OWN read instants (its agent tape); a
     // side without one (JS) gets the player's feed at the release instants.
-    let feed = if a.nmea_reads.is_empty() || b.nmea_reads.is_empty() {
-        nmea_lines(&tape_recs(Path::new(&play.tape)), Some(&play.releases))
-    } else {
-        Vec::new()
+    // review-wp6 S-F4: a Rust side's read instant is self-reported, so each
+    // one is bounded against the player's release of the SAME line
+    // (`readLagMs`); an unbounded read cannot anchor a race.
+    let feed = nmea_lines(&tape_recs(Path::new(&play.tape)), Some(&play.releases));
+    let read_lag = row_tol(table, "T4/rec-sample", "readLagMs", 0.0) as i64;
+    let mut timeline = |label: &str, m: &MediaCapture| {
+        if m.nmea_reads.is_empty() {
+            let all: Vec<(i64, String, bool)> =
+                feed.iter().map(|(w, l)| (*w, l.clone(), true)).collect();
+            return gps_timeline(&all);
+        }
+        let (bounded, lags) = bound_reads(&m.nmea_reads, &feed, read_lag);
+        let out = bounded.iter().filter(|r| !r.2).count();
+        let mut l = lags.clone();
+        l.sort();
+        rep.inputs.insert(
+            format!("T4 nmea read − release {label} (S-F4)"),
+            format!(
+                "{} reads, {} matched, median {:?} / max {:?} ms, {out} outside [0, {read_lag}] ms",
+                bounded.len(),
+                lags.len(),
+                l.get(l.len() / 2),
+                l.last()
+            ),
+        );
+        gps_timeline(&bounded)
     };
-    let timeline = |m: &MediaCapture| {
-        gps_timeline(if m.nmea_reads.is_empty() {
-            &feed
-        } else {
-            &m.nmea_reads
-        })
-    };
-    let ep = (timeline(a), timeline(b));
+    let ep = (timeline("A", a), timeline("B", b));
     for sid in va.keys().filter(|k| vb.contains_key(*k)) {
         rec_values(sid, (&va[sid], &vb[sid]), &ep, play, &facts, table, rep);
     }
@@ -3349,6 +3450,88 @@ mod tests {
         );
     }
 
+    /// review-wp6 F5 (re-review run rr-m1, 15 busy loops + host overload):
+    /// an interior fragment's boundary moved 272 ms on one side (inside
+    /// T12's startTs ±300) while its neighbour compensated — its durationMs
+    /// differs by 302 but both its boundaries agree within ±300: tolerated
+    /// as `T12/interior-boundaries`. A moved END boundary (> 300) or the
+    /// session's LAST fragment stays as before.
+    #[test]
+    fn interior_fragment_durations_are_judged_by_their_boundaries() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam0#0>";
+        let side = |starts: &[i64], last_dur: i64| {
+            let mut finals = BTreeMap::new();
+            for (i, st) in starts.iter().enumerate() {
+                let dur = starts.get(i + 1).map_or(last_dur, |n| n - st);
+                finals.insert(
+                    format!("recordings/video/cam0/{sid}/{i:05}.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "seq": i, "startTs": st, "startMono": st - starts[0] + 5,
+                        "durationMs": dur, "sizeBytes": 100,
+                    }))
+                    .unwrap(),
+                );
+            }
+            MediaCapture {
+                kind: "rust".into(),
+                spawns: vec![Spawn {
+                    w: starts[0] - 2_500,
+                    role: "capture".into(),
+                    key: "cam0".into(),
+                    pid: 7,
+                    argv: vec!["gst".into()],
+                    env: BTreeMap::new(),
+                    playing: Some(starts[0] - 2_000),
+                    end: Some("int".into()),
+                    end_w: None,
+                    sid: Some(sid.into()),
+                }],
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        let run = |a: MediaCapture, b: MediaCapture| {
+            let mut rep = Report::default();
+            diff_media(&a, &b, &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                // within T12's own ±150 (the +30 at 00003): not this rule's
+                .filter(|m| m.stream == "sidecar" && m.path == "durationMs" && m.tol != "T12")
+                .map(|m| format!("{} {}", m.at, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let a = side(&[400_000, 410_000, 420_000, 430_000], 5_000);
+        // B's 00002 boundary 272 ms late: 00001 is 272 longer, 00002 272
+        // shorter (+30 at 00003's start): two interior rows by boundaries.
+        let b = side(&[400_000, 410_000, 420_272, 430_030], 4_970);
+        assert_eq!(
+            run(a.clone(), b),
+            vec![
+                format!("{sid}/00001 T12/interior-boundaries"),
+                format!("{sid}/00002 T12/interior-boundaries"),
+            ]
+        );
+        // An END boundary 320 ms off its peer (beyond T12's startTs bound).
+        let far = side(&[400_000, 410_000, 420_320, 430_000], 5_000);
+        // (00002's own END agrees again: its start row fails instead.)
+        assert_eq!(
+            run(a.clone(), far),
+            vec![
+                format!("{sid}/00001 {UNTOLERATED}"),
+                format!("{sid}/00002 T12/interior-boundaries"),
+            ]
+        );
+        // The LAST fragment (no successor) is not interior: its own rules.
+        let short = side(&[400_000, 410_000, 420_000, 430_000], 4_700);
+        assert_eq!(run(a, short), vec![format!("{sid}/00003 {UNTOLERATED}")]);
+    }
+
     /// G1: recorded VALUES per leaf (deduplicated), per-group presence.
     #[test]
     fn rec_values_compare_steps_exactly_but_a_raced_tick() {
@@ -3519,15 +3702,40 @@ mod tests {
             present: true,
             ..Default::default()
         };
-        let run = |a: MediaCapture, b: MediaCapture| {
+        // The player's tape + releases of the same lines (S-F4: a Rust read
+        // anchors a race only within readLagMs of the release of its line).
+        let tape_path =
+            std::env::temp_dir().join(format!("xorgate-replay-f4-{}.ndjson", std::process::id()));
+        let mut tape_text = String::from("{\"v\":1,\"k\":\"meta\"}\n");
+        let mut releases = Vec::new();
+        for (i, (w, line)) in reads(0).into_iter().enumerate() {
+            tape_text.push_str(
+                &serde_json::json!({"t": i, "w": w, "k": "nmea", "line": line}).to_string(),
+            );
+            tape_text.push('\n');
+            releases.push(crate::diff::Release {
+                w,
+                due: w,
+                t: i as u64,
+                k: "nmea".into(),
+            });
+        }
+        std::fs::write(&tape_path, tape_text).unwrap();
+        let play = PlayInfo {
+            tape: tape_path.display().to_string(),
+            releases,
+            ..Default::default()
+        };
+        let run_with = |a: MediaCapture, b: MediaCapture, play: &PlayInfo| {
             let mut rep = Report::default();
-            diff_media(&a, &b, &PlayInfo::default(), &table, &mut rep);
+            diff_media(&a, &b, play, &table, &mut rep);
             rep.mismatches
                 .into_iter()
                 .filter(|m| m.stream == "rec-telemetry" && m.path.starts_with("metrics.gps"))
                 .map(|m| format!("{} {}", m.path, m.tol))
                 .collect::<Vec<_>>()
         };
+        let run = |a: MediaCapture, b: MediaCapture| run_with(a, b, &play);
         let t = |i: i64, d: i64| 100_000 + i * 1000 + d;
         let la = |v: &[(i64, i64)]| {
             v.iter()
@@ -3570,11 +3778,46 @@ mod tests {
         let mut s9 = sb(-3);
         s9[3].2 = 14.6;
         assert_eq!(run(cap(&sa(10), reads(0)), cap(&s9, reads(0))), bad);
-        // No reads (nothing replays the collector): UNTOLERATED.
-        assert_eq!(run(cap(&sa(10), vec![]), cap(&sb(-3), vec![])), bad);
+        // No reads and no player tape (nothing replays the collector).
+        assert_eq!(
+            run_with(
+                cap(&sa(10), vec![]),
+                cap(&sb(-3), vec![]),
+                &PlayInfo::default()
+            ),
+            bad
+        );
+        // S-F4: A's reader 300 ms late on every line, its ticks 3 ms before
+        // ITS OWN reads (a self-consistent late reader): its reads are
+        // outside readLagMs of the player's releases → no anchor → UNTOLERATED;
+        // the same shape without a player tape cannot anchor either.
+        let late = la(&[
+            (t(1, 310), 1),
+            (t(2, 310), 2),
+            (t(3, 297), 2),
+            (t(4, 297), 3),
+            (t(5, 310), 5),
+            (t(6, 310), 6),
+        ]);
+        assert_eq!(run(cap(&late, reads(300)), cap(&sb(-3), reads(0))), bad);
+        assert_eq!(
+            run_with(
+                cap(&sa(10), reads(0)),
+                cap(&sb(-3), reads(0)),
+                &PlayInfo::default()
+            ),
+            bad
+        );
+        let (bounded, lags) = bound_reads(&reads(80), &reads(0), 200);
+        assert!(bounded.iter().all(|r| r.2) && lags.iter().all(|l| *l == 80));
+        let (bounded, _) = bound_reads(&reads(300), &reads(0), 200);
+        assert!(bounded.iter().all(|r| !r.2));
         // Non-consecutive values (A holds 2 where B holds 4 at slot 3/4,
         // every tick raced): never two misses.
-        let tl = gps_timeline(&reads(0));
+        let anchored = |r: Vec<(i64, String)>| -> Vec<(i64, String, bool)> {
+            r.into_iter().map(|(w, l)| (w, l, true)).collect()
+        };
+        let tl = gps_timeline(&anchored(reads(0)));
         let leaves = |v: &[(i64, &str, f64)]| -> Vec<(i64, BTreeMap<String, String>)> {
             v.iter()
                 .map(|(ts, leaf, x)| {
@@ -3601,7 +3844,7 @@ mod tests {
             ((t(3, -3), &x2), (t(4, 10), &y)),
             50
         ));
-        assert_eq!(tl["metrics.gps.lat.value"][3], (t(3, 0), lat(3)));
+        assert_eq!(tl["metrics.gps.lat.value"][3], (t(3, 0), lat(3), true));
         assert_eq!(
             tl["metrics.gps.snr_max.value"]
                 .iter()
@@ -3651,12 +3894,13 @@ mod tests {
             run(cap(&sky_a, reads(0)), cap(&sky_b(-192), reads(0))),
             vec![format!("metrics.gps.snr_max.value(values) {UNTOLERATED}")]
         );
+        let _ = std::fs::remove_file(&tape_path);
     }
 
     /// A capture SIGINTed at the agent's stop and killed by the agent's exit
     /// before gst printed `handling interrupt.` (gate run 032624Z, 15 busy
-    /// loops) is `int` by the agent's own tape record of the SIGINT; with
-    /// neither the line nor the record it stays `kill`.
+    /// loops) is `int` by the agent's own tape record of the SIGINT — only
+    /// when that record proves delivery (review-wp6 M5); otherwise `kill`.
     #[test]
     fn capture_end_int_from_the_agents_own_sigint_record() {
         let dir = std::env::temp_dir().join(format!("xorgate-replay-end-{}", std::process::id()));
@@ -3687,16 +3931,50 @@ mod tests {
                 .and_then(|s| s.end.clone())
         };
         assert_eq!(end(&dir).as_deref(), Some("kill"));
-        let tape = concat!(
-            r#"{"v":1,"k":"meta"}"#,
-            "\n",
-            r#"{"t":67618,"w":3000,"k":"child_signal","role":"capture","key":"cam1","pid":9146,"sig":2}"#,
-            "\n"
+        let with_tape = |recs: &[&str]| {
+            let mut tape = String::from("{\"v\":1,\"k\":\"meta\"}\n");
+            for r in recs {
+                tape.push_str(r);
+                tape.push('\n');
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gz, tape.as_bytes()).unwrap();
+            std::fs::write(dir.join("agent-tape.ndjson.gz"), gz.finish().unwrap()).unwrap();
+            end(&dir)
+        };
+        let sent = |w: i64, sig: i32, errno: &str| {
+            format!(
+                r#"{{"t":67618,"w":{w},"k":"child_signal","role":"capture","key":"cam1","pid":9146,"sig":{sig}{errno}}}"#
+            )
+        };
+        // SIGINT really sent (taped after kill(2), errno 0), before the
+        // child's death, never reaped by the agent → `int`.
+        assert_eq!(
+            with_tape(&[&sent(3000, 2, r#","errno":0"#)]).as_deref(),
+            Some("int")
         );
-        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        std::io::Write::write_all(&mut gz, tape.as_bytes()).unwrap();
-        std::fs::write(dir.join("agent-tape.ndjson.gz"), gz.finish().unwrap()).unwrap();
-        assert_eq!(end(&dir).as_deref(), Some("int"));
+        // (1) Not proven delivered: kill(2) failed (ESRCH 3), a record
+        // written BEFORE the syscall (no errno), or another signal (9).
+        assert_eq!(
+            with_tape(&[&sent(3000, 2, r#","errno":3"#)]).as_deref(),
+            Some("kill")
+        );
+        assert_eq!(with_tape(&[&sent(3000, 2, "")]).as_deref(), Some("kill"));
+        assert_eq!(
+            with_tape(&[&sent(3000, 9, r#","errno":0"#)]).as_deref(),
+            Some("kill")
+        );
+        // (2) Stamped after the child died (its eof at 3021).
+        assert_eq!(
+            with_tape(&[&sent(3022, 2, r#","errno":0"#)]).as_deref(),
+            Some("kill")
+        );
+        // (3) The agent reaped the child itself (a death while it lived).
+        let exit = r#"{"t":67620,"w":3010,"k":"child_exit","role":"capture","key":"cam1","pid":9146,"code":null,"signal":9,"external":false}"#;
+        assert_eq!(
+            with_tape(&[&sent(3000, 2, r#","errno":0"#), exit]).as_deref(),
+            Some("kill")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
