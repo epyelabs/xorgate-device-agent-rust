@@ -15,6 +15,7 @@
 //! (`led.ts` `stop()` → `lastLevels = null`), as do white toggles and blanks —
 //! identically on both sides.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
@@ -201,13 +202,103 @@ pub fn diff_p4(a: &P4Capture, b: &P4Capture, table: &Table, rep: &mut Report) {
     diff_at(a, b, rep);
 }
 
-fn led_bounds(table: &Table) -> Option<(String, f64, f64)> {
+/// T15 bounds: `(row id, step_ms, drift_ms_per_tick, spawn_ms)`.
+fn led_bounds(table: &Table) -> Option<(String, f64, f64, f64)> {
     let r = table.of_kind("p4", "led").next()?;
     Some((
         r.id.clone(),
         *r.tolerance.get("step_ms")?,
-        *r.tolerance.get("phase_ms")?,
+        *r.tolerance.get("drift_ms_per_tick")?,
+        *r.tolerance.get("spawn_ms")?,
     ))
+}
+
+/// The LED pin map the driver logged (`[led] rgb-gpio r=GPIO12 g=GPIO21
+/// b=GPIO16 …`, led.ts:291-296), else the Argus CM5 default.
+fn pin_map(c: &P4Capture) -> [u32; 3] {
+    let num = |l: &str, k: &str| -> Option<u32> {
+        let i = l.find(k)? + k.len();
+        l[i..]
+            .split(|ch: char| !ch.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    };
+    c.led_other
+        .iter()
+        .find_map(|l| Some([num(l, "r=GPIO")?, num(l, "g=GPIO")?, num(l, "b=GPIO")?]))
+        .unwrap_or([12, 21, 16])
+}
+
+/// The first `apply()` of a `play(colour, …)` from "levels unknown": the
+/// colour's pins high, the others low, each listed r, g, b (led.ts:351-381).
+fn first_group(colour: &str, pins: [u32; 3]) -> Option<String> {
+    let ch: [bool; 3] = match colour {
+        "off" => [false, false, false],
+        "red" => [true, false, false],
+        "green" => [false, true, false],
+        "blue" => [false, false, true],
+        "purple" => [true, false, true],
+        "cyan" => [false, true, true],
+        "white" => [true, true, true],
+        _ => return None,
+    };
+    let join = |on: bool| {
+        (0..3)
+            .filter(|&i| ch[i] == on)
+            .map(|i| pins[i].to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let (rise, fall) = (join(true), join(false));
+    Some(match (rise.is_empty(), fall.is_empty()) {
+        (false, false) => format!("+{rise} -{fall}"),
+        (false, true) => format!("+{rise}"),
+        (true, _) => format!("-{fall}"),
+    })
+}
+
+/// `[led] <from> → <to> (<colour> <pattern>)` → (from, to, colour).
+fn parse_transition(t: &str) -> Option<(String, String, String)> {
+    let body = t.strip_prefix("[led] ")?;
+    let (from, rest) = body.split_once(" → ")?;
+    let (to, paren) = rest.split_once(" (")?;
+    let colour = paren.split_whitespace().next()?;
+    Some((from.to_string(), to.to_string(), colour.to_string()))
+}
+
+/// Heartbeat ticks a transition may legitimately land apart on the two
+/// agents (T15 basis): 0 for a directly-fed rung; for a rung whose input is
+/// itself produced on an own-phase timer, the hops of that chain —
+/// undervoltage / thermal: the shed tick (manager.ts:612-615, 1 s) → the
+/// publish loop's noteRecordingStatus (worker.ts:1207, 1 s) → the heartbeat:
+/// 2; leaving `network` on reconnect: mqtt.js `reconnectPeriod: 2000`
+/// (mqtt.ts:63) → up to 2.
+fn chain_ticks(from: &str, to: &str) -> i64 {
+    let shed = |r: &str| matches!(r, "undervoltage" | "thermal");
+    if shed(from) || shed(to) || from == "network" {
+        2
+    } else {
+        0
+    }
+}
+
+/// Per side: (run index → transition index) for the runs a logged render
+/// started (matched in order by the colour's first group); other runs are
+/// unlogged event-driven ones (the config-applied flash, a blank).
+fn logged_runs(runs: &[Vec<Group>], transitions: &[String], pins: [u32; 3]) -> Vec<Option<usize>> {
+    let mut out = vec![None; runs.len()];
+    let mut t = 0;
+    for (i, r) in runs.iter().enumerate() {
+        let Some((_, _, colour)) = transitions.get(t).and_then(|x| parse_transition(x)) else {
+            break;
+        };
+        if first_group(&colour, pins).as_deref() == Some(r[0].text.as_str()) {
+            out[i] = Some(t);
+            t += 1;
+        }
+    }
+    out
 }
 
 fn diff_led(a: &P4Capture, b: &P4Capture, table: &Table, rep: &mut Report) {
@@ -245,7 +336,8 @@ fn diff_led(a: &P4Capture, b: &P4Capture, table: &Table, rep: &mut Report) {
             UNTOLERATED.into(),
         ));
     }
-    let (ra, rb) = (runs(&groups(&a.writes)), runs(&groups(&b.writes)));
+    let (ga, gb) = (groups(&a.writes), groups(&b.writes));
+    let (ra, rb) = (runs(&ga), runs(&gb));
     let mut compared = a.transitions.len().min(b.transitions.len());
     if ra.len() != rb.len() {
         rep.push(mm(
@@ -258,38 +350,20 @@ fn diff_led(a: &P4Capture, b: &P4Capture, table: &Table, rep: &mut Report) {
         ));
     }
     let bounds = led_bounds(table);
-    let tol_or_fail = |within: bool| -> String {
-        match (&bounds, within) {
-            (Some((id, ..)), true) => id.clone(),
-            _ => UNTOLERATED.into(),
-        }
-    };
-    let (step_ms, phase_ms) = bounds
+    let id = bounds.as_ref().map(|(i, ..)| i.clone());
+    let (step_ms, drift, spawn_ms) = bounds
         .as_ref()
-        .map(|(_, s, p)| (*s as i64, *p as i64))
-        .unwrap_or((0, 0));
-    let end = |r: &[Vec<Group>], i: usize, all: &[Group]| -> i64 {
-        r.get(i + 1)
-            .map(|n| n[0].w)
-            .unwrap_or_else(|| all.last().map(|g| g.w).unwrap_or(0))
-    };
-    let (ga, gb) = (groups(&a.writes), groups(&b.writes));
+        .map(|(_, s, d, sp)| (*s as i64, *d as i64, *sp as i64))
+        .unwrap_or((0, 0, 0));
+    // Per run: the signed sum of the per-step interval differences (A − B)
+    // over the compared legs — what the measured leg jitter accumulates to.
+    let mut cum: Vec<i64> = vec![0; ra.len().min(rb.len())];
+    let mut max_step_delta = 0i64;
+    // Groups + per-step intervals of every run (structure, both kinds).
     for i in 0..ra.len().min(rb.len()) {
         let (x, y) = (&ra[i], &rb[i]);
         compared += 1;
-        let dstart = x[0].w - y[0].w;
-        if dstart.abs() > step_ms {
-            rep.push(mm(
-                "led",
-                format!("run #{i} start"),
-                &x[0].text,
-                x[0].w.to_string(),
-                y[0].w.to_string(),
-                tol_or_fail(dstart.abs() <= phase_ms),
-            ));
-        }
-        let k = x.len().min(y.len());
-        for j in 0..k {
+        for j in 0..x.len().min(y.len()) {
             if x[j].text != y[j].text {
                 rep.push(mm(
                     "led",
@@ -304,6 +378,8 @@ fn diff_led(a: &P4Capture, b: &P4Capture, table: &Table, rep: &mut Report) {
             if j > 0 {
                 let (ia, ib) = (x[j].w - x[j - 1].w, y[j].w - y[j - 1].w);
                 compared += 1;
+                max_step_delta = max_step_delta.max((ia - ib).abs());
+                cum[i] += ia - ib;
                 if (ia - ib).abs() > step_ms {
                     rep.push(mm(
                         "led",
@@ -316,21 +392,148 @@ fn diff_led(a: &P4Capture, b: &P4Capture, table: &Table, rep: &mut Report) {
                 }
             }
         }
-        if x.len() != y.len() {
-            // A repeating pattern runs until the next state: its length
-            // follows the run's duration, which differs by the two heartbeat
-            // phases at its two ends.
-            let (da, db) = (end(&ra, i, &ga) - x[0].w, end(&rb, i, &gb) - y[0].w);
+    }
+    // review-wp6 M1: run START instants anchored to each agent's own
+    // heartbeat grid. A logged render that is not `none → …` is drawn by
+    // tick() from the 1 s heartbeat (worker.ts:633-638, led-manager.ts:56-73),
+    // so on each side consecutive such starts are k·1000 ms apart, ± the
+    // render's first `pinctrl` spawn latency (`spawn_ms`, led.ts:219-225: the
+    // shim stamps the write after the process spawn, host-load dependent) +
+    // k·drift; and the cross-agent offset of a run equals the base one (the
+    // two phases) ± the same slack. `spawn_ms` < 500 keeps a whole-heartbeat
+    // shift (1000 ± spawn_ms) disjoint from an on-phase render (0 ± spawn_ms). A render one heartbeat late
+    // shifts that offset by 1000 ms: UNTOLERATED, unless the rung's input is
+    // produced on an own-phase timer (`chain_ticks`, cited T15). Event-driven
+    // runs (`none → …` after start()/the overlay, the flash itself, a blank)
+    // are anchored to that agent's own async event, not comparable on the
+    // LED stream: their structure and steps are compared above, their
+    // anchors elsewhere (connection, config-apply events).
+    let (pa, pb) = (pin_map(a), pin_map(b));
+    let (la, lb) = (
+        logged_runs(&ra, &a.transitions, pa),
+        logged_runs(&rb, &b.transitions, pb),
+    );
+    let hb = |l: &[Option<usize>], tr: &[String]| -> BTreeMap<usize, usize> {
+        l.iter()
+            .enumerate()
+            .filter_map(|(run, t)| {
+                let t = (*t)?;
+                (!tr.get(t)?.starts_with("[led] none → ")).then_some((t, run))
+            })
+            .collect()
+    };
+    let (ha, hbm) = (hb(&la, &a.transitions), hb(&lb, &b.transitions));
+    let mut prev: Option<(usize, i64, i64, i64)> = None; // (t, start A, start B, Δ)
+    let mut base: Option<(usize, i64, i64, i64)> = None; // the last on-phase render
+    for (&t, &rai) in &ha {
+        let Some(&rbi) = hbm.get(&t) else { continue };
+        let (sa, sb) = (ra[rai][0].w, rb[rbi][0].w);
+        let d = sa - sb;
+        compared += 1;
+        let Some((pt, psa, psb, pd)) = prev else {
+            prev = Some((t, sa, sb, d));
+            base = Some((t, sa, sb, d));
+            rep.inputs
+                .entry("led heartbeat offset A−B (first heartbeat render)".into())
+                .or_insert_with(|| format!("{d} ms"));
+            continue;
+        };
+        let (from, to, _) = parse_transition(&a.transitions[t]).unwrap_or_default();
+        // Own grids: k heartbeats since the previous logged render.
+        for (side, s, ps) in [("A", sa, psa), ("B", sb, psb)] {
+            let k = ((s - ps) as f64 / 1000.0).round() as i64;
+            let off = (s - ps) - 1000 * k;
+            if off.abs() > spawn_ms + drift * k.abs() {
+                rep.push(mm(
+                    "led",
+                    format!("transition #{t} start ({side} grid)"),
+                    &format!("{from} → {to}"),
+                    format!("{} ms after #{pt}", s - ps),
+                    format!("{k} heartbeats ± {}", spawn_ms + drift * k.abs()),
+                    UNTOLERATED.into(),
+                ));
+            }
+        }
+        // The offset reference is the last render judged ON the base phase
+        // (`base`): a chained late render does not move it, so the next
+        // direct render is judged against the agents' real phase again.
+        let (bt, bsa, _bsb, bd) = base.unwrap_or((pt, psa, psb, pd));
+        let _ = bt;
+        let k = ((sa - bsa) as f64 / 1000.0).round().abs() as i64;
+        let slack = spawn_ms + drift * k;
+        let shift = d - bd;
+        let m = (shift as f64 / 1000.0).round() as i64;
+        if shift.abs() > slack {
+            let tol = match &id {
+                Some(id)
+                    if m != 0
+                        && (shift - 1000 * m).abs() <= slack
+                        && m.abs() <= chain_ticks(&from, &to) =>
+                {
+                    id.clone()
+                }
+                _ => UNTOLERATED.to_string(),
+            };
             rep.push(mm(
                 "led",
-                format!("run #{i} length"),
-                "(groups / ms)",
-                format!("{} / {da}", x.len()),
-                format!("{} / {db}", y.len()),
-                tol_or_fail((da - db).abs() <= 2 * phase_ms),
+                format!("transition #{t} start"),
+                &format!("{from} → {to}"),
+                format!("A−B {d} ms"),
+                format!(
+                    "base A−B {bd} ms ({m:+} heartbeat(s), chain allows {})",
+                    chain_ticks(&from, &to)
+                ),
+                tol,
             ));
+        } else {
+            base = Some((t, sa, sb, d));
         }
+        prev = Some((t, sa, sb, d));
     }
+    // A repeating pattern runs until the next state, so a run's group count
+    // follows its duration (the gap to the next run's start, whose offset
+    // the heartbeat rule judged): tolerated only when the count difference is
+    // what that duration difference buys at the pattern's shortest leg (+1
+    // for the boundary).
+    for i in 0..ra.len().min(rb.len()) {
+        let (x, y) = (&ra[i], &rb[i]);
+        if x.len() == y.len() {
+            continue;
+        }
+        let (da, db) = match (ra.get(i + 1), rb.get(i + 1)) {
+            (Some(nx), Some(ny)) => (nx[0].w - x[0].w, ny[0].w - y[0].w),
+            // The last run: cut by the stop (both agents together).
+            _ => (
+                ga.last().map(|g| g.w).unwrap_or(0) - x[0].w,
+                gb.last().map(|g| g.w).unwrap_or(0) - y[0].w,
+            ),
+        };
+        let leg = x
+            .windows(2)
+            .chain(y.windows(2))
+            .map(|w| w[1].w - w[0].w)
+            .filter(|d| *d > 0)
+            .min()
+            .unwrap_or(120)
+            .max(1);
+        let span = (da - db).abs() + cum.get(i).copied().unwrap_or(0).abs();
+        let allowed = (span + leg - 1) / leg + 1;
+        let ok = (x.len() as i64 - y.len() as i64).abs() <= allowed;
+        rep.push(mm(
+            "led",
+            format!("run #{i} length"),
+            "(groups / ms)",
+            format!("{} / {da}", x.len()),
+            format!("{} / {db}", y.len()),
+            match (&id, ok) {
+                (Some(id), true) => id.clone(),
+                _ => UNTOLERATED.into(),
+            },
+        ));
+    }
+    rep.inputs
+        .entry("led max per-step |Δ| (T15 step_ms)".into())
+        .or_insert_with(|| format!("{max_step_delta} ms (bound {step_ms})"));
     rep.stats.entry("led".into()).or_default().compared += compared;
 }
 
@@ -557,6 +760,78 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert_eq!(r[0].len(), 3);
         assert_eq!(r[1].len(), 2);
+    }
+
+    /// review-wp6 M1: heartbeat-anchored run starts. A blue → green render
+    /// one heartbeat late on B FAILS; on a shed rung (≤ 2 heartbeats) it is
+    /// T15; a constant phase offset is fine.
+    #[test]
+    fn led_run_starts_on_the_heartbeat_grid() {
+        let table = Table::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let tr = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A blink-free sketch: each render = its first group only (solid-like).
+        let cap = |phase: i64, late: i64, mid: &str| {
+            let mut c = P4Capture {
+                transitions: tr(&[
+                    "[led] starting → gps-wait (blue blink-slow)",
+                    &format!("[led] gps-wait → {mid}"),
+                    "[led] healthy → network (purple blink-fast)",
+                ]),
+                led_other: vec!["[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)".into()],
+                ..Default::default()
+            };
+            let (mid_rise, mid_fall) = if mid.contains("red") {
+                (vec![12], vec![21, 16])
+            } else {
+                (vec![21], vec![12, 16])
+            };
+            c.writes = vec![
+                w(1000 + phase, &[16], true),
+                w(1005 + phase, &[12, 21], false),
+                w(5000 + phase + late, &mid_rise, true),
+                w(5005 + phase + late, &mid_fall, false),
+                w(9000 + phase, &[12, 16], true),
+                w(9005 + phase, &[21], false),
+            ];
+            c
+        };
+        let unt = |a: &P4Capture, b: &P4Capture| {
+            let mut rep = Report::default();
+            diff_led(a, b, &table, &mut rep);
+            rep.mismatches
+                .iter()
+                .filter(|m| m.at.contains("start"))
+                .map(|m| m.tol.clone())
+                .collect::<Vec<_>>()
+        };
+        let healthy = "healthy (green heartbeat)";
+        // B 140 ms later on every render: a constant phase, nothing to report.
+        assert!(unt(&cap(0, 0, healthy), &cap(140, 0, healthy)).is_empty());
+        // B one heartbeat late on gps-wait → healthy (directly fed): FAIL.
+        let r = unt(&cap(0, 0, healthy), &cap(140, 1000, healthy));
+        assert!(r.contains(&UNTOLERATED.to_string()), "{r:?}");
+        // The same on a shed rung (gps-wait → undervoltage, ≤ 2): T15.
+        let uv = "undervoltage (red blink-fast)";
+        let r = unt(&cap(0, 0, uv), &cap(140, 1000, uv));
+        assert!(r.iter().all(|t| t == "T15") && !r.is_empty(), "{r:?}");
+        // Off its own grid by 600 ms (> spawn_ms 400, < a heartbeat): FAIL.
+        let r = unt(&cap(0, 0, healthy), &cap(140, 600, healthy));
+        assert!(r.contains(&UNTOLERATED.to_string()), "{r:?}");
+        assert_eq!(
+            first_group("purple", [12, 21, 16]).as_deref(),
+            Some("+12,16 -21")
+        );
+        assert_eq!(
+            first_group("white", [12, 21, 16]).as_deref(),
+            Some("+12,21,16")
+        );
+        assert_eq!(
+            first_group("off", [12, 21, 16]).as_deref(),
+            Some("-12,21,16")
+        );
     }
 
     #[test]

@@ -1300,10 +1300,13 @@ fn d30_session_end(
 /// start is already judged (startTs vs PLAYING, T4 transitions). Conditions =
 /// D30's `d30_session_end` (a) + (c) + (d) WITHOUT (b): (a) the last seq of the
 /// session on BOTH sides, the capture ended at the agent's stop (int/eos) and
-/// never respawned; (c) end instants within `endMs`; (d) the session-start
-/// anchor agrees — on each side the spawn lags that side's last
-/// powerShed/liveBlock change by the same ±`lagMs`, or neither side had one
-/// (a boot-started session).
+/// never respawned; (c) end instants within `endMs`; (d) each side's session
+/// start is anchored to ITS OWN shed transition: decision → spawn is the same
+/// code path on both sides, and what the rig sees of the decision is the
+/// change in the telemetry, published on that side's next 1 s publish tick
+/// (worker.ts:1207) — so the two sides' spawn-minus-change lags differ by at
+/// most one publish period (`tickMs`) — or neither side had a change (a
+/// boot-started session).
 #[allow(clippy::too_many_arguments)]
 fn t12_cut_fragment(
     a: &MediaCapture,
@@ -1314,9 +1317,8 @@ fn t12_cut_fragment(
     fb: &BTreeMap<String, BTreeMap<u64, u64>>,
     key: &(String, u64),
     end_ms: f64,
-    lag_ms: i64,
+    tick_ms: i64,
 ) -> bool {
-    const TICK_MS: i64 = 1_100;
     let (sid, seq) = (&key.0, key.1);
     let last = |f: &BTreeMap<String, BTreeMap<u64, u64>>, c: &BTreeMap<(String, u64), Value>| {
         let fl = f.get(sid).and_then(|m| m.keys().next_back().copied());
@@ -1359,12 +1361,12 @@ fn t12_cut_fragment(
     let lag = |m: &MediaCapture, w: i64| {
         m.shed_changes
             .iter()
-            .rfind(|c| **c <= w + TICK_MS)
+            .rfind(|c| **c <= w + tick_ms)
             .map(|c| w - c)
     };
     match (lag(a, wa), lag(b, wb)) {
         (None, None) => true,
-        (Some(x), Some(y)) => (x - y).abs() <= lag_ms,
+        (Some(x), Some(y)) => (x - y).abs() <= tick_ms,
         _ => false,
     }
 }
@@ -1699,7 +1701,7 @@ pub fn diff_media(
                 &fb,
                 key,
                 row_tol(table, "T12/cut-fragment", "endMs", 0.0),
-                row_tol(table, "T12/cut-fragment", "lagMs", 0.0) as i64,
+                row_tol(table, "T12/cut-fragment", "tickMs", 0.0) as i64,
             );
         let skip = |p: &str| -> Option<String> {
             match p {
@@ -3106,6 +3108,12 @@ mod tests {
         assert_eq!(run(jb.clone(), rb), row(cut));
         // ... but a shed anchor on one side only is not the same session start.
         assert_eq!(run(jb, rs()), row(UNTOLERATED));
+        // (d) a spawn more than one publish tick before its own side's change
+        // is not anchored to it.
+        assert_eq!(
+            run(side("js", 526_868, 528_886, 3_451, 528_100), rs()),
+            row(UNTOLERATED)
+        );
         // (c) the ends disagree by > 150 ms.
         assert_eq!(
             run(js(), side("rust", 525_962, 527_978, 4_600, 521_949)),
@@ -3122,9 +3130,9 @@ mod tests {
         let mut j = js();
         j.spawns[0].end = Some("external".into());
         assert_eq!(run(j, rs()), row(UNTOLERATED));
-        // (d) the spawn-to-restore lags differ by > 300 ms.
+        // (d) the spawn-to-restore lags differ by > one publish tick (1100 ms).
         assert_eq!(
-            run(side("js", 526_868, 528_886, 3_451, 522_400), rs()),
+            run(side("js", 526_868, 528_886, 3_451, 521_500), rs()),
             row(UNTOLERATED)
         );
         // (e) an earlier fragment of the session failed T12.

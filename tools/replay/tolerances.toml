@@ -614,11 +614,11 @@ paths = ["sizeBytes"]
 
 [[rule]]
 id = "T12/cut-fragment"
-title = "sidecar `durationMs` of a session's CUT fragment (its last, ended by the agent's stop): compared by its END instant `startTs + durationMs` (±endMs), not by its duration — conditions = d30_session_end (a)+(c)+(d) without (b): last seq on BOTH sides + capture ended at the stop, never respawned; end instants within endMs; the session-start anchor agrees (each side's spawn lags its own last powerShed/liveBlock change by the same ±lagMs, or neither side had one). Every other fragment keeps T12's ±150 ms (GOP boundaries at both ends)"
+title = "sidecar `durationMs` of a session's CUT fragment (its last, ended by the agent's stop): compared by its END instant `startTs + durationMs` (±endMs), not by its duration — conditions = d30_session_end (a)+(c)+(d) without (b): last seq on BOTH sides + capture ended at the stop, never respawned; end instants within endMs; each side's session start is anchored to ITS OWN shed transition: the spawn-minus-last-powerShed/liveBlock-change lags of the two sides differ by ≤ tickMs (decision → spawn is one code path; the change is seen on each side's next 1 s publish tick, worker.ts:1207), or neither side had one (boot-started). Every other fragment keeps T12's ±150 ms (GOP boundaries at both ends)"
 basis = "review-wp6 M3 (F1): a cut fragment's duration = stop − session start; the stop is one instant for both agents (the player SIGTERMs both together, play.rs) and the session start follows each agent's own phase — boot skew, or the shed tick (manager.ts:612-615) for a transition-started session — which T12 never bounded (replay-20261019T231240Z 7066/6895, review run 3 5191/5388 in plain `media`). The end instant carries the stop jitter only (T12's 150 ms); the start is judged by startTs-vs-PLAYING (T12) and the T4 transition rule"
 kind = "media"
 streams = ["sidecar"]
-tolerance = { "endMs" = 150.0, "lagMs" = 300.0 }
+tolerance = { "endMs" = 150.0, "tickMs" = 1100.0 }
 
 [[rule]]
 id = "T13"
@@ -660,11 +660,11 @@ streams = ["s3"]
 
 [[rule]]
 id = "T15"
-title = "LED pin timeline: per-step interval ±step_ms; a run's start ±phase_ms and its length (groups) where the two runs' durations differ by ≤ 2·phase_ms — the pin/level SEQUENCE of every compared group and the ordered `[led] a → b (colour pattern)` transitions are exact"
-basis = "phase file §8 `led-jitter` (per-step ±50 ms: led.ts:356-396 awaits the pinctrl spawn then setTimeout(step.ms) — Node timers vs tokio + one process spawn per leg); phase: led-manager.ts:56-73 resolves the state on tick(), which the worker drives from its OWN 1 s heartbeat setInterval (worker.ts:633-638), so each agent starts a new rung up to one heartbeat period (+ the hold-gate guard 150 ms) after the input; a repeating pattern (blink-fast/blink-slow/heartbeat) then runs until the next state, so its group count follows the run's duration"
+title = "LED pin timeline: per-step interval ±step_ms; heartbeat-rendered run starts (every logged render but `none → …`) on each agent's OWN heartbeat grid (k·1000 ± spawn_ms + k·drift_ms_per_tick since the previous one: the render's first pinctrl spawn latency) with a constant cross-agent offset (± the same slack; spawn_ms < 500 so a whole-heartbeat shift is never absorbed); a whole-heartbeat shift of that offset is UNTOLERATED except on a rung whose input is produced on an own-phase timer (undervoltage/thermal via the shed tick + publish loop: ≤ 2; leaving network on the 2 s reconnect: ≤ 2); a run's group count may differ by what its duration difference plus the summed measured per-leg differences buy at the pattern's shortest leg (+1). Pin/level sequences and the ordered `[led] a → b` transitions are exact; event-driven runs (`none → …`, the flash, a blank) are compared by structure + steps only"
+basis = "step: led.ts:356-396 awaits the pinctrl spawn then setTimeout(step.ms) — Node timers vs tokio + one process spawn per leg (`led-jitter`, phase file §8). Grid: led-manager.ts:56-73 renders from tick(), driven by the worker's 1 s heartbeat setInterval (worker.ts:633-638), so a rung change lands on that agent's own heartbeat; drift: Node's setInterval drifts ~1 ms/tick (README hold-gate notes), Rust's SetInterval re-arms from the fire (timer.rs). Spawn: led.ts:219-225 pinctrlWriter = run('pinctrl', …) — a process spawn per write, stamped by the shim after it started; observed render offsets from the k·1000 grid 100–220 ms under the media load (replay-20261019T233553Z, T221223Z JS-vs-JS), bound 400 (< 500 by construction). Chains: shed tick manager.ts:612-615 → noteRecordingStatus worker.ts:1207 → heartbeat; reconnect mqtt.ts:63 `reconnectPeriod: 2000`. review-wp6 M1 (replaces the ±1150 ms phase bound, which accepted a Rust render one heartbeat late)"
 kind = "p4"
 streams = ["led"]
-tolerance = { "step_ms" = 50.0, "phase_ms" = 1150.0 }
+tolerance = { "step_ms" = 50.0, "drift_ms_per_tick" = 2.0, "spawn_ms" = 400.0 }
 
 [[rule]]
 id = "T16"
