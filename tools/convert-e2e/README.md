@@ -42,7 +42,9 @@ convert-revert-convert, update-after-convert, js-pin, bad-sha, missing-sidecar,
 missing-member, wrong-arch, failed-start, interrupt-1…8, interrupt-1…8-revert,
 root-svc, root-svc-dropin, js-disabled-before, js-stopped-before, not-root,
 not-provisioned, foreign-dropin, bootstrap-oneliner, offline-revert, tarball-mode,
-visudo-refuses, usage-status, wrapper-path-is-dir, rollback-step6, rollback-step6-preexisting,
+visudo-refuses, usage-status, wrapper-path-is-dir, predir-blocked-refuses (a file where a
+needed directory goes: refused before any change), rollback-step6, rollback-step6-preexisting
+(a REAL mid-step-6 write failure via a one-shot `install` shim in /usr/local/sbin),
 bench-window, bench-window-rollback, status-nonroot, revert-runtime-drift,
 failed-start-js-disabled, failed-start-js-stopped,
 clean-fail-step8-{reload,enable-rs,disable-js,start-rs} (a clean failure: exit 4, JS back),

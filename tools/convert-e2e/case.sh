@@ -139,6 +139,25 @@ status_head_ok() { # `--status | head -n1` under pipefail, 5×: exit 0 (no SIGPI
   local _
   for _ in 1 2 3 4 5; do bash -o pipefail -c "bash '$IRS' --status | head -n1 >/dev/null" || return 1; done
 }
+# fail_install_to <dest>: the NEXT `install … <dest>` fails (a real mid-step
+# write failure: disk full / EIO). The shim sits in /usr/local/sbin — first in
+# sudo's secure_path and outside every I3 root — and is one-shot.
+fail_install_to() {
+  echo "$1" >"$E/fail-install-dest"
+  cat >/usr/local/sbin/install <<'SHIM'
+#!/bin/bash
+# convert-e2e one-shot install failure (case.sh fail_install_to)
+f=/run/e2e/fail-install-dest
+if [ -s "$f" ] && [ "${!#}" = "$(cat "$f")" ]; then
+  echo "install ${*}" >>/run/e2e/install-fail.log
+  rm -f "$f"
+  echo "install: cannot create regular file '${!#}': No space left on device" >&2
+  exit 1
+fi
+exec /usr/bin/install "$@"
+SHIM
+  chmod 0755 /usr/local/sbin/install
+}
 # power_cycle: what a power cut + boot does — every service dies, then
 # systemd starts what multi-user.target wants (Conflicts= as the shim models).
 power_cycle() {
@@ -621,24 +640,37 @@ wrapper-path-is-dir)
     check "exit 0 → the updater unit's ExecStart works (xorgate-rs -v through the wrapper)" bash -c '/usr/local/bin/xorgate-rs -v | grep -q "^xorgate-rs "'
   fi
   invariants "$E/M0" ;;
-rollback-step6|rollback-step6-preexisting)
-  # REAL failures inside steps 4-7 (not the test knob): I1 says they restore
-  # /opt/xorgate-rs from .old, remove the NEW files this run created, exit 1.
+predir-blocked-refuses)
+  # A FILE where a directory the converter needs goes (xorgate-updater-rs.service.d):
+  # refused BEFORE any change (WP1 ensure_dir), exit 1, M == M0.
   provision
-  case "$CASE" in
-    rollback-step6*) printf 'not a dir\n' >"$RS_UPD.d" ;;    # a file where the updater .d/ goes
-  esac
-  if [ "$CASE" = rollback-step6-preexisting ]; then
-    install -d -m 0755 /opt/xorgate-rs
-    tar --no-same-owner -xzf "$SRV/xorgate-agent-rs-v2.tar.gz" -C /opt/xorgate-rs
-  fi
+  printf 'not a dir\n' >"$RS_UPD.d"
   systemctl daemon-reload
   M "$E/M0"
   irs
   check "exit 1" rc_is 1
+  check "the refusal says nothing was changed" out_has 'nothing was changed'
+  M "$E/M1"
+  check "I3: device == M0 exactly (no record dir left either)" same_file "$E/M0" "$E/M1"
+  check "JS still enabled + active; no unit started/stopped/enabled/disabled" bash -c '[ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/active ] && ! grep -qE "^(start|stop|restart|enable|disable)" "$1"' _ "$E/systemctl.log"
+  invariants "$E/M0" ;;
+rollback-step6|rollback-step6-preexisting)
+  # A REAL write failure in the middle of step 6 (the install of 10-dist.conf,
+  # after the units were written): I1 → roll back, exit 1; D-WP1-2 → a first
+  # run also removes its record, so M == M0.
+  provision
+  if [ "$CASE" = rollback-step6-preexisting ]; then
+    install -d -m 0755 /opt/xorgate-rs
+    tar --no-same-owner -xzf "$SRV/xorgate-agent-rs-v2.tar.gz" -C /opt/xorgate-rs
+  fi
+  M "$E/M0"
+  fail_install_to "$DIST_DROPIN"
+  irs
+  check "the injected write failure fired (10-dist.conf)" test -s "$E/install-fail.log"
+  check "exit 1" rc_is 1
   check "it says it rolled back" out_has 'rolled back'
   M "$E/M1"
-  same_rows "I3: device == M0 outside the record dir (rollback removed every NEW file)" no_rec_rows "$E/M0" "$E/M1"
+  same_rows "I3: device == M0 (rollback removed every NEW file, restored /opt/xorgate-rs)" cat "$E/M0" "$E/M1"
   [ "$CASE" = rollback-step6-preexisting ] && check "the pre-existing /opt/xorgate-rs (v2) is restored from .old" grep -q '"version": *"v2"' /opt/xorgate-rs/build-info.json
   check "no .new/.old left" bash -c '[ ! -e /opt/xorgate-rs.new ] && [ ! -e /opt/xorgate-rs.old ]'
   check "JS still enabled + active; no unit started/stopped/enabled/disabled" bash -c '[ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/active ] && ! grep -qE "^(start|stop|restart|enable|disable)" "$1"' _ "$E/systemctl.log"
@@ -982,7 +1014,6 @@ bench-window-rollback)
   install -m 0644 /opt/xorgate-rs/systemd/bench/90-bench-dev.conf "$RS_UNIT.d/90-bench-dev.conf"
   printf '[Service]\nEnvironment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps\n' >"$RS_UNIT.d/95-inputs.conf"
   install -m 0600 -o pi -g pi /etc/xorgate/agent.env /etc/xorgate/agent-rs-dev.env
-  printf 'not a dir\n' >"$RS_UPD.d"          # the step-6 blocker
   systemctl daemon-reload
   systemctl enable xorgate-agent-rs 2>/dev/null
   systemctl start xorgate-agent-rs
@@ -990,10 +1021,13 @@ bench-window-rollback)
   M "$E/M0"
   SIM_TS0=$(systemctl show -p ActiveEnterTimestamp --value sim7600-lte)
   : >"$E/systemctl.log"
+  fail_install_to "$DIST_DROPIN"   # step 6, AFTER the bench unit + wrapper were overwritten
   irs
+  check "the injected write failure fired (10-dist.conf)" test -s "$E/install-fail.log"
   check "exit 1" rc_is 1
+  check "the rollback names the restore of what it overwrote" out_has 'restored'
   M "$E/M1"
-  same_rows "S1: device == M0 outside the record dir (bench unit, wrapper, drop-ins, /opt/xorgate-rs byte-exact)" no_rec_rows "$E/M0" "$E/M1"
+  same_rows "S1: device == M0 (bench unit, wrapper, drop-ins, /opt/xorgate-rs byte-exact)" cat "$E/M0" "$E/M1"
   check "the bench unit is back (no Conflicts= line)" bash -c "! grep -q '^Conflicts=' $RS_UNIT"
   check "rs still enabled + active, not restarted; JS enabled + inactive" bash -c '[ "$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)" = enabled/active ] && [ "$(systemctl show -p MainPID --value xorgate-agent-rs)" = "$1" ] && [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/inactive ]' _ "$pid0"
   invariants "$E/M0" ;;

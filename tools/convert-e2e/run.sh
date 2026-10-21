@@ -36,7 +36,7 @@ DOCS_MD=${DOCS_MD:-$REPO/docs/convert.md}
 ALL_CASES=(convert-happy convert-twice convert-repair revert-keep revert-purge revert-twice
   convert-revert-convert update-after-convert js-pin bad-sha missing-sidecar missing-member
   wrong-arch failed-start failed-start-js-disabled failed-start-js-stopped
-  wrapper-path-is-dir rollback-step6 rollback-step6-preexisting
+  wrapper-path-is-dir predir-blocked-refuses rollback-step6 rollback-step6-preexisting
   clean-fail-step8-reload clean-fail-step8-enable-rs clean-fail-step8-disable-js clean-fail-step8-start-rs
   signal-convert-hup-8 signal-convert-term-8 signal-convert-hup-9 signal-convert-term-9
   signal-convert-int-9 signal-revert-hup signal-revert-term signal-revert-int
