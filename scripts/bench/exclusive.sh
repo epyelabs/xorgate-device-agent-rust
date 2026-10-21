@@ -327,7 +327,8 @@ end)
   # after an `xorgate-rs update`, Phase 4) must not skip the audits below.
   WAIT_UNITS="$JS_UNIT $UNIT $MODEM_UNIT"
   if [ "$CONV" = 1 ]; then
-    echo "  ! conversion in place: NOT restarting $UNIT (revert, install.sh, then end again)"
+    if rs_unit_converted; then echo "  $RS_CONVERTED_REFUSAL"; fi
+    echo "  ! conversion in place: $UNIT not restarted (see above) — revert, install.sh, then end again"
     WAIT_UNITS="$JS_UNIT $MODEM_UNIT"
   else
     reload_restart_rs || echo "  ! $UNIT not restarted (see above) — $JS_UNIT stays up; fix with install.sh then profile.sh shared"
