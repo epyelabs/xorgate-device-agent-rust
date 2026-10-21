@@ -152,6 +152,8 @@ const KINDS: &[&str] = &[
     // Phase 3: T4's media/recording state transitions ±1 tick (diff.rs
     // `Cx::transition`).
     "transition",
+    // Phase 4 (WP6): the `led` / set-clock bounds of diff_p4.rs (`tolerance`).
+    "p4",
 ];
 
 impl Table {
@@ -166,7 +168,8 @@ impl Table {
         if t.version != 1 {
             bail!("tolerances.toml version {} (want 1)", t.version);
         }
-        for want in ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"] {
+        // T6 is DELETED (Phase 4 WP6, CF54); the rest of T1-T9 must exist.
+        for want in ["T1", "T2", "T3", "T4", "T5", "T7", "T8", "T9"] {
             if !t.rules.iter().any(|r| r.id == want) {
                 bail!("tolerances.toml lacks rule {want} (phase file T1-T9)");
             }

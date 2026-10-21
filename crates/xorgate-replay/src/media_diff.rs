@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | `children` | per (role, key): spawn count, argv, kvs env, how each child ended (`int` / `eos` / `kill` / `external` / `exit:<code>`) | spawn instant ±1 s (T10); stagger gap ≥ 4 s is a contract check per side |
 //! | `session` | `session.json` fields | `sessionId`, `bootId`, `anchorTs`, `anchorMono` (T11) |
-//! | `sidecar` | key order; every field but the tolerated ones | `startTs` ±300 ms relative to the agent's own capture PLAYING (`New clock:`) time, `startMono` deltas within the session ±300 ms, `durationMs` ±150 ms, `sizeBytes` any (T12) |
+//! | `sidecar` | key order; every field but the tolerated ones | `startTs` ±300 ms relative to the agent's own capture PLAYING (`New clock:`) time, `startMono` deltas within the session ±300 ms, `durationMs` ±150 ms (an INTERIOR fragment: its end boundary like its start, `T12/interior-boundaries`; the session's last: `T12/cut-fragment`), `sizeBytes` any (T12) |
 //! | `mp4` | per side: seq contiguity from 0, no 0-byte closed fragment | fragment count per session ±1 (T12, the run's cut) |
 //! | `rec-telemetry` | decompressed header lines minus T1/T11 fields; sample key order; per segment the groups present, each group's leaf paths and number SHAPES (T9); per session the deduplicated VALUE sequence of every non-host leaf and per-group sample counts (G1) | segment count per session ±1 and file-name ms stamps (T13; gz bytes never compared: D24) |
 //! | `s3` | per side every SigV4 signature valid, sidecar PUT before its mp4, each source's first successful PUTs oldest-first; A vs B the normalised key multiset of successful PUTs + content types, and each source's order of the keys both PUT | a session's LAST fragment / LAST telemetry segment present on one side only (never a middle segment), attempt counts / timing (T14) |
@@ -100,6 +100,10 @@ pub struct MediaCapture {
     /// state.json snapshots (`files.ndjson`; T8/d30-js-reference).
     pub shed_events: Vec<(i64, String)>,
     pub end_backlog: Option<i64>,
+    /// `(read wall ms, line)` of every NMEA line this agent READ, from its
+    /// own tape (`<run>/<label>/agent-tape.ndjson.gz`, Rust only; empty for
+    /// a JS side): the T4/rec-sample epoch anchor (review-wp6 F4).
+    pub nmea_reads: Vec<(i64, String)>,
     /// Anything media-related captured at all.
     pub present: bool,
 }
@@ -245,6 +249,43 @@ impl MediaCapture {
             .unwrap_or_default();
         let shim = lines(&dir.join("shim.ndjson"));
         let procs = lines(&dir.join("procs.ndjson"));
+        // The agent's own tape (Rust only): its NMEA reads and the capture
+        // children IT SIGINTed — counted only from a record that proves the
+        // SIGINT was DELIVERED to a live child (review-wp6 M5): written after
+        // the kill(2) returned (`errno` present) with sig 2 and errno 0;
+        // stamped before the child died (the shim's `eof`, else the
+        // player's `gone`); and the agent never reaped that child
+        // (`child_exit`): it died with its agent, the A3 race. Anything else
+        // falls back to gst's own `handling interrupt.` line.
+        let tape = tape_recs(&dir.join("agent-tape.ndjson.gz"));
+        let death: BTreeMap<u32, i64> = shim
+            .iter()
+            .filter(|v| v["k"] == "eof")
+            .chain(procs.iter().filter(|v| v["k"] == "gone"))
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["w"].as_i64()?)))
+            .fold(BTreeMap::new(), |mut m, (p, w)| {
+                m.entry(p)
+                    .and_modify(|x: &mut i64| *x = (*x).min(w))
+                    .or_insert(w);
+                m
+            });
+        let reaped: BTreeSet<u32> = tape
+            .iter()
+            .filter(|v| v["k"] == "child_exit")
+            .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
+            .collect();
+        let agent_int: BTreeSet<u32> = tape
+            .iter()
+            .filter(|v| {
+                v["k"] == "child_signal"
+                    && v["role"] == "capture"
+                    && v["sig"] == 2
+                    && v["errno"] == 0
+            })
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["w"].as_i64()?)))
+            .filter(|(p, w)| death.get(p).is_some_and(|d| w < d) && !reaped.contains(p))
+            .map(|(p, _)| p)
+            .collect();
         let rec_json: Value = std::fs::read(dir.join("recordings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -427,7 +468,16 @@ impl MediaCapture {
                     .or_else(|| gone.contains(&s.pid).then(|| "kill".to_string()));
             } else if gone.contains(&s.pid) {
                 let ls = lines_of.get(&s.pid).cloned().unwrap_or_default();
-                let int = ls.iter().any(|l| l.contains("handling interrupt"));
+                // SIGINTed: gst's own `handling interrupt.` line, or (review-wp6
+                // gate run 032624Z) the agent's tape record of sending it. At
+                // the agent's stop the TS SIGINTs (video-capture.ts:493-507,
+                // worker.ts:1307) and exits tens of ms later, killing the
+                // child (execa cleanup; Rust kill_on_drop, A3): under CPU
+                // starvation gst can die before its main loop prints the
+                // line (A: SIGINT 183368, killed 183389, no line). The line
+                // stays the only evidence for a JS side (no tape).
+                let int = agent_int.contains(&s.pid)
+                    || ls.iter().any(|l| l.contains("handling interrupt"));
                 let eos = ls.iter().any(|l| l.contains("Got EOS"));
                 s.end = Some(
                     if external_cap.contains(&s.pid) {
@@ -596,9 +646,133 @@ impl MediaCapture {
             last_tick_backlog,
             end_backlog,
             shed_events,
+            nmea_reads: nmea_lines(&tape, None),
             present,
         }
     }
+}
+
+/// Every record of a tape file (gz or plain); empty when absent.
+fn tape_recs(path: &Path) -> Vec<Value> {
+    let Ok(raw) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let text = if raw.starts_with(&[0x1f, 0x8b]) {
+        gunzip(&raw).unwrap_or_default()
+    } else {
+        String::from_utf8_lossy(&raw).into_owned()
+    };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect()
+}
+
+/// `(wall ms, line)` of a tape's `nmea` records: an agent tape's `w` is
+/// the agent's own read instant. With `releases` (a player tape), each
+/// record's instant is instead its actual release (`releases.ndjson`,
+/// matched by tape `t` in order) — never reordered.
+fn nmea_lines(recs: &[Value], releases: Option<&[crate::diff::Release]>) -> Vec<(i64, String)> {
+    let recs = recs.iter().filter(|v| v["k"] == "nmea");
+    let Some(rel) = releases else {
+        return recs
+            .filter_map(|v| Some((v["w"].as_i64()?, v["line"].as_str()?.to_string())))
+            .collect();
+    };
+    let mut at: BTreeMap<u64, std::collections::VecDeque<i64>> = BTreeMap::new();
+    for r in rel.iter().filter(|r| r.k == "nmea") {
+        at.entry(r.t).or_default().push_back(r.w);
+    }
+    recs.filter_map(|v| {
+        let w = at.get_mut(&v["t"].as_u64()?)?.pop_front()?;
+        Some((w, v["line"].as_str()?.to_string()))
+    })
+    .collect()
+}
+
+/// Per gps leaf path (`metrics.gps.<leaf>.value`), the `(instant, value)`
+/// CHANGES one side's collector state went through, replayed from that
+/// side's NMEA lines at their own instants through the agent's own core
+/// (`FixAggregator::update` + `SkyTracker::note` → `map_latest`, the
+/// `collectors/gps.rs` run_stream/sample path; ttff not replayed). The
+/// T4/rec-sample value anchor (review-wp6 F4): when each value became
+/// current on THAT side — position at its GGA/RMC, `snr_max`/`sats_heard`
+/// at the talker's last GSV of the cycle.
+pub(crate) type Timeline = BTreeMap<String, Changes>;
+/// One leaf's `(instant, value, anchored)` changes on one side; `anchored`
+/// = the read that made it current is bounded by the player's release
+/// (S-F4, [`bound_reads`]).
+pub(crate) type Changes = Vec<(i64, f64, bool)>;
+
+/// review-wp6 S-F4: each self-reported read `(w, line)` is matched to the
+/// player's LATEST release of the same line at or before it (`feed`, the
+/// release instants; an NMEA epoch's GSV/GSA lines repeat verbatim every
+/// second, GGA/RMC carry the UTC time and are unique), looking back at most
+/// 2 s; `true` when `read − release ≤ max_lag`. Unmatched (no player tape,
+/// a line never released before the read) → `false`. Also returns the
+/// matched lags. A repeated line can only match TOO EARLY (a larger lag →
+/// unanchored), never too late.
+fn bound_reads(
+    reads: &[(i64, String)],
+    feed: &[(i64, String)],
+    max_lag: i64,
+) -> (Vec<(i64, String, bool)>, Vec<i64>) {
+    let mut lags = Vec::new();
+    let out = reads
+        .iter()
+        .map(|(w, line)| {
+            let l = line.trim_end();
+            let upto = feed.partition_point(|(r, _)| r <= w);
+            let lag = feed[..upto]
+                .iter()
+                .rev()
+                .take_while(|(r, _)| w - r <= 2_000)
+                .find(|(_, f)| f.trim_end() == l)
+                .map(|(r, _)| w - r);
+            if let Some(g) = lag {
+                lags.push(g);
+            }
+            (*w, line.clone(), lag.is_some_and(|g| g <= max_lag))
+        })
+        .collect();
+    (out, lags)
+}
+
+fn gps_timeline(reads: &[(i64, String, bool)]) -> Timeline {
+    let mut out: Timeline = BTreeMap::new();
+    let Some(&(t0, _, _)) = reads.first() else {
+        return out;
+    };
+    let mut agg = xorgate_core::nmea::FixAggregator::new();
+    let mut sky = xorgate_core::sky_state::SkyTracker::with_defaults(t0.max(0) as u64);
+    let mut latest: Option<xorgate_core::nmea::GpsFix> = None;
+    for (w, line, bounded) in reads {
+        let now = (*w).max(0) as u64;
+        if agg.update(line) {
+            latest = Some(agg.fix.clone());
+        }
+        if line.contains("GSV") {
+            if let Some(g) = xorgate_core::nmea::parse_gsv(line) {
+                sky.note(&g, now);
+            }
+        }
+        let Some(fix) = &latest else { continue };
+        let snap = sky.snapshot(now);
+        let group = xorgate_core::gps_group::map_latest(fix, &snap, None);
+        let mut leaves = BTreeMap::new();
+        leaf_texts(
+            &serde_json::to_value(&group).unwrap_or(Value::Null),
+            "metrics.gps",
+            &mut leaves,
+        );
+        for (path, text) in leaves {
+            let Ok(v) = text.parse::<f64>() else { continue };
+            let tl = out.entry(path).or_default();
+            if tl.last().is_none_or(|&(_, last, _)| last != v) {
+                tl.push((*w, v, *bounded));
+            }
+        }
+    }
+    out
 }
 
 fn mm(stream: &str, at: &str, path: &str, a: String, b: String, tol: &str) -> Mismatch {
@@ -892,6 +1066,49 @@ fn system_presence_tol(table: &Table, ka: &str, kb: &str, la: usize, lb: usize) 
     }
 }
 
+/// review-wp6 M2 (F3): the system-less samples of one segment that carry the
+/// D30 STARVATION signature — isolated (both neighbours carry `system`) and
+/// taken 900–999 ms after the previous sample (`mono`). On a steady host the
+/// recorder's fires are ≥ 1000 ms apart (timer.rs re-arm from fire), so a gap
+/// < 1000 ms proves the PREVIOUS sample was taken late; its gate stamp
+/// (`collectors/system.rs` `rec.last_at = mono_ms()` at the call, = TS
+/// `system.ts:104-113` `recLastAt` before the compute) then made this call
+/// land < 1000 ms after it, and the freshness gate (`recorder_gate.rs:85-89`
+/// = `telemetry-recorder.ts:102`) wrote no duplicate `system`. `mono` units
+/// follow the segment's own median step (ns/µs/ms).
+fn d30_starved_drops(v: &[Value]) -> usize {
+    let mono: Vec<Option<f64>> = v.iter().map(|x| x["mono"].as_f64()).collect();
+    let mut steps: Vec<f64> = mono
+        .windows(2)
+        .filter_map(|w| Some(w[1]? - w[0]?))
+        .filter(|d| *d > 0.0)
+        .collect();
+    if steps.is_empty() {
+        return 0;
+    }
+    steps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = steps[steps.len() / 2];
+    // One sample per ~1 s (rateHz 1): the median step is ~1 s in the unit.
+    let per_ms = if median > 1e8 {
+        1e6
+    } else if median > 1e5 {
+        1e3
+    } else {
+        1.0
+    };
+    let has = |i: usize| v[i]["metrics"].get("system").is_some();
+    (1..v.len().saturating_sub(1))
+        .filter(|&i| v[i]["metrics"].is_object() && !has(i) && has(i - 1) && has(i + 1))
+        .filter(|&i| match (mono[i - 1], mono[i]) {
+            (Some(p), Some(c)) => {
+                let gap = (c - p) / per_ms;
+                (900.0..1000.0).contains(&gap)
+            }
+            _ => false,
+        })
+        .count()
+}
+
 /// Flatten `metrics` into `path → JSON text` leaves (`metrics.gps.lat.value`).
 fn leaf_texts(v: &Value, path: &str, out: &mut BTreeMap<String, String>) {
     match v {
@@ -948,6 +1165,94 @@ fn step_hunks(x: &[Step], y: &[Step]) -> Vec<(usize, Vec<Step>, Vec<Step>)> {
     out
 }
 
+/// review-wp6 F4: a two-sided 1×1 gps hunk — A holds X (its sample at
+/// `ta`) where B holds Y (its sample at `tb`) — is two MISSES, not a
+/// different value, iff on BOTH sides' own replayed collector state
+/// ([`gps_timeline`]) X and Y are CONSECUTIVE values of that leaf (same
+/// order on both), so each side's sequence is the input's minus one value;
+/// each holder's value became current on its side ≤ 1.1 s before its sample;
+/// and each miss passes the one-sided race test on its own: the lacking
+/// side's sample nearest the instant the missing value became current ON
+/// THAT SIDE lies within `collision` of it (that tick raced that input;
+/// `ts` is stamped after the collectors are read, so a tick that read just
+/// before can stamp just after). Mechanism: the recorder's 1 Hz tick is
+/// ungated by the player (README "Limits") and drifts (`setInterval`
+/// re-armed from each fire; mean 1003 ms under load); while its phase
+/// crosses the input's phase every sample is a coin flip per side, and two
+/// adjacent opposite flips (A: P X · N, B: P · Y N) are what LCS presents as
+/// the substitution X/Y. Anything else two-sided stays UNTOLERATED.
+fn adjacent_races(
+    (la, lb): (&Leaves, &Leaves),
+    (ea, eb): (Option<&Changes>, Option<&Changes>),
+    ((ta, x), (tb, y)): ((i64, &String), (i64, &String)),
+    collision: i64,
+) -> bool {
+    let (Some(ea), Some(eb), Ok(x), Ok(y)) = (ea, eb, x.parse::<f64>(), y.parse::<f64>()) else {
+        return false;
+    };
+    // The holder's change to `v`: the last at or before its sample, ≤ 1.1 s.
+    let held = |e: &[(i64, f64, bool)], v: f64, ts: i64| -> Option<usize> {
+        let i = e.iter().rposition(|&(w, u, _)| w <= ts && u == v)?;
+        (ts - e[i].0 <= 1_100).then_some(i)
+    };
+    // The same change on the other side: to `v`, within 500 ms.
+    let peer = |e: &[(i64, f64, bool)], v: f64, at: i64| -> Option<usize> {
+        e.iter()
+            .enumerate()
+            .filter(|(_, &(w, u, _))| u == v && (w - at).abs() <= 500)
+            .min_by_key(|(_, &(w, _, _))| (w - at).abs())
+            .map(|(i, _)| i)
+    };
+    let raced = |l: &Leaves, at: i64| {
+        l.iter()
+            .map(|(t, _)| (t - at).abs())
+            .min()
+            .is_some_and(|o| o <= collision)
+    };
+    let (Some(iax), Some(iby)) = (held(ea, x, ta), held(eb, y, tb)) else {
+        return false;
+    };
+    let (Some(iay), Some(ibx)) = (peer(ea, y, eb[iby].0), peer(eb, x, ea[iax].0)) else {
+        return false;
+    };
+    let (da, db) = (iay as i64 - iax as i64, iby as i64 - ibx as i64);
+    // S-F4: every instant used is a release-bounded read.
+    let anchored = [ea[iax].2, ea[iay].2, eb[iby].2, eb[ibx].2]
+        .iter()
+        .all(|b| *b);
+    anchored && da.abs() == 1 && da == db && raced(la, ea[iay].0) && raced(lb, eb[ibx].0)
+}
+
+type Leaves = [(i64, BTreeMap<String, String>)];
+
+/// review-wp6 F5 (final-check NIT): on ONE side, how far an interior
+/// fragment's end (`startTs + durationMs` = its mtime, the finalize's last
+/// write) may sit from its own successor's `startTs` (the next file's
+/// birthtime, opened at the rotation). Measured over 240 seams of 12 gate
+/// runs under 15 busy loops: −42 … 0 ms, never positive (175 exactly 0).
+/// 50 keeps that with headroom while a late finalize — the end drifting
+/// past the next start, which T12's ±300 boundary bound alone would admit —
+/// fails.
+const FRAGMENT_SEAM_MS: f64 = 50.0;
+
+/// [`FRAGMENT_SEAM_MS`] for one fragment and its successor on the same side.
+fn seam_ok(v: &Value, next: &Value) -> bool {
+    let end = v["startTs"]
+        .as_f64()
+        .zip(v["durationMs"].as_f64())
+        .map(|(s, d)| s + d);
+    matches!((end, next["startTs"].as_f64()), (Some(e), Some(n)) if (e - n).abs() <= FRAGMENT_SEAM_MS)
+}
+
+/// review-wp6 F5: the fragments' END instants (`startTs + durationMs`),
+/// each relative to its own side's capture PLAYING, agree within `bound`.
+fn ends_agree(x: &Value, y: &Value, (pa, pb): (Option<i64>, Option<i64>), bound: f64) -> bool {
+    let end = |v: &Value, p: Option<i64>| {
+        Some(v["startTs"].as_f64()? + v["durationMs"].as_f64()? - p? as f64)
+    };
+    matches!((end(x, pa), end(y, pb)), (Some(rx), Some(ry)) if (rx - ry).abs() <= bound)
+}
+
 /// The tape record kinds that feed a telemetry group (T4's per-group list).
 fn group_inputs(group: &str) -> &'static [&'static str] {
     match group {
@@ -969,15 +1274,16 @@ fn group_inputs(group: &str) -> &'static [&'static str] {
 ///   within `collisionMs` of a release of that group's input (its recorder
 ///   tick raced the input — the next tick shows the following value). A
 ///   stretch where both sides hold a step the other lacks (a different value)
-///   is UNTOLERATED.
+///   is UNTOLERATED — except (review-wp6 F4) a gps 1×1 pair proven to be two
+///   adjacent misses, each raced at its own side's read (`adjacent_races`).
 /// - per group (`system`: the `(samples without system)` check above), the
 ///   count of samples carrying it: |Δ| ≤ that group's input transitions in
 ///   the stretch ±1.5 s (T4, `InputFacts::groups`).
 #[allow(clippy::too_many_arguments)]
 fn rec_values(
     sid: &str,
-    a: &BTreeMap<u64, String>,
-    b: &BTreeMap<u64, String>,
+    (a, b): (&BTreeMap<u64, String>, &BTreeMap<u64, String>),
+    (ea, eb): &(Timeline, Timeline),
     play: &PlayInfo,
     facts: &crate::diff::InputFacts,
     table: &Table,
@@ -1084,19 +1390,34 @@ fn rec_values(
             for (start, only_a, only_b) in step_hunks(&sa, &sb) {
                 let edge = start == 0 || start + only_a.len() >= sa.len();
                 let one_sided = only_a.is_empty() != only_b.is_empty();
-                let ok = has
-                    && one_sided
-                    && only_a.iter().chain(only_b.iter()).all(|s| s.1 == 1)
-                    // One race skips ONE value; two or more consecutive
-                    // missing steps need a ≥ 2 s gap, not a raced tick.
-                    && only_a.len() + only_b.len() == 1
-                    && (if edge {
-                        true
-                    } else if only_b.is_empty() {
-                        only_a.iter().all(|s| raced(&lb, s.2))
-                    } else {
-                        only_b.iter().all(|s| raced(&la, s.2))
-                    });
+                // review-wp6 F4: two ADJACENT misses, one per side (see
+                // `adjacent_races`), which LCS shows as one substitution.
+                let swap = has
+                    && group == "gps"
+                    && only_a.len() == 1
+                    && only_b.len() == 1
+                    && only_a[0].1 == 1
+                    && only_b[0].1 == 1
+                    && adjacent_races(
+                        (la.as_slice(), lb.as_slice()),
+                        (ea.get(p.as_str()), eb.get(p.as_str())),
+                        ((only_a[0].2, &only_a[0].0), (only_b[0].2, &only_b[0].0)),
+                        collision,
+                    );
+                let ok = swap
+                    || (has
+                        && one_sided
+                        && only_a.iter().chain(only_b.iter()).all(|s| s.1 == 1)
+                        // One race skips ONE value; two or more consecutive
+                        // missing steps need a ≥ 2 s gap, not a raced tick.
+                        && only_a.len() + only_b.len() == 1
+                        && (if edge {
+                            true
+                        } else if only_b.is_empty() {
+                            only_a.iter().all(|s| raced(&lb, s.2))
+                        } else {
+                            only_b.iter().all(|s| raced(&la, s.2))
+                        }));
                 let fmt = |v: &[Step]| {
                     v.iter()
                         .map(|s| format!("{}×{}@{}", s.0, s.1, s.2))
@@ -1246,6 +1567,86 @@ fn d30_session_end(
             .map(|c| w - c)
     };
     matches!((lag(a, wa), lag(b, wb)), (Some(x), Some(y)) if (x - y).abs() <= LAG_MS)
+}
+
+/// `T12/cut-fragment` (review-wp6 M3, F1): the LAST fragment of a session
+/// cut by the run's stop has no GOP boundary at its end — its `durationMs`
+/// is `stop − session start`, so the two sides differ by the session-start
+/// phase (boot skew, or each side's own shed tick for a transition-started
+/// session, `manager.ts:612-615`), which T12 never bounds. Compared instead by
+/// its END instant (`startTs + durationMs`, ±`endMs`: the shared stop); its
+/// start is already judged (startTs vs PLAYING, T4 transitions). Conditions =
+/// D30's `d30_session_end` (a) + (c) + (d) WITHOUT (b): (a) the last seq of the
+/// session on BOTH sides, the capture ended at the agent's stop (int/eos) and
+/// never respawned; (c) end instants within `endMs`; (d) each side's session
+/// start is anchored to ITS OWN shed transition: decision → spawn is the same
+/// code path on both sides, and what the rig sees of the decision is the
+/// change in the telemetry, published on that side's next 1 s publish tick
+/// (worker.ts:1207) — so the two sides' spawn-minus-change lags differ by at
+/// most one publish period (`tickMs`) — or neither side had a change (a
+/// boot-started session).
+#[allow(clippy::too_many_arguments)]
+fn t12_cut_fragment(
+    a: &MediaCapture,
+    b: &MediaCapture,
+    ca: &BTreeMap<(String, u64), Value>,
+    cb: &BTreeMap<(String, u64), Value>,
+    fa: &BTreeMap<String, BTreeMap<u64, u64>>,
+    fb: &BTreeMap<String, BTreeMap<u64, u64>>,
+    key: &(String, u64),
+    end_ms: f64,
+    tick_ms: i64,
+) -> bool {
+    let (sid, seq) = (&key.0, key.1);
+    let last = |f: &BTreeMap<String, BTreeMap<u64, u64>>, c: &BTreeMap<(String, u64), Value>| {
+        let fl = f.get(sid).and_then(|m| m.keys().next_back().copied());
+        let cl = c
+            .range((sid.clone(), 0)..=(sid.clone(), u64::MAX))
+            .next_back()
+            .map(|((_, q), _)| *q);
+        fl.max(cl) == Some(seq)
+    };
+    if !last(fa, ca) || !last(fb, cb) {
+        return false;
+    }
+    let spawn_at = |m: &MediaCapture| -> Option<i64> {
+        let s = m
+            .spawns
+            .iter()
+            .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid.as_str()))?;
+        let at_stop = matches!(s.end.as_deref(), Some("int") | Some("eos"));
+        let respawned = m
+            .spawns
+            .iter()
+            .any(|o| o.role == "capture" && o.key == s.key && o.w > s.w);
+        (at_stop && !respawned).then_some(s.w)
+    };
+    let (Some(wa), Some(wb)) = (spawn_at(a), spawn_at(b)) else {
+        return false;
+    };
+    let f64_at = |c: &BTreeMap<(String, u64), Value>, q: u64, k: &str| {
+        c.get(&(sid.clone(), q)).and_then(|v| v[k].as_f64())
+    };
+    let end = |c: &BTreeMap<(String, u64), Value>| {
+        Some(f64_at(c, seq, "startTs")? + f64_at(c, seq, "durationMs")?)
+    };
+    let (Some(ea), Some(eb)) = (end(ca), end(cb)) else {
+        return false;
+    };
+    if (ea - eb).abs() > end_ms {
+        return false;
+    }
+    let lag = |m: &MediaCapture, w: i64| {
+        m.shed_changes
+            .iter()
+            .rfind(|c| **c <= w + tick_ms)
+            .map(|c| w - c)
+    };
+    match (lag(a, wa), lag(b, wb)) {
+        (None, None) => true,
+        (Some(x), Some(y)) => (x - y).abs() <= tick_ms,
+        _ => false,
+    }
 }
 
 /// The Phase 3 comparison. `a`/`b` absent of any media artifact on BOTH
@@ -1567,6 +1968,32 @@ pub fn diff_media(
         let d30_ok = d30_end.is_some()
             && !sid_failed.contains(&key.0)
             && d30_session_end(a, b, &ca, &cb, &fa, &fb, key, dur_ms);
+        let cut_ok = has_row(table, "T12/cut-fragment")
+            && !sid_failed.contains(&key.0)
+            && t12_cut_fragment(
+                a,
+                b,
+                &ca,
+                &cb,
+                &fa,
+                &fb,
+                key,
+                row_tol(table, "T12/cut-fragment", "endMs", 0.0),
+                row_tol(table, "T12/cut-fragment", "tickMs", 0.0) as i64,
+            );
+        // review-wp6 F5: an INTERIOR fragment (its successor exists on both
+        // sides) has no duration of its own — `durationMs` = mtime − birthtime
+        // (video-segments.ts:178-182) and its mtime IS the rotation to the next
+        // file (end = next startTs ±3 ms per side, measured), so it is the
+        // difference of two boundaries, each a per-process fs instant. Its END
+        // is judged like its start: relative to each side's own PLAYING within
+        // T12's startTs bound.
+        let next = |c: &BTreeMap<(String, u64), Value>| c.get(&(key.0.clone(), key.1 + 1)).cloned();
+        let interior = has_row(table, "T12/interior-boundaries")
+            && [(x, next(&ca)), (y, next(&cb))]
+                .iter()
+                .all(|(v, n)| n.as_ref().is_some_and(|n| seam_ok(v, n)))
+            && ends_agree(x, y, (pa, pb), start_ms);
         let skip = |p: &str| -> Option<String> {
             match p {
                 "sizeBytes" => Some(t12.to_string()),
@@ -1584,6 +2011,10 @@ pub fn diff_media(
                     let d = (x["durationMs"].as_f64()? - y["durationMs"].as_f64()?).abs();
                     if d <= dur_ms {
                         Some(t12.to_string())
+                    } else if interior {
+                        Some("T12/interior-boundaries".to_string())
+                    } else if cut_ok {
+                        Some("T12/cut-fragment".to_string())
                     } else if d30_ok {
                         d30_end.clone()
                     } else {
@@ -1681,6 +2112,9 @@ pub fn diff_media(
             ));
         }
         let mut lack = (0usize, 0usize);
+        // review-wp6 M2: the system-less samples that carry the D30
+        // starvation SIGNATURE (`d30_starved_drops`), per side.
+        let mut starved = (0usize, 0usize);
         for (i, (sa, sb)) in xa.iter().zip(xb.iter()).enumerate() {
             stat(rep, "rec-telemetry").compared += 1;
             let at = format!("{sid}/seg#{i}");
@@ -1785,6 +2219,8 @@ pub fn diff_media(
             if carries(&pa) || carries(&pb) {
                 lack.0 += lacking(&pa);
                 lack.1 += lacking(&pb);
+                starved.0 += d30_starved_drops(&pa);
+                starved.1 += d30_starved_drops(&pb);
             }
             rep.inputs
                 .entry(format!("rec-telemetry samples {sid}"))
@@ -1803,13 +2239,49 @@ pub fn diff_media(
         // (calibrations: max |Δ| 2); JS-vs-Rust the D30 matcher only (Rust
         // never drops: any Rust drop is UNTOLERATED, even when the counts
         // agree); Rust-vs-Rust exact.
-        if let Some(tol) = system_presence_tol(table, &a.kind, &b.kind, lack.0, lack.1) {
+        // review-wp6 M2 (F3, ruled inherent): a RUST system-less sample with
+        // the starvation signature is the TS mechanism (a delayed sample()
+        // let the next one land < 1000 ms after the gate stamp) — cited
+        // T7/D30 by itself, then left out of the Rust count. Never a count
+        // rule: an unsigned Rust drop still counts (and fails).
+        let rs_adj =
+            |kind: &str, lack: usize, st: usize| if kind == "rust" { lack - st } else { lack };
+        for (side, kind, st) in [("A", &a.kind, starved.0), ("B", &b.kind, starved.1)] {
+            if kind == "rust" && st > 0 {
+                let id = table
+                    .matcher_rows("d30_system_presence", "rec-telemetry")
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| UNTOLERATED.to_string());
+                rep.push(mm(
+                    "rec-telemetry",
+                    sid,
+                    "(starved system-less samples: isolated, mono gap 900-999 ms)",
+                    if side == "A" {
+                        st.to_string()
+                    } else {
+                        String::new()
+                    },
+                    if side == "B" {
+                        st.to_string()
+                    } else {
+                        String::new()
+                    },
+                    &id,
+                ));
+            }
+        }
+        let (la, lb) = (
+            rs_adj(&a.kind, lack.0, starved.0),
+            rs_adj(&b.kind, lack.1, starved.1),
+        );
+        if let Some(tol) = system_presence_tol(table, &a.kind, &b.kind, la, lb) {
             rep.push(mm(
                 "rec-telemetry",
                 sid,
                 "(samples without system)",
-                lack.0.to_string(),
-                lack.1.to_string(),
+                la.to_string(),
+                lb.to_string(),
                 &tol,
             ));
         }
@@ -1820,8 +2292,47 @@ pub fn diff_media(
     let (va, vb) = (segments_by_seq(a), segments_by_seq(b));
     stat(rep, "rec-values");
     stat(rep, "rec-presence");
+    // Each side's NMEA epochs at its OWN read instants (its agent tape); a
+    // side without one (JS) gets the player's feed at the release instants.
+    // review-wp6 S-F4: a Rust side's read instant is self-reported, so each
+    // one is bounded against the player's release of the SAME line
+    // within `collisionMs` — the race window itself: an anchor that may sit
+    // further from its release than the window could move a race by more
+    // than the rule admits (measured max 14 ms under 15 busy loops); an
+    // unbounded read cannot anchor a race.
+    // The lines AS WRITTEN: the player shifts each NMEA time-of-day/date
+    // to the run's wall clock before the write (play.rs, rewrite.rs).
+    let feed: Vec<(i64, String)> =
+        nmea_lines(&tape_recs(Path::new(&play.tape)), Some(&play.releases))
+            .into_iter()
+            .map(|(w, l)| (w, crate::rewrite::shift_nmea_line(&l, play.shift_s)))
+            .collect();
+    let read_lag = row_tol(table, "T4/rec-sample", "collisionMs", 0.0) as i64;
+    let mut timeline = |label: &str, m: &MediaCapture| {
+        if m.nmea_reads.is_empty() {
+            let all: Vec<(i64, String, bool)> =
+                feed.iter().map(|(w, l)| (*w, l.clone(), true)).collect();
+            return gps_timeline(&all);
+        }
+        let (bounded, lags) = bound_reads(&m.nmea_reads, &feed, read_lag);
+        let out = bounded.iter().filter(|r| !r.2).count();
+        let mut l = lags.clone();
+        l.sort();
+        rep.inputs.insert(
+            format!("T4 nmea read − release {label} (S-F4)"),
+            format!(
+                "{} reads, {} matched, median {:?} / max {:?} ms, {out} outside [0, {read_lag}] ms",
+                bounded.len(),
+                lags.len(),
+                l.get(l.len() / 2),
+                l.last()
+            ),
+        );
+        gps_timeline(&bounded)
+    };
+    let ep = (timeline("A", a), timeline("B", b));
     for sid in va.keys().filter(|k| vb.contains_key(*k)) {
-        rec_values(sid, &va[sid], &vb[sid], play, &facts, table, rep);
+        rec_values(sid, (&va[sid], &vb[sid]), &ep, play, &facts, table, rep);
     }
 
     // ---- S3 (T14)
@@ -2716,6 +3227,68 @@ mod tests {
         )));
     }
 
+    /// review-wp6 M2: only the starvation SIGNATURE is a D30 drop — isolated,
+    /// 900–999 ms after the previous sample; mono in ns like the recorders.
+    #[test]
+    fn d30_starved_drop_signature_only() {
+        let smp = |mono_ms: f64, sys: bool| {
+            let mut m = serde_json::json!({"gps": {}});
+            if sys {
+                m["system"] = serde_json::json!({});
+            }
+            serde_json::json!({"mono": mono_ms * 1e6, "metrics": m})
+        };
+        let seg = |rows: &[(f64, bool)]| rows.iter().map(|(t, s)| smp(*t, *s)).collect::<Vec<_>>();
+        // A late sample at 2050, the next one 950 ms later lacks system: 1.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1000.0, true),
+                (2050.0, true),
+                (3000.0, false),
+                (4000.0, true)
+            ])),
+            1
+        );
+        // The same drop on an on-time grid (gap 1000): no signature.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1000.0, true),
+                (2000.0, true),
+                (3000.0, false),
+                (4000.0, true)
+            ])),
+            0
+        );
+        // Two in a row, or at a segment edge: never.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1050.0, true),
+                (2000.0, false),
+                (2950.0, false),
+                (4000.0, true)
+            ])),
+            0
+        );
+        assert_eq!(
+            d30_starved_drops(&seg(&[(1050.0, true), (2000.0, false)])),
+            0
+        );
+        // Gap under 900 ms is not the signature either.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1000.0, true),
+                (2150.0, true),
+                (3000.0, false),
+                (4000.0, true)
+            ])),
+            0
+        );
+    }
+
     #[test]
     fn rec_telemetry_system_presence_per_sample() {
         let table = Table::load(
@@ -2845,15 +3418,34 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let row = |tol: &str| vec![format!("{sid}/00001 durationMs {tol}")];
-        assert_eq!(run(js(), rs()), row("T7/D30"));
-        assert_eq!(run(rs(), js()), row("T7/D30"), "either column order");
-        // (b) Rust LATER (a P-WP6-1 regression shape): never.
+        // review-wp6 M3: the cut fragment is judged by its END instant
+        // (T12/cut-fragment = d30_session_end (a)+(c)+(d) without (b)), which
+        // now covers the D30 JS-late restore too.
+        let cut = "T12/cut-fragment";
+        assert_eq!(run(js(), rs()), row(cut));
+        assert_eq!(run(rs(), js()), row(cut), "either column order");
+        // No δ band any more: a Rust-later start with the same end + anchor.
         let rs_late = side("rust", 527_774, 529_790, 2_540, 523_845);
-        assert_eq!(run(js(), rs_late), row(UNTOLERATED));
-        // Rust-vs-Rust: never.
+        assert_eq!(run(js(), rs_late), row(cut));
+        // Rust-vs-Rust too.
         let mut r2 = js();
         r2.kind = "rust".into();
-        assert_eq!(run(r2, rs()), row(UNTOLERATED));
+        assert_eq!(run(r2, rs()), row(cut));
+        // A boot-started session (no shed change on either side): anchored to
+        // the boot, still the end instant.
+        let mut jb = js();
+        jb.shed_changes.clear();
+        let mut rb = rs();
+        rb.shed_changes.clear();
+        assert_eq!(run(jb.clone(), rb), row(cut));
+        // ... but a shed anchor on one side only is not the same session start.
+        assert_eq!(run(jb, rs()), row(UNTOLERATED));
+        // (d) a spawn more than one publish tick before its own side's change
+        // is not anchored to it.
+        assert_eq!(
+            run(side("js", 526_868, 528_886, 3_451, 528_100), rs()),
+            row(UNTOLERATED)
+        );
         // (c) the ends disagree by > 150 ms.
         assert_eq!(
             run(js(), side("rust", 525_962, 527_978, 4_600, 521_949)),
@@ -2870,9 +3462,9 @@ mod tests {
         let mut j = js();
         j.spawns[0].end = Some("external".into());
         assert_eq!(run(j, rs()), row(UNTOLERATED));
-        // (d) the spawn-to-restore lags differ by > 300 ms.
+        // (d) the spawn-to-restore lags differ by > one publish tick (1100 ms).
         assert_eq!(
-            run(side("js", 526_868, 528_886, 3_451, 522_400), rs()),
+            run(side("js", 526_868, 528_886, 3_451, 521_500), rs()),
             row(UNTOLERATED)
         );
         // (e) an earlier fragment of the session failed T12.
@@ -2891,6 +3483,99 @@ mod tests {
                 format!("{sid}/00001 durationMs {UNTOLERATED}"),
             ]
         );
+    }
+
+    /// review-wp6 F5 (re-review run rr-m1, 15 busy loops + host overload):
+    /// an interior fragment's boundary moved 272 ms on one side (inside
+    /// T12's startTs ±300) while its neighbour compensated — its durationMs
+    /// differs by 302 but both its boundaries agree within ±300: tolerated
+    /// as `T12/interior-boundaries`. A moved END boundary (> 300) or the
+    /// session's LAST fragment stays as before.
+    #[test]
+    fn interior_fragment_durations_are_judged_by_their_boundaries() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam0#0>";
+        let side = |starts: &[i64], last_dur: i64| {
+            let mut finals = BTreeMap::new();
+            for (i, st) in starts.iter().enumerate() {
+                let dur = starts.get(i + 1).map_or(last_dur, |n| n - st);
+                finals.insert(
+                    format!("recordings/video/cam0/{sid}/{i:05}.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "seq": i, "startTs": st, "startMono": st - starts[0] + 5,
+                        "durationMs": dur, "sizeBytes": 100,
+                    }))
+                    .unwrap(),
+                );
+            }
+            MediaCapture {
+                kind: "rust".into(),
+                spawns: vec![Spawn {
+                    w: starts[0] - 2_500,
+                    role: "capture".into(),
+                    key: "cam0".into(),
+                    pid: 7,
+                    argv: vec!["gst".into()],
+                    env: BTreeMap::new(),
+                    playing: Some(starts[0] - 2_000),
+                    end: Some("int".into()),
+                    end_w: None,
+                    sid: Some(sid.into()),
+                }],
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        let run = |a: MediaCapture, b: MediaCapture| {
+            let mut rep = Report::default();
+            diff_media(&a, &b, &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                // within T12's own ±150 (the +30 at 00003): not this rule's
+                .filter(|m| m.stream == "sidecar" && m.path == "durationMs" && m.tol != "T12")
+                .map(|m| format!("{} {}", m.at, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let a = side(&[400_000, 410_000, 420_000, 430_000], 5_000);
+        // B's 00002 boundary 272 ms late: 00001 is 272 longer, 00002 272
+        // shorter (+30 at 00003's start): two interior rows by boundaries.
+        let b = side(&[400_000, 410_000, 420_272, 430_030], 4_970);
+        assert_eq!(
+            run(a.clone(), b),
+            vec![
+                format!("{sid}/00001 T12/interior-boundaries"),
+                format!("{sid}/00002 T12/interior-boundaries"),
+            ]
+        );
+        // An END boundary 320 ms off its peer (beyond T12's startTs bound).
+        let far = side(&[400_000, 410_000, 420_320, 430_000], 5_000);
+        // (00002's own END agrees again: its start row fails instead.)
+        assert_eq!(
+            run(a.clone(), far),
+            vec![
+                format!("{sid}/00001 {UNTOLERATED}"),
+                format!("{sid}/00002 T12/interior-boundaries"),
+            ]
+        );
+        // A late finalize on B: 00001 ends 200 ms PAST its own successor's
+        // start (the boundaries still agree within ±300, the seam does not).
+        let mut late = side(&[400_000, 410_000, 420_000, 430_000], 5_000);
+        let f = "recordings/video/cam0/<sid:video:cam0#0>/00001.json".to_string();
+        let mut v: Value = serde_json::from_slice(&late.finals[&f]).unwrap();
+        v["durationMs"] = serde_json::json!(10_200);
+        late.finals.insert(f, serde_json::to_vec(&v).unwrap());
+        assert_eq!(
+            run(a.clone(), late),
+            vec![format!("{sid}/00001 {UNTOLERATED}")]
+        );
+        // The LAST fragment (no successor) is not interior: its own rules.
+        let short = side(&[400_000, 410_000, 420_000, 430_000], 4_700);
+        assert_eq!(run(a, short), vec![format!("{sid}/00003 {UNTOLERATED}")]);
     }
 
     /// G1: recorded VALUES per leaf (deduplicated), per-group presence.
@@ -3002,6 +3687,361 @@ mod tests {
                 format!("metrics.gps(samples carrying) {UNTOLERATED}"),
             ]
         );
+    }
+
+    /// review-wp6 F4 (reviewer's heavy run 1, scratchpad `m1/diff.md`; gate
+    /// run 033610Z `snr_max`): a two-sided 1×1 gps hunk is two adjacent
+    /// misses — tolerated only when both values are consecutive on each
+    /// side's own replayed collector state and each lacking side's tick raced
+    /// the instant its missing value became current there.
+    #[test]
+    fn rec_values_two_adjacent_misses_need_their_own_races() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let nmea = |body: String| {
+            let cs = body.bytes().fold(0u8, |x, c| x ^ c);
+            format!("${body}*{cs:02X}")
+        };
+        // Epoch k: GGA at 100 000 + k*1000 (+ `late` on that side), the
+        // position 1430.0000 + k*0.0006 min N; one-message GPGSV cycle 8 ms
+        // later with SNR snr(k): 30 30 30 31 32 33 30 30 30.
+        let gga = |k: i64| {
+            nmea(format!(
+                "GPGGA,000000.00,14{:07.4},N,12100.0000,E,1,08,0.9,545.{k},M,0.0,M,,",
+                30.0 + k as f64 * 0.0006
+            ))
+        };
+        let snr = |k: i64| [30, 30, 30, 31, 32, 33, 30, 30, 30][k as usize];
+        let gsv = |k: i64| nmea(format!("GPGSV,1,1,01,05,31,077,{},1", snr(k)));
+        let lat = |k: i64| {
+            let f = xorgate_core::nmea::parse_sentence(&gga(k)).unwrap();
+            xorgate_core::round::round(f.latitude.unwrap(), 6)
+        };
+        let reads = |late: i64| -> Vec<(i64, String)> {
+            (0..9)
+                .flat_map(|k| {
+                    let w = 100_000 + k * 1000 + late;
+                    [(w, gga(k)), (w + 8, gsv(k))]
+                })
+                .collect()
+        };
+        // Samples `(ts, leaf, value)` → one segment.
+        let seg = |s: &[(i64, &str, f64)]| {
+            let mut t = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (i, (ts, leaf, v)) in s.iter().enumerate() {
+                t.push_str(&format!(
+                    "{{\"ts\":{ts},\"seq\":{i},\"metrics\":{{\"gps\":{{\"{leaf}\":{{\"value\":{v}}}}}}}}}\n"
+                ));
+            }
+            t
+        };
+        let cap = |s: &[(i64, &str, f64)], reads: Vec<(i64, String)>| MediaCapture {
+            kind: "rust".into(),
+            finals: BTreeMap::from([(
+                "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
+                seg(s).into_bytes(),
+            )]),
+            nmea_reads: reads,
+            present: true,
+            ..Default::default()
+        };
+        // The player's tape + releases of the same lines (S-F4: a Rust read
+        // anchors a race only within collisionMs of the release of its line).
+        let tape_path =
+            std::env::temp_dir().join(format!("xorgate-replay-f4-{}.ndjson", std::process::id()));
+        let mut tape_text = String::from("{\"v\":1,\"k\":\"meta\"}\n");
+        let mut releases = Vec::new();
+        for (i, (w, line)) in reads(0).into_iter().enumerate() {
+            tape_text.push_str(
+                &serde_json::json!({"t": i, "w": w, "k": "nmea", "line": line}).to_string(),
+            );
+            tape_text.push('\n');
+            releases.push(crate::diff::Release {
+                w,
+                due: w,
+                t: i as u64,
+                k: "nmea".into(),
+            });
+        }
+        std::fs::write(&tape_path, tape_text).unwrap();
+        let play = PlayInfo {
+            tape: tape_path.display().to_string(),
+            releases,
+            ..Default::default()
+        };
+        let run_with = |a: MediaCapture, b: MediaCapture, play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_media(&a, &b, play, &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "rec-telemetry" && m.path.starts_with("metrics.gps"))
+                .map(|m| format!("{} {}", m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let run = |a: MediaCapture, b: MediaCapture| run_with(a, b, &play);
+        let t = |i: i64, d: i64| 100_000 + i * 1000 + d;
+        let la = |v: &[(i64, i64)]| {
+            v.iter()
+                .map(|&(ts, k)| (ts, "lat", lat(k)))
+                .collect::<Vec<_>>()
+        };
+        let ok = vec!["metrics.gps.lat.value(values) T4/rec-sample".to_string()];
+        let bad = vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")];
+        // POSITION. Both recorders tick on the GGA phase. A: slots 3 and 4
+        // tick 3 ms BEFORE their read → 1 2 2 3 5 6 (misses 4); B: slot 3
+        // before, slot 4 after → 1 2 2 4 5 6 (misses 3). LCS: one hunk
+        // A=[3×1] B=[4×1] at slot 4 — the reviewer's shape.
+        let sa = |d: i64| {
+            la(&[
+                (t(1, d), 1),
+                (t(2, d), 2),
+                (t(3, -3), 2),
+                (t(4, -3), 3),
+                (t(5, d), 5),
+                (t(6, d), 6),
+            ])
+        };
+        let sb = |d3: i64| {
+            la(&[
+                (t(1, 10), 1),
+                (t(2, 10), 2),
+                (t(3, d3), 2),
+                (t(4, 10), 4),
+                (t(5, 10), 5),
+                (t(6, 10), 6),
+            ])
+        };
+        assert_eq!(run(cap(&sa(10), reads(0)), cap(&sb(-3), reads(0))), ok);
+        // B's slot-3 tick 120 ms before ITS read of 3: no race at B's miss.
+        assert_eq!(run(cap(&sa(10), reads(0)), cap(&sb(-120), reads(0))), bad);
+        // Judged at each side's OWN read: A reads every epoch 80 ms late, so
+        // its slot-4 tick is 83 ms from its read of 4 → no race.
+        assert_eq!(run(cap(&sa(100), reads(80)), cap(&sb(-3), reads(0))), bad);
+        // B holds a value no input carried: a different value, never.
+        let mut s9 = sb(-3);
+        s9[3].2 = 14.6;
+        assert_eq!(run(cap(&sa(10), reads(0)), cap(&s9, reads(0))), bad);
+        // No reads and no player tape (nothing replays the collector).
+        assert_eq!(
+            run_with(
+                cap(&sa(10), vec![]),
+                cap(&sb(-3), vec![]),
+                &PlayInfo::default()
+            ),
+            bad
+        );
+        // S-F4: A's reader 300 ms late on every line, its ticks 3 ms before
+        // ITS OWN reads (a self-consistent late reader): its reads are
+        // outside collisionMs of the player's releases → no anchor → UNTOLERATED;
+        // the same shape without a player tape cannot anchor either.
+        let late = la(&[
+            (t(1, 310), 1),
+            (t(2, 310), 2),
+            (t(3, 297), 2),
+            (t(4, 297), 3),
+            (t(5, 310), 5),
+            (t(6, 310), 6),
+        ]);
+        assert_eq!(run(cap(&late, reads(300)), cap(&sb(-3), reads(0))), bad);
+        assert_eq!(
+            run_with(
+                cap(&sa(10), reads(0)),
+                cap(&sb(-3), reads(0)),
+                &PlayInfo::default()
+            ),
+            bad
+        );
+        // The player shifts each NMEA time to the run's clock before the
+        // write: the agent reads the SHIFTED line, which still anchors.
+        let shifted = |r: Vec<(i64, String)>| -> Vec<(i64, String)> {
+            r.into_iter()
+                .map(|(w, l)| (w, crate::rewrite::shift_nmea_line(&l, 3_600)))
+                .collect()
+        };
+        assert_ne!(shifted(reads(0))[0].1, reads(0)[0].1, "the GGA time moved");
+        let play_shift = PlayInfo {
+            shift_s: 3_600,
+            ..play.clone()
+        };
+        assert_eq!(
+            run_with(
+                cap(&sa(10), shifted(reads(0))),
+                cap(&sb(-3), shifted(reads(0))),
+                &play_shift
+            ),
+            ok
+        );
+        let (bounded, lags) = bound_reads(&reads(30), &reads(0), 50);
+        assert!(bounded.iter().all(|r| r.2) && lags.iter().all(|l| *l == 30));
+        let (bounded, _) = bound_reads(&reads(80), &reads(0), 50);
+        assert!(bounded.iter().all(|r| !r.2));
+        // Non-consecutive values (A holds 2 where B holds 4 at slot 3/4,
+        // every tick raced): never two misses.
+        let anchored = |r: Vec<(i64, String)>| -> Vec<(i64, String, bool)> {
+            r.into_iter().map(|(w, l)| (w, l, true)).collect()
+        };
+        let tl = gps_timeline(&anchored(reads(0)));
+        let leaves = |v: &[(i64, &str, f64)]| -> Vec<(i64, BTreeMap<String, String>)> {
+            v.iter()
+                .map(|(ts, leaf, x)| {
+                    (
+                        *ts,
+                        BTreeMap::from([(format!("metrics.gps.{leaf}.value"), x.to_string())]),
+                    )
+                })
+                .collect()
+        };
+        let p = "metrics.gps.lat.value";
+        let (l_a, l_b) = (leaves(&sa(10)), leaves(&sb(-3)));
+        let (x, y) = (lat(3).to_string(), lat(4).to_string());
+        assert!(adjacent_races(
+            (&l_a, &l_b),
+            (tl.get(p), tl.get(p)),
+            ((t(4, -3), &x), (t(4, 10), &y)),
+            50
+        ));
+        let x2 = lat(2).to_string();
+        assert!(!adjacent_races(
+            (&l_a, &l_b),
+            (tl.get(p), tl.get(p)),
+            ((t(3, -3), &x2), (t(4, 10), &y)),
+            50
+        ));
+        assert_eq!(tl["metrics.gps.lat.value"][3], (t(3, 0), lat(3), true));
+        assert_eq!(
+            tl["metrics.gps.snr_max.value"]
+                .iter()
+                .map(|c| c.1)
+                .collect::<Vec<_>>(),
+            [30.0, 31.0, 32.0, 33.0, 30.0]
+        );
+        assert_eq!(
+            tl["metrics.gps.snr_max.value"][1].0,
+            t(3, 8),
+            "a GSV value is current at its cycle's last message"
+        );
+        // SKY (gate run 033610Z): snr_max becomes current at the GSV, 8 ms
+        // after the GGA. A ticks 34 ms after each epoch but its slot-3 read
+        // fell before the GSV (stamped 26 ms after it) → 30 30 30 32 33 30
+        // (misses 31); B ticks 2 ms before the GSV at slots 3-4 and 1 ms
+        // after at 5 → 30 30 30 31 33 30 (misses 32). Hunk A=[32] B=[31].
+        let sn = |v: &[(i64, f64)]| {
+            v.iter()
+                .map(|&(ts, x)| (ts, "snr_max", x))
+                .collect::<Vec<_>>()
+        };
+        let sky_a = sn(&[
+            (t(1, 34), 30.0),
+            (t(2, 34), 30.0),
+            (t(3, 34), 30.0),
+            (t(4, 34), 32.0),
+            (t(5, 34), 33.0),
+            (t(6, 34), 30.0),
+        ]);
+        let sky_b = |d4: i64| {
+            sn(&[
+                (t(1, 34), 30.0),
+                (t(2, 34), 30.0),
+                (t(3, 6), 30.0),
+                (t(4, d4), 31.0),
+                (t(5, 9), 33.0),
+                (t(6, 34), 30.0),
+            ])
+        };
+        assert_eq!(
+            run(cap(&sky_a, reads(0)), cap(&sky_b(6), reads(0))),
+            vec!["metrics.gps.snr_max.value(values) T4/rec-sample".to_string()]
+        );
+        // B's slot-4 tick 200 ms before the GSV it missed: no race.
+        assert_eq!(
+            run(cap(&sky_a, reads(0)), cap(&sky_b(-192), reads(0))),
+            vec![format!("metrics.gps.snr_max.value(values) {UNTOLERATED}")]
+        );
+        let _ = std::fs::remove_file(&tape_path);
+    }
+
+    /// A capture SIGINTed at the agent's stop and killed by the agent's exit
+    /// before gst printed `handling interrupt.` (gate run 032624Z, 15 busy
+    /// loops) is `int` by the agent's own tape record of the SIGINT — only
+    /// when that record proves delivery (review-wp6 M5); otherwise `kill`.
+    #[test]
+    fn capture_end_int_from_the_agents_own_sigint_record() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-end-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            concat!(
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":9146,"argv":["videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam1.sock"],"w":1000}"#,
+                "\n",
+                r#"{"k":"line","pid":9146,"fd":1,"line":"Redistribute latency...","w":2000}"#,
+                "\n",
+                r#"{"k":"eof","pid":9146,"w":3021}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            "{\"k\":\"gone\",\"pid\":9146,\"w\":3100}\n",
+        )
+        .unwrap();
+        let end = |dir: &std::path::Path| {
+            MediaCapture::load(dir, &[])
+                .spawns
+                .iter()
+                .find(|s| s.pid == 9146)
+                .and_then(|s| s.end.clone())
+        };
+        assert_eq!(end(&dir).as_deref(), Some("kill"));
+        let with_tape = |recs: &[&str]| {
+            let mut tape = String::from("{\"v\":1,\"k\":\"meta\"}\n");
+            for r in recs {
+                tape.push_str(r);
+                tape.push('\n');
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gz, tape.as_bytes()).unwrap();
+            std::fs::write(dir.join("agent-tape.ndjson.gz"), gz.finish().unwrap()).unwrap();
+            end(&dir)
+        };
+        let sent = |w: i64, sig: i32, errno: &str| {
+            format!(
+                r#"{{"t":67618,"w":{w},"k":"child_signal","role":"capture","key":"cam1","pid":9146,"sig":{sig}{errno}}}"#
+            )
+        };
+        // SIGINT really sent (taped after kill(2), errno 0), before the
+        // child's death, never reaped by the agent → `int`.
+        assert_eq!(
+            with_tape(&[&sent(3000, 2, r#","errno":0"#)]).as_deref(),
+            Some("int")
+        );
+        // (1) Not proven delivered: kill(2) failed (ESRCH 3), a record
+        // written BEFORE the syscall (no errno), or another signal (9).
+        assert_eq!(
+            with_tape(&[&sent(3000, 2, r#","errno":3"#)]).as_deref(),
+            Some("kill")
+        );
+        assert_eq!(with_tape(&[&sent(3000, 2, "")]).as_deref(), Some("kill"));
+        assert_eq!(
+            with_tape(&[&sent(3000, 9, r#","errno":0"#)]).as_deref(),
+            Some("kill")
+        );
+        // (2) Stamped after the child died (its eof at 3021).
+        assert_eq!(
+            with_tape(&[&sent(3022, 2, r#","errno":0"#)]).as_deref(),
+            Some("kill")
+        );
+        // (3) The agent reaped the child itself (a death while it lived).
+        let exit = r#"{"t":67620,"w":3010,"k":"child_exit","role":"capture","key":"cam1","pid":9146,"code":null,"signal":9,"external":false}"#;
+        assert_eq!(
+            with_tape(&[&sent(3000, 2, r#","errno":0"#), exit]).as_deref(),
+            Some("kill")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// End-snapshot `recording.backlogSegments` (review-wp6 FLAG 3): no

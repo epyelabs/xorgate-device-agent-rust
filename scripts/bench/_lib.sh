@@ -128,7 +128,7 @@ PY
 # absent file (masters never start), the exclusive one at the packaged runtime.
 env_file_guard() {
   local bad
-  bad=$(grep -E '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN)=' "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
+  bad=$(grep -E "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE)=" "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
   if [ -n "$bad" ]; then
     echo "REFUSING: $RS_ENV sets $(echo "$bad" | tr '\n' ' ')— an EnvironmentFile overrides the profile drop-ins; remove those keys by hand"
     exit 1
@@ -157,10 +157,11 @@ inputs_safe() {
   grep -qx 'Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: GPS_NMEA_PORT=/run/xorgate-rs-no-gps in $INPUTS_DROPIN"; ok=1; }
   grep -qx 'Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python in $INPUTS_DROPIN"; ok=1; }
   grep -qx "HARDWARE_MANIFEST=$HW_SHARED" "$RS_ENV" 2>/dev/null || { echo "  missing: HARDWARE_MANIFEST=$HW_SHARED in $RS_ENV (dev-manifests.sh)"; ok=1; }
-  if grep -qE '^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN)=' "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN"; ok=1; fi
+  if grep -qE "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE)=" "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN/XORGATE_LED_*/XORGATE_SMS_PORT"; ok=1; fi
   if [ -f "/etc/xorgate/hardware.json" ]; then
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("imu"))' "$HW_SHARED" 2>/dev/null)" = None ] || { echo "  missing: imu: null in $HW_SHARED (dev-manifests.sh / profile.sh shared)"; ok=1; }
   fi
+  p4_inputs_safe || ok=1
   return $ok
 }
 profile_shared() {
@@ -178,6 +179,7 @@ profile_shared() {
   # no capture while the JS agent owns the sensors). Created HERE (not in
   # dev-manifests.sh) so the profile and its verifier own them together.
   shared_shims
+  p4_sudo_shim
   local nch
   nch=$(kvs_channels_count "$KVS_SHARED")
   [ "$nch" = 0 ] || echo "  WARNING: $KVS_SHARED has channels=$nch (want 0) — run scripts/bench/dev-manifests.sh (inputs_safe fails until then)"
@@ -204,6 +206,17 @@ Environment=PATH=/var/lib/xorgate-rs/shared-shims:/usr/local/bin:/usr/bin:/bin
 Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps
 Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python
 Environment=KVS_RUNTIME_BIN=/var/lib/xorgate-rs/no-kvs
+# Phase 4 (WP6, plan Q6 / phase-4-operations.md §9): the JS prod agent drives
+# the status LED, the SMS port, the clock stepper and the camera mount. Two LED
+# writers would fight, so the agent's LED is inert ("gpio chip not found") and
+# shared-shims/pinctrl refuses (the `led boot|exit-state` unit hooks are
+# '-'-prefixed: harmless); shared-shims/sudo refuses ONLY xorgate-setclock and
+# xorgate-camrotate (two steppers double-step; DEV cameraMount would fight
+# PROD's over the same config.txt) and execs /usr/bin/sudo otherwise; the SMS
+# port does not exist (read_sms answers no_modem; the two agents' lock files
+# live in different homes on the bench and would not interlock).
+Environment=XORGATE_LED_GPIOCHIP=/run/xorgate-rs-no-gpio
+Environment=XORGATE_SMS_PORT=/run/xorgate-rs-no-sms
 CONF
   remove_if_present "$EXCLUSIVE_DROPIN" || true
 }
@@ -235,6 +248,10 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=GPS_NMEA_PORT=/dev/ttyUSB1
 Environment=XORGATE_PYTHON_DIR=/opt/xorgate-rs/python
 Environment=KVS_RUNTIME_BIN=/opt/xorgate-rs/media/xorgate-kvs-webrtc
+# Phase 4 (WP6, §9): the real LED chip (by label pinctrl-rp1), the SMS port by
+# USB identity (interface 05, never /dev/ttyUSB2), the real pinctrl + sudo
+# (full PATH above has no shared-shims): drop the shared profile's knobs.
+UnsetEnvironment=XORGATE_LED_GPIOCHIP XORGATE_SMS_PORT XORGATE_LED_WRITER
 # EnvironmentFile= wins over Environment=, and a later file over an earlier
 # one: this one (last drop-in) points HARDWARE_MANIFEST at the real IMU block
 # and KVS_MANIFEST at the channels-on DEV manifest (beats agent-rs-dev.env).
@@ -251,6 +268,13 @@ ENV
 }
 reload_restart_rs() {
   act systemctl daemon-reload
+  # Phase 4 (WP6): an `xorgate-rs update` (E11) reinstalls the SHIPPED unit,
+  # whose Conflicts=xorgate-agent.service would stop the JS prod agent on this
+  # restart — refuse until install.sh has restored the bench flavour.
+  if ! bench_flavour_ok; then
+    echo "  REFUSING to restart $UNIT: bench flavour lost (above) — run scripts/bench/install.sh <tarball>, then retry"
+    return 1
+  fi
   act systemctl restart $UNIT
   if [ "$DRY" != 1 ]; then
     sleep 3
@@ -279,7 +303,7 @@ c15_check() {
 # Phase 3 (WP6) additions — media-off shared profile, window helpers
 # (plan phase-3-recording-media.md §Bench recipe, P3/P7/P13). Appended only.
 SHIMS_DIR=$RS_HOME/shared-shims
-SHIM_NAMES="rpicam-hello gst-launch-1.0"
+SHIM_NAMES="rpicam-hello gst-launch-1.0 pinctrl"
 SHARED_PATH=$SHIMS_DIR:/usr/local/bin:/usr/bin:/bin
 NO_KVS=$RS_HOME/no-kvs
 KVS_SHARED=$RS_ETC/kvs.json
@@ -542,6 +566,12 @@ say "exclusive window never ended — restoring the PROD JS agent ($JS_UNIT)"
 for u in $UNIT $GATE_UNIT $SOAK_UNIT; do systemctl stop "\$u" 2>/dev/null || true; done
 rm -f $EXCLUSIVE_DROPIN $TAPE_DROPIN $GATE_DROPIN $EXCLUSIVE_ENV
 systemctl daemon-reload || true
+# Phase 4 (review-wp6 M4): NTP back on + undo an ntp-unsync.sh break.
+act() { "\$@"; }
+note() { say "\$1"; }
+NTP_STATE=$NTP_STATE
+$(declare -f ntp_restore)
+ntp_restore
 for i in 1 2 3; do
   systemctl start $JS_UNIT || true
   for s in 1 2 3 4 5 6 7 8 9 10; do
@@ -636,6 +666,129 @@ PY
   done
   echo "  JS media after ${i}s: ${out#* }"
   [ "${out%% *}" = OK ]
+}
+# ---------------------------------------------------------------------------
+# Phase 4 (WP6) additions — LED / SMS / clock / camera-mount knobs of the
+# shared profile, the updater bootstrap (plan phase-4-operations.md §9, Q6).
+# The knobs live ONLY in the shared drop-in + shims, never in $RS_ENV.
+P4_KNOBS_RE='XORGATE_LED_GPIOCHIP|XORGATE_LED_WRITER|XORGATE_SMS_PORT'
+NO_GPIO=/run/xorgate-rs-no-gpio
+NO_SMS=/run/xorgate-rs-no-sms
+SUDO_SHIM=$SHIMS_DIR/sudo
+UPDATER_UNIT=xorgate-updater-rs.service
+UPDATE_SUDOERS=/etc/sudoers.d/024_xorgate-update-rs
+# The shared-profile sudo shim. Refuses the two helpers the JS agent owns on
+# the bench, by ANY argument naming them (path or basename), before anything
+# runs; every other call is the real sudo (Phase 2 command checks keep working).
+sudo_shim_body() {
+  cat <<'SHIM'
+#!/bin/sh
+# xorgate-rs SHARED-profile shim (scripts/bench/profile.sh shared, Phase 4 §9).
+# The JS prod agent owns the clock stepper and the camera mount on the bench:
+# refuse xorgate-setclock / xorgate-camrotate, exec the real sudo otherwise.
+# The exclusive profile's PATH omits this dir.
+for a in "$@"; do
+  case "$a" in
+    /usr/local/bin/xorgate-setclock|xorgate-setclock|/usr/local/bin/xorgate-camrotate|xorgate-camrotate)
+      echo "sudo $a: disabled in the shared profile (xorgate-rs bench, Phase 4)" >&2
+      exit 1 ;;
+  esac
+done
+exec /usr/bin/sudo "$@"
+SHIM
+}
+p4_sudo_shim() {
+  write_if_changed "$SUDO_SHIM" 0755 < <(sudo_shim_body) || true
+}
+# 0 when the Phase 4 half of the shared profile is in force. The sudo shim is
+# checked by CONTENT, never by running it: a broken shim would exec the real
+# `sudo -n xorgate-setclock …`.
+p4_inputs_safe() {
+  local ok=0 want
+  grep -qx "Environment=XORGATE_LED_GPIOCHIP=$NO_GPIO" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_LED_GPIOCHIP=$NO_GPIO in $INPUTS_DROPIN (Phase 4)"; ok=1; }
+  grep -qx "Environment=XORGATE_SMS_PORT=$NO_SMS" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_SMS_PORT=$NO_SMS in $INPUTS_DROPIN (Phase 4)"; ok=1; }
+  if [ -e "$NO_GPIO" ]; then echo "  UNSAFE: $NO_GPIO exists (must stay absent: the agent LED is inert in the shared profile)"; ok=1; fi
+  if [ -e "$NO_SMS" ]; then echo "  UNSAFE: $NO_SMS exists (must stay absent: no SMS port in the shared profile)"; ok=1; fi
+  want=$(sudo_shim_body)
+  if [ ! -x "$SUDO_SHIM" ]; then echo "  missing: shim $SUDO_SHIM (profile.sh shared, Phase 4)"; ok=1
+  elif [ "$(cat "$SUDO_SHIM")" != "$want" ]; then echo "  UNSAFE: $SUDO_SHIM differs from the shared-profile body (re-run profile.sh shared)"; ok=1; fi
+  return $ok
+}
+# Bootstrap of the Rust remote-update rail (CF47 bench half, §5 "Bootstrap"):
+# the first xorgate-updater-rs.service + 024 grant; every later
+# `xorgate-rs update` reinstalls them from its tarball. $1 = install root,
+# $2 = service user. visudo BEFORE it lands; a refusal warns, never fatal.
+update_sudoers_body() {
+  printf '%s\n' \
+    "# Installed by xorgate-rs. Allows the agent (running as $1) to start the" \
+    "# one-shot self-update unit on a cloud-issued 'update' command, and nothing" \
+    "# else. See device-agent-rust crates/xorgate-hal/src/privileged.rs + systemd/xorgate-updater-rs.service." \
+    "$1 ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater-rs.service"
+}
+p4_updater_bootstrap() {
+  local root=$1 user=$2 tmpd
+  if [ -f "$root/systemd/$UPDATER_UNIT" ]; then
+    if [ -f "/etc/systemd/system/$UPDATER_UNIT" ] && cmp -s "$root/systemd/$UPDATER_UNIT" "/etc/systemd/system/$UPDATER_UNIT"; then
+      echo "  = $UPDATER_UNIT unchanged"
+    else
+      act install -m 0644 "$root/systemd/$UPDATER_UNIT" "/etc/systemd/system/$UPDATER_UNIT"; note "/etc/systemd/system/$UPDATER_UNIT installed (no [Install]: never enabled)"
+    fi
+  else
+    echo "  NOTE: tarball has no systemd/$UPDATER_UNIT (a pre-Phase-4 build) — remote update rail not bootstrapped"
+    return 0
+  fi
+  if [ -z "$user" ] || [ "$user" = root ]; then echo "  = no $UPDATE_SUDOERS (service user '${user:-?}' needs no grant)"; return 0; fi
+  tmpd=$(mktemp -d)
+  update_sudoers_body "$user" > "$tmpd/024_xorgate-update-rs"
+  if [ -f "$UPDATE_SUDOERS" ] && cmp -s "$tmpd/024_xorgate-update-rs" "$UPDATE_SUDOERS"; then
+    echo "  = $UPDATE_SUDOERS unchanged"
+  elif visudo -cf "$tmpd/024_xorgate-update-rs" >/dev/null 2>&1; then
+    act install -m 0440 "$tmpd/024_xorgate-update-rs" "$UPDATE_SUDOERS"; note "$UPDATE_SUDOERS installed (visudo -cf ok; $user → systemctl start --no-block $UPDATER_UNIT)"
+  else
+    echo "  WARNING: 024 sudoers body failed visudo -cf — not installed; remote updates will not work"
+  fi
+  rm -rf "$tmpd"
+  visudo -c >/dev/null 2>&1 && echo "  visudo -c: clean" || echo "  WARNING: visudo -c reports a problem in /etc/sudoers*"
+}
+# Phase 4 E8 clock break (ntp-unsync.sh) — review-wp6 M4. `break` records what
+# it changed in NTP_STATE (persistent: `set-ntp false` survives a reboot too);
+# `ntp_restore` (ntp-unsync.sh restore, exclusive.sh end, the dead-man) turns
+# NTP back on ALWAYS and undoes the −secs step only when the clock was not
+# stepped since (wall − record = uptime − record, ±5 s); a stepped clock (the
+# stepper's E8 correction) is left to NTP. Idempotent: no record = set-ntp only.
+NTP_STATE=$RS_HOME/ntp-unsync.state
+ntp_restore() {
+  local st=$NTP_STATE secs wall up now nowup drift
+  act timedatectl set-ntp true || echo "  ! timedatectl set-ntp true failed"
+  if [ ! -f "$st" ]; then echo "  ntp: set-ntp true (no ntp-unsync record)"; return 0; fi
+  secs=$(sed -n 's/^secs=//p' "$st"); wall=$(sed -n 's/^wall=//p' "$st"); up=$(sed -n 's/^uptime=//p' "$st")
+  now=$(date +%s); nowup=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
+  case "$secs$wall$up" in ''|*[!0-9]*) echo "  ntp: unreadable record $st — left to NTP" ;;
+  *)
+    if [ "$nowup" -lt "$up" ]; then echo "  ntp: rebooted since the break — clock left to NTP"
+    else
+      drift=$((now - (wall + nowup - up)))
+      if [ "${drift#-}" -le 5 ]; then act date -u -s "@$((now + secs))" >/dev/null; echo "  ntp: clock untouched since the break (drift ${drift}s) → stepped back +${secs}s"
+      else echo "  ntp: clock moved ${drift}s since the break (a step corrected it) → left to NTP"; fi
+    fi ;;
+  esac
+  act rm -f "$st"; note "$st removed (NTP on)"
+  return 0
+}
+# The bench flavour of the agent unit + wrapper: `xorgate-rs update` (E11)
+# reinstalls the SHIPPED unit (with Conflicts=xorgate-agent.service) and the
+# shipped wrapper (XORGATE_HOME=/var/lib/xorgate, the JS home). Starting the
+# JS agent with that unit in place would stop the Rust one, and the CLI would
+# edit the JS agent's settings.json — install.sh restores both.
+bench_flavour_ok() {
+  local ok=0
+  if grep -q '^Conflicts=xorgate-agent.service' "/etc/systemd/system/$UNIT.service" 2>/dev/null; then
+    echo "  UNSAFE: /etc/systemd/system/$UNIT.service carries Conflicts=xorgate-agent.service (an 'xorgate-rs update' reinstalled the shipped unit) — re-run scripts/bench/install.sh <tarball>"; ok=1
+  fi
+  if [ -f /usr/local/bin/xorgate-rs ] && ! grep -q 'XORGATE_HOME:-/var/lib/xorgate-rs}' /usr/local/bin/xorgate-rs; then
+    echo "  UNSAFE: /usr/local/bin/xorgate-rs is not the bench wrapper (XORGATE_HOME default /var/lib/xorgate-rs) — re-run scripts/bench/install.sh <tarball>"; ok=1
+  fi
+  return $ok
 }
 LIB
 }

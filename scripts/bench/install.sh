@@ -24,7 +24,15 @@
 #      PROD cert in /etc/xorgate), CA_PATH=/etc/xorgate/root-ca.pem unless the
 #      backup carries its own, and XORGATE_HOME=/var/lib/xorgate-rs. An
 #      existing env file is never rewritten (edit it by hand for A6 faults).
+#   3b. Phase 4: /etc/systemd/system/xorgate-updater-rs.service from the
+#      tarball (0644, no [Install], never started here) + the exact-args grant
+#      /etc/sudoers.d/024_xorgate-update-rs for pi (visudo -cf before it
+#      lands, 0440; a refusal warns) — the bootstrap of the remote update rail
 #   5. /var/lib/xorgate-rs{,/evidence} owned by pi; systemctl daemon-reload
+# Precondition (step 0): while the unit is enabled/active the shared input
+# profile must be complete — Phase 4 adds the LED/SMS knobs + the pinctrl and
+# sudo shims, so on a bench still on a Phase 3 profile run
+# `scripts/bench/profile.sh shared` FIRST, then this script.
 # It never starts the service (scripts/bench/start.sh does) and NEVER touches
 # xorgate-agent.service, /etc/xorgate/agent.env, /var/lib/xorgate or
 # sim7600-lte.service.
@@ -173,6 +181,11 @@ else
   note "/etc/systemd/system/$UNIT.d/90-bench-dev.conf installed (bench-only)"
 fi
 
+echo "== 3b. remote update rail bootstrap (Phase 4: $UPDATER_UNIT + $UPDATE_SUDOERS)"
+# Chicken-and-egg (phase-4-operations.md §5 "Bootstrap"): the first updater
+# unit + exact-args grant come from here; every later `xorgate-rs update`
+# reinstalls them from its own tarball. Never enabled, never started here.
+p4_updater_bootstrap "$RS_ROOT" "$SVC_USER"
 echo "== 4. dev identity env file $RS_ENV"
 if [ -f "$RS_ENV" ]; then
   echo "  - $RS_ENV exists — kept as is"

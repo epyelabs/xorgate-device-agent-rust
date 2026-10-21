@@ -88,8 +88,12 @@ pub enum ChildEvent {
     Done(ChildDone),
 }
 
-/// A signal request to the waiter: `(signal, whole group?)`.
-type SignalReq = (i32, bool);
+/// Called by the waiter right AFTER its `kill(2)` returned, with the errno
+/// (0 = sent). Dropped uncalled when nothing was sent (the child is reaped).
+pub type SignalReport = Box<dyn FnOnce(i32) + Send>;
+
+/// A signal request to the waiter: `(signal, whole group?, report)`.
+type SignalReq = (i32, bool, Option<SignalReport>);
 
 /// The running child (`StreamHandle`).
 #[derive(Debug)]
@@ -111,13 +115,20 @@ impl ChildHandle {
     /// `stop(signal)` (`child.kill(signal)`): signal the child itself, if it
     /// is still unreaped (a no-op afterwards).
     pub fn signal(&self, sig: i32) {
-        self.request(sig, false);
+        self.request(sig, false, None);
+    }
+
+    /// [`Self::signal`], reporting the `kill(2)` result to `report` once it
+    /// returned (review-wp6 M5: the tape records what was really sent). Not
+    /// called when nothing is sent.
+    pub fn signal_reported(&self, sig: i32, report: SignalReport) {
+        self.request(sig, false, Some(report));
     }
 
     /// Signal the child's whole process group (it leads its own group), if
     /// the leader is still unreaped (a no-op afterwards).
     pub fn signal_group(&self, sig: i32) {
-        self.request(sig, true);
+        self.request(sig, true, None);
     }
 
     /// How many signals were actually delivered (tests / diagnostics).
@@ -125,10 +136,10 @@ impl ChildHandle {
         DeliveredSignals(self.delivered.clone())
     }
 
-    fn request(&self, sig: i32, group: bool) {
+    fn request(&self, sig: i32, group: bool, report: Option<SignalReport>) {
         if let Some(ctl) = &self.ctl {
             // A closed channel = the waiter is done = the child is reaped.
-            let _ = ctl.send((sig, group));
+            let _ = ctl.send((sig, group, report));
         }
     }
 }
@@ -205,15 +216,21 @@ pub fn spawn(spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEve
             loop {
                 tokio::select! {
                     st = child.wait() => break st, // cancel safe
-                    Some((sig, group)) = ctl_rx.recv() => match child.try_wait() {
+                    Some((sig, group, report)) = ctl_rx.recv() => match child.try_wait() {
                         Ok(None) => {
                             if let Some(pid) = child.id() {
                                 let target = if group { -(pid as libc::pid_t) } else { pid as libc::pid_t };
                                 // SAFETY: plain kill(2) on a pid we have not reaped.
-                                unsafe {
-                                    libc::kill(target, sig);
-                                }
+                                let rc = unsafe { libc::kill(target, sig) };
+                                let errno = if rc == 0 {
+                                    0
+                                } else {
+                                    std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
+                                };
                                 counter.fetch_add(1, Ordering::SeqCst);
+                                if let Some(report) = report {
+                                    report(errno);
+                                }
                             }
                         }
                         Ok(Some(st)) => break Ok(st),
@@ -365,6 +382,33 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// review-wp6 M5: the report runs AFTER kill(2) returned, with its errno
+    /// and the signal really passed; nothing is reported when nothing is sent.
+    #[tokio::test]
+    async fn signal_reported_after_the_syscall_with_its_result() {
+        let (h, mut rx) = spawn(&sh("echo up; exec sleep 30"));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .unwrap(),
+            Some(ChildEvent::Stdout("up".into()))
+        );
+        let (tx, mut got) = mpsc::unbounded_channel();
+        let tx2 = tx.clone();
+        h.signal_reported(libc::SIGINT, Box::new(move |errno| tx.send(errno).unwrap()));
+        let first = tokio::time::timeout(Duration::from_secs(10), got.recv()).await;
+        assert_eq!(first.unwrap(), Some(0));
+        let ev = all(rx).await;
+        assert!(matches!(ev.last(), Some(ChildEvent::Done(d)) if d.signal == Some(libc::SIGINT)));
+        // Reaped: the request is dropped, the report never runs.
+        h.signal_reported(
+            libc::SIGINT,
+            Box::new(move |errno| tx2.send(errno).unwrap()),
+        );
+        let none = tokio::time::timeout(Duration::from_millis(200), got.recv()).await;
+        assert!(matches!(none, Ok(None) | Err(_)), "{none:?}");
     }
 
     #[tokio::test]

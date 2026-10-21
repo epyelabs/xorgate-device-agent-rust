@@ -17,7 +17,7 @@ if command -v shellcheck >/dev/null; then
   fixture_bench; reset_units
   D=$(mktemp -d)
   for cmd in "dev-manifests.sh" "profile.sh shared" "profile.sh exclusive" "exclusive.sh begin" "exclusive.sh end" "exclusive.sh tape-off" \
-             "exclusive.sh status" "gate-seam.sh on" "shm-audit.sh" "soak.sh" "filler.sh seed" "start.sh"; do
+             "exclusive.sh status" "gate-seam.sh on" "shm-audit.sh" "soak.sh" "filler.sh seed" "start.sh" "ntp-unsync.sh status" "status.sh"; do
     n=${cmd//[ \/]/_}
     # shellcheck disable=SC2086
     XORGATE_TEST_DUMP="$D/$n.sh" bash scripts/bench/$cmd >/dev/null 2>&1 || true

@@ -531,45 +531,130 @@ async fn polls_pending<F: std::future::Future + Unpin>(f: &mut F) -> bool {
 /// the first one's compute is in flight waits and returns the NEW cache. (The
 /// TS sets `recLastAt` BEFORE `await compute()` without holding anything,
 /// `system.ts:107-108`, so its second caller gets the PREVIOUS `recCache`.)
-/// Deterministic: the first future always parks inside its compute
-/// (`tokio::fs` → spawn_blocking), and `join!` polls the second right then.
+/// Deterministic (WP6, CI run 39328644627 flake): the runtime has ONE
+/// blocking thread and the test occupies it, so the first sample's compute
+/// (`tokio::fs` → `spawn_blocking`) is queued — it cannot finish inside its
+/// first poll — until the test releases the blocker after polling both.
+#[test]
+fn system_sample_during_an_in_flight_compute_returns_the_new_cache() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .max_blocking_threads(1)
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        use xorgate_agent::collectors::system::SystemCollector;
+        let home = scratch("system-d30");
+        let (ctx, _) = ctx_at(&home, 1_781_000_000_000);
+        let c = SystemCollector::new(&ctx, false).await;
+        let first = c.sample().await.expect("first sample computes");
+        tokio::time::advance(Duration::from_millis(1000)).await;
+        // Occupy the only blocking thread until both samples are in flight.
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started) = std::sync::mpsc::channel::<()>();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            gate.recv().unwrap();
+        });
+        started.recv().unwrap();
+        // `a` PARKS inside its compute (holding the cache: its blocking read
+        // is queued behind the blocker); `b`, polled while `a` is parked, must
+        // WAIT (Rust holds the cache across the compute) — TS-like code would
+        // answer at once with the PREVIOUS cache.
+        let mut fa = c.sample();
+        let mut fb = c.sample();
+        assert!(
+            polls_pending(&mut fa).await,
+            "the first sample() parked mid-compute"
+        );
+        assert!(
+            polls_pending(&mut fb).await,
+            "the second sample() waits for it"
+        );
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        let (a, b) = tokio::join!(fa, fb);
+        let (a, b) = (a.expect("a"), b.expect("b"));
+        assert!(
+            a.updated_mono > first.updated_mono,
+            "a recomputed (gate due)"
+        );
+        assert_eq!(
+            b.updated_mono, a.updated_mono,
+            "b got the NEW cache, not the previous one"
+        );
+        assert_eq!(b, a);
+        // …and a caller after it inside the same second gets that cache too.
+        tokio::time::advance(Duration::from_millis(999)).await;
+        assert_eq!(c.sample().await.expect("c").updated_mono, a.updated_mono);
+    });
+}
+
+/// D30 sequential pin (review-wp6 M2, F3 ruled inherent): the gate stamp is
+/// the CALL instant (`rec.last_at = mono_ms()` when `sample()` runs, =
+/// `system.ts:104-113` `recLastAt`), not the caller's timer fire. Shed tick
+/// fires at 0/1000/2000/3000 and samples promptly; the recorder samples at
+/// 100, then its 1100 fire is starved until 2050, then fires on time at 2100
+/// and 3100. The 2100 call lands 100 ms after the shed tick's 2000 stamp →
+/// no recompute → the same cache generation the recorder already wrote at
+/// 2050 → the freshness gate (`telemetry-recorder.ts:102`) drops `system`
+/// for that ONE sample; at 3100 it is back. Deterministic: paused time, one
+/// caller at a time.
 #[tokio::test(start_paused = true)]
-async fn system_sample_during_an_in_flight_compute_returns_the_new_cache() {
+async fn d30_a_starved_recorder_sample_drops_system_once() {
     use xorgate_agent::collectors::system::SystemCollector;
-    let home = scratch("system-d30");
-    let (ctx, _) = ctx_at(&home, 1_781_000_000_000);
+    use xorgate_core::recorder_gate::RecorderGate;
+    let home = scratch("system-d30-seq");
+    let (ctx, t0) = ctx_at(&home, 1_781_000_000_000);
     let c = SystemCollector::new(&ctx, false).await;
-    let first = c.sample().await.expect("first sample computes");
-    tokio::time::advance(Duration::from_millis(1000)).await;
-    // `a` must PARK inside its compute (holding the cache) — else `b` would
-    // not be issued during an in-flight compute and the test is vacuous.
-    // `b` is then polled while `a` is still parked: it must WAIT (Rust holds
-    // the cache across the compute) — TS-like code would answer at once with
-    // the PREVIOUS cache.
-    let mut fa = c.sample();
-    let mut fb = c.sample();
-    assert!(
-        polls_pending(&mut fa).await,
-        "the first sample() parked mid-compute"
-    );
-    assert!(
-        polls_pending(&mut fb).await,
-        "the second sample() waits for it"
-    );
-    let (a, b) = tokio::join!(fa, fb);
-    let (a, b) = (a.expect("a"), b.expect("b"));
-    assert!(
-        a.updated_mono > first.updated_mono,
-        "a recomputed (gate due)"
-    );
+    let mut gate: RecorderGate<Instant> = RecorderGate::new(None);
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let goto = |ms: u64| async move {
+        let now = Instant::now();
+        if at(ms) > now {
+            tokio::time::advance(at(ms) - now).await;
+        }
+    };
+    let rec = |gate: &mut RecorderGate<Instant>, s: &xorgate_agent::ctx::GroupSample| {
+        gate.admit(
+            "system",
+            s.updated_mono,
+            Instant::now().duration_since(t0).as_millis() as u64,
+            1.0,
+        )
+    };
+    let shed0 = c.sample().await.expect("shed @0 computes");
+    goto(100).await;
+    let r100 = c.sample().await.expect("rec @100");
     assert_eq!(
-        b.updated_mono, a.updated_mono,
-        "b got the NEW cache, not the previous one"
+        r100.updated_mono, shed0.updated_mono,
+        "not due: the shed tick's cache"
     );
-    assert_eq!(b, a);
-    // …and a caller after it inside the same second gets that cache too.
-    tokio::time::advance(Duration::from_millis(999)).await;
-    assert_eq!(c.sample().await.expect("c").updated_mono, a.updated_mono);
+    assert!(rec(&mut gate, &r100), "rec @100 writes system (g1)");
+    goto(1000).await;
+    let shed1 = c.sample().await.expect("shed @1000");
+    assert!(shed1.updated_mono > shed0.updated_mono, "g2");
+    goto(2000).await;
+    let shed2 = c.sample().await.expect("shed @2000");
+    assert!(shed2.updated_mono > shed1.updated_mono, "g3");
+    goto(2050).await; // the recorder's 1100 fire, starved
+    let r2050 = c.sample().await.expect("rec @2050");
+    assert_eq!(r2050.updated_mono, shed2.updated_mono);
+    assert!(rec(&mut gate, &r2050), "the late sample writes g3");
+    goto(2100).await; // the recorder's next fire, on time
+    let r2100 = c.sample().await.expect("rec @2100");
+    assert_eq!(
+        r2100.updated_mono, shed2.updated_mono,
+        "100 ms after the 2000 stamp: no recompute"
+    );
+    assert!(!rec(&mut gate, &r2100), "the ONE system-less sample (F3)");
+    goto(3000).await;
+    let shed3 = c.sample().await.expect("shed @3000");
+    goto(3100).await;
+    let r3100 = c.sample().await.expect("rec @3100");
+    assert_eq!(r3100.updated_mono, shed3.updated_mono);
+    assert!(rec(&mut gate, &r3100), "system is back on the next tick");
 }
 
 // ---------------------------------------------------------------------------

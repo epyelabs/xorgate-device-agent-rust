@@ -44,11 +44,21 @@ services:
       - "c0rig00000000.credentials.iot.ca-central-1.amazonaws.com:127.0.0.1"
       - "xorgate-rig-media.s3.ca-central-1.amazonaws.com:127.0.0.1"
       - "xorgate-synth-uploads.s3.ca-central-1.amazonaws.com:127.0.0.1"
+    # Phase 4 (WP6, src/p4.rs): each agent of a Pi-namespaced tape runs in a
+    # private mount namespace (`unshare -m` + pi-ns.sh: its own
+    # /boot/firmware and /proc/device-tree). Mounting needs CAP_SYS_ADMIN and
+    # an unconfined AppArmor profile — inside this throwaway, network-internal
+    # rig container only.
+    cap_add: [SYS_ADMIN]
+    security_opt: ["apparmor:unconfined"]
     environment:
       - TZ=UTC
     volumes:
       - .:/rig/tools:ro
       - ../../fixtures:/rig/fixtures:ro
+      # Phase 4: the vendored helpers (system/xorgate-camrotate, WP3) the sudo
+      # shim executes for E12.
+      - ../../system:/rig/system:ro
       - ./.cache:/rig/cache
       - ./.cache/certs:/rig/certs:ro
       - ${RIG_TAPES:-./.cache/tapes}:/rig/tapes:ro

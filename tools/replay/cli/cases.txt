@@ -43,5 +43,5 @@ apn internet.example --no-wait
 apn "" --no-wait
 @root timeSync.stepThresholdSecs 12
 @root recording.telemetry.enabled off
-wifi on    #expect:T8/set-wifi
+wifi on
 nokey value

@@ -25,6 +25,13 @@ pub trait CaptureChild: Send + Sync {
     fn pid(&self) -> Option<u32>;
     /// `handle.stop(sig)`: signal the child itself, a no-op once it is reaped.
     fn signal(&self, sig: i32);
+    /// [`Self::signal`], calling `report(errno)` once the `kill(2)` returned
+    /// (0 = sent; not called when nothing was sent). The default (test
+    /// fakes) signals and reports 0.
+    fn signal_reported(&self, sig: i32, report: child::SignalReport) {
+        self.signal(sig);
+        report(0);
+    }
     /// `setPriority(pid, nice)` (`video-capture.ts:690-696`).
     fn renice(&self, nice: i32) -> io::Result<()>;
 }
@@ -74,6 +81,10 @@ impl CaptureChild for GstChild {
 
     fn signal(&self, sig: i32) {
         self.0.signal(sig);
+    }
+
+    fn signal_reported(&self, sig: i32, report: child::SignalReport) {
+        self.0.signal_reported(sig, report);
     }
 
     fn renice(&self, nice: i32) -> io::Result<()> {

@@ -264,7 +264,8 @@ a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
 - `cpu_temp` (no thermal zone in the Docker VM) is absent on both sides;
   `cpu_usage`, `ram_usage`, `disk_usage` are the rig host's live values (T3).
 - `rpicam-hello` is absent (camera reconcile = "cannot enumerate"); camera
-  mount, LED, recording and media are Phase 3/4 and tolerated as T6.
+  mount, LED, recording and media were Phase 3/4 (T6, DELETED in Phase 4 —
+  see the Phase 4 section: Pi tapes give each agent its own device tree).
 
 ## CLI matrix (C11)
 
@@ -346,7 +347,7 @@ and, on synthetic tapes only, `rig` (`s3Faults`, `filler`).
 | Input | Rig value |
 |---|---|
 | `kvs.json` | tape channels + (when the tape has channels / `kvs.upload` / Phase 3 output records) a COMPLETE manifest with the rig's fake-AWS identity: region `ca-central-1`, credentialEndpoint `c0rig00000000.credentials.iot.ca-central-1.amazonaws.com`, roleAlias `xorgate-rig-role-alias`, uploadBucket `xorgate-rig-media`, deviceId = the rig id. Phase 2 tapes keep the `{"channels": …}` stub |
-| `gst-launch-1.0` (PATH) | `shims/gst-launch-1.0`: logs argv verbatim to `<work>/shim.ndjson`, replaces ONLY `libcamerasrc camera-name=<cam>` with `videotestsrc is-live=true pattern=ball`, tees stdout/stderr (so the rig sees `New clock:` / `handling interrupt.` / `Got EOS` for the JS agent too) and `exec`s the real binary — same pid, real x264enc + splitmuxsink + shmsink, so the ~2.1 s sidecar GOP lag is reproduced (D8 rig half) |
+| `gst-launch-1.0` (PATH) | `shims/gst-launch-1.0`: logs argv verbatim to `<work>/shim.ndjson`, replaces ONLY `libcamerasrc camera-name=<cam>` with `videotestsrc is-live=true pattern=ball`, tees stdout/stderr (so the rig sees `New clock:` / `handling interrupt.` / `Got EOS` for the JS agent too; a Rust side's capture also counts as `int` by its own tape's `child_signal` record when it proves delivery — written after the `kill(2)` returned with `sig` 2 and `errno` 0, stamped before the child's death, and no `child_exit` for that pid (it died with its agent): at the agent's stop the child can be killed by the agent's exit before gst prints the line) and `exec`s the real binary — same pid, real x264enc + splitmuxsink + shmsink, so the ~2.1 s sidecar GOP lag is reproduced (D8 rig half) |
 | `KVS_RUNTIME_BIN` | `<work>/kvs/xorgate-kvs-webrtc` = `media/xorgate-kvs-webrtc` (fake master: logs argv + contract env, a line every 5 s, exit 0 on SIGINT, the tape's code on an `external` exit) when the tape has channels; else a missing path (Phase 2) |
 | `rpicam-hello` (PATH) | present when the tape answers `--list-cameras` (`exec`), or with `--with-rpicam` |
 | TLS trust | rig CA → the container's system store (`update-ca-certificates`, Rust's platform verifier) and `NODE_EXTRA_CA_CERTS` (Node) — no agent knob (P5) |
@@ -400,7 +401,8 @@ appearance), telemetry file-name ms stamps → `<ms>`.
 | `evictions` | the ordered list of fragments deleted without a successful PUT | — |
 | `shm` | orphan `shmpipe.<pid>.*` of dead gst children at the end, per side | — |
 
-T6 is SHRUNK to the Phase 4 gaps (LED, camera mount, clock stepper): the
+T6 was SHRUNK to the Phase 4 gaps (LED, camera mount, clock stepper) — and is
+DELETED by Phase 4 WP6 (CF54): nothing phase-owned remains. In Phase 3: the
 payload's `media`/`recording` blocks, `bootDefer`/`powerShed`/`liveBlock`, the
 recording/hardware/uploader events and the recording latch details are
 compared now, so a missing recording/media event FAILS. T1 adds
@@ -473,3 +475,82 @@ on stderr.
   past T12) and cuts the tape to 58 s (the scenario's last LTE rewrite at
   59.5 s races the 60 s telemetry rotation).
 
+
+## Phase 4: LED, SMS, clock stepper, camera mount, remote rail (WP6)
+
+Plan: `phase-4-operations.md` §8. Same doctrine: both agents on the same
+inputs, every difference cited by a row of `tolerances.toml` or UNTOLERATED.
+
+### New tape kinds (`xorgate-hal::tape`, I9 — recorded by the Rust agent)
+
+| `k` | payload | written |
+|---|---|---|
+| `at_tx` / `at_rx` | `port`, `line` (no `\r`) / `hex` (raw chunk) | `AtSession` write / read |
+| `gpio` | `pins`, `high`, `via` (`gpiocdev`/`pinctrl`) | every `PinWriter::write` |
+| `sudo` | `argv` (`["sudo","-n",…]`), `code`, `stdout`?, `stderr`?, `notFound`? | every privileged run, when it settles |
+| `ntp_probe` | `synced` | the clock stepper's NTP probe |
+
+The player replays `ntp_probe` (the `timedatectl` shim's NTPSynchronized,
+`<state>/ntp`, default `yes`), `sudo` (the shim's answer per helper, applied up
+front — the record is the answer the device got) and `at_tx`/`at_rx` (the fake
+modem's transcript mode). `gpio` is compared through the pinctrl shim, not
+replayed.
+
+### What the player adds (`src/p4.rs`)
+
+| Input | Rig value |
+|---|---|
+| A Raspberry Pi of its own (`meta.rig.pi`) | each agent runs in a PRIVATE mount namespace: `unshare -m --propagation private -- pi-ns.sh <work>/pi <agent…>` binds `/boot/firmware` (its own `config.txt`) and `/sys/firmware/devicetree/base` = `/proc/device-tree` (`model` "Raspberry Pi Compute Module 5 Rev 1.0", camera `rotation` bytes). `exec` keeps the pid. `meta.rig.pi.dtWrites [{t, rel, hex}]` rewrites DT files at tape time (the simulated reboot). Needs `cap_add: SYS_ADMIN` + AppArmor unconfined (compose) |
+| `pinctrl`, `gpioinfo`, `dtoverlay` (PATH, Pi tapes only) | `pinctrl` logs `<wall ms> <argv>` to `<run>/<label>/led.log`; `gpioinfo` / `dtoverlay` answer from `exec` records (`gpioinfo` default: 54 unused lines) |
+| `XORGATE_LED_WRITER=pinctrl` | both agents (Q6: the JS agent always drives pinctrl; the Rust agent's runtime choice), so both hit one shim |
+| SMS port (`meta.rig.modem` or a transcript) | a pty per agent, `XORGATE_SMS_PORT=<work>/sms-tty`; a thread answers with the FakeModem semantics of `test/sms-modem.test.ts:46-111` @89b5c64 (`ATE0`, `CMGF?/=`, `CPMS?`, `CPMS="m"`, `CMGRO=i`, else `ERROR`; `\r\n<line>\r\n` framing), or the recorded `at_rx` bytes per `at_tx`; every command → `<run>/<label>/at.ndjson` (`forbidden` / `fault` flagged) |
+| `sudo` | logs as before and answers from the tape; `xorgate-camrotate` EXECUTES the real vendored helper (`/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy; `--camrotate`) with a clean env, inside the agent's namespace — the ONE executing shim mode |
+
+### Synthetic scenarios
+
+| scenario | s | exercises (gate rows) |
+|---|---|---|
+| `p4-led-ladder` | 180 | starting → gps-wait → healthy → network (cut 40→60 s) → flash2 on a REAL config change (75.7 s; the 85.7 s redelivery must not flash) → undervoltage via the Phase 3 rail seam (100→140 s; `liveBlock.reason` first, CF57) → healthy (E2, E3) |
+| `p4-sms` | 60 | FakeModem with the bench inbox (SM 7/40 unread, ME 23/23) + a 2-part UCS2 concat + a stored SUBMIT, text mode at start (→ PDU → restored); read_sms limit 10, a reuse inside 5 s, limit 3 later (E2, E5) |
+| `p4-clock-gps` | 120 | NTP unsynced; GPS +600 s with a fix → one gps step; NTP synced at 90 s → stood down (E2, E7) |
+| `p4-clock-nitz` | 120 | no GPS fix; NITZ +600 s unregistered (reg 0, fail-closed) then reg 5 → one nitz step; NTP at 100 s (E2, E7) |
+| `p4-clock-cap` | 700 | `maxStepsPerBoot: 1` (seeded settings.json); implausible NITZ 80/01/06 → warn + 5 min hold-off; GPS +600 s from 200 s → step 1/1; the cap warning after the next hold-off (E2, E7) |
+| `p4-cam-mount` | 300 | cameraMount cam0 0→180 (real helper edits the agent's config.txt → pending-reboot, rebootRequired), DT 180 at 100 s → applied (60 s poll), →0 at 170.7 s, DT 0 at 230 s (E2, E12) |
+| `p4-update-cmd` | 60 | cloud update / reboot / power_off → sudo argv (T8/O3 for the updater unit name) (E2, E10, E16) |
+
+The clock tapes move the SOURCES +600 s (the container clock cannot move); the
+bench recipe (§9 E8) moves the clock −600 s instead. The SMS store contents
+are `fixtures/replay/p4-sms-modem.json`, dumped by
+`js/dump-sms-modem.mts` with the TS test's PDU builder (no hand-typed PDU).
+
+### The Phase 4 diff (`src/diff_p4.rs`)
+
+| stream | exact | tolerated |
+|---|---|---|
+| `led` | the ordered `[led] a → b (colour pattern)` lines (stdout+stderr); the multiset of the other `[led] …` lines; the run count; per run, the pin groups (one `apply()` = its rise + fall writes, `+12,16 -21`) of the common prefix | T15: per-step interval ±50 ms; a run's start ±1150 ms; its length where the two durations differ ≤ 2300 ms (each agent changes rung on its own 1 s heartbeat) |
+| `at` | the command sequence; the modem end state | — (a forbidden command — `CMGR=`, `CMGL`, `CMGD`, `CMGW`, `CMSS`, `CMGS`, 2-arg `CPMS` — or a text-mode `CMGRO` FAILS on either side) |
+| `sudo` | argv sequence | T16: `xorgate-setclock <epoch>` compared as the offset from the call time ±1 s (each agent ticks on its own 30 s phase) |
+
+A run starts at every pin group that drives all three channels (each new
+colour/pattern starts from "levels unknown", `led.ts` `stop()`); a group is one
+`apply()` (a lone rise, then a fall on other pins, < 60 ms apart).
+
+T6 is DELETED (CF54) and T8/O4 too (CF48: the Rust real-mode reader answers
+like the TS): a JS-only `[clock] …` / `camera mount: …` event, a report's
+`effective.cameraMount` / `clockStepperArmed`, the stood-down latch detail or a
+set-clock / camrotate sudo argv on one side only FAILS.
+
+C11 (`cli-matrix.sh`): every Phase 4 verb is real — `set wifi`, `pipeline`,
+`recording` expect equality; `update` / `led` use `map:T8/cli-q9-names` (the
+Rust side's `xorgate-rs` → `xorgate`, Q9 local hints, then exact) and `sms`
+`map:T8/cli-sms-duration`; `manage` / `monitor` without a tty are
+`T8/cli-tui-no-tty` (the TUI is compared on TestBackend frames + bench E15).
+
+`ci-smoke.sh` keeps `$OUT`'s diff + small logs in `$CI_SMOKE_KEEP` on every
+exit (the load-only media flake) — plus each agent's own tape and the small
+files of its `final/` + `s3/` trees (no mp4), so a recorded-value row can be
+timed against that agent's NMEA reads afterwards, plus the tape itself
+(`tape.ndjson.gz`, which `diff` uses when play.json's recorded path is gone),
+so a kept run re-diffs completely — and the player now waits up to the capture
+stop grace (10 s) for an exited agent's process group before its SIGKILL, so a
+capture's `ended` (int vs kill) is the agent's doing, not a race with the rig.

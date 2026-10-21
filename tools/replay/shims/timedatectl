@@ -1,7 +1,11 @@
 #!/bin/sh
-# Rig shim: timedatectl — the rig host clock is NTP-synced (phase file: "synced").
+# Rig shim: timedatectl. `NTPSynchronized` answers from $RIG_STATE/ntp — the
+# tape's `ntp_probe` timeline (Phase 4 clock stepper, `clock-step.ts` probeNtp;
+# the player writes yes/no at tape time) — and "yes" when the tape has none
+# (the rig host clock is NTP-synced: phase file "synced", Phase 2/3 tapes).
+ntp=$(cat "${RIG_STATE:-/nonexistent}/ntp" 2>/dev/null || echo yes)
 case "$*" in
-  *NTPSynchronized*) echo yes ;;
-  *) echo "System clock synchronized: yes"; echo "NTP service: active" ;;
+  *NTPSynchronized*) echo "$ntp" ;;
+  *) echo "System clock synchronized: $ntp"; echo "NTP service: active" ;;
 esac
 exit 0

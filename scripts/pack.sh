@@ -92,6 +92,11 @@ mkdir -p "$OUT_DIR"
 TAR_OPTS=()
 if tar --version 2>/dev/null | grep -q GNU; then
   TAR_OPTS=(--owner=0 --group=0 --numeric-owner)  # root-owned entries like the installer expects
+elif tar --version 2>/dev/null | grep -q bsdtar; then
+  # macOS bsdtar (WP4 note 9): root-owned entries, no Apple provenance xattrs
+  # (GNU tar on the device warns on the unknown pax keywords).
+  TAR_OPTS=(--uid 0 --gid 0 --no-xattrs --no-mac-metadata)
+  export COPYFILE_DISABLE=1
 fi
 # (the `+` expansion keeps macOS bash 3.2 happy with an empty array under set -u)
 tar -czf "$OUT_DIR/$TARBALL" ${TAR_OPTS[@]+"${TAR_OPTS[@]}"} -C "$STAGE" "${MEMBERS[@]}"
@@ -110,15 +115,32 @@ done
 # @ 89b5c64, P4) must be packed, and the STAGED copy must verify against
 # media/SHA256SUMS (= the JS repo's blobs) — a corrupted/LFS-pointer blob or a
 # missing .so fails the pack instead of the first live view on a device.
-[ -f "$STAGE/media/SHA256SUMS" ] || { echo "pack: media/SHA256SUMS missing (vendored KVS runtime)" >&2; exit 1; }
-while read -r _sum name; do
-  grep -qx "media/$name" <<<"$LISTING" || { echo "pack: missing media/$name in $TARBALL" >&2; exit 1; }
-done < "$STAGE/media/SHA256SUMS"
-if command -v sha256sum >/dev/null 2>&1; then
-  (cd "$STAGE/media" && sha256sum --quiet -c SHA256SUMS) >&2 || { echo "pack: media/ does not match media/SHA256SUMS" >&2; exit 1; }
-else
-  (cd "$STAGE/media" && shasum -a 256 --quiet -c SHA256SUMS) >&2 || { echo "pack: media/ does not match media/SHA256SUMS" >&2; exit 1; }
-fi
+# Phase 4 (WP6, WP3/WP4 hand-offs): the same for the vendored modem/ (WP4,
+# CF62) and system/ (WP3: xorgate-camrotate, xorgate-setclock, the
+# fake-hwclock cron) — both required (review-wp6 nit: a missing helper dir
+# fails the pack).
+verify_vendored() { # <dir> <required:1|0>
+  local d=$1 req=$2 _sum name
+  if [ ! -d "$STAGE/$d" ]; then
+    [ "$req" = 1 ] && { echo "pack: $d/ missing (vendored)" >&2; exit 1; }
+    return 0
+  fi
+  [ -f "$STAGE/$d/SHA256SUMS" ] || { echo "pack: $d/SHA256SUMS missing (vendored $d/)" >&2; exit 1; }
+  while read -r _sum name; do
+    grep -qx "$d/$name" <<<"$LISTING" || { echo "pack: missing $d/$name in $TARBALL" >&2; exit 1; }
+  done < "$STAGE/$d/SHA256SUMS"
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$STAGE/$d" && sha256sum --quiet -c SHA256SUMS) >&2 || { echo "pack: $d/ does not match $d/SHA256SUMS" >&2; exit 1; }
+  else
+    (cd "$STAGE/$d" && shasum -a 256 --quiet -c SHA256SUMS) >&2 || { echo "pack: $d/ does not match $d/SHA256SUMS" >&2; exit 1; }
+  fi
+}
+verify_vendored media 1
+verify_vendored modem 1
+verify_vendored system 1
+# Phase 4 (WP4): the remote update rail's unit (the bench bootstrap and every
+# `xorgate-rs update` install it from the tarball).
+grep -qx "systemd/xorgate-updater-rs.service" <<<"$LISTING" || { echo "pack: missing systemd/xorgate-updater-rs.service in $TARBALL" >&2; exit 1; }
 
 if command -v sha256sum >/dev/null 2>&1; then
   SHA=$(cd "$OUT_DIR" && sha256sum "$TARBALL" | cut -d' ' -f1)

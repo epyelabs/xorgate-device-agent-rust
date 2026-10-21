@@ -1,5 +1,26 @@
 #!/bin/sh
-# Rig shim: sudo — logs "<epoch ms> <argv…>" to $RIG_SUDO_LOG and succeeds,
-# so reboot/power_off/update/set-clock never touch the rig (C7/O3 diff input).
+# Rig shim: sudo — logs "<epoch ms> <argv…>" to $RIG_SUDO_LOG (the diff's
+# `sudo` stream) and NEVER runs the command, so reboot/power_off/update/
+# set-clock never touch the rig (C7/O3). The answer is the tape's `sudo`
+# record for that helper ($RIG_STATE/sudo/<basename of the command>.{code,out,err},
+# Phase 4), else success.
+# The ONE executing mode (Phase 4, E12): with $RIG_CAMROTATE set, a
+# `xorgate-camrotate` call runs that REAL vendored helper (system/xorgate-camrotate)
+# with a clean environment, as sudo would — inside the agent's private mount
+# namespace, where /boot/firmware is the agent's own config.txt dir.
 printf '%s %s\n' "$(date +%s%3N)" "$*" >> "${RIG_SUDO_LOG:-/dev/null}"
+while [ $# -gt 0 ]; do
+  case "$1" in -*) shift ;; *) break ;; esac
+done
+helper=$(basename "${1:-}")
+if [ "$helper" = xorgate-camrotate ] && [ -n "${RIG_CAMROTATE:-}" ]; then
+  shift
+  exec env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin "$RIG_CAMROTATE" "$@"
+fi
+f="${RIG_STATE:-/nonexistent}/sudo/$helper"
+if [ -f "$f.code" ]; then
+  [ -f "$f.out" ] && cat "$f.out"
+  [ -f "$f.err" ] && cat "$f.err" >&2
+  exit "$(cat "$f.code")"
+fi
 exit 0

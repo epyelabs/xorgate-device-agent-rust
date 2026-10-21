@@ -395,12 +395,16 @@ pub enum TapeEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         count: Option<u64>,
     },
-    /// The agent sent `sig` to a child.
+    /// The agent sent `sig` to a child. `errno` (review-wp6 M5): present
+    /// when the record was written AFTER the `kill(2)` returned — 0 = sent,
+    /// else its errno; absent for a record written at the request.
     ChildSignal {
         role: String,
         key: String,
         pid: u32,
         sig: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        errno: Option<i32>,
     },
     /// A capture / KVS child exited.
     ChildExit(ChildExitRec),
@@ -1042,12 +1046,23 @@ impl<W: Write + Send> TapeWriter<W> {
 
     /// The agent sent `sig` to a child.
     pub fn child_signal(&self, role: &str, key: &str, pid: u32, sig: i32) {
+        self.write_child_signal(role, key, pid, sig, None);
+    }
+
+    /// The agent's `kill(2)` of `sig` returned `errno` (0 = sent): written
+    /// after the syscall, so the record proves the signal really left.
+    pub fn child_signal_sent(&self, role: &str, key: &str, pid: u32, sig: i32, errno: i32) {
+        self.write_child_signal(role, key, pid, sig, Some(errno));
+    }
+
+    fn write_child_signal(&self, role: &str, key: &str, pid: u32, sig: i32, errno: Option<i32>) {
         if let Ok(mut st) = self.state.lock() {
             let ev = TapeEvent::ChildSignal {
                 role: role.to_string(),
                 key: key.to_string(),
                 pid,
                 sig,
+                errno,
             };
             self.write_locked(&mut st, ev, true);
         }
@@ -1269,6 +1284,9 @@ impl crate::io::TapeSink for FileTape {
     }
     fn child_signal(&self, role: &str, key: &str, pid: u32, sig: i32) {
         self.inner.child_signal(role, key, pid, sig);
+    }
+    fn child_signal_sent(&self, role: &str, key: &str, pid: u32, sig: i32, errno: i32) {
+        self.inner.child_signal_sent(role, key, pid, sig, errno);
     }
     fn child_exit(&self, r: &ChildExitRec) {
         self.inner.child_exit(r);
@@ -2161,6 +2179,14 @@ mod tests {
                 key: "cam0".into(),
                 pid: 9,
                 sig: 2,
+                errno: None,
+            },
+            TapeEvent::ChildSignal {
+                role: ROLE_CAPTURE.into(),
+                key: "cam0".into(),
+                pid: 9,
+                sig: 2,
+                errno: Some(0),
             },
             TapeEvent::ChildExit(ChildExitRec {
                 role: ROLE_KVS.into(),

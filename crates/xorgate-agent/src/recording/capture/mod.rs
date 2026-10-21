@@ -650,12 +650,17 @@ impl Shared {
         if *sig.exited.borrow() {
             return; // reaped: execa's kill is a no-op, nothing is sent
         }
-        if let Some(pid) = sig.pid {
-            self.opts
-                .tape
-                .child_signal(ROLE_CAPTURE, &sig.key, pid, sig.sig);
-        }
-        sig.child.signal(sig.sig);
+        let Some(pid) = sig.pid else {
+            sig.child.signal(sig.sig);
+            return;
+        };
+        // review-wp6 M5: taped AFTER the kill(2) returned, with the signal
+        // really passed and its errno (0 = sent) — a record proves delivery.
+        let (tape, key, s) = (self.opts.tape.clone(), sig.key.clone(), sig.sig);
+        sig.child.signal_reported(
+            sig.sig,
+            Box::new(move |errno| tape.child_signal_sent(ROLE_CAPTURE, &key, pid, s, errno)),
+        );
     }
 
     /// Home-relative path for the tape (the full path when outside `home`).

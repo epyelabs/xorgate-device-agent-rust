@@ -259,6 +259,8 @@ end)
   # runs in an errexit-exempt `||` context), so PROD is still restored next.
   echo "== 1b. Rust gst-launch-1.0/xorgate-kvs-webrtc leftovers (SIGINT, 5 s, SIGKILL; never a JS pid)"
   kill_rs_media || echo "  ! leftover sweep failed — continuing (JS first)"
+  echo "== 1c. NTP (review-wp6 M4): set-ntp true + undo an ntp-unsync.sh break"
+  ntp_restore || echo "  ! ntp restore failed — run scripts/bench/ntp-unsync.sh restore"
   echo "== 2. JS agent (start + verify BEFORE anything that can fail)"
   JS_OK=1
   if [ "$(systemctl is-active $JS_UNIT || true)" != active ]; then
@@ -278,7 +280,9 @@ end)
   filler_clear || echo "  ! filler clear refused (see above)"
   echo "== 4. shared profile + restart $UNIT"
   profile_shared
-  reload_restart_rs
+  # JS is already back (step 2); a refused Rust restart (bench flavour lost
+  # after an `xorgate-rs update`, Phase 4) must not skip the audits below.
+  reload_restart_rs || echo "  ! $UNIT not restarted (see above) — $JS_UNIT stays up; fix with install.sh then profile.sh shared"
   if [ "$DRY" != 1 ]; then
     for _ in $(seq 1 30); do
       ok=1; for u in $JS_UNIT $UNIT $MODEM_UNIT; do [ "$(systemctl is-active $u || true)" = active ] || ok=0; done

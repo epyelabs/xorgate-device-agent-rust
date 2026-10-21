@@ -116,36 +116,13 @@ streams = ["report"]
 max_count_delta = 1
 quiet_ms = 10000
 
-[[rule]]
-id = "T6"
-title = "phase-owned gaps until Phase 4 (LED, camera mount, clock stepper)"
-basis = "phase file T6; scope boundary table; CF30; SHRUNK by Phase 3 (phase-3-recording-media.md §Record/replay, CF45): every recording/media matcher deleted, so a missing recording/media field or event FAILS"
-kind = "phase_owned"
-streams = ["telemetry", "report", "state", "events", "sudo"]
-paths = [
-  "**.clockStepperArmed",
-  "effective.cameraMount", "effective.cameraMount.**",
-]
-# state.json `recentEvents` msg prefixes owned by Phase 4 — EXACT texts of
-# the TS emitters. ONE-DIRECTIONAL: tolerated only when the JS side has the
-# event and the Rust side has none of it.
-#   camera mount: …        worker.ts:181 (boot-config reconciler, cam-sensor-level-rotate)
-#   [clock] …              clock-step.ts:232-307 (offline clock stepper, CF20 → Phase 4)
-# (Phase 3 deleted: `hardware: `, the recording manager / boot policy / video
-# capture / uploader prefixes.)
-event_prefixes = [
-  "camera mount: ",
-  "[clock] ",
-]
-# Report detail produced ONLY by the Phase 4 hint `clockStepperArmed === false`
-# (config-sync.ts:1007-1024). The recording latch parts (boot power staging,
-# GPS/LTE gate, load shedding) are Phase 3 and compared exactly now.
-latch_detail_paths = ["status.*.detail"]
-latch_detail_prefix = "in force, but "
-latch_detail_parts = []
-latch_detail_exact = ["in force, but the clock stepper stood down for this boot (NTP is synchronized)"]
-# sudo argv owned by Phase 4 (camera-mount helper, set-clock helper).
-sudo_argv_contains = ["xorgate-camrotate", "xorgate-setclock", "camrotate", "setclock"]
+# T6 (phase-owned gaps: LED, camera mount, clock stepper) DELETED by Phase 4
+# WP6 (CF54, phase-4-operations.md §8): every Phase 4 field and event is
+# compared — a missing `camera mount: …` / `[clock] …` event, a `clockStepperArmed`
+# hint, `effective.cameraMount`, the stood-down latch detail or a set-clock /
+# camrotate sudo argv on one side only FAILS. Pinned by diff.rs tests
+# `cf54_phase4_report_fields_are_compared`, `latch_detail_only_when_hint_text_is_one_sided`,
+# `events_multiset_with_t6_prefixes`, `t6_events_exact_phase_prefixes_js_only`.
 
 [[rule]]
 id = "T7"
@@ -312,10 +289,10 @@ source = "phase-1/evidence/accepted-divergences.md"
 
   [[rule.row]]
   id = "D30"
-  what = "which consumer recomputes the shared 1 s system.sample() cache (TS: random — Node re-arms a repeat from the ms-floored libuv time and system.ts:107 sets recLastAt before the await; Rust: the first-armed shed tick, deterministically) → a JS recorder sample may lack `system`, a Rust one never does. Matched ONLY JS-vs-Rust, per telemetry session, `(samples without system)` with the Rust count 0 and the JS count ≥ 1 (either column order; no JS cap). A Rust count > 0 is UNTOLERATED even when the counts agree (evidence against D30). JS-vs-JS stays T13/system-presence; Rust-vs-Rust exact. Orchestrator 2026-10-19 (P-WP6-2, review-wp6 §2-§3)"
+  what = "which consumer recomputes the shared 1 s system.sample() cache (TS: random — Node re-arms a repeat from the ms-floored libuv time and system.ts:107 sets recLastAt before the await; Rust: the first-armed shed tick, deterministically) → a JS recorder sample may lack `system`; a Rust one only under scheduler starvation (review-wp6 M2: the gate is stamped at the call). Matched JS-vs-Rust per telemetry session, `(samples without system)` with the Rust count 0 and the JS count ≥ 1 (either column order; no JS cap) — where a Rust system-less sample counts UNLESS it carries the starvation SIGNATURE (isolated: both neighbours carry `system`; taken 900–999 ms after the previous sample by `mono` — impossible on a steady host, whose fires are ≥ 1000 ms apart; such samples are cited D30 one by one as `(starved system-less samples …)`, any Rust-vs-X pair). Any other Rust drop is UNTOLERATED (evidence against D30). Never a count rule. JS-vs-JS stays T13/system-presence; Rust-vs-Rust exact. Orchestrator 2026-10-19 (P-WP6-2, review-wp6 §2-§3)"
   streams = ["rec-telemetry"]
   matcher = "d30_system_presence"
-  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::rec_telemetry_system_presence_per_sample; timer.rs re_arms_from_the_fire_instant…; collectors/system.rs concurrent sample test"
+  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::rec_telemetry_system_presence_per_sample + d30_starved_drop_signature_only; timer.rs re_arms_from_the_fire_instant…; tests/collectors.rs concurrent + d30_a_starved_recorder_sample_drops_system_once"
 
   [[rule.row]]
   id = "D30"
@@ -359,12 +336,6 @@ kind = "decisions"
   normalize = { "xorgate-updater-rs.service" = "xorgate-updater.service" }
 
   [[rule.row]]
-  id = "O4"
-  what = "real-mode read_sms (tape meta.env.MODE = real, JS vs Rust only): the TS sweep finds no SIMCom interface-05 tty and answers status \"no_modem\", error \"no SIMCom interface 05 tty\" (sms-modem.ts:524); the Rust agent has no SMS reader until Phase 4 and answers status \"error\", error \"sms reader not available in this build\" (command_flow.rs:63, :511-516 — the O4 decision). Matched ONLY when the JS result carries exactly the TS pair and the Rust result exactly the O4 pair, and ONLY the `status` and `error` fields of that result: on `…/sms` those two leaves, and in the `read_sms <id>: status=… error=…` event line that renders the same result (worker.ts:930-937) those two words. Every other field (and the rest of the line) is compared as usual"
-  streams = ["sms", "events"]
-  matcher = "read_sms_unavailable"
-
-  [[rule.row]]
   id = "sms-duration"
   what = "read_sms `durationMs` is a measured wall span of the sweep (TS sms-modem.ts:504-519 `end - start`; Rust command_flow.rs, monotonic, series-5 item 2): two agents' sweeps take 0-2 ms each (JS-vs-JS spread over every series-1..4 run: max 2 ms of 18 pairs). Matched ONLY on `…/sms` `durationMs` and the `durationMs=<n>` of the `read_sms <id>:` event line (paired per request id), ONLY when BOTH values are non-negative integers differing by at most max_delta_ms; nothing else in the payload"
   streams = ["sms", "events"]
@@ -393,13 +364,8 @@ kind = "decisions"
   values_only = true
 
   [[rule.row]]
-  id = "set-wifi"
-  what = "`set wifi` is Phase 4 (CF22; WP6 T8): Rust prints `xorgate-rs: 'set wifi' arrives in a later build` and exits 1 before the sudo note (cli_set.rs:44) where the TS runs set.ts:679-717. C11: stdout/stderr/exit differ; settings.json must still be identical (untouched)"
-  streams = ["cli"]
-
-  [[rule.row]]
   id = "cli-banner"
-  what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the SHORTER Rust usage (only this binary's verbs: run/status/set/logs; cli.rs usage()) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
+  what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the Rust usage (cli.rs usage(): this binary's verbs, the systemd hint for start/stop/restart, `manage` without daemon control — Q10/D35) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
   streams = ["cli"]
 
   [[rule.row]]
@@ -408,8 +374,18 @@ kind = "decisions"
   streams = ["cli"]
 
   [[rule.row]]
-  id = "cli-later-verbs"
-  what = "verbs owned by Phase 3/4 (`update`, `pipeline`, `recording`, `led`, `sms`, `manage`, `monitor`; WP6 A5): Rust prints `xorgate-rs: '<verb>' arrives in a later build` and exits 1 (cli.rs) — the TS has these verbs, so `unknown command` would be wrong. C11: stdout/stderr/exit differ; settings.json must match. Retire each verb's row when its phase lands"
+  id = "cli-q9-names"
+  what = "MAPPING row (cli-matrix.sh `map:`), not a free pass: Q9 local-only CLI hints name the Rust binary — `[xorgate-rs] update failed: … sudo xorgate-rs update` (D-WP4-6), the `xorgate-rs led` usage block + `'xorgate-rs led off'` (WP1 Q9 strings), `xorgate-rs sms` help (D34). The Rust side's `xorgate-rs` → `xorgate`, then stdout/stderr/exit/settings.json must be identical"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-sms-duration"
+  what = "MAPPING row: `xorgate-rs sms` prints the sweep's own duration (`· <N> ms`), a timing — normalised on both sides, everything else identical (the T8/sms-duration rule of the …/sms payload, for the CLI)"
+  streams = ["cli"]
+
+  [[rule.row]]
+  id = "cli-tui-no-tty"
+  what = "`manage` / `monitor` without a terminal (the matrix runs with stdin </dev/null): ink renders its first frame then fails `Raw mode is not supported…` (exit 1) where crossterm fails `No such device or address (os error 6)` (exit 1) before drawing. The TUI itself is compared on ratatui TestBackend frames vs the TS monitor.test.tsx its (D35, tests/manage_tui.rs) and on the bench over `ssh -t` (E15); exit code and settings.json must match"
   streams = ["cli"]
 
   [[rule.row]]
@@ -637,6 +613,14 @@ tolerance = { "startTs" = 300.0, "startMono" = 300.0, "durationMs" = 150.0 }
 paths = ["sizeBytes"]
 
 [[rule]]
+id = "T12/cut-fragment"
+title = "sidecar `durationMs` of a session's CUT fragment (its last, ended by the agent's stop): compared by its END instant `startTs + durationMs` (±endMs), not by its duration — conditions = d30_session_end (a)+(c)+(d) without (b): last seq on BOTH sides + capture ended at the stop, never respawned; end instants within endMs; each side's session start is anchored to ITS OWN shed transition: the spawn-minus-last-powerShed/liveBlock-change lags of the two sides differ by ≤ tickMs (decision → spawn is one code path; the change is seen on each side's next 1 s publish tick, worker.ts:1207), or neither side had one (boot-started). Every other fragment keeps T12's ±150 ms (GOP boundaries at both ends)"
+basis = "review-wp6 M3 (F1): a cut fragment's duration = stop − session start; the stop is one instant for both agents (the player SIGTERMs both together, play.rs) and the session start follows each agent's own phase — boot skew, or the shed tick (manager.ts:612-615) for a transition-started session — which T12 never bounded (replay-20261019T231240Z 7066/6895, review run 3 5191/5388 in plain `media`). The end instant carries the stop jitter only (T12's 150 ms); the start is judged by startTs-vs-PLAYING (T12) and the T4 transition rule"
+kind = "media"
+streams = ["sidecar"]
+tolerance = { "endMs" = 150.0, "tickMs" = 1100.0 }
+
+[[rule]]
 id = "T13"
 title = "telemetry segments: file-name ms stamps and rotation count ±1; gz bytes never compared (D24)"
 basis = "phase file T13; P6"
@@ -645,7 +629,7 @@ streams = ["rec-telemetry"]
 
 [[rule]]
 id = "T13/system-presence"
-title = "telemetry segments, JS-vs-JS pairs ONLY (calibration): per telemetry session, the number of samples WITHOUT the agent-sampled `system` group may differ by perSession (5, the review limit; observed JS-vs-JS per-instance spread 0–4, the TS D30 drops). JS-vs-Rust → T7/D30 (d30_system_presence, Rust must be 0); Rust-vs-Rust exact"
+title = "telemetry segments, JS-vs-JS pairs ONLY (calibration): per telemetry session, the number of samples WITHOUT the agent-sampled `system` group may differ by perSession (5, the review limit; observed JS-vs-JS per-instance spread 0–4, the TS D30 drops). JS-vs-Rust → T7/D30 (d30_system_presence: Rust 0 bar the starvation signature); Rust-vs-Rust exact bar that signature"
 basis = "WP6 2026-10-19 (the per-segment group union hid a recorder that drops `system` on 6-8 % of ticks). TS: system.ts:104-113 recomputes the recorder-side cache at most once per 1000 ms (Date.now gate) and telemetry-recorder.ts:102 skips a group whose updatedMono did not advance, so a tick landing under 1000 ms after the last recompute writes no `system` — 0-5 per run under Node setInterval. JS-vs-JS calibrations (replay-20261017T221027Z … T224409Z + replay-20261019T140703Z, 10 runs): max |Δ| per session = 2 (JS-vs-Rust 2026-10-19: 5-16)"
 kind = "media"
 streams = ["rec-telemetry"]
@@ -656,11 +640,18 @@ tolerance = { "perSession" = 5.0 }
 
 [[rule]]
 id = "T4/rec-sample"
-title = "recorded telemetry VALUES (review-wp6 G1): per telemetry session and leaf (not T3's host-read paths), the run-length-deduplicated value sequences over the segments both sides hold are compared EXACTLY; one step carried by ONE sample may be absent on the other side only at a segment-stretch edge (±1 sample) or (NARROWED, review-wp6 re-check) where the OTHER side's sample nearest THE release that brought the step (the group's last input burst — releases ≤ 200 ms apart, an NMEA epoch spans ~60 ms — starting ≤ the step's sample and ≤ 1.1 s before it) lies within collisionMs of that burst (its tick raced that input); a hunk of ≥ 2 missing steps is never a race. Per group (not system), the count of samples carrying it may differ by the group's T4 input transitions in the stretch (cited T4)"
-basis = "phase file row `telemetry segments … sample metrics per T3/T4`; the recorder ticks on its own timer, ungated by the player (telemetry-recorder.ts:67-72 ↔ recording/telemetry.rs), so a 1 Hz input released within a few ms of a recorder tick lands on that tick or the next. WP6 2026-10-19 runs: JS-vs-JS 8/8 exact; JS-vs-Rust media/rec-shed-uv/rec-cameras each skip 1-2 NMEA steps where that side's tick fell 1-5 ms from the burst release (e.g. replay-20261019T151749Z Rust tick 29.655 vs burst 29.654). A step present on BOTH sides as different values is never tolerated"
+title = "recorded telemetry VALUES (review-wp6 G1): per telemetry session and leaf (not T3's host-read paths), the run-length-deduplicated value sequences over the segments both sides hold are compared EXACTLY; one step carried by ONE sample may be absent on the other side only at a segment-stretch edge (±1 sample) or (NARROWED, review-wp6 re-check) where the OTHER side's sample nearest THE release that brought the step (the group's last input burst — releases ≤ 200 ms apart, an NMEA epoch spans ~60 ms — starting ≤ the step's sample and ≤ 1.1 s before it) lies within collisionMs of that burst (its tick raced that input); a hunk of ≥ 2 missing steps is never a race. ADDED (review-wp6 F4): a gps hunk where A holds ONE step (one sample) and B holds ONE other step (one sample) is two adjacent MISSES, one per side, only when content proves it and each miss passes the race test on its own: each side's NMEA lines (its agent tape at its own read instants; the player's releases for a JS side) are replayed through the agent's own core (FixAggregator + SkyTracker → map_latest, collectors/gps.rs), the two values are CONSECUTIVE values of that leaf in the same order on both sides, each holder's value became current on its side ≤ 1.1 s before its sample, and each lacking side's sample nearest the instant ITS missing value became current on THAT side lies within collisionMs; and (S-F4, re-review) every instant used is a Rust read within collisionMs of the player's release of the SAME line as written (the race window itself; measured max 14 ms under 15 busy loops) (releases.ndjson; the read path pty → tty thread → channel → run_stream stamp, gps.rs:251) — the anchor is never purely self-reported; anything else two-sided (a value the replay never produced, non-consecutive values, no race at either miss, no reads) stays UNTOLERATED. Per group (not system), the count of samples carrying it may differ by the group's T4 input transitions in the stretch (cited T4)"
+basis = "phase file row `telemetry segments … sample metrics per T3/T4`; the recorder ticks on its own timer, ungated by the player (telemetry-recorder.ts:67-72 ↔ recording/telemetry.rs), so a 1 Hz input released within a few ms of a recorder tick lands on that tick or the next. WP6 2026-10-19 runs: JS-vs-JS 8/8 exact; JS-vs-Rust media/rec-shed-uv/rec-cameras each skip 1-2 NMEA steps where that side's tick fell 1-5 ms from the burst release (e.g. replay-20261019T151749Z Rust tick 29.655 vs burst 29.654). F4 (review-wp6 heavy run 1, 15 busy loops; WP6 gate run 033610Z): the recorder tick drifts (setInterval re-armed from each fire, telemetry-recorder.ts:67-72; mean 1003 ms under load) and its ts is stamped after the collectors are read (:90-125), so while its phase crosses the input's phase every sample is a coin flip per side: A ticking just before its read of epoch k+1 and B just after (same slot, both stamped 1792550521989) gives A: P X · N and B: P · Y N, which LCS shows as the substitution X/Y (lat/lon/alt 14.502373/14.502382 = consecutive fixes); likewise snr_max 32/31 (033610Z: becomes current at the GPGSV cycle's last line; B ticked 1 ms before it, A read 26 ms before its stamp). A step present on BOTH sides as values no adjacent epoch pair explains is never tolerated"
 kind = "media"
 streams = ["rec-telemetry"]
 tolerance = { "collisionMs" = 50.0 }
+
+[[rule]]
+id = "T12/interior-boundaries"
+title = "INTERIOR video fragment (its successor exists on both sides): durationMs is judged as the difference of its two boundaries — its END (startTs + durationMs) relative to each side's own capture PLAYING within T12's startTs bound, like its start (row T12); the session's last fragment keeps T12 / T12/cut-fragment"
+basis = "video-segments.ts:173-182: for seq ≥ 1 startTs = the mp4's birthtime (the file splitmuxsink opens at the rotation) and durationMs = mtime − birthtime (its last write at finalize), so an interior fragment's end is the next fragment's start (per side: end − next startTs within ±3 ms, gate run 035741Z) — two fs instants of each agent's own gst process. T12's durationMs ±150 is inconsistent with its own startTs ±300 once each encoder is starved independently: re-review run rr-m1 (15 busy loops + host overload) moved one interior boundary 272 ms (cam0#0/00003 startTs 409233 vs 409505) while the neighbour compensated (00002+00003 = 19998 vs 19839; 00004 starts ±30) — durations 8377 vs 8075. No new number: the end boundary gets the start boundary's bound. Plus, per side, the fragment's end must meet its OWN successor's startTs within FRAGMENT_SEAM_MS 50 (media_diff.rs; measured −42…0 ms over 240 seams under 15 busy loops), so a late finalize cannot pass inside ±300"
+kind = "media"
+streams = ["sidecar"]
 
 [[rule]]
 id = "T14"
@@ -668,3 +659,24 @@ title = "S3 PUT timing / failed-attempt counts (NARROWED review-wp6: |Δ| ≤ 1 
 basis = "phase file T14"
 kind = "media"
 streams = ["s3"]
+
+# ---------------------------------------------------------------- Phase 4
+# T15–T16: phase-4-operations.md §8 "Diff streams added" (read by
+# crates/xorgate-replay/src/diff_p4.rs; `tolerance` = the ± bounds). PROVISIONAL
+# until the WP6 JS-vs-JS calibration + the adversarial review cite runs.
+
+[[rule]]
+id = "T15"
+title = "LED pin timeline: per-step interval ±step_ms; heartbeat-rendered run starts (every logged render but `none → …`) on each agent's OWN heartbeat grid (k·1000 ± spawn_ms + k·drift_ms_per_tick since the previous one: the render's first pinctrl spawn latency) with a constant cross-agent offset (± the same slack; spawn_ms < 500 so a whole-heartbeat shift is never absorbed); a whole-heartbeat shift of that offset is UNTOLERATED except on a rung whose input is produced on an own-phase timer (undervoltage/thermal via the shed tick + publish loop: ≤ 2; leaving network on the 2 s reconnect: ≤ 2); a run's group count may differ by what its duration difference plus the summed measured per-leg differences buy at the pattern's shortest leg (+1). Pin/level sequences and the ordered `[led] a → b` transitions are exact; event-driven runs (`none → …`, the flash, a blank) are compared by structure + steps only"
+basis = "step: led.ts:356-396 awaits the pinctrl spawn then setTimeout(step.ms) — Node timers vs tokio + one process spawn per leg (`led-jitter`, phase file §8). Grid: led-manager.ts:56-73 renders from tick(), driven by the worker's 1 s heartbeat setInterval (worker.ts:633-638), so a rung change lands on that agent's own heartbeat; drift: Node's setInterval drifts ~1 ms/tick (README hold-gate notes), Rust's SetInterval re-arms from the fire (timer.rs). Spawn: led.ts:219-225 pinctrlWriter = run('pinctrl', …) — a process spawn per write, stamped by the shim after it started; observed render offsets from the k·1000 grid 100–220 ms under the media load (replay-20261019T233553Z, T221223Z JS-vs-JS), bound 400 (< 500 by construction). Chains: shed tick manager.ts:612-615 → noteRecordingStatus worker.ts:1207 → heartbeat; reconnect mqtt.ts:63 `reconnectPeriod: 2000`. review-wp6 M1 (replaces the ±1150 ms phase bound, which accepted a Rust render one heartbeat late)"
+kind = "p4"
+streams = ["led"]
+tolerance = { "step_ms" = 50.0, "drift_ms_per_tick" = 2.0, "spawn_ms" = 400.0 }
+
+[[rule]]
+id = "T16"
+title = "clock-stepper values stamped at THAT agent's tick: (sudo) `xorgate-setclock <epoch>` compared as the offset epoch − (the shim's call time, rounded s), ±epoch_s; (events) `[clock] ignoring implausible <src> time <ISO>` — an A-only and a B-only line, same level + source, whose ISO minus the event's OWN state.json ts (= the source offset) agree within ±anchor_ms"
+basis = "clock-step.ts:186 `String(Math.round(targetMs / 1000))` with targetMs = gps.utcMs + gps.ageMs (or now + modem.offsetMs) evaluated at THAT agent's 30 s tick (clock-step.ts:291 setInterval from its own start), so the absolute epoch differs by the two tick phases; the offset from the call's own time is the comparable value, and two roundings (the target's and the call time's) put it within ±1 s. Events: clock-step.ts:262 targetMs = now() + modem.offsetMs (GPS: utcMs + ageMs) printed by :274 `new Date(targetMs).toISOString()` — `now()` is that agent's tick instant; both steppers start after their own boot (worker.ts:554, first tick immediate) and keep that phase, so the ISOs differ by the boot skew (p4-clock-cap: JS-vs-JS 3 ms, JS-vs-Rust 149 ms; replay-20261020T013620Z / T014855Z) — anchored instead to each event's own `Date.now()` stamp (worker.ts:546-551, same tick as `now()`), which removes the phase: the difference left is the in-tick processing (ms) (review-wp6 should-fix)"
+kind = "p4"
+streams = ["sudo", "events"]
+tolerance = { "epoch_s" = 1.0, "anchor_ms" = 50.0 }

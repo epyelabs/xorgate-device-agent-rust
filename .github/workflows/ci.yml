@@ -124,10 +124,20 @@ jobs:
           name: replay-ci-smoke
           # The whole smoke run dir (≈ 1-2 MB: releases, pairs, watch.json,
           # player.log, per-agent captures) so a failing pair can be
-          # root-caused; the media run keeps diff.md only (its tree is large).
+          # root-caused; the media run keeps its diff + the small logs only
+          # (its recordings/s3 trees are large) — enough to time a child's
+          # end (procs, shim, stderr: WP6, the run 39328644627 flake).
           path: |
             /tmp/replay-ci-smoke
             /tmp/replay-ci-media/diff.md
+            /tmp/replay-ci-media/diff.json
+            /tmp/replay-ci-media/player.log
+            /tmp/replay-ci-media/play.json
+            /tmp/replay-ci-media/shm.ndjson
+            /tmp/replay-ci-media/*/procs.ndjson
+            /tmp/replay-ci-media/*/shim.ndjson
+            /tmp/replay-ci-media/*/stderr.log
+            /tmp/replay-ci-media/*/stdout.log
           if-no-files-found: ignore
           retention-days: 14
 
