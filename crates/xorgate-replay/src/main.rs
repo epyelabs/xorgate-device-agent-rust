@@ -160,6 +160,7 @@ fn main() -> Result<()> {
             let pa = diff_p4::P4Capture::load(&run.join("a"));
             let pb = diff_p4::P4Capture::load(&run.join("b"));
             diff_p4::diff_p4(&pa, &pb, &table, &mut rep);
+            diff_p4::retag_clock_iso(&table, &mut rep);
             rep.hits = diff::row_hits(&rep, &table);
             let md = diff::render(&rep, &a, &b, &info, &table, &run);
             let out = out.unwrap_or_else(|| run.join("diff.md"));

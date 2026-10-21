@@ -264,7 +264,8 @@ a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
 - `cpu_temp` (no thermal zone in the Docker VM) is absent on both sides;
   `cpu_usage`, `ram_usage`, `disk_usage` are the rig host's live values (T3).
 - `rpicam-hello` is absent (camera reconcile = "cannot enumerate"); camera
-  mount, LED, recording and media are Phase 3/4 and tolerated as T6.
+  mount, LED, recording and media were Phase 3/4 (T6, DELETED in Phase 4 —
+  see the Phase 4 section: Pi tapes give each agent its own device tree).
 
 ## CLI matrix (C11)
 
@@ -400,7 +401,8 @@ appearance), telemetry file-name ms stamps → `<ms>`.
 | `evictions` | the ordered list of fragments deleted without a successful PUT | — |
 | `shm` | orphan `shmpipe.<pid>.*` of dead gst children at the end, per side | — |
 
-T6 is SHRUNK to the Phase 4 gaps (LED, camera mount, clock stepper): the
+T6 was SHRUNK to the Phase 4 gaps (LED, camera mount, clock stepper) — and is
+DELETED by Phase 4 WP6 (CF54): nothing phase-owned remains. In Phase 3: the
 payload's `media`/`recording` blocks, `bootDefer`/`powerShed`/`liveBlock`, the
 recording/hardware/uploader events and the recording latch details are
 compared now, so a missing recording/media event FAILS. T1 adds
@@ -530,4 +532,21 @@ are `fixtures/replay/p4-sms-modem.json`, dumped by
 | `sudo` | argv sequence | T16: `xorgate-setclock <epoch>` compared as the offset from the call time ±1 s (each agent ticks on its own 30 s phase) |
 
 A run starts at every pin group that drives all three channels (each new
-colour/pattern starts from "levels unknown", `led.ts` `stop()`).
+colour/pattern starts from "levels unknown", `led.ts` `stop()`); a group is one
+`apply()` (a lone rise, then a fall on other pins, < 60 ms apart).
+
+T6 is DELETED (CF54) and T8/O4 too (CF48: the Rust real-mode reader answers
+like the TS): a JS-only `[clock] …` / `camera mount: …` event, a report's
+`effective.cameraMount` / `clockStepperArmed`, the stood-down latch detail or a
+set-clock / camrotate sudo argv on one side only FAILS.
+
+C11 (`cli-matrix.sh`): every Phase 4 verb is real — `set wifi`, `pipeline`,
+`recording` expect equality; `update` / `led` use `map:T8/cli-q9-names` (the
+Rust side's `xorgate-rs` → `xorgate`, Q9 local hints, then exact) and `sms`
+`map:T8/cli-sms-duration`; `manage` / `monitor` without a tty are
+`T8/cli-tui-no-tty` (the TUI is compared on TestBackend frames + bench E15).
+
+`ci-smoke.sh` keeps `$OUT`'s diff + small logs in `$CI_SMOKE_KEEP` on every
+exit (the load-only media flake), and the player now waits up to the capture
+stop grace (10 s) for an exited agent's process group before its SIGKILL, so a
+capture's `ended` (int vs kill) is the agent's doing, not a race with the rig.

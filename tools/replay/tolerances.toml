@@ -660,8 +660,8 @@ tolerance = { "step_ms" = 50.0, "phase_ms" = 1150.0 }
 
 [[rule]]
 id = "T16"
-title = "set-clock argv: `xorgate-setclock <epoch>` compared as the offset epoch − (the shim's call time, rounded s), ±epoch_s"
-basis = "clock-step.ts:186 `String(Math.round(targetMs / 1000))` with targetMs = gps.utcMs + gps.ageMs (or now + modem.offsetMs) evaluated at THAT agent's 30 s tick (clock-step.ts:291 setInterval from its own start), so the absolute epoch differs by the two tick phases; the offset from the call's own time is the comparable value, and two roundings (the target's and the call time's) put it within ±1 s"
+title = "clock-stepper values stamped at THAT agent's tick: (sudo) `xorgate-setclock <epoch>` compared as the offset epoch − (the shim's call time, rounded s), ±epoch_s; (events) `[clock] ignoring implausible <src> time <ISO>` — an A-only and a B-only line, same level + source, ISOs within ±iso_ms"
+basis = "clock-step.ts:186 `String(Math.round(targetMs / 1000))` with targetMs = gps.utcMs + gps.ageMs (or now + modem.offsetMs) evaluated at THAT agent's 30 s tick (clock-step.ts:291 setInterval from its own start), so the absolute epoch differs by the two tick phases; the offset from the call's own time is the comparable value, and two roundings (the target's and the call time's) put it within ±1 s. Events: clock-step.ts:262 targetMs = now() + modem.offsetMs (GPS: utcMs + ageMs) printed by :274 `new Date(targetMs).toISOString()` — `now()` is that agent's tick instant; both steppers start after their own boot (worker.ts:554, first tick immediate) and keep that phase, so the ISOs differ by the boot skew (p4-clock-cap: JS-vs-JS 3 ms, JS-vs-Rust 149 ms; replay-20261020T013620Z / T014855Z)"
 kind = "p4"
-streams = ["sudo"]
-tolerance = { "epoch_s" = 1.0 }
+streams = ["sudo", "events"]
+tolerance = { "epoch_s" = 1.0, "iso_ms" = 2000.0 }

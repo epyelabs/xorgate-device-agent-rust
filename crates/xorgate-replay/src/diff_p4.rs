@@ -432,6 +432,78 @@ pub fn setclock_tolerated(table: &Table, x: &str, y: &str) -> Option<String> {
     (stem(x) == stem(y) && (ox - oy).abs() <= lim).then(|| r.id.clone())
 }
 
+/// T16 (events half): `[clock] ignoring implausible <src> time <ISO>`
+/// (`clock-step.ts:272-276`) prints `new Date(targetMs).toISOString()` with
+/// `targetMs = now() + modem.offsetMs` (NITZ, `:262`) or `utcMs + ageMs`
+/// (GPS) at THAT agent's tick — the two agents' steppers start after their
+/// own boot (worker.ts:554) and keep that phase (setInterval 30 s, `:291`),
+/// so the ISO differs by the boot skew. An A-only and a B-only line of that
+/// shape, same level and source, ISOs within `iso_ms`, are re-cited to T16;
+/// anything else stays as the events diff left it.
+pub fn retag_clock_iso(table: &Table, rep: &mut Report) {
+    let Some(r) = table.of_kind("p4", "events").next() else {
+        return;
+    };
+    let Some(lim) = r.tolerance.get("iso_ms").map(|v| *v as i64) else {
+        return;
+    };
+    let parse = |path: &str| -> Option<(String, i64)> {
+        let i = path.find("[clock] ignoring implausible ")?;
+        let (head, iso) = path.rsplit_once(" time ")?;
+        let _ = i;
+        Some((head.to_string(), iso_ms(iso)?))
+    };
+    let idx: Vec<usize> = (0..rep.mismatches.len())
+        .filter(|&i| {
+            let m = &rep.mismatches[i];
+            m.stream == "events" && m.tol == UNTOLERATED && parse(&m.path).is_some()
+        })
+        .collect();
+    let mut used = vec![false; rep.mismatches.len()];
+    for &i in &idx {
+        for &j in &idx {
+            if i == j || used[i] || used[j] {
+                continue;
+            }
+            let (mi, mj) = (&rep.mismatches[i], &rep.mismatches[j]);
+            // i: A has it, B not; j: B has it, A not.
+            if !(mi.a == "1" && mi.b == "0" && mj.a == "0" && mj.b == "1") {
+                continue;
+            }
+            let ((hi, ti), (hj, tj)) = (parse(&mi.path).unwrap(), parse(&mj.path).unwrap());
+            if hi == hj && (ti - tj).abs() <= lim {
+                used[i] = true;
+                used[j] = true;
+            }
+        }
+    }
+    for (k, u) in used.iter().enumerate() {
+        if *u {
+            rep.retag(k, r.id.clone());
+        }
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SS.mmmZ` → epoch ms.
+fn iso_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 24 || b[23] != b'Z' {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (h, mi, se, ms) = (n(11..13)?, n(14..16)?, n(17..19)?, n(20..23)?);
+    // days_from_civil (Howard Hinnant).
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 24 + h) * 60 + mi) * 60_000 + se * 1000 + ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +622,36 @@ tolerance = { epoch_s = 1 }
             "-n /usr/local/bin/xorgate-setclock 1760000600",
         );
         assert_eq!(setclock_tolerated(&t, &n, &far), None);
+    }
+
+    #[test]
+    fn iso_and_clock_retag() {
+        assert_eq!(iso_ms("1970-01-01T00:00:01.250Z"), Some(1250));
+        assert_eq!(iso_ms("2026-10-20T00:00:00.000Z"), Some(1_792_454_400_000));
+        let mut toml = String::from("version = 1\n");
+        for id in ["T1", "T2", "T3", "T4", "T5", "T7", "T8", "T9"] {
+            toml += &format!("[[rule]]\nid = \"{id}\"\ntitle = \"x\"\nkind = \"exclude\"\n");
+        }
+        toml += "[[rule]]\nid = \"T16\"\ntitle = \"x\"\nkind = \"p4\"\nstreams = [\"sudo\", \"events\"]\ntolerance = { epoch_s = 1, iso_ms = 2000 }\n";
+        let t = Table::parse(&toml).unwrap();
+        let ev = |iso: &str, a: &str, b: &str| Mismatch {
+            stream: "events".into(),
+            at: "multiset".into(),
+            path: format!("warn: [clock] ignoring implausible nitz time {iso}"),
+            a: a.into(),
+            b: b.into(),
+            tol: UNTOLERATED.into(),
+        };
+        let mut rep = Report::default();
+        rep.push(ev("1980-03-28T06:18:58.317Z", "0", "1"));
+        rep.push(ev("1980-03-28T06:18:58.466Z", "1", "0"));
+        retag_clock_iso(&t, &mut rep);
+        assert_eq!(rep.untolerated(), 0, "{:?}", rep.mismatches);
+        let mut far = Report::default();
+        far.push(ev("1980-03-28T06:18:58.317Z", "0", "1"));
+        far.push(ev("1980-03-28T06:19:08.466Z", "1", "0"));
+        retag_clock_iso(&t, &mut far);
+        assert_eq!(far.untolerated(), 2);
     }
 
     #[test]

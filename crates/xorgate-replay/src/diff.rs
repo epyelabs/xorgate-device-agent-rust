@@ -855,6 +855,20 @@ impl Report {
         }
         self.mismatches.push(m);
     }
+
+    /// Re-cite mismatch `i` (an UNTOLERATED one) to row `tol`, keeping the
+    /// per-stream counts right (Phase 4 `diff_p4::retag_clock_iso`).
+    pub(crate) fn retag(&mut self, i: usize, tol: String) {
+        let Some(m) = self.mismatches.get_mut(i) else {
+            return;
+        };
+        if m.tol == UNTOLERATED && tol != UNTOLERATED {
+            let st = self.stats.entry(m.stream.clone()).or_default();
+            st.untolerated = st.untolerated.saturating_sub(1);
+            st.tolerated += 1;
+        }
+        m.tol = tol;
+    }
 }
 
 fn show(v: Option<&Value>) -> String {
