@@ -8,7 +8,9 @@
 # the -latest alias (= v1; case.sh flips it to v2) with a sidecar naming the
 # alias basename, install-rs.sh + install-rs.sh.sha256. Variants (from the v1
 # tree, version-stamped with their own name): badsha, nosum (no sidecar),
-# nomember-{buildinfo,installrs,updater}, wrongarch (x86_64 binary), runfails
+# nomember-{bin,unit,buildinfo,installrs,updater} (each of the 5 required
+# members, I1 step 3), wrongname (right digest, the sidecar names ANOTHER
+# file), wrongarch (x86_64 binary), runfails
 # (a shell stub that answers -v like the real binary and exits 1 on `run`).
 set -euo pipefail
 B=/bucket
@@ -62,6 +64,8 @@ variant() { # <name> <edit-fn>: v1 tree + edit + version stamp, packed (no sidec
 same() { :; }
 wrong_arch() { install -m 0755 /in/x86_64-true "$1/bin/xorgate-rs"; }
 no_buildinfo() { rm "$1/build-info.json"; }
+no_bin() { rm "$1/bin/xorgate-rs"; }
+no_unit() { rm "$1/systemd/xorgate-agent-rs.service"; }
 no_installrs() { rm "$1/install-rs.sh"; }
 no_updater() { rm "$1/systemd/xorgate-updater-rs.service"; }
 run_fails() {
@@ -81,7 +85,13 @@ variant badsha same
 # a well-formed sidecar whose digest is v1's, not badsha's
 printf '%s  %s\n' "$(cut -d' ' -f1 "$B/xorgate-agent-rs-v1.tar.gz.sha256")" xorgate-agent-rs-badsha.tar.gz >"$B/xorgate-agent-rs-badsha.tar.gz.sha256"
 variant nosum same
+variant nomember-bin no_bin;               sidecar xorgate-agent-rs-nomember-bin.tar.gz
+variant nomember-unit no_unit;             sidecar xorgate-agent-rs-nomember-unit.tar.gz
 variant nomember-buildinfo no_buildinfo;  sidecar xorgate-agent-rs-nomember-buildinfo.tar.gz
+variant wrongname same
+# the right digest, but the sidecar names another file (sha256sum -c would
+# check xorgate-agent-rs-v1.tar.gz instead)
+printf '%s  %s\n' "$(sha256sum "$B/xorgate-agent-rs-wrongname.tar.gz" | cut -d' ' -f1)" xorgate-agent-rs-v1.tar.gz >"$B/xorgate-agent-rs-wrongname.tar.gz.sha256"
 variant nomember-installrs no_installrs;  sidecar xorgate-agent-rs-nomember-installrs.tar.gz
 variant nomember-updater no_updater;      sidecar xorgate-agent-rs-nomember-updater.tar.gz
 variant wrongarch wrong_arch;             sidecar xorgate-agent-rs-wrongarch.tar.gz

@@ -66,8 +66,44 @@ provision() {
   : >"$E/systemctl.log"
   : >"$E/visudo.log"
   SIM_TS0=$(systemctl show -p ActiveEnterTimestamp --value sim7600-lte)
+  footprint_mark
 }
 M() { bash /e2e/manifest.sh >"$1"; }
+# ---- S1 (review-wp2): a whole-filesystem footprint sweep. The I3 roots only
+# see what they list; this sees every write on the container's root fs since
+# the device was provisioned (find -xdev: /proc /sys /dev and the bind mounts
+# /e2e /in /bucket /fixtures /out are other filesystems). Directories are
+# compared as a SET (new dirs), files/links by mtime/ctime, because a parent
+# directory's mtime moving (a temp file made and removed) is not a footprint.
+footprint_mark() {
+  touch "$E/fp.marker"
+  find / -xdev -type d 2>/dev/null | LC_ALL=C sort >"$E/fp.dirs0"
+}
+# The allowlist — each entry is a path the harness itself, the agents' shared
+# runtime state, or the OS legitimately writes; nothing install-rs.sh owns:
+FP_ALLOW_LIST=(
+  '/run/e2e(/.*)?'                          # shim state, journals, logs, artefacts
+  '/run/xorgate-rs-install\.lock(/.*)?'     # I1 lock: only while a run holds it (checked below)
+  '/run/sudo(/.*)?' '/var/lib/sudo(/.*)?'   # sudo timestamps / lecture flags
+  '/var/lib/xorgate(/.*)?'                  # §4: shared runtime state (excluded from every compare)
+  '/var/lib/xorgate-rs(/.*)?'               # the bench drop-in's StateDirectory (foreign-dropin, bench-*)
+  '/srv/bucket(/.*)?'                       # the case's writable bucket copy (flip_latest)
+  '/home/pi(/.*)?' '/home/operator(/.*)?' '/root(/.*)?'  # case files (dl/, one-liner), agents' ~/.cache
+  '/usr/local/sbin/install'                 # the case's one-shot install shim (fail_install_to)
+  '/var/log(/.*)?'                          # OS logs
+  '.*/__pycache__(/.*)?'                    # python3 (bucket, fixtures) bytecode
+  '/var/tmp'                                # harness tree_digest scratch parent
+)
+FP_ALLOW="^($(IFS='|'; echo "${FP_ALLOW_LIST[*]}"))\$"
+# …plus everything the I3 manifest already accounts for (its roots + trees).
+I3_COVERED='^(/etc/xorgate|/usr/local/bin|/etc/systemd/system|/etc/sudoers\.d|/etc/cron\.d|/etc/udev/rules\.d|/etc/NetworkManager/conf\.d|/etc/systemd/logind\.conf\.d|/var/lib/xorgate-rs-install|/opt/xorgate|/opt/xorgate-rs[^/]*)(/.*)?$'
+footprint_leaks() { # prints every write not allowlisted and not I3-covered
+  [ -e "$E/fp.marker" ] || return 0
+  {
+    find / -xdev ! -type d \( -newer "$E/fp.marker" -o -cnewer "$E/fp.marker" \) 2>/dev/null
+    find / -xdev -type d 2>/dev/null | LC_ALL=C sort | comm -13 "$E/fp.dirs0" -
+  } | LC_ALL=C sort -u | grep -vE "$FP_ALLOW" | grep -vE "$I3_COVERED" | grep -vE "${FP_EXTRA:-^\$}"
+}
 # path of an I3 line (everything after the first " /")
 paths() { awk '{ n = index($0, " /"); print substr($0, n + 1) }' "$1"; }
 RUST_RE='^(/opt/xorgate-rs(\.new|\.old)?|/usr/local/bin/xorgate-rs|/etc/systemd/system/xorgate-(agent|updater)-rs\.service(\.d(/.*)?)?|/etc/systemd/system/[^/]+\.(wants|requires)/xorgate-(agent|updater)-rs\.service|/etc/sudoers\.d/024_xorgate-update-rs|/var/lib/xorgate-rs-install(/.*)?)$'
@@ -158,9 +194,14 @@ exec /usr/bin/install "$@"
 SHIM
   chmod 0755 /usr/local/sbin/install
 }
-# power_cycle: what a power cut + boot does — every service dies, then
-# systemd starts what multi-user.target wants (Conflicts= as the shim models).
+# power_cycle [fwd|rev]: what a power cut + boot does — every service dies,
+# then what multi-user.target wants is started. Real systemd starts both agent
+# units in ONE transaction and resolves Conflicts= there (UNMODELLED, see the
+# README residuals); the shim starts them one by one, so the order decides
+# which agent survives. Every powercut case therefore also runs as a `-rev`
+# twin with the reverse order, and nothing asserts WHICH agent runs.
 power_cycle() {
+  local order=${1:-fwd}
   local f pid u
   for f in /run/e2e/sd/*.pid; do
     [ -e "$f" ] || continue
@@ -168,10 +209,12 @@ power_cycle() {
   done
   rm -f /run/e2e/sd/*.pid /run/e2e/sd/*.active /run/e2e/sd/*.failed "$E/inject" "$E/crash-at"
   echo "POWER-CYCLE" >>"$E/systemctl.log"
-  for f in "$WANTS"/*.service; do
-    [ -L "$f" ] || continue
-    u=$(basename "$f"); systemctl start "$u" 2>/dev/null
-  done
+  local units=()
+  for f in "$WANTS"/*.service; do [ -L "$f" ] && units+=("$(basename "$f")"); done
+  [ "$order" = rev ] && mapfile -t units < <(printf '%s\n' "${units[@]}" | tac)
+  echo "BOOT order ($order): ${units[*]}" >>"$E/systemctl.log"
+  for u in "${units[@]}"; do systemctl start "$u" 2>/dev/null; done
+  rm -rf /run/xorgate-rs-install.lock   # /run is a tmpfs: a boot wipes it
   SIM_TS0=$(systemctl show -p ActiveEnterTimestamp --value sim7600-lte)
   mv "$E/systemctl.log" "$E/systemctl.precycle.log"; : >"$E/systemctl.log"
 }
@@ -272,6 +315,11 @@ manifest_is() { # <label> <actual> <expected>
 # on stale unit config, and sim7600-lte's ActiveEnterTimestamp is unchanged.
 invariants() { # <M0>
   M "$E/M.end"
+  footprint_leaks >"$E/fp.leaks"
+  if [ -s "$E/fp.leaks" ]; then bad "S1: no write outside the I3 surface + the allowlist (whole-fs sweep)"; sed 's/^/        /' "$E/fp.leaks" | head -20
+  else ok "S1: no write outside the I3 surface + the allowlist (whole-fs sweep)"; fi
+  if [ -z "${FP_LOCK_HELD:-}" ]; then check "the I1 lock is released (no /run/xorgate-rs-install.lock left)" [ ! -e /run/xorgate-rs-install.lock ]; fi
+  check "I3 tree list: every /opt/xorgate-rs* on disk has its own line" bash -c 'for d in /opt/xorgate-rs*; do [ -e "$d" ] || continue; grep -qx "t [0-9a-f]\{64\} $d" "$1" || exit 1; done' _ "$E/M.end"
   same_rows "G8: never-touched rows (/etc/xorgate, /opt/xorgate, JS wrapper/unit/.d/updater, sudoers 010+020-023, modem/system/cron/udev/NM/logind) == M0" never_rows "$1" "$E/M.end"
   check "G8: no reboot/poweroff/halt (shim log)" bash -c "! grep -qE '^(FORBIDDEN|(reboot|poweroff|halt|kexec)( |\$))' $E/systemctl.log"
   check "G8: sim7600-lte never started/stopped/restarted/disabled" bash -c "! grep -E '^(start|stop|restart|try-restart|reload|enable|disable|CONFLICT-STOP)( |.* )sim7600-lte' $E/systemctl.log | grep -q ."
@@ -455,10 +503,11 @@ revert-purge)
   provision
   M "$E/M0"
   convert_ok "$E/M0" pi 1 enabled active
+  n0=$(wc -l <"$E/systemctl.log")
   irs --revert --purge
   check "purge exit 0" rc_is 0
   assert_reverted "$E/M0" purge enabled active
-  check "purge ran daemon-reload after deleting the units" bash -c "tac $E/systemctl.log | grep -m1 -E '^(daemon-reload|start xorgate-agent)' | grep -q daemon-reload || grep -q daemon-reload $E/systemctl.log"
+  check "S2: the PURGE itself ran daemon-reload (after it deleted the unit files)" bash -c 'tail -n +"$(($1 + 1))" "$2" | grep -qx daemon-reload' _ "$n0" "$E/systemctl.log"
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
 revert-twice)
@@ -559,14 +608,15 @@ js-pin)
   check "… /opt/xorgate-rs is now v2" grep -q '"version": *"v2"' /opt/xorgate-rs/build-info.json
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
-bad-sha|missing-sidecar|wrong-arch|missing-member)
+bad-sha|missing-sidecar|sidecar-wrong-name|wrong-arch|missing-member)
   provision
   M "$E/M0"
   case "$CASE" in
     bad-sha) tags=(badsha) ;;
     missing-sidecar) tags=(nosum) ;;
     wrong-arch) tags=(wrongarch) ;;
-    missing-member) tags=(nomember-buildinfo nomember-installrs nomember-updater) ;;
+    sidecar-wrong-name) tags=(wrongname) ;;
+    missing-member) tags=(nomember-bin nomember-unit nomember-buildinfo nomember-installrs nomember-updater) ;;
   esac
   for t in "${tags[@]}"; do
     irs --tag "$t"
@@ -720,6 +770,21 @@ root-svc-dropin)
   provision --svc root
   M "$E/M0"
   convert_ok "$E/M0" root 1 enabled active
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+nonpi-svc)
+  # M1 (review-wp2): be:74-85 runs the agent as $SUDO_USER — any login, not
+  # just pi. The 024 grant must name THAT user (10-user.conf), not pi (who
+  # runs `sudo bash install-rs.sh` here, so SUDO_USER=pi is a trap too).
+  useradd -m -s /bin/bash -U operator 2>/dev/null || useradd -m -s /bin/bash -g operator operator
+  provision --svc operator
+  M "$E/M0"
+  convert_ok "$E/M0" operator 1 enabled active
+  check "024 names operator, not pi" bash -c "grep -qx 'operator ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater-rs.service' $S024 && ! grep -q '^pi ' $S024"
+  check "record serviceUser=operator" [ "$(rec serviceUser)" = operator ]
+  irs --revert --purge
+  check "purge exit 0" rc_is 0
+  assert_reverted "$E/M0" purge enabled active
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
 js-disabled-before)
@@ -950,10 +1015,15 @@ signal-revert-*)
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
 powercut-convert-[0-9]*|powercut-revert-[0-9]*)
+  order=fwd; [ "${CASE%-rev}" != "$CASE" ] && order=rev
+  # a kill -9 cannot run any cleanup: the cut run's download scratch dir stays
+  # in /tmp (I1 crash semantics; systemd-tmpfiles ages /tmp out). Allowed here
+  # ONLY — every clean exit path must leave /tmp as it was.
+  FP_EXTRA='^/tmp/xg-install-rs-[^/]+(/.*)?$'
   # A3(ii) CRASH: a power cut right after the k-th systemctl call of the run
   # (kill -9 of the script, no cleanup, then a boot). Assert only:
   # (a) at least one agent unit is enabled, (b) re-running converges.
-  k=${CASE##*-}
+  k=${CASE%-rev}; k=${k##*-}
   provision
   M "$E/M0"
   if [ "${CASE#powercut-revert}" != "$CASE" ]; then
@@ -969,9 +1039,8 @@ powercut-convert-[0-9]*|powercut-revert-[0-9]*)
   if [ -e "$E/crashed" ]; then
     note "power cut after systemctl call #$k: $(grep '^INJECT crash' "$E/systemctl.log")"
     check "(a) after the cut at least one agent unit is enabled (M2)" bash -c "[ -L $WANTS/xorgate-agent.service ] || [ -L $WANTS/xorgate-agent-rs.service ]"
-    power_cycle
-    note "after boot: JS $(ise xorgate-agent)/$(isa xorgate-agent), rs $(ise xorgate-agent-rs)/$(isa xorgate-agent-rs)"
-    check "after boot some agent runs" bash -c '[ "$(systemctl is-active xorgate-agent)" = active ] || [ "$(systemctl is-active xorgate-agent-rs)" = active ]'
+    power_cycle "$order"
+    note "after boot ($order): JS $(ise xorgate-agent)/$(isa xorgate-agent), rs $(ise xorgate-agent-rs)/$(isa xorgate-agent-rs)"
   else
     note "fewer than $k systemctl calls: no cut happened (rc $(cat "$E/rc"))"
   fi
@@ -1063,6 +1132,7 @@ lock-concurrent)
   # holder's lock untouched.
   provision
   M "$E/M0"
+  FP_LOCK_HELD=1
   sleep 600 & holder=$!
   install -d -m 0700 /run/xorgate-rs-install.lock
   echo "$holder" >/run/xorgate-rs-install.lock/pid

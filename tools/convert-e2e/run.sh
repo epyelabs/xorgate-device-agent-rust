@@ -35,19 +35,21 @@ INSTALL_RS=${INSTALL_RS:-$REPO/scripts/install-rs.sh}
 DOCS_MD=${DOCS_MD:-$REPO/docs/convert.md}
 ALL_CASES=(convert-happy convert-twice convert-repair revert-keep revert-purge revert-twice
   convert-revert-convert update-after-convert js-pin bad-sha missing-sidecar missing-member
-  wrong-arch failed-start failed-start-js-disabled failed-start-js-stopped
+  sidecar-wrong-name wrong-arch failed-start failed-start-js-disabled failed-start-js-stopped
   wrapper-path-is-dir predir-blocked-refuses rollback-step6 rollback-step6-preexisting
   clean-fail-step8-reload clean-fail-step8-enable-rs clean-fail-step8-disable-js clean-fail-step8-start-rs
   signal-convert-hup-8 signal-convert-term-8 signal-convert-hup-9 signal-convert-term-9
   signal-convert-int-9 signal-revert-hup signal-revert-term signal-revert-int
   n7-refusal lock-stale lock-concurrent
   powercut-convert-1 powercut-convert-2 powercut-convert-3 powercut-convert-4 powercut-convert-5 powercut-convert-6 powercut-convert-7 powercut-convert-8 powercut-convert-9 powercut-convert-10 powercut-convert-11 powercut-convert-12 powercut-convert-13 powercut-convert-14
+  powercut-convert-1-rev powercut-convert-2-rev powercut-convert-3-rev powercut-convert-4-rev powercut-convert-5-rev powercut-convert-6-rev powercut-convert-7-rev powercut-convert-8-rev powercut-convert-9-rev powercut-convert-10-rev powercut-convert-11-rev powercut-convert-12-rev powercut-convert-13-rev powercut-convert-14-rev
   powercut-revert-1 powercut-revert-2 powercut-revert-3 powercut-revert-4 powercut-revert-5 powercut-revert-6 powercut-revert-7 powercut-revert-8 powercut-revert-9 powercut-revert-10 powercut-revert-11 powercut-revert-12
+  powercut-revert-1-rev powercut-revert-2-rev powercut-revert-3-rev powercut-revert-4-rev powercut-revert-5-rev powercut-revert-6-rev powercut-revert-7-rev powercut-revert-8-rev powercut-revert-9-rev powercut-revert-10-rev powercut-revert-11-rev powercut-revert-12-rev
   bench-window-rollback
   interrupt-1 interrupt-2 interrupt-3 interrupt-4 interrupt-5 interrupt-6 interrupt-7 interrupt-8
   interrupt-1-revert interrupt-2-revert interrupt-3-revert interrupt-4-revert
   interrupt-5-revert interrupt-6-revert interrupt-7-revert interrupt-8-revert
-  root-svc root-svc-dropin js-disabled-before js-stopped-before not-root not-provisioned
+  root-svc root-svc-dropin nonpi-svc js-disabled-before js-stopped-before not-root not-provisioned
   foreign-dropin bench-window status-nonroot revert-runtime-drift bootstrap-oneliner offline-revert tarball-mode visudo-refuses usage-status)
 CASES=("$@")
 [ ${#CASES[@]} -gt 0 ] || CASES=("${ALL_CASES[@]}")

@@ -10,7 +10,7 @@
 #   f <mode> <uid>:<gid> <sha256> <path>
 #   d <mode> <uid>:<gid> - <path>
 #   l <mode> <uid>:<gid> -><target> <path>
-#   t <digest> <tree>            (/opt/xorgate, /opt/xorgate-rs, .new, .old)
+#   t <digest> <tree>            (/opt/xorgate and every /opt/xorgate-rs*)
 # <mode> = 4 octal digits (stat %a, zero-padded). A tree digest = sha256 of
 # that tree's own sorted f/d/l lines (the tree's root dir included), so
 # node_modules costs one line. --expand prints the per-file lines of the trees
@@ -40,7 +40,14 @@ done
 ROOTS=(/etc/xorgate /usr/local/bin /etc/systemd/system /etc/sudoers.d /etc/cron.d
   /etc/udev/rules.d /etc/NetworkManager/conf.d /etc/systemd/logind.conf.d
   /var/lib/xorgate-rs-install)
-TREES=(/opt/xorgate /opt/xorgate-rs /opt/xorgate-rs.new /opt/xorgate-rs.old)
+# I3: "/opt/xorgate" plus "/opt/xorgate-rs*" — every sibling (.new, .old, or a
+# stray .prev/.bak a converter might leave), not just the two documented ones.
+TREES=(/opt/xorgate)
+for t in "$PREFIX"/opt/xorgate-rs*; do
+  [ -e "$t" ] || [ -L "$t" ] || continue
+  TREES+=("${t#"$PREFIX"}")
+done
+is_tree_path() { case "$1" in /opt/xorgate | /opt/xorgate-rs*) return 0 ;; esac; return 1; }
 [ ${#PATHS[@]} -gt 0 ] || PATHS=("${ROOTS[@]}" "${TREES[@]}")
 
 # entries <device path>: the f/d/l lines of everything at and under it
@@ -76,9 +83,7 @@ by_path() { awk '{ n = index($0, " /"); print substr($0, n + 1) "\t" $0 }' | sor
 
 {
   for p in "${PATHS[@]}"; do
-    is_tree=0
-    for t in "${TREES[@]}"; do [ "$p" = "$t" ] && is_tree=1; done
-    if [ $is_tree = 1 ] && [ $EXPAND = 0 ]; then
+    if is_tree_path "$p" && [ $EXPAND = 0 ]; then
       [ -e "$PREFIX$p" ] || continue
       printf 't %s %s\n' "$(entries "$p" | by_path | sha256sum | cut -d' ' -f1)" "$p"
     else

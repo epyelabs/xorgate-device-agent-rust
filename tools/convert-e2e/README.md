@@ -56,11 +56,26 @@ the run, then a simulated boot: ≥ 1 agent unit enabled, and a re-run converges
 Fault injection goes through the systemctl shim: `/run/e2e/inject` lines
 `fail|crash|hup|int|term <ERE over the call>`, and `/run/e2e/crash-at <k>`.
 
-Every case ends with `invariants`, which checks four things:
+Every case ends with `invariants`:
 - The never-touched rows equal M0. These are `/etc/xorgate`, `/opt/xorgate`, the JS wrapper, unit, `.d/` and updater, sudoers 010 and 020–023, and the modem, system, cron, udev, NM and logind assets.
-- The shim saw no reboot or poweroff, no sim7600-lte action, no unmodelled call and no stale-config start.
+- A whole-filesystem footprint sweep finds nothing outside the I3 surface. It covers every file or link changed since provisioning and every new directory on the root fs, minus the commented allowlist in `case.sh` (`FP_ALLOW_LIST`). The I1 lock is released, and every `/opt/xorgate-rs*` on disk has its own I3 tree line.
+- The shim saw no reboot or poweroff, no sim7600-lte action, no JS-updater start, no unmodelled call and no stale-config start.
 - The sim7600-lte `ActiveEnterTimestamp` is unchanged.
 - A source grep of the converter finds no reboot, poweroff or sim7600 restart.
+
+A full run of the 121 cases takes about 10–12 minutes on an M-series Mac, one container at a time.
+
+## Not modelled: Phase 6 / bench residuals
+
+The shim is not systemd. These behaviours are NOT proven by G2, and need a real device (the Phase 6 soak, or a bench window):
+
+| Residual | Why it matters | Where to prove it |
+|---|---|---|
+| A real boot with BOTH agent units enabled | It is reachable by design: a power cut between `enable xorgate-agent-rs` and `disable xorgate-agent` (the M2 order). systemd puts both start jobs in ONE transaction and resolves `Conflicts=` there ("Fixing conflicting jobs"). The shim starts them one by one, so the powercut cases run in both orders (`-rev` twins) and only assert "≥ 1 agent unit enabled, and a re-run converges". | Phase 6: leave a device with both enabled, reboot once, then `systemctl is-active` both + `journalctl -b` for the transaction |
+| READY=1 and `WatchdogSec=60` | `Type=notify` is approximated as "alive after 3 s"; no sd_notify, no watchdog kill | bench G9 (`systemctl show -p ActiveState,NRestarts` over minutes) |
+| `Restart=always` / `StartLimitBurst` | A dead service is reported `activating`; nothing restarts it | Phase 6 soak |
+| The implicit reload `enable`/`disable` perform | The shim's stale-config check is coarser than systemd's | bench G9/G11 |
+| `/run` wiped at boot | `power_cycle` removes the lock dir by hand; other `/run` state is kept | Phase 6 reboot |
 
 ## G6 (bench layout fidelity, read-only)
 
