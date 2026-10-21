@@ -59,8 +59,11 @@
 #     NOT starting xorgate-agent-rs (it would stop the PROD JS agent)" (CF65);
 #   - the dead-man runs `/opt/xorgate-rs/install-rs.sh --revert` first when
 #     /var/lib/xorgate-rs-install/record says state=converted|converting;
-#     end and status only WARN about an unreverted conversion (the revert is
-#     the gate runner's G11 step). Checklist: scripts/bench/convert-window.md.
+#     on such a record (or an unreadable one, state=unknown, or the shipped
+#     unit) end still restores JS (steps 1-2), then disables xorgate-agent-rs,
+#     leaves the dead-man ARMED, skips the Rust restart and exits 1; begin
+#     refuses; status warns (the revert is the gate runner's G11 step).
+#     Checklist: scripts/bench/convert-window.md.
 # Never touches sim7600-lte, /etc/xorgate/agent.env or /var/lib/xorgate contents.
 set -euo pipefail
 # shellcheck source=scripts/bench/_lib.sh
@@ -76,7 +79,7 @@ while [ $# -gt 0 ]; do
 done
 case "$DEADMAN_MIN" in ''|*[!0-9]*) echo "--deadman-min: minutes, got '$DEADMAN_MIN'" >&2; exit 2 ;; esac
 [ "$DEADMAN_MIN" -ge 10 ] || { echo "--deadman-min must be >= 10" >&2; exit 2; }
-case "$VERB" in begin|end|tape-off|status) ;; *) sed -n '2,64p' "$0"; exit 2 ;; esac
+case "$VERB" in begin|end|tape-off|status) ;; *) sed -n '2,67p' "$0"; exit 2 ;; esac
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 log "exclusive $VERB on $BENCH$([ $DRY = 1 ] && echo ' (DRY RUN)')"
 { echo "DRY=$DRY VERB=$VERB TS=$TS DEADMAN_SECS=$((DEADMAN_MIN * 60))"; bench_remote_lib; cat <<'REMOTE'
@@ -91,7 +94,7 @@ conversion_warn() {
   local st
   st=$(conversion_state)
   case "$st" in
-    converted|converting)
+    converted|converting|unknown)
       echo "!!!! conversion record $RS_INSTALL_RECORD says state=$st — run: sudo $RS_INSTALLER --revert; then scripts/bench/install.sh <tarball>; then exclusive.sh end again" >&2 ;;
   esac
 }
@@ -141,7 +144,7 @@ status)
   units_report
   ls -l "$DROPIN_DIR" "$RUN_DROPIN_DIR" 2>/dev/null | sed 's/^/  /' || true
   echo "  latest window: $(latest_window || echo none)"
-  echo "  dead-man $DEADMAN_UNIT.timer: $(deadman_state)"
+  echo "  dead-man $DEADMAN_UNIT.timer: $(deadman_state)   next: $(systemctl list-timers --all --no-pager "$DEADMAN_UNIT.timer" 2>/dev/null | sed -n 2p | tr -s ' ' || true)"
   echo "  conversion record: state=$(conversion_state)   $JS_UNIT is-enabled=$(systemctl is-enabled $JS_UNIT 2>/dev/null || true)"
   if rs_unit_converted; then echo "  UNSAFE: $RS_CONVERTED_REFUSAL"; fi
   conversion_warn
@@ -163,6 +166,10 @@ begin)
   # Phase 5 (CF65): the window opens on the bench flavour only; a SHIPPED
   # (converted) unit would stop the PROD JS agent on the step-5 restart.
   if rs_unit_converted; then need "$RS_CONVERTED_REFUSAL"; fi
+  # review-wp3 N1: nor on an unreverted (or unreadable) conversion record.
+  case "$(conversion_state)" in
+    converted|converting|unknown) need "conversion record $RS_INSTALL_RECORD says state=$(conversion_state) — run: sudo $RS_INSTALLER --revert first" ;;
+  esac
   [ -f "$C15_BASELINE" ] || need "no C15 baseline — run scripts/bench/dev-manifests.sh first"
   grep -q "^KVS_MANIFEST=$RS_ETC/" "$RS_ENV" || need "$RS_ENV does not use the dev manifests — run dev-manifests.sh"
   units_report
@@ -288,9 +295,25 @@ end)
   else
     echo "  = $JS_UNIT active + enabled"
   fi
-  conversion_warn
+  # review-wp3 M1: a conversion still in place (record converted|converting|
+  # unknown, or the shipped unit) — JS is back (above), now close the reboot
+  # race (both units enabled, one Conflicts= the other): disable the Rust unit,
+  # keep the dead-man ARMED (its --revert is the unattended backstop), do not
+  # restart Rust, and exit non-zero at the end.
+  CONV=0
+  if conversion_in_place; then
+    CONV=1
+    conversion_warn
+    if [ "$(systemctl is-enabled $UNIT 2>/dev/null || true)" = enabled ]; then
+      act systemctl disable $UNIT || echo "!!!! systemctl disable $UNIT FAILED — both units enabled: a reboot races them" >&2
+      note "$UNIT disabled (conversion in place: no boot race with $JS_UNIT)"
+    else
+      echo "  = $UNIT not enabled"
+    fi
+  fi
   echo "== 2b. dead-man timer"
-  if [ "$JS_OK" = 1 ]; then deadman_cancel || true
+  if [ "$CONV" = 1 ]; then echo "  ! conversion in place: dead-man left ARMED ($(deadman_state)) — it runs $RS_INSTALLER --revert when it fires"
+  elif [ "$JS_OK" = 1 ]; then deadman_cancel || true
   else echo "  ! $JS_UNIT not active: dead-man left ARMED ($(deadman_state)) — it retries the restore when it fires"; fi
   echo "== 3. runtime drop-ins + window helpers (gate seam, soak, filler)"
   remove_if_present "$EXCLUSIVE_DROPIN" || true
@@ -302,10 +325,16 @@ end)
   profile_shared
   # JS is already back (step 2); a refused Rust restart (bench flavour lost
   # after an `xorgate-rs update`, Phase 4) must not skip the audits below.
-  reload_restart_rs || echo "  ! $UNIT not restarted (see above) — $JS_UNIT stays up; fix with install.sh then profile.sh shared"
+  WAIT_UNITS="$JS_UNIT $UNIT $MODEM_UNIT"
+  if [ "$CONV" = 1 ]; then
+    echo "  ! conversion in place: NOT restarting $UNIT (revert, install.sh, then end again)"
+    WAIT_UNITS="$JS_UNIT $MODEM_UNIT"
+  else
+    reload_restart_rs || echo "  ! $UNIT not restarted (see above) — $JS_UNIT stays up; fix with install.sh then profile.sh shared"
+  fi
   if [ "$DRY" != 1 ]; then
     for _ in $(seq 1 30); do
-      ok=1; for u in $JS_UNIT $UNIT $MODEM_UNIT; do [ "$(systemctl is-active $u || true)" = active ] || ok=0; done
+      ok=1; for u in $WAIT_UNITS; do [ "$(systemctl is-active $u || true)" = active ] || ok=0; done
       [ $ok = 1 ] && break; sleep 1
     done
   fi
@@ -343,6 +372,11 @@ end)
     echo "  (no window record with js-stopped — nothing to attribute)"
   fi
   echo "== done: ${#CHANGED[@]} change(s)$([ "$DRY" = 1 ] && echo ' (dry run: nothing written)')"
+  if [ "$CONV" = 1 ]; then
+    conversion_warn
+    echo "!!!! end INCOMPLETE: a conversion is in place — $JS_UNIT restored, $UNIT disabled, dead-man still ARMED; revert, install.sh, then run end again" >&2
+    exit 1
+  fi
   ;;
 esac
 REMOTE

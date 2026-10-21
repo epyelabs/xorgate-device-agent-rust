@@ -560,6 +560,9 @@ gate_seam_off() {
 # (every step tolerates "already done"). `end` cancels it; a reboot clears it.
 DEADMAN_UNIT=xorgate-rs-window-deadman
 DEADMAN_SCRIPT=/run/xorgate-rs-window-deadman.sh
+# Phase 5 (review-wp3 S2): how long a fired dead-man waits for a running
+# install-rs.sh (XORGATE_TEST_DEADMAN_LOCK_SECS is test-only).
+DEADMAN_LOCK_SECS=${XORGATE_TEST_DEADMAN_LOCK_SECS:-300}
 deadman_state() { systemctl is-active "$DEADMAN_UNIT.timer" 2>/dev/null || true; }
 # deadman_arm <seconds> <window dir>: (re)arms; an armed timer is replaced.
 deadman_arm() {
@@ -583,6 +586,18 @@ JS_UNIT=$JS_UNIT
 # converted|converting) is reverted FIRST — keep mode: Rust disabled + stopped,
 # the JS enablement restored from the record, JS started. Bounded; a failed or
 # missing revert never blocks the enable + start below.
+# review-wp3 S2: a conversion still RUNNING holds install-rs.sh's lock (its
+# --revert would be refused, and its step 8 would later stop JS again): wait
+# for it, bounded, then revert whatever state it left.
+RS_INSTALL_LOCK=$RS_INSTALL_LOCK
+$(declare -f convert_lock_held)
+w=0
+while convert_lock_held && [ "\$w" -lt $DEADMAN_LOCK_SECS ]; do
+  [ "\$w" = 0 ] && say "install-rs.sh is running (lock $RS_INSTALL_LOCK) — waiting <= ${DEADMAN_LOCK_SECS}s for it"
+  sleep 1; w=\$((w + 1))
+done
+if convert_lock_held; then say "install-rs.sh still holds $RS_INSTALL_LOCK after ${DEADMAN_LOCK_SECS}s — reverting/restoring anyway"
+elif [ "\$w" -gt 0 ]; then say "install-rs.sh finished after \${w}s"; fi
 REC=$RS_INSTALL_RECORD
 st=\$(sed -n 's/^state=//p' "\$REC" 2>/dev/null | head -n1)
 case "\$st" in
@@ -833,11 +848,34 @@ rs_unit_converted() {
   return 1
 }
 # The conversion record's state (install-rs.sh I2): converted|converting|…;
-# "none" without a record (never converted, or reverted: record.reverted-<ts>).
+# "none" only when there is provably no record (no record dir, or a readable
+# dir without `record`: never converted, or reverted = record.reverted-<ts>);
+# "unknown" when the dir/record cannot be read or the record has no state=
+# line. Callers treat "unknown" like "converted" (fail closed; review-wp3 M1/X1).
 conversion_state() {
-  local st=""
-  [ -f "$RS_INSTALL_RECORD" ] && st=$(sed -n 's/^state=//p' "$RS_INSTALL_RECORD" 2>/dev/null | head -n1)
-  echo "${st:-none}"
+  local d st=""
+  d=$(dirname "$RS_INSTALL_RECORD")
+  if [ ! -e "$d" ]; then echo none; return 0; fi
+  if [ ! -r "$d" ] || [ ! -x "$d" ]; then echo unknown; return 0; fi
+  if [ ! -e "$RS_INSTALL_RECORD" ]; then echo none; return 0; fi
+  if [ ! -r "$RS_INSTALL_RECORD" ]; then echo unknown; return 0; fi
+  st=$(sed -n 's/^state=//p' "$RS_INSTALL_RECORD" 2>/dev/null | head -n1)
+  echo "${st:-unknown}"
+}
+# True while a conversion may be in place: record state converted|converting|
+# unknown, or the shipped (Conflicts=) unit installed.
+conversion_in_place() {
+  case "$(conversion_state)" in converted|converting|unknown) return 0 ;; esac
+  rs_unit_converted
+}
+# install-rs.sh's run lock (WP1: mkdir lock dir + pid file). True while a LIVE
+# install-rs.sh holds it (a stale lock with a dead pid does not count).
+RS_INSTALL_LOCK=/run/xorgate-rs-install.lock
+convert_lock_held() {
+  local pid
+  [ -d "$RS_INSTALL_LOCK" ] || return 1
+  pid=$(cat "$RS_INSTALL_LOCK/pid" 2>/dev/null || true)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 # Start the PROD JS agent and verify it is active. Never aborts the script
 # (set -e safe): returns 1 after ~30 s of retries so the caller can shout.
