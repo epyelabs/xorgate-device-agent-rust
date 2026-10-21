@@ -259,6 +259,8 @@ end)
   # runs in an errexit-exempt `||` context), so PROD is still restored next.
   echo "== 1b. Rust gst-launch-1.0/xorgate-kvs-webrtc leftovers (SIGINT, 5 s, SIGKILL; never a JS pid)"
   kill_rs_media || echo "  ! leftover sweep failed — continuing (JS first)"
+  echo "== 1c. NTP (review-wp6 M4): set-ntp true + undo an ntp-unsync.sh break"
+  ntp_restore || echo "  ! ntp restore failed — run scripts/bench/ntp-unsync.sh restore"
   echo "== 2. JS agent (start + verify BEFORE anything that can fail)"
   JS_OK=1
   if [ "$(systemctl is-active $JS_UNIT || true)" != active ]; then

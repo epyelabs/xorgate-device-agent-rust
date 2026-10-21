@@ -566,6 +566,12 @@ say "exclusive window never ended — restoring the PROD JS agent ($JS_UNIT)"
 for u in $UNIT $GATE_UNIT $SOAK_UNIT; do systemctl stop "\$u" 2>/dev/null || true; done
 rm -f $EXCLUSIVE_DROPIN $TAPE_DROPIN $GATE_DROPIN $EXCLUSIVE_ENV
 systemctl daemon-reload || true
+# Phase 4 (review-wp6 M4): NTP back on + undo an ntp-unsync.sh break.
+act() { "\$@"; }
+note() { say "\$1"; }
+NTP_STATE=$NTP_STATE
+$(declare -f ntp_restore)
+ntp_restore
 for i in 1 2 3; do
   systemctl start $JS_UNIT || true
   for s in 1 2 3 4 5 6 7 8 9 10; do
@@ -743,6 +749,31 @@ p4_updater_bootstrap() {
   fi
   rm -rf "$tmpd"
   visudo -c >/dev/null 2>&1 && echo "  visudo -c: clean" || echo "  WARNING: visudo -c reports a problem in /etc/sudoers*"
+}
+# Phase 4 E8 clock break (ntp-unsync.sh) — review-wp6 M4. `break` records what
+# it changed in NTP_STATE (persistent: `set-ntp false` survives a reboot too);
+# `ntp_restore` (ntp-unsync.sh restore, exclusive.sh end, the dead-man) turns
+# NTP back on ALWAYS and undoes the −secs step only when the clock was not
+# stepped since (wall − record = uptime − record, ±5 s); a stepped clock (the
+# stepper's E8 correction) is left to NTP. Idempotent: no record = set-ntp only.
+NTP_STATE=$RS_HOME/ntp-unsync.state
+ntp_restore() {
+  local st=$NTP_STATE secs wall up now nowup drift
+  act timedatectl set-ntp true || echo "  ! timedatectl set-ntp true failed"
+  if [ ! -f "$st" ]; then echo "  ntp: set-ntp true (no ntp-unsync record)"; return 0; fi
+  secs=$(sed -n 's/^secs=//p' "$st"); wall=$(sed -n 's/^wall=//p' "$st"); up=$(sed -n 's/^uptime=//p' "$st")
+  now=$(date +%s); nowup=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
+  case "$secs$wall$up" in ''|*[!0-9]*) echo "  ntp: unreadable record $st — left to NTP" ;;
+  *)
+    if [ "$nowup" -lt "$up" ]; then echo "  ntp: rebooted since the break — clock left to NTP"
+    else
+      drift=$((now - (wall + nowup - up)))
+      if [ "${drift#-}" -le 5 ]; then act date -u -s "@$((now + secs))" >/dev/null; echo "  ntp: clock untouched since the break (drift ${drift}s) → stepped back +${secs}s"
+      else echo "  ntp: clock moved ${drift}s since the break (a step corrected it) → left to NTP"; fi
+    fi ;;
+  esac
+  act rm -f "$st"; note "$st removed (NTP on)"
+  return 0
 }
 # The bench flavour of the agent unit + wrapper: `xorgate-rs update` (E11)
 # reinstalls the SHIPPED unit (with Conflicts=xorgate-agent.service) and the

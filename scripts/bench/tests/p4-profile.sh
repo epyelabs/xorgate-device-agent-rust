@@ -18,10 +18,21 @@ if [ "${1:-}" = -cf ]; then ! grep -q BAD "$2"; else echo "/etc/sudoers: parsed 
 S
 cat > "$STUB/timedatectl" <<'S'
 #!/usr/bin/env bash
+# set-ntp X → $SYSD_STATE/ntp-on; `show -p NTP` reads it (default yes).
 echo "timedatectl $*" >> "$SYSD_STATE/timedatectl.log"
-case "$*" in *NTPSynchronized*) cat "$SYSD_STATE/ntp" 2>/dev/null || echo yes ;; *NTP*) echo yes ;; esac
+case "$*" in
+  "set-ntp "*) echo "${2}" | sed 's/true/yes/;s/false/no/' > "$SYSD_STATE/ntp-on" ;;
+  *NTPSynchronized*) cat "$SYSD_STATE/ntp" 2>/dev/null || echo yes ;;
+  *"-p NTP "*|*"-p NTP") cat "$SYSD_STATE/ntp-on" 2>/dev/null || echo yes ;;
+esac
 S
-chmod +x "$STUB/visudo" "$STUB/timedatectl"
+# date: `-s` is logged, never applied (the container clock is not ours).
+cat > "$STUB/date" <<'S'
+#!/usr/bin/env bash
+for a in "$@"; do [ "$a" = -s ] && { echo "date $*" >> "$SYSD_STATE/date.log"; exit 0; }; done
+exec /bin/date "$@"
+S
+chmod +x "$STUB/visudo" "$STUB/timedatectl" "$STUB/date"
 # A stand-in for the REAL sudo the shim execs for every other command.
 REAL_SUDO_ADDED=0
 if [ ! -e /usr/bin/sudo ]; then printf '#!/bin/sh\necho "realsudo $*"\n' > /usr/bin/sudo; chmod +x /usr/bin/sudo; REAL_SUDO_ADDED=1; fi
@@ -154,6 +165,46 @@ bash "$B/ntp-unsync.sh" break --dry-run >"$LOGS/n3.log" 2>&1; rc=$?
 expect $? "break --dry-run in a window: stop rs → set-ntp false → date -s, nothing run"
 bash "$B/ntp-unsync.sh" break --secs 5000 >"$LOGS/n4.log" 2>&1; rc=$?
 expect $((rc != 2)) "--secs over 900 refused (rc=2)"
+
+echo "== ntp-unsync break records once; end / the dead-man restore NTP (review-wp6 M4)"
+ST=/var/lib/xorgate-rs/ntp-unsync.state
+rm -f "$ST" "$STATE/date.log" "$STATE/ntp-on"; : > "$STATE/timedatectl.log"
+echo inactive > "$STATE/xorgate-agent"; mkdir -p "$(dirname "$X")"; : > "$X"
+bash "$B/ntp-unsync.sh" break >"$LOGS/m1.log" 2>&1; rc=$?
+[ "$rc" = 0 ] && [ -f "$ST" ] && grep -q '^secs=600$' "$ST" && [ "$(grep -c -- ' -s @' "$STATE/date.log")" = 1 ] && grep -q 'set-ntp false' "$STATE/timedatectl.log"
+expect $? "break: set-ntp false, ONE date -s, the original offset recorded"
+cp "$ST" "$LOGS/st.bak"
+bash "$B/ntp-unsync.sh" break >"$LOGS/m2.log" 2>&1; rc=$?
+[ "$rc" = 0 ] && [ "$(grep -c -- ' -s @' "$STATE/date.log")" = 1 ] && grep -q "already broken" "$LOGS/m2.log" && cmp -s "$ST" "$LOGS/st.bak"
+expect $? "a second break never moves the clock again (record unchanged)"
+rm -f "$ST"; echo no > "$STATE/ntp-on"
+bash "$B/ntp-unsync.sh" break >"$LOGS/m3.log" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -q "NTP is already off" "$LOGS/m3.log"; expect $? "break refuses when NTP is off without our record"
+cp "$LOGS/st.bak" "$ST"; : > "$STATE/date.log"; : > "$STATE/timedatectl.log"
+# The record as if the break just happened: wall = now, uptime = now.
+printf 'secs=600\nwall=%s\nuptime=%s\n' "$(/bin/date +%s)" "$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)" > "$ST"
+bash "$B/exclusive.sh" end >"$LOGS/m4.log" 2>&1
+grep -q 'set-ntp true' "$STATE/timedatectl.log" && [ "$(grep -c -- ' -s @' "$STATE/date.log")" = 1 ] && [ ! -e "$ST" ] && [ "$(js_state)" = active ]
+expect $? "exclusive.sh end: set-ntp true, undoes the untouched break (+600 s), record gone, JS back"
+: > "$STATE/date.log"; : > "$STATE/timedatectl.log"
+# A clock stepped since the break (the stepper's E8 correction): wall moved 600 s more than uptime.
+printf 'secs=600\nwall=%s\nuptime=%s\n' "$(( $(/bin/date +%s) - 600 ))" "$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)" > "$ST"
+bash "$B/ntp-unsync.sh" restore --dry-run >/dev/null 2>&1
+bash "$B/exclusive.sh" end >"$LOGS/m5.log" 2>&1
+grep -q 'set-ntp true' "$STATE/timedatectl.log" && [ ! -s "$STATE/date.log" ] && grep -q "a step corrected it" "$LOGS/m5.log"
+expect $? "end after a stepper correction: NTP on, the clock NOT moved"
+: > "$STATE/timedatectl.log"
+bash "$B/exclusive.sh" end >"$LOGS/m6.log" 2>&1
+grep -q 'set-ntp true' "$STATE/timedatectl.log" && grep -q "no ntp-unsync record" "$LOGS/m6.log"
+expect $? "end without a record: still set-ntp true (idempotent)"
+# The dead-man: arm via begin, then fire its script.
+reset_units; : > "$STATE/date.log"; : > "$STATE/timedatectl.log"; rm -f "$X"
+bash "$B/exclusive.sh" begin --deadman-min 95 >"$LOGS/m7.log" 2>&1
+printf 'secs=600\nwall=%s\nuptime=%s\n' "$(/bin/date +%s)" "$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)" > "$ST"
+bash /run/xorgate-rs-window-deadman.sh >"$LOGS/m8.log" 2>&1
+grep -q 'set-ntp true' "$STATE/timedatectl.log" && [ "$(grep -c -- ' -s @' "$STATE/date.log")" = 1 ] && [ ! -e "$ST" ] && [ "$(js_state)" = active ]
+expect $? "dead-man fire: set-ntp true + undo the break, then JS back"
+bash "$B/exclusive.sh" end >/dev/null 2>&1
 rm -f "$X"
 [ "$REAL_SUDO_ADDED" = 1 ] && rm -f /usr/bin/sudo
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"

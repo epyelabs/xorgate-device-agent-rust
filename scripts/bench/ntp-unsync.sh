@@ -14,7 +14,11 @@
 # drop-in present AND xorgate-agent — the JS prod agent — inactive): the JS
 # agent's own stepper would step the clock back, and a skewed clock under the
 # PROD agent breaks its mTLS. --secs is capped at 900 (mTLS tolerates minutes,
-# not days). Restore BEFORE `exclusive.sh end`. Never touches sim7600-lte.
+# not days). Restore BEFORE `exclusive.sh end` — though `end` and the window
+# dead-man now restore too (review-wp6 M4): `break` records what it changed in
+# /var/lib/xorgate-rs/ntp-unsync.state ONCE (a re-run never moves the clock
+# again) and `ntp_restore` (_lib.sh) turns NTP back on and undoes the step
+# unless the clock was stepped since. Never touches sim7600-lte.
 set -euo pipefail
 # shellcheck source=scripts/bench/_lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
@@ -60,6 +64,17 @@ break)
   echo "== 0. preconditions"
   window_open || { echo "REFUSING: break needs an open exclusive window"; exit 1; }
   echo "  ok: exclusive window open, $JS_UNIT stopped"
+  # Idempotent (review-wp6 S1/M4): the original offset is recorded ONCE; a
+  # re-run never moves the clock again.
+  if [ -f "$NTP_STATE" ]; then
+    echo "  = already broken: $(tr '\n' ' ' < "$NTP_STATE") — the clock is NOT moved again (restore first)"
+    clock_report
+    exit 0
+  fi
+  if [ "$(timedatectl show -p NTP --value 2>/dev/null)" = no ]; then
+    echo "REFUSING: NTP is already off and there is no ntp-unsync record ($NTP_STATE) — not ours to break; run 'timedatectl set-ntp true' first"
+    exit 1
+  fi
   clock_report
   echo "== 1. stop $UNIT (its stepper must first tick on the broken clock)"
   act systemctl stop $UNIT
@@ -67,7 +82,11 @@ break)
   act timedatectl set-ntp false
   T=$(( $(date +%s) - SECS ))
   act date -u -s "@$T"
-  record "break: set-ntp false; date -s @$T (-$SECS s)"
+  if [ "$DRY" != 1 ]; then
+    printf 'secs=%s\nwall=%s\nuptime=%s\n' "$SECS" "$(date +%s)" "$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)" > "$NTP_STATE"
+    chmod 0644 "$NTP_STATE"
+  fi
+  record "break: set-ntp false; date -s @$T (-$SECS s); record $NTP_STATE"
   if [ "$DRY" != 1 ]; then
     sleep 1
     [ "$(synced)" = no ] || echo "  WARNING: NTPSynchronized=$(synced) after date -s (want no) — the stepper would disarm on its first tick"
@@ -79,9 +98,9 @@ break)
   echo "  restore with: scripts/bench/ntp-unsync.sh restore   (BEFORE exclusive.sh end)"
   ;;
 restore)
-  echo "== 1. NTP on"
-  act timedatectl set-ntp true
-  record "restore: set-ntp true"
+  echo "== 1. NTP on + undo the recorded break (ntp_restore)"
+  ntp_restore
+  record "restore: ntp_restore"
   if [ "$DRY" != 1 ]; then
     for _ in $(seq 1 120); do [ "$(synced)" = yes ] && break; sleep 1; done
     if [ "$(synced)" != yes ]; then

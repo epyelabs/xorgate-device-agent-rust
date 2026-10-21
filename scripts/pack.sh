@@ -116,8 +116,9 @@ done
 # media/SHA256SUMS (= the JS repo's blobs) — a corrupted/LFS-pointer blob or a
 # missing .so fails the pack instead of the first live view on a device.
 # Phase 4 (WP6, WP3/WP4 hand-offs): the same for the vendored modem/ (WP4,
-# CF62) — required — and system/ (WP3: xorgate-camrotate, xorgate-setclock,
-# the fake-hwclock cron) — verified whenever the repo carries it.
+# CF62) and system/ (WP3: xorgate-camrotate, xorgate-setclock, the
+# fake-hwclock cron) — both required (review-wp6 nit: a missing helper dir
+# fails the pack).
 verify_vendored() { # <dir> <required:1|0>
   local d=$1 req=$2 _sum name
   if [ ! -d "$STAGE/$d" ]; then
@@ -136,7 +137,7 @@ verify_vendored() { # <dir> <required:1|0>
 }
 verify_vendored media 1
 verify_vendored modem 1
-verify_vendored system 0
+verify_vendored system 1
 # Phase 4 (WP4): the remote update rail's unit (the bench bootstrap and every
 # `xorgate-rs update` install it from the tarball).
 grep -qx "systemd/xorgate-updater-rs.service" <<<"$LISTING" || { echo "pack: missing systemd/xorgate-updater-rs.service in $TARBALL" >&2; exit 1; }
