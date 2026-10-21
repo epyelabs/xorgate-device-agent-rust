@@ -21,6 +21,9 @@ PASS=0
 FAIL=0
 E=/run/e2e
 mkdir -p "$E"
+FINISHED=0
+# a case that dies before finish() still leaves its artefacts and a line
+trap '[ $FINISHED = 1 ] || { echo "CASE $CASE: ABORTED (case.sh exited early, rc $?)"; [ -d /out ] && cp -a "$E"/. /out/ 2>/dev/null; }' EXIT
 ok() { echo "  ok   $*"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL $*"; FAIL=$((FAIL + 1)); }
 check() { local d=$1; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
@@ -131,6 +134,28 @@ no_rs_run() { ! pgrep -f '^(/bin/sh )?/opt/xorgate-rs/bin/xorgate-rs run' >/dev/
 rs_pid() { systemctl show -p MainPID --value xorgate-agent-rs; }
 rs_uid() { awk '/^Uid:/ {print $2}' "/proc/$(rs_pid)/status" 2>/dev/null; }
 rs_exe() { readlink "/proc/$(rs_pid)/exe" 2>/dev/null; }
+never_none_enabled() { ! grep -qx 'ENABLED js=disabled rs=\(disabled\)\?' "$E/systemctl.log"; }
+status_head_ok() { # `--status | head -n1` under pipefail, 5×: exit 0 (no SIGPIPE)
+  local _
+  for _ in 1 2 3 4 5; do bash -o pipefail -c "bash '$IRS' --status | head -n1 >/dev/null" || return 1; done
+}
+# power_cycle: what a power cut + boot does — every service dies, then
+# systemd starts what multi-user.target wants (Conflicts= as the shim models).
+power_cycle() {
+  local f pid u
+  for f in /run/e2e/sd/*.pid; do
+    [ -e "$f" ] || continue
+    read -r pid _ <"$f"; kill -9 "$pid" 2>/dev/null
+  done
+  rm -f /run/e2e/sd/*.pid /run/e2e/sd/*.active /run/e2e/sd/*.failed "$E/inject" "$E/crash-at"
+  echo "POWER-CYCLE" >>"$E/systemctl.log"
+  for f in "$WANTS"/*.service; do
+    [ -L "$f" ] || continue
+    u=$(basename "$f"); systemctl start "$u" 2>/dev/null
+  done
+  SIM_TS0=$(systemctl show -p ActiveEnterTimestamp --value sim7600-lte)
+  mv "$E/systemctl.log" "$E/systemctl.precycle.log"; : >"$E/systemctl.log"
+}
 rs_env() { tr '\0' '\n' <"/proc/$(rs_pid)/environ" 2>/dev/null | sed -n "s/^$1=//p"; }
 
 # ---------------------------------------------------------------- expected bytes
@@ -238,6 +263,7 @@ invariants() { # <M0>
   check "no reboot/poweroff/sim7600 restart in install-rs.sh source (G8 grep)" bash -c "! grep -nE '(^|[^-[:alnum:]_])(reboot|poweroff)([^-[:alnum:]_]|\$)|(restart|stop|try-restart)[^#]*sim7600' $IRS | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q ."
 }
 finish() {
+  FINISHED=1
   # artefacts for a post-mortem: run.sh mounts target/convert-e2e/cases/<case> at /out
   if [ -d /out ]; then cp -a "$E"/. /out/ 2>/dev/null; cp -a "$REC_DIR" /out/rec 2>/dev/null; fi
   echo "  --- systemctl calls (after provisioning)"
@@ -367,6 +393,8 @@ convert-happy)
   convert_ok "$E/M0" pi 1 enabled active
   check "G8: only the two agent units enabled/disabled; JS stopped only via Conflicts= or stop" bash -c "! grep -E '^(enable|disable)' $E/systemctl.log | grep -vE '^(enable|disable)( --now)? (xorgate-agent|xorgate-agent-rs)(\\.service)?\$' | grep -q ."
   check "Conflicts= stopped the JS agent when the rs unit started (or an explicit stop)" grep -qE '^(CONFLICT-STOP xorgate-agent\.service|stop xorgate-agent(\.service)?$|disable --now xorgate-agent)' "$E/systemctl.log"
+  check "M2: the enablement hand-over never leaves BOTH agent units disabled (power-cut safe)" never_none_enabled
+  check "--status | head -n1 exits 0 under pipefail (S2)" status_head_ok
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
 convert-twice)
@@ -410,6 +438,7 @@ revert-keep)
   irs --revert
   check "revert exit 0" rc_is 0
   assert_reverted "$E/M0" keep enabled active
+  check "M2: the revert hand-over never leaves BOTH agent units disabled" never_none_enabled
   check "§5.8: revert made no bucket request" [ "$(wc -l <"$E/http.log")" = "$h0" ]
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
@@ -845,6 +874,140 @@ revert-runtime-drift)
   awk '{ n = index($0, " /"); print substr($0, n + 1) "\t" $0 }' "$E/M0x" | LC_ALL=C sort -t$'\t' -k1,1 | cut -f2- >"$E/M0d"
   invariants "$E/M0d" ;;
 # -------------------------------------------------------------------------
+clean-fail-step8-*)
+  # A3(i) CLEAN failure: one step-8 systemctl call fails and the script
+  # takes its own error path → auto-rollback, exit 4, JS enabled + active.
+  provision
+  M "$E/M0"
+  case "$CASE" in
+    *-reload) echo 'fail ^daemon-reload' >"$E/inject" ;;
+    *-enable-rs) echo 'fail ^enable xorgate-agent-rs' >"$E/inject" ;;
+    *-disable-js) echo 'fail ^disable xorgate-agent(\.service)?$' >"$E/inject" ;;
+    *-start-rs) echo 'fail ^start xorgate-agent-rs' >"$E/inject" ;;
+  esac
+  irs
+  check "the injected failure fired" grep -q '^INJECT fail' "$E/systemctl.log"
+  check "exit 4 (step-8 failure → auto-revert)" rc_is 4
+  M "$E/M1"
+  same_rows "I3: JS-owned rows == M0" js_rows "$E/M0" "$E/M1"
+  check "JS enabled + active" units_are xorgate-agent.service enabled/active
+  check "JS worker running" js_running
+  check "rs not enabled, not active" bash -c "[ \"\$(systemctl is-active xorgate-agent-rs)\" != active ] && ! [ -L $WANTS/xorgate-agent-rs.service ]"
+  check "no record left as converted" bash -c "[ ! -e $REC ] || ! grep -qx 'state=converted' $REC"
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+signal-convert-*)
+  # M1: SIGHUP (ssh/LTE drop, relayed by sudo) or SIGTERM in steps 8-9 must
+  # end with JS enabled + active (the abort path runs the keep revert).
+  provision
+  M "$E/M0"
+  sig=${CASE#signal-convert-}; sig=${sig%-*}; at=${CASE##*-}
+  if [ "$at" = 8 ]; then echo "$sig ^enable xorgate-agent-rs" >"$E/inject"
+  else echo "$sig ^is-active xorgate-agent-rs" >"$E/inject"; fi
+  irs
+  check "the SIG${sig^^} was delivered (step $at)" test -e "$E/signalled"
+  check "non-zero exit" bash -c "! grep -qx 0 $E/rc"
+  check "end state: JS enabled + active" units_are xorgate-agent.service enabled/active
+  check "JS worker running" js_running
+  check "rs not enabled, not active" bash -c "[ \"\$(systemctl is-active xorgate-agent-rs)\" != active ] && ! [ -L $WANTS/xorgate-agent-rs.service ]"
+  M "$E/M1"
+  same_rows "I3: JS-owned rows == M0" js_rows "$E/M0" "$E/M1"
+  invariants "$E/M0" ;;
+signal-revert-*)
+  # M1: a revert ignores HUP/INT/TERM and completes.
+  provision
+  M "$E/M0"
+  convert_ok "$E/M0" pi 1 enabled active
+  sig=${CASE#signal-revert-}
+  echo "$sig ^(disable|stop|enable)" >"$E/inject"
+  : >"$E/systemctl.log"
+  irs --revert
+  check "the SIG${sig^^} was delivered mid-revert" test -e "$E/signalled"
+  check "revert completed despite the signal: exit 0" rc_is 0
+  assert_reverted "$E/M0" keep enabled active
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+powercut-convert-[0-9]|powercut-revert-[0-9])
+  # A3(ii) CRASH: a power cut right after the k-th state-changing systemctl
+  # call (kill -9 of the script, no cleanup, then a boot). Assert only:
+  # (a) at least one agent unit is enabled, (b) re-running converges.
+  k=${CASE##*-}
+  provision
+  M "$E/M0"
+  if [ "${CASE#powercut-revert}" != "$CASE" ]; then
+    convert_ok "$E/M0" pi 1 enabled active
+    : >"$E/systemctl.log"; rm -f "$E/sc-count"
+    echo "$k" >"$E/crash-at"
+    irs --revert
+  else
+    rm -f "$E/sc-count"
+    echo "$k" >"$E/crash-at"
+    irs
+  fi
+  if [ -e "$E/crashed" ]; then
+    note "power cut after state-changing call #$k: $(grep '^INJECT crash' "$E/systemctl.log")"
+    check "(a) after the cut at least one agent unit is enabled (M2)" bash -c "[ -L $WANTS/xorgate-agent.service ] || [ -L $WANTS/xorgate-agent-rs.service ]"
+    power_cycle
+    note "after boot: JS $(ise xorgate-agent)/$(isa xorgate-agent), rs $(ise xorgate-agent-rs)/$(isa xorgate-agent-rs)"
+    check "after boot some agent runs" bash -c '[ "$(systemctl is-active xorgate-agent)" = active ] || [ "$(systemctl is-active xorgate-agent-rs)" = active ]'
+  else
+    note "fewer than $k state-changing calls: no cut happened (rc $(cat "$E/rc"))"
+  fi
+  rm -f "$E/crash-at" "$E/sc-count"
+  if [ "${CASE#powercut-revert}" != "$CASE" ]; then
+    # (b) the operator re-runs the revert
+    irs --revert
+    check "(b) re-run --revert converges: exit 0" rc_is 0
+    check "… JS enabled + active" units_are xorgate-agent.service enabled/active
+    check "… rs disabled, not active" bash -c "[ \"\$(systemctl is-active xorgate-agent-rs)\" != active ] && ! [ -L $WANTS/xorgate-agent-rs.service ]"
+    M "$E/M1"
+    same_rows "… I3: JS-owned rows == M0" js_rows "$E/M0" "$E/M1"
+    invariants "$E/M0"
+    finish
+  fi
+  # (b) the operator re-runs the convert
+  irs
+  check "(b) re-run convert converges: exit 0" rc_is 0
+  check "… rs enabled + active, JS disabled + inactive" bash -c '[ "$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)" = enabled/active ] && [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = disabled/inactive ]'
+  check "… record state=converted, JS recorded as enabled + active (record-once)" bash -c "grep -qx state=converted $REC && grep -qx jsEnabled=enabled $REC && grep -qx jsActive=active $REC"
+  M "$E/M1"
+  if diff <(js_rows "$E/M0" | grep -vF " $WANTS/xorgate-agent.service") <(js_rows "$E/M1") >"$E/diff.out"; then ok "… JS-owned rows == M0 minus the JS wants link"; else bad "… JS-owned rows == M0 minus the JS wants link"; sed 's/^/        /' "$E/diff.out"; fi
+  irs --revert --purge
+  check "(b) and a purge then lands on M0: exit 0" rc_is 0
+  assert_reverted "$E/M0" purge enabled active
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+bench-window-rollback)
+  # S1: the bench shape (Rust pre-installed) + a REAL step-6 failure: the
+  # pre-existing unit, wrapper and drop-ins come back byte-exact.
+  provision --js enabled-inactive
+  install -d -m 0755 /opt/xorgate-rs
+  tar --no-same-owner -xzf "$SRV/xorgate-agent-rs-v2.tar.gz" -C /opt/xorgate-rs
+  sed -e 's|^Conflicts=xorgate-agent.service$|# BENCH (scripts/bench/install.sh): Conflicts=xorgate-agent.service stripped — both agents coexist on the bench|' \
+    /opt/xorgate-rs/systemd/xorgate-agent-rs.service >"$RS_UNIT"
+  printf '%s\n' '#!/usr/bin/env bash' '# xorgate-rs CLI wrapper (BENCH flavour, written by scripts/bench/install.sh).' \
+    'exec env XORGATE_HOME="${XORGATE_HOME:-/var/lib/xorgate-rs}" /opt/xorgate-rs/bin/xorgate-rs "$@"' >"$WRAP"
+  chmod 0755 "$WRAP"
+  install -d -m 0755 "$RS_UNIT.d"
+  install -m 0644 /opt/xorgate-rs/systemd/bench/90-bench-dev.conf "$RS_UNIT.d/90-bench-dev.conf"
+  printf '[Service]\nEnvironment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps\n' >"$RS_UNIT.d/95-inputs.conf"
+  install -m 0600 -o pi -g pi /etc/xorgate/agent.env /etc/xorgate/agent-rs-dev.env
+  printf 'not a dir\n' >"$RS_UPD.d"          # the step-6 blocker
+  systemctl daemon-reload
+  systemctl enable xorgate-agent-rs 2>/dev/null
+  systemctl start xorgate-agent-rs
+  pid0=$(rs_pid)
+  M "$E/M0"
+  SIM_TS0=$(systemctl show -p ActiveEnterTimestamp --value sim7600-lte)
+  : >"$E/systemctl.log"
+  irs
+  check "exit 1" rc_is 1
+  M "$E/M1"
+  same_rows "S1: device == M0 outside the record dir (bench unit, wrapper, drop-ins, /opt/xorgate-rs byte-exact)" no_rec_rows "$E/M0" "$E/M1"
+  check "the bench unit is back (no Conflicts= line)" bash -c "! grep -q '^Conflicts=' $RS_UNIT"
+  check "rs still enabled + active, not restarted; JS enabled + inactive" bash -c '[ "$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)" = enabled/active ] && [ "$(systemctl show -p MainPID --value xorgate-agent-rs)" = "$1" ] && [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/inactive ]' _ "$pid0"
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
 bootstrap-oneliner)
   provision
   M "$E/M0"
@@ -918,6 +1081,7 @@ usage-status)
   provision
   M "$E/M0"
   check "--status on a JS device: state=not-converted, exit 0" status_first state=not-converted
+  check "--status | head -n1 exits 0 under pipefail (S2)" status_head_ok
   irs --bogus-flag
   check "unknown flag: exit 2" rc_is 2
   irs -h

@@ -37,6 +37,12 @@ ALL_CASES=(convert-happy convert-twice convert-repair revert-keep revert-purge r
   convert-revert-convert update-after-convert js-pin bad-sha missing-sidecar missing-member
   wrong-arch failed-start failed-start-js-disabled failed-start-js-stopped
   wrapper-path-is-dir rollback-step6 rollback-step6-preexisting
+  clean-fail-step8-reload clean-fail-step8-enable-rs clean-fail-step8-disable-js clean-fail-step8-start-rs
+  signal-convert-hup-8 signal-convert-term-8 signal-convert-hup-9 signal-convert-term-9
+  signal-revert-hup signal-revert-term
+  powercut-convert-1 powercut-convert-2 powercut-convert-3 powercut-convert-4 powercut-convert-5
+  powercut-revert-1 powercut-revert-2 powercut-revert-3 powercut-revert-4 powercut-revert-5
+  bench-window-rollback
   interrupt-1 interrupt-2 interrupt-3 interrupt-4 interrupt-5 interrupt-6 interrupt-7 interrupt-8
   interrupt-1-revert interrupt-2-revert interrupt-3-revert interrupt-4-revert
   interrupt-5-revert interrupt-6-revert interrupt-7-revert interrupt-8-revert
