@@ -1,0 +1,429 @@
+{
+ "source": "Phase 4 gate, gate-offbench/E3-led-cli/e3run3 (TS node dist/cli.js @89b5c64 vs xorgate-rs 08ff720 in the rig, pinctrl shim logs wall ms + argv; SIGINT wall ms logged by the harness)",
+ "finding": "F-E3-1: the TS writes the dark blank twice after SIGINT mid-pattern (9/9); 08ff720 Rust once",
+ "note": "ts/rs08ff720.postSignal = every shim line at or after the SIGINT instant, dtMs relative to it. expectedSpawnedAfterSignal drops a non-blank line at <= +1 ms (a step child spawned before the signal).",
+ "cases": [
+  {
+   "case": "b1",
+   "args": [
+    "blue",
+    "blink-fast"
+   ],
+   "harnessSigintAfterMs": 3023,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 4,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 6,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 2,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "b2",
+   "args": [
+    "blue",
+    "blink-fast"
+   ],
+   "harnessSigintAfterMs": 3046,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 3,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 5,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 2,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "b3",
+   "args": [
+    "blue",
+    "blink-fast"
+   ],
+   "harnessSigintAfterMs": 3069,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 0,
+      "argv": "set 16 op dh"
+     },
+     {
+      "dtMs": 3,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 5,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 2,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "b4",
+   "args": [
+    "blue",
+    "blink-fast"
+   ],
+   "harnessSigintAfterMs": 3092,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 1,
+      "argv": "set 16 op dh"
+     },
+     {
+      "dtMs": 3,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 5,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 2,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "b5",
+   "args": [
+    "blue",
+    "blink-fast"
+   ],
+   "harnessSigintAfterMs": 3115,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 3,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 5,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 2,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "b6",
+   "args": [
+    "blue",
+    "blink-fast"
+   ],
+   "harnessSigintAfterMs": 3138,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 3,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 4,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: blue blink-fast — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 1,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "s1",
+   "args": [
+    "cyan",
+    "blink-slow"
+   ],
+   "harnessSigintAfterMs": 4300,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: cyan blink-slow — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 3,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 5,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: cyan blink-slow — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 2,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "s2",
+   "args": [
+    "cyan",
+    "blink-slow"
+   ],
+   "harnessSigintAfterMs": 4300,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: cyan blink-slow — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 4,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 6,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: cyan blink-slow — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 2,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  },
+  {
+   "case": "s3",
+   "args": [
+    "cyan",
+    "blink-slow"
+   ],
+   "harnessSigintAfterMs": 4300,
+   "ts": {
+    "code": 0,
+    "stdout": [
+     "led: cyan blink-slow — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 4,
+      "argv": "set 12,21,16 op dl"
+     },
+     {
+      "dtMs": 6,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "rs08ff720": {
+    "code": 0,
+    "stdout": [
+     "led: cyan blink-slow — Ctrl-C to stop (goes dark on exit)"
+    ],
+    "stderr": [
+     "[led] rgb-gpio r=GPIO12 g=GPIO21 b=GPIO16 (active high)"
+    ],
+    "postSignal": [
+     {
+      "dtMs": 1,
+      "argv": "set 12,21,16 op dl"
+     }
+    ]
+   },
+   "expectedSpawnedAfterSignal": [
+    "pinctrl set 12,21,16 op dl",
+    "pinctrl set 12,21,16 op dl"
+   ]
+  }
+ ]
+}

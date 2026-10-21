@@ -203,10 +203,20 @@ pub async fn run(rest: &[String], deps: LedCliDeps) -> i32 {
     loop {
         tokio::select! {
             biased;
-            _ = &mut shut => return 0,
+            _ = &mut shut => break,
             _ = &mut body, if !body_done => body_done = true,
         }
     }
+    // F-E3-1 (Phase 4 gate): the TS's trailing blank (or an in-flight
+    // pattern step) has SPAWNED its `pinctrl` child by then — in the same
+    // microtask drain as the shutdown blank — and `process.exit` does not
+    // kill children, so it lands too: a signalled pattern writes the dark
+    // blank TWICE (9/9 real runs). Our exit drops the runtime and
+    // `kill_on_drop` would kill that child, so wait for every write already
+    // started. The body is not polled any further (the TS main flow gets no
+    // further turn of the event loop either).
+    driver.writes_settled().await;
+    0
 }
 
 /// The part of `ledCommand` after init (`led.ts:76-105`).

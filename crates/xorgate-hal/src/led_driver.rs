@@ -30,7 +30,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use xorgate_core::js::number_to_string;
 use xorgate_core::led::{
     led_timeline, parse_busy_pins, validate_pin_map, LedChannels, LedColour, LedPattern, LedPinMap,
@@ -308,6 +308,19 @@ struct Inner {
     log: LedLog,
     probe: LedProbe,
     st: Mutex<State>,
+    /// Writer calls whose future has not finished yet (see
+    /// [`LedDriver::writes_settled`]).
+    in_flight: watch::Sender<usize>,
+}
+
+/// Decrements [`Inner::in_flight`] when a writer task ends — completion,
+/// panic or abort alike.
+struct InFlight(watch::Sender<usize>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
 }
 
 /// `LedDriver` (`led.ts:249-418`): colour + pattern → pins. Cheap to clone
@@ -366,6 +379,7 @@ impl LedDriver {
                     .unwrap_or_else(|| Box::new(|m| tracing::info!("[led] {m}"))),
                 probe,
                 st: Mutex::new(State::default()),
+                in_flight: watch::Sender::new(0),
             }),
         }
     }
@@ -440,6 +454,21 @@ impl LedDriver {
     pub fn blank(&self, quiet: bool) -> BoxFut<'static, ()> {
         self.stop();
         Inner::apply(&self.inner, LedColour::Off, quiet)
+    }
+
+    /// Resolves once every write started so far (its future polled — the
+    /// lazy [`PinWriter`] contract) has finished; at once when none is in
+    /// flight. A `pinctrl` child the TS has already spawned is
+    /// not killed by `process.exit` and still lands; a Rust process exit
+    /// drops the runtime, and `kill_on_drop` would kill it. The CLI's
+    /// shutdown awaits this before it exits (F-E3-1, Phase 4 gate). Bounded
+    /// by the writer's own timeout (`pinctrl`: 2 s). Writes started while it
+    /// waits are waited for too — the caller stops driving the flow first.
+    pub fn writes_settled(&self) -> BoxFut<'static, ()> {
+        let mut rx = self.inner.in_flight.subscribe();
+        Box::pin(async move {
+            let _ = rx.wait_for(|n| *n == 0).await;
+        })
     }
 
     /// `stop()` (`led.ts:324-332`): cancel a running pattern; leaves the LED
@@ -601,7 +630,21 @@ impl Inner {
         }
         let high = if self.map.active_high { lit } else { !lit };
         match catch_unwind(AssertUnwindSafe(|| self.write.write(&pins, high))) {
-            Ok(fut) => Box::pin(async move { tokio::spawn(fut).await.unwrap_or(false) }),
+            Ok(fut) => {
+                let in_flight = self.in_flight.clone();
+                Box::pin(async move {
+                    // Lazy, as before: the write starts (and counts as in
+                    // flight) when this future is first polled (D31).
+                    in_flight.send_modify(|n| *n += 1);
+                    let guard = InFlight(in_flight);
+                    tokio::spawn(async move {
+                        let _guard = guard;
+                        fut.await
+                    })
+                    .await
+                    .unwrap_or(false)
+                })
+            }
             Err(_) => Box::pin(async { false }),
         }
     }

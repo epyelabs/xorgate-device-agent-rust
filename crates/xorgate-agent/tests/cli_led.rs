@@ -276,3 +276,185 @@ fn usage_differs_from_the_ts_only_by_the_binary_name() {
     assert_eq!(rs, q9(ts));
     assert!(!rs.contains("xorgate led"));
 }
+
+// ---------------------------------------------------------------------------
+// F-E3-1 (Phase 4 gate): SIGINT mid-pattern in the REAL process, pinned to
+// the gate's rig trace `fixtures/led_driver/led-cli-sigint-gate.json`
+// (gate-offbench/E3-led-cli/e3run3: TS @89b5c64 vs xorgate-rs 08ff720, 9
+// runs). The fixture above records writer CALLS under fake time, where both
+// sides already made two blank calls; in the real process the TS's second
+// `pinctrl` child (spawned in the same microtask drain as the shutdown
+// blank) outlives `process.exit` and lands, while 08ff720 returned as soon
+// as the shutdown blank landed and the runtime drop killed the second child
+// (`kill_on_drop`). Modelled here: a writer whose "child" starts when the
+// write future is first polled and LANDS only after it ran for a while (2 ms
+// + 1 ms per child already running — the trace's +3/+5 ms stagger), and a
+// process exit = dropping the runtime the moment `run` returns.
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GateFixture {
+    cases: Vec<GateCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GateCase {
+    case: String,
+    args: Vec<String>,
+    harness_sigint_after_ms: u64,
+    ts: GateSide,
+    expected_spawned_after_signal: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct GateSide {
+    code: i32,
+    stdout: Vec<String>,
+    stderr: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct Child {
+    spawned_ms: u64,
+    argv: String,
+    landed: bool,
+}
+
+type Children = Arc<Mutex<Vec<Child>>>;
+
+struct ChildPinctrl {
+    children: Children,
+    running: Arc<std::sync::atomic::AtomicU64>,
+    t0: Instant,
+}
+
+impl PinWriter for ChildPinctrl {
+    fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
+        use std::sync::atomic::Ordering;
+        let argv = format!("pinctrl {}", PinctrlWriter::args(pins, high).join(" "));
+        let (children, running, t0) = (self.children.clone(), self.running.clone(), self.t0);
+        Box::pin(async move {
+            let idx = {
+                let mut c = children.lock().unwrap();
+                c.push(Child {
+                    spawned_ms: ms_since(t0),
+                    argv,
+                    landed: false,
+                });
+                c.len() - 1
+            };
+            let busy = running.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(2 + busy)).await;
+            running.fetch_sub(1, Ordering::SeqCst);
+            children.lock().unwrap()[idx].landed = true;
+            true
+        })
+    }
+}
+
+fn run_gate_case(case: &GateCase) -> (Vec<Line>, i32, Vec<Child>) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let children: Children = Arc::default();
+    let out = Arc::new(Out::default());
+    let code = {
+        let (children, out) = (children.clone(), out.clone());
+        let sig_ms = case.harness_sigint_after_ms;
+        let args = case.args.clone();
+        rt.block_on(async move {
+            let t0 = Instant::now();
+            let calls: Calls = Arc::default();
+            let host = Arc::new(FakeHost {
+                h: HostIn::default(),
+                mock: false,
+                calls,
+                t0,
+            });
+            let writer = Arc::new(ChildPinctrl {
+                children,
+                running: Arc::default(),
+                t0,
+            });
+            run(
+                &args,
+                LedCliDeps {
+                    out,
+                    make_driver: Box::new(move |log| {
+                        let map = LedPinMap::status_led_map();
+                        LedDriver::new(LedDriverOptions {
+                            map: Some(map.clone()),
+                            writer: Some(writer),
+                            probe: Some(Box::new(move || {
+                                let (map, host) = (map.clone(), host.clone());
+                                Box::pin(async move { probe_host_with(&map, host.as_ref()).await })
+                            })),
+                            log: Some(log),
+                        })
+                    }),
+                    service_result: None,
+                    signal: Box::new(move || {
+                        Box::pin(async move {
+                            tokio::time::sleep_until(t0 + Duration::from_millis(sig_ms)).await
+                        })
+                    }),
+                },
+            )
+            .await
+        })
+    };
+    // Process exit: every task still running (a child not yet landed) dies.
+    drop(rt);
+    let lines = out.0.lock().unwrap().clone();
+    let children = children.lock().unwrap().clone();
+    (lines, code, children)
+}
+
+#[test]
+fn sigint_mid_pattern_lands_the_blank_twice_like_the_ts_gate_trace() {
+    let p = format!(
+        "{}/../../fixtures/led_driver/led-cli-sigint-gate.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let fx: GateFixture = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+    assert_eq!(fx.cases.len(), 9);
+    for case in &fx.cases {
+        let (lines, code, children) = run_gate_case(case);
+        let sig = case.harness_sigint_after_ms;
+        let want_lines: Vec<Line> = case
+            .ts
+            .stdout
+            .iter()
+            .map(|t| Line { fd: 1, text: q9(t) })
+            .chain(case.ts.stderr.iter().map(|t| Line {
+                fd: 2,
+                text: t.clone(),
+            }))
+            .collect();
+        let mut got_lines = lines.clone();
+        got_lines.sort_by_key(|l| l.fd);
+        assert_eq!(got_lines, want_lines, "{}: stdout/stderr", case.case);
+        assert_eq!(code, case.ts.code, "{}: exit code", case.case);
+        // Nothing the process started is killed by its exit ...
+        let killed: Vec<&Child> = children.iter().filter(|c| !c.landed).collect();
+        assert!(
+            killed.is_empty(),
+            "{}: killed children {killed:?}",
+            case.case
+        );
+        // ... and what it started after the signal is exactly the TS's.
+        let after: Vec<String> = children
+            .iter()
+            .filter(|c| c.spawned_ms >= sig)
+            .map(|c| c.argv.clone())
+            .collect();
+        assert_eq!(
+            after, case.expected_spawned_after_signal,
+            "{}: pinctrl children after SIGINT at {sig} ms",
+            case.case
+        );
+    }
+}
