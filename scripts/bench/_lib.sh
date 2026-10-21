@@ -267,6 +267,14 @@ KVS_MANIFEST=$KVS_EXCLUSIVE
 ENV
 }
 reload_restart_rs() {
+  # Phase 5 (I6, CF65): a SHIPPED (converted) unit — install-rs.sh installs it
+  # byte-equal, Conflicts=xorgate-agent.service included — must never be
+  # (re)started on the bench: starting it stops the PROD JS agent.
+  if rs_unit_converted; then
+    echo "  $RS_CONVERTED_REFUSAL"
+    echo "  REFUSING to restart $UNIT: bench flavour lost (above) — run scripts/bench/install.sh <tarball>, then retry"
+    return 1
+  fi
   act systemctl daemon-reload
   # Phase 4 (WP6): an `xorgate-rs update` (E11) reinstalls the SHIPPED unit,
   # whose Conflicts=xorgate-agent.service would stop the JS prod agent on this
@@ -547,10 +555,18 @@ gate_seam_off() {
 # transient timer; if `exclusive.sh end` never runs (gate runner died, usage
 # cut, laptop asleep) it fires after DEADMAN_SECS and gives the PROD JS agent
 # back: stops the Rust agent + window helpers, drops the runtime drop-ins and
-# the exclusive env, daemon-reload, start + verify xorgate-agent. Idempotent
+# the exclusive env, daemon-reload, reverts an install-rs.sh conversion still
+# in place (Phase 5), enable (if disabled) + start + verify xorgate-agent. Idempotent
 # (every step tolerates "already done"). `end` cancels it; a reboot clears it.
 DEADMAN_UNIT=xorgate-rs-window-deadman
 DEADMAN_SCRIPT=/run/xorgate-rs-window-deadman.sh
+# Phase 5 (review-wp3 S2): how long a fired dead-man waits for a running
+# install-rs.sh (XORGATE_TEST_DEADMAN_LOCK_SECS is test-only).
+DEADMAN_LOCK_SECS=${XORGATE_TEST_DEADMAN_LOCK_SECS:-300}
+# …and how long its --revert may run: WP1's revert IGNORES SIGTERM (review-wp1
+# M1), so the bound is `timeout -k 10 <secs>` (SIGKILL 10 s after the TERM).
+# XORGATE_TEST_DEADMAN_REVERT_SECS is test-only.
+DEADMAN_REVERT_SECS=${XORGATE_TEST_DEADMAN_REVERT_SECS:-300}
 deadman_state() { systemctl is-active "$DEADMAN_UNIT.timer" 2>/dev/null || true; }
 # deadman_arm <seconds> <window dir>: (re)arms; an armed timer is replaced.
 deadman_arm() {
@@ -566,24 +582,50 @@ say "exclusive window never ended — restoring the PROD JS agent ($JS_UNIT)"
 for u in $UNIT $GATE_UNIT $SOAK_UNIT; do systemctl stop "\$u" 2>/dev/null || true; done
 rm -f $EXCLUSIVE_DROPIN $TAPE_DROPIN $GATE_DROPIN $EXCLUSIVE_ENV
 systemctl daemon-reload || true
-# Phase 4 (review-wp6 M4): NTP back on + undo an ntp-unsync.sh break.
 act() { "\$@"; }
 note() { say "\$1"; }
+DRY=0
+JS_UNIT=$JS_UNIT
+# Phase 5 (I6): a conversion still in place (install-rs.sh record state
+# converted|converting) is reverted FIRST — keep mode: Rust disabled + stopped,
+# the JS enablement restored from the record, JS started. Bounded; a failed or
+# missing revert never blocks the enable + start below.
+# review-wp3 S2: a conversion still RUNNING holds install-rs.sh's lock (its
+# --revert would be refused, and its step 8 would later stop JS again): wait
+# for it, bounded, then revert whatever state it left.
+RS_INSTALL_LOCK=$RS_INSTALL_LOCK
+$(declare -f convert_lock_held)
+w=0
+while convert_lock_held && [ "\$w" -lt $DEADMAN_LOCK_SECS ]; do
+  [ "\$w" = 0 ] && say "install-rs.sh is running (lock $RS_INSTALL_LOCK) — waiting <= ${DEADMAN_LOCK_SECS}s for it"
+  sleep 1; w=\$((w + 1))
+done
+if convert_lock_held; then say "install-rs.sh still holds $RS_INSTALL_LOCK after ${DEADMAN_LOCK_SECS}s — reverting/restoring anyway"
+elif [ "\$w" -gt 0 ]; then say "install-rs.sh finished after \${w}s"; fi
+REC=$RS_INSTALL_RECORD
+st=\$(sed -n 's/^state=//p' "\$REC" 2>/dev/null | head -n1)
+case "\$st" in
+  converted|converting)
+    if [ -f $RS_INSTALLER ]; then
+      say "conversion record state=\$st — running $RS_INSTALLER --revert"
+      if timeout -k 10 $DEADMAN_REVERT_SECS bash $RS_INSTALLER --revert </dev/null; then say "revert done"
+      else rc=\$?; say "$RS_INSTALLER --revert exited \$rc (124/137 = timed out/killed after ${DEADMAN_REVERT_SECS}s) — continuing with enable + start of $JS_UNIT"; fi
+    else
+      say "conversion record state=\$st but $RS_INSTALLER is missing — cannot revert; continuing with enable + start of $JS_UNIT"
+    fi ;;
+esac
+# Phase 4 (review-wp6 M4): NTP back on + undo an ntp-unsync.sh break.
 NTP_STATE=$NTP_STATE
 $(declare -f ntp_restore)
 ntp_restore
-for i in 1 2 3; do
-  systemctl start $JS_UNIT || true
-  for s in 1 2 3 4 5 6 7 8 9 10; do
-    if [ "\$(systemctl is-active $JS_UNIT 2>/dev/null)" = active ]; then
-      say "$JS_UNIT active"
-      date -u +%Y-%m-%dT%H:%M:%SZ > "$win/deadman-fired" 2>/dev/null || true
-      exit 0
-    fi
-    sleep 1
-  done
-done
-say "$JS_UNIT FAILED TO START — the PROD agent is DOWN: sudo systemctl start $JS_UNIT"
+# Phase 5 (CF64): enable (if is-enabled != enabled) + start + verify.
+$(declare -f start_js_verified enable_start_js_verified)
+if enable_start_js_verified; then
+  say "$JS_UNIT active + \$(systemctl is-enabled $JS_UNIT 2>/dev/null || true)"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$win/deadman-fired" 2>/dev/null || true
+  exit 0
+fi
+say "$JS_UNIT FAILED TO START — the PROD agent is DOWN: sudo systemctl enable --now $JS_UNIT"
 exit 1
 SCRIPT
   act systemd-run --unit="$DEADMAN_UNIT" --on-active="${secs}s" --timer-property=AccuracySec=1s \
@@ -789,6 +831,90 @@ bench_flavour_ok() {
     echo "  UNSAFE: /usr/local/bin/xorgate-rs is not the bench wrapper (XORGATE_HOME default /var/lib/xorgate-rs) — re-run scripts/bench/install.sh <tarball>"; ok=1
   fi
   return $ok
+}
+# ---------------------------------------------------------------------------
+# Phase 5 (WP3) additions — a CONVERSION window (install-rs.sh, plan
+# phase-5-distribution.md §12, I6, CF64, CF65). Appended only.
+RS_INSTALL_RECORD=/var/lib/xorgate-rs-install/record
+RS_INSTALLER=/opt/xorgate-rs/install-rs.sh
+RS_CONVERTED_REFUSAL="shipped (converted) unit installed — run scripts/bench/install.sh first; NOT starting $UNIT (it would stop the PROD JS agent)"
+# True when the installed Rust unit — or any of its drop-ins (persistent or
+# runtime) — carries a Conflicts= naming the JS unit: the SHIPPED unit that
+# install-rs.sh (or `xorgate-rs update`) installs, not the bench flavour
+# (install.sh strips the line). A superset of I6's `^Conflicts=xorgate-agent.service$`:
+# any Conflicts= list naming xorgate-agent.service stops the PROD agent.
+rs_unit_converted() {
+  local f
+  for f in "/etc/systemd/system/$UNIT.service" "$DROPIN_DIR"/*.conf "$RUN_DROPIN_DIR"/*.conf; do
+    [ -f "$f" ] || continue
+    if grep -Eq "^[[:space:]]*Conflicts[[:space:]]*=[[:space:]]*(.*[[:space:]])?$JS_UNIT\.service([[:space:]]|\$)" "$f"; then return 0; fi
+  done
+  return 1
+}
+# The conversion record's state (install-rs.sh I2): converted|converting|…;
+# "none" only when there is provably no record (no record dir, or a readable
+# dir without `record`: never converted, or reverted = record.reverted-<ts>);
+# "unknown" when the dir/record cannot be read or the record has no state=
+# line. Callers treat "unknown" like "converted" (fail closed; review-wp3 M1/X1).
+conversion_state() {
+  local d st=""
+  d=$(dirname "$RS_INSTALL_RECORD")
+  if [ ! -e "$d" ]; then echo none; return 0; fi
+  if [ ! -r "$d" ] || [ ! -x "$d" ]; then echo unknown; return 0; fi
+  if [ ! -e "$RS_INSTALL_RECORD" ]; then echo none; return 0; fi
+  if [ ! -r "$RS_INSTALL_RECORD" ]; then echo unknown; return 0; fi
+  st=$(sed -n 's/^state=//p' "$RS_INSTALL_RECORD" 2>/dev/null | head -n1)
+  echo "${st:-unknown}"
+}
+# True while a conversion may be in place: record state converted|converting|
+# unknown, or the shipped (Conflicts=) unit installed.
+conversion_in_place() {
+  case "$(conversion_state)" in converted|converting|unknown) return 0 ;; esac
+  rs_unit_converted
+}
+# install-rs.sh's run lock (WP1: mkdir lock dir + pid file). True while it is
+# HELD: the dir exists and its pid file is missing/empty (being written) or
+# names a live pid. Only a lock whose pid is provably dead is stale.
+RS_INSTALL_LOCK=/run/xorgate-rs-install.lock
+convert_lock_held() {
+  local pid
+  [ -d "$RS_INSTALL_LOCK" ] || return 1
+  pid=$(cat "$RS_INSTALL_LOCK/pid" 2>/dev/null || true)
+  [ -n "$pid" ] || return 0
+  kill -0 "$pid" 2>/dev/null
+}
+# Start the PROD JS agent and verify it is active. Never aborts the script
+# (set -e safe): returns 1 after ~30 s of retries so the caller can shout.
+# (Moved here from exclusive.sh in Phase 5 so the dead-man embeds the same body.)
+start_js_verified() {
+  if [ "$DRY" = 1 ]; then echo "  [dry-run] would: systemctl start $JS_UNIT (+ verify active)"; return 0; fi
+  local i
+  for i in 1 2 3; do
+    systemctl start "$JS_UNIT" || true
+    for _ in $(seq 1 10); do
+      [ "$(systemctl is-active "$JS_UNIT" || true)" = active ] && { echo "  = $JS_UNIT active"; return 0; }
+      sleep 1
+    done
+  done
+  echo "!!!! $JS_UNIT FAILED TO START — the PROD agent is DOWN; fix by hand: sudo systemctl start $JS_UNIT" >&2
+  return 1
+}
+# CF64 (I6): after a conversion the JS unit is DISABLED; giving PROD back means
+# enable (only if `is-enabled` != enabled) + start + verify. An enable failure
+# (masked, …) is reported and the start is still attempted. set -e safe.
+enable_start_js_verified() {
+  local en
+  en=$(systemctl is-enabled "$JS_UNIT" 2>/dev/null || true)
+  if [ "$en" != enabled ]; then
+    if [ "$DRY" = 1 ]; then
+      echo "  [dry-run] would: systemctl enable $JS_UNIT (is-enabled=${en:-unknown})"
+    elif systemctl enable "$JS_UNIT"; then
+      note "$JS_UNIT enabled (was ${en:-unknown})"
+    else
+      echo "!!!! systemctl enable $JS_UNIT FAILED (is-enabled=${en:-unknown}) — starting it anyway; fix by hand: sudo systemctl enable $JS_UNIT" >&2
+    fi
+  fi
+  start_js_verified
 }
 LIB
 }

@@ -27,5 +27,7 @@ if command -v shellcheck >/dev/null; then
   # SC2034: the shared constants block is used by some bodies only.
   shellcheck -s bash -S warning -e SC2034 "$D"/*.sh >"$LOGS/sc-remote.log" 2>&1 && pass "shellcheck -S warning (remote bodies: $(ls "$D" | wc -l))" || { failc "shellcheck remote bodies:"; cat "$LOGS/sc-remote.log"; }
 fi
+# Phase 5 WP3: the dist scripts + their test (bash -n + shellcheck -x).
+for f in scripts/dist-manifest.sh scripts/dist-check.sh scripts/dist-guard.sh scripts/tests/dist.sh; do bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "$f"; } >"$LOGS/sc-dist.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-dist.log"; }; done
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail
