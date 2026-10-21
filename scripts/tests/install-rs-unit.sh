@@ -54,6 +54,8 @@ start() {
   touch "$S/active/$1"
 }
 act() {
+# STUB_FAIL="<verb> <unit>" makes that one call fail (a step-8 failure).
+if [ -n "${STUB_FAIL:-}" ] && [ "$STUB_FAIL" = "$verb $u" ]; then echo "stub: simulated $verb failure" >&2; return 1; fi
 case $verb in
   daemon-reload) return 0 ;;
   is-enabled)
@@ -417,6 +419,30 @@ grep -q '^f 0600 ' /var/lib/xorgate-rs-install/pre.manifest && grep -q '^d 0700 
 # A pre.manifest from the older 3-digit emitter still self-checks clean.
 sed -i -E 's/^([fdl]) 0([0-7]{3}) /\1 \2 /' /var/lib/xorgate-rs-install/pre.manifest
 run "$O" --revert; expect $? 0 "revert against a 3-digit pre.manifest"; has "$O" "matches the pre-conversion record: yes" "  ... matches"
+
+echo "== W1/W2 (footprint): no temp file or dir is left in /tmp on any exit path"
+tmpls() { find /tmp -mindepth 1 -maxdepth 1 ! -name irs-unit -printf '%f\n' | sort; }
+rm -rf /tmp/xg-install-rs-* /tmp/install-rs.* /tmp/tmp.*; TMP0=$(tmpls)
+noleak() { local now; now=$(tmpls); if [ "$now" = "$TMP0" ]; then pass "  ... /tmp clean after $1"; else failc "  ... /tmp leaks after $1: $(comm -13 <(echo "$TMP0") <(echo "$now") | tr '\n' ' ')"; fi; }
+provision pi; run "$O" -y --tarball "$GOOD"; expect $? 0 "convert"; noleak "a successful convert"
+run "$O" -y --tarball "$GOOD"; expect $? 0 "re-run"; noleak "a re-run"
+run "$O" --revert; expect $? 0 "revert"; noleak "a keep revert"
+run "$O" -y --tarball "$GOOD"; run "$O" --revert --purge; expect $? 0 "purge"; noleak "a purge (re-exec copy included)"
+run "$O" --status > /dev/null; noleak "--status"
+provision pi; run "$O" -y --tarball "$T/badsum.tar.gz"; expect $? 1 "bad sha"; noleak "a step-2 failure"
+provision pi; run "$O" -y --tarball "$T/dist/xorgate-agent-rs-runfails.tar.gz"; expect $? 4 "failed start (W1)"; noleak "the exit-4 auto-revert (W1)"
+provision pi; STUB_FAIL="enable xorgate-agent-rs" run "$O" -y --tarball "$GOOD"; expect $? 4 "step-8 enable failure (W1)"; noleak "a step-8 failure (W1)"
+provision pi
+bash "$INSTALL_RS" -y --tarball "$T/dist/xorgate-agent-rs-noconflict.tar.gz" > "$O" 2>&1 < /dev/null & pid=$!
+for _ in $(seq 1 100); do grep -q '== 9. verify' "$O" && break; sleep 0.2; done
+kill -TERM "$pid"; wait "$pid"; expect $? 4 "SIGTERM at step 9 (W1)"; noleak "a signal at step 9 (W1)"
+provision pi; FAIL_INSTALL_DEST=/usr/local/bin/xorgate-rs run "$O" -y --tarball "$GOOD"; expect $? 1 "put_body write failure at the wrapper (W2)"
+noleak "a put_body write failure (W2)"
+provision pi; FAIL_INSTALL_DEST=/etc/systemd/system/xorgate-updater-rs.service.d/10-dist.conf run "$O" -y --tarball "$GOOD"; expect $? 1 "put_body write failure at 10-dist.conf (W2)"
+noleak "a put_body write failure after files were backed up (W2)"
+provision pi; XORGATE_RS_CONVERT_FAIL_AT=5 run "$O" -y --tarball "$GOOD"; expect $? 9 "the test crash knob"
+[ -n "$(comm -13 <(echo "$TMP0") <(tmpls))" ]; expect $? 0 "  ... the crash knob (only) leaves its scratch dir, by design"
+rm -rf /tmp/xg-install-rs-*
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail
