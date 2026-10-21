@@ -76,7 +76,7 @@ if [ -f "$DOCS_MD" ]; then cp "$DOCS_MD" "$WORK/in/convert.md"; echo "docs: $DOC
 BODIES_JSON=${BODIES_JSON:-$REPO/fixtures/install_rs/bodies.json}
 if [ -f "$BODIES_JSON" ]; then cp "$BODIES_JSON" "$WORK/in/bodies.json"; echo "golden: $BODIES_JSON"; else echo "golden: none"; fi
 X86="$WORK/x86_64-true"
-if [ ! -s "$X86" ]; then wait_slot; docker run --rm --platform linux/amd64 debian:bookworm cat /bin/true >"$X86"; fi
+if [ ! -s "$X86" ]; then wait_slot; docker run --rm --label xorgate.agent=p5-e2e --platform linux/amd64 debian:bookworm cat /bin/true >"$X86"; fi
 cp "$X86" "$WORK/in/x86_64-true"
 
 echo "== 2. dist tarballs v1 + v2 (scripts/pack.sh --bin \$E2E_BIN)"
@@ -94,7 +94,7 @@ docker image prune -f >/dev/null
 echo "== 4. bucket"
 rm -rf "$WORK/bucket" && mkdir -p "$WORK/bucket"
 wait_slot
-docker run --rm --platform linux/arm64 -v "$WORK/in:/in:ro" -v "$WORK/bucket:/bucket" \
+docker run --rm --label xorgate.agent=p5-e2e --platform linux/arm64 -v "$WORK/in:/in:ro" -v "$WORK/bucket:/bucket" \
   -v "$HERE:/e2e:ro" "$IMAGE" /e2e/prep-bucket.sh
 
 echo "== 5. cases"
@@ -104,7 +104,7 @@ failed=()
 for c in "${CASES[@]}"; do
   wait_slot
   rm -rf "$WORK/cases/$c" && mkdir -p "$WORK/cases/$c"
-  if docker run --rm --init --cap-add SYS_PTRACE --platform linux/arm64 -v "$WORK/cases/$c:/out" \
+  if docker run --rm --label xorgate.agent=p5-e2e --init --cap-add SYS_PTRACE --platform linux/arm64 -v "$WORK/cases/$c:/out" \
     -v "$WORK/bucket:/bucket:ro" -v "$HERE:/e2e:ro" -v "$WORK/in:/in:ro" \
     -v "$REPO/fixtures:/fixtures:ro" "$IMAGE" /e2e/case.sh "$c"; then
     pass=$((pass + 1))
