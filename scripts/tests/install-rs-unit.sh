@@ -201,11 +201,15 @@ M1=$(snap)
 run "$O" -y --tarball "$GOOD"; expect $? 0 "re-run"
 grep -q '^\[install-rs\] already converted (.*, good); install verified, changed (0). change the build with: sudo systemctl start xorgate-updater-rs$' "$O"; expect $? 0 "re-run: I1 line with changed (0)"
 [ "$(snap)" = "$M1" ]; expect $? 0 "re-run: device byte-identical"
-run "$O" --revert; expect $? 0 "revert (keep)"
+# WP3 hand-off: the dead-man runs --revert with stdin from /dev/null and no -y;
+# it must never prompt. A stdin that stays open (a pipe nobody writes) would
+# hang a prompt: bound it.
+timeout 60 bash "$INSTALL_RS" --revert > "$O" 2>&1 < <(sleep 120); expect $? 0 "revert (keep), stdin an open pipe, no -y: no prompt"
+grep -qi '\[y/N\]' "$O"; [ $? = 1 ]; expect $? 0 "revert printed no confirmation question"
 has "$O" "[install-rs] reverted: xorgate-agent enabled + active; xorgate-agent-rs disabled (files kept). JS install matches the pre-conversion record: yes" "I1 revert final line"
 ls /var/lib/xorgate-rs-install/record.reverted-* >/dev/null 2>&1 && [ ! -e /var/lib/xorgate-rs-install/record ]; expect $? 0 "record renamed record.reverted-<ts>"
 run "$O" --status; [ "$(head -n1 "$O")" = state=reverted ]; expect $? 0 "--status: state=reverted"
-run "$O" --revert; expect $? 0 "revert twice: no-op"
+run "$O" --revert; expect $? 0 "revert twice: no-op (stdin /dev/null, no -y)"
 
 echo "== re-convert after keep revert → --revert --purge == M0"
 run "$O" -y --tarball "$GOOD"; expect $? 0 "re-convert"; has "$O" "rsPreexisting=no inherited" "inherits the earlier record"

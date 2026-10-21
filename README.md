@@ -28,6 +28,30 @@ Nothing else of the agent is ported yet.
 
 The two agents never share an IoT identity (a duplicate clientId kicks the other and fires its LWT).
 
+## Install
+
+A device is provisioned the standard way (JS agent) and then **converted** with
+`scripts/install-rs.sh`, which ships at the root of every tarball (`/opt/xorgate-rs/install-rs.sh`)
+and as the bucket key `install-rs.sh` + `install-rs.sh.sha256`. The full runbook is
+[`docs/convert.md`](docs/convert.md): prerequisites, offline `--tarball`, revert, updates, exit
+codes, troubleshooting.
+
+```
+# convert (on the device, as the provisioning user): fetch, verify, run
+B=$(sudo sed -n 's/^DEVICE_DIST_BUCKET_URL=//p' /etc/xorgate/agent.env); B=${B%/}
+curl -fsSLO "$B/install-rs.sh" -O "$B/install-rs.sh.sha256" && sha256sum -c install-rs.sh.sha256 && sudo bash install-rs.sh
+
+sudo /opt/xorgate-rs/install-rs.sh --status            # state=converted|converting|reverted|not-converted
+sudo systemctl start xorgate-updater-rs                # update to xorgate-agent-rs-latest (what the cloud `update` does)
+sudo /opt/xorgate-rs/install-rs.sh --revert            # back to the JS agent; Rust files kept, inert
+sudo /opt/xorgate-rs/install-rs.sh --revert --purge    # ... and delete everything the conversion installed
+```
+
+The conversion writes only Rust-owned paths (`/opt/xorgate-rs`, `/usr/local/bin/xorgate-rs`, the
+`-rs` units and drop-ins, sudoers `024`, the record in `/var/lib/xorgate-rs-install`). It disables
+the JS unit and starts the Rust one, whose `Conflicts=` stops the JS agent. `/etc/xorgate`,
+`/var/lib/xorgate`, the JS install and the modem daemon are untouched.
+
 ## Layout
 
 ```

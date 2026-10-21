@@ -151,6 +151,15 @@ detail() { # <stderr file> <rc>
   t=${t#"${t%%[![:space:]]*}"}; t=${t%"${t##*[![:space:]]}"}
   if [ -n "$t" ]; then printf '%s' "$t"; else printf 'exit %s' "$2"; fi
 }
+# sctl <args…>: systemctl with its output kept off the operator stream (every
+# line carries the prefix); SCTL_ERR = its output as one line, for a message.
+SCTL_ERR=""
+sctl() {
+  local o rc=0
+  o=$(timeout 100 systemctl "$@" 2>&1) || rc=$?
+  o=$(printf '%s' "$o" | tr -s '\n\t' '  '); SCTL_ERR=${o%" "}
+  return "$rc"
+}
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | first_line; }
 
 MODE=none
@@ -692,23 +701,23 @@ convert_main() {
   # ---- step 8: hand over the identity (§4: JS stopped by Conflicts=, disabled) ----
   PHASE=start
   say "== 8. systemctl"
-  systemctl daemon-reload || abort_convert "systemctl daemon-reload failed"
+  sctl daemon-reload || abort_convert "systemctl daemon-reload failed: $SCTL_ERR"
   if [ "$(unit_enabled "$JS_SVC")" = enabled ]; then
-    systemctl disable "$JS_SVC" >/dev/null 2>&1 || abort_convert "systemctl disable $JS_SVC failed"
+    sctl disable "$JS_SVC" || abort_convert "systemctl disable $JS_SVC failed: $SCTL_ERR"
     note "$JS_SVC disabled"
   fi
   if [ "$(unit_enabled "$RS_SVC")" != enabled ]; then
     if [ ! -e "$WANTS/$RS_SVC.service" ] && [ ! -L "$WANTS/$RS_SVC.service" ]; then created "$WANTS/$RS_SVC.service"; fi
-    systemctl enable "$RS_SVC" >/dev/null 2>&1 || abort_convert "systemctl enable $RS_SVC failed"
+    sctl enable "$RS_SVC" || abort_convert "systemctl enable $RS_SVC failed: $SCTL_ERR"
     note "$RS_SVC enabled"
   fi
   if [ "$(unit_active "$RS_SVC")" = active ]; then
     if [ "$NEED_RESTART" = 1 ]; then
-      timeout 100 systemctl restart "$RS_SVC" || abort_convert "systemctl restart $RS_SVC failed"
+      sctl restart "$RS_SVC" || abort_convert "systemctl restart $RS_SVC failed: $SCTL_ERR"
       note "$RS_SVC restarted (new build or unit)"
     fi
   else
-    timeout 100 systemctl start "$RS_SVC" || abort_convert "systemctl start $RS_SVC failed"
+    sctl start "$RS_SVC" || abort_convert "systemctl start $RS_SVC failed: $SCTL_ERR"
     note "$RS_SVC started"
   fi
   maybe_fail_at 8
@@ -766,12 +775,12 @@ revert_main() {
   if [ "$already" = 1 ]; then say "already reverted ($(basename -- "$recf")); the JS agent is left as it is"
   else say "== reverting the conversion started ${R[startedAt]} (state=${R[state]})"; fi
   if [ "$(unit_enabled "$RS_SVC")" = enabled ]; then
-    systemctl disable "$RS_SVC" >/dev/null 2>&1 || say "  ! systemctl disable $RS_SVC failed"
+    sctl disable "$RS_SVC" || say "  ! systemctl disable $RS_SVC failed: $SCTL_ERR"
     note "$RS_SVC disabled"
   fi
   case $(unit_active "$RS_SVC") in
     inactive | failed | unknown | "") ;;
-    *) systemctl stop "$RS_SVC" >/dev/null 2>&1 || say "  ! systemctl stop $RS_SVC failed"; note "$RS_SVC stopped" ;;
+    *) sctl stop "$RS_SVC" || say "  ! systemctl stop $RS_SVC failed: $SCTL_ERR"; note "$RS_SVC stopped" ;;
   esac
   if [ -e "$STAGING" ]; then rm -rf "$STAGING"; note "$STAGING (an incomplete staging) removed"; fi
 
@@ -781,12 +790,12 @@ revert_main() {
     case ${R[jsEnabled]} in
       enabled)
         if [ "$en" != enabled ]; then
-          systemctl enable "$JS_SVC" >/dev/null 2>&1 || say "  ! systemctl enable $JS_SVC failed"
+          sctl enable "$JS_SVC" || say "  ! systemctl enable $JS_SVC failed: $SCTL_ERR"
           note "$JS_SVC enabled (as recorded)"
         fi ;;
       disabled)
         if [ "$en" = enabled ]; then
-          systemctl disable "$JS_SVC" >/dev/null 2>&1 || say "  ! systemctl disable $JS_SVC failed"
+          sctl disable "$JS_SVC" || say "  ! systemctl disable $JS_SVC failed: $SCTL_ERR"
           note "$JS_SVC disabled (as recorded)"
         fi ;;
       *) say "  = recorded jsEnabled='${R[jsEnabled]}': enablement left as it is ($en)" ;;
@@ -794,7 +803,7 @@ revert_main() {
     # 3. JS started iff it was enabled OR active (§4: an enabled JS agent is meant to run).
     if [ "${R[jsEnabled]}" = enabled ] || [ "${R[jsActive]}" = active ]; then
       if [ "$(unit_active "$JS_SVC")" != active ]; then
-        timeout 100 systemctl start "$JS_SVC" || say "  ! systemctl start $JS_SVC failed"
+        sctl start "$JS_SVC" || say "  ! systemctl start $JS_SVC failed: $SCTL_ERR"
         note "$JS_SVC started"
       fi
     fi
@@ -831,7 +840,7 @@ revert_main() {
         done
       fi
     done
-    systemctl daemon-reload || say "  ! systemctl daemon-reload failed"
+    sctl daemon-reload || say "  ! systemctl daemon-reload failed: $SCTL_ERR"
   fi
 
   # 5. self-check against pre.manifest: the JS-owned rows (keep), or every
