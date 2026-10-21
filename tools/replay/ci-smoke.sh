@@ -89,6 +89,10 @@ keep_run() {
   (cd "$OUT" && find . -maxdepth 2 \( -name '*.md' -o -name '*.json' -o -name '*.ndjson' -o -name '*.log' \) \
      ! -name 'mqtt.ndjson' -print0 | xargs -0 -I{} cp --parents {} "$d/") 2>/dev/null || true
   [ -f "$OUT/a/mqtt.ndjson" ] && [ "$MODE" = smoke ] && cp --parents "$OUT"/*/mqtt.ndjson "$d/" 2>/dev/null
+  # The agents' own tapes (input read instants) + the final/s3 trees' small
+  # files (telemetry segments, sidecars; no mp4): enough to re-run the diff.
+  (cd "$OUT" && { ls -d */agent-tape.ndjson.gz 2>/dev/null; find */final */s3 -type f -size -2M ! -name '*.mp4' 2>/dev/null; } \
+     | while read -r f; do cp --parents "$f" "$d/"; done) 2>/dev/null || true
   echo "ci-smoke: run kept in $d" >&2
 }
 trap 'rc=$?; kill $MQ 2>/dev/null || true; keep_run $rc' EXIT

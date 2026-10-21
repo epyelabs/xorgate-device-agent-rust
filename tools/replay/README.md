@@ -547,6 +547,10 @@ Rust side's `xorgate-rs` → `xorgate`, Q9 local hints, then exact) and `sms`
 `T8/cli-tui-no-tty` (the TUI is compared on TestBackend frames + bench E15).
 
 `ci-smoke.sh` keeps `$OUT`'s diff + small logs in `$CI_SMOKE_KEEP` on every
-exit (the load-only media flake), and the player now waits up to the capture
+exit (the load-only media flake) — plus each agent's own tape and the small
+files of its `final/` + `s3/` trees (no mp4), so a recorded-value row can be
+timed against that agent's NMEA reads afterwards (a re-diff of a kept run
+lacks `mqtt.ndjson` and the player tape: its live-stream and T4-presence rows
+are not meaningful) — and the player now waits up to the capture
 stop grace (10 s) for an exited agent's process group before its SIGKILL, so a
 capture's `ended` (int vs kill) is the agent's doing, not a race with the rig.

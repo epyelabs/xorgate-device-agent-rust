@@ -457,8 +457,7 @@ fn diff_led(a: &P4Capture, b: &P4Capture, table: &Table, rep: &mut Report) {
         // The offset reference is the last render judged ON the base phase
         // (`base`): a chained late render does not move it, so the next
         // direct render is judged against the agents' real phase again.
-        let (bt, bsa, _bsb, bd) = base.unwrap_or((pt, psa, psb, pd));
-        let _ = bt;
+        let (_, bsa, _, bd) = base.unwrap_or((pt, psa, psb, pd));
         let k = ((sa - bsa) as f64 / 1000.0).round().abs() as i64;
         let slack = spawn_ms + drift * k;
         let shift = d - bd;
