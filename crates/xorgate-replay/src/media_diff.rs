@@ -249,6 +249,14 @@ impl MediaCapture {
             .unwrap_or_default();
         let shim = lines(&dir.join("shim.ndjson"));
         let procs = lines(&dir.join("procs.ndjson"));
+        // The agent's own tape (Rust only): its NMEA reads and the capture
+        // children IT SIGINTed (`child_signal`).
+        let tape = tape_recs(&dir.join("agent-tape.ndjson.gz"));
+        let agent_int: BTreeSet<u32> = tape
+            .iter()
+            .filter(|v| v["k"] == "child_signal" && v["role"] == "capture" && v["sig"] == 2)
+            .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
+            .collect();
         let rec_json: Value = std::fs::read(dir.join("recordings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -431,7 +439,16 @@ impl MediaCapture {
                     .or_else(|| gone.contains(&s.pid).then(|| "kill".to_string()));
             } else if gone.contains(&s.pid) {
                 let ls = lines_of.get(&s.pid).cloned().unwrap_or_default();
-                let int = ls.iter().any(|l| l.contains("handling interrupt"));
+                // SIGINTed: gst's own `handling interrupt.` line, or (review-wp6
+                // gate run 032624Z) the agent's tape record of sending it. At
+                // the agent's stop the TS SIGINTs (video-capture.ts:493-507,
+                // worker.ts:1307) and exits tens of ms later, killing the
+                // child (execa cleanup; Rust kill_on_drop, A3): under CPU
+                // starvation gst can die before its main loop prints the
+                // line (A: SIGINT 183368, killed 183389, no line). The line
+                // stays the only evidence for a JS side (no tape).
+                let int = agent_int.contains(&s.pid)
+                    || ls.iter().any(|l| l.contains("handling interrupt"));
                 let eos = ls.iter().any(|l| l.contains("Got EOS"));
                 s.end = Some(
                     if external_cap.contains(&s.pid) {
@@ -600,17 +617,14 @@ impl MediaCapture {
             last_tick_backlog,
             end_backlog,
             shed_events,
-            nmea_reads: nmea_lines(&dir.join("agent-tape.ndjson.gz"), None),
+            nmea_reads: nmea_lines(&tape, None),
             present,
         }
     }
 }
 
-/// `(wall ms, line)` of the `nmea` records of a tape file (gz or plain):
-/// an agent tape's `w` is the agent's own read instant. With `releases`
-/// (a player tape), each record's instant is instead its actual release
-/// (`releases.ndjson`, matched by tape `t` in order) — never reordered.
-fn nmea_lines(path: &Path, releases: Option<&[crate::diff::Release]>) -> Vec<(i64, String)> {
+/// Every record of a tape file (gz or plain); empty when absent.
+fn tape_recs(path: &Path) -> Vec<Value> {
     let Ok(raw) = std::fs::read(path) else {
         return Vec::new();
     };
@@ -619,10 +633,17 @@ fn nmea_lines(path: &Path, releases: Option<&[crate::diff::Release]>) -> Vec<(i6
     } else {
         String::from_utf8_lossy(&raw).into_owned()
     };
-    let recs = text
-        .lines()
+    text.lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|v| v["k"] == "nmea");
+        .collect()
+}
+
+/// `(wall ms, line)` of a tape's `nmea` records: an agent tape's `w` is
+/// the agent's own read instant. With `releases` (a player tape), each
+/// record's instant is instead its actual release (`releases.ndjson`,
+/// matched by tape `t` in order) — never reordered.
+fn nmea_lines(recs: &[Value], releases: Option<&[crate::diff::Release]>) -> Vec<(i64, String)> {
+    let recs = recs.iter().filter(|v| v["k"] == "nmea");
     let Some(rel) = releases else {
         return recs
             .filter_map(|v| Some((v["w"].as_i64()?, v["line"].as_str()?.to_string())))
@@ -639,32 +660,51 @@ fn nmea_lines(path: &Path, releases: Option<&[crate::diff::Release]>) -> Vec<(i6
     .collect()
 }
 
-/// One NMEA epoch as one side saw it: the lines read ≤ 200 ms apart (an
-/// epoch is ~8 lines over ~60 ms) and the position it carried — the
-/// `gps.lat` leaf it yields (`round(latitude, 6)`, `gps_group.rs` map_latest).
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Epoch {
-    r0: i64,
-    r1: i64,
-    lat: Option<f64>,
-}
+/// Per gps leaf path (`metrics.gps.<leaf>.value`), the `(instant, value)`
+/// CHANGES one side's collector state went through, replayed from that
+/// side's NMEA lines at their own instants through the agent's own core
+/// (`FixAggregator::update` + `SkyTracker::note` → `map_latest`, the
+/// `collectors/gps.rs` run_stream/sample path; ttff not replayed). The
+/// T4/rec-sample value anchor (review-wp6 F4): when each value became
+/// current on THAT side — position at its GGA/RMC, `snr_max`/`sats_heard`
+/// at the talker's last GSV of the cycle.
+pub(crate) type Timeline = BTreeMap<String, Changes>;
+/// One leaf's `(instant, value)` changes on one side.
+pub(crate) type Changes = Vec<(i64, f64)>;
 
-fn nmea_epochs(reads: &[(i64, String)]) -> Vec<Epoch> {
-    let mut out: Vec<Epoch> = Vec::new();
+fn gps_timeline(reads: &[(i64, String)]) -> Timeline {
+    let mut out: Timeline = BTreeMap::new();
+    let Some(&(t0, _)) = reads.first() else {
+        return out;
+    };
+    let mut agg = xorgate_core::nmea::FixAggregator::new();
+    let mut sky = xorgate_core::sky_state::SkyTracker::with_defaults(t0.max(0) as u64);
+    let mut latest: Option<xorgate_core::nmea::GpsFix> = None;
     for (w, line) in reads {
-        let lat = xorgate_core::nmea::parse_sentence(line.trim_end())
-            .and_then(|f| f.latitude)
-            .map(|v| xorgate_core::round::round(v, 6));
-        match out.last_mut() {
-            Some(e) if w - e.r1 <= 200 => {
-                e.r1 = *w;
-                e.lat = e.lat.or(lat);
+        let now = (*w).max(0) as u64;
+        if agg.update(line) {
+            latest = Some(agg.fix.clone());
+        }
+        if line.contains("GSV") {
+            if let Some(g) = xorgate_core::nmea::parse_gsv(line) {
+                sky.note(&g, now);
             }
-            _ => out.push(Epoch {
-                r0: *w,
-                r1: *w,
-                lat,
-            }),
+        }
+        let Some(fix) = &latest else { continue };
+        let snap = sky.snapshot(now);
+        let group = xorgate_core::gps_group::map_latest(fix, &snap, None);
+        let mut leaves = BTreeMap::new();
+        leaf_texts(
+            &serde_json::to_value(&group).unwrap_or(Value::Null),
+            "metrics.gps",
+            &mut leaves,
+        );
+        for (path, text) in leaves {
+            let Ok(v) = text.parse::<f64>() else { continue };
+            let tl = out.entry(path).or_default();
+            if tl.last().is_none_or(|&(_, last)| last != v) {
+                tl.push((*w, v));
+            }
         }
     }
     out
@@ -1061,68 +1101,57 @@ fn step_hunks(x: &[Step], y: &[Step]) -> Vec<(usize, Vec<Step>, Vec<Step>)> {
 }
 
 /// review-wp6 F4: a two-sided 1×1 gps hunk — A holds X (its sample at
-/// `ts.0`) where B holds Y (its sample at `ts.1`) — is two MISSES, not a
-/// different value, iff the epoch that carried X and the one that carried Y
-/// are ADJACENT input epochs on both sides (identified by content: each
-/// holder sample's `gps.lat` = that epoch's GGA/RMC latitude, from that
-/// side's own reads), so each side's sequence is the input minus one
-/// epoch; and each miss passes the one-sided race test on its own: the
-/// lacking side's sample nearest ITS OWN read of the epoch it lacks lies
-/// within `collision` of that epoch (its tick raced that input), and each
-/// holder sampled its epoch ≤ 1.1 s after reading it. Mechanism: the
-/// recorder's 1 Hz tick is ungated by the player (README "Limits") and
-/// drifts (`setInterval` re-armed from each fire, mean 1003 ms under load);
-/// while its phase crosses the NMEA burst phase every sample is a coin flip
-/// per side, and two adjacent opposite flips (A: P X · N, B: P · Y N) are
-/// what LCS presents as the substitution X/Y. Any other two-sided hunk
-/// (non-adjacent, unidentified epochs, no race at either miss) stays
-/// UNTOLERATED.
+/// `ta`) where B holds Y (its sample at `tb`) — is two MISSES, not a
+/// different value, iff on BOTH sides' own replayed collector state
+/// ([`gps_timeline`]) X and Y are CONSECUTIVE values of that leaf (same
+/// order on both), so each side's sequence is the input's minus one value;
+/// each holder's value became current on its side ≤ 1.1 s before its sample;
+/// and each miss passes the one-sided race test on its own: the lacking
+/// side's sample nearest the instant the missing value became current ON
+/// THAT SIDE lies within `collision` of it (that tick raced that input;
+/// `ts` is stamped after the collectors are read, so a tick that read just
+/// before can stamp just after). Mechanism: the recorder's 1 Hz tick is
+/// ungated by the player (README "Limits") and drifts (`setInterval`
+/// re-armed from each fire; mean 1003 ms under load); while its phase
+/// crosses the input's phase every sample is a coin flip per side, and two
+/// adjacent opposite flips (A: P X · N, B: P · Y N) are what LCS presents as
+/// the substitution X/Y. Anything else two-sided stays UNTOLERATED.
 fn adjacent_races(
     (la, lb): (&Leaves, &Leaves),
-    (ea, eb): (&[Epoch], &[Epoch]),
-    (ta, tb): (i64, i64),
+    (ea, eb): (Option<&Changes>, Option<&Changes>),
+    ((ta, x), (tb, y)): ((i64, &String), (i64, &String)),
     collision: i64,
 ) -> bool {
-    let lat_at = |l: &Leaves, ts: i64| -> Option<f64> {
-        l.iter()
-            .find(|(t, _)| *t == ts)?
-            .1
-            .get("metrics.gps.lat.value")?
-            .parse()
-            .ok()
+    let (Some(ea), Some(eb), Ok(x), Ok(y)) = (ea, eb, x.parse::<f64>(), y.parse::<f64>()) else {
+        return false;
     };
-    let same = |e: &Epoch, v: f64| e.lat.is_some_and(|l| (l - v).abs() < 5e-7);
-    // The holder's epoch: the last one carrying `v` read at or before its sample.
-    let held = |e: &[Epoch], v: f64, ts: i64| -> Option<usize> {
-        let i = e.iter().rposition(|x| x.r0 <= ts && same(x, v))?;
-        (ts - e[i].r0 <= 1_100).then_some(i)
+    // The holder's change to `v`: the last at or before its sample, ≤ 1.1 s.
+    let held = |e: &[(i64, f64)], v: f64, ts: i64| -> Option<usize> {
+        let i = e.iter().rposition(|&(w, u)| w <= ts && u == v)?;
+        (ts - e[i].0 <= 1_100).then_some(i)
     };
-    // The same epoch on the other side: carrying `v`, read within 500 ms.
-    let peer = |e: &[Epoch], v: f64, at: i64| -> Option<usize> {
+    // The same change on the other side: to `v`, within 500 ms.
+    let peer = |e: &[(i64, f64)], v: f64, at: i64| -> Option<usize> {
         e.iter()
             .enumerate()
-            .filter(|(_, x)| same(x, v) && (x.r0 - at).abs() <= 500)
-            .min_by_key(|(_, x)| (x.r0 - at).abs())
+            .filter(|(_, &(w, u))| u == v && (w - at).abs() <= 500)
+            .min_by_key(|(_, &(w, _))| (w - at).abs())
             .map(|(i, _)| i)
     };
-    let raced = |l: &Leaves, e: &Epoch| {
-        let off = |t: i64| (e.r0 - t).max(t - e.r1).max(0);
+    let raced = |l: &Leaves, at: i64| {
         l.iter()
-            .map(|(t, _)| off(*t))
+            .map(|(t, _)| (t - at).abs())
             .min()
             .is_some_and(|o| o <= collision)
     };
-    let (Some(xa), Some(yb)) = (lat_at(la, ta), lat_at(lb, tb)) else {
+    let (Some(iax), Some(iby)) = (held(ea, x, ta), held(eb, y, tb)) else {
         return false;
     };
-    let (Some(iaa), Some(ibb)) = (held(ea, xa, ta), held(eb, yb, tb)) else {
+    let (Some(iay), Some(ibx)) = (peer(ea, y, eb[iby].0), peer(eb, x, ea[iax].0)) else {
         return false;
     };
-    let (Some(iab), Some(iba)) = (peer(ea, yb, eb[ibb].r0), peer(eb, xa, ea[iaa].r0)) else {
-        return false;
-    };
-    let (da, db) = (iab as i64 - iaa as i64, ibb as i64 - iba as i64);
-    da.abs() == 1 && da == db && raced(la, &ea[iab]) && raced(lb, &eb[iba])
+    let (da, db) = (iay as i64 - iax as i64, iby as i64 - ibx as i64);
+    da.abs() == 1 && da == db && raced(la, ea[iay].0) && raced(lb, eb[ibx].0)
 }
 
 type Leaves = [(i64, BTreeMap<String, String>)];
@@ -1157,7 +1186,7 @@ fn group_inputs(group: &str) -> &'static [&'static str] {
 fn rec_values(
     sid: &str,
     (a, b): (&BTreeMap<u64, String>, &BTreeMap<u64, String>),
-    (ea, eb): &(Vec<Epoch>, Vec<Epoch>),
+    (ea, eb): &(Timeline, Timeline),
     play: &PlayInfo,
     facts: &crate::diff::InputFacts,
     table: &Table,
@@ -1274,8 +1303,8 @@ fn rec_values(
                     && only_b[0].1 == 1
                     && adjacent_races(
                         (la.as_slice(), lb.as_slice()),
-                        (ea.as_slice(), eb.as_slice()),
-                        (only_a[0].2, only_b[0].2),
+                        (ea.get(p.as_str()), eb.get(p.as_str())),
+                        ((only_a[0].2, &only_a[0].0), (only_b[0].2, &only_b[0].0)),
                         collision,
                     );
                 let ok = swap
@@ -2154,18 +2183,18 @@ pub fn diff_media(
     // Each side's NMEA epochs at its OWN read instants (its agent tape); a
     // side without one (JS) gets the player's feed at the release instants.
     let feed = if a.nmea_reads.is_empty() || b.nmea_reads.is_empty() {
-        nmea_lines(Path::new(&play.tape), Some(&play.releases))
+        nmea_lines(&tape_recs(Path::new(&play.tape)), Some(&play.releases))
     } else {
         Vec::new()
     };
-    let epochs = |m: &MediaCapture| {
-        nmea_epochs(if m.nmea_reads.is_empty() {
+    let timeline = |m: &MediaCapture| {
+        gps_timeline(if m.nmea_reads.is_empty() {
             &feed
         } else {
             &m.nmea_reads
         })
     };
-    let ep = (epochs(a), epochs(b));
+    let ep = (timeline(a), timeline(b));
     for sid in va.keys().filter(|k| vb.contains_key(*k)) {
         rec_values(sid, (&va[sid], &vb[sid]), &ep, play, &facts, table, rep);
     }
@@ -3431,10 +3460,11 @@ mod tests {
         );
     }
 
-    /// review-wp6 F4 (reviewer's heavy run 1, scratchpad `m1/diff.md`): a
-    /// two-sided 1×1 gps hunk is two adjacent misses — tolerated only when
-    /// both epochs are identified by content on each side's own reads, are
-    /// adjacent, and each lacking side's tick raced the epoch it lacks.
+    /// review-wp6 F4 (reviewer's heavy run 1, scratchpad `m1/diff.md`; gate
+    /// run 033610Z `snr_max`): a two-sided 1×1 gps hunk is two adjacent
+    /// misses — tolerated only when both values are consecutive on each
+    /// side's own replayed collector state and each lacking side's tick raced
+    /// the instant its missing value became current there.
     #[test]
     fn rec_values_two_adjacent_misses_need_their_own_races() {
         let table = Table::load(
@@ -3442,33 +3472,44 @@ mod tests {
                 .join("../../tools/replay/tolerances.toml"),
         )
         .unwrap();
-        // Epoch k (k = 0..8) read at 100 000 + k*1000 (+ `late` on that
-        // side), lat(k) = 14.5 + k*1e-5 (GGA ddmm.mmmm: 1430.0000 + k*0.0006).
-        let lat = |k: i64| 14.5 + k as f64 * 1e-5;
-        let gga = |k: i64| {
-            let m = 30.0 + k as f64 * 0.0006;
-            let body =
-                format!("GPGGA,000000.00,14{m:07.4},N,12100.0000,E,1,08,0.9,545.{k},M,0.0,M,,");
+        let nmea = |body: String| {
             let cs = body.bytes().fold(0u8, |x, c| x ^ c);
             format!("${body}*{cs:02X}")
         };
+        // Epoch k: GGA at 100 000 + k*1000 (+ `late` on that side), the
+        // position 1430.0000 + k*0.0006 min N; one-message GPGSV cycle 8 ms
+        // later with SNR snr(k): 30 30 30 31 32 33 30 30 30.
+        let gga = |k: i64| {
+            nmea(format!(
+                "GPGGA,000000.00,14{:07.4},N,12100.0000,E,1,08,0.9,545.{k},M,0.0,M,,",
+                30.0 + k as f64 * 0.0006
+            ))
+        };
+        let snr = |k: i64| [30, 30, 30, 31, 32, 33, 30, 30, 30][k as usize];
+        let gsv = |k: i64| nmea(format!("GPGSV,1,1,01,05,31,077,{},1", snr(k)));
+        let lat = |k: i64| {
+            let f = xorgate_core::nmea::parse_sentence(&gga(k)).unwrap();
+            xorgate_core::round::round(f.latitude.unwrap(), 6)
+        };
         let reads = |late: i64| -> Vec<(i64, String)> {
             (0..9)
-                .map(|k| (100_000 + k * 1000 + late, gga(k)))
+                .flat_map(|k| {
+                    let w = 100_000 + k * 1000 + late;
+                    [(w, gga(k)), (w + 8, gsv(k))]
+                })
                 .collect()
         };
-        // Samples at 100 000 + i*1000 + phase[i] holding epoch e[i].
-        let seg = |s: &[(i64, i64)]| {
+        // Samples `(ts, leaf, value)` → one segment.
+        let seg = |s: &[(i64, &str, f64)]| {
             let mut t = String::from("{\"type\":\"header\",\"v\":1}\n");
-            for (i, (ts, k)) in s.iter().enumerate() {
+            for (i, (ts, leaf, v)) in s.iter().enumerate() {
                 t.push_str(&format!(
-                    "{{\"ts\":{ts},\"seq\":{i},\"metrics\":{{\"gps\":{{\"lat\":{{\"value\":{}}}}}}}}}\n",
-                    lat(*k)
+                    "{{\"ts\":{ts},\"seq\":{i},\"metrics\":{{\"gps\":{{\"{leaf}\":{{\"value\":{v}}}}}}}}}\n"
                 ));
             }
             t
         };
-        let cap = |s: &[(i64, i64)], reads: Vec<(i64, String)>| MediaCapture {
+        let cap = |s: &[(i64, &str, f64)], reads: Vec<(i64, String)>| MediaCapture {
             kind: "rust".into(),
             finals: BTreeMap::from([(
                 "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
@@ -3483,81 +3524,180 @@ mod tests {
             diff_media(&a, &b, &PlayInfo::default(), &table, &mut rep);
             rep.mismatches
                 .into_iter()
-                .filter(|m| m.stream == "rec-telemetry" && m.path.contains("lat"))
+                .filter(|m| m.stream == "rec-telemetry" && m.path.starts_with("metrics.gps"))
                 .map(|m| format!("{} {}", m.path, m.tol))
                 .collect::<Vec<_>>()
         };
         let t = |i: i64, d: i64| 100_000 + i * 1000 + d;
-        // Both recorders' ticks sit on the burst phase (slot i at epoch i's
-        // read + d). A: slots 3 and 4 tick 3 ms BEFORE their read → 1 2 2 3
-        // 5 6 (misses 4); B: slot 3 before, slot 4 after → 1 2 2 4 5 6
-        // (misses 3). LCS: one hunk A=[3×1] B=[4×1] at slot 4 — the
-        // reviewer's shape (same slot, A just before, B just after).
+        let la = |v: &[(i64, i64)]| {
+            v.iter()
+                .map(|&(ts, k)| (ts, "lat", lat(k)))
+                .collect::<Vec<_>>()
+        };
+        let ok = vec!["metrics.gps.lat.value(values) T4/rec-sample".to_string()];
+        let bad = vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")];
+        // POSITION. Both recorders tick on the GGA phase. A: slots 3 and 4
+        // tick 3 ms BEFORE their read → 1 2 2 3 5 6 (misses 4); B: slot 3
+        // before, slot 4 after → 1 2 2 4 5 6 (misses 3). LCS: one hunk
+        // A=[3×1] B=[4×1] at slot 4 — the reviewer's shape.
         let sa = |d: i64| {
-            [
+            la(&[
                 (t(1, d), 1),
                 (t(2, d), 2),
                 (t(3, -3), 2),
                 (t(4, -3), 3),
                 (t(5, d), 5),
                 (t(6, d), 6),
-            ]
+            ])
         };
         let sb = |d3: i64| {
-            [
+            la(&[
                 (t(1, 10), 1),
                 (t(2, 10), 2),
                 (t(3, d3), 2),
                 (t(4, 10), 4),
                 (t(5, 10), 5),
                 (t(6, 10), 6),
-            ]
+            ])
         };
-        let ok = vec!["metrics.gps.lat.value(values) T4/rec-sample".to_string()];
-        let bad = vec![format!("metrics.gps.lat.value(values) {UNTOLERATED}")];
         assert_eq!(run(cap(&sa(10), reads(0)), cap(&sb(-3), reads(0))), ok);
-        // The same hunk with B's slot-3 tick 120 ms before ITS read of 3:
-        // no race at B's miss → UNTOLERATED (each miss needs its own race).
+        // B's slot-3 tick 120 ms before ITS read of 3: no race at B's miss.
         assert_eq!(run(cap(&sa(10), reads(0)), cap(&sb(-120), reads(0))), bad);
-        // Judged at each side's OWN read: A read every epoch 80 ms late
-        // (its slot-4 tick is then 83 ms from its read of 4) → no race.
+        // Judged at each side's OWN read: A reads every epoch 80 ms late, so
+        // its slot-4 tick is 83 ms from its read of 4 → no race.
         assert_eq!(run(cap(&sa(100), reads(80)), cap(&sb(-3), reads(0))), bad);
-        // B holds a value no epoch carried: a different value, never.
+        // B holds a value no input carried: a different value, never.
         let mut s9 = sb(-3);
-        s9[3].1 = 99;
+        s9[3].2 = 14.6;
         assert_eq!(run(cap(&sa(10), reads(0)), cap(&s9, reads(0))), bad);
-        // No reads (nothing identifies the epochs): UNTOLERATED.
+        // No reads (nothing replays the collector): UNTOLERATED.
         assert_eq!(run(cap(&sa(10), vec![]), cap(&sb(-3), vec![])), bad);
-        // Non-adjacent epochs (A holds 2, B holds 4 at the same slot).
-        let leaves = |s: &[(i64, i64)]| -> Vec<(i64, BTreeMap<String, String>)> {
-            s.iter()
-                .map(|(ts, k)| {
+        // Non-consecutive values (A holds 2 where B holds 4 at slot 3/4,
+        // every tick raced): never two misses.
+        let tl = gps_timeline(&reads(0));
+        let leaves = |v: &[(i64, &str, f64)]| -> Vec<(i64, BTreeMap<String, String>)> {
+            v.iter()
+                .map(|(ts, leaf, x)| {
                     (
                         *ts,
-                        BTreeMap::from([(
-                            "metrics.gps.lat.value".to_string(),
-                            lat(*k).to_string(),
-                        )]),
+                        BTreeMap::from([(format!("metrics.gps.{leaf}.value"), x.to_string())]),
                     )
                 })
                 .collect()
         };
-        let e = nmea_epochs(&reads(0));
-        assert_eq!(e.len(), 9);
-        assert!((e[3].lat.unwrap() - lat(3)).abs() < 5e-7, "{:?}", e[3]);
-        let (la, lb) = (leaves(&sa(10)), leaves(&sb(-3)));
+        let p = "metrics.gps.lat.value";
+        let (l_a, l_b) = (leaves(&sa(10)), leaves(&sb(-3)));
+        let (x, y) = (lat(3).to_string(), lat(4).to_string());
         assert!(adjacent_races(
-            (&la, &lb),
-            (&e, &e),
-            (t(4, -3), t(4, 10)),
+            (&l_a, &l_b),
+            (tl.get(p), tl.get(p)),
+            ((t(4, -3), &x), (t(4, 10), &y)),
             50
         ));
+        let x2 = lat(2).to_string();
         assert!(!adjacent_races(
-            (&la, &lb),
-            (&e, &e),
-            (t(3, -3), t(4, 10)),
+            (&l_a, &l_b),
+            (tl.get(p), tl.get(p)),
+            ((t(3, -3), &x2), (t(4, 10), &y)),
             50
         ));
+        assert_eq!(tl["metrics.gps.lat.value"][3], (t(3, 0), lat(3)));
+        assert_eq!(
+            tl["metrics.gps.snr_max.value"]
+                .iter()
+                .map(|c| c.1)
+                .collect::<Vec<_>>(),
+            [30.0, 31.0, 32.0, 33.0, 30.0]
+        );
+        assert_eq!(
+            tl["metrics.gps.snr_max.value"][1].0,
+            t(3, 8),
+            "a GSV value is current at its cycle's last message"
+        );
+        // SKY (gate run 033610Z): snr_max becomes current at the GSV, 8 ms
+        // after the GGA. A ticks 34 ms after each epoch but its slot-3 read
+        // fell before the GSV (stamped 26 ms after it) → 30 30 30 32 33 30
+        // (misses 31); B ticks 2 ms before the GSV at slots 3-4 and 1 ms
+        // after at 5 → 30 30 30 31 33 30 (misses 32). Hunk A=[32] B=[31].
+        let sn = |v: &[(i64, f64)]| {
+            v.iter()
+                .map(|&(ts, x)| (ts, "snr_max", x))
+                .collect::<Vec<_>>()
+        };
+        let sky_a = sn(&[
+            (t(1, 34), 30.0),
+            (t(2, 34), 30.0),
+            (t(3, 34), 30.0),
+            (t(4, 34), 32.0),
+            (t(5, 34), 33.0),
+            (t(6, 34), 30.0),
+        ]);
+        let sky_b = |d4: i64| {
+            sn(&[
+                (t(1, 34), 30.0),
+                (t(2, 34), 30.0),
+                (t(3, 6), 30.0),
+                (t(4, d4), 31.0),
+                (t(5, 9), 33.0),
+                (t(6, 34), 30.0),
+            ])
+        };
+        assert_eq!(
+            run(cap(&sky_a, reads(0)), cap(&sky_b(6), reads(0))),
+            vec!["metrics.gps.snr_max.value(values) T4/rec-sample".to_string()]
+        );
+        // B's slot-4 tick 200 ms before the GSV it missed: no race.
+        assert_eq!(
+            run(cap(&sky_a, reads(0)), cap(&sky_b(-192), reads(0))),
+            vec![format!("metrics.gps.snr_max.value(values) {UNTOLERATED}")]
+        );
+    }
+
+    /// A capture SIGINTed at the agent's stop and killed by the agent's exit
+    /// before gst printed `handling interrupt.` (gate run 032624Z, 15 busy
+    /// loops) is `int` by the agent's own tape record of the SIGINT; with
+    /// neither the line nor the record it stays `kill`.
+    #[test]
+    fn capture_end_int_from_the_agents_own_sigint_record() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-end-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            concat!(
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":9146,"argv":["videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam1.sock"],"w":1000}"#,
+                "\n",
+                r#"{"k":"line","pid":9146,"fd":1,"line":"Redistribute latency...","w":2000}"#,
+                "\n",
+                r#"{"k":"eof","pid":9146,"w":3021}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            "{\"k\":\"gone\",\"pid\":9146,\"w\":3100}\n",
+        )
+        .unwrap();
+        let end = |dir: &std::path::Path| {
+            MediaCapture::load(dir, &[])
+                .spawns
+                .iter()
+                .find(|s| s.pid == 9146)
+                .and_then(|s| s.end.clone())
+        };
+        assert_eq!(end(&dir).as_deref(), Some("kill"));
+        let tape = concat!(
+            r#"{"v":1,"k":"meta"}"#,
+            "\n",
+            r#"{"t":67618,"w":3000,"k":"child_signal","role":"capture","key":"cam1","pid":9146,"sig":2}"#,
+            "\n"
+        );
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, tape.as_bytes()).unwrap();
+        std::fs::write(dir.join("agent-tape.ndjson.gz"), gz.finish().unwrap()).unwrap();
+        assert_eq!(end(&dir).as_deref(), Some("int"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// End-snapshot `recording.backlogSegments` (review-wp6 FLAG 3): no

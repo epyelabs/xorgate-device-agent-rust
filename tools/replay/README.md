@@ -347,7 +347,7 @@ and, on synthetic tapes only, `rig` (`s3Faults`, `filler`).
 | Input | Rig value |
 |---|---|
 | `kvs.json` | tape channels + (when the tape has channels / `kvs.upload` / Phase 3 output records) a COMPLETE manifest with the rig's fake-AWS identity: region `ca-central-1`, credentialEndpoint `c0rig00000000.credentials.iot.ca-central-1.amazonaws.com`, roleAlias `xorgate-rig-role-alias`, uploadBucket `xorgate-rig-media`, deviceId = the rig id. Phase 2 tapes keep the `{"channels": …}` stub |
-| `gst-launch-1.0` (PATH) | `shims/gst-launch-1.0`: logs argv verbatim to `<work>/shim.ndjson`, replaces ONLY `libcamerasrc camera-name=<cam>` with `videotestsrc is-live=true pattern=ball`, tees stdout/stderr (so the rig sees `New clock:` / `handling interrupt.` / `Got EOS` for the JS agent too) and `exec`s the real binary — same pid, real x264enc + splitmuxsink + shmsink, so the ~2.1 s sidecar GOP lag is reproduced (D8 rig half) |
+| `gst-launch-1.0` (PATH) | `shims/gst-launch-1.0`: logs argv verbatim to `<work>/shim.ndjson`, replaces ONLY `libcamerasrc camera-name=<cam>` with `videotestsrc is-live=true pattern=ball`, tees stdout/stderr (so the rig sees `New clock:` / `handling interrupt.` / `Got EOS` for the JS agent too; a Rust side's capture also counts as `int` by its own tape's `child_signal` SIGINT record — at the agent's stop the child can be killed by the agent's exit before gst prints the line) and `exec`s the real binary — same pid, real x264enc + splitmuxsink + shmsink, so the ~2.1 s sidecar GOP lag is reproduced (D8 rig half) |
 | `KVS_RUNTIME_BIN` | `<work>/kvs/xorgate-kvs-webrtc` = `media/xorgate-kvs-webrtc` (fake master: logs argv + contract env, a line every 5 s, exit 0 on SIGINT, the tape's code on an `external` exit) when the tape has channels; else a missing path (Phase 2) |
 | `rpicam-hello` (PATH) | present when the tape answers `--list-cameras` (`exec`), or with `--with-rpicam` |
 | TLS trust | rig CA → the container's system store (`update-ca-certificates`, Rust's platform verifier) and `NODE_EXTRA_CA_CERTS` (Node) — no agent knob (P5) |
@@ -550,7 +550,6 @@ Rust side's `xorgate-rs` → `xorgate`, Q9 local hints, then exact) and `sms`
 exit (the load-only media flake) — plus each agent's own tape and the small
 files of its `final/` + `s3/` trees (no mp4), so a recorded-value row can be
 timed against that agent's NMEA reads afterwards (a re-diff of a kept run
-lacks `mqtt.ndjson` and the player tape: its live-stream and T4-presence rows
-are not meaningful) — and the player now waits up to the capture
+lacks only the player tape: its T4 input-transition facts are empty) — and the player now waits up to the capture
 stop grace (10 s) for an exited agent's process group before its SIGKILL, so a
 capture's `ended` (int vs kill) is the agent's doing, not a race with the rig.
