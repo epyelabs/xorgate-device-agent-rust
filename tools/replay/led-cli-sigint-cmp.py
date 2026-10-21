@@ -29,11 +29,12 @@ STARTS; .out/.err/.code), BOTH sides must satisfy:
    shutdown blank is spawned synchronously in the signal handler
    (led.ts:70-74), and the trailing blank once the in-flight write resolves,
    bounded by the pinctrl timeout `timeoutMs: 2000` (led.ts:221); the Rust
-   CLI waits for the same bound (`SHUTDOWN_UNWIND`). The shim logs at spawn.
-6. D36 (accepted-divergences.md): the TS lands 1 OR 2 blanks (its second
-   pinctrl child races execa's `cleanup: true` kill at process.exit); the
-   Rust CLI lands EXACTLY 2 (cli/led.rs: the stopped pattern unwinds into its
-   own trailing blank; F-E3-1, review-gate-fixes F-R1).
+   CLI spawns its one blank at the signal. The shim logs at spawn.
+6. D36 (accepted-divergences.md, option B): the TS lands 1 OR 2 blanks (its
+   second pinctrl child races execa's `cleanup: true` kill at process.exit);
+   the Rust CLI lands EXACTLY 1 — the TS's "exit wins" outcome (cli/led.rs:
+   the body is not polled after the signal, so the pattern never spawns its
+   own trailing blank).
 
 Exit 1 on any failure.
 """
@@ -50,7 +51,7 @@ COLOUR_PINS = {
 }
 WINDOW_MS = 2000
 TS_BLANKS = (1, 2)  # D36
-RS_BLANKS = (2,)  # D36
+RS_BLANKS = (1,)  # D36 (option B)
 
 
 def rd(p):
@@ -168,33 +169,37 @@ def compare(o, quiet=False):
 def self_test():
     """Synthetic cases: SIGINT at 1000, blue (pin 16) blink-fast."""
     ok_js = ["900 set 16 op dh", f"1003 {BLANK}", f"1005 {BLANK}"]
-    ok_rs = ["900 set 16 op dh", f"1002 {BLANK}", f"1003 {BLANK}"]
+    ok_rs = ["900 set 16 op dh", f"1002 {BLANK}"]
     first = ["990 set 16 op dh"]
     cases = {
         # name: (js lines, rs lines, expect PASS)
         "ok": (ok_js, ok_rs, True),
         "ok_ts_one_blank": (["900 set 16 op dh", f"1003 {BLANK}"], ok_rs, True),
         "ok_in_flight_rise": (["900 set 16 op dl", "1000 set 16 op dh", f"1003 {BLANK}"],
-                              ["900 set 16 op dl", "1001 set 16 op dh", f"1002 {BLANK}", f"1004 {BLANK}"], True),
+                              ["900 set 16 op dl", "1001 set 16 op dh", f"1002 {BLANK}"], True),
         "ok_in_flight_off": (["900 set 16 op dh", "1001 set 16 op dl", f"1003 {BLANK}"], ok_rs, True),
         "ok_first_step_fall": (first + ["1001 set 12,21 op dl", f"1003 {BLANK}"],
-                               first + ["1001 set 12,21 op dl", f"1002 {BLANK}", f"1003 {BLANK}"], True),
-        "ok_first_fall_after_blank": (ok_js, first + [f"1002 {BLANK}", "1003 set 12,21 op dl", f"1004 {BLANK}"], True),
-        "ok_unwind_1500": (ok_js, ["900 set 16 op dh", f"1002 {BLANK}", f"2500 {BLANK}"], True),
+                               first + ["1001 set 12,21 op dl", f"1002 {BLANK}"], True),
+        "ok_ts_first_fall_after_blank": (first + [f"1003 {BLANK}", "1004 set 12,21 op dl", f"1005 {BLANK}"], ok_rs, True),
+        "ok_ts_unwind_1500": (["900 set 16 op dh", f"1003 {BLANK}", f"2500 {BLANK}"], ok_rs, True),
         # the reviewer's x1-x4 (review-gate-fixes F-R2)
-        "x1_lit_between_blanks": (ok_js, ["900 set 16 op dh", f"1002 {BLANK}", "1004 set 16 op dh", f"1006 {BLANK}"], False),
-        "x2_stray_21_dl": (ok_js, ["900 set 16 op dh", "1002 set 21 op dl", f"1003 {BLANK}", f"1005 {BLANK}"], False),
-        "x3_two_rises": (ok_js, ["900 set 16 op dh", "1001 set 16 op dh", "1002 set 16 op dh", f"1003 {BLANK}", f"1005 {BLANK}"], False),
-        "x4_blank_at_2500": (ok_js, ["900 set 16 op dh", f"1003 {BLANK}", f"3500 {BLANK}"], False),
+        # (on the TS side, whose 2 blanks are allowed: each still FAILS)
+        "x1_lit_between_blanks": (["900 set 16 op dh", f"1003 {BLANK}", "1004 set 16 op dh", f"1006 {BLANK}"], ok_rs, False),
+        "x2_stray_21_dl": (["900 set 16 op dh", "1002 set 21 op dl", f"1003 {BLANK}", f"1005 {BLANK}"], ok_rs, False),
+        "x3_two_rises": (["900 set 16 op dh", "1001 set 16 op dh", "1002 set 16 op dh", f"1003 {BLANK}", f"1005 {BLANK}"], ok_rs, False),
+        "x4_blank_at_2500": (["900 set 16 op dh", f"1003 {BLANK}", f"3500 {BLANK}"], ok_rs, False),
+        # D36 option B: Rust with TWO blanks fails (so does a 2nd at +2500)
+        "rs_two_blanks": (ok_js, ["900 set 16 op dh", f"1002 {BLANK}", f"1003 {BLANK}"], False),
+        "rs_lit_after_blank": (ok_js, ["900 set 16 op dh", f"1002 {BLANK}", "1070 set 16 op dh"], False),
         # and the earlier ones
         "ts_no_blank": (["900 set 16 op dh"], ok_rs, False),
-        "rs_one_blank": (ok_js, ["900 set 16 op dh", f"1002 {BLANK}"], False),
-        "rs_three_blanks": (ok_js, ok_rs + [f"1004 {BLANK}"], False),
-        "wrong_pin_rise": (ok_js, ["900 set 16 op dh", "1001 set 12 op dh", f"1002 {BLANK}", f"1003 {BLANK}"], False),
+        "rs_no_blank": (ok_js, ["900 set 16 op dh"], False),
+        "ts_three_blanks": (ok_js + [f"1007 {BLANK}"], ok_rs, False),
+        "wrong_pin_rise": (ok_js, ["900 set 16 op dh", "1001 set 12 op dh", f"1002 {BLANK}"], False),
         "blank_before_sigint": ([f"990 {BLANK}", f"1003 {BLANK}"], ok_rs, False),
         "not_dark": ([f"1003 {BLANK}", "1004 set 16 op dh"], ok_rs, False),
-        "first_fall_not_first": (ok_js, ["800 set 16 op dl", "900 set 16 op dh", "1001 set 12,21 op dl", f"1002 {BLANK}", f"1003 {BLANK}"], False),
-        "slow_lit_after_blank": (ok_js, ["900 set 16 op dl", f"1002 {BLANK}", "1070 set 16 op dh", f"1072 {BLANK}"], False),
+        "first_fall_not_first": (ok_js, ["800 set 16 op dl", "900 set 16 op dh", "1001 set 12,21 op dl", f"1002 {BLANK}"], False),
+        "ts_slow_lit_after_blank": (["900 set 16 op dl", f"1003 {BLANK}", "1070 set 16 op dh", f"1072 {BLANK}"], ok_rs, False),
     }
     d = tempfile.mkdtemp()
     try:

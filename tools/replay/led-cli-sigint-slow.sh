@@ -4,8 +4,12 @@
 # (are logged) when the child FINISHES, `dh` taking $SLOW_DH_S (0.08 s); the
 # harness waits for a `dh` to start, sends SIGINT 10 ms later. TS @89b5c64 and
 # xorgate-rs `blue blink-fast`, 5 cases each. Verdict per case and side: the
-# LED ends dark (the last landed write is the all-pin blank); Rust also lands
-# exactly 2 blanks after the signal (D36). Runs INSIDE the rig container:
+# LED ends dark (the last landed write is the all-pin blank) and never
+# re-lights (no `dh` lands after a blank); Rust lands EXACTLY 1 blank (D36,
+# option B). Then 2 HUNG cases per side: every pinctrl after the SIGINT
+# hangs (`exec sleep 30`); each side's exit instant after the SIGINT is
+# recorded and Rust's must be <= the TS's (the TS: shutdown blank 2 s
+# timeout + fail-safe blank 2 s, ~+4.03 s). Runs INSIDE the rig container:
 #   RIG_RUNS=<dir> docker compose -p <proj> -f tools/replay/docker-compose.yml \
 #     run --rm -T --entrypoint bash rig /rig/tools/led-cli-sigint-slow.sh
 #   docker compose -p <proj> -f tools/replay/docker-compose.yml down -v --remove-orphans
@@ -20,6 +24,7 @@ cat > $SH/pinctrl <<'S'
 #!/bin/sh
 # Slow shim: a write lands (is logged) when the child FINISHES; `dh` is slow
 # and touches a start marker first.
+[ -e "${RIG_LED_LOG}.hang" ] && exec sleep 30
 case "$*" in
   *" op dh") : > "${RIG_LED_LOG}.dhstart"; sleep "${SLOW_DH_S:-0.08}" ;;
 esac
@@ -27,30 +32,43 @@ printf '%s %s\n' "$(date +%s%3N)" "$*" >> "${RIG_LED_LOG:-/dev/null}"
 exit 0
 S
 chmod +x $SH/pinctrl
-sig() { # <side> <case> <cmd…>
-  local s=$1 c=$2; shift 2; local d=$O/$s; mkdir -p $d $O/home-$s; : > $d/$c.led; rm -f $d/$c.led.dhstart
+sig() { # <side> <case> <hang 0|1> <cmd…>
+  local s=$1 c=$2 hang=$3; shift 3; local d=$O/$s; mkdir -p $d $O/home-$s; : > $d/$c.led; rm -f $d/$c.led.dhstart $d/$c.led.hang
   env -i PATH=$SH:/usr/local/bin:/usr/bin:/bin HOME=/root TZ=UTC RIG_LED_LOG=$d/$c.led RIG_STATE=$O/st-free XORGATE_LED_WRITER=pinctrl XORGATE_HOME=$O/home-$s SLOW_DH_S=0.08 \
     unshare -m --propagation private -- /rig/tools/pi-ns.sh $P "$@" led blue blink-fast > $d/$c.out 2> $d/$c.err & local pid=$!
   sleep 1.2; rm -f $d/$c.led.dhstart
   for _ in $(seq 1 400); do [ -e $d/$c.led.dhstart ] && break; sleep 0.002; done
   sleep 0.01
-  date +%s%3N > $d/$c.sig; kill -INT $pid; wait $pid; echo $? > $d/$c.code; sleep 0.3; rm -f $d/$c.led.dhstart
+  [ "$hang" = 1 ] && : > $d/$c.led.hang
+  date +%s%3N > $d/$c.sig; kill -INT $pid; wait $pid; echo $? > $d/$c.code; date +%s%3N > $d/$c.exit
+  sleep 0.3; rm -f $d/$c.led.dhstart $d/$c.led.hang
 }
 verdict() { # <side> <case> <want blanks or ->
   local d=$O/$1 c=$2 want=$3 g last n
   g=$(cat $d/$c.sig); last=$(tail -1 $d/$c.led | cut -d' ' -f2-)
   n=$(awk -v g="$g" '$1 >= g && $0 ~ / set 12,21,16 op dl$/' $d/$c.led | wc -l | tr -d ' ')
+  # re-light: a `dh` landing after the first blank that follows the SIGINT
+  local relit
+  relit=$(awk -v g="$g" '$1 >= g && / set 12,21,16 op dl$/ {b=1} b && / op dh$/ {n++} END {print n+0}' $d/$c.led)
   local ok=1; [ "$last" = "set 12,21,16 op dl" ] || ok=0; [ "$want" = - ] || [ "$n" = "$want" ] || ok=0
-  [ "$(cat $d/$c.code)" = 0 ] || ok=0
-  echo "$1 $c last=[$last] blanks-after-SIGINT=$n code=$(cat $d/$c.code) $([ $ok = 1 ] && echo PASS || echo FAIL)"
+  [ "$relit" = 0 ] || ok=0; [ "$(cat $d/$c.code)" = 0 ] || ok=0
+  echo "$1 $c last=[$last] blanks-after-SIGINT=$n relit=$relit code=$(cat $d/$c.code) exit=+$(( $(cat $d/$c.exit) - g ))ms $([ $ok = 1 ] && echo PASS || echo FAIL)"
   [ $ok = 1 ]
 }
 fails=0
 for i in 1 2 3 4 5; do
-  sig js a$i node /rig/cache/js-89b5c64/dist/cli.js
-  sig rs a$i /rig/cache/bin/xorgate-rs
+  sig js a$i 0 node /rig/cache/js-89b5c64/dist/cli.js
+  sig rs a$i 0 /rig/cache/bin/xorgate-rs
   verdict js a$i - || fails=$((fails + 1))
-  verdict rs a$i 2 || fails=$((fails + 1))
+  verdict rs a$i 1 || fails=$((fails + 1))
+done
+for i in 1 2; do
+  sig js h$i 1 node /rig/cache/js-89b5c64/dist/cli.js
+  sig rs h$i 1 /rig/cache/bin/xorgate-rs
+  ej=$(( $(cat $O/js/h$i.exit) - $(cat $O/js/h$i.sig) )); er=$(( $(cat $O/rs/h$i.exit) - $(cat $O/rs/h$i.sig) ))
+  ok=PASS; [ "$er" -le "$ej" ] || { ok=FAIL; fails=$((fails + 1)); }
+  [ "$(cat $O/rs/h$i.code)" = 0 ] && [ "$(cat $O/js/h$i.code)" = 0 ] || { ok=FAIL; fails=$((fails + 1)); }
+  echo "hung h$i: TS exit +${ej}ms code=$(cat $O/js/h$i.code), Rust exit +${er}ms code=$(cat $O/rs/h$i.code) $ok"
 done
 echo "== slow-child: $fails FAIL"
 [ $fails = 0 ]
