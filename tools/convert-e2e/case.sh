@@ -729,6 +729,9 @@ rollback-step6|rollback-step6-preexisting)
 # -------------------------------------------------------------------------
 interrupt-[1-8]|interrupt-[1-8]-revert)
   n=${CASE#interrupt-}; n=${n%-revert}
+  # FAIL_AT=n is a simulated CRASH (I1 amendment: exit 9, no cleanup), so the
+  # interrupted run's download scratch dir may stay in /tmp, as after a kill -9.
+  FP_EXTRA='^/tmp/xg-install-rs-[^/]+(/.*)?$'
   provision
   M "$E/M0"
   irs XORGATE_RS_CONVERT_FAIL_AT="$n"
