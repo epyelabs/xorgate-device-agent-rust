@@ -506,7 +506,34 @@ expect $? "lock never released: bounded (4 s), then revert attempted + JS enable
 js_disabled_stopped; no_record; mkdir -p "$LOCKD"; echo 999999 > "$LOCKD/pid"
 fire >"$LOGS/p14c.log" 2>&1; rc=$?; rm -rf "$LOCKD"
 [ "$rc" = 0 ] && ! grep -q "waiting" "$LOGS/p14c.log" && [ "$(js_state)" = active ]; expect $? "a STALE lock (dead pid) is not waited for"
+js_disabled_stopped; no_record; mkdir -p "$LOCKD"; rm -f "$LOCKD/pid"
+fire >"$LOGS/p14d.log" 2>&1; rc=$?; rm -rf "$LOCKD"
+[ "$rc" = 0 ] && grep -q "waiting <= 4s" "$LOGS/p14d.log" && grep -q "still holds $LOCKD after 4s" "$LOGS/p14d.log" && [ "$(js_state)" = active ] && [ "$(js_en)" = enabled ]
+expect $? "a lock dir WITHOUT a pid file counts as HELD (waited the full bound), then JS enabled + active"
 no_record; rm -rf /opt/xorgate-rs; bench_unit; bash "$B/exclusive.sh" end >/dev/null 2>&1
+
+echo "== case (p15): a --revert that ignores SIGTERM is hard-bounded (timeout -k 10) and the dead-man still enables + starts JS"
+reset; bench_unit; no_record
+XORGATE_TEST_DEADMAN_REVERT_SECS=2 bash "$B/exclusive.sh" begin >"$LOGS/p15-begin.log" 2>&1
+grep -q "timeout -k 10 2 bash /opt/xorgate-rs/install-rs.sh --revert" /run/xorgate-rs-window-deadman.sh; expect $? "the dead-man bounds --revert with timeout -k 10 <secs>"
+converted_unit; js_disabled_stopped; record converted; mkdir -p /opt/xorgate-rs
+printf '#!/bin/bash\necho "$*" >> %s/installer.argv\ntrap "" TERM\nwhile :; do sleep 0.2; done\n' "$LOGS" > "$INST"; chmod 0755 "$INST"; rm -f "$LOGS/installer.argv"
+t0=$(date +%s); fire >"$LOGS/p15.log" 2>&1; rc=$?; t1=$(date +%s)
+[ "$rc" = 0 ] && [ "$(cat "$LOGS/installer.argv")" = --revert ] && grep -q "install-rs.sh --revert exited 137" "$LOGS/p15.log" && [ $((t1 - t0)) -lt 40 ]
+expect $? "TERM-ignoring revert: SIGKILLed (rc 137) after 2+10 s, dead-man rc=0 in $((t1 - t0)) s"
+check active "after the killed revert: JS active"; [ "$(js_en)" = enabled ]; expect $? "…and enabled"
+pgrep -f "$INST" >/dev/null; expect $((1 - $?)) "no install-rs.sh process left behind"
+no_record; rm -rf /opt/xorgate-rs; bench_unit; bash "$B/exclusive.sh" end >/dev/null 2>&1
+
+echo "== case (p1d): a FAILING disable in end is logged as failed, not as disabled"
+reset; converted_unit; record converted; echo active > "$STATE/$DM.timer"
+touch "$STATE/FAIL_DISABLE_xorgate-agent-rs"
+bash "$B/exclusive.sh" end >"$LOGS/p1d.log" 2>&1; rc=$?
+rm -f "$STATE/FAIL_DISABLE_xorgate-agent-rs"
+[ "$rc" = 1 ] && grep -q "systemctl disable xorgate-agent-rs FAILED (still enabled)" "$LOGS/p1d.log" && ! grep -q "xorgate-agent-rs disabled (conversion in place" "$LOGS/p1d.log"
+expect $? "failed disable: FAILED (still enabled) logged, no 'disabled' note, rc=1 (rc=$rc)"
+check active "failed disable: JS active"
+no_record; bench_unit; bash "$B/exclusive.sh" end >/dev/null 2>&1
 
 echo "== case (p12): status reports the conversion record + the shipped unit"
 reset; converted_unit; record converted

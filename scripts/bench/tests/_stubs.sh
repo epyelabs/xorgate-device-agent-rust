@@ -37,10 +37,11 @@ case "$cmd" in
           for p in $(cat "$st/js-children"); do kill -KILL "$p" 2>/dev/null || true; done; : > "$st/js-children"
         fi;;
   # Phase 5: enablement in $st/<unit>.enabled (absent = "enabled", the bench
-  # default); `--now` also starts/stops; FAIL_ENABLE_<unit> makes enable fail.
+  # default); `--now` also starts/stops; FAIL_ENABLE_/FAIL_DISABLE_<unit> make them fail.
   is-enabled) u="$1"; s=$(cat "$st/$u.enabled" 2>/dev/null || echo enabled); echo "$s"; [ "$s" = enabled ];;
   enable|disable) now=0; [ "${1:-}" = --now ] && { now=1; shift; }; u="$1"
         [ "$cmd" = enable ] && [ -f "$st/FAIL_ENABLE_$u" ] && { echo "stub: enable $u failed" >&2; exit 1; }
+        [ "$cmd" = disable ] && [ -f "$st/FAIL_DISABLE_$u" ] && { echo "stub: disable $u failed" >&2; exit 1; }
         echo "${cmd}d" > "$st/$u.enabled"
         if [ "$now" = 1 ]; then if [ "$cmd" = enable ]; then echo active > "$st/$u"; else echo inactive > "$st/$u"; fi; fi;;
   daemon-reload) [ -f "$st/FAIL_RELOAD" ] && { echo "stub: daemon-reload failed" >&2; exit 1; }; true;;

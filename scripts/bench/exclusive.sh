@@ -305,8 +305,11 @@ end)
     CONV=1
     conversion_warn
     if [ "$(systemctl is-enabled $UNIT 2>/dev/null || true)" = enabled ]; then
-      act systemctl disable $UNIT || echo "!!!! systemctl disable $UNIT FAILED — both units enabled: a reboot races them" >&2
-      note "$UNIT disabled (conversion in place: no boot race with $JS_UNIT)"
+      if act systemctl disable $UNIT; then
+        note "$UNIT disabled (conversion in place: no boot race with $JS_UNIT)"
+      else
+        echo "!!!! systemctl disable $UNIT FAILED (still $(systemctl is-enabled $UNIT 2>/dev/null || true)) — both units enabled: a reboot races them" >&2
+      fi
     else
       echo "  = $UNIT not enabled"
     fi

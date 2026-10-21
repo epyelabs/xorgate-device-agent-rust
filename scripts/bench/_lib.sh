@@ -563,6 +563,10 @@ DEADMAN_SCRIPT=/run/xorgate-rs-window-deadman.sh
 # Phase 5 (review-wp3 S2): how long a fired dead-man waits for a running
 # install-rs.sh (XORGATE_TEST_DEADMAN_LOCK_SECS is test-only).
 DEADMAN_LOCK_SECS=${XORGATE_TEST_DEADMAN_LOCK_SECS:-300}
+# …and how long its --revert may run: WP1's revert IGNORES SIGTERM (review-wp1
+# M1), so the bound is `timeout -k 10 <secs>` (SIGKILL 10 s after the TERM).
+# XORGATE_TEST_DEADMAN_REVERT_SECS is test-only.
+DEADMAN_REVERT_SECS=${XORGATE_TEST_DEADMAN_REVERT_SECS:-300}
 deadman_state() { systemctl is-active "$DEADMAN_UNIT.timer" 2>/dev/null || true; }
 # deadman_arm <seconds> <window dir>: (re)arms; an armed timer is replaced.
 deadman_arm() {
@@ -604,8 +608,8 @@ case "\$st" in
   converted|converting)
     if [ -f $RS_INSTALLER ]; then
       say "conversion record state=\$st — running $RS_INSTALLER --revert"
-      if timeout 300 bash $RS_INSTALLER --revert </dev/null; then say "revert done"
-      else rc=\$?; say "$RS_INSTALLER --revert exited \$rc — continuing with enable + start of $JS_UNIT"; fi
+      if timeout -k 10 $DEADMAN_REVERT_SECS bash $RS_INSTALLER --revert </dev/null; then say "revert done"
+      else rc=\$?; say "$RS_INSTALLER --revert exited \$rc (124/137 = timed out/killed after ${DEADMAN_REVERT_SECS}s) — continuing with enable + start of $JS_UNIT"; fi
     else
       say "conversion record state=\$st but $RS_INSTALLER is missing — cannot revert; continuing with enable + start of $JS_UNIT"
     fi ;;
@@ -868,14 +872,16 @@ conversion_in_place() {
   case "$(conversion_state)" in converted|converting|unknown) return 0 ;; esac
   rs_unit_converted
 }
-# install-rs.sh's run lock (WP1: mkdir lock dir + pid file). True while a LIVE
-# install-rs.sh holds it (a stale lock with a dead pid does not count).
+# install-rs.sh's run lock (WP1: mkdir lock dir + pid file). True while it is
+# HELD: the dir exists and its pid file is missing/empty (being written) or
+# names a live pid. Only a lock whose pid is provably dead is stale.
 RS_INSTALL_LOCK=/run/xorgate-rs-install.lock
 convert_lock_held() {
   local pid
   [ -d "$RS_INSTALL_LOCK" ] || return 1
   pid=$(cat "$RS_INSTALL_LOCK/pid" 2>/dev/null || true)
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  [ -n "$pid" ] || return 0
+  kill -0 "$pid" 2>/dev/null
 }
 # Start the PROD JS agent and verify it is active. Never aborts the script
 # (set -e safe): returns 1 after ~30 s of retries so the caller can shout.
