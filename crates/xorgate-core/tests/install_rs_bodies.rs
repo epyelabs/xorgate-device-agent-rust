@@ -49,7 +49,10 @@ fn golden_is_bash_readable() {
     let mut values = vec![g.wrapper.as_str(), g.dist_dropin.as_str()];
     values.extend(g.updater_sudoers.values().map(String::as_str));
     for v in values {
-        assert!(!v.contains('\\') && !v.contains('\t') && !v.contains('\r'), "{v:?}");
+        assert!(
+            !v.contains('\\') && !v.contains('\t') && !v.contains('\r'),
+            "{v:?}"
+        );
         assert!(v.ends_with('\n'));
     }
     // One value per line, as the bash reader expects.
