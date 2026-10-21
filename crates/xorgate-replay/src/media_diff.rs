@@ -1264,6 +1264,9 @@ fn group_inputs(group: &str) -> &'static [&'static str] {
     }
 }
 
+/// One recorded sample as `(ts, leaf path → JSON text)` (`rec_values`).
+type LeafSample = (i64, BTreeMap<String, String>);
+
 /// T7/D30 `d30_rec_value_gap` (F-E2-1, Phase 4 gate rec-disk run 1,
 /// replay-20261021T074334Z): the rail value a JS recorder never wrote
 /// because of D30 itself. The tape releases one pmic value `v` between `u`
@@ -1289,8 +1292,8 @@ fn group_inputs(group: &str) -> &'static [&'static str] {
 ///   drop, counted in that session's `(samples without system)` row).
 fn d30_rec_value_gap(
     p: &str,
-    (lack_kind, lack): (&str, &[(i64, BTreeMap<String, String>)]),
-    (hold_kind, hold): (&str, &[(i64, BTreeMap<String, String>)]),
+    (lack_kind, lack): (&str, &[LeafSample]),
+    (hold_kind, hold): (&str, &[LeafSample]),
     only: &[Step],
     pmic: &[(i64, String)],
 ) -> bool {
@@ -1324,8 +1327,7 @@ fn d30_rec_value_gap(
     if held.len() != *n || held.iter().any(|t| *t < lo || *t >= hi) {
         return false;
     }
-    let in_window: Vec<&(i64, BTreeMap<String, String>)> =
-        lack.iter().filter(|(t, _)| *t >= lo && *t < hi).collect();
+    let in_window: Vec<&LeafSample> = lack.iter().filter(|(t, _)| *t >= lo && *t < hi).collect();
     let system_less =
         |o: &BTreeMap<String, String>| !o.keys().any(|k| k.starts_with("metrics.system."));
     let explained = in_window.iter().all(|(t, o)| {
