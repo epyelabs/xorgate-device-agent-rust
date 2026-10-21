@@ -168,7 +168,18 @@ MODE=none
 FINISHED=0
 PHASE=none      # none (steps 0-1) | fetch (2-3) | install (4-7) | start (8-9)
 LOCKED=0
-finish() { FINISHED=1; exit "$1"; }
+finish() { FINISHED=1; scratch_clean; exit "$1"; }
+# W1/W2 (wp2 footprint sweep): every temp file and dir of a run lives in ONE
+# scratch dir (the download, the rollback backups, generated bodies, manifest
+# work files), removed on every exit path: finish, each abort, the EXIT trap.
+# Only the test-only crash knob and kill -9 leave it behind.
+SCRATCH=""
+# Never fatal (F2-M1): returns 1 when /tmp is unusable (full, read-only). The
+# revert's restore path never needs it; only its self-check does, and that is
+# then reported unverified.
+scratch_init() { [ -n "$SCRATCH" ] || SCRATCH=$(mktemp -d /tmp/xg-install-rs-XXXXXX 2>/dev/null) || { SCRATCH=""; return 1; }; }
+scratch_clean() { if [ -n "$SCRATCH" ]; then rm -rf "$SCRATCH"; SCRATCH=""; fi; }
+mkt() { if [ "${1:-}" = -d ]; then mktemp -d "${SCRATCH:-/tmp}/d.XXXXXX"; else mktemp "${SCRATCH:-/tmp}/f.XXXXXX"; fi; }
 usage_error() { printf '%s%s\n' "$PREFIX" "$1" "$PREFIX" "see: install-rs.sh --help" >&2 2>/dev/null || true; FINISHED=1; exit 2; }
 refuse() { say "refused: $1 (nothing changed)"; finish 3; }
 
@@ -229,7 +240,7 @@ service_user_of() {
 _i3_records() { # <root> → "path<TAB>line" records, unsorted
   local root=$1 tmp rec y m o l p d
   local -A H=()
-  tmp=$(mktemp -d)
+  tmp=$(mkt -d 2>/dev/null) && [ -n "$tmp" ] || return 1   # no scratch space: the manifest fails, never a partial one
   find "$root" -type f -print0 > "$tmp/files"
   xargs -0 -r sha256sum -z -- < "$tmp/files" > "$tmp/sums"
   while IFS= read -r -d '' rec; do H["${rec:66}"]=${rec:0:64}; done < "$tmp/sums"
@@ -251,11 +262,11 @@ manifest() { # → the I3 manifest on stdout
   local r digest
   {
     for r in "${MANIFEST_ROOTS[@]}"; do
-      if [ -e "$r" ] || [ -L "$r" ]; then _i3_records "$r"; fi
+      if [ -e "$r" ] || [ -L "$r" ]; then _i3_records "$r" || exit 1; fi    # the group is a subshell
     done
     for r in "${TREE_ROOTS[@]}"; do
       if [ -e "$r" ] || [ -L "$r" ]; then
-        digest=$(_i3_records "$r" | msort | sha256sum | cut -d' ' -f1)
+        digest=$(_i3_records "$r" | msort | sha256sum | cut -d' ' -f1) || exit 1
         printf '%s\tt %s %s\n' "$r" "$digest" "$r"
       fi
     done
@@ -309,9 +320,9 @@ DIFFS=0
 selfcheck() {
   local pre=$1 mode=$2 tmp line p
   local -A WAS=() NOW=()
-  tmp=$(mktemp -d)
-  mfilter "$mode" < "$pre" | sort > "$tmp/a"
-  manifest | mfilter "$mode" | sort > "$tmp/b"
+  tmp=$(mkt -d 2>/dev/null) && [ -n "$tmp" ] || return 1   # F2-M1: unverified, never fatal
+  mfilter "$mode" < "$pre" | sort > "$tmp/a" || { rm -rf "$tmp"; return 1; }
+  manifest | mfilter "$mode" | sort > "$tmp/b" || { rm -rf "$tmp"; return 1; }
   comm -23 "$tmp/a" "$tmp/b" > "$tmp/gone"
   comm -13 "$tmp/a" "$tmp/b" > "$tmp/new"
   while IFS= read -r line; do mpath "$line"; WAS["$MP"]=1; done < "$tmp/gone"
@@ -408,8 +419,13 @@ reexec_private() {
   local self=${BASH_SOURCE[0]} tmp
   [ -z "${XORGATE_RS_INSTALL_REEXEC:-}" ] || return 0
   [ -f "$self" ] || return 0
-  tmp=$(mktemp /tmp/install-rs.XXXXXX)
-  cp -- "$self" "$tmp"
+  # No /tmp: carry on from the file itself. Purge only unlinks it, and bash
+  # keeps reading the open inode, so this is safe, just not belt-and-braces.
+  if ! tmp=$(mktemp /tmp/install-rs.XXXXXX 2>/dev/null) || ! cp -- "$self" "$tmp" 2>/dev/null; then
+    [ -z "${tmp:-}" ] || rm -f "$tmp"
+    say "  note: no /tmp space for a private copy; running from $self"
+    return 0
+  fi
   XORGATE_RS_INSTALL_REEXEC=$tmp exec bash "$tmp" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 }
 
@@ -433,7 +449,7 @@ created() { RUN_CREATED+=("$1"); rec_add_installed "$1"; }
 # rsPreexisting=yes) is copied aside first and put back by a step 4-7 rollback.
 BAK=""; OVERWRITTEN=()
 backup_of() { # <path>
-  [ -n "$BAK" ] || BAK=$(mktemp -d /tmp/xg-install-rs-bak-XXXXXX) || return 1
+  [ -n "$BAK" ] || BAK=$(mkt -d) || return 1
   cp -a -- "$1" "$BAK/${#OVERWRITTEN[@]}" || return 1
   OVERWRITTEN+=("$1")
 }
@@ -463,7 +479,7 @@ put_file() {
 put_body() { # <dest> <mode> <body function> [args]: put_file of a generated body
   local dest=$1 mode=$2 tmp rc=0
   shift 2
-  tmp=$(mktemp)
+  tmp=$(mkt)
   "$@" > "$tmp"
   put_file "$dest" "$mode" "$tmp" || rc=$?
   rm -f "$tmp"
@@ -491,7 +507,7 @@ abort_convert() { # <message>
       if [ "$REC_DIR_CREATED" = 1 ]; then rm -rf "$REC_DIR"; fi
       say "failed: $1"
       say "nothing was changed (exit 1)"
-      FINISHED=1; unlock; exit 1 ;;
+      FINISHED=1; scratch_clean; unlock; exit 1 ;;
     install)
       if [ "$SWAPPED" = 1 ]; then
         if [ "$HAD_PREV" = 0 ]; then rm -rf "$RS_PREFIX"
@@ -513,7 +529,7 @@ abort_convert() { # <message>
       [ -z "$DL" ] || rm -rf "$DL"
       say "failed: $1"
       say "rolled back: the files this run created are removed, the ones it overwrote are restored and $RS_PREFIX is as it was (exit 1)"
-      FINISHED=1; unlock; exit 1 ;;
+      FINISHED=1; scratch_clean; unlock; exit 1 ;;
     start)
       PHASE=none
       say "failed: $1"
@@ -525,7 +541,7 @@ abort_convert() { # <message>
       REVERT_FINAL=0
       revert_main
       say "FAILED: $RS_SVC did not become healthy; reverted to $JS_SVC ($(unit_enabled "$JS_SVC") + $(unit_active "$JS_SVC")). see: journalctl -u $RS_SVC (exit 4)"
-      FINISHED=1; unlock; exit 4 ;;
+      FINISHED=1; scratch_clean; unlock; exit 4 ;;
   esac
 }
 on_exit() {
@@ -539,6 +555,7 @@ on_exit() {
     say "failed: interrupted or unexpected error (exit $rc) before the conversion record was written; nothing was changed"
   fi
   [ -z "$BAK" ] || rm -rf "$BAK"
+  scratch_clean
   unlock
   if [ -n "${XORGATE_RS_INSTALL_REEXEC:-}" ]; then rm -f "$XORGATE_RS_INSTALL_REEXEC"; fi
 }
@@ -551,7 +568,7 @@ PRE_TMP=""
 
 fetch_and_verify() { # step 2 (§5.4, §5.7) → TGZ, SHA, SOURCE
   local base url sumf want have bucket rc
-  DL=$(mktemp -d /tmp/xg-install-rs-XXXXXX)
+  DL=$(mkt -d)
   if [ -n "$TARBALL" ]; then
     if [ -n "$FROM$TAG" ]; then say "  note: --tarball given: --from/--tag ignored"; fi
     [ -f "$TARBALL" ] || abort_convert "no such tarball: $TARBALL"
@@ -650,6 +667,7 @@ convert_main() {
   for m in "$AGENT_ENV" "$JS_PREFIX" "$JS_UNIT"; do [ -e "$m" ] || missing+=("$m"); done
   [ ${#missing[@]} = 0 ] || refuse "not a JS-provisioned device: missing ${missing[*]}"
   lock
+  scratch_init || refuse "no scratch space in /tmp (full or read-only): a conversion needs it for the download and the rollback backups"
   trap 'on_signal 129' HUP; trap 'on_signal 130' INT; trap 'on_signal 143' TERM; trap '' PIPE
   # N7 (review-wp1): no record, yet the Rust unit is enabled and the JS one is
   # not (e.g. a converted device whose record was deleted): recording that as
@@ -677,7 +695,7 @@ convert_main() {
     R=([state]=converting [startedAt]="$(utc)" [convertedAt]="" [version]="" [channel]="" [sha256]="" [source]=""
        [jsEnabled]="$(unit_enabled "$JS_SVC")" [jsActive]="$(unit_active "$JS_SVC")" [rsPreexisting]="$rs_exists"
        [serviceUser]="${user:-root}" [installed]="")
-    pre_tmp=$(mktemp); PRE_TMP=$pre_tmp
+    pre_tmp=$(mkt); PRE_TMP=$pre_tmp
     prev=$(latest_reverted)
     prev_pre=${prev/record.reverted-/pre.manifest.reverted-}
     if [ "$rs_exists" = yes ] && [ -n "$prev" ] && [ -f "$prev_pre" ]; then
@@ -689,7 +707,7 @@ convert_main() {
       R[rsPreexisting]=$(sed -n 's/^rsPreexisting=//p' "$prev" | first_line)
       R[installed]=$(sed -n 's/^installed=//p' "$prev" | first_line)
       {
-        manifest | mfilter keep
+        manifest | mfilter keep || exit 1   # the group is a subshell: fail the pipeline
         while IFS= read -r t; do mpath "$t"; if is_rust_owned "$MP"; then printf '%s\n' "$t"; fi; done < "$prev_pre"
       } | key_by_path | msort > "$pre_tmp"
       say "  re-conversion after a keep-mode revert ($(basename -- "$prev")): rsPreexisting=${R[rsPreexisting]} inherited"
@@ -774,7 +792,7 @@ convert_main() {
   if [ -z "$user" ] || [ "$user" = root ]; then
     say "  = service user '${user:-root}' needs no grant: no $SUDOERS_024"
   else
-    t=$(mktemp -d)
+    t=$(mkt -d)
     rs_update_sudoers_body "$user" > "$t/024_xorgate-update-rs"
     chmod 0440 "$t/024_xorgate-update-rs"
     if [ -f "$SUDOERS_024" ] && [ ! -L "$SUDOERS_024" ] && cmp -s "$t/024_xorgate-update-rs" "$SUDOERS_024" \
@@ -950,7 +968,7 @@ revert_main() {
   #    row but the record dir (purge). The e2e checks the same independently.
   if [ -f "$pref" ]; then
     say "== self-check against $pref ($mode rows)"
-    if ! selfcheck "$pref" "$mode"; then ok="NO (the self-check could not run)"
+    if ! selfcheck "$pref" "$mode"; then ok="NO (unverified: the self-check could not run, no scratch space in /tmp?)"
     elif [ "$DIFFS" != 0 ]; then ok="NO ($DIFFS differences, listed above)"; fi
   else
     say "  - $pref missing: nothing to compare against"
@@ -965,7 +983,7 @@ revert_main() {
     while [ -e "$REC_DIR/record.reverted-$ts" ]; do ts="${ts}x"; done
     dest="$REC_DIR/record.reverted-$ts"
     mv -f "$REC" "$dest"
-    sed -i 's/^state=.*/state=reverted/' "$dest"
+    sed -i 's/^state=.*/state=reverted/' "$dest" 2>/dev/null || say "  ! could not mark $dest state=reverted (no space?)"
     if [ -f "$PRE" ]; then mv -f "$PRE" "$REC_DIR/pre.manifest.reverted-$ts"; fi
     note "record moved to $dest"
   fi
@@ -1028,6 +1046,7 @@ main() {
       # also runs it); SIGPIPE ignored so a dead output reader cannot either.
       trap '' HUP INT TERM PIPE
       lock
+      scratch_init || say "WARNING: no scratch space in /tmp (full or read-only): reverting anyway; the self-check will be unverified"
       revert_main ;;
     convert)
       case ${BASH_SOURCE[0]} in "$RS_PREFIX"/* | "$STAGING"/* | "$BACKUP"/*) reexec_private ;; esac
