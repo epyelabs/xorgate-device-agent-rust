@@ -79,6 +79,14 @@ fi
 exit $rc
 STUB
 chmod 0755 "$T/bin/systemctl"
+# `install` shim: FAIL_INSTALL_DEST=<path> makes the install to that path fail
+# (a real write failure mid-step, for the rollback cases).
+cat > "$T/bin/install" <<'SHIM'
+#!/usr/bin/env bash
+if [ -n "${FAIL_INSTALL_DEST:-}" ] && [ "${!#}" = "$FAIL_INSTALL_DEST" ]; then echo "install: simulated failure" >&2; exit 1; fi
+exec /usr/bin/install "$@"
+SHIM
+chmod 0755 "$T/bin/install"
 export PATH="$T/bin:$PATH"
 
 # ---- a fake build (real units + install-rs.sh; a shell "binary") ----
@@ -245,7 +253,7 @@ expect $? 0 "JS enabled + active again, rs disabled"
 
 echo "== interrupted after step 4 → re-run completes; root service user"
 provision root; M0=$(snap)
-XORGATE_RS_CONVERT_FAIL_AT=4 run "$O" -y --tarball "$GOOD"; expect $? 1 "interrupt-4"
+XORGATE_RS_CONVERT_FAIL_AT=4 run "$O" -y --tarball "$GOOD"; expect $? 9 "interrupt-4 (test-only crash: exit 9, I1 amendment)"
 grep -qx state=converting /var/lib/xorgate-rs-install/record; expect $? 0 "record left state=converting"
 run "$O" -y --tarball "$GOOD"; expect $? 0 "re-run completes"
 [ ! -e /etc/sudoers.d/024_xorgate-update-rs ] && [ ! -e /etc/systemd/system/xorgate-agent-rs.service.d ]; expect $? 0 "root svc: no 024, no 10-user copy"
@@ -369,9 +377,9 @@ mkdir -p /etc/systemd/system/xorgate-agent-rs.service.d
 cp "$SRC/systemd/bench/90-bench-dev.conf" /etc/systemd/system/xorgate-agent-rs.service.d/
 # shellcheck disable=SC2016  # the bench wrapper's $ are literal
 printf '#!/usr/bin/env bash\nexec env XORGATE_HOME="${XORGATE_HOME:-/var/lib/xorgate-rs}" /opt/xorgate-rs/bin/xorgate-rs "$@"\n' > /usr/local/bin/xorgate-rs; chmod 0755 /usr/local/bin/xorgate-rs
-echo "not a dir" > /etc/systemd/system/xorgate-updater-rs.service.d     # makes step 6's mkdir fail
 systemctl enable xorgate-agent-rs; M0=$(snap)
-run "$O" -y --tarball "$GOOD"; expect $? 1 "step-6 write failure on a bench-shaped device"
+FAIL_INSTALL_DEST=/etc/systemd/system/xorgate-updater-rs.service.d/10-dist.conf run "$O" -y --tarball "$GOOD"
+expect $? 1 "step-6 write failure on a bench-shaped device"
 has "$O" "the ones it overwrote are restored" "rollback names the restore"
 [ "$(snap)" = "$M0" ]; expect $? 0 "bench shape: unit, wrapper, drop-ins and /opt/xorgate-rs byte-exact as before"
 [ -z "$(diff <(echo "$M0") <(snap))" ] || diff <(echo "$M0") <(snap) | sed 's/^/    /'
@@ -379,6 +387,36 @@ has "$O" "the ones it overwrote are restored" "rollback names the restore"
 echo "== N7: no record, rs enabled, JS not → refused (a revert could not restore JS)"
 provision pi; run "$O" -y --tarball "$GOOD"; rm -rf /var/lib/xorgate-rs-install; M0=$(snap)
 run "$O" -y --tarball "$GOOD"; expect $? 3 "record deleted on a converted device"; [ "$(snap)" = "$M0" ]; expect $? 0 "nothing changed"
+
+echo "== wp2 bug 1: a directory (or other non-file) where a file goes → refused, exit 1, nothing changed"
+for p in /usr/local/bin/xorgate-rs /etc/systemd/system/xorgate-agent-rs.service /etc/systemd/system/xorgate-agent-rs.service.d/10-user.conf \
+         /etc/systemd/system/xorgate-updater-rs.service /etc/systemd/system/xorgate-updater-rs.service.d/10-dist.conf /etc/sudoers.d/024_xorgate-update-rs; do
+  provision pi; mkdir -p "$p"; echo "user content" > "$p/keep.me"; M0=$(snap)
+  run "$O" -y --tarball "$GOOD"; expect $? 1 "dir at $p"
+  [ "$(snap)" = "$M0" ] && [ "$(cat "$p/keep.me")" = "user content" ]; expect $? 0 "  ... device byte-unchanged, the user content kept"
+  grep -q "in the way" "$O" && ! grep -q '^\[install-rs\] converted:' "$O"; expect $? 0 "  ... says what is in the way, never 'converted:'"
+done
+provision pi; mkfifo /usr/local/bin/xorgate-rs; M0=$(snap)
+run "$O" -y --tarball "$GOOD"; expect $? 1 "a FIFO at the wrapper path"; [ "$(snap)" = "$M0" ]; expect $? 0 "  ... nothing changed"
+provision pi; echo "a file" > /etc/systemd/system/xorgate-updater-rs.service.d; M0=$(snap)
+run "$O" -y --tarball "$GOOD"; expect $? 1 "a file where the drop-in dir goes"; [ "$(snap)" = "$M0" ]; expect $? 0 "  ... nothing changed"
+# Same refusal on a converted re-run (repair path), device unchanged.
+provision pi; run "$O" -y --tarball "$GOOD"; rm -f /usr/local/bin/xorgate-rs; mkdir /usr/local/bin/xorgate-rs; M1=$(snap)
+run "$O" -y --tarball "$GOOD"; expect $? 1 "converted re-run with a dir at the wrapper"; [ "$(snap)" = "$M1" ]; expect $? 0 "  ... nothing changed"
+
+echo "== wp2 bug 2: --purge names the foreign drop-in it keeps"
+provision pi; mkdir -p /etc/systemd/system/xorgate-agent-rs.service.d; cp "$SRC/systemd/bench/90-bench-dev.conf" /etc/systemd/system/xorgate-agent-rs.service.d/; M0=$(snap)
+run "$O" -y --tarball "$GOOD"; expect $? 0 "convert with a foreign drop-in"; has "$O" "foreign drop-in kept (not installed by install-rs.sh): /etc/systemd/system/xorgate-agent-rs.service.d/90-bench-dev.conf" "  ... named by the convert"
+run "$O" --revert --purge; expect $? 0 "purge"; has "$O" "foreign drop-in kept (not installed by install-rs.sh): /etc/systemd/system/xorgate-agent-rs.service.d/90-bench-dev.conf" "  ... named by the purge"
+[ "$(snap)" = "$M0" ]; expect $? 0 "  ... device == M0, the drop-in kept"
+
+echo "== I3 amendment: pre.manifest modes are 4 digits"
+provision pi; run "$O" -y --tarball "$GOOD"
+! grep -vE '^(t [0-9a-f]{64} /|[fdlpsbc] [0-7]{4} [0-9]+:[0-9]+ )' /var/lib/xorgate-rs-install/pre.manifest; expect $? 0 "every line: 4-digit mode (or a tree line)"
+grep -q '^f 0600 ' /var/lib/xorgate-rs-install/pre.manifest && grep -q '^d 0700 ' /var/lib/xorgate-rs-install/pre.manifest; expect $? 0 "  ... e.g. f 0600 / d 0700"
+# A pre.manifest from the older 3-digit emitter still self-checks clean.
+sed -i -E 's/^([fdl]) 0([0-7]{3}) /\1 \2 /' /var/lib/xorgate-rs-install/pre.manifest
+run "$O" --revert; expect $? 0 "revert against a 3-digit pre.manifest"; has "$O" "matches the pre-conversion record: yes" "  ... matches"
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

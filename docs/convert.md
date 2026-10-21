@@ -215,6 +215,7 @@ the conversion itself created.
 | 2 | usage error | `install-rs.sh --help` |
 | 3 | refused, nothing changed: not root, not JS-provisioned, `--purge` of a pre-existing install, another `install-rs.sh` running | fix the precondition |
 | 4 | the Rust agent started but was not healthy within 90 s; the script reverted to the JS agent by itself | `journalctl -u xorgate-agent-rs -n 100`; the script printed the tail |
+| 9 | only with the test-only `XORGATE_RS_CONVERT_FAIL_AT` (a simulated crash); never on a real device | run the script again, or `--revert` |
 
 Common failures:
 
@@ -223,6 +224,9 @@ Common failures:
 - `download failed (… 404 …)`: wrong `--tag`, or no Rust build in that bucket yet.
 - `staged build does not run on this device (…)`: wrong architecture or a truncated download.
 - `the build is missing install-rs.sh`: a tarball packed before Phase 5. Use a newer build.
+- `… is in the way …`: a directory or special file sits where the script writes a file (for
+  example `/usr/local/bin/xorgate-rs` is a directory). Nothing was changed; move it away and run
+  the script again. It never deletes such content itself.
 - An interrupted run (`--status` shows `state=converting`): run the same command again to finish
   it, or `--revert`.
 
@@ -249,7 +253,7 @@ Logs: `journalctl -u xorgate-agent-rs`, `journalctl -u xorgate-updater-rs`; the 
   foreign files. Pass `XORGATE_HOME=/var/lib/xorgate-rs` to bench `xorgate-rs` calls, and run
   `scripts/bench/install.sh` again before `scripts/bench/exclusive.sh end`. The full recipe is
   `scripts/bench/convert-window.md`.
-- **Test-only knob.** `XORGATE_RS_CONVERT_FAIL_AT=<n>` makes the script exit 1 right after step
+- **Test-only knob.** `XORGATE_RS_CONVERT_FAIL_AT=<n>` makes the script exit 9 right after step
   `<n>` with no cleanup, to simulate a crash for the Docker e2e (`tools/convert-e2e`). Never set
   it on a real device.
 
