@@ -522,7 +522,8 @@ t0=$(date +%s); fire >"$LOGS/p15.log" 2>&1; rc=$?; t1=$(date +%s)
 [ "$rc" = 0 ] && [ "$(cat "$LOGS/installer.argv")" = --revert ] && grep -q "install-rs.sh --revert exited 137" "$LOGS/p15.log" && [ $((t1 - t0)) -lt 40 ]
 expect $? "TERM-ignoring revert: SIGKILLed (rc 137) after 2+10 s, dead-man rc=0 in $((t1 - t0)) s"
 check active "after the killed revert: JS active"; [ "$(js_en)" = enabled ]; expect $? "…and enabled"
-pgrep -f "$INST" >/dev/null; expect $((1 - $?)) "no install-rs.sh process left behind"
+left=0; for f in /proc/[0-9]*/cmdline; do [ "$(tr '\0' ' ' < "$f" 2>/dev/null)" = "bash $INST --revert " ] && left=1; done
+[ "$left" = 0 ]; expect $? "no install-rs.sh --revert process left behind (/proc scan)"
 no_record; rm -rf /opt/xorgate-rs; bench_unit; bash "$B/exclusive.sh" end >/dev/null 2>&1
 
 echo "== case (p1d): a FAILING disable in end is logged as failed, not as disabled"
