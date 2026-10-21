@@ -257,6 +257,19 @@ async fn led_cli_matches_the_ts_command() {
                 text: q9(&l.text),
             })
             .collect();
+        if case.input.signal_at_ms.is_some() {
+            // D36 (option B): the TS CALLS the dark blank twice after the
+            // signal (shutdown + the main flow's trailing blank, which then
+            // races execa's exit cleanup); Rust calls and lands exactly ONE.
+            let blank = |c: &CallRec| c.argv.join(" ") == "pinctrl set 12,21,16 op dl";
+            let n = want.calls.len();
+            assert!(
+                n >= 2 && blank(&want.calls[n - 1]) && blank(&want.calls[n - 2]),
+                "{}: the TS ends on two blank calls",
+                case.name
+            );
+            want.calls.pop();
+        }
         assert_eq!(lines, want_lines, "{}: lines", case.name);
         assert_eq!(code, want.exit_code, "{}: exit code", case.name);
         assert_eq!(
@@ -278,18 +291,176 @@ fn usage_differs_from_the_ts_only_by_the_binary_name() {
 }
 
 // ---------------------------------------------------------------------------
-// F-E3-1 (Phase 4 gate): SIGINT mid-pattern in the REAL process, pinned to
-// the gate's rig trace `fixtures/led_driver/led-cli-sigint-gate.json`
-// (gate-offbench/E3-led-cli/e3run3: TS @89b5c64 vs xorgate-rs 08ff720, 9
-// runs). The fixture above records writer CALLS under fake time, where both
-// sides already made two blank calls; in the real process the TS's second
-// `pinctrl` child (spawned in the same microtask drain as the shutdown
-// blank) outlives `process.exit` and lands, while 08ff720 returned as soon
-// as the shutdown blank landed and the runtime drop killed the second child
-// (`kill_on_drop`). Modelled here: a writer whose "child" starts when the
-// write future is first polled and LANDS only after it ran for a while (2 ms
-// + 1 ms per child already running — the trace's +3/+5 ms stagger), and a
-// process exit = dropping the runtime the moment `run` returns.
+// D36 (orchestrator option B, review-gate-fixes final check): a signalled
+// pattern lands EXACTLY ONE dark blank and exits — the TS's "exit wins"
+// outcome. The TS lands 1 or 2 (its trailing blank races execa's
+// `cleanup: true` kill at process.exit). Modelled with a writer whose
+// "child" starts when the write future is first polled and LANDS when it
+// finishes; process exit = dropping the runtime the moment `run` returns
+// (a child still running is killed, as `kill_on_drop` / execa cleanup do).
+
+const BLANK: &str = "pinctrl set 12,21,16 op dl";
+
+#[derive(Debug, Clone)]
+struct Landed {
+    spawned_ms: u64,
+    argv: String,
+    landed_seq: Option<usize>,
+}
+
+/// `dh` writes take `dh_ms`, `dl` writes 2 ms. From `hang_from_ms` on, every
+/// write instead takes `hang_ms` and fails — `None` = never returns (a hung
+/// pinctrl without the writer's own timeout).
+struct SlowChild {
+    log: Arc<Mutex<Vec<Landed>>>,
+    seq: Arc<std::sync::atomic::AtomicUsize>,
+    t0: Instant,
+    dh_ms: u64,
+    hang_from_ms: Option<u64>,
+    hang_ms: Option<u64>,
+}
+
+impl PinWriter for SlowChild {
+    fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
+        let argv = format!("pinctrl {}", PinctrlWriter::args(pins, high).join(" "));
+        let (log, seq, t0) = (self.log.clone(), self.seq.clone(), self.t0);
+        let (dh_ms, hang_from, hang_ms) = (self.dh_ms, self.hang_from_ms, self.hang_ms);
+        Box::pin(async move {
+            let now = ms_since(t0);
+            let idx = {
+                let mut l = log.lock().unwrap();
+                l.push(Landed {
+                    spawned_ms: now,
+                    argv,
+                    landed_seq: None,
+                });
+                l.len() - 1
+            };
+            if hang_from.is_some_and(|h| now >= h) {
+                match hang_ms {
+                    Some(ms) => {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                        return false; // timed out: nothing written
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            }
+            let ms = if high { dh_ms } else { 2 };
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            let n = seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            log.lock().unwrap()[idx].landed_seq = Some(n);
+            true
+        })
+    }
+}
+
+struct Signalled {
+    lines: Vec<Line>,
+    code: i32,
+    /// Virtual ms from start to `run` returning (the process exit).
+    exit_ms: u64,
+    log: Vec<Landed>,
+}
+
+fn run_signalled(args: &[String], sig_ms: u64, dh_ms: u64, hang: Option<Option<u64>>) -> Signalled {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let log: Arc<Mutex<Vec<Landed>>> = Arc::default();
+    let out = Arc::new(Out::default());
+    let (code, exit_ms) = {
+        let (log, out, args) = (log.clone(), out.clone(), args.to_vec());
+        rt.block_on(async move {
+            let t0 = Instant::now();
+            let host = Arc::new(FakeHost {
+                h: HostIn::default(),
+                mock: false,
+                calls: Calls::default(),
+                t0,
+            });
+            let writer = Arc::new(SlowChild {
+                log,
+                seq: Arc::default(),
+                t0,
+                dh_ms,
+                hang_from_ms: hang.map(|_| sig_ms),
+                hang_ms: hang.flatten(),
+            });
+            let code = run(
+                &args,
+                LedCliDeps {
+                    out,
+                    make_driver: Box::new(move |log| {
+                        let map = LedPinMap::status_led_map();
+                        LedDriver::new(LedDriverOptions {
+                            map: Some(map.clone()),
+                            writer: Some(writer),
+                            probe: Some(Box::new(move || {
+                                let (map, host) = (map.clone(), host.clone());
+                                Box::pin(async move { probe_host_with(&map, host.as_ref()).await })
+                            })),
+                            log: Some(log),
+                        })
+                    }),
+                    service_result: None,
+                    signal: Box::new(move || {
+                        Box::pin(async move {
+                            tokio::time::sleep_until(t0 + Duration::from_millis(sig_ms)).await
+                        })
+                    }),
+                },
+            )
+            .await;
+            (code, ms_since(t0))
+        })
+    };
+    drop(rt); // process exit: a child still running dies here
+    let lines = out.0.lock().unwrap().clone();
+    let log = log.lock().unwrap().clone();
+    Signalled {
+        lines,
+        code,
+        exit_ms,
+        log,
+    }
+}
+
+/// Exactly one blank was started after the signal and it landed; no other
+/// write started at/after the signal landed (a step whose timer fired in the
+/// same instant as the signal may start, but it is killed); and the blank
+/// is the LAST write that landed (nothing — no lit step — after it).
+fn assert_one_blank_ends_dark(at: &str, sig: u64, r: &Signalled) {
+    assert_eq!(r.code, 0, "{at}");
+    let started: Vec<&Landed> = r.log.iter().filter(|w| w.spawned_ms >= sig).collect();
+    let blanks: Vec<&&Landed> = started.iter().filter(|w| w.argv == BLANK).collect();
+    assert_eq!(blanks.len(), 1, "{at}: blanks after the signal {:?}", r.log);
+    assert!(blanks[0].landed_seq.is_some(), "{at}: the blank landed");
+    // Besides the blank, only a step whose timer fired in the signal's own
+    // instant (started before the signal was handled) may land — and only
+    // before the blank (checked below).
+    let others: Vec<&&Landed> = started
+        .iter()
+        .filter(|w| w.landed_seq.is_some() && w.argv != BLANK)
+        .collect();
+    assert!(
+        others.iter().all(|w| w.spawned_ms == sig),
+        "{at}: landed after the signal {:?}",
+        r.log
+    );
+    let last = r
+        .log
+        .iter()
+        .filter(|w| w.landed_seq.is_some())
+        .max_by_key(|w| w.landed_seq);
+    assert_eq!(
+        last.map(|w| w.argv.as_str()),
+        Some(BLANK),
+        "{at}: last landed {:?}",
+        r.log
+    );
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -314,107 +485,12 @@ struct GateSide {
     stderr: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct Child {
-    spawned_ms: u64,
-    argv: String,
-    landed: bool,
-}
-
-type Children = Arc<Mutex<Vec<Child>>>;
-
-struct ChildPinctrl {
-    children: Children,
-    running: Arc<std::sync::atomic::AtomicU64>,
-    t0: Instant,
-}
-
-impl PinWriter for ChildPinctrl {
-    fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
-        use std::sync::atomic::Ordering;
-        let argv = format!("pinctrl {}", PinctrlWriter::args(pins, high).join(" "));
-        let (children, running, t0) = (self.children.clone(), self.running.clone(), self.t0);
-        Box::pin(async move {
-            let idx = {
-                let mut c = children.lock().unwrap();
-                c.push(Child {
-                    spawned_ms: ms_since(t0),
-                    argv,
-                    landed: false,
-                });
-                c.len() - 1
-            };
-            let busy = running.fetch_add(1, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(2 + busy)).await;
-            running.fetch_sub(1, Ordering::SeqCst);
-            children.lock().unwrap()[idx].landed = true;
-            true
-        })
-    }
-}
-
-fn run_gate_case(case: &GateCase) -> (Vec<Line>, i32, Vec<Child>) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap();
-    let children: Children = Arc::default();
-    let out = Arc::new(Out::default());
-    let code = {
-        let (children, out) = (children.clone(), out.clone());
-        let sig_ms = case.harness_sigint_after_ms;
-        let args = case.args.clone();
-        rt.block_on(async move {
-            let t0 = Instant::now();
-            let calls: Calls = Arc::default();
-            let host = Arc::new(FakeHost {
-                h: HostIn::default(),
-                mock: false,
-                calls,
-                t0,
-            });
-            let writer = Arc::new(ChildPinctrl {
-                children,
-                running: Arc::default(),
-                t0,
-            });
-            run(
-                &args,
-                LedCliDeps {
-                    out,
-                    make_driver: Box::new(move |log| {
-                        let map = LedPinMap::status_led_map();
-                        LedDriver::new(LedDriverOptions {
-                            map: Some(map.clone()),
-                            writer: Some(writer),
-                            probe: Some(Box::new(move || {
-                                let (map, host) = (map.clone(), host.clone());
-                                Box::pin(async move { probe_host_with(&map, host.as_ref()).await })
-                            })),
-                            log: Some(log),
-                        })
-                    }),
-                    service_result: None,
-                    signal: Box::new(move || {
-                        Box::pin(async move {
-                            tokio::time::sleep_until(t0 + Duration::from_millis(sig_ms)).await
-                        })
-                    }),
-                },
-            )
-            .await
-        })
-    };
-    // Process exit: every task still running (a child not yet landed) dies.
-    drop(rt);
-    let lines = out.0.lock().unwrap().clone();
-    let children = children.lock().unwrap().clone();
-    (lines, code, children)
-}
-
+/// The 9 SIGINT runs of the Phase 4 gate rig trace
+/// (`fixtures/led_driver/led-cli-sigint-gate.json`, gate-offbench/E3-led-cli/
+/// e3run3, where the TS happened to land 2 blanks 9/9): stdout/stderr/code
+/// = the TS; Rust lands exactly the FIRST of the TS's two blanks (D36).
 #[test]
-fn sigint_mid_pattern_lands_the_blank_twice_like_the_ts_gate_trace() {
+fn sigint_mid_pattern_lands_exactly_one_blank_d36() {
     let p = format!(
         "{}/../../fixtures/led_driver/led-cli-sigint-gate.json",
         env!("CARGO_MANIFEST_DIR")
@@ -422,8 +498,8 @@ fn sigint_mid_pattern_lands_the_blank_twice_like_the_ts_gate_trace() {
     let fx: GateFixture = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
     assert_eq!(fx.cases.len(), 9);
     for case in &fx.cases {
-        let (lines, code, children) = run_gate_case(case);
         let sig = case.harness_sigint_after_ms;
+        let r = run_signalled(&case.args, sig, 2, None);
         let want_lines: Vec<Line> = case
             .ts
             .stdout
@@ -434,173 +510,86 @@ fn sigint_mid_pattern_lands_the_blank_twice_like_the_ts_gate_trace() {
                 text: t.clone(),
             }))
             .collect();
-        let mut got_lines = lines.clone();
-        got_lines.sort_by_key(|l| l.fd);
-        assert_eq!(got_lines, want_lines, "{}: stdout/stderr", case.case);
-        assert_eq!(code, case.ts.code, "{}: exit code", case.case);
-        // Nothing the process started is killed by its exit ...
-        let killed: Vec<&Child> = children.iter().filter(|c| !c.landed).collect();
-        assert!(
-            killed.is_empty(),
-            "{}: killed children {killed:?}",
-            case.case
-        );
-        // ... and what it started after the signal is exactly the TS's.
-        let after: Vec<String> = children
-            .iter()
-            .filter(|c| c.spawned_ms >= sig)
-            .map(|c| c.argv.clone())
-            .collect();
+        let mut got = r.lines.clone();
+        got.sort_by_key(|l| l.fd);
+        assert_eq!(got, want_lines, "{}: stdout/stderr", case.case);
+        assert_eq!(r.code, case.ts.code, "{}: exit code", case.case);
         assert_eq!(
-            after, case.expected_spawned_after_signal,
-            "{}: pinctrl children after SIGINT at {sig} ms",
+            case.expected_spawned_after_signal,
+            vec![BLANK.to_string(), BLANK.to_string()],
+            "{}: the TS trace",
             case.case
         );
+        assert_one_blank_ends_dark(&case.case, sig, &r);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Review-gate-fixes F-R1: a SLOW lit step in flight at the signal. The
-// reviewer's rig repro (scratchpad `adv/`): a pinctrl shim whose `dh` takes
-// 80 ms (a write lands when its child FINISHES), SIGINT 10 ms into a `dh`,
-// `blue blink-fast` — TS @89b5c64 and 08ff720 ended dark, 6e6ca52 ended on
-// `set 16 op dh`. Swept here over signal instants across the pattern (incl.
-// mid-`dh`): the LAST landed write is always the all-pin blank, exactly two
-// blanks land after the signal (D36), nothing is killed by the exit.
-
-#[derive(Debug, Clone)]
-struct Landed {
-    spawned_ms: u64,
-    argv: String,
-    landed_seq: Option<usize>,
-}
-
-struct SlowChild {
-    log: Arc<Mutex<Vec<Landed>>>,
-    seq: Arc<std::sync::atomic::AtomicUsize>,
-    t0: Instant,
-    dh_ms: u64,
-    dl_ms: u64,
-}
-
-impl PinWriter for SlowChild {
-    fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
-        let argv = format!("pinctrl {}", PinctrlWriter::args(pins, high).join(" "));
-        let (log, seq, t0) = (self.log.clone(), self.seq.clone(), self.t0);
-        let ms = if high { self.dh_ms } else { self.dl_ms };
-        Box::pin(async move {
-            let idx = {
-                let mut l = log.lock().unwrap();
-                l.push(Landed {
-                    spawned_ms: ms_since(t0),
-                    argv,
-                    landed_seq: None,
-                });
-                l.len() - 1
-            };
-            tokio::time::sleep(Duration::from_millis(ms)).await;
-            let n = seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            log.lock().unwrap()[idx].landed_seq = Some(n);
-            true
-        })
-    }
-}
-
-fn run_slow_case(args: &[&str], sig_ms: u64, dh_ms: u64) -> (i32, Vec<Landed>) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap();
-    let log: Arc<Mutex<Vec<Landed>>> = Arc::default();
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let code = {
-        let log = log.clone();
-        rt.block_on(async move {
-            let t0 = Instant::now();
-            let host = Arc::new(FakeHost {
-                h: HostIn::default(),
-                mock: false,
-                calls: Calls::default(),
-                t0,
-            });
-            let writer = Arc::new(SlowChild {
-                log,
-                seq: Arc::default(),
-                t0,
-                dh_ms,
-                dl_ms: 2,
-            });
-            run(
-                &args,
-                LedCliDeps {
-                    out: Arc::new(Out::default()),
-                    make_driver: Box::new(move |log| {
-                        let map = LedPinMap::status_led_map();
-                        LedDriver::new(LedDriverOptions {
-                            map: Some(map.clone()),
-                            writer: Some(writer),
-                            probe: Some(Box::new(move || {
-                                let (map, host) = (map.clone(), host.clone());
-                                Box::pin(async move { probe_host_with(&map, host.as_ref()).await })
-                            })),
-                            log: Some(log),
-                        })
-                    }),
-                    service_result: None,
-                    signal: Box::new(move || {
-                        Box::pin(async move {
-                            tokio::time::sleep_until(t0 + Duration::from_millis(sig_ms)).await
-                        })
-                    }),
-                },
-            )
-            .await
-        })
-    };
-    drop(rt); // process exit: a child not yet landed dies here
-    let log = log.lock().unwrap().clone();
-    (code, log)
-}
-
+/// Review-gate-fixes F-R1 / final check: a SLOW lit step in flight at the
+/// signal (the reviewer's rig repro: `dh` children 80 ms, SIGINT 10 ms into
+/// one). The TS kills that child at exit (execa cleanup) and never
+/// re-lights; so does Rust now — swept over signal instants across three
+/// patterns: one blank, it lands last, an in-flight `dh` that would finish
+/// after it is killed (never lands).
 #[test]
-fn sigint_with_a_slow_lit_step_in_flight_still_ends_dark() {
-    const BLANK: &str = "pinctrl set 12,21,16 op dl";
-    let mut mid_dh = 0;
+fn sigint_with_a_slow_lit_step_in_flight_ends_dark_without_relight() {
+    let mut killed_dh = 0;
     for (args, dh_ms) in [
         (["blue", "blink-fast"], 80),
         (["cyan", "blink-slow"], 80),
         (["purple", "heartbeat"], 150),
     ] {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         for sig in (1..900).step_by(7) {
-            let (code, log) = run_slow_case(&args, sig, dh_ms);
+            let r = run_signalled(&args, sig, dh_ms, None);
             let at = format!("{args:?} SIGINT at {sig} ms (dh {dh_ms} ms)");
-            assert_eq!(code, 0, "{at}");
-            let killed: Vec<&Landed> = log.iter().filter(|w| w.landed_seq.is_none()).collect();
-            assert!(killed.is_empty(), "{at}: killed {killed:?}");
-            let mut by_land = log.clone();
-            by_land.sort_by_key(|w| w.landed_seq);
-            assert_eq!(
-                by_land.last().map(|w| w.argv.as_str()),
-                Some(BLANK),
-                "{at}: last landed write {by_land:?}"
-            );
-            let blanks = log
+            assert_one_blank_ends_dark(&at, sig, &r);
+            killed_dh += r
+                .log
                 .iter()
-                .filter(|w| w.spawned_ms >= sig && w.argv == BLANK)
+                .filter(|w| w.argv.ends_with(" dh") && w.landed_seq.is_none())
                 .count();
-            assert_eq!(blanks, 2, "{at}: blanks after the signal {log:?}");
-            // A `dh` child started before the signal and still running at it:
-            // the F-R1 case (it lands after the shutdown blank).
-            if log.iter().any(|w| {
-                w.argv.ends_with(" dh") && w.spawned_ms < sig && w.spawned_ms + dh_ms > sig
-            }) {
-                mid_dh += 1;
-            }
         }
     }
     assert!(
-        mid_dh >= 20,
-        "the sweep must hit a lit step in flight ({mid_dh} cases)"
+        killed_dh >= 20,
+        "the sweep must hit a lit step in flight ({killed_dh} killed)"
     );
+}
+
+/// Every pinctrl hangs after the signal. With the writer's own 2 s timeout
+/// (`PinctrlWriter`, the TS `timeoutMs: 2000`) the shutdown blank fails at
+/// +2 s and its fail-safe all-pins blank at +4 s — the TS's measured exit
+/// +4.03 s; with no timeout at all, `SHUTDOWN_DEADLINE` still exits at +4 s.
+#[test]
+fn sigint_with_every_pinctrl_hung_exits_within_the_ts_bound() {
+    let args: Vec<String> = ["blue", "blink-fast"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let deadline = xorgate_agent::cli::led::SHUTDOWN_DEADLINE.as_millis() as u64;
+    assert_eq!(deadline, 4000);
+    for (hang, label) in [(Some(2000), "2 s writer timeout"), (None, "no timeout")] {
+        for sig in [3_023, 3_100, 4_300] {
+            let r = run_signalled(&args, sig, 2, Some(hang));
+            let at = format!("{label}, SIGINT at {sig} ms");
+            assert_eq!(r.code, 0, "{at}");
+            assert!(
+                r.exit_ms - sig <= deadline,
+                "{at}: exit at +{} ms",
+                r.exit_ms - sig
+            );
+            let after: Vec<&str> = r
+                .log
+                .iter()
+                .filter(|w| w.spawned_ms >= sig)
+                .map(|w| w.argv.as_str())
+                .collect();
+            match hang {
+                // the shutdown blank, then its fail-safe blank (led.ts:375-379)
+                Some(_) => assert_eq!(after, vec![BLANK, BLANK], "{at}"),
+                None => assert_eq!(after, vec![BLANK], "{at}"),
+            }
+            assert!(r.exit_ms - sig >= 3_999, "{at}: +{} ms", r.exit_ms - sig);
+        }
+    }
 }
