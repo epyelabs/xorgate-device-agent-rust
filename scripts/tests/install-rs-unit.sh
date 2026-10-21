@@ -296,6 +296,33 @@ bash "$INSTALL_RS" --revert 2>&1 < /dev/null | head -c 1 > /dev/null; expect "${
 [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)/$(systemctl is-enabled xorgate-agent-rs)" = enabled/active/disabled ]
 expect $? 0 "  ... and JS is enabled + active, rs disabled"
 
+echo "== lock (I1 layout /run/xorgate-rs-install.lock/pid): born complete; no pid = HELD"
+L=/run/xorgate-rs-install.lock
+provision pi; M0=$(snap)
+rm -rf "$L"; mkdir "$L"     # the old empty-pid window, frozen
+run "$O" -y --tarball "$GOOD"; expect $? 3 "lock dir without pid: convert refuses (held, not free)"
+has "$O" "exists without a pid: treated as held" "  ... and says why"
+run "$O" --revert; expect $? 3 "lock dir without pid: --revert refuses too"
+[ "$(snap)" = "$M0" ] && [ -d "$L" ] && [ ! -e "$L/pid" ]; expect $? 0 "  ... nothing changed, the held lock untouched"
+rm -rf "$L"; sleep 300 & live=$!; mkdir "$L"; echo "$live" > "$L/pid"
+run "$O" -y --tarball "$GOOD"; expect $? 3 "lock held by a live pid: refused"
+[ "$(cat "$L/pid")" = "$live" ]; expect $? 0 "  ... the live lock untouched"
+kill "$live"; wait "$live" 2>/dev/null
+run "$O" -y --tarball "$GOOD"; expect $? 0 "lock with a dead pid: stale, taken over, convert done"
+[ ! -e "$L" ] && ! ls -d "$L".* >/dev/null 2>&1; expect $? 0 "  ... lock released, no temp/aside dirs left"
+# While a convert runs, the lock always carries a pid (sampled every 10 ms).
+provision pi; rm -rf "$L"
+bash "$INSTALL_RS" -y --tarball "$T/dist/xorgate-agent-rs-slowsmoke.tar.gz" > "$O" 2>&1 < /dev/null & pid=$!
+bad=0; while kill -0 "$pid" 2>/dev/null; do if [ -d "$L" ] && [ ! -s "$L/pid" ] && [ -d "$L" ]; then bad=$((bad + 1)); fi; sleep 0.01; done
+wait "$pid"; expect $? 0 "convert under a 10 ms lock sampler"
+[ "$bad" = 0 ]; expect $? 0 "  ... never observed a lock dir without its pid ($bad samples)"
+# Two concurrent converts: exactly one gets the lock.
+provision pi; rm -rf "$L"
+bash "$INSTALL_RS" -y --tarball "$T/dist/xorgate-agent-rs-slowsmoke.tar.gz" > "$O.a" 2>&1 < /dev/null & a=$!
+bash "$INSTALL_RS" -y --tarball "$T/dist/xorgate-agent-rs-slowsmoke.tar.gz" > "$O.b" 2>&1 < /dev/null & b=$!
+wait "$a"; ra=$?; wait "$b"; rb=$?
+[ "$(printf '%s\n' "$ra" "$rb" | sort | tr '\n' ' ')" = "0 3 " ]; expect $? 0 "two concurrent converts: one 0, one 3 (got $ra/$rb)"
+
 echo "== S2: --status | head -n1 exits 0"
 for _ in $(seq 1 20); do bash "$INSTALL_RS" --status | head -n1 > /dev/null; [ "${PIPESTATUS[0]}" = 0 ] || { failc "--status | head -n1 rc ${PIPESTATUS[0]}"; break; }; done
 pass "--status | head -n1: rc 0 (x20 or the FAIL above)"

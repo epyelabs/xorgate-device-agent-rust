@@ -356,16 +356,39 @@ rec_state() {
 }
 
 # ---------------------------------------------------------------------------
+# The lock (I1 layout): the directory $LOCK holding `pid`. It is born
+# complete: `pid` is written into a temp dir next to it (same filesystem) and
+# the dir is renamed into place (`mv -n -T` = one renameat2(RENAME_NOREPLACE):
+# never over an existing lock, not even an empty one), so no reader ever
+# sees a lock without its pid. A lock dir WITHOUT `pid` is therefore HELD,
+# never free. A lock whose pid is dead is stale: it is renamed aside, checked
+# to be the one that was judged stale, and replaced.
 lock() {
-  local pid
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    pid=$(cat "$LOCK/pid" 2>/dev/null || true)
-    if [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
-      refuse "another install-rs.sh is running (pid $pid)"
-    fi
-    rm -rf "$LOCK"; mkdir "$LOCK"
+  local tmp pid aside
+  tmp=$(mktemp -d "$LOCK.new.XXXXXX")
+  echo "$$" > "$tmp/pid"
+  if mv -n -T "$tmp" "$LOCK" 2>/dev/null && [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ]; then LOCKED=1; return 0; fi
+  if [ ! -f "$LOCK/pid" ]; then
+    rm -rf "$tmp"
+    refuse "$LOCK exists without a pid: treated as held by another install-rs.sh (remove it by hand only if none is running)"
   fi
-  echo "$$" > "$LOCK/pid"; LOCKED=1
+  pid=$(cat "$LOCK/pid" 2>/dev/null || true)
+  if [ -z "$pid" ] || { [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; }; then
+    rm -rf "$tmp"
+    refuse "another install-rs.sh is running (pid ${pid:-?})"
+  fi
+  # Stale (its pid is dead): move it aside atomically, then make sure the one
+  # moved is the stale one (a concurrent taker may have replaced it meanwhile).
+  aside="$LOCK.stale.$$"
+  rm -rf "$aside"
+  if mv -T "$LOCK" "$aside" 2>/dev/null && [ "$(cat "$aside/pid" 2>/dev/null)" = "$pid" ] \
+     && mv -n -T "$tmp" "$LOCK" 2>/dev/null && [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ]; then
+    rm -rf "$aside"; LOCKED=1; return 0
+  fi
+  # Lost a race: put back what was moved aside (if it is not the stale one) and refuse.
+  if [ -d "$aside" ] && [ "$(cat "$aside/pid" 2>/dev/null)" != "$pid" ]; then mv -n -T "$aside" "$LOCK" 2>/dev/null || true; fi
+  rm -rf "$tmp" "$aside"
+  refuse "another install-rs.sh took the lock $LOCK meanwhile"
 }
 unlock() { if [ "$LOCKED" = 1 ]; then rm -rf "$LOCK"; LOCKED=0; fi; }
 
