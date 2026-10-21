@@ -57,25 +57,47 @@ DEST_TAPE="$HERE/.cache/tapes/$(basename "$TAPE")"
 export RIG_TAPES="$HERE/.cache/tapes" RIG_RUNS="$HERE/.cache/runs"
 
 cd "$HERE"
-# shellcheck disable=SC2329  # invoked by the EXIT trap
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap
 # `-v`: the mosquitto image declares two anonymous volumes (/mosquitto/data,
 # /mosquitto/log); without it every run leaked both (F-RIG-1, Phase 4 gate).
 cleanup() { dc down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap 'rc=$?; cleanup; exit $rc' EXIT
 # A signal ends the script through `exit`, so the EXIT trap (and the teardown)
-# runs on Ctrl-C / kill too.
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# runs on Ctrl-C / kill / Ctrl-\ too (QUIT does not run an EXIT trap by itself).
+# The long `dc run` steps run in the background + `wait`, so a TERM is acted on
+# at once (bash defers traps while a FOREGROUND child runs): the handler
+# forwards it to that `docker compose run` (which stops its container), waits
+# for it, then exits through the EXIT trap. Review-gate-fixes F-R4.
+CHILD=""
+# shellcheck disable=SC2317,SC2329  # invoked by the signal traps
+on_signal() {
+  if [ -n "$CHILD" ]; then
+    kill -TERM "$CHILD" 2>/dev/null || true
+    wait "$CHILD" 2>/dev/null || true
+  fi
+  exit "$1"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 131' QUIT
+# run_dc <compose args…>: `docker compose -p $PROJECT …` as a waited background
+# child; returns its exit status.
+run_dc() {
+  docker compose -p "$PROJECT" "$@" &
+  CHILD=$!
+  local rc=0
+  wait "$CHILD" || rc=$?
+  CHILD=""
+  return "$rc"
+}
 echo ">> compose project $PROJECT"
 dc build --quiet rig
 dc up -d mosquitto
 echo ">> play $(basename "$TAPE") A=$A B=$B → .cache/runs/$RUN (real time)"
-dc run --rm -T rig play --tape "/rig/tapes/$(basename "$TAPE")" --out "/rig/out/$RUN" \
+run_dc run --rm -T rig play --tape "/rig/tapes/$(basename "$TAPE")" --out "/rig/out/$RUN" \
   --a "$A" --b "$B" --js-dir "/rig/cache/js-89b5c64" --rs-bin /rig/cache/bin/xorgate-rs ${EXTRA[@]+"${EXTRA[@]}"}
-set +e
-dc run --rm -T rig diff "/rig/out/$RUN" --tolerances /rig/tools/tolerances.toml
-RC=$?
-set -e
+RC=0
+run_dc run --rm -T rig diff "/rig/out/$RUN" --tolerances /rig/tools/tolerances.toml || RC=$?
 mkdir -p "$OUT"
 cp -R "$HERE/.cache/runs/$RUN/." "$OUT/"
 echo ">> diff: $OUT/diff.md (exit $RC)"
