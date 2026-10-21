@@ -122,7 +122,7 @@ automatically reverted (JS restored).
 Record: /var/lib/xorgate-rs-install/{record,pre.manifest} (root 0700).
 Logs: journalctl -u xorgate-agent-rs, journalctl -u xorgate-updater-rs.
 
-TEST-ONLY: XORGATE_RS_CONVERT_FAIL_AT=<n> exits 1 right after convert step <n>
+TEST-ONLY: XORGATE_RS_CONVERT_FAIL_AT=<n> exits 9 right after convert step <n>
 (0 preconditions, 1 record, 2 fetch+verify, 3 stage+smoke, 4 swap, 5 wrapper,
 6 units, 7 sudoers, 8 systemctl, 9 verify) with no cleanup, to simulate a
 crash for the e2e. Never set it on a real device.
@@ -223,7 +223,7 @@ service_user_of() {
 # I3 manifest: `<f|d|l> <octal mode> <uid>:<gid> <sha256 | - | ->target> <path>`,
 # one line per path, sorted by path (C locale), over MANIFEST_ROOTS, plus one
 # `t <digest> <root>` line per TREE_ROOT present. <octal mode> is find's %m
-# (no leading zero: 644, 755, 4755). <digest> is the sha256 of that tree's
+# zero-padded to 4 digits (0644, 0755, 4755; I3 amendment). <digest> is the sha256 of that tree's
 # own I3 lines (every entry, the root included), sorted by path, each line
 # \n-terminated. Paths holding a tab or a newline are not supported.
 _i3_records() { # <root> → "path<TAB>line" records, unsorted
@@ -241,6 +241,7 @@ _i3_records() { # <root> → "path<TAB>line" records, unsorted
       l) d="->$l" ;;
       *) d=- ;;
     esac
+    while [ ${#m} -lt 4 ]; do m=0$m; done    # I3 amendment: always 4 digits (0644)
     printf '%s\t%s %s %s %s %s\n' "$p" "$y" "$m" "$o" "$d" "$p"
   done < "$tmp/meta"
   rm -rf "$tmp"
@@ -284,8 +285,13 @@ is_rec() { case $1 in "$REC_DIR" | "$REC_DIR"/*) return 0 ;; esac; return 1; }
 # (§4: excluded in keep mode; in purge mode it is deleted after the check,
 # and pre.manifest never holds it). keep: the JS-owned rows only.
 mfilter() {
-  local line
+  local line y r m
   while IFS= read -r line; do
+    case $line in
+      t\ *) ;;
+      *) y=${line%% *}; r=${line#* }; m=${r%% *}
+         if [ ${#m} -lt 4 ]; then while [ ${#m} -lt 4 ]; do m=0$m; done; line="$y $m ${r#* }"; fi ;;
+    esac
     mpath "$line"
     is_rec "$MP" && continue
     if [ "$1" = keep ] && is_rust_owned "$MP"; then continue; fi
@@ -409,10 +415,10 @@ reexec_private() {
 
 maybe_fail_at() { # §5.3: test-only crash injection (documented in --help)
   if [ "${XORGATE_RS_CONVERT_FAIL_AT:-}" = "$1" ]; then
-    say "TEST-ONLY: XORGATE_RS_CONVERT_FAIL_AT=$1: exiting 1 after step $1 with no cleanup"
+    say "TEST-ONLY: XORGATE_RS_CONVERT_FAIL_AT=$1: exiting 9 after step $1 with no cleanup"
     trap - EXIT
     unlock
-    exit 1
+    exit 9    # I1 amendment: 9, never 1 (1 = "device back at its pre-run state")
   fi
 }
 
@@ -436,7 +442,13 @@ backup_of() { # <path>
 put_file() {
   local dest=$1 mode=$2 src=$3 existed=0 link=0
   if [ -L "$dest" ]; then link=1
-  elif [ -e "$dest" ]; then existed=1; fi
+  elif [ -e "$dest" ]; then
+    # wp2 bug 1: `install src <dir>` would write INTO a directory and report
+    # success. Anything but a regular file (or a symlink, replaced as
+    # update.rs does) in the way is refused; user content is never removed.
+    [ -f "$dest" ] || abort_convert "$dest is in the way: $(stat -c %F "$dest" 2>/dev/null || echo 'not a regular file') where a file goes; move it away and re-run"
+    existed=1
+  fi
   if [ "$existed" = 1 ] && cmp -s "$src" "$dest" && [ "$(stat -c '%a %u:%g' "$dest")" = "${mode#0} 0:0" ]; then
     say "  = $dest unchanged"
     return 1
@@ -458,7 +470,7 @@ put_body() { # <dest> <mode> <body function> [args]: put_file of a generated bod
   return "$rc"
 }
 ensure_dir() {
-  [ ! -d "$1" ] || return 0
+  if [ -d "$1" ] && [ ! -L "$1" ]; then return 0; fi
   if [ -e "$1" ] || [ -L "$1" ]; then abort_convert "cannot create $1: something else is there"; fi
   created "$1"
   install -d -m 0755 -o root -g root "$1" || abort_convert "cannot create $1"
@@ -612,6 +624,24 @@ swap_tree() { # step 4: same-filesystem renames, the previous build kept as .old
   NEED_RESTART=1
 }
 
+# Every path steps 5-7 write, checked BEFORE anything changes (wp2 bug 1): a
+# directory or a special file where a file goes, or a non-directory where a
+# drop-in directory goes, refuses the run (exit 1, nothing changed).
+preflight_targets() {
+  local p bad=() u
+  u=$(service_user_of "$RS_USER_CONF" || service_user_of "$JS_USER_CONF" || true)
+  for p in "$WRAPPER" "$RS_UNIT" "$RS_USER_CONF" "$UPD_UNIT" "$DIST_DROPIN" "$SUDOERS_024"; do
+    if [ "$p" = "$SUDOERS_024" ] && { [ -z "$u" ] || [ "$u" = root ]; }; then continue; fi
+    if [ "$p" = "$RS_USER_CONF" ] && [ ! -f "$JS_USER_CONF" ]; then continue; fi
+    if [ -e "$p" ] && [ ! -L "$p" ] && [ ! -f "$p" ]; then bad+=("$p ($(stat -c %F "$p" 2>/dev/null))"); fi
+  done
+  for p in "$RS_UNIT_D" "$UPD_UNIT_D"; do
+    if { [ -e "$p" ] || [ -L "$p" ]; } && { [ -L "$p" ] || [ ! -d "$p" ]; }; then bad+=("$p ($(stat -c %F "$p" 2>/dev/null), a directory goes there)"); fi
+  done
+  [ ${#bad[@]} = 0 ] || abort_convert "in the way of the files this conversion writes: ${bad[*]}; move them away and re-run"
+  return 0
+}
+
 convert_main() {
   local user js_pin live_ok=1 m pre_tmp prev prev_pre was_converted=0 rs_exists ans t ra ja deadline first=0
   local missing=()
@@ -678,6 +708,7 @@ convert_main() {
     fi
   fi
   maybe_fail_at 1
+  preflight_targets
 
   # ---- steps 2-4: only when the build must change (§5.2) ----
   for m in "${REQUIRED_MEMBERS[@]}"; do [ -e "$RS_PREFIX/$m" ] || live_ok=0; done
@@ -820,7 +851,7 @@ convert_main() {
 PURGE=0; FORCE=0; REVERT_FINAL=1
 revert_main() {
   local recf pref already=0 ts dest p d en mode=keep files=kept rest ok=yes
-  local cands=() dirs=()
+  local cands=() dirs=() kept=()
   if [ -f "$REC" ]; then recf=$REC; pref=$PRE
   else
     recf=$(latest_reverted)
@@ -893,7 +924,11 @@ revert_main() {
       if ! is_rust_owned "$p"; then say "  ! $p is not a Rust-owned path: not deleted"; continue; fi
       case " ${R[installed]} " in
         *" $p "*) ;;
-        *) if in_manifest "$p" "$pref"; then say "  = $p predates the conversion: kept"; continue; fi ;;
+        *) if in_manifest "$p" "$pref"; then
+             say "  = $p predates the conversion: kept"
+             if [ -d "$p" ] && [ ! -L "$p" ]; then kept+=("$p"); fi   # never removed, but its foreign drop-ins are named
+             continue
+           fi ;;
       esac
       case $p in
         "$RS_PREFIX" | "$STAGING" | "$BACKUP") rm -rf "$p"; note "$p removed" ;;
@@ -901,12 +936,12 @@ revert_main() {
       esac
     done
     for d in ${dirs[@]+"${dirs[@]}"}; do
-      if rmdir "$d" 2>/dev/null; then note "$d/ removed"
-      else
-        for rest in "$d"/*; do
-          if [ -e "$rest" ]; then say "  foreign drop-in kept (not installed by install-rs.sh): $rest"; fi
-        done
-      fi
+      if rmdir "$d" 2>/dev/null; then note "$d/ removed"; else kept+=("$d"); fi
+    done
+    for d in ${kept[@]+"${kept[@]}"}; do
+      for rest in "$d"/*; do
+        if [ -e "$rest" ]; then say "  foreign drop-in kept (not installed by install-rs.sh): $rest"; fi
+      done
     done
     sctl daemon-reload || say "  ! systemctl daemon-reload failed: $SCTL_ERR"
   fi
