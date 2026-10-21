@@ -1285,11 +1285,13 @@ type LeafSample = (i64, BTreeMap<String, String>);
 ///   successor `w`, and every holder sample of that step lies in
 ///   [release(v), release(w) + 1000 ms) — a value the replay never released
 ///   at that time (an extra or wrong rail value) is never covered;
-/// - on the lacking side, every sample in that window either carries no
-///   `system` group, or carries `u` taken < 1000 ms after release(v) (stale
-///   cache), or carries `w` taken at/after release(w); at least one sample
-///   is in the window and at least one of them lacks `system` (the D30
-///   drop, counted in that session's `(samples without system)` row).
+/// - on the lacking side, the samples in that window are, in order, one or
+///   more carrying `u` taken < 1000 ms after release(v) (stale cache), then
+///   one or more WITHOUT `system` (the D30 drop, counted in that session's
+///   `(samples without system)` row), then only `w` taken at/after
+///   release(w);
+/// - every value compared exactly as a 2-dp number (`5.1` = `5.10`; a
+///   `5.111` is never the released `5.11`).
 fn d30_rec_value_gap(
     p: &str,
     (lack_kind, lack): (&str, &[LeafSample]),
@@ -1304,7 +1306,13 @@ fn d30_rec_value_gap(
     let [(v, n, ts0)] = only else {
         return false;
     };
-    let norm = |t: &str| t.parse::<f64>().ok().map(|x| format!("{x:.2}"));
+    // The JSON number text as the series' `%.2f` — only when it IS a 2-dp
+    // value (`5.1` → `5.10`; a `5.111` is no released value: `None`).
+    let norm = |t: &str| {
+        let x = t.parse::<f64>().ok()?;
+        let f = format!("{x:.2}");
+        (f.parse::<f64>().ok()? == x).then_some(f)
+    };
     let Some(v) = norm(v) else {
         return false;
     };
@@ -1330,17 +1338,30 @@ fn d30_rec_value_gap(
     let in_window: Vec<&LeafSample> = lack.iter().filter(|(t, _)| *t >= lo && *t < hi).collect();
     let system_less =
         |o: &BTreeMap<String, String>| !o.keys().any(|k| k.starts_with("metrics.system."));
-    let explained = in_window.iter().all(|(t, o)| {
-        if system_less(o) {
-            return true;
-        }
-        match o.get(p).and_then(|x| norm(x)) {
-            Some(x) if x == *u => *t < *rv + 1000,
-            Some(x) if x == *w => *t >= *rw,
-            _ => false,
-        }
-    });
-    !in_window.is_empty() && explained && in_window.iter().any(|(_, o)| system_less(o))
+    // Each JS sample in the window: S = the stale repeat of `u` (< 1 s after
+    // v's release: the cache predates it), N = no `system` (D30's drop),
+    // W = `w` at/after its release. The D30 signature, IN THAT ORDER: one or
+    // more stale repeats, then the system-less sample(s), then only `w`
+    // (review-gate-fixes F-R3).
+    let class: Option<String> = in_window
+        .iter()
+        .map(|(t, o)| {
+            if system_less(o) {
+                return Some('N');
+            }
+            match o.get(p).and_then(|x| norm(x)) {
+                Some(x) if x == *u && *t < *rv + 1000 => Some('S'),
+                Some(x) if x == *w && *t >= *rw => Some('W'),
+                _ => None,
+            }
+        })
+        .collect();
+    let Some(class) = class else {
+        return false;
+    };
+    let rest = class.trim_start_matches('S');
+    let after_n = rest.trim_start_matches('N');
+    rest.len() < class.len() && after_n.len() < rest.len() && after_n.chars().all(|c| c == 'W')
 }
 
 /// Recorded telemetry VALUES (review-wp6 G1, phase file "telemetry segments …
@@ -3513,6 +3534,28 @@ mod tests {
         let mut stale = js;
         stale[2].1 = Some(5.1);
         assert_eq!(run(&stale, &rs, ("js", "rust"), &pmic), row(UNTOLERATED));
+        // review-gate-fixes F-R3: the ORDER is the signature — the
+        // system-less sample first, then a stale repeat: untolerated.
+        let mut swapped = js;
+        swapped[1].1 = None;
+        swapped[2].1 = Some(5.1);
+        swapped[2].0 = 20_400; // still < release(v) + 1000: a stale repeat
+        assert_eq!(run(&swapped, &rs, ("js", "rust"), &pmic), row(UNTOLERATED));
+        // No stale repeat at all (only the system-less sample): untolerated.
+        let mut no_stale = js;
+        no_stale[1].1 = None;
+        let got = run(&no_stale, &rs, ("js", "rust"), &pmic);
+        assert!(got.iter().all(|r| !r.contains("T7/D30")), "{got:?}");
+        // The exact value: a Rust 5.111 is not the released 5.11.
+        let mut off = rs;
+        off[1].1 = Some(5.111);
+        assert_eq!(
+            run(&js, &off, ("js", "rust"), &pmic),
+            vec![format!(
+                "metrics.system.rail_5v.value(values) {UNTOLERATED} A= B=5.111×1@{}",
+                T0 + 20_097
+            )]
+        );
     }
 
     #[test]
