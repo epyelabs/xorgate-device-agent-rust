@@ -8,9 +8,9 @@
 # Unit files: /etc/systemd/system/<u> then /lib/systemd/system/<u>; drop-ins
 # /etc/systemd/system/<u>.d/*.conf in lexical order (systemd.unit(5)
 # "drop-in"). Parsing: `[Section]`, `Key=Value`, `#`/`;` comments; an EMPTY
-# assignment resets a list (Conflicts=, Environment=, EnvironmentFile=,
+# assignment resets a [Service] list (Environment=, EnvironmentFile=,
 # StateDirectory=, ExecStart…=) and a single-valued key to its default
-# (User= → root). No line continuations (none of the units uses one).
+# (User= → root), but NOT a [Unit] dependency such as Conflicts= (252). No line continuations (none of the units uses one).
 #
 #   enable [--now] <u>…    [Install] WantedBy=/RequiredBy= → creates
 #                          /etc/systemd/system/<T>.wants|requires/<u> →
@@ -105,8 +105,12 @@ conf() {
 }
 # last <u> <Section> <Key>: the effective single value ("" = default).
 last() { conf "$1" | awk -F'\t' -v s="$2" -v k="$3" '$1 == s && $2 == k { v = $3 } END { print v }'; }
-# list <u> <Section> <Key>: the accumulated values, one per line (empty resets).
-list() { conf "$1" | awk -F'\t' -v s="$2" -v k="$3" '$1 == s && $2 == k { if ($3 == "") n = 0; else a[++n] = $3 } END { for (i = 1; i <= n; i++) print a[i] }'; }
+# list <u> <Section> <Key>: the accumulated values, one per line. An empty
+# assignment resets the list — EXCEPT a [Unit] dependency (Conflicts=, …):
+# systemd 252 silently ignores an empty one in a drop-in (verified on the
+# bench 2026-10-08, scripts/bench/install.sh:156-163), so the bench
+# 90-bench-dev.conf's `Conflicts=` does NOT clear the shipped unit's.
+list() { conf "$1" | awk -F'\t' -v s="$2" -v k="$3" '$1 == s && $2 == k { if ($3 == "") { if (s != "Unit") n = 0 } else a[++n] = $3 } END { for (i = 1; i <= n; i++) print a[i] }'; }
 cfg_hash() { { unit_file "$1" >/dev/null && cat "$(unit_file "$1")"; cat "/etc/systemd/system/$1.d"/*.conf 2>/dev/null; } | sha256sum | cut -d' ' -f1; }
 
 alive() { [ -n "$1" ] && [ -r "/proc/$1/stat" ] && [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]; }
@@ -193,13 +197,13 @@ job_failed() {
 }
 
 do_stop() {
-  local u=$1 pid i
+  local u=$1 pid
   pid=$(pid_of "$u")
   if [ -n "$pid" ] && alive "$pid"; then
     kill -TERM "$pid" 2>/dev/null
-    for i in $(seq 100); do alive "$pid" || break; sleep 0.1; done
+    for _ in $(seq 100); do alive "$pid" || break; sleep 0.1; done
     alive "$pid" && kill -KILL "$pid" 2>/dev/null
-    for i in $(seq 20); do alive "$pid" || break; sleep 0.1; done
+    for _ in $(seq 20); do alive "$pid" || break; sleep 0.1; done
   fi
   local was=0
   { [ -n "$pid" ] || [ -e "$SD/$u.active" ]; } && was=1
@@ -212,7 +216,7 @@ do_stop() {
 }
 
 do_start() {
-  local u=$1 f typ cmd b sd mode user group pid i
+  local u=$1 f typ cmd b sd mode user group
   f=$(unit_file "$u") || { echo "Failed to start $u: Unit $u not found." >&2; return 5; }
   if [ -e "$SD/$u.loaded" ] && [ "$(cat "$SD/$u.loaded")" != "$(cfg_hash "$u")" ]; then
     echo "STALE $u" >>"$E/systemctl.log"
@@ -263,7 +267,7 @@ do_start() {
   # setsid -f: the service is orphaned at once (reaped by the container's
   # init, docker run --init), so a dead service never lingers as a zombie.
   setsid -f bash -c "echo \$\$ >'$SD/$u.pid.new'; export LC_ALL=C; $(declare -p ENVV W); $FUNCS; exec 0</dev/null >>'$J/$u.log' 2>&1; exec_as_user '$u' \"\${W[@]}\""
-  for i in $(seq 50); do [ -s "$SD/$u.pid.new" ] && break; sleep 0.1; done
+  for _ in $(seq 50); do [ -s "$SD/$u.pid.new" ] && break; sleep 0.1; done
   mv -f "$SD/$u.pid.new" "$SD/$u.pid" 2>/dev/null || { touch "$SD/$u.failed"; job_failed "$u"; return 1; }
   if [ "$typ" = notify ]; then sleep 3; else sleep 0.5; fi
   if alive "$(pid_of "$u")"; then
@@ -348,6 +352,7 @@ case "$VERB" in
   show)
     u=$(norm "${UNITS[0]}")
     [ ${#PROPS[@]} -gt 0 ] || PROPS=(ActiveState SubState MainPID ActiveEnterTimestamp UnitFileState LoadState FragmentPath User)
+    # shellcheck disable=SC2048  # split "-p A,B" (stored as "A B") into words
     for p in ${PROPS[*]}; do
       case "$p" in
         ActiveState) v=$(state "$u") ;;

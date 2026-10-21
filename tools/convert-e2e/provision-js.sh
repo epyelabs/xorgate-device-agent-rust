@@ -140,7 +140,10 @@ printf '// convert-e2e stub of the JS agent worker (the real one is tsc output)\
 printf '// convert-e2e stub of the JS agent CLI\n' >"$INSTALL_PREFIX/dist/cli.js"
 printf '{ "version": "89b5c64", "channel": "dev", "builtAt": "2026-10-09T00:00:00Z", "packageVersion": "0.1.2" }\n' \
   >"$INSTALL_PREFIX/dist/build-info.json"
-# be:242-245 (5) — `npm ci --omit=dev`: a stub node_modules/ (root-owned).
+# G6 (bench 2026-10-21): root's `tar -xzf` restores the CI tarball's owners,
+# so every shipped member is 1001:1001 (the GitHub runner) on a real device.
+chown -R 1001:1001 "$INSTALL_PREFIX"/{dist,media,modem,python,system,systemd,package.json,package-lock.json}
+# be:242-245 (5) — `npm ci --omit=dev` as root: a stub node_modules/ (0:0).
 install -d -m 0755 "$INSTALL_PREFIX/node_modules/mqtt" "$INSTALL_PREFIX/node_modules/.bin"
 printf '{ "name": "mqtt", "version": "5.0.0" }\n' >"$INSTALL_PREFIX/node_modules/mqtt/package.json"
 printf 'module.exports = {};\n' >"$INSTALL_PREFIX/node_modules/mqtt/index.js"
@@ -229,6 +232,22 @@ if [ -f "$INSTALL_PREFIX/systemd/xorgate-updater.service" ]; then
 $SVC_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater.service
 EOF
   sudoers_drop /etc/sudoers.d/022_xorgate-update "update sudoers drop-in failed validation; remote updates will not work"
+  # G6 (bench 2026-10-21): a device the JS `xorgate update` has run on carries
+  # the body update.ts installUpdateSudoers writes (§4 "maintained by JS
+  # xorgate update"), not be's — the TS dump in fixtures/update_plan/update.json.
+  if [ "$SVC_USER" != root ] && [ -r /fixtures/update_plan/update.json ]; then
+    SUDOERS_TMP="$(mktemp)"
+    python3 -I - "$SVC_USER" >"$SUDOERS_TMP" <<'PY'
+import json, sys
+u = sys.argv[1]
+for c in json.load(open("/fixtures/update_plan/update.json"))["cases"]:
+    i = c["input"]
+    if c["op"] == "sudoers" and i["grant"] == "update" and i["visudoExit"] == 0:
+        sys.stdout.write(c["expected"]["body"].replace(i["user"], u))
+        break
+PY
+    sudoers_drop /etc/sudoers.d/022_xorgate-update "update sudoers (update.ts body) failed validation"
+  fi
 fi
 
 # be:367-383 (6b) — logind RemoveIPC=no drop-in.
@@ -311,6 +330,23 @@ EOF
 # be:510-511 (8) — the pipelines dir 0755 svc. With a hardware block be
 # writes no pipelines (be:528-530, 551-553); the agent renders them later.
 install -d -m 0755 -o "$SVC_USER" -g "$SVC_GROUP" "$CONF_DIR/pipelines"
+# be:532-549 (8) — the legacy CM5 pipeline trio. be writes it only without a
+# hardware block, but G6 found it on the bench next to hardware.json (a legacy
+# install that later got its block from the cloud), so the simulation has both.
+write_bridged_pipeline() {
+  local key=$1 camera_name=$2
+  install -m 0644 -o "$SVC_USER" -g "$SVC_GROUP" /dev/stdin "$CONF_DIR/pipelines/$key.gst" <<GST
+shmsrc socket-path=/var/lib/xorgate/shm/$key.sock is-live=true do-timestamp=true ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video
+GST
+  install -m 0644 -o "$SVC_USER" -g "$SVC_GROUP" /dev/stdin "$CONF_DIR/pipelines/$key.camera" <<CAM
+$camera_name
+CAM
+  install -m 0644 -o "$SVC_USER" -g "$SVC_GROUP" /dev/stdin "$CONF_DIR/pipelines/$key.gst.direct" <<GST
+libcamerasrc name=$key camera-name=$camera_name ! video/x-raw,format=I420,width=1280,height=720,framerate=15/1 ! x264enc bframes=0 speed-preset=ultrafast bitrate=1000 byte-stream=TRUE tune=zerolatency threads=2 ! video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE name=appsink-video
+GST
+}
+write_bridged_pipeline cam0 /base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a
+write_bridged_pipeline cam1 /base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a
 # be:557-559 (8) — chmod the KVS runtime binary.
 [ -f "$INSTALL_PREFIX/media/xorgate-kvs-webrtc" ] && chmod 0755 "$INSTALL_PREFIX/media/xorgate-kvs-webrtc"
 

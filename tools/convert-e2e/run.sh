@@ -14,12 +14,14 @@
 #   JS_REPO=<dir>      default ../xorgate-device-agent
 #   DOCS_MD=<path>     the runbook whose bootstrap one-liner is run verbatim
 #                      (default docs/convert.md, if present)
+#   BODIES_JSON=<path> WP1's golden bodies (default fixtures/install_rs/bodies.json)
 #
 # Steps: (1) inputs into target/convert-e2e/in (install-rs.sh, the JS tree,
 # an x86_64 ELF); (2) two REAL tarballs v1 + v2 from scripts/pack.sh
 # (channel dev); (3) the image xorgate-convert-e2e:bookworm (rebuilt in place,
 # dangling layers pruned); (4) the bucket (prep-bucket.sh); (5) one fresh
-# `--rm --init` container per case (case.sh). Results on stdout and in
+# `--rm --init` container per case (case.sh; SYS_PTRACE so root may read
+# /proc/<pid>/exe|environ of the agent running as pi). Results on stdout and in
 # target/convert-e2e/run-<ts>.log; exit 1 if any case fails.
 set -euo pipefail
 
@@ -33,12 +35,13 @@ INSTALL_RS=${INSTALL_RS:-$REPO/scripts/install-rs.sh}
 DOCS_MD=${DOCS_MD:-$REPO/docs/convert.md}
 ALL_CASES=(convert-happy convert-twice convert-repair revert-keep revert-purge revert-twice
   convert-revert-convert update-after-convert js-pin bad-sha missing-sidecar missing-member
-  wrong-arch failed-start
+  wrong-arch failed-start failed-start-js-disabled failed-start-js-stopped
+  wrapper-path-is-dir rollback-step6 rollback-step6-preexisting
   interrupt-1 interrupt-2 interrupt-3 interrupt-4 interrupt-5 interrupt-6 interrupt-7 interrupt-8
   interrupt-1-revert interrupt-2-revert interrupt-3-revert interrupt-4-revert
   interrupt-5-revert interrupt-6-revert interrupt-7-revert interrupt-8-revert
   root-svc root-svc-dropin js-disabled-before js-stopped-before not-root not-provisioned
-  foreign-dropin bootstrap-oneliner offline-revert tarball-mode visudo-refuses usage-status)
+  foreign-dropin bench-window status-nonroot revert-runtime-drift bootstrap-oneliner offline-revert tarball-mode visudo-refuses usage-status)
 CASES=("$@")
 [ ${#CASES[@]} -gt 0 ] || CASES=("${ALL_CASES[@]}")
 
@@ -47,7 +50,7 @@ LOG="$WORK/run-$(date -u +%Y%m%dT%H%M%SZ).log"
 exec > >(tee "$LOG") 2>&1
 echo "== convert-e2e $(date -u +%FT%TZ) repo $(git -C "$REPO" rev-parse --short HEAD) cases ${#CASES[@]}"
 
-[ -n "${E2E_BIN:-}" ] && [ -f "$E2E_BIN" ] || { echo "E2E_BIN=<aarch64 xorgate-rs> is required (DISK BUDGET rule 1)" >&2; exit 2; }
+if [ -z "${E2E_BIN:-}" ] || [ ! -f "$E2E_BIN" ]; then echo "E2E_BIN=<aarch64 xorgate-rs> is required (DISK BUDGET rule 1)" >&2; exit 2; fi
 [ -f "$INSTALL_RS" ] || { echo "INSTALL_RS $INSTALL_RS missing" >&2; exit 2; }
 
 echo "== 0. DISK BUDGET preconditions"
@@ -64,6 +67,8 @@ echo "install-rs.sh sha256 $(shasum -a 256 "$WORK/in/install-rs.sh" 2>/dev/null 
 git -C "$JS_REPO" archive "$JS_REF" package.json package-lock.json systemd python modem media system | tar -x -C "$WORK/in/js"
 [ -z "$(git -C "$JS_REPO" status --porcelain)" ] || echo "WARNING: $JS_REPO working tree is not clean (not ours; read via git archive only)"
 if [ -f "$DOCS_MD" ]; then cp "$DOCS_MD" "$WORK/in/convert.md"; echo "docs: $DOCS_MD"; else echo "docs: none ($DOCS_MD absent)"; fi
+BODIES_JSON=${BODIES_JSON:-$REPO/fixtures/install_rs/bodies.json}
+if [ -f "$BODIES_JSON" ]; then cp "$BODIES_JSON" "$WORK/in/bodies.json"; echo "golden: $BODIES_JSON"; else echo "golden: none"; fi
 X86="$WORK/x86_64-true"
 if [ ! -s "$X86" ]; then wait_slot; docker run --rm --platform linux/amd64 debian:bookworm cat /bin/true >"$X86"; fi
 cp "$X86" "$WORK/in/x86_64-true"
@@ -92,7 +97,8 @@ fail=0
 failed=()
 for c in "${CASES[@]}"; do
   wait_slot
-  if docker run --rm --init --platform linux/arm64 \
+  rm -rf "$WORK/cases/$c" && mkdir -p "$WORK/cases/$c"
+  if docker run --rm --init --cap-add SYS_PTRACE --platform linux/arm64 -v "$WORK/cases/$c:/out" \
     -v "$WORK/bucket:/bucket:ro" -v "$HERE:/e2e:ro" -v "$WORK/in:/in:ro" \
     -v "$REPO/fixtures:/fixtures:ro" "$IMAGE" /e2e/case.sh "$c"; then
     pass=$((pass + 1))

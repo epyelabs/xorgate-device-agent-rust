@@ -12,6 +12,9 @@
 # js/ = the JS repo @ JS_REF, convert.md if any), /fixtures (repo fixtures/).
 # Prints one line per check and `CASE <name>: PASS <n> FAIL <m>`; exit 1 on
 # any FAIL.
+# check/same_rows call the helpers indirectly (SC2317); the single-quoted
+# `bash -c '…'` bodies expand in the child on purpose (SC2016).
+# shellcheck disable=SC2317,SC2016
 set -uo pipefail
 CASE=${1:?case name}
 PASS=0
@@ -66,6 +69,7 @@ M() { bash /e2e/manifest.sh >"$1"; }
 paths() { awk '{ n = index($0, " /"); print substr($0, n + 1) }' "$1"; }
 RUST_RE='^(/opt/xorgate-rs(\.new|\.old)?|/usr/local/bin/xorgate-rs|/etc/systemd/system/xorgate-(agent|updater)-rs\.service(\.d(/.*)?)?|/etc/systemd/system/[^/]+\.(wants|requires)/xorgate-(agent|updater)-rs\.service|/etc/sudoers\.d/024_xorgate-update-rs|/var/lib/xorgate-rs-install(/.*)?)$'
 NEVER_RE='^(/etc/xorgate(/.*)?|/opt/xorgate|/usr/local/bin/(xorgate|xorgate-setclock|xorgate-camrotate|sim7600-lte\.sh)|/etc/systemd/system/(xorgate-agent\.service(\.d(/.*)?)?|xorgate-updater\.service|sim7600-lte\.service)|/etc/sudoers\.d/0(10|2[0-3])_.*|/etc/cron\.d(/.*)?|/etc/udev/rules\.d(/.*)?|/etc/NetworkManager/conf\.d(/.*)?|/etc/systemd/logind\.conf\.d(/.*)?)$'
+export RUST_RE NEVER_RE
 sel() { # <regex> <invert 0|1> <manifest>: the lines whose path matches (or not)
   awk -v re="$1" -v inv="$2" '{ n = index($0, " /"); p = substr($0, n + 1); m = (p ~ re); if (inv) m = !m; if (m) print }' "$3"
 }
@@ -122,6 +126,8 @@ ise() { systemctl is-enabled "$1" 2>/dev/null; }
 isa() { systemctl is-active "$1" 2>/dev/null; }
 units_are() { [ "$(ise "$1")/$(isa "$1")" = "$2" ]; }
 js_running() { pgrep -f "$JS_WORKER" >/dev/null; }
+js_stopped() { ! js_running; }
+no_rs_run() { ! pgrep -f '^(/bin/sh )?/opt/xorgate-rs/bin/xorgate-rs run' >/dev/null; } # (never `bash -c "! pgrep -f …"`: pgrep would match that bash)
 rs_pid() { systemctl show -p MainPID --value xorgate-agent-rs; }
 rs_uid() { awk '/^Uid:/ {print $2}' "/proc/$(rs_pid)/status" 2>/dev/null; }
 rs_exe() { readlink "/proc/$(rs_pid)/exe" 2>/dev/null; }
@@ -159,8 +165,10 @@ PY
 # in_golden <text>: if WP1's golden (fixtures/install_rs/bodies.json) exists,
 # the text must be one of its string values; absent golden → skipped (noted).
 in_golden() {
-  [ -f /fixtures/install_rs/bodies.json ] || { note "fixtures/install_rs/bodies.json absent (pre-WP1): golden cross-check skipped"; return 0; }
-  python3 -I - "$1" <<'PY'
+  local g=/fixtures/install_rs/bodies.json
+  [ -f /in/bodies.json ] && g=/in/bodies.json
+  [ -f "$g" ] || { note "fixtures/install_rs/bodies.json absent (pre-WP1): golden cross-check skipped"; return 0; }
+  python3 -I - "$1" "$g" <<'PY'
 import json, sys
 want = sys.argv[1]
 def leaves(x):
@@ -169,7 +177,7 @@ def leaves(x):
         for v in x.values(): yield from leaves(v)
     elif isinstance(x, list):
         for v in x: yield from leaves(v)
-vals = list(leaves(json.load(open("/fixtures/install_rs/bodies.json"))))
+vals = list(leaves(json.load(open(sys.argv[2]))))
 sys.exit(0 if want in vals or want + "\n" in vals or want.rstrip("\n") in vals else 1)
 PY
 }
@@ -230,6 +238,8 @@ invariants() { # <M0>
   check "no reboot/poweroff/sim7600 restart in install-rs.sh source (G8 grep)" bash -c "! grep -nE '(^|[^-[:alnum:]_])(reboot|poweroff)([^-[:alnum:]_]|\$)|(restart|stop|try-restart)[^#]*sim7600' $IRS | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q ."
 }
 finish() {
+  # artefacts for a post-mortem: run.sh mounts target/convert-e2e/cases/<case> at /out
+  if [ -d /out ]; then cp -a "$E"/. /out/ 2>/dev/null; cp -a "$REC_DIR" /out/rec 2>/dev/null; fi
   echo "  --- systemctl calls (after provisioning)"
   sed 's/^/  > /' "$E/systemctl.log"
   echo "CASE $CASE: PASS $PASS FAIL $FAIL"
@@ -247,7 +257,7 @@ assert_converted() {
   same_rows "/etc/xorgate rows + /opt/xorgate tree line identical" never_rows "$m0" "$E/M.conv"
   check "xorgate-agent-rs enabled + active" units_are xorgate-agent-rs.service enabled/active
   check "xorgate-agent disabled + inactive" units_are xorgate-agent.service disabled/inactive
-  check "no JS worker process (node-stub)" bash -c "! pgrep -f '$JS_WORKER' >/dev/null"
+  check "no JS worker process (node-stub)" js_stopped
   check "rs process = /opt/xorgate-rs/bin/xorgate-rs" [ "$(rs_exe)" = /opt/xorgate-rs/bin/xorgate-rs ]
   check "rs process runs as $svc (uid $(id -u "$svc"))" [ "$(rs_uid)" = "$(id -u "$svc")" ]
   check "unit == tarball systemd/xorgate-agent-rs.service" member_is "$RS_UNIT" "$tgz" systemd/xorgate-agent-rs.service
@@ -263,7 +273,7 @@ assert_converted() {
     check "visudo -cf ran on the 024 body BEFORE 024 existed (rule 3)" grep -qE "^-c.*\| sha256=$hex \| 024=absent\$" "$E/visudo.log"
   else
     check "root svc: no 024" [ ! -e "$S024" ]
-    check "root svc: no rs 10-user.conf" [ ! -e "$RS_UNIT.d/10-user.conf" ]
+    [ "$dropin" = 0 ] && check "root svc without a JS drop-in: no rs 10-user.conf" [ ! -e "$RS_UNIT.d/10-user.conf" ]
   fi
   [ "$dropin" = 1 ] && check "rs 10-user.conf == JS 10-user.conf (byte copy)" same_file "$RS_UNIT.d/10-user.conf" "$SYS/xorgate-agent.service.d/10-user.conf"
   check "I2 record keys in order" rec_keys_ok
@@ -286,24 +296,37 @@ assert_converted() {
   done
   [ "$svc" != root ] && { grep -qwF "$S024" <<<" $(rec installed) " || missing+=" $S024"; }
   check "record installed lists every NEW file${missing:+ (missing:$missing)}" [ -z "$missing" ]
-  if diff <(no_rec_rows "$m0") <(no_rec_rows "$REC_DIR/pre.manifest") >"$E/pre.diff" 2>&1; then
-    ok "I3 cross-check: WP1's pre.manifest == WP2's independent M0 (outside the record dir)"
+  if diff <(xnorm "$m0") <(no_rec_rows "$REC_DIR/pre.manifest" | unpad) >"$E/pre.diff" 2>&1; then
+    ok "I3 cross-check: WP1's pre.manifest == WP2's independent M0 (modes unpadded; /opt/xorgate digest recomputed in that format)"
   else
     bad "I3 cross-check: WP1's pre.manifest == WP2's independent M0 (- WP2, + WP1)"; sed 's/^/        /' "$E/pre.diff" | head -20
   fi
   check "--status: first line state=converted, exit 0" status_first state=converted
 }
-export -f body_is mode_is
+export -f body_is mode_is never_rows sel
+# I3 says "<octal mode>" without a width: WP2 prints 4 digits (0644), WP1 the
+# stat %a form (644), and a tree digest hashes its lines in each tool's own
+# format. unpad maps both to %a; xnorm also recomputes WP2's /opt/xorgate
+# digest over unpadded lines (never touched, so recomputing later is exact).
+unpad() { sed -E 's/^([fdl]) 0*([0-7]+) /\1 \2 /'; }
+xnorm() {
+  local d
+  d=$(bash /e2e/manifest.sh --expand /opt/xorgate | unpad | sha256sum | cut -d' ' -f1)
+  no_rec_rows "$1" | unpad | sed -E "s#^t [0-9a-f]{64} /opt/xorgate\$#t $d /opt/xorgate#"
+}
 
-# assert_reverted <M0> <keep|purge> <jsEnabled> <jsActive>
+# assert_reverted <M0> <keep|purge|keep-nofiles> <jsEnabled> <jsActive>
+# (keep-nofiles: a keep revert after an interrupted run that had already
+# rolled its Rust files back)
 assert_reverted() {
-  local m0=$1 mode=$2 want_e=$3 want_a=$4
+  local m0=$1 mode=$2 want_e=$3 want_a=$4 nofiles=0
+  [ "$mode" = keep-nofiles ] && { mode=keep; nofiles=1; }
   M "$E/M.rev"
   if [ "$mode" = purge ]; then
     same_rows "I3: whole manifest == M0 (purge)" cat "$m0" "$E/M.rev"
   else
     same_rows "I3: JS-owned rows == M0 (keep)" js_rows "$m0" "$E/M.rev"
-    check "keep: Rust files stay (unit, wrapper, /opt/xorgate-rs)" bash -c "[ -f $RS_UNIT ] && [ -f $WRAP ] && [ -x /opt/xorgate-rs/bin/xorgate-rs ]"
+    [ $nofiles = 0 ] && check "keep: Rust files stay (unit, wrapper, /opt/xorgate-rs)" bash -c "[ -f $RS_UNIT ] && [ -f $WRAP ] && [ -x /opt/xorgate-rs/bin/xorgate-rs ]"
     check "keep: record renamed record.reverted-<ts>, no live record" bash -c "[ ! -e $REC ] && ls $REC_DIR/record.reverted-* >/dev/null 2>&1"
   fi
   check "xorgate-agent-rs disabled + not active" bash -c "[ \"\$(systemctl is-active xorgate-agent-rs)\" != active ] && ! [ -L $WANTS/xorgate-agent-rs.service ]"
@@ -311,7 +334,7 @@ assert_reverted() {
   if [ "$want_a" = active ]; then
     check "JS worker process running" js_running
   else
-    check "no JS worker process" bash -c "! pgrep -f '$JS_WORKER' >/dev/null"
+    check "no JS worker process" js_stopped
   fi
   local files=kept; [ "$mode" = purge ] && files=purged
   check "I1 final line (revert)" last_line_is "${P}reverted: xorgate-agent $want_e + $want_a; xorgate-agent-rs disabled (files $files). JS install matches the pre-conversion record: yes"
@@ -329,7 +352,7 @@ convert_ok() {
   check "I1 final line (convert)" last_line_is "$(CONV_LINE v1)"
   check "every output line carries '[install-rs] ' (rule 5)" all_prefixed
   local n; n=$(changed_n)
-  check "changed (N) block: N == number of '  - ' lines (N=${n:-none})" bash -c "[ -n '$n' ] && [ \"\$(grep -cE '^\[install-rs\]   - ' $E/out)\" = '$n' ]"
+  check "changed (N) summary block: N == its '  - ' lines (N=${n:-none})" bash -c "[ -n '$n' ] && [ \"\$(sed -n '/^\[install-rs\] changed ([0-9]*)\$/,\$p' $E/out | grep -cE '^\[install-rs\]   - ')\" = '$n' ]"
   cp "$LATEST" "$E/conv.tgz"
   assert_converted "$m0" "$E/conv.tgz" "$svc" "$dropin" v1 "$jse" "$jsa"
 }
@@ -412,7 +435,8 @@ revert-twice)
   check "2nd revert = no-op, exit 0" rc_is 0
   M "$E/Mr2"
   check "I3: manifest unchanged by the 2nd revert" same_file "$E/Mr1" "$E/Mr2"
-  check "JS still enabled + active, not restarted" bash -c "[ \"\$(systemctl is-enabled xorgate-agent)/\$(systemctl is-active xorgate-agent)\" = enabled/active ] && [ \"\$(pgrep -f '$JS_WORKER')\" = '$jspid' ]"
+  check "JS still enabled + active" units_are xorgate-agent.service enabled/active
+  check "JS not restarted (same worker pid)" [ "$(pgrep -f "$JS_WORKER")" = "$jspid" ]
   check "2nd revert: no start/stop/enable/disable" bash -c "! grep -qE '^(start|stop|restart|enable|disable|CONFLICT-STOP)' $E/systemctl.log"
   check "--status: state=reverted" status_first state=reverted
   invariants "$E/M0" ;;
@@ -430,9 +454,13 @@ convert-revert-convert)
   check "re-convert I1 final line" last_line_is "$(CONV_LINE v1)"
   check "fresh record: state=converted, startedAt differs" bash -c "[ \"$(rec state)\" = converted ] && [ \"$(rec startedAt)\" != '$st1' ]"
   check "fresh record: jsEnabled=enabled jsActive=active (the restored JS)" [ "$(rec jsEnabled)/$(rec jsActive)" = enabled/active ]
-  check "fresh record: rsPreexisting=yes (keep mode left /opt/xorgate-rs + unit; I2)" [ "$(rec rsPreexisting)" = yes ]
+  check "fresh record: rsPreexisting=no (inherited from the earlier record, D-WP1-3 / orchestrator ruling)" [ "$(rec rsPreexisting)" = no ]
   check "the old record is kept as record.reverted-*" bash -c "ls $REC_DIR/record.reverted-* >/dev/null 2>&1"
   check "rs enabled + active, JS disabled + inactive" bash -c "[ \"\$(systemctl is-enabled xorgate-agent-rs)/\$(systemctl is-active xorgate-agent-rs)\" = enabled/active ] && [ \"\$(systemctl is-enabled xorgate-agent)/\$(systemctl is-active xorgate-agent)\" = disabled/inactive ]"
+  check "the 2nd conversion's manifest == the 1st one's (outside the record dir)" bash -c 'M() { bash /e2e/manifest.sh; }; diff <(grep -v " /var/lib/xorgate-rs-install" "$1") <(M | grep -v " /var/lib/xorgate-rs-install") >/dev/null' _ "$E/M.conv"
+  irs --revert --purge
+  check "convert → revert → convert → --purge: exit 0" rc_is 0
+  assert_reverted "$E/M0" purge enabled active
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
 update-after-convert)
@@ -527,6 +555,75 @@ failed-start)
   check "rs disabled + not active" bash -c "[ \"\$(systemctl is-active xorgate-agent-rs)\" != active ] && ! [ -L $WANTS/xorgate-agent-rs.service ]"
   check "record moved to record.reverted-* (keep-mode revert)" bash -c "[ ! -e $REC ] && ls $REC_DIR/record.reverted-* >/dev/null 2>&1"
   check "output carries the journal tail (runfails stub's stderr)" out_has 'runfails stub: exiting 1 on run'
+  check "I1 exit-4 line (FAILED … reverted to xorgate-agent (enabled + active) … (exit 4))" grep -qxF "${P}FAILED: xorgate-agent-rs did not become healthy; reverted to xorgate-agent (enabled + active). see: journalctl -u xorgate-agent-rs (exit 4)" "$E/out"
+  check "no runfails process left behind" no_rs_run
+  check "--status after exit 4: state=reverted" status_first state=reverted
+  # recovery: the operator retries with a good build
+  irs --tag v1
+  check "retry with a good build after exit 4: exit 0" rc_is 0
+  check "retry: I1 final line (convert)" last_line_is "$(CONV_LINE v1)"
+  check "retry: rs enabled + active, JS disabled + inactive" bash -c '[ "$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)" = enabled/active ] && [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = disabled/inactive ]'
+  check "retry: fresh record jsEnabled=enabled jsActive=active (the auto-revert restored JS)" [ "$(rec jsEnabled)/$(rec jsActive)" = enabled/active ]
+  check "retry: the build is v1 (not runfails)" grep -q '"version": *"v1"' /opt/xorgate-rs/build-info.json
+  irs --revert --purge
+  check "… and a purge after all that lands on M0: exit 0" rc_is 0
+  assert_reverted "$E/M0" purge enabled active
+  invariants "$E/M0" ;;
+failed-start-js-disabled|failed-start-js-stopped)
+  # the auto-revert restores the RECORDED JS state, whatever it was
+  if [ "$CASE" = failed-start-js-disabled ]; then provision --js disabled-inactive; we=disabled; wa=inactive
+  else provision --js enabled-inactive; we=enabled; wa=active; fi
+  M "$E/M0"
+  irs --tag runfails
+  check "exit 4" rc_is 4
+  M "$E/M1"
+  same_rows "I3: JS-owned rows == M0" js_rows "$E/M0" "$E/M1"
+  check "JS back to $we + $wa (record rule: start iff enabled or active)" units_are xorgate-agent.service "$we/$wa"
+  if [ "$wa" = active ]; then check "JS worker running" js_running; else check "no JS worker" js_stopped; fi
+  check "I1 exit-4 line names the restored state" grep -qxF "${P}FAILED: xorgate-agent-rs did not become healthy; reverted to xorgate-agent ($we + $wa). see: journalctl -u xorgate-agent-rs (exit 4)" "$E/out"
+  check "rs disabled + not active" bash -c "[ \"\$(systemctl is-active xorgate-agent-rs)\" != active ] && ! [ -L $WANTS/xorgate-agent-rs.service ]"
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+wrapper-path-is-dir)
+  # A directory where the wrapper goes. update.rs (rm_rf + write) would
+  # replace it; I1 would roll back on a write failure. Either is fine — a
+  # "converted" device whose /usr/local/bin/xorgate-rs is not the wrapper is
+  # not (the updater unit's ExecStart is that path).
+  provision
+  install -d -m 0755 "$WRAP"
+  M "$E/M0"
+  irs
+  if rc_is 1; then
+    ok "exit 1 (refused + rolled back)"
+    M "$E/M1"
+    same_rows "I3: device == M0 outside the record dir" no_rec_rows "$E/M0" "$E/M1"
+  else
+    check "exit 0 → the wrapper path IS the wrapper (regular file == WRAPPER_BODY, 0755)" bash -c '[ -f "$1" ] && [ ! -d "$1" ] && body_is "$1" "$2" && mode_is "$1" 755' _ "$WRAP" "$WRAPPER_BODY"
+    check "exit 0 → the updater unit's ExecStart works (xorgate-rs -v through the wrapper)" bash -c '/usr/local/bin/xorgate-rs -v | grep -q "^xorgate-rs "'
+  fi
+  invariants "$E/M0" ;;
+rollback-step6|rollback-step6-preexisting)
+  # REAL failures inside steps 4-7 (not the test knob): I1 says they restore
+  # /opt/xorgate-rs from .old, remove the NEW files this run created, exit 1.
+  provision
+  case "$CASE" in
+    rollback-step6*) printf 'not a dir\n' >"$RS_UPD.d" ;;    # a file where the updater .d/ goes
+  esac
+  if [ "$CASE" = rollback-step6-preexisting ]; then
+    install -d -m 0755 /opt/xorgate-rs
+    tar --no-same-owner -xzf "$SRV/xorgate-agent-rs-v2.tar.gz" -C /opt/xorgate-rs
+  fi
+  systemctl daemon-reload
+  M "$E/M0"
+  irs
+  check "exit 1" rc_is 1
+  check "it says it rolled back" out_has 'rolled back'
+  M "$E/M1"
+  same_rows "I3: device == M0 outside the record dir (rollback removed every NEW file)" no_rec_rows "$E/M0" "$E/M1"
+  [ "$CASE" = rollback-step6-preexisting ] && check "the pre-existing /opt/xorgate-rs (v2) is restored from .old" grep -q '"version": *"v2"' /opt/xorgate-rs/build-info.json
+  check "no .new/.old left" bash -c '[ ! -e /opt/xorgate-rs.new ] && [ ! -e /opt/xorgate-rs.old ]'
+  check "JS still enabled + active; no unit started/stopped/enabled/disabled" bash -c '[ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/active ] && ! grep -qE "^(start|stop|restart|enable|disable)" "$1"' _ "$E/systemctl.log"
+  check "no record left as converted" bash -c "[ ! -e $REC ] || ! grep -qx 'state=converted' $REC"
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
 interrupt-[1-8]|interrupt-[1-8]-revert)
@@ -537,12 +634,12 @@ interrupt-[1-8]|interrupt-[1-8]-revert)
   check "FAIL_AT=$n: exit 1" rc_is 1
   M "$E/Mi"
   check "FAIL_AT=$n: record state=converting + pre.manifest written (§5.1)" bash -c "grep -qx state=converting $REC && [ -s $REC_DIR/pre.manifest ]"
+  check "FAIL_AT=$n: the never-touched rows == M0 even mid-conversion" bash -c 'diff <(never_rows "$1") <(never_rows "$2") >/dev/null' _ "$E/M0" "$E/Mi"
   if [ "$n" -le 7 ]; then
-    same_rows "FAIL_AT=$n: exit 1 = device at its pre-run state (manifest == M0 outside the record dir)" no_rec_rows "$E/M0" "$E/Mi"
+    check "FAIL_AT=$n (crash before step 8): JS still enabled + active, no unit started/stopped/enabled" bash -c '[ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/active ] && ! grep -qE "^(start|stop|restart|enable|disable)" "$1"' _ "$E/systemctl.log"
   else
-    same_rows "FAIL_AT=$n: JS-owned rows == M0" js_rows "$E/M0" "$E/Mi"
+    note "FAIL_AT=8 is a crash after step 8 (WP1: 'no cleanup'): JS $(ise xorgate-agent)/$(isa xorgate-agent), rs $(ise xorgate-agent-rs)/$(isa xorgate-agent-rs)"
   fi
-  check "FAIL_AT=$n: exit 1 = JS back at its pre-run state (enabled + active)" units_are xorgate-agent.service enabled/active
   check "FAIL_AT=$n: --status: state=converting" status_first state=converting
   cp "$REC" "$E/rec.i"; cp "$REC_DIR/pre.manifest" "$E/pre.i"
   if [ "${CASE%-revert}" = "$CASE" ]; then
@@ -557,7 +654,7 @@ interrupt-[1-8]|interrupt-[1-8]-revert)
   else
     irs --revert
     check "revert from FAIL_AT=$n: exit 0" rc_is 0
-    assert_reverted "$E/M0" keep enabled active
+    if [ -e "$RS_UNIT" ]; then assert_reverted "$E/M0" keep enabled active; else assert_reverted "$E/M0" keep-nofiles enabled active; fi
   fi
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
@@ -637,20 +734,133 @@ foreign-dropin)
   check "purge names the foreign drop-in it leaves" out_has 90-bench-dev.conf
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
+bench-window)
+  # The REAL bench before G9 (G6 capture 2026-10-21 + scripts/bench/install.sh):
+  # a bench-flavour Rust install already there (shipped unit with Conflicts=
+  # stripped, bench wrapper, 90-bench-dev.conf + 95-inputs.conf, enabled and
+  # running), the JS unit's extra 20-workdir.conf, and the exclusive window's
+  # shape (JS enabled but stopped). §12 step 3 converts exactly this.
+  provision --js enabled-inactive
+  printf '[Service]\nWorkingDirectory=/var/lib/xorgate\n' >"$SYS/xorgate-agent.service.d/20-workdir.conf"
+  install -d -m 0755 /opt/xorgate-rs
+  tar --no-same-owner -xzf "$SRV/xorgate-agent-rs-v1.tar.gz" -C /opt/xorgate-rs
+  sed -e 's|^Conflicts=xorgate-agent.service$|# BENCH (scripts/bench/install.sh): Conflicts=xorgate-agent.service stripped — both agents coexist on the bench|' \
+    /opt/xorgate-rs/systemd/xorgate-agent-rs.service >"$RS_UNIT"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '# xorgate-rs CLI wrapper (BENCH flavour, written by scripts/bench/install.sh).' \
+    '# The shipped wrapper (Phase 5 install-rs.sh) defaults XORGATE_HOME to' \
+    '# /var/lib/xorgate like the JS one; on the bench the Rust agent runs under the' \
+    '# bench-only drop-in with StateDirectory=xorgate-rs, so the CLI must look there' \
+    '# to reflect THIS service (plan D0.1).' \
+    'exec env XORGATE_HOME="${XORGATE_HOME:-/var/lib/xorgate-rs}" /opt/xorgate-rs/bin/xorgate-rs "$@"' >"$WRAP"
+  chmod 0755 "$WRAP"
+  install -d -m 0755 "$RS_UNIT.d"
+  install -m 0644 /opt/xorgate-rs/systemd/bench/90-bench-dev.conf "$RS_UNIT.d/90-bench-dev.conf"
+  printf '[Service]\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin\nEnvironment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps\nEnvironment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python\n' >"$RS_UNIT.d/95-inputs.conf"
+  install -m 0600 -o pi -g pi /etc/xorgate/agent.env /etc/xorgate/agent-rs-dev.env
+  # the bench's hand-made extras (G6): an operator backup inside /etc/xorgate,
+  # agent.env/cert/kvs.json loosened to 0644, a non-xorgate enabled unit + cron
+  install -d -m 0755 /etc/xorgate/dev-backup-20260823
+  install -m 0600 -o pi -g pi /etc/xorgate/agent.env /etc/xorgate/dev-backup-20260823/agent.env
+  chmod 0644 /etc/xorgate/agent.env /etc/xorgate/device.cert.pem /etc/xorgate/kvs.json /etc/xorgate/root-ca.pem
+  printf '[Unit]\nDescription=pitunnel (bench)\n[Service]\nExecStart=/usr/local/bin/pitunnel\n[Install]\nWantedBy=multi-user.target\n' >"$SYS/pitunnel.service"
+  chown 1000:1000 "$SYS/pitunnel.service"; chmod 0664 "$SYS/pitunnel.service"
+  printf '*/5 * * * * root /usr/local/bin/wifi-failsafe.sh\n' >/etc/cron.d/wifi-failsafe
+  systemctl daemon-reload
+  systemctl enable pitunnel.service 2>/dev/null
+  systemctl enable xorgate-agent-rs 2>/dev/null
+  systemctl start xorgate-agent-rs
+  check "pre-state: bench Rust agent running, JS enabled but stopped" bash -c '[ "$(systemctl is-active xorgate-agent-rs)" = active ] && [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/inactive ]'
+  pid0=$(rs_pid)
+  M "$E/M0"
+  SIM_TS0=$(systemctl show -p ActiveEnterTimestamp --value sim7600-lte)
+  : >"$E/systemctl.log"; : >"$E/visudo.log"
+  irs
+  check "exit 0" rc_is 0
+  check "I1 final line (convert)" last_line_is "$(CONV_LINE v1)"
+  M "$E/M.conv"
+  if diff <(js_rows "$E/M0" | grep -vF " $WANTS/xorgate-agent.service") <(js_rows "$E/M.conv") >"$E/diff.out"; then
+    ok "I3: JS-owned rows (incl. 20-workdir.conf) == M0 minus the JS wants link"
+  else
+    bad "I3: JS-owned rows (incl. 20-workdir.conf) == M0 minus the JS wants link"; sed 's/^/        /' "$E/diff.out"
+  fi
+  check "record rsPreexisting=yes, jsEnabled=enabled, jsActive=inactive" [ "$(rec rsPreexisting)/$(rec jsEnabled)/$(rec jsActive)" = yes/enabled/inactive ]
+  check "the bench unit is replaced by the SHIPPED one (Conflicts= back)" member_is "$RS_UNIT" "$SRV/xorgate-agent-rs-v1.tar.gz" systemd/xorgate-agent-rs.service
+  check "the bench wrapper is replaced by WRAPPER_BODY" body_is "$WRAP" "$WRAPPER_BODY"
+  for f in 90-bench-dev.conf 95-inputs.conf; do
+    check "foreign drop-in $f kept byte-identical" bash -c "grep -F ' $RS_UNIT.d/$f' $E/M0 | cmp -s - <(grep -F ' $RS_UNIT.d/$f' $E/M.conv)"
+    check "foreign drop-in $f named in the output" out_has "$f"
+  done
+  pre_inst=""
+  for p in $(rec installed); do grep -qE " $p\$" "$E/M0" && pre_inst+=" $p"; done
+  check "record installed lists no pre-existing path${pre_inst:+:$pre_inst}" [ -z "$pre_inst" ]
+  check "rs active, JS disabled + inactive" bash -c '[ "$(systemctl is-active xorgate-agent-rs)" = active ] && [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = disabled/inactive ]'
+  check "rs was (re)started onto the converted build: MainPID changed" [ "$(rs_pid)" != "$pid0" ]
+  check "the running rs binary is the live /opt/xorgate-rs one, not a deleted pre-conversion inode ($(rs_exe))" [ "$(rs_exe)" = /opt/xorgate-rs/bin/xorgate-rs ]
+  check "rs still on the bench identity (90-bench-dev.conf: XORGATE_HOME=/var/lib/xorgate-rs)" [ "$(rs_env XORGATE_HOME)" = /var/lib/xorgate-rs ]
+  M "$E/Mc"
+  irs --revert --purge
+  check "Q12: --purge refused on rsPreexisting=yes without --force (non-zero exit)" bash -c "! grep -qx 0 $E/rc"
+  M "$E/Md"
+  check "... and nothing changed" same_file "$E/Mc" "$E/Md"
+  irs --revert
+  check "keep revert exit 0" rc_is 0
+  assert_reverted "$E/M0" keep enabled active
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+status-nonroot)
+  # D-WP1-1 (orchestrator ruling): a non-root --status cannot read the 0700
+  # record dir and prints state=unknown; root never sees that value.
+  provision
+  M "$E/M0"
+  irs --as pi-nosudo --status
+  check "non-root --status on a JS device: exit 0" rc_is 0
+  check "non-root --status on a JS device: first line state=not-converted|unknown" bash -c "head -n1 $E/out | grep -qxE 'state=(not-converted|unknown)'"
+  convert_ok "$E/M0" pi 1 enabled active
+  irs --as pi-nosudo --status
+  check "non-root --status on a converted device: exit 0" rc_is 0
+  check "non-root --status on a converted device: first line state=unknown" [ "$(head -n1 "$E/out")" = state=unknown ]
+  check "root --status: first line state=converted" status_first state=converted
+  M "$E/M1"
+  check "non-root --status changed nothing" same_file "$E/M.conv" "$E/M1"
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+revert-runtime-drift)
+  # D-WP1-8: the agent legitimately rewrites /etc/xorgate/hardware.json while
+  # converted (save_hardware_block); the revert self-check must report exactly
+  # that one difference (exit 1, NO) and still bring JS back.
+  provision
+  M "$E/M0"
+  convert_ok "$E/M0" pi 1 enabled active
+  printf '{"v":2,"platform":"rpi-cm5","encoder":"sw-x264","rails":true,"statusLed":null,"imu":null,"video":[]}\n' >/etc/xorgate/hardware.json
+  irs --revert
+  check "self-check finds the drift: exit 1" rc_is 1
+  check "final line: JS install matches the pre-conversion record: NO (1 differences, listed above)" last_line_is "${P}reverted: xorgate-agent enabled + active; xorgate-agent-rs disabled (files kept). JS install matches the pre-conversion record: NO (1 differences, listed above)"
+  check "the listed difference names /etc/xorgate/hardware.json" out_has /etc/xorgate/hardware.json
+  check "JS restored anyway: enabled + active" units_are xorgate-agent.service enabled/active
+  check "JS worker running" js_running
+  M "$E/M1"
+  check "nothing but hardware.json differs on the JS-owned rows" bash -c 'diff <(grep -vF " /etc/xorgate/hardware.json" "$1" | awk -v re="$3" '"'"'{ n = index($0, " /"); if (substr($0, n + 1) !~ re) print }'"'"') <(grep -vF " /etc/xorgate/hardware.json" "$2" | awk -v re="$3" '"'"'{ n = index($0, " /"); if (substr($0, n + 1) !~ re) print }'"'"') >/dev/null' _ "$E/M0" "$E/M1" "$RUST_RE"
+  grep -vF " /etc/xorgate/hardware.json" "$E/M0" >"$E/M0x"; grep -F " /etc/xorgate/hardware.json" "$E/M1" >>"$E/M0x"
+  awk '{ n = index($0, " /"); print substr($0, n + 1) "\t" $0 }' "$E/M0x" | LC_ALL=C sort -t$'\t' -k1,1 | cut -f2- >"$E/M0d"
+  invariants "$E/M0d" ;;
+# -------------------------------------------------------------------------
 bootstrap-oneliner)
   provision
   M "$E/M0"
   Q3='B=$(sed -n '"'"'s/^DEVICE_DIST_BUCKET_URL=//p'"'"' /etc/xorgate/agent.env); curl -fsSLO "$B/install-rs.sh" -O "$B/install-rs.sh.sha256" && sha256sum -c install-rs.sh.sha256 && sudo bash install-rs.sh'
   ONE=$Q3
   if [ -f /in/convert.md ]; then
-    doc=$(grep -F 'install-rs.sh.sha256' /in/convert.md | grep -F 'sha256sum -c' | grep -F 'sudo bash install-rs.sh' | head -n1 | sed 's/^[[:space:]]*//; s/^\$ //')
+    # the first fenced block holding the sha256-checked one-liner, verbatim
+    doc=$(awk '/^```/ { if (inb) { if (b ~ /sha256sum -c install-rs\.sh\.sha256/ && !done) { printf "%s", b; done = 1 } inb = 0; b = "" } else inb = 1; next }
+               inb { b = b $0 "\n" }' /in/convert.md)
     check "docs/convert.md carries the bootstrap one-liner (sha256-checked)" [ -n "$doc" ]
     [ -n "$doc" ] && ONE=$doc
     [ "$ONE" = "$Q3" ] || note "docs one-liner differs from the plan's Q3 text; running the docs' verbatim"
   else
     note "no docs/convert.md (pre-WP1): running the plan's Q3 one-liner verbatim"
   fi
-  echo "  one-liner: $ONE"
+  echo "  one-liner:"; printf '%s\n' "$ONE" | sed 's/^/    /'
   echo "$ONE" >/home/pi/oneliner.sh
   (cd /home/pi && runuser -u pi -- bash -c "$ONE") >"$E/out" 2>"$E/err"; echo $? >"$E/rc"
   sed 's/^/  | /' "$E/out"; sed 's/^/  ! /' "$E/err"

@@ -14,7 +14,11 @@ set -euo pipefail
 B=/bucket
 mkdir -p "$B"
 sidecar() { (cd "$B" && sha256sum "$1" >"$1.sha256"); }
-pack_dir() { (cd "$1" && tar -czf "$B/$2" --owner=0 --group=0 --numeric-owner $(ls -A)); }
+pack_dir() { # <dir> <tarball>: the dir's top-level members, root-owned (as CI packs)
+  local m
+  mapfile -t m < <(cd "$1" && find . -mindepth 1 -maxdepth 1 -printf '%P\n' | LC_ALL=C sort)
+  (cd "$1" && tar -czf "$B/$2" --owner=0 --group=0 --numeric-owner "${m[@]}")
+}
 
 # v1 + v2: pack.sh's tarballs, re-packed with GNU tar --owner=0 (what CI
 # publishes; pack.sh on a Mac runs bsdtar). INSTALL_RS is the install-rs.sh
