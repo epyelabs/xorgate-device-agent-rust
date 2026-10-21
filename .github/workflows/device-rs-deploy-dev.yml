@@ -8,7 +8,13 @@ name: Device (Rust) — deploy dev
 #   xorgate-agent-rs-<sha>.tar.gz.sha256   sidecar, `sha256sum -c` format
 #   xorgate-agent-rs-latest.tar.gz         alias (what `xorgate-rs update` pulls)
 #   xorgate-agent-rs-latest.tar.gz.sha256
+#   install-rs.sh                          the converter (Phase 5; byte-equal to the
+#   install-rs.sh.sha256                   copy inside the versioned tarball)
 #   latest-rs.json                         manifest, same field set as latest.json
+#                                          (bytes from scripts/dist-manifest.sh)
+#
+# Every key passes scripts/dist-guard.sh before its write; after the upload
+# scripts/dist-check.sh re-reads everything anonymously (what a device sees).
 #
 # NEVER write `latest.json` or any `xorgate-agent-<sha>` key without `-rs`:
 # those belong to the JS agent and the console's `GET /device-dist/latest`
@@ -60,6 +66,11 @@ on:
       - "media/**"
       - "system/**"
       - ".github/workflows/device-rs-deploy-dev.yml"
+      # Phase 5 Q9 (CI-minute economy): bench tooling and docs are never
+      # shipped, so a change touching ONLY them publishes nothing. Negations
+      # must stay after the positive patterns (GitHub evaluates in order).
+      - "!scripts/bench/**"
+      - "!**/*.md"
   workflow_dispatch:
 
 permissions:
@@ -148,6 +159,7 @@ jobs:
       - name: Resolve dist bucket from CloudFormation
         id: bucket
         env:
+          REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           STACK: XorgateCoreStorageStackDev
         run: |
           BUCKET=$(aws cloudformation describe-stacks \
@@ -160,8 +172,40 @@ jobs:
           fi
           echo "Using dist bucket: $BUCKET"
           echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
+          # The base URL devices are handed (agent.env DEVICE_DIST_BUCKET_URL =
+          # the backend Lambda env = https://<bucketRegionalDomainName>, the
+          # same value as this stack's DeviceDistBucketUrl output). Used only
+          # by the anonymous checks below; nothing is written through it.
+          URL=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='DeviceDistBucketUrl'].OutputValue" \
+            --output text)
+          if [ -z "$URL" ] || [ "$URL" = "None" ]; then
+            URL="https://$BUCKET.s3.$REGION.amazonaws.com"
+          fi
+          URL=${URL%/}
+          echo "Device-facing dist URL: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Upload to S3 (versioned + latest, -rs keys only)
+      # Phase 5 (§7): the JS manifest's ETag BEFORE this run's writes, so the
+      # post-upload check can prove no JS key was touched (anonymous HEAD).
+      - name: Capture the JS latest.json ETag (before)
+        id: jsetag
+        env:
+          URL: ${{ steps.bucket.outputs.url }}
+        run: |
+          ETAG=$(scripts/dist-check.sh --js-etag-of "$URL")
+          echo "JS latest.json ETag before: $ETAG"
+          echo "etag=$ETAG" >> "$GITHUB_OUTPUT"
+
+      # Phase 5 (§6/§7): every key passes scripts/dist-guard.sh (the -rs
+      # allow-list; never latest.json or a JS xorgate-agent-<v> key) right before
+      # its write. All local files are built first, so a refusal or a failed
+      # build writes nothing. Order: versioned + sidecar -> alias + sidecar ->
+      # install-rs.sh + sidecar -> latest-rs.json LAST. A device reading the
+      # alias between two puts can see a mismatched sidecar: it fails closed
+      # and succeeds on retry (accepted posture, §6).
+      - name: Upload to S3 (versioned + latest + install-rs.sh, -rs keys only)
         env:
           BUCKET: ${{ steps.bucket.outputs.name }}
           TARBALL: ${{ steps.pack.outputs.tarball }}
@@ -171,42 +215,57 @@ jobs:
           PKG_VERSION: ${{ steps.pack.outputs.packageVersion }}
           SHA256: ${{ steps.pack.outputs.sha256 }}
         run: |
-          case "$TARBALL" in
-            xorgate-agent-rs-*.tar.gz) ;;
-            *) echo "refusing to upload non -rs key: $TARBALL"; exit 1 ;;
-          esac
+          set -euo pipefail
+          scripts/dist-guard.sh "$TARBALL"
+          OUT=dist-rs; rm -rf "$OUT"; mkdir -p "$OUT"
+          # install-rs.sh as published = the immutable copy INSIDE this tarball
+          # (scripts/pack.sh ships it at the root; dist-check.sh verifies the
+          # bucket copy stays byte-identical to it).
+          LISTING=$(tar -tzf "$TARBALL_PATH")
+          grep -qx install-rs.sh <<<"$LISTING" || { echo "::error::$TARBALL has no install-rs.sh member (pack.sh must ship it)"; exit 1; }
+          tar -xzf "$TARBALL_PATH" -C "$OUT" install-rs.sh
+          printf '%s  %s\n' "$(sha256sum "$OUT/install-rs.sh" | cut -d' ' -f1)" install-rs.sh > "$OUT/install-rs.sh.sha256"
+          # The alias sidecar names the alias basename (sha256sum -c works on it).
+          printf '%s  %s\n' "$SHA256" "xorgate-agent-rs-latest.tar.gz" > "$OUT/latest-rs.sha256"
+          # latest-rs.json: frozen 5-field bytes (Q7), describing exactly what
+          # the alias points at; dist-manifest.sh refuses a tarball that is not
+          # this run's versioned key.
+          scripts/dist-manifest.sh --version "$VERSION" --channel dev --built-at "$BUILT_AT" \
+            --package-version "$PKG_VERSION" --tarball "$TARBALL" > "$OUT/latest-rs.json"
+          cat "$OUT/latest-rs.json"
+          put() { # <local file> <key> <cache-control> <content-type>
+            scripts/dist-guard.sh "$2"
+            aws s3 cp "$1" "s3://$BUCKET/$2" --cache-control "$3" --content-type "$4"
+          }
+          IMMUTABLE="public,max-age=31536000,immutable"
           # Versioned tarball: immutable, cache forever.
-          aws s3 cp "$TARBALL_PATH" "s3://$BUCKET/$TARBALL" \
-            --cache-control "public,max-age=31536000,immutable" \
-            --content-type "application/gzip"
-          aws s3 cp "$TARBALL_PATH.sha256" "s3://$BUCKET/$TARBALL.sha256" \
-            --cache-control "public,max-age=31536000,immutable" \
-            --content-type "text/plain"
-          # `latest` alias: what `xorgate-rs update` (Phase 5) pulls by default.
-          aws s3 cp "$TARBALL_PATH" "s3://$BUCKET/xorgate-agent-rs-latest.tar.gz" \
-            --cache-control "no-cache" \
-            --content-type "application/gzip"
-          printf '%s  %s\n' "$SHA256" "xorgate-agent-rs-latest.tar.gz" > latest-rs.sha256
-          aws s3 cp latest-rs.sha256 "s3://$BUCKET/xorgate-agent-rs-latest.tar.gz.sha256" \
-            --cache-control "no-cache" \
-            --content-type "text/plain"
-          # latest-rs.json describes exactly what the `-rs-latest` alias now
-          # points at — written in THIS step so the manifest and the alias
-          # cannot drift. Same field set as the JS latest.json
-          # (device-deploy-dev.yml:156-159) so a future `GET /device-dist/latest-rs`
-          # can reuse the console's comparison as-is.
-          cat > latest-rs.json <<EOF
-          { "version": "$VERSION", "channel": "dev", "builtAt": "$BUILT_AT",
-            "packageVersion": "$PKG_VERSION", "tarball": "$TARBALL" }
-          EOF
-          aws s3 cp latest-rs.json "s3://$BUCKET/latest-rs.json" \
-            --cache-control "no-cache" \
-            --content-type "application/json"
+          put "$TARBALL_PATH" "$TARBALL" "$IMMUTABLE" application/gzip
+          put "$TARBALL_PATH.sha256" "$TARBALL.sha256" "$IMMUTABLE" text/plain
+          # `latest` alias: what `xorgate-rs update` pulls by default.
+          put "$TARBALL_PATH" xorgate-agent-rs-latest.tar.gz no-cache application/gzip
+          put "$OUT/latest-rs.sha256" xorgate-agent-rs-latest.tar.gz.sha256 no-cache text/plain
+          # The converter (bootstrap one-liner, phase-5 Q3); no-cache: the
+          # immutable copy is the one inside every versioned tarball.
+          put "$OUT/install-rs.sh" install-rs.sh no-cache text/x-shellscript
+          put "$OUT/install-rs.sh.sha256" install-rs.sh.sha256 no-cache text/plain
+          # Manifest last.
+          put "$OUT/latest-rs.json" latest-rs.json no-cache application/json
+
+      # Phase 5 (§7, G5/G12): what a device sees, anonymously — every key 200,
+      # sidecars verify, alias == versioned, latest-rs.json schema + version,
+      # install-rs.sh == the tarball's copy, JS latest.json ETag unchanged.
+      - name: Anonymous post-upload check (scripts/dist-check.sh)
+        env:
+          URL: ${{ steps.bucket.outputs.url }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          JS_ETAG: ${{ steps.jsetag.outputs.etag }}
+        run: scripts/dist-check.sh "$URL" "$VERSION" --channel dev --js-etag "$JS_ETAG"
 
       - name: Summary
         if: always()
         env:
           BUCKET: ${{ steps.bucket.outputs.name }}
+          URL: ${{ steps.bucket.outputs.url }}
           VERSION: ${{ steps.pack.outputs.version }}
           BIN_BYTES: ${{ steps.pack.outputs.binaryBytes }}
           TAR_BYTES: ${{ steps.pack.outputs.tarballBytes }}
@@ -220,5 +279,7 @@ jobs:
             echo "- Tarballs:"
             echo "  - \`s3://$BUCKET/xorgate-agent-rs-$VERSION.tar.gz\` (immutable, + .sha256)"
             echo "  - \`s3://$BUCKET/xorgate-agent-rs-latest.tar.gz\` (alias, + .sha256)"
+            echo "- Converter: \`s3://$BUCKET/install-rs.sh\` (+ .sha256; the immutable copy is inside the tarball)"
             echo "- Manifest: \`s3://$BUCKET/latest-rs.json\`"
+            echo "- Device-facing URL: \`$URL\` (checked anonymously by scripts/dist-check.sh)"
           } >> "$GITHUB_STEP_SUMMARY"
