@@ -92,6 +92,7 @@ keep_run() {
   # files (telemetry segments, sidecars; no mp4): enough to re-run the diff.
   (cd "$OUT" && { ls -d */agent-tape.ndjson.gz 2>/dev/null; find */final */s3 -type f -size -2M ! -name '*.mp4' 2>/dev/null; } \
      | while read -r f; do cp --parents "$f" "$d/"; done) 2>/dev/null || true
+  cp "$TAPE" "$d/tape.ndjson.gz" 2>/dev/null || true
   echo "ci-smoke: run kept in $d" >&2
 }
 trap 'rc=$?; kill $MQ 2>/dev/null || true; keep_run $rc' EXIT

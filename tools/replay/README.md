@@ -549,7 +549,8 @@ Rust side's `xorgate-rs` → `xorgate`, Q9 local hints, then exact) and `sms`
 `ci-smoke.sh` keeps `$OUT`'s diff + small logs in `$CI_SMOKE_KEEP` on every
 exit (the load-only media flake) — plus each agent's own tape and the small
 files of its `final/` + `s3/` trees (no mp4), so a recorded-value row can be
-timed against that agent's NMEA reads afterwards (a re-diff of a kept run
-lacks only the player tape: its T4 input-transition facts are empty) — and the player now waits up to the capture
+timed against that agent's NMEA reads afterwards, plus the tape itself
+(`tape.ndjson.gz`, which `diff` uses when play.json's recorded path is gone),
+so a kept run re-diffs completely — and the player now waits up to the capture
 stop grace (10 s) for an exited agent's process group before its SIGKILL, so a
 capture's `ended` (int vs kill) is the agent's doing, not a race with the rig.

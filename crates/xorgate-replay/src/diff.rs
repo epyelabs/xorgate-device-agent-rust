@@ -3709,6 +3709,11 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
+    // A kept run (ci-smoke CI_SMOKE_KEEP) carries its tape beside it; the
+    // recorded path was the container's /tmp and is gone.
+    if !Path::new(&play.tape).exists() && run.join("tape.ndjson.gz").exists() {
+        play.tape = run.join("tape.ndjson.gz").display().to_string();
+    }
     play.host = std::fs::read_to_string(run.join("host.ndjson"))
         .unwrap_or_default()
         .lines()

@@ -703,29 +703,35 @@ pub(crate) type Timeline = BTreeMap<String, Changes>;
 /// (S-F4, [`bound_reads`]).
 pub(crate) type Changes = Vec<(i64, f64, bool)>;
 
-/// review-wp6 S-F4: each self-reported read `(w, line)` matched, in order,
-/// to the player's release of the same line (`feed`); `true` when
-/// `0 ≤ read − release ≤ max_lag`. Unmatched (no player tape, a line the
-/// player never released) → `false`. Also returns the matched lags.
+/// review-wp6 S-F4: each self-reported read `(w, line)` is matched to the
+/// player's LATEST release of the same line at or before it (`feed`, the
+/// release instants; an NMEA epoch's GSV/GSA lines repeat verbatim every
+/// second, GGA/RMC carry the UTC time and are unique), looking back at most
+/// 2 s; `true` when `read − release ≤ max_lag`. Unmatched (no player tape,
+/// a line never released before the read) → `false`. Also returns the
+/// matched lags. A repeated line can only match TOO EARLY (a larger lag →
+/// unanchored), never too late.
 fn bound_reads(
     reads: &[(i64, String)],
     feed: &[(i64, String)],
     max_lag: i64,
 ) -> (Vec<(i64, String, bool)>, Vec<i64>) {
-    let mut j = 0;
     let mut lags = Vec::new();
     let out = reads
         .iter()
         .map(|(w, line)| {
             let l = line.trim_end();
-            let hit = (j..feed.len().min(j + 64)).find(|&k| feed[k].1.trim_end() == l);
-            let ok = hit.is_some_and(|k| {
-                j = k + 1;
-                let lag = w - feed[k].0;
-                lags.push(lag);
-                (0..=max_lag).contains(&lag)
-            });
-            (*w, line.clone(), ok)
+            let upto = feed.partition_point(|(r, _)| r <= w);
+            let lag = feed[..upto]
+                .iter()
+                .rev()
+                .take_while(|(r, _)| w - r <= 2_000)
+                .find(|(_, f)| f.trim_end() == l)
+                .map(|(r, _)| w - r);
+            if let Some(g) = lag {
+                lags.push(g);
+            }
+            (*w, line.clone(), lag.is_some_and(|g| g <= max_lag))
         })
         .collect();
     (out, lags)
