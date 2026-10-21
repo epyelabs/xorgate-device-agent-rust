@@ -1225,6 +1225,25 @@ fn adjacent_races(
 
 type Leaves = [(i64, BTreeMap<String, String>)];
 
+/// review-wp6 F5 (final-check NIT): on ONE side, how far an interior
+/// fragment's end (`startTs + durationMs` = its mtime, the finalize's last
+/// write) may sit from its own successor's `startTs` (the next file's
+/// birthtime, opened at the rotation). Measured over 240 seams of 12 gate
+/// runs under 15 busy loops: −42 … 0 ms, never positive (175 exactly 0).
+/// 50 keeps that with headroom while a late finalize — the end drifting
+/// past the next start, which T12's ±300 boundary bound alone would admit —
+/// fails.
+const FRAGMENT_SEAM_MS: f64 = 50.0;
+
+/// [`FRAGMENT_SEAM_MS`] for one fragment and its successor on the same side.
+fn seam_ok(v: &Value, next: &Value) -> bool {
+    let end = v["startTs"]
+        .as_f64()
+        .zip(v["durationMs"].as_f64())
+        .map(|(s, d)| s + d);
+    matches!((end, next["startTs"].as_f64()), (Some(e), Some(n)) if (e - n).abs() <= FRAGMENT_SEAM_MS)
+}
+
 /// review-wp6 F5: the fragments' END instants (`startTs + durationMs`),
 /// each relative to its own side's capture PLAYING, agree within `bound`.
 fn ends_agree(x: &Value, y: &Value, (pa, pb): (Option<i64>, Option<i64>), bound: f64) -> bool {
@@ -1969,10 +1988,11 @@ pub fn diff_media(
         // difference of two boundaries, each a per-process fs instant. Its END
         // is judged like its start: relative to each side's own PLAYING within
         // T12's startTs bound.
+        let next = |c: &BTreeMap<(String, u64), Value>| c.get(&(key.0.clone(), key.1 + 1)).cloned();
         let interior = has_row(table, "T12/interior-boundaries")
-            && [&ca, &cb]
+            && [(x, next(&ca)), (y, next(&cb))]
                 .iter()
-                .all(|c| c.contains_key(&(key.0.clone(), key.1 + 1)))
+                .all(|(v, n)| n.as_ref().is_some_and(|n| seam_ok(v, n)))
             && ends_agree(x, y, (pa, pb), start_ms);
         let skip = |p: &str| -> Option<String> {
             match p {
@@ -2276,7 +2296,10 @@ pub fn diff_media(
     // side without one (JS) gets the player's feed at the release instants.
     // review-wp6 S-F4: a Rust side's read instant is self-reported, so each
     // one is bounded against the player's release of the SAME line
-    // (`readLagMs`); an unbounded read cannot anchor a race.
+    // within `collisionMs` — the race window itself: an anchor that may sit
+    // further from its release than the window could move a race by more
+    // than the rule admits (measured max 14 ms under 15 busy loops); an
+    // unbounded read cannot anchor a race.
     // The lines AS WRITTEN: the player shifts each NMEA time-of-day/date
     // to the run's wall clock before the write (play.rs, rewrite.rs).
     let feed: Vec<(i64, String)> =
@@ -2284,7 +2307,7 @@ pub fn diff_media(
             .into_iter()
             .map(|(w, l)| (w, crate::rewrite::shift_nmea_line(&l, play.shift_s)))
             .collect();
-    let read_lag = row_tol(table, "T4/rec-sample", "readLagMs", 0.0) as i64;
+    let read_lag = row_tol(table, "T4/rec-sample", "collisionMs", 0.0) as i64;
     let mut timeline = |label: &str, m: &MediaCapture| {
         if m.nmea_reads.is_empty() {
             let all: Vec<(i64, String, bool)> =
@@ -3539,6 +3562,17 @@ mod tests {
                 format!("{sid}/00002 T12/interior-boundaries"),
             ]
         );
+        // A late finalize on B: 00001 ends 200 ms PAST its own successor's
+        // start (the boundaries still agree within ±300, the seam does not).
+        let mut late = side(&[400_000, 410_000, 420_000, 430_000], 5_000);
+        let f = "recordings/video/cam0/<sid:video:cam0#0>/00001.json".to_string();
+        let mut v: Value = serde_json::from_slice(&late.finals[&f]).unwrap();
+        v["durationMs"] = serde_json::json!(10_200);
+        late.finals.insert(f, serde_json::to_vec(&v).unwrap());
+        assert_eq!(
+            run(a.clone(), late),
+            vec![format!("{sid}/00001 {UNTOLERATED}")]
+        );
         // The LAST fragment (no successor) is not interior: its own rules.
         let short = side(&[400_000, 410_000, 420_000, 430_000], 4_700);
         assert_eq!(run(a, short), vec![format!("{sid}/00003 {UNTOLERATED}")]);
@@ -3715,7 +3749,7 @@ mod tests {
             ..Default::default()
         };
         // The player's tape + releases of the same lines (S-F4: a Rust read
-        // anchors a race only within readLagMs of the release of its line).
+        // anchors a race only within collisionMs of the release of its line).
         let tape_path =
             std::env::temp_dir().join(format!("xorgate-replay-f4-{}.ndjson", std::process::id()));
         let mut tape_text = String::from("{\"v\":1,\"k\":\"meta\"}\n");
@@ -3801,7 +3835,7 @@ mod tests {
         );
         // S-F4: A's reader 300 ms late on every line, its ticks 3 ms before
         // ITS OWN reads (a self-consistent late reader): its reads are
-        // outside readLagMs of the player's releases → no anchor → UNTOLERATED;
+        // outside collisionMs of the player's releases → no anchor → UNTOLERATED;
         // the same shape without a player tape cannot anchor either.
         let late = la(&[
             (t(1, 310), 1),
@@ -3840,9 +3874,9 @@ mod tests {
             ),
             ok
         );
-        let (bounded, lags) = bound_reads(&reads(80), &reads(0), 200);
-        assert!(bounded.iter().all(|r| r.2) && lags.iter().all(|l| *l == 80));
-        let (bounded, _) = bound_reads(&reads(300), &reads(0), 200);
+        let (bounded, lags) = bound_reads(&reads(30), &reads(0), 50);
+        assert!(bounded.iter().all(|r| r.2) && lags.iter().all(|l| *l == 30));
+        let (bounded, _) = bound_reads(&reads(80), &reads(0), 50);
         assert!(bounded.iter().all(|r| !r.2));
         // Non-consecutive values (A holds 2 where B holds 4 at slot 3/4,
         // every tick raced): never two misses.
