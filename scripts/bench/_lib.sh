@@ -267,6 +267,14 @@ KVS_MANIFEST=$KVS_EXCLUSIVE
 ENV
 }
 reload_restart_rs() {
+  # Phase 5 (I6, CF65): a SHIPPED (converted) unit — install-rs.sh installs it
+  # byte-equal, Conflicts=xorgate-agent.service included — must never be
+  # (re)started on the bench: starting it stops the PROD JS agent.
+  if rs_unit_converted; then
+    echo "  $RS_CONVERTED_REFUSAL"
+    echo "  REFUSING to restart $UNIT: bench flavour lost (above) — run scripts/bench/install.sh <tarball>, then retry"
+    return 1
+  fi
   act systemctl daemon-reload
   # Phase 4 (WP6): an `xorgate-rs update` (E11) reinstalls the SHIPPED unit,
   # whose Conflicts=xorgate-agent.service would stop the JS prod agent on this
@@ -547,7 +555,8 @@ gate_seam_off() {
 # transient timer; if `exclusive.sh end` never runs (gate runner died, usage
 # cut, laptop asleep) it fires after DEADMAN_SECS and gives the PROD JS agent
 # back: stops the Rust agent + window helpers, drops the runtime drop-ins and
-# the exclusive env, daemon-reload, start + verify xorgate-agent. Idempotent
+# the exclusive env, daemon-reload, reverts an install-rs.sh conversion still
+# in place (Phase 5), enable (if disabled) + start + verify xorgate-agent. Idempotent
 # (every step tolerates "already done"). `end` cancels it; a reboot clears it.
 DEADMAN_UNIT=xorgate-rs-window-deadman
 DEADMAN_SCRIPT=/run/xorgate-rs-window-deadman.sh
@@ -566,24 +575,38 @@ say "exclusive window never ended — restoring the PROD JS agent ($JS_UNIT)"
 for u in $UNIT $GATE_UNIT $SOAK_UNIT; do systemctl stop "\$u" 2>/dev/null || true; done
 rm -f $EXCLUSIVE_DROPIN $TAPE_DROPIN $GATE_DROPIN $EXCLUSIVE_ENV
 systemctl daemon-reload || true
-# Phase 4 (review-wp6 M4): NTP back on + undo an ntp-unsync.sh break.
 act() { "\$@"; }
 note() { say "\$1"; }
+DRY=0
+JS_UNIT=$JS_UNIT
+# Phase 5 (I6): a conversion still in place (install-rs.sh record state
+# converted|converting) is reverted FIRST — keep mode: Rust disabled + stopped,
+# the JS enablement restored from the record, JS started. Bounded; a failed or
+# missing revert never blocks the enable + start below.
+REC=$RS_INSTALL_RECORD
+st=\$(sed -n 's/^state=//p' "\$REC" 2>/dev/null | head -n1)
+case "\$st" in
+  converted|converting)
+    if [ -f $RS_INSTALLER ]; then
+      say "conversion record state=\$st — running $RS_INSTALLER --revert"
+      if timeout 300 bash $RS_INSTALLER --revert </dev/null; then say "revert done"
+      else rc=\$?; say "$RS_INSTALLER --revert exited \$rc — continuing with enable + start of $JS_UNIT"; fi
+    else
+      say "conversion record state=\$st but $RS_INSTALLER is missing — cannot revert; continuing with enable + start of $JS_UNIT"
+    fi ;;
+esac
+# Phase 4 (review-wp6 M4): NTP back on + undo an ntp-unsync.sh break.
 NTP_STATE=$NTP_STATE
 $(declare -f ntp_restore)
 ntp_restore
-for i in 1 2 3; do
-  systemctl start $JS_UNIT || true
-  for s in 1 2 3 4 5 6 7 8 9 10; do
-    if [ "\$(systemctl is-active $JS_UNIT 2>/dev/null)" = active ]; then
-      say "$JS_UNIT active"
-      date -u +%Y-%m-%dT%H:%M:%SZ > "$win/deadman-fired" 2>/dev/null || true
-      exit 0
-    fi
-    sleep 1
-  done
-done
-say "$JS_UNIT FAILED TO START — the PROD agent is DOWN: sudo systemctl start $JS_UNIT"
+# Phase 5 (CF64): enable (if is-enabled != enabled) + start + verify.
+$(declare -f start_js_verified enable_start_js_verified)
+if enable_start_js_verified; then
+  say "$JS_UNIT active + \$(systemctl is-enabled $JS_UNIT 2>/dev/null || true)"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$win/deadman-fired" 2>/dev/null || true
+  exit 0
+fi
+say "$JS_UNIT FAILED TO START — the PROD agent is DOWN: sudo systemctl enable --now $JS_UNIT"
 exit 1
 SCRIPT
   act systemd-run --unit="$DEADMAN_UNIT" --on-active="${secs}s" --timer-property=AccuracySec=1s \
@@ -789,6 +812,65 @@ bench_flavour_ok() {
     echo "  UNSAFE: /usr/local/bin/xorgate-rs is not the bench wrapper (XORGATE_HOME default /var/lib/xorgate-rs) — re-run scripts/bench/install.sh <tarball>"; ok=1
   fi
   return $ok
+}
+# ---------------------------------------------------------------------------
+# Phase 5 (WP3) additions — a CONVERSION window (install-rs.sh, plan
+# phase-5-distribution.md §12, I6, CF64, CF65). Appended only.
+RS_INSTALL_RECORD=/var/lib/xorgate-rs-install/record
+RS_INSTALLER=/opt/xorgate-rs/install-rs.sh
+RS_CONVERTED_REFUSAL="shipped (converted) unit installed — run scripts/bench/install.sh first; NOT starting $UNIT (it would stop the PROD JS agent)"
+# True when the installed Rust unit — or any of its drop-ins (persistent or
+# runtime) — carries a Conflicts= naming the JS unit: the SHIPPED unit that
+# install-rs.sh (or `xorgate-rs update`) installs, not the bench flavour
+# (install.sh strips the line). A superset of I6's `^Conflicts=xorgate-agent.service$`:
+# any Conflicts= list naming xorgate-agent.service stops the PROD agent.
+rs_unit_converted() {
+  local f
+  for f in "/etc/systemd/system/$UNIT.service" "$DROPIN_DIR"/*.conf "$RUN_DROPIN_DIR"/*.conf; do
+    [ -f "$f" ] || continue
+    if grep -Eq "^[[:space:]]*Conflicts[[:space:]]*=[[:space:]]*(.*[[:space:]])?$JS_UNIT\.service([[:space:]]|\$)" "$f"; then return 0; fi
+  done
+  return 1
+}
+# The conversion record's state (install-rs.sh I2): converted|converting|…;
+# "none" without a record (never converted, or reverted: record.reverted-<ts>).
+conversion_state() {
+  local st=""
+  [ -f "$RS_INSTALL_RECORD" ] && st=$(sed -n 's/^state=//p' "$RS_INSTALL_RECORD" 2>/dev/null | head -n1)
+  echo "${st:-none}"
+}
+# Start the PROD JS agent and verify it is active. Never aborts the script
+# (set -e safe): returns 1 after ~30 s of retries so the caller can shout.
+# (Moved here from exclusive.sh in Phase 5 so the dead-man embeds the same body.)
+start_js_verified() {
+  if [ "$DRY" = 1 ]; then echo "  [dry-run] would: systemctl start $JS_UNIT (+ verify active)"; return 0; fi
+  local i
+  for i in 1 2 3; do
+    systemctl start "$JS_UNIT" || true
+    for _ in $(seq 1 10); do
+      [ "$(systemctl is-active "$JS_UNIT" || true)" = active ] && { echo "  = $JS_UNIT active"; return 0; }
+      sleep 1
+    done
+  done
+  echo "!!!! $JS_UNIT FAILED TO START — the PROD agent is DOWN; fix by hand: sudo systemctl start $JS_UNIT" >&2
+  return 1
+}
+# CF64 (I6): after a conversion the JS unit is DISABLED; giving PROD back means
+# enable (only if `is-enabled` != enabled) + start + verify. An enable failure
+# (masked, …) is reported and the start is still attempted. set -e safe.
+enable_start_js_verified() {
+  local en
+  en=$(systemctl is-enabled "$JS_UNIT" 2>/dev/null || true)
+  if [ "$en" != enabled ]; then
+    if [ "$DRY" = 1 ]; then
+      echo "  [dry-run] would: systemctl enable $JS_UNIT (is-enabled=${en:-unknown})"
+    elif systemctl enable "$JS_UNIT"; then
+      note "$JS_UNIT enabled (was ${en:-unknown})"
+    else
+      echo "!!!! systemctl enable $JS_UNIT FAILED (is-enabled=${en:-unknown}) — starting it anyway; fix by hand: sudo systemctl enable $JS_UNIT" >&2
+    fi
+  fi
+  start_js_verified
 }
 LIB
 }

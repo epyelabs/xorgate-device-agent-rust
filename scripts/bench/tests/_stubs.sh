@@ -6,6 +6,7 @@
 # $SYSD_STATE/<unit>.mainpid feeds `systemctl show -p MainPID`;
 # `systemctl stop xorgate-agent` also kills the pids in $SYSD_STATE/js-children
 # (the JS unit's capture/masters going down with it).
+# Enablement (Phase 5) lives in $SYSD_STATE/<unit>.enabled ("enabled" when absent).
 # shellcheck disable=SC2034  # variables are consumed by the sourcing tests
 [ "$(id -u)" -eq 0 ] || { echo "run as root (in a container)"; exit 2; }
 command -v python3 >/dev/null || { apt-get update -qq >/dev/null && apt-get install -y -qq python3 >/dev/null; }
@@ -35,6 +36,13 @@ case "$cmd" in
         if [ "$u" = xorgate-agent ] && [ -f "$st/js-children" ]; then
           for p in $(cat "$st/js-children"); do kill -KILL "$p" 2>/dev/null || true; done; : > "$st/js-children"
         fi;;
+  # Phase 5: enablement in $st/<unit>.enabled (absent = "enabled", the bench
+  # default); `--now` also starts/stops; FAIL_ENABLE_<unit> makes enable fail.
+  is-enabled) u="$1"; s=$(cat "$st/$u.enabled" 2>/dev/null || echo enabled); echo "$s"; [ "$s" = enabled ];;
+  enable|disable) now=0; [ "${1:-}" = --now ] && { now=1; shift; }; u="$1"
+        [ "$cmd" = enable ] && [ -f "$st/FAIL_ENABLE_$u" ] && { echo "stub: enable $u failed" >&2; exit 1; }
+        echo "${cmd}d" > "$st/$u.enabled"
+        if [ "$now" = 1 ]; then if [ "$cmd" = enable ]; then echo active > "$st/$u"; else echo inactive > "$st/$u"; fi; fi;;
   daemon-reload) [ -f "$st/FAIL_RELOAD" ] && { echo "stub: daemon-reload failed" >&2; exit 1; }; true;;
   show) u="$1"; shift
         if [ "${1:-}" = -p ] && [ "${2:-}" = MainPID ]; then cat "$st/$u.mainpid" 2>/dev/null || echo 0; else echo ""; fi;;

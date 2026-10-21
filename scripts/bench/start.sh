@@ -2,7 +2,8 @@
 # Enable + start xorgate-agent-rs on the bench (dev identity, next to the JS
 # prod agent). Idempotent. Refuses to start without the bench env file so a
 # half-installed bench can never bring the unit up on the shipped
-# /etc/xorgate/agent.env (= the PROD identity the JS agent owns).
+# /etc/xorgate/agent.env (= the PROD identity the JS agent owns), and refuses
+# a SHIPPED (converted, Conflicts=xorgate-agent.service) unit (Phase 5, CF65).
 #
 #   scripts/bench/start.sh
 set -euo pipefail
@@ -12,6 +13,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 log "enable --now $UNIT on $BENCH"
 { bench_remote_lib; cat <<'REMOTE'
 UNIT=xorgate-agent-rs
+# Phase 5 (I6, CF65): FIRST, before anything else — a SHIPPED (converted) unit
+# carries Conflicts=xorgate-agent.service; enabling/starting it would stop the
+# PROD JS agent (and enable it at boot).
+if rs_unit_converted; then echo "REFUSING: $RS_CONVERTED_REFUSAL"; exit 1; fi
 # Phase 2 bench-safety precondition (orchestrator, review-wp2): never start a
 # build with the WP2 collectors against the JS agent's inputs.
 inputs_safe || { echo "REFUSING to start: the shared input profile is incomplete (above) — run scripts/bench/dev-manifests.sh && scripts/bench/profile.sh shared --no-restart"; exit 1; }

@@ -294,5 +294,153 @@ bash "$B/exclusive.sh" begin --deadman-min 5 >"$LOGS/g8.log" 2>&1; rc=$?
 expect $((rc != 2)) "begin refuses --deadman-min < 10 (rc=$rc)"; check active "the refused begin touched nothing"
 bash "$B/exclusive.sh" end >/dev/null 2>&1
 
+# ---------------------------------------------------------------- Phase 5 (WP3)
+# A CONVERSION window (phase-5-distribution.md §12, I6): install-rs.sh installs
+# the SHIPPED unit (Conflicts=xorgate-agent.service) and DISABLES the JS unit.
+# CF64: end / the begin trap / the dead-man re-enable JS; CF65: nothing on the
+# bench (re)starts a Conflicts=-bearing Rust unit; the dead-man reverts a
+# conversion still in place.
+U=/etc/systemd/system/xorgate-agent-rs.service
+REC=/var/lib/xorgate-rs-install/record
+INST=/opt/xorgate-rs/install-rs.sh
+I6="shipped (converted) unit installed — run scripts/bench/install.sh first; NOT starting xorgate-agent-rs (it would stop the PROD JS agent)"
+converted_unit() { printf '[Unit]\nDescription=Xorgate device agent (Rust)\nConflicts=xorgate-agent.service\n[Service]\nType=notify\nExecStart=/opt/xorgate-rs/bin/xorgate-rs run\n' > "$U"; }
+bench_unit() { printf '[Unit]\nDescription=Xorgate device agent (Rust)\n# BENCH (scripts/bench/install.sh): Conflicts=xorgate-agent.service stripped — both agents coexist on the bench\n[Service]\nType=notify\n' > "$U"; }
+js_en() { cat "$STATE/xorgate-agent.enabled" 2>/dev/null || echo enabled; }
+js_disabled_stopped() { echo disabled > "$STATE/xorgate-agent.enabled"; echo inactive > "$STATE/xorgate-agent"; }
+# A stand-in for install-rs.sh --revert (keep mode, I1): logs its argv, then
+# does what the real one does to the units (+ moves the record away).
+fake_installer() { # <rc>
+  mkdir -p /opt/xorgate-rs
+  cat > "$INST" <<STUB
+#!/bin/bash
+echo "\$*" >> $LOGS/installer.argv
+[ "$1" = 0 ] || exit $1
+systemctl disable --now xorgate-agent-rs
+systemctl enable xorgate-agent
+systemctl start xorgate-agent
+mv $REC $REC.reverted-test
+STUB
+  chmod 0755 "$INST"; rm -f "$LOGS/installer.argv"
+}
+record() { mkdir -p /var/lib/xorgate-rs-install; chmod 0700 /var/lib/xorgate-rs-install; printf 'state=%s\nstartedAt=2026-10-21T00:00:00Z\njsEnabled=enabled\njsActive=inactive\nrsPreexisting=yes\n' "$1" > "$REC"; }
+no_record() { rm -rf /var/lib/xorgate-rs-install; }
+line_of() { grep -n -- "$1" "$STATE/systemctl.log" | head -n1 | cut -d: -f1; }
+
+echo "== case (p1): end on a CONVERTED bench (shipped unit, JS disabled) re-enables + starts JS and refuses the Rust restart"
+reset; converted_unit; js_disabled_stopped; record converted; fake_installer 0; : > "$STATE/systemctl.log"
+bash "$B/exclusive.sh" end >"$LOGS/p1.log" 2>&1; echo "  exclusive.sh end rc=$?"
+check active "end with the shipped unit: JS active"
+[ "$(js_en)" = enabled ]; expect $? "end re-enabled the disabled JS unit (CF64)"
+e=$(line_of "^systemctl enable xorgate-agent$"); st=$(line_of "^systemctl start xorgate-agent$")
+[ -n "$e" ] && [ -n "$st" ] && [ "$e" -lt "$st" ]; expect $? "enable ran before start (systemctl log lines $e < $st)"
+! grep -Eq "^systemctl (restart|start|enable) xorgate-agent-rs" "$STATE/systemctl.log" && [ "$(cat "$STATE/xorgate-agent-rs")" = inactive ]
+expect $? "the shipped Rust unit was NOT (re)started or enabled; it stays stopped (CF65)"
+grep -qF "$I6" "$LOGS/p1.log"; expect $? "end prints the I6 refusal text"
+grep -q "xorgate-agent enabled (was disabled)" "$LOGS/p1.log"; expect $? "end names the enable as a change"
+grep -q "state=converted — run: sudo /opt/xorgate-rs/install-rs.sh --revert" "$LOGS/p1.log" && [ ! -e "$LOGS/installer.argv" ]
+expect $? "end WARNS about the unreverted conversion and does not run the installer itself"
+no_record; bench_unit; bash "$B/exclusive.sh" end >/dev/null 2>&1
+
+echo "== case (p2): end with JS disabled + stopped (bench flavour) — enabled, started, Rust restarted; second end 0 changes"
+reset; bench_unit; js_disabled_stopped; : > "$STATE/systemctl.log"
+bash "$B/exclusive.sh" end >"$LOGS/p2a.log" 2>&1; rc=$?
+expect $((rc != 0)) "end rc=0 (rc=$rc)"
+check active "disabled JS: end started it"; [ "$(js_en)" = enabled ]; expect $? "disabled JS: end enabled it"
+grep -q "^systemctl restart xorgate-agent-rs" "$STATE/systemctl.log"; expect $? "bench flavour: Rust restarted as before"
+bash "$B/exclusive.sh" end >"$LOGS/p2b.log" 2>&1
+grep -q "== done: 0 change(s)" "$LOGS/p2b.log" && grep -q "= xorgate-agent active + enabled" "$LOGS/p2b.log"; expect $? "second end: active + enabled, 0 changes"
+
+echo "== case (p3): end with JS ACTIVE but disabled — enabled, not counted as a start"
+reset; bench_unit; echo disabled > "$STATE/xorgate-agent.enabled"
+bash "$B/exclusive.sh" end >"$LOGS/p3.log" 2>&1
+[ "$(js_en)" = enabled ] && grep -q "xorgate-agent enabled (was disabled)" "$LOGS/p3.log" && ! grep -q -- "- xorgate-agent started" "$LOGS/p3.log"
+expect $? "active+disabled JS: enabled only"; check active "active+disabled JS stays active"
+
+echo "== case (p4): a failing enable still starts JS and says so"
+reset; bench_unit; js_disabled_stopped; touch "$STATE/FAIL_ENABLE_xorgate-agent"
+bash "$B/exclusive.sh" end >"$LOGS/p4.log" 2>&1; rm -f "$STATE/FAIL_ENABLE_xorgate-agent"
+check active "enable failed: JS started anyway"
+grep -q "systemctl enable xorgate-agent FAILED" "$LOGS/p4.log"; expect $? "the enable failure is reported"
+bash "$B/exclusive.sh" end >/dev/null 2>&1
+
+echo "== case (p5): begin refuses a shipped (converted) unit BEFORE stopping JS"
+reset; converted_unit; : > "$STATE/systemctl.log"; rm -f "$STATE/systemd-run.log"
+bash "$B/exclusive.sh" begin >"$LOGS/p5.log" 2>&1; rc=$?
+expect $((rc == 0)) "begin rc!=0 with the shipped unit (rc=$rc)"
+grep -qF "refusing: $I6" "$LOGS/p5.log"; expect $? "begin preflight prints the I6 text"
+check active "refused begin: JS untouched"
+! grep -q "stop xorgate-agent$" "$STATE/systemctl.log" && [ ! -e "$STATE/systemd-run.log" ]; expect $? "refused begin: no JS stop, no dead-man armed"
+
+echo "== case (p6): tape-off and profile.sh shared refuse to restart the shipped unit"
+reset; converted_unit; : > "$STATE/systemctl.log"
+bash "$B/exclusive.sh" tape-off >"$LOGS/p6a.log" 2>&1; rc=$?
+[ "$rc" != 0 ] && grep -qF "$I6" "$LOGS/p6a.log" && ! grep -q "restart xorgate-agent-rs" "$STATE/systemctl.log"; expect $? "tape-off refuses (rc=$rc, I6 text, no restart)"
+bash "$B/profile.sh" shared >"$LOGS/p6b.log" 2>&1; rc=$?
+[ "$rc" != 0 ] && grep -qF "$I6" "$LOGS/p6b.log" && ! grep -q "restart xorgate-agent-rs" "$STATE/systemctl.log"; expect $? "profile.sh shared refuses (rc=$rc, I6 text, no restart)"
+check active "after the refusals"
+
+echo "== case (p7): start.sh refuses the shipped unit FIRST (and a Conflicts= drop-in), never enabling Rust"
+reset; converted_unit; : > "$STATE/systemctl.log"
+bash "$B/start.sh" >"$LOGS/p7a.log" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -qF "REFUSING: $I6" "$LOGS/p7a.log" && ! grep -q "xorgate-agent-rs" "$STATE/systemctl.log"; expect $? "start.sh: rc=1, I6 text, no systemctl call on Rust (rc=$rc)"
+bench_unit; mkdir -p /etc/systemd/system/xorgate-agent-rs.service.d
+printf '[Unit]\nConflicts = foo.service xorgate-agent.service\n' > /etc/systemd/system/xorgate-agent-rs.service.d/50-p7.conf
+bash "$B/start.sh" >"$LOGS/p7b.log" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -qF "$I6" "$LOGS/p7b.log"; expect $? "start.sh refuses a drop-in whose Conflicts= list names xorgate-agent.service"
+printf '[Unit]\nConflicts=xorgate-agent-rs-helper.service\n' > /etc/systemd/system/xorgate-agent-rs.service.d/50-p7.conf
+bash "$B/start.sh" >"$LOGS/p7c.log" 2>&1
+! grep -qF "$I6" "$LOGS/p7c.log"; expect $? "a Conflicts= on another unit (xorgate-agent-rs-helper) is not the shipped unit"
+rm -f /etc/systemd/system/xorgate-agent-rs.service.d/50-p7.conf
+check active "start.sh cases leave JS active"
+
+echo "== case (p8): the DEAD-MAN on a converted bench runs install-rs.sh --revert first, then enable + start + verify"
+reset; bench_unit; no_record
+(cd / && sha256sum /etc/xorgate/agent.env /etc/xorgate/kvs.json /etc/xorgate/hardware.json) > "$C15"
+bash "$B/exclusive.sh" begin --deadman-min 95 >"$LOGS/p8-begin.log" 2>&1; rc=$?
+expect $((rc != 0)) "begin (bench flavour) rc=0 (rc=$rc)"
+WINP=$(ls -1d /var/lib/xorgate-rs/evidence/window-* | tail -n1)
+fire() { eval "$(cat "$STATE/$DM.cmd")"; }
+# Inside the window the gate runner converts: shipped unit, JS disabled, Rust active.
+converted_unit; js_disabled_stopped; echo active > "$STATE/xorgate-agent-rs"; record converted; fake_installer 0; : > "$STATE/systemctl.log"
+fire >"$LOGS/p8-fire.log" 2>&1; rc=$?
+expect $((rc != 0)) "fired dead-man rc=0 (rc=$rc)"
+[ "$(cat "$LOGS/installer.argv" 2>/dev/null)" = "--revert" ]; expect $? "it ran $INST with exactly --revert"
+check active "dead-man after a conversion: JS active"; [ "$(js_en)" = enabled ]; expect $? "…and enabled"
+[ "$(cat "$STATE/xorgate-agent-rs")" = inactive ] && [ "$(cat "$STATE/xorgate-agent-rs.enabled")" = disabled ]; expect $? "Rust stopped + disabled by the revert"
+[ -f "$WINP/deadman-fired" ] && grep -q "conversion record state=converted" "$LOGS/p8-fire.log"; expect $? "deadman-fired recorded; log names the conversion"
+! grep -Eq "^systemctl (restart|start|enable) xorgate-agent-rs" "$STATE/systemctl.log"; expect $? "the dead-man never starts the shipped Rust unit"
+
+echo "== case (p9): dead-man, state=converting, the revert FAILS — JS is still enabled + started"
+converted_unit; js_disabled_stopped; record converting; fake_installer 1; rm -f "$WINP/deadman-fired"
+fire >"$LOGS/p9.log" 2>&1; rc=$?
+expect $((rc != 0)) "fired dead-man rc=0 despite the failed revert (rc=$rc)"
+[ "$(cat "$LOGS/installer.argv" 2>/dev/null)" = "--revert" ] && grep -q "install-rs.sh --revert exited 1" "$LOGS/p9.log"; expect $? "converting record: revert attempted, its failure named"
+check active "failed revert: JS active"; [ "$(js_en)" = enabled ]; expect $? "failed revert: JS enabled by the dead-man itself (CF64)"
+
+echo "== case (p10): dead-man, no record / reverted record / installer missing — never runs the installer, still enables JS"
+for v in none reverted missing; do
+  bench_unit; js_disabled_stopped; fake_installer 0
+  case $v in none) no_record ;; reverted) record reverted ;; missing) record converted; rm -f "$INST" ;; esac
+  fire >"$LOGS/p10-$v.log" 2>&1; rc=$?
+  [ "$rc" = 0 ] && [ ! -e "$LOGS/installer.argv" ] && [ "$(js_state)" = active ] && [ "$(js_en)" = enabled ]
+  expect $? "dead-man ($v): rc=0, installer not run, JS enabled + active (rc=$rc)"
+done
+grep -q "install-rs.sh is missing — cannot revert" "$LOGS/p10-missing.log"; expect $? "a converted record without the installer is named"
+no_record; rm -rf /opt/xorgate-rs; bash "$B/exclusive.sh" end >/dev/null 2>&1
+
+echo "== case (p11): an aborted begin with JS disabled re-enables it (the trap)"
+reset; bench_unit; echo disabled > "$STATE/xorgate-agent.enabled"; touch "$STATE/FAIL_RELOAD"
+bash "$B/exclusive.sh" begin >"$LOGS/p11.log" 2>&1; rm -f "$STATE/FAIL_RELOAD"
+grep -q "begin aborted" "$LOGS/p11.log" && [ "$(js_en)" = enabled ]; expect $? "aborted begin: trap enabled JS"
+check active "aborted begin: JS active"
+bash "$B/exclusive.sh" end >/dev/null 2>&1
+
+echo "== case (p12): status reports the conversion record + the shipped unit"
+reset; converted_unit; record converted
+bash "$B/exclusive.sh" status >"$LOGS/p12.log" 2>&1
+grep -q "conversion record: state=converted" "$LOGS/p12.log" && grep -qF "UNSAFE: $I6" "$LOGS/p12.log"; expect $? "status names state=converted and the shipped unit"
+no_record; bench_unit
+
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)  (logs in $LOGS)"
 exit $fail

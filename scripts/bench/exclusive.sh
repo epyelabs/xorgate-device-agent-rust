@@ -49,6 +49,18 @@
 #   C15 sha256s + the window's pipelines.sha256 (D17) and lists files under
 #   /var/lib/xorgate modified while the JS agent was stopped (= touched by
 #   someone else). Leaves Rust running on dev. Idempotent: run it first on ANY abort.
+# Phase 5 (WP3; a CONVERSION window, phase-5-distribution.md §12, I6):
+#   - end, the begin trap and the dead-man ENABLE the JS unit when
+#     `is-enabled` != enabled (install-rs.sh disables it) before start + verify
+#     (CF64: enable_start_js_verified in _lib.sh);
+#   - begin, tape-off, end and profile.sh never (re)start a SHIPPED Rust unit
+#     (Conflicts=xorgate-agent.service, as install-rs.sh installs it): they print
+#     "shipped (converted) unit installed — run scripts/bench/install.sh first;
+#     NOT starting xorgate-agent-rs (it would stop the PROD JS agent)" (CF65);
+#   - the dead-man runs `/opt/xorgate-rs/install-rs.sh --revert` first when
+#     /var/lib/xorgate-rs-install/record says state=converted|converting;
+#     end and status only WARN about an unreverted conversion (the revert is
+#     the gate runner's G11 step). Checklist: scripts/bench/convert-window.md.
 # Never touches sim7600-lte, /etc/xorgate/agent.env or /var/lib/xorgate contents.
 set -euo pipefail
 # shellcheck source=scripts/bench/_lib.sh
@@ -64,27 +76,24 @@ while [ $# -gt 0 ]; do
 done
 case "$DEADMAN_MIN" in ''|*[!0-9]*) echo "--deadman-min: minutes, got '$DEADMAN_MIN'" >&2; exit 2 ;; esac
 [ "$DEADMAN_MIN" -ge 10 ] || { echo "--deadman-min must be >= 10" >&2; exit 2; }
-case "$VERB" in begin|end|tape-off|status) ;; *) sed -n '2,54p' "$0"; exit 2 ;; esac
+case "$VERB" in begin|end|tape-off|status) ;; *) sed -n '2,64p' "$0"; exit 2 ;; esac
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 log "exclusive $VERB on $BENCH$([ $DRY = 1 ] && echo ' (DRY RUN)')"
 { echo "DRY=$DRY VERB=$VERB TS=$TS DEADMAN_SECS=$((DEADMAN_MIN * 60))"; bench_remote_lib; cat <<'REMOTE'
 [ "$(id -u)" -eq 0 ] || { echo "must run as root"; exit 1; }
 WIN_ROOT=$RS_HOME/evidence
 latest_window() { ls -1d "$WIN_ROOT"/window-* 2>/dev/null | tail -n1; }
-# Start the PROD JS agent and verify it is active. Never aborts the script
-# (set -e safe): returns 1 after ~30 s of retries so the caller can shout.
-start_js_verified() {
-  if [ "$DRY" = 1 ]; then echo "  [dry-run] would: systemctl start $JS_UNIT (+ verify active)"; return 0; fi
-  local i
-  for i in 1 2 3; do
-    systemctl start "$JS_UNIT" || true
-    for _ in $(seq 1 10); do
-      [ "$(systemctl is-active "$JS_UNIT" || true)" = active ] && { echo "  = $JS_UNIT active"; return 0; }
-      sleep 1
-    done
-  done
-  echo "!!!! $JS_UNIT FAILED TO START — the PROD agent is DOWN; fix by hand: sudo systemctl start $JS_UNIT" >&2
-  return 1
+# start_js_verified / enable_start_js_verified live in _lib.sh (Phase 5: the
+# dead-man embeds the same bodies).
+# Phase 5: a conversion (install-rs.sh) left unreverted — shout, never act
+# (the revert is the gate runner's step; the dead-man runs it unattended).
+conversion_warn() {
+  local st
+  st=$(conversion_state)
+  case "$st" in
+    converted|converting)
+      echo "!!!! conversion record $RS_INSTALL_RECORD says state=$st — run: sudo $RS_INSTALLER --revert; then scripts/bench/install.sh <tarball>; then exclusive.sh end again" >&2 ;;
+  esac
 }
 # Phase 3: camera-release wait (XORGATE_TEST_JS_RELEASE_SECS is test-only).
 JS_RELEASE_SECS=${XORGATE_TEST_JS_RELEASE_SECS:-60}
@@ -133,6 +142,9 @@ status)
   ls -l "$DROPIN_DIR" "$RUN_DROPIN_DIR" 2>/dev/null | sed 's/^/  /' || true
   echo "  latest window: $(latest_window || echo none)"
   echo "  dead-man $DEADMAN_UNIT.timer: $(deadman_state)"
+  echo "  conversion record: state=$(conversion_state)   $JS_UNIT is-enabled=$(systemctl is-enabled $JS_UNIT 2>/dev/null || true)"
+  if rs_unit_converted; then echo "  UNSAFE: $RS_CONVERTED_REFUSAL"; fi
+  conversion_warn
   for hw in "$HW_SHARED" "$HW_EXCLUSIVE"; do
     if [ -f "$hw" ]; then echo "  $(basename "$hw"): imu=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("imu")))' "$hw" 2>/dev/null || echo '?')"; fi
   done
@@ -148,6 +160,9 @@ begin)
   echo "== 1. preflight"
   need() { if [ "$DRY" = 1 ]; then echo "  [dry-run] PREFLIGHT would refuse: $1"; else echo "refusing: $1"; exit 1; fi; }
   [ -f /etc/systemd/system/$UNIT.service ] || need "$UNIT not installed"
+  # Phase 5 (CF65): the window opens on the bench flavour only; a SHIPPED
+  # (converted) unit would stop the PROD JS agent on the step-5 restart.
+  if rs_unit_converted; then need "$RS_CONVERTED_REFUSAL"; fi
   [ -f "$C15_BASELINE" ] || need "no C15 baseline — run scripts/bench/dev-manifests.sh first"
   grep -q "^KVS_MANIFEST=$RS_ETC/" "$RS_ENV" || need "$RS_ENV does not use the dev manifests — run dev-manifests.sh"
   units_report
@@ -203,7 +218,7 @@ PY
     systemctl stop "$UNIT" 2>/dev/null || true
     rm -f "$EXCLUSIVE_DROPIN" "$TAPE_DROPIN" "$EXCLUSIVE_ENV" 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
-    start_js_verified && deadman_cancel || true
+    enable_start_js_verified && deadman_cancel || true
     echo "!! run scripts/bench/exclusive.sh end to re-apply the shared profile and restart Rust" >&2
     exit "$rc"
   }
@@ -261,14 +276,19 @@ end)
   kill_rs_media || echo "  ! leftover sweep failed — continuing (JS first)"
   echo "== 1c. NTP (review-wp6 M4): set-ntp true + undo an ntp-unsync.sh break"
   ntp_restore || echo "  ! ntp restore failed — run scripts/bench/ntp-unsync.sh restore"
-  echo "== 2. JS agent (start + verify BEFORE anything that can fail)"
+  echo "== 2. JS agent (enable + start + verify BEFORE anything that can fail)"
+  # Phase 5 (CF64, I6): a conversion DISABLES the JS unit; end gives it back
+  # enabled as well as active (enable only when is-enabled != enabled).
   JS_OK=1
-  if [ "$(systemctl is-active $JS_UNIT || true)" != active ]; then
-    start_js_verified || JS_OK=0
-    [ "$JS_OK" = 1 ] && note "$JS_UNIT started"
+  JS_WAS=$(systemctl is-active $JS_UNIT || true)
+  JS_EN=$(systemctl is-enabled $JS_UNIT 2>/dev/null || true)
+  if [ "$JS_WAS" != active ] || [ "$JS_EN" != enabled ]; then
+    enable_start_js_verified || JS_OK=0
+    [ "$JS_OK" = 1 ] && [ "$JS_WAS" != active ] && note "$JS_UNIT started"
   else
-    echo "  = $JS_UNIT active"
+    echo "  = $JS_UNIT active + enabled"
   fi
+  conversion_warn
   echo "== 2b. dead-man timer"
   if [ "$JS_OK" = 1 ]; then deadman_cancel || true
   else echo "  ! $JS_UNIT not active: dead-man left ARMED ($(deadman_state)) — it retries the restore when it fires"; fi
@@ -290,6 +310,7 @@ end)
     done
   fi
   [ "$JS_OK" = 1 ] || echo "!!!! $JS_UNIT is NOT active — see above" >&2
+  conversion_warn
   units_report
   WIN=$(latest_window || true)
   echo "== 5. JS capture/masters back (state.json, read only; <= 90 s)"
