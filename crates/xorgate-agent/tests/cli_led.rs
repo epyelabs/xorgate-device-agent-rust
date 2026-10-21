@@ -458,3 +458,149 @@ fn sigint_mid_pattern_lands_the_blank_twice_like_the_ts_gate_trace() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Review-gate-fixes F-R1: a SLOW lit step in flight at the signal. The
+// reviewer's rig repro (scratchpad `adv/`): a pinctrl shim whose `dh` takes
+// 80 ms (a write lands when its child FINISHES), SIGINT 10 ms into a `dh`,
+// `blue blink-fast` — TS @89b5c64 and 08ff720 ended dark, 6e6ca52 ended on
+// `set 16 op dh`. Swept here over signal instants across the pattern (incl.
+// mid-`dh`): the LAST landed write is always the all-pin blank, exactly two
+// blanks land after the signal (D36), nothing is killed by the exit.
+
+#[derive(Debug, Clone)]
+struct Landed {
+    spawned_ms: u64,
+    argv: String,
+    landed_seq: Option<usize>,
+}
+
+struct SlowChild {
+    log: Arc<Mutex<Vec<Landed>>>,
+    seq: Arc<std::sync::atomic::AtomicUsize>,
+    t0: Instant,
+    dh_ms: u64,
+    dl_ms: u64,
+}
+
+impl PinWriter for SlowChild {
+    fn write(&self, pins: &[u32], high: bool) -> BoxFut<'static, bool> {
+        let argv = format!("pinctrl {}", PinctrlWriter::args(pins, high).join(" "));
+        let (log, seq, t0) = (self.log.clone(), self.seq.clone(), self.t0);
+        let ms = if high { self.dh_ms } else { self.dl_ms };
+        Box::pin(async move {
+            let idx = {
+                let mut l = log.lock().unwrap();
+                l.push(Landed {
+                    spawned_ms: ms_since(t0),
+                    argv,
+                    landed_seq: None,
+                });
+                l.len() - 1
+            };
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            let n = seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            log.lock().unwrap()[idx].landed_seq = Some(n);
+            true
+        })
+    }
+}
+
+fn run_slow_case(args: &[&str], sig_ms: u64, dh_ms: u64) -> (i32, Vec<Landed>) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let log: Arc<Mutex<Vec<Landed>>> = Arc::default();
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let code = {
+        let log = log.clone();
+        rt.block_on(async move {
+            let t0 = Instant::now();
+            let host = Arc::new(FakeHost {
+                h: HostIn::default(),
+                mock: false,
+                calls: Calls::default(),
+                t0,
+            });
+            let writer = Arc::new(SlowChild {
+                log,
+                seq: Arc::default(),
+                t0,
+                dh_ms,
+                dl_ms: 2,
+            });
+            run(
+                &args,
+                LedCliDeps {
+                    out: Arc::new(Out::default()),
+                    make_driver: Box::new(move |log| {
+                        let map = LedPinMap::status_led_map();
+                        LedDriver::new(LedDriverOptions {
+                            map: Some(map.clone()),
+                            writer: Some(writer),
+                            probe: Some(Box::new(move || {
+                                let (map, host) = (map.clone(), host.clone());
+                                Box::pin(async move { probe_host_with(&map, host.as_ref()).await })
+                            })),
+                            log: Some(log),
+                        })
+                    }),
+                    service_result: None,
+                    signal: Box::new(move || {
+                        Box::pin(async move {
+                            tokio::time::sleep_until(t0 + Duration::from_millis(sig_ms)).await
+                        })
+                    }),
+                },
+            )
+            .await
+        })
+    };
+    drop(rt); // process exit: a child not yet landed dies here
+    let log = log.lock().unwrap().clone();
+    (code, log)
+}
+
+#[test]
+fn sigint_with_a_slow_lit_step_in_flight_still_ends_dark() {
+    const BLANK: &str = "pinctrl set 12,21,16 op dl";
+    let mut mid_dh = 0;
+    for (args, dh_ms) in [
+        (["blue", "blink-fast"], 80),
+        (["cyan", "blink-slow"], 80),
+        (["purple", "heartbeat"], 150),
+    ] {
+        for sig in (1..900).step_by(7) {
+            let (code, log) = run_slow_case(&args, sig, dh_ms);
+            let at = format!("{args:?} SIGINT at {sig} ms (dh {dh_ms} ms)");
+            assert_eq!(code, 0, "{at}");
+            let killed: Vec<&Landed> = log.iter().filter(|w| w.landed_seq.is_none()).collect();
+            assert!(killed.is_empty(), "{at}: killed {killed:?}");
+            let mut by_land = log.clone();
+            by_land.sort_by_key(|w| w.landed_seq);
+            assert_eq!(
+                by_land.last().map(|w| w.argv.as_str()),
+                Some(BLANK),
+                "{at}: last landed write {by_land:?}"
+            );
+            let blanks = log
+                .iter()
+                .filter(|w| w.spawned_ms >= sig && w.argv == BLANK)
+                .count();
+            assert_eq!(blanks, 2, "{at}: blanks after the signal {log:?}");
+            // A `dh` child started before the signal and still running at it:
+            // the F-R1 case (it lands after the shutdown blank).
+            if log.iter().any(|w| {
+                w.argv.ends_with(" dh") && w.spawned_ms < sig && w.spawned_ms + dh_ms > sig
+            }) {
+                mid_dh += 1;
+            }
+        }
+    }
+    assert!(
+        mid_dh >= 20,
+        "the sweep must hit a lit step in flight ({mid_dh} cases)"
+    );
+}

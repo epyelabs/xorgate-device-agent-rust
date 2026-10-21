@@ -179,6 +179,13 @@ pub async fn run(rest: &[String], deps: LedCliDeps) -> i32 {
     // A pattern only exists while this process does, so hand the LED back
     // dark on any signalled exit (`led.ts:68-74`). SIGKILL cannot be caught.
     let mut signal = (deps.signal)();
+    // `<colour> <pattern>` (not solid/off): the body is `play` + its own
+    // trailing blank (`led.ts:104-105`).
+    let plays_pattern = LedColour::parse(sub).is_some_and(|c| c != LedColour::Off)
+        && pos
+            .get(1)
+            .and_then(|p| LedPattern::parse(p))
+            .is_some_and(|p| p != LedPattern::Solid);
     let body = body(
         sub,
         pos.get(1).copied(),
@@ -207,17 +214,36 @@ pub async fn run(rest: &[String], deps: LedCliDeps) -> i32 {
             _ = &mut body, if !body_done => body_done = true,
         }
     }
-    // F-E3-1 (Phase 4 gate): the TS's trailing blank (or an in-flight
-    // pattern step) has SPAWNED its `pinctrl` child by then — in the same
-    // microtask drain as the shutdown blank — and `process.exit` does not
-    // kill children, so it lands too: a signalled pattern writes the dark
-    // blank TWICE (9/9 real runs). Our exit drops the runtime and
-    // `kill_on_drop` would kill that child, so wait for every write already
-    // started. The body is not polled any further (the TS main flow gets no
-    // further turn of the event loop either).
+    // F-E3-1 / D36 + review-gate-fixes F-R1. The TS main flow unwinds the
+    // stopped pattern into its own trailing blank: at once when the signal
+    // lands while `play` sleeps (spawned in the same microtask drain as the
+    // shutdown blank), or once the in-flight step's write(s) resolve when it
+    // lands mid-`apply` (no generation check inside `apply`, led.ts:357-381);
+    // whether that blank lands before `process.exit` (execa `cleanup: true`
+    // kills a child still running) is a race. Here a pattern run lets the
+    // body finish (bounded by the TS writer timeout, 2 s), so its trailing
+    // blank is spawned only after every step write resolved and lands LAST.
+    if plays_pattern && !body_done {
+        let _ = tokio::time::timeout(SHUTDOWN_UNWIND, &mut body).await;
+    }
+    // Our exit drops the runtime (`kill_on_drop` would kill a child still
+    // running): wait for every write already started — each bounded by its
+    // own `pinctrl` timeout. The body is not polled any further.
     driver.writes_settled().await;
+    // The LAST write is the dark blank, always: if a lit write landed after
+    // the blanks (a non-pattern run's in-flight write, or a pattern whose
+    // unwind hit the 2 s bound), blank once more and let that settle too.
+    if !driver.last_write_dark() {
+        driver.blank(false).await;
+        driver.writes_settled().await;
+    }
     0
 }
+
+/// How long a signalled pattern run waits for the stopped pattern to unwind
+/// into its trailing blank: the TS `pinctrlWriter` timeout (`led.ts:221`,
+/// `timeoutMs: 2000`).
+const SHUTDOWN_UNWIND: Duration = Duration::from_millis(2000);
 
 /// The part of `ledCommand` after init (`led.ts:76-105`).
 async fn body(

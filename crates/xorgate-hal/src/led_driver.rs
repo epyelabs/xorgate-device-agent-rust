@@ -311,6 +311,10 @@ struct Inner {
     /// Writer calls whose future has not finished yet (see
     /// [`LedDriver::writes_settled`]).
     in_flight: watch::Sender<usize>,
+    /// Whether the write that FINISHED last drove all three channels dark
+    /// (`None` = none finished yet). Finish order = the order the writes
+    /// took effect (each is one `pinctrl` / line-request call).
+    last_landed_dark: Arc<Mutex<Option<bool>>>,
 }
 
 /// Decrements [`Inner::in_flight`] when a writer task ends — completion,
@@ -380,6 +384,7 @@ impl LedDriver {
                 probe,
                 st: Mutex::new(State::default()),
                 in_flight: watch::Sender::new(0),
+                last_landed_dark: Arc::new(Mutex::new(None)),
             }),
         }
     }
@@ -464,11 +469,27 @@ impl LedDriver {
     /// shutdown awaits this before it exits (F-E3-1, Phase 4 gate). Bounded
     /// by the writer's own timeout (`pinctrl`: 2 s). Writes started while it
     /// waits are waited for too — the caller stops driving the flow first.
+    ///
+    /// It waits for a LIT write too, which may then land AFTER a blank: a
+    /// caller that must end dark checks [`last_write_dark`](Self::last_write_dark)
+    /// afterwards and blanks again (review-gate-fixes F-R1).
     pub fn writes_settled(&self) -> BoxFut<'static, ()> {
         let mut rx = self.inner.in_flight.subscribe();
         Box::pin(async move {
             let _ = rx.wait_for(|n| *n == 0).await;
         })
+    }
+
+    /// True when the write that finished LAST drove all three channels dark
+    /// and succeeded (or nothing was written yet). Rust-only; the CLI's
+    /// shutdown uses it after [`writes_settled`](Self::writes_settled).
+    pub fn last_write_dark(&self) -> bool {
+        let g = self
+            .inner
+            .last_landed_dark
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *g != Some(false)
     }
 
     /// `stop()` (`led.ts:324-332`): cancel a running pattern; leaves the LED
@@ -632,6 +653,12 @@ impl Inner {
         match catch_unwind(AssertUnwindSafe(|| self.write.write(&pins, high))) {
             Ok(fut) => {
                 let in_flight = self.in_flight.clone();
+                let landed = self.last_landed_dark.clone();
+                let mut all = self.pins.to_vec();
+                all.sort_unstable();
+                let mut these = pins.clone();
+                these.sort_unstable();
+                let dark_all = !lit && these == all;
                 Box::pin(async move {
                     // Lazy, as before: the write starts (and counts as in
                     // flight) when this future is first polled (D31).
@@ -639,7 +666,9 @@ impl Inner {
                     let guard = InFlight(in_flight);
                     tokio::spawn(async move {
                         let _guard = guard;
-                        fut.await
+                        let ok = fut.await;
+                        *landed.lock().unwrap_or_else(|p| p.into_inner()) = Some(ok && dark_all);
+                        ok
                     })
                     .await
                     .unwrap_or(false)
