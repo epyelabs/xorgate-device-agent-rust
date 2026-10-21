@@ -322,24 +322,14 @@ assert_converted() {
   done
   [ "$svc" != root ] && { grep -qwF "$S024" <<<" $(rec installed) " || missing+=" $S024"; }
   check "record installed lists every NEW file${missing:+ (missing:$missing)}" [ -z "$missing" ]
-  if diff <(xnorm "$m0") <(no_rec_rows "$REC_DIR/pre.manifest" | unpad) >"$E/pre.diff" 2>&1; then
-    ok "I3 cross-check: WP1's pre.manifest == WP2's independent M0 (modes unpadded; /opt/xorgate digest recomputed in that format)"
+  if diff <(no_rec_rows "$m0") <(no_rec_rows "$REC_DIR/pre.manifest") >"$E/pre.diff" 2>&1; then
+    ok "I3 cross-check: WP1's pre.manifest == WP2's independent M0, byte for byte (I3 amendment: 4-digit modes)"
   else
     bad "I3 cross-check: WP1's pre.manifest == WP2's independent M0 (- WP2, + WP1)"; sed 's/^/        /' "$E/pre.diff" | head -20
   fi
   check "--status: first line state=converted, exit 0" status_first state=converted
 }
 export -f body_is mode_is never_rows sel
-# I3 says "<octal mode>" without a width: WP2 prints 4 digits (0644), WP1 the
-# stat %a form (644), and a tree digest hashes its lines in each tool's own
-# format. unpad maps both to %a; xnorm also recomputes WP2's /opt/xorgate
-# digest over unpadded lines (never touched, so recomputing later is exact).
-unpad() { sed -E 's/^([fdl]) 0*([0-7]+) /\1 \2 /'; }
-xnorm() {
-  local d
-  d=$(bash /e2e/manifest.sh --expand /opt/xorgate | unpad | sha256sum | cut -d' ' -f1)
-  no_rec_rows "$1" | unpad | sed -E "s#^t [0-9a-f]{64} /opt/xorgate\$#t $d /opt/xorgate#"
-}
 
 # assert_reverted <M0> <keep|purge|keep-nofiles> <jsEnabled> <jsActive>
 # (keep-nofiles: a keep revert after an interrupted run that had already
@@ -660,7 +650,7 @@ interrupt-[1-8]|interrupt-[1-8]-revert)
   provision
   M "$E/M0"
   irs XORGATE_RS_CONVERT_FAIL_AT="$n"
-  check "FAIL_AT=$n: exit 1" rc_is 1
+  check "FAIL_AT=$n: exit 9 (the test-only crash knob, I1 amendment)" rc_is 9
   M "$E/Mi"
   check "FAIL_AT=$n: record state=converting + pre.manifest written (§5.1)" bash -c "grep -qx state=converting $REC && [ -s $REC_DIR/pre.manifest ]"
   check "FAIL_AT=$n: the never-touched rows == M0 even mid-conversion" bash -c 'diff <(never_rows "$1") <(never_rows "$2") >/dev/null' _ "$E/M0" "$E/Mi"
