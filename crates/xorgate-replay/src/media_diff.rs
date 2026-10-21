@@ -2277,7 +2277,13 @@ pub fn diff_media(
     // review-wp6 S-F4: a Rust side's read instant is self-reported, so each
     // one is bounded against the player's release of the SAME line
     // (`readLagMs`); an unbounded read cannot anchor a race.
-    let feed = nmea_lines(&tape_recs(Path::new(&play.tape)), Some(&play.releases));
+    // The lines AS WRITTEN: the player shifts each NMEA time-of-day/date
+    // to the run's wall clock before the write (play.rs, rewrite.rs).
+    let feed: Vec<(i64, String)> =
+        nmea_lines(&tape_recs(Path::new(&play.tape)), Some(&play.releases))
+            .into_iter()
+            .map(|(w, l)| (w, crate::rewrite::shift_nmea_line(&l, play.shift_s)))
+            .collect();
     let read_lag = row_tol(table, "T4/rec-sample", "readLagMs", 0.0) as i64;
     let mut timeline = |label: &str, m: &MediaCapture| {
         if m.nmea_reads.is_empty() {
@@ -3813,6 +3819,26 @@ mod tests {
                 &PlayInfo::default()
             ),
             bad
+        );
+        // The player shifts each NMEA time to the run's clock before the
+        // write: the agent reads the SHIFTED line, which still anchors.
+        let shifted = |r: Vec<(i64, String)>| -> Vec<(i64, String)> {
+            r.into_iter()
+                .map(|(w, l)| (w, crate::rewrite::shift_nmea_line(&l, 3_600)))
+                .collect()
+        };
+        assert_ne!(shifted(reads(0))[0].1, reads(0)[0].1, "the GGA time moved");
+        let play_shift = PlayInfo {
+            shift_s: 3_600,
+            ..play.clone()
+        };
+        assert_eq!(
+            run_with(
+                cap(&sa(10), shifted(reads(0))),
+                cap(&sb(-3), shifted(reads(0))),
+                &play_shift
+            ),
+            ok
         );
         let (bounded, lags) = bound_reads(&reads(80), &reads(0), 200);
         assert!(bounded.iter().all(|r| r.2) && lags.iter().all(|l| *l == 80));
