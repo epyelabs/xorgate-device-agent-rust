@@ -48,15 +48,14 @@
 #   reboot|poweroff|halt|kexec   FORBIDDEN (logged, exit 1)
 #
 # Fault injection (case.sh writes these; each fires once):
-#   /run/e2e/inject   lines "<fail|crash|hup|term> <ERE over the call's argv>":
+#   /run/e2e/inject   lines "<fail|crash|hup|int|term> <ERE over the call's argv>":
 #                     fail  = this call fails (exit 1, systemd-like stderr)
 #                     crash = after this call, kill -9 every install-rs.sh
 #                             bash (a power cut / OOM kill mid-script)
-#                     hup|term = after this call, SIGHUP/SIGTERM the
+#                     hup|int|term = after this call, SIGHUP/SIGINT/SIGTERM the
 #                             install-rs.sh main bash (ssh drop / kill)
-#   /run/e2e/crash-at N  crash after the N-th state-changing call (enable,
-#                     disable, start, stop, restart, daemon-reload) counted
-#                     in /run/e2e/sc-count
+#   /run/e2e/crash-at N  crash after the N-th systemctl call (any verb) made
+#                     while it is armed, counted in /run/e2e/sc-count
 # After every enable/disable: "ENABLED js=<state> rs=<state>" is logged (the
 # M2 hand-over order: never both disabled while one was enabled).
 # pid files hold "<pid> <starttime>" so a reused pid is never taken for the
@@ -87,18 +86,19 @@ inject_match() { # <action> → 0 (and the line consumed) if an inject line matc
 }
 after_call() { # post-call faults
   local rc=$1 n
-  case "$VERB" in enable|disable|start|stop|restart|daemon-reload)
+  if [ -s "$E/crash-at" ]; then
     n=$(( $(cat "$E/sc-count" 2>/dev/null || echo 0) + 1 )); echo $n >"$E/sc-count"
-    if [ -s "$E/crash-at" ] && [ "$(cat "$E/crash-at")" = "$n" ]; then
+    if [ "$(cat "$E/crash-at")" = "$n" ]; then
       rm -f "$E/crash-at"; echo "INJECT crash after #$n: $CALL" >>"$E/systemctl.log"
       touch "$E/crashed"; pkill -9 -f "$INSTALLER_RE"
-    fi ;;
-  esac
+    fi
+  fi
   case "$VERB" in enable|disable)
     echo "ENABLED js=$(is_enabled xorgate-agent.service 2>/dev/null || true) rs=$(is_enabled xorgate-agent-rs.service 2>/dev/null || true)" >>"$E/systemctl.log" ;;
   esac
   if inject_match crash; then echo "INJECT crash after: $CALL" >>"$E/systemctl.log"; touch "$E/crashed"; pkill -9 -f "$INSTALLER_RE"; fi
   if inject_match hup; then echo "INJECT SIGHUP after: $CALL" >>"$E/systemctl.log"; kill -HUP "$(installer_main)" 2>/dev/null; touch "$E/signalled"; fi
+  if inject_match int; then echo "INJECT SIGINT after: $CALL" >>"$E/systemctl.log"; kill -INT "$(installer_main)" 2>/dev/null; touch "$E/signalled"; fi
   if inject_match term; then echo "INJECT SIGTERM after: $CALL" >>"$E/systemctl.log"; kill -TERM "$(installer_main)" 2>/dev/null; touch "$E/signalled"; fi
   exit "$rc"
 }

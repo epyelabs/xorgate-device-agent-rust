@@ -46,12 +46,13 @@ visudo-refuses, usage-status, wrapper-path-is-dir, rollback-step6, rollback-step
 bench-window, bench-window-rollback, status-nonroot, revert-runtime-drift,
 failed-start-js-disabled, failed-start-js-stopped,
 clean-fail-step8-{reload,enable-rs,disable-js,start-rs} (a clean failure: exit 4, JS back),
-signal-convert-{hup,term}-{8,9}, signal-revert-{hup,term},
-powercut-convert-1…5, powercut-revert-1…5 (a crash after the k-th state-changing
-systemctl call, then a simulated boot: ≥ 1 agent unit enabled, and a re-run converges).
+signal-convert-{hup,term}-{8,9}, signal-convert-int-9, signal-revert-{hup,term,int},
+n7-refusal, lock-stale, lock-concurrent,
+powercut-convert-1…14, powercut-revert-1…12 (a crash after the k-th systemctl call of
+the run, then a simulated boot: ≥ 1 agent unit enabled, and a re-run converges).
 
 Fault injection goes through the systemctl shim: `/run/e2e/inject` lines
-`fail|crash|hup|term <ERE over the call>`, and `/run/e2e/crash-at <k>`.
+`fail|crash|hup|int|term <ERE over the call>`, and `/run/e2e/crash-at <k>`.
 
 Every case ends with `invariants`, which checks four things:
 - The never-touched rows equal M0. These are `/etc/xorgate`, `/opt/xorgate`, the JS wrapper, unit, `.d/` and updater, sudoers 010 and 020–023, and the modem, system, cron, udev, NM and logind assets.

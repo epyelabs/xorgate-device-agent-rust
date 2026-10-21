@@ -906,7 +906,7 @@ signal-convert-*)
   else echo "$sig ^is-active xorgate-agent-rs" >"$E/inject"; fi
   irs
   check "the SIG${sig^^} was delivered (step $at)" test -e "$E/signalled"
-  check "non-zero exit" bash -c "! grep -qx 0 $E/rc"
+  check "exit 4 (the abort path ran the keep revert)" rc_is 4
   check "end state: JS enabled + active" units_are xorgate-agent.service enabled/active
   check "JS worker running" js_running
   check "rs not enabled, not active" bash -c "[ \"\$(systemctl is-active xorgate-agent-rs)\" != active ] && ! [ -L $WANTS/xorgate-agent-rs.service ]"
@@ -927,9 +927,9 @@ signal-revert-*)
   assert_reverted "$E/M0" keep enabled active
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
-powercut-convert-[0-9]|powercut-revert-[0-9])
-  # A3(ii) CRASH: a power cut right after the k-th state-changing systemctl
-  # call (kill -9 of the script, no cleanup, then a boot). Assert only:
+powercut-convert-[0-9]*|powercut-revert-[0-9]*)
+  # A3(ii) CRASH: a power cut right after the k-th systemctl call of the run
+  # (kill -9 of the script, no cleanup, then a boot). Assert only:
   # (a) at least one agent unit is enabled, (b) re-running converges.
   k=${CASE##*-}
   provision
@@ -945,13 +945,13 @@ powercut-convert-[0-9]|powercut-revert-[0-9])
     irs
   fi
   if [ -e "$E/crashed" ]; then
-    note "power cut after state-changing call #$k: $(grep '^INJECT crash' "$E/systemctl.log")"
+    note "power cut after systemctl call #$k: $(grep '^INJECT crash' "$E/systemctl.log")"
     check "(a) after the cut at least one agent unit is enabled (M2)" bash -c "[ -L $WANTS/xorgate-agent.service ] || [ -L $WANTS/xorgate-agent-rs.service ]"
     power_cycle
     note "after boot: JS $(ise xorgate-agent)/$(isa xorgate-agent), rs $(ise xorgate-agent-rs)/$(isa xorgate-agent-rs)"
     check "after boot some agent runs" bash -c '[ "$(systemctl is-active xorgate-agent)" = active ] || [ "$(systemctl is-active xorgate-agent-rs)" = active ]'
   else
-    note "fewer than $k state-changing calls: no cut happened (rc $(cat "$E/rc"))"
+    note "fewer than $k systemctl calls: no cut happened (rc $(cat "$E/rc"))"
   fi
   rm -f "$E/crash-at" "$E/sc-count"
   if [ "${CASE#powercut-revert}" != "$CASE" ]; then
@@ -1006,6 +1006,50 @@ bench-window-rollback)
   same_rows "S1: device == M0 outside the record dir (bench unit, wrapper, drop-ins, /opt/xorgate-rs byte-exact)" no_rec_rows "$E/M0" "$E/M1"
   check "the bench unit is back (no Conflicts= line)" bash -c "! grep -q '^Conflicts=' $RS_UNIT"
   check "rs still enabled + active, not restarted; JS enabled + inactive" bash -c '[ "$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)" = enabled/active ] && [ "$(systemctl show -p MainPID --value xorgate-agent-rs)" = "$1" ] && [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/inactive ]' _ "$pid0"
+  invariants "$E/M0" ;;
+# -------------------------------------------------------------------------
+n7-refusal)
+  # N7: no record, but rs enabled and JS not (an operator deleted the record
+  # on a converted device) → exit 3, nothing changed (else the next record
+  # would call "disabled" the JS "before" state).
+  provision
+  M "$E/M0"
+  convert_ok "$E/M0" pi 1 enabled active
+  rm -rf "$REC_DIR"
+  M "$E/M1"
+  : >"$E/systemctl.log"
+  irs
+  check "exit 3" rc_is 3
+  check "a refusal line" grep -q '^\[install-rs\] refused: .*(nothing changed)$' "$E/out"
+  M "$E/M2"
+  check "nothing changed" same_file "$E/M1" "$E/M2"
+  check "no state-changing systemctl call" bash -c "! grep -qE '^(start|stop|restart|enable|disable|daemon-reload)' $E/systemctl.log"
+  invariants "$E/M0" ;;
+lock-stale)
+  # I1 lock /run/xorgate-rs-install.lock/pid: a dead pid is reclaimed.
+  provision
+  M "$E/M0"
+  install -d -m 0700 /run/xorgate-rs-install.lock
+  echo 999999 >/run/xorgate-rs-install.lock/pid
+  convert_ok "$E/M0" pi 1 enabled active
+  check "the stale lock was reclaimed and released" [ ! -e /run/xorgate-rs-install.lock ]
+  invariants "$E/M0" ;;
+lock-concurrent)
+  # A live holder → a second run is refused (exit 3), nothing changed, the
+  # holder's lock untouched.
+  provision
+  M "$E/M0"
+  sleep 600 & holder=$!
+  install -d -m 0700 /run/xorgate-rs-install.lock
+  echo "$holder" >/run/xorgate-rs-install.lock/pid
+  irs
+  check "exit 3 (another run holds the lock)" rc_is 3
+  M "$E/M1"
+  check "nothing changed (manifest == M0, no record dir)" same_file "$E/M0" "$E/M1"
+  check "the holder's lock is untouched" [ "$(cat /run/xorgate-rs-install.lock/pid 2>/dev/null)" = "$holder" ]
+  irs --revert
+  check "--revert is refused too while locked (exit 3)" rc_is 3
+  kill "$holder" 2>/dev/null
   invariants "$E/M0" ;;
 # -------------------------------------------------------------------------
 bootstrap-oneliner)
