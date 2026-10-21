@@ -28,7 +28,7 @@ for p in /run/xorgate-rs-no-gpio /run/xorgate-rs-no-sms; do [ -e "$p" ] && echo 
 SINCE=$(systemctl show $UNIT -p ActiveEnterTimestamp --value)
 if [ -n "$SINCE" ]; then
   N=$(journalctl _COMM=sudo --since "$SINCE" --no-pager -q 2>/dev/null | grep -cE 'COMMAND=/usr/local/bin/xorgate-(setclock|camrotate)' || true)
-  echo "  sudo journal since $UNIT start ($SINCE): $N xorgate-setclock/xorgate-camrotate run(s) — BOTH agents run as pi, so this includes the JS prod agent's own legitimate steps/rotations; the Rust agent's are refused by its sudo shim (shared profile), so compare with: journalctl -u xorgate-agent-rs | grep -c "disabled in the shared profile""
+  echo "  sudo journal since $UNIT start ($SINCE): $N xorgate-setclock/xorgate-camrotate run(s) — BOTH agents run as pi, so this includes the JS prod agent's own legitimate steps/rotations; the Rust agent's are refused by its sudo shim (shared profile), so compare with: journalctl -u xorgate-agent-rs | grep -c 'disabled in the shared profile'"
 fi
 if command -v gpioinfo >/dev/null 2>&1; then
   echo "  gpioinfo lines 12/16/21: $(gpioinfo gpiochip0 2>/dev/null | grep -E 'line +(12|16|21):' | tr -s ' ' | tr '\n' ';')"
