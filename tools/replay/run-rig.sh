@@ -15,7 +15,8 @@
 # run's (or another agent's) broker.
 #
 # Steps: gen-certs.sh → js-build.sh → build-bins.sh → mosquitto up → `play`
-# (real time; the tape's length + settle) → `diff` → copy → compose down.
+# (real time; the tape's length + settle) → `diff` → copy → compose down -v
+# (on every exit path, errors and signals included).
 # Exit code = the diff's (non-zero on any UNTOLERATED mismatch).
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -57,8 +58,14 @@ export RIG_TAPES="$HERE/.cache/tapes" RIG_RUNS="$HERE/.cache/runs"
 
 cd "$HERE"
 # shellcheck disable=SC2329  # invoked by the EXIT trap
-cleanup() { dc down --remove-orphans >/dev/null 2>&1 || true; }
+# `-v`: the mosquitto image declares two anonymous volumes (/mosquitto/data,
+# /mosquitto/log); without it every run leaked both (F-RIG-1, Phase 4 gate).
+cleanup() { dc down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap 'rc=$?; cleanup; exit $rc' EXIT
+# A signal ends the script through `exit`, so the EXIT trap (and the teardown)
+# runs on Ctrl-C / kill too.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 echo ">> compose project $PROJECT"
 dc build --quiet rig
 dc up -d mosquitto
