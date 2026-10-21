@@ -1,0 +1,10 @@
+{
+  "generatedBy": "hand-written in Phase 5 WP1 from xorgate_core::update_plan (WRAPPER_BODY, updater_sudoers_body) and phase-5-distribution.md §8 (10-dist.conf); pinned both ways: crates/xorgate-core/tests/install_rs_bodies.rs (== update_plan) and scripts/tests/install-rs-bodies.sh (== scripts/install-rs.sh + scripts/bench/_lib.sh)",
+  "note": "one value per line; the only JSON escapes used are \\n and \\\" (the bash reader refuses any other)",
+  "wrapper": "#!/usr/bin/env bash\nexec env XORGATE_HOME=\"${XORGATE_HOME:-/var/lib/xorgate}\" /opt/xorgate-rs/bin/xorgate-rs \"$@\"\n",
+  "updaterSudoers": {
+    "pi": "# Installed by xorgate-rs. Allows the agent (running as pi) to start the\n# one-shot self-update unit on a cloud-issued 'update' command, and nothing\n# else. See device-agent-rust crates/xorgate-hal/src/privileged.rs + systemd/xorgate-updater-rs.service.\npi ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater-rs.service\n",
+    "operator": "# Installed by xorgate-rs. Allows the agent (running as operator) to start the\n# one-shot self-update unit on a cloud-issued 'update' command, and nothing\n# else. See device-agent-rust crates/xorgate-hal/src/privileged.rs + systemd/xorgate-updater-rs.service.\noperator ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater-rs.service\n"
+  },
+  "distDropin": "# Installed by install-rs.sh. agent.env's DEVICE_DIST_VERSION is the JS agent's pin;\n# the Rust updater always follows xorgate-agent-rs-latest (README §6: the cloud update stays latest-only).\n[Service]\nEnvironment=DEVICE_DIST_VERSION=latest\n"
+}
