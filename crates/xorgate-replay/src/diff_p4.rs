@@ -19,7 +19,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::diff::{Mismatch, Report, UNTOLERATED};
+use crate::diff::{Capture, Mismatch, Report, UNTOLERATED};
 use crate::tolerances::Table;
 
 /// Writes closer than this belong to one `apply()` (rise then fall; the
@@ -432,31 +432,36 @@ pub fn setclock_tolerated(table: &Table, x: &str, y: &str) -> Option<String> {
     (stem(x) == stem(y) && (ox - oy).abs() <= lim).then(|| r.id.clone())
 }
 
-/// T16 (events half): `[clock] ignoring implausible <src> time <ISO>`
-/// (`clock-step.ts:272-276`) prints `new Date(targetMs).toISOString()` with
-/// `targetMs = now() + modem.offsetMs` (NITZ, `:262`) or `utcMs + ageMs`
-/// (GPS) at THAT agent's tick — the two agents' steppers start after their
-/// own boot (worker.ts:554) and keep that phase (setInterval 30 s, `:291`),
-/// so the ISO differs by the boot skew. An A-only and a B-only line of that
-/// shape, same level and source, ISOs within `iso_ms`, are re-cited to T16;
-/// anything else stays as the events diff left it.
-pub fn retag_clock_iso(table: &Table, rep: &mut Report) {
+/// T16 (events half, review-wp6 S): `[clock] ignoring implausible <src> time
+/// <ISO>` (`clock-step.ts:272-276`) prints `targetMs = now() + modem.offsetMs`
+/// (NITZ, `:262`; GPS: `utcMs + ageMs`) taken in the SAME tick as the event's
+/// own state.json stamp (`onEvent` → `Date.now()`, worker.ts:546-551). So
+/// `ISO − the event's own ts` is the source offset — the same file / NMEA on
+/// both agents — whatever each agent's tick phase. An A-only and a B-only
+/// line of that shape (same level + source) whose anchored offsets agree
+/// within `anchor_ms` are re-cited to T16; nothing is compared across agents
+/// by wall time.
+pub fn retag_clock_iso(table: &Table, a: &Capture, b: &Capture, rep: &mut Report) {
     let Some(r) = table.of_kind("p4", "events").next() else {
         return;
     };
-    let Some(lim) = r.tolerance.get("iso_ms").map(|v| *v as i64) else {
+    let Some(lim) = r.tolerance.get("anchor_ms").map(|v| *v as i64) else {
         return;
     };
-    let parse = |path: &str| -> Option<(String, i64)> {
-        let i = path.find("[clock] ignoring implausible ")?;
+    // `level: msg` → (head, ISO − own ts) for that capture's event.
+    let anchored = |c: &Capture, path: &str| -> Option<(String, i64)> {
+        path.find("[clock] ignoring implausible ")?;
         let (head, iso) = path.rsplit_once(" time ")?;
-        let _ = i;
-        Some((head.to_string(), iso_ms(iso)?))
+        let (level, msg) = path.split_once(": ")?;
+        let at = c.events.iter().find(|(_, l, m)| l == level && m == msg)?.0;
+        Some((head.to_string(), iso_ms(iso)? - at))
     };
     let idx: Vec<usize> = (0..rep.mismatches.len())
         .filter(|&i| {
             let m = &rep.mismatches[i];
-            m.stream == "events" && m.tol == UNTOLERATED && parse(&m.path).is_some()
+            m.stream == "events"
+                && m.tol == UNTOLERATED
+                && m.path.contains("[clock] ignoring implausible ")
         })
         .collect();
     let mut used = vec![false; rep.mismatches.len()];
@@ -466,14 +471,16 @@ pub fn retag_clock_iso(table: &Table, rep: &mut Report) {
                 continue;
             }
             let (mi, mj) = (&rep.mismatches[i], &rep.mismatches[j]);
-            // i: A has it, B not; j: B has it, A not.
+            // i: on A only; j: on B only.
             if !(mi.a == "1" && mi.b == "0" && mj.a == "0" && mj.b == "1") {
                 continue;
             }
-            let ((hi, ti), (hj, tj)) = (parse(&mi.path).unwrap(), parse(&mj.path).unwrap());
-            if hi == hj && (ti - tj).abs() <= lim {
-                used[i] = true;
-                used[j] = true;
+            if let (Some((hi, oi)), Some((hj, oj))) = (anchored(a, &mi.path), anchored(b, &mj.path))
+            {
+                if hi == hj && (oi - oj).abs() <= lim {
+                    used[i] = true;
+                    used[j] = true;
+                }
             }
         }
     }
@@ -632,25 +639,37 @@ tolerance = { epoch_s = 1 }
         for id in ["T1", "T2", "T3", "T4", "T5", "T7", "T8", "T9"] {
             toml += &format!("[[rule]]\nid = \"{id}\"\ntitle = \"x\"\nkind = \"exclude\"\n");
         }
-        toml += "[[rule]]\nid = \"T16\"\ntitle = \"x\"\nkind = \"p4\"\nstreams = [\"sudo\", \"events\"]\ntolerance = { epoch_s = 1, iso_ms = 2000 }\n";
+        toml += "[[rule]]\nid = \"T16\"\ntitle = \"x\"\nkind = \"p4\"\nstreams = [\"sudo\", \"events\"]\ntolerance = { epoch_s = 1, anchor_ms = 50 }\n";
         let t = Table::parse(&toml).unwrap();
+        let line = |iso: &str| format!("[clock] ignoring implausible nitz time {iso}");
         let ev = |iso: &str, a: &str, b: &str| Mismatch {
             stream: "events".into(),
             at: "multiset".into(),
-            path: format!("warn: [clock] ignoring implausible nitz time {iso}"),
+            path: format!("warn: {}", line(iso)),
             a: a.into(),
             b: b.into(),
             tol: UNTOLERATED.into(),
         };
+        // Each event's own state.json stamp: ISO − ts = the modem offset.
+        let cap = |iso: &str, ts: i64| Capture {
+            events: vec![(ts, "warn".into(), line(iso))],
+            ..Default::default()
+        };
+        let (ia, ib) = ("1980-03-28T06:18:58.466Z", "1980-03-28T06:18:58.317Z");
+        let (ta, tb) = (
+            iso_ms(ia).unwrap() + 1_400_000_000_000,
+            iso_ms(ib).unwrap() + 1_400_000_000_003,
+        );
         let mut rep = Report::default();
-        rep.push(ev("1980-03-28T06:18:58.317Z", "0", "1"));
-        rep.push(ev("1980-03-28T06:18:58.466Z", "1", "0"));
-        retag_clock_iso(&t, &mut rep);
+        rep.push(ev(ib, "0", "1"));
+        rep.push(ev(ia, "1", "0"));
+        retag_clock_iso(&t, &cap(ia, ta), &cap(ib, tb), &mut rep);
         assert_eq!(rep.untolerated(), 0, "{:?}", rep.mismatches);
+        // Different offsets (a different modem clock): never.
         let mut far = Report::default();
-        far.push(ev("1980-03-28T06:18:58.317Z", "0", "1"));
-        far.push(ev("1980-03-28T06:19:08.466Z", "1", "0"));
-        retag_clock_iso(&t, &mut far);
+        far.push(ev(ib, "0", "1"));
+        far.push(ev(ia, "1", "0"));
+        retag_clock_iso(&t, &cap(ia, ta), &cap(ib, tb + 5_000), &mut far);
         assert_eq!(far.untolerated(), 2);
     }
 

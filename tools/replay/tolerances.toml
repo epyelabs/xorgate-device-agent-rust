@@ -289,10 +289,10 @@ source = "phase-1/evidence/accepted-divergences.md"
 
   [[rule.row]]
   id = "D30"
-  what = "which consumer recomputes the shared 1 s system.sample() cache (TS: random — Node re-arms a repeat from the ms-floored libuv time and system.ts:107 sets recLastAt before the await; Rust: the first-armed shed tick, deterministically) → a JS recorder sample may lack `system`, a Rust one never does. Matched ONLY JS-vs-Rust, per telemetry session, `(samples without system)` with the Rust count 0 and the JS count ≥ 1 (either column order; no JS cap). A Rust count > 0 is UNTOLERATED even when the counts agree (evidence against D30). JS-vs-JS stays T13/system-presence; Rust-vs-Rust exact. Orchestrator 2026-10-19 (P-WP6-2, review-wp6 §2-§3)"
+  what = "which consumer recomputes the shared 1 s system.sample() cache (TS: random — Node re-arms a repeat from the ms-floored libuv time and system.ts:107 sets recLastAt before the await; Rust: the first-armed shed tick, deterministically) → a JS recorder sample may lack `system`; a Rust one only under scheduler starvation (review-wp6 M2: the gate is stamped at the call). Matched JS-vs-Rust per telemetry session, `(samples without system)` with the Rust count 0 and the JS count ≥ 1 (either column order; no JS cap) — where a Rust system-less sample counts UNLESS it carries the starvation SIGNATURE (isolated: both neighbours carry `system`; taken 900–999 ms after the previous sample by `mono` — impossible on a steady host, whose fires are ≥ 1000 ms apart; such samples are cited D30 one by one as `(starved system-less samples …)`, any Rust-vs-X pair). Any other Rust drop is UNTOLERATED (evidence against D30). Never a count rule. JS-vs-JS stays T13/system-presence; Rust-vs-Rust exact. Orchestrator 2026-10-19 (P-WP6-2, review-wp6 §2-§3)"
   streams = ["rec-telemetry"]
   matcher = "d30_system_presence"
-  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::rec_telemetry_system_presence_per_sample; timer.rs re_arms_from_the_fire_instant…; collectors/system.rs concurrent sample test"
+  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::rec_telemetry_system_presence_per_sample + d30_starved_drop_signature_only; timer.rs re_arms_from_the_fire_instant…; tests/collectors.rs concurrent + d30_a_starved_recorder_sample_drops_system_once"
 
   [[rule.row]]
   id = "D30"
@@ -613,6 +613,14 @@ tolerance = { "startTs" = 300.0, "startMono" = 300.0, "durationMs" = 150.0 }
 paths = ["sizeBytes"]
 
 [[rule]]
+id = "T12/cut-fragment"
+title = "sidecar `durationMs` of a session's CUT fragment (its last, ended by the agent's stop): compared by its END instant `startTs + durationMs` (±endMs), not by its duration — conditions = d30_session_end (a)+(c)+(d) without (b): last seq on BOTH sides + capture ended at the stop, never respawned; end instants within endMs; the session-start anchor agrees (each side's spawn lags its own last powerShed/liveBlock change by the same ±lagMs, or neither side had one). Every other fragment keeps T12's ±150 ms (GOP boundaries at both ends)"
+basis = "review-wp6 M3 (F1): a cut fragment's duration = stop − session start; the stop is one instant for both agents (the player SIGTERMs both together, play.rs) and the session start follows each agent's own phase — boot skew, or the shed tick (manager.ts:612-615) for a transition-started session — which T12 never bounded (replay-20261019T231240Z 7066/6895, review run 3 5191/5388 in plain `media`). The end instant carries the stop jitter only (T12's 150 ms); the start is judged by startTs-vs-PLAYING (T12) and the T4 transition rule"
+kind = "media"
+streams = ["sidecar"]
+tolerance = { "endMs" = 150.0, "lagMs" = 300.0 }
+
+[[rule]]
 id = "T13"
 title = "telemetry segments: file-name ms stamps and rotation count ±1; gz bytes never compared (D24)"
 basis = "phase file T13; P6"
@@ -621,7 +629,7 @@ streams = ["rec-telemetry"]
 
 [[rule]]
 id = "T13/system-presence"
-title = "telemetry segments, JS-vs-JS pairs ONLY (calibration): per telemetry session, the number of samples WITHOUT the agent-sampled `system` group may differ by perSession (5, the review limit; observed JS-vs-JS per-instance spread 0–4, the TS D30 drops). JS-vs-Rust → T7/D30 (d30_system_presence, Rust must be 0); Rust-vs-Rust exact"
+title = "telemetry segments, JS-vs-JS pairs ONLY (calibration): per telemetry session, the number of samples WITHOUT the agent-sampled `system` group may differ by perSession (5, the review limit; observed JS-vs-JS per-instance spread 0–4, the TS D30 drops). JS-vs-Rust → T7/D30 (d30_system_presence: Rust 0 bar the starvation signature); Rust-vs-Rust exact bar that signature"
 basis = "WP6 2026-10-19 (the per-segment group union hid a recorder that drops `system` on 6-8 % of ticks). TS: system.ts:104-113 recomputes the recorder-side cache at most once per 1000 ms (Date.now gate) and telemetry-recorder.ts:102 skips a group whose updatedMono did not advance, so a tick landing under 1000 ms after the last recompute writes no `system` — 0-5 per run under Node setInterval. JS-vs-JS calibrations (replay-20261017T221027Z … T224409Z + replay-20261019T140703Z, 10 runs): max |Δ| per session = 2 (JS-vs-Rust 2026-10-19: 5-16)"
 kind = "media"
 streams = ["rec-telemetry"]
@@ -660,8 +668,8 @@ tolerance = { "step_ms" = 50.0, "phase_ms" = 1150.0 }
 
 [[rule]]
 id = "T16"
-title = "clock-stepper values stamped at THAT agent's tick: (sudo) `xorgate-setclock <epoch>` compared as the offset epoch − (the shim's call time, rounded s), ±epoch_s; (events) `[clock] ignoring implausible <src> time <ISO>` — an A-only and a B-only line, same level + source, ISOs within ±iso_ms"
-basis = "clock-step.ts:186 `String(Math.round(targetMs / 1000))` with targetMs = gps.utcMs + gps.ageMs (or now + modem.offsetMs) evaluated at THAT agent's 30 s tick (clock-step.ts:291 setInterval from its own start), so the absolute epoch differs by the two tick phases; the offset from the call's own time is the comparable value, and two roundings (the target's and the call time's) put it within ±1 s. Events: clock-step.ts:262 targetMs = now() + modem.offsetMs (GPS: utcMs + ageMs) printed by :274 `new Date(targetMs).toISOString()` — `now()` is that agent's tick instant; both steppers start after their own boot (worker.ts:554, first tick immediate) and keep that phase, so the ISOs differ by the boot skew (p4-clock-cap: JS-vs-JS 3 ms, JS-vs-Rust 149 ms; replay-20261020T013620Z / T014855Z)"
+title = "clock-stepper values stamped at THAT agent's tick: (sudo) `xorgate-setclock <epoch>` compared as the offset epoch − (the shim's call time, rounded s), ±epoch_s; (events) `[clock] ignoring implausible <src> time <ISO>` — an A-only and a B-only line, same level + source, whose ISO minus the event's OWN state.json ts (= the source offset) agree within ±anchor_ms"
+basis = "clock-step.ts:186 `String(Math.round(targetMs / 1000))` with targetMs = gps.utcMs + gps.ageMs (or now + modem.offsetMs) evaluated at THAT agent's 30 s tick (clock-step.ts:291 setInterval from its own start), so the absolute epoch differs by the two tick phases; the offset from the call's own time is the comparable value, and two roundings (the target's and the call time's) put it within ±1 s. Events: clock-step.ts:262 targetMs = now() + modem.offsetMs (GPS: utcMs + ageMs) printed by :274 `new Date(targetMs).toISOString()` — `now()` is that agent's tick instant; both steppers start after their own boot (worker.ts:554, first tick immediate) and keep that phase, so the ISOs differ by the boot skew (p4-clock-cap: JS-vs-JS 3 ms, JS-vs-Rust 149 ms; replay-20261020T013620Z / T014855Z) — anchored instead to each event's own `Date.now()` stamp (worker.ts:546-551, same tick as `now()`), which removes the phase: the difference left is the in-tick processing (ms) (review-wp6 should-fix)"
 kind = "p4"
 streams = ["sudo", "events"]
-tolerance = { "epoch_s" = 1.0, "iso_ms" = 2000.0 }
+tolerance = { "epoch_s" = 1.0, "anchor_ms" = 50.0 }

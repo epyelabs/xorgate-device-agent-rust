@@ -589,7 +589,7 @@ pub struct Msg {
     pub payload: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Capture {
     pub meta: AgentMeta,
     pub msgs: Vec<Msg>,

@@ -591,6 +591,72 @@ fn system_sample_during_an_in_flight_compute_returns_the_new_cache() {
     });
 }
 
+/// D30 sequential pin (review-wp6 M2, F3 ruled inherent): the gate stamp is
+/// the CALL instant (`rec.last_at = mono_ms()` when `sample()` runs, =
+/// `system.ts:104-113` `recLastAt`), not the caller's timer fire. Shed tick
+/// fires at 0/1000/2000/3000 and samples promptly; the recorder samples at
+/// 100, then its 1100 fire is starved until 2050, then fires on time at 2100
+/// and 3100. The 2100 call lands 100 ms after the shed tick's 2000 stamp →
+/// no recompute → the same cache generation the recorder already wrote at
+/// 2050 → the freshness gate (`telemetry-recorder.ts:102`) drops `system`
+/// for that ONE sample; at 3100 it is back. Deterministic: paused time, one
+/// caller at a time.
+#[tokio::test(start_paused = true)]
+async fn d30_a_starved_recorder_sample_drops_system_once() {
+    use xorgate_agent::collectors::system::SystemCollector;
+    use xorgate_core::recorder_gate::RecorderGate;
+    let home = scratch("system-d30-seq");
+    let (ctx, t0) = ctx_at(&home, 1_781_000_000_000);
+    let c = SystemCollector::new(&ctx, false).await;
+    let mut gate: RecorderGate<Instant> = RecorderGate::new(None);
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let goto = |ms: u64| async move {
+        let now = Instant::now();
+        if at(ms) > now {
+            tokio::time::advance(at(ms) - now).await;
+        }
+    };
+    let rec = |gate: &mut RecorderGate<Instant>, s: &xorgate_agent::ctx::GroupSample| {
+        gate.admit(
+            "system",
+            s.updated_mono,
+            Instant::now().duration_since(t0).as_millis() as u64,
+            1.0,
+        )
+    };
+    let shed0 = c.sample().await.expect("shed @0 computes");
+    goto(100).await;
+    let r100 = c.sample().await.expect("rec @100");
+    assert_eq!(
+        r100.updated_mono, shed0.updated_mono,
+        "not due: the shed tick's cache"
+    );
+    assert!(rec(&mut gate, &r100), "rec @100 writes system (g1)");
+    goto(1000).await;
+    let shed1 = c.sample().await.expect("shed @1000");
+    assert!(shed1.updated_mono > shed0.updated_mono, "g2");
+    goto(2000).await;
+    let shed2 = c.sample().await.expect("shed @2000");
+    assert!(shed2.updated_mono > shed1.updated_mono, "g3");
+    goto(2050).await; // the recorder's 1100 fire, starved
+    let r2050 = c.sample().await.expect("rec @2050");
+    assert_eq!(r2050.updated_mono, shed2.updated_mono);
+    assert!(rec(&mut gate, &r2050), "the late sample writes g3");
+    goto(2100).await; // the recorder's next fire, on time
+    let r2100 = c.sample().await.expect("rec @2100");
+    assert_eq!(
+        r2100.updated_mono, shed2.updated_mono,
+        "100 ms after the 2000 stamp: no recompute"
+    );
+    assert!(!rec(&mut gate, &r2100), "the ONE system-less sample (F3)");
+    goto(3000).await;
+    let shed3 = c.sample().await.expect("shed @3000");
+    goto(3100).await;
+    let r3100 = c.sample().await.expect("rec @3100");
+    assert_eq!(r3100.updated_mono, shed3.updated_mono);
+    assert!(rec(&mut gate, &r3100), "system is back on the next tick");
+}
+
 // ---------------------------------------------------------------------------
 // IMU shutdown (WP2 review MUST-FIX 1 + NIT 5): `stop()` signals a running
 // helper's group, and nothing at all once the helper has exited.

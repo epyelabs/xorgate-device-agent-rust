@@ -892,6 +892,49 @@ fn system_presence_tol(table: &Table, ka: &str, kb: &str, la: usize, lb: usize) 
     }
 }
 
+/// review-wp6 M2 (F3): the system-less samples of one segment that carry the
+/// D30 STARVATION signature — isolated (both neighbours carry `system`) and
+/// taken 900–999 ms after the previous sample (`mono`). On a steady host the
+/// recorder's fires are ≥ 1000 ms apart (timer.rs re-arm from fire), so a gap
+/// < 1000 ms proves the PREVIOUS sample was taken late; its gate stamp
+/// (`collectors/system.rs` `rec.last_at = mono_ms()` at the call, = TS
+/// `system.ts:104-113` `recLastAt` before the compute) then made this call
+/// land < 1000 ms after it, and the freshness gate (`recorder_gate.rs:85-89`
+/// = `telemetry-recorder.ts:102`) wrote no duplicate `system`. `mono` units
+/// follow the segment's own median step (ns/µs/ms).
+fn d30_starved_drops(v: &[Value]) -> usize {
+    let mono: Vec<Option<f64>> = v.iter().map(|x| x["mono"].as_f64()).collect();
+    let mut steps: Vec<f64> = mono
+        .windows(2)
+        .filter_map(|w| Some(w[1]? - w[0]?))
+        .filter(|d| *d > 0.0)
+        .collect();
+    if steps.is_empty() {
+        return 0;
+    }
+    steps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = steps[steps.len() / 2];
+    // One sample per ~1 s (rateHz 1): the median step is ~1 s in the unit.
+    let per_ms = if median > 1e8 {
+        1e6
+    } else if median > 1e5 {
+        1e3
+    } else {
+        1.0
+    };
+    let has = |i: usize| v[i]["metrics"].get("system").is_some();
+    (1..v.len().saturating_sub(1))
+        .filter(|&i| v[i]["metrics"].is_object() && !has(i) && has(i - 1) && has(i + 1))
+        .filter(|&i| match (mono[i - 1], mono[i]) {
+            (Some(p), Some(c)) => {
+                let gap = (c - p) / per_ms;
+                (900.0..1000.0).contains(&gap)
+            }
+            _ => false,
+        })
+        .count()
+}
+
 /// Flatten `metrics` into `path → JSON text` leaves (`metrics.gps.lat.value`).
 fn leaf_texts(v: &Value, path: &str, out: &mut BTreeMap<String, String>) {
     match v {
@@ -1248,6 +1291,84 @@ fn d30_session_end(
     matches!((lag(a, wa), lag(b, wb)), (Some(x), Some(y)) if (x - y).abs() <= LAG_MS)
 }
 
+/// `T12/cut-fragment` (review-wp6 M3, F1): the LAST fragment of a session
+/// cut by the run's stop has no GOP boundary at its end — its `durationMs`
+/// is `stop − session start`, so the two sides differ by the session-start
+/// phase (boot skew, or each side's own shed tick for a transition-started
+/// session, `manager.ts:612-615`), which T12 never bounds. Compared instead by
+/// its END instant (`startTs + durationMs`, ±`endMs`: the shared stop); its
+/// start is already judged (startTs vs PLAYING, T4 transitions). Conditions =
+/// D30's `d30_session_end` (a) + (c) + (d) WITHOUT (b): (a) the last seq of the
+/// session on BOTH sides, the capture ended at the agent's stop (int/eos) and
+/// never respawned; (c) end instants within `endMs`; (d) the session-start
+/// anchor agrees — on each side the spawn lags that side's last
+/// powerShed/liveBlock change by the same ±`lagMs`, or neither side had one
+/// (a boot-started session).
+#[allow(clippy::too_many_arguments)]
+fn t12_cut_fragment(
+    a: &MediaCapture,
+    b: &MediaCapture,
+    ca: &BTreeMap<(String, u64), Value>,
+    cb: &BTreeMap<(String, u64), Value>,
+    fa: &BTreeMap<String, BTreeMap<u64, u64>>,
+    fb: &BTreeMap<String, BTreeMap<u64, u64>>,
+    key: &(String, u64),
+    end_ms: f64,
+    lag_ms: i64,
+) -> bool {
+    const TICK_MS: i64 = 1_100;
+    let (sid, seq) = (&key.0, key.1);
+    let last = |f: &BTreeMap<String, BTreeMap<u64, u64>>, c: &BTreeMap<(String, u64), Value>| {
+        let fl = f.get(sid).and_then(|m| m.keys().next_back().copied());
+        let cl = c
+            .range((sid.clone(), 0)..=(sid.clone(), u64::MAX))
+            .next_back()
+            .map(|((_, q), _)| *q);
+        fl.max(cl) == Some(seq)
+    };
+    if !last(fa, ca) || !last(fb, cb) {
+        return false;
+    }
+    let spawn_at = |m: &MediaCapture| -> Option<i64> {
+        let s = m
+            .spawns
+            .iter()
+            .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid.as_str()))?;
+        let at_stop = matches!(s.end.as_deref(), Some("int") | Some("eos"));
+        let respawned = m
+            .spawns
+            .iter()
+            .any(|o| o.role == "capture" && o.key == s.key && o.w > s.w);
+        (at_stop && !respawned).then_some(s.w)
+    };
+    let (Some(wa), Some(wb)) = (spawn_at(a), spawn_at(b)) else {
+        return false;
+    };
+    let f64_at = |c: &BTreeMap<(String, u64), Value>, q: u64, k: &str| {
+        c.get(&(sid.clone(), q)).and_then(|v| v[k].as_f64())
+    };
+    let end = |c: &BTreeMap<(String, u64), Value>| {
+        Some(f64_at(c, seq, "startTs")? + f64_at(c, seq, "durationMs")?)
+    };
+    let (Some(ea), Some(eb)) = (end(ca), end(cb)) else {
+        return false;
+    };
+    if (ea - eb).abs() > end_ms {
+        return false;
+    }
+    let lag = |m: &MediaCapture, w: i64| {
+        m.shed_changes
+            .iter()
+            .rfind(|c| **c <= w + TICK_MS)
+            .map(|c| w - c)
+    };
+    match (lag(a, wa), lag(b, wb)) {
+        (None, None) => true,
+        (Some(x), Some(y)) => (x - y).abs() <= lag_ms,
+        _ => false,
+    }
+}
+
 /// The Phase 3 comparison. `a`/`b` absent of any media artifact on BOTH
 /// sides = nothing to compare (a Phase 2 tape): the streams are listed with 0.
 pub fn diff_media(
@@ -1567,6 +1688,19 @@ pub fn diff_media(
         let d30_ok = d30_end.is_some()
             && !sid_failed.contains(&key.0)
             && d30_session_end(a, b, &ca, &cb, &fa, &fb, key, dur_ms);
+        let cut_ok = has_row(table, "T12/cut-fragment")
+            && !sid_failed.contains(&key.0)
+            && t12_cut_fragment(
+                a,
+                b,
+                &ca,
+                &cb,
+                &fa,
+                &fb,
+                key,
+                row_tol(table, "T12/cut-fragment", "endMs", 0.0),
+                row_tol(table, "T12/cut-fragment", "lagMs", 0.0) as i64,
+            );
         let skip = |p: &str| -> Option<String> {
             match p {
                 "sizeBytes" => Some(t12.to_string()),
@@ -1584,6 +1718,8 @@ pub fn diff_media(
                     let d = (x["durationMs"].as_f64()? - y["durationMs"].as_f64()?).abs();
                     if d <= dur_ms {
                         Some(t12.to_string())
+                    } else if cut_ok {
+                        Some("T12/cut-fragment".to_string())
                     } else if d30_ok {
                         d30_end.clone()
                     } else {
@@ -1681,6 +1817,9 @@ pub fn diff_media(
             ));
         }
         let mut lack = (0usize, 0usize);
+        // review-wp6 M2: the system-less samples that carry the D30
+        // starvation SIGNATURE (`d30_starved_drops`), per side.
+        let mut starved = (0usize, 0usize);
         for (i, (sa, sb)) in xa.iter().zip(xb.iter()).enumerate() {
             stat(rep, "rec-telemetry").compared += 1;
             let at = format!("{sid}/seg#{i}");
@@ -1785,6 +1924,8 @@ pub fn diff_media(
             if carries(&pa) || carries(&pb) {
                 lack.0 += lacking(&pa);
                 lack.1 += lacking(&pb);
+                starved.0 += d30_starved_drops(&pa);
+                starved.1 += d30_starved_drops(&pb);
             }
             rep.inputs
                 .entry(format!("rec-telemetry samples {sid}"))
@@ -1803,13 +1944,49 @@ pub fn diff_media(
         // (calibrations: max |Δ| 2); JS-vs-Rust the D30 matcher only (Rust
         // never drops: any Rust drop is UNTOLERATED, even when the counts
         // agree); Rust-vs-Rust exact.
-        if let Some(tol) = system_presence_tol(table, &a.kind, &b.kind, lack.0, lack.1) {
+        // review-wp6 M2 (F3, ruled inherent): a RUST system-less sample with
+        // the starvation signature is the TS mechanism (a delayed sample()
+        // let the next one land < 1000 ms after the gate stamp) — cited
+        // T7/D30 by itself, then left out of the Rust count. Never a count
+        // rule: an unsigned Rust drop still counts (and fails).
+        let rs_adj =
+            |kind: &str, lack: usize, st: usize| if kind == "rust" { lack - st } else { lack };
+        for (side, kind, st) in [("A", &a.kind, starved.0), ("B", &b.kind, starved.1)] {
+            if kind == "rust" && st > 0 {
+                let id = table
+                    .matcher_rows("d30_system_presence", "rec-telemetry")
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| UNTOLERATED.to_string());
+                rep.push(mm(
+                    "rec-telemetry",
+                    sid,
+                    "(starved system-less samples: isolated, mono gap 900-999 ms)",
+                    if side == "A" {
+                        st.to_string()
+                    } else {
+                        String::new()
+                    },
+                    if side == "B" {
+                        st.to_string()
+                    } else {
+                        String::new()
+                    },
+                    &id,
+                ));
+            }
+        }
+        let (la, lb) = (
+            rs_adj(&a.kind, lack.0, starved.0),
+            rs_adj(&b.kind, lack.1, starved.1),
+        );
+        if let Some(tol) = system_presence_tol(table, &a.kind, &b.kind, la, lb) {
             rep.push(mm(
                 "rec-telemetry",
                 sid,
                 "(samples without system)",
-                lack.0.to_string(),
-                lack.1.to_string(),
+                la.to_string(),
+                lb.to_string(),
                 &tol,
             ));
         }
@@ -2716,6 +2893,68 @@ mod tests {
         )));
     }
 
+    /// review-wp6 M2: only the starvation SIGNATURE is a D30 drop — isolated,
+    /// 900–999 ms after the previous sample; mono in ns like the recorders.
+    #[test]
+    fn d30_starved_drop_signature_only() {
+        let smp = |mono_ms: f64, sys: bool| {
+            let mut m = serde_json::json!({"gps": {}});
+            if sys {
+                m["system"] = serde_json::json!({});
+            }
+            serde_json::json!({"mono": mono_ms * 1e6, "metrics": m})
+        };
+        let seg = |rows: &[(f64, bool)]| rows.iter().map(|(t, s)| smp(*t, *s)).collect::<Vec<_>>();
+        // A late sample at 2050, the next one 950 ms later lacks system: 1.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1000.0, true),
+                (2050.0, true),
+                (3000.0, false),
+                (4000.0, true)
+            ])),
+            1
+        );
+        // The same drop on an on-time grid (gap 1000): no signature.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1000.0, true),
+                (2000.0, true),
+                (3000.0, false),
+                (4000.0, true)
+            ])),
+            0
+        );
+        // Two in a row, or at a segment edge: never.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1050.0, true),
+                (2000.0, false),
+                (2950.0, false),
+                (4000.0, true)
+            ])),
+            0
+        );
+        assert_eq!(
+            d30_starved_drops(&seg(&[(1050.0, true), (2000.0, false)])),
+            0
+        );
+        // Gap under 900 ms is not the signature either.
+        assert_eq!(
+            d30_starved_drops(&seg(&[
+                (0.0, true),
+                (1000.0, true),
+                (2150.0, true),
+                (3000.0, false),
+                (4000.0, true)
+            ])),
+            0
+        );
+    }
+
     #[test]
     fn rec_telemetry_system_presence_per_sample() {
         let table = Table::load(
@@ -2845,15 +3084,28 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let row = |tol: &str| vec![format!("{sid}/00001 durationMs {tol}")];
-        assert_eq!(run(js(), rs()), row("T7/D30"));
-        assert_eq!(run(rs(), js()), row("T7/D30"), "either column order");
-        // (b) Rust LATER (a P-WP6-1 regression shape): never.
+        // review-wp6 M3: the cut fragment is judged by its END instant
+        // (T12/cut-fragment = d30_session_end (a)+(c)+(d) without (b)), which
+        // now covers the D30 JS-late restore too.
+        let cut = "T12/cut-fragment";
+        assert_eq!(run(js(), rs()), row(cut));
+        assert_eq!(run(rs(), js()), row(cut), "either column order");
+        // No δ band any more: a Rust-later start with the same end + anchor.
         let rs_late = side("rust", 527_774, 529_790, 2_540, 523_845);
-        assert_eq!(run(js(), rs_late), row(UNTOLERATED));
-        // Rust-vs-Rust: never.
+        assert_eq!(run(js(), rs_late), row(cut));
+        // Rust-vs-Rust too.
         let mut r2 = js();
         r2.kind = "rust".into();
-        assert_eq!(run(r2, rs()), row(UNTOLERATED));
+        assert_eq!(run(r2, rs()), row(cut));
+        // A boot-started session (no shed change on either side): anchored to
+        // the boot, still the end instant.
+        let mut jb = js();
+        jb.shed_changes.clear();
+        let mut rb = rs();
+        rb.shed_changes.clear();
+        assert_eq!(run(jb.clone(), rb), row(cut));
+        // ... but a shed anchor on one side only is not the same session start.
+        assert_eq!(run(jb, rs()), row(UNTOLERATED));
         // (c) the ends disagree by > 150 ms.
         assert_eq!(
             run(js(), side("rust", 525_962, 527_978, 4_600, 521_949)),
