@@ -17,13 +17,16 @@
 #   build-info.json          {version, channel, builtAt, packageVersion}
 #   systemd/                 xorgate-agent-rs.service (+ bench/ drop-in, which
 #                            install-rs.sh never installs)
+#   install-rs.sh            the converter (scripts/install-rs.sh, 0755; Phase 5
+#                            WP1) — the device copy that makes --revert work
+#                            offline and without a working binary
 #   python/ modem/ media/ system/   ONLY if present in the repo — Phase 0 ships
 #                            what exists; they are vendored in Phase 4/5. The
 #                            JS tarball (device-deploy-dev.yml:98) ships all
 #                            four unconditionally; here a missing dir is not an
 #                            error, a missing REQUIRED entry is.
 # Required entries verified after packing: bin/xorgate-rs, build-info.json,
-# systemd/xorgate-agent-rs.service, python/bno085_read.py (Phase 2 WP2: the
+# systemd/xorgate-agent-rs.service, install-rs.sh, python/bno085_read.py (Phase 2 WP2: the
 # IMU collector spawns `python3 <root>/python/bno085_read.py`, vendored
 # byte-identical from the JS repo @ 89b5c64, sha256 7af7a856…; the JS
 # tarball ships python/ too, device-deploy-dev.yml:98).
@@ -63,6 +66,7 @@ fi
 [ -f "$BIN" ] || { echo "pack: binary $BIN missing — cargo build --release first (or --bin <path>)" >&2; exit 1; }
 [ -f "$REPO/systemd/xorgate-agent-rs.service" ] || { echo "pack: systemd/xorgate-agent-rs.service missing" >&2; exit 1; }
 [ -f "$REPO/python/bno085_read.py" ] || { echo "pack: python/bno085_read.py missing (the IMU helper)" >&2; exit 1; }
+[ -f "$REPO/scripts/install-rs.sh" ] || { echo "pack: scripts/install-rs.sh missing (the converter)" >&2; exit 1; }
 
 # Tiny JSON field reader (no jq on the bench): first "key": "value" occurrence.
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -n1; }
@@ -77,7 +81,9 @@ find "$STAGE" -mindepth 1 -maxdepth 1 ! -name build-info.json -exec rm -rf {} +
 mkdir -p "$STAGE/bin"
 install -m 0755 "$BIN" "$STAGE/bin/xorgate-rs"
 cp -R "$REPO/systemd" "$STAGE/systemd"
-MEMBERS=(bin build-info.json systemd)
+# Phase 5 WP1: the converter at the tarball root (= /opt/xorgate-rs/install-rs.sh).
+install -m 0755 "$REPO/scripts/install-rs.sh" "$STAGE/install-rs.sh"
+MEMBERS=(bin build-info.json systemd install-rs.sh)
 for d in python modem media system; do
   if [ -d "$REPO/$d" ]; then
     cp -R "$REPO/$d" "$STAGE/$d"
@@ -110,7 +116,7 @@ LISTING=$(tar -tzf "$OUT_DIR/$TARBALL")
 echo "Contents ($(wc -l <<<"$LISTING" | tr -d ' ') entries; first 30):" >&2
 sed -n '1,30p' <<<"$LISTING" >&2
 # Keys install-rs.sh / scripts/bench/install.sh extract and expect.
-for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service python/bno085_read.py; do
+for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service python/bno085_read.py install-rs.sh; do
   grep -qx "$required" <<<"$LISTING" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
 done
 

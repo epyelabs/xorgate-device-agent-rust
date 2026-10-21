@@ -19,6 +19,7 @@ FAKE=$(mktemp -d); SHIMS=$(mktemp -d); LOGS=$(mktemp -d)
 trap 'rm -rf "$FAKE" "$SHIMS" "$LOGS"' EXIT
 mkdir -p "$FAKE/scripts" "$FAKE/systemd/bench" "$FAKE/python" "$FAKE/target/pack" "$FAKE/bin"
 cp "$REPO/scripts/pack.sh" "$FAKE/scripts/pack.sh"
+printf '#!/usr/bin/env bash\necho fake converter\n' > "$FAKE/scripts/install-rs.sh"; chmod 0644 "$FAKE/scripts/install-rs.sh"
 printf '#!/bin/sh\necho fake\n' > "$FAKE/bin/xorgate-rs"
 echo '[Unit]' > "$FAKE/systemd/xorgate-agent-rs.service"
 echo '[Unit]' > "$FAKE/systemd/xorgate-updater-rs.service"
@@ -45,6 +46,8 @@ n=$(tar -tzf "$T" 2>/dev/null | wc -l | tr -d ' ')
 grep -qx "sha256=$(cut -d' ' -f1 "$T.sha256")" "$LOGS/out"; expect $? "key=value outputs printed (script ran to the end)"
 grep -q "^Contents ($n entries; first 30):" "$LOGS/err" && [ "$(tar -tzf "$T" | grep -cxFf - "$LOGS/err")" = 30 ]
 expect $? "stderr shows the entry count + exactly the first 30 entries"
+
+LV=$(tar -tvzf "$T" 2>/dev/null); grep -qE '^-rwxr-xr-x .* install-rs\.sh$' <<<"$LV"; expect $? "install-rs.sh packed at the tarball root, mode 0755 (Phase 5 WP1)"
 
 echo "== a real listing error still fails the pack"
 cat > "$SHIMS/tar" <<S

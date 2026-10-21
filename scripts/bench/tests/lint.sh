@@ -12,6 +12,7 @@ cd "$REPO" || exit 2
 for f in scripts/bench/*.sh scripts/bench/tests/*.sh; do
   bash -n "$f" && pass "bash -n $f" || failc "bash -n $f"
 done
+for f in scripts/install-rs.sh scripts/tests/install-rs-*.sh; do bash -n "$f" && pass "bash -n $f" || failc "bash -n $f"; ! command -v shellcheck >/dev/null || { shellcheck -x "$f" >"$LOGS/sc-p5wp1.log" 2>&1 && pass "shellcheck -x $f" || { failc "shellcheck -x $f:"; cat "$LOGS/sc-p5wp1.log"; }; }; done  # Phase 5 WP1
 if command -v shellcheck >/dev/null; then
   shellcheck -x scripts/bench/*.sh scripts/bench/tests/*.sh >"$LOGS/sc.log" 2>&1 && pass "shellcheck (Mac-side scripts + tests)" || { failc "shellcheck:"; cat "$LOGS/sc.log"; }
   fixture_bench; reset_units
