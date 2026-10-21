@@ -131,7 +131,9 @@ EOF
 
 # ---------------------------------------------------------------------------
 # Output and small helpers.
-say() { printf '%s%s\n' "$PREFIX" "$*"; }
+# Never fatal: a hung-up terminal (EIO) or a dead pipe reader (EPIPE; SIGPIPE
+# is ignored while converting/reverting) must not stop the script midway.
+say() { printf '%s%s\n' "$PREFIX" "$*" 2>/dev/null || true; }
 CHANGES=()
 note() { CHANGES+=("$1"); say "  - $1"; }
 summary() {
@@ -167,7 +169,7 @@ FINISHED=0
 PHASE=none      # none (steps 0-1) | fetch (2-3) | install (4-7) | start (8-9)
 LOCKED=0
 finish() { FINISHED=1; exit "$1"; }
-usage_error() { printf '%s%s\n' "$PREFIX" "$1" "$PREFIX" "see: install-rs.sh --help" >&2; FINISHED=1; exit 2; }
+usage_error() { printf '%s%s\n' "$PREFIX" "$1" "$PREFIX" "see: install-rs.sh --help" >&2 2>/dev/null || true; FINISHED=1; exit 2; }
 refuse() { say "refused: $1 (nothing changed)"; finish 3; }
 
 # agent.env: update_plan::parse_env_file for one key (the last one wins; a
@@ -398,18 +400,28 @@ DL=""; TGZ=""; SHA=""; SOURCE=""; VER=""; CHANNEL=""
 RUN_CREATED=(); REC_CREATED=0; REC_DIR_CREATED=0; HAD_PREV=0; SWAPPED=0; NEED_RESTART=0
 
 created() { RUN_CREATED+=("$1"); rec_add_installed "$1"; }
+# S1 (review-wp1): a pre-existing file this run overwrites (the bench shape:
+# rsPreexisting=yes) is copied aside first and put back by a step 4-7 rollback.
+BAK=""; OVERWRITTEN=()
+backup_of() { # <path>
+  [ -n "$BAK" ] || BAK=$(mktemp -d /tmp/xg-install-rs-bak-XXXXXX) || return 1
+  cp -a -- "$1" "$BAK/${#OVERWRITTEN[@]}" || return 1
+  OVERWRITTEN+=("$1")
+}
 # put_file <dest> <mode> <src>: cmp-before-write (the bench install.sh
 # idiom); returns 0 when it wrote, 1 when the file was already right.
 put_file() {
-  local dest=$1 mode=$2 src=$3 existed=0
-  if [ -L "$dest" ]; then rm -f "$dest"   # never write through a symlink
+  local dest=$1 mode=$2 src=$3 existed=0 link=0
+  if [ -L "$dest" ]; then link=1
   elif [ -e "$dest" ]; then existed=1; fi
   if [ "$existed" = 1 ] && cmp -s "$src" "$dest" && [ "$(stat -c '%a %u:%g' "$dest")" = "${mode#0} 0:0" ]; then
     say "  = $dest unchanged"
     return 1
   fi
+  if [ "$existed" = 1 ] || [ "$link" = 1 ]; then backup_of "$dest" || abort_convert "cannot back up $dest"; fi
+  if [ "$existed" = 0 ] && [ "$link" = 0 ]; then created "$dest"; fi   # tracked before it exists
+  if [ "$link" = 1 ]; then rm -f "$dest"; fi   # never write through a symlink
   install -m "$mode" -o root -g root "$src" "$dest" || abort_convert "cannot write $dest"
-  if [ "$existed" = 0 ]; then created "$dest"; fi
   note "$dest written"
   return 0
 }
@@ -424,8 +436,9 @@ put_body() { # <dest> <mode> <body function> [args]: put_file of a generated bod
 }
 ensure_dir() {
   [ ! -d "$1" ] || return 0
-  install -d -m 0755 -o root -g root "$1" || abort_convert "cannot create $1"
+  if [ -e "$1" ] || [ -L "$1" ]; then abort_convert "cannot create $1: something else is there"; fi
   created "$1"
+  install -d -m 0755 -o root -g root "$1" || abort_convert "cannot create $1"
   note "$1/ created"
 }
 
@@ -433,6 +446,7 @@ ensure_dir() {
 # back to the pre-run state; steps 8-9 revert to the JS agent (exit 4).
 abort_convert() { # <message>
   set +e
+  trap '' HUP INT TERM    # a second signal must not cut the cleanup short (M1)
   local i p
   case $PHASE in
     none | fetch)
@@ -445,8 +459,8 @@ abort_convert() { # <message>
       FINISHED=1; unlock; exit 1 ;;
     install)
       if [ "$SWAPPED" = 1 ]; then
-        rm -rf "$RS_PREFIX"
-        if [ "$HAD_PREV" = 1 ]; then mv "$BACKUP" "$RS_PREFIX" && say "  $RS_PREFIX restored from $BACKUP"; fi
+        if [ "$HAD_PREV" = 0 ]; then rm -rf "$RS_PREFIX"
+        elif [ -e "$BACKUP" ]; then rm -rf "$RS_PREFIX"; mv "$BACKUP" "$RS_PREFIX" && say "  $RS_PREFIX restored from $BACKUP"; fi
       fi
       rm -rf "$STAGING"
       for ((i = ${#RUN_CREATED[@]} - 1; i >= 0; i--)); do
@@ -454,11 +468,16 @@ abort_convert() { # <message>
         [ "$p" != "$RS_PREFIX" ] || continue
         if [ -d "$p" ] && [ ! -L "$p" ]; then rmdir "$p" 2>/dev/null; else rm -f "$p"; fi
       done
+      for ((i = ${#OVERWRITTEN[@]} - 1; i >= 0; i--)); do
+        p=${OVERWRITTEN[$i]}
+        rm -f "$p" && cp -a -- "$BAK/$i" "$p" && say "  $p restored"
+      done
+      [ -z "$BAK" ] || rm -rf "$BAK"
       if [ "$REC_CREATED" = 1 ]; then rm -f "$REC" "$PRE" "$REC_DIR"/.record.*; fi
       if [ "$REC_DIR_CREATED" = 1 ]; then rm -rf "$REC_DIR"; fi
       [ -z "$DL" ] || rm -rf "$DL"
       say "failed: $1"
-      say "rolled back: the files this run created are removed and $RS_PREFIX is as it was (exit 1)"
+      say "rolled back: the files this run created are removed, the ones it overwrote are restored and $RS_PREFIX is as it was (exit 1)"
       FINISHED=1; unlock; exit 1 ;;
     start)
       PHASE=none
@@ -476,15 +495,24 @@ abort_convert() { # <message>
 }
 on_exit() {
   local rc=$1
+  [ -z "$PRE_TMP" ] || rm -f "$PRE_TMP"
   if [ "$FINISHED" = 0 ] && [ "$rc" != 0 ] && [ "$MODE" = convert ]; then
+    FINISHED=1
     if [ "$PHASE" != none ] || [ "$REC_CREATED" = 1 ]; then
-      FINISHED=1
-      abort_convert "unexpected error (exit $rc)"
+      abort_convert "interrupted or unexpected error (exit $rc)"
     fi
+    say "failed: interrupted or unexpected error (exit $rc) before the conversion record was written; nothing was changed"
   fi
+  [ -z "$BAK" ] || rm -rf "$BAK"
   unlock
   if [ -n "${XORGATE_RS_INSTALL_REEXEC:-}" ]; then rm -f "$XORGATE_RS_INSTALL_REEXEC"; fi
 }
+
+# M1: HUP (a dropped ssh/LTE session), INT and TERM during a convert run the
+# same step-correct cleanup as a failure: steps 2-3 nothing changed, 4-7
+# rollback, 8-9 the automatic keep-mode revert (exit 4).
+on_signal() { trap '' HUP INT TERM; exit "$1"; }
+PRE_TMP=""
 
 fetch_and_verify() { # step 2 (§5.4, §5.7) → TGZ, SHA, SOURCE
   local base url sumf want have bucket rc
@@ -552,11 +580,12 @@ stage_and_smoke() { # step 3 (§5.4): nothing outside $STAGING changes here
 swap_tree() { # step 4: same-filesystem renames, the previous build kept as .old
   rm -rf "$BACKUP"
   HAD_PREV=0
-  if [ -e "$RS_PREFIX" ]; then mv "$RS_PREFIX" "$BACKUP" || abort_convert "cannot move $RS_PREFIX aside"; HAD_PREV=1; fi
-  SWAPPED=1
+  if [ -e "$RS_PREFIX" ]; then HAD_PREV=1; fi
+  SWAPPED=1     # set before the renames: the rollback copes with any point between them
+  if [ "$HAD_PREV" = 1 ]; then mv "$RS_PREFIX" "$BACKUP" || abort_convert "cannot move $RS_PREFIX aside"; fi
   mv "$STAGING" "$RS_PREFIX" || abort_convert "cannot move $STAGING to $RS_PREFIX"
   if [ "$HAD_PREV" = 1 ]; then note "$RS_PREFIX swapped to $VER (previous build at $BACKUP until verified)"
-  else created "$RS_PREFIX"; note "$RS_PREFIX installed ($VER)"; fi
+  else rec_add_installed "$RS_PREFIX"; note "$RS_PREFIX installed ($VER)"; fi
   NEED_RESTART=1
 }
 
@@ -568,9 +597,16 @@ convert_main() {
   for m in "$AGENT_ENV" "$JS_PREFIX" "$JS_UNIT"; do [ -e "$m" ] || missing+=("$m"); done
   [ ${#missing[@]} = 0 ] || refuse "not a JS-provisioned device: missing ${missing[*]}"
   lock
+  trap 'on_signal 129' HUP; trap 'on_signal 130' INT; trap 'on_signal 143' TERM; trap '' PIPE
+  # N7 (review-wp1): no record, yet the Rust unit is enabled and the JS one is
+  # not (e.g. a converted device whose record was deleted): recording that as
+  # "before" would make a later revert leave no agent at all.
+  if [ ! -f "$REC" ] && [ "$(unit_enabled "$RS_SVC")" = enabled ] && [ "$(unit_enabled "$JS_SVC")" != enabled ]; then
+    refuse "$RS_SVC is enabled and $JS_SVC is not, but there is no conversion record ($REC); a revert could not restore the JS agent. If this is intended, run 'systemctl enable $JS_SVC' first"
+  fi
   if [ -f "$REC" ] && [ "$(sed -n 's/^state=//p' "$REC" | first_line)" = converted ]; then was_converted=1; fi
   if [ "$was_converted" = 0 ] && [ "$YES" = 0 ] && [ -t 0 ]; then
-    printf '%sconvert this device to the Rust agent? %s will be stopped and disabled [y/N] ' "$PREFIX" "$JS_SVC"
+    printf '%sconvert this device to the Rust agent? %s will be stopped and disabled [y/N] ' "$PREFIX" "$JS_SVC" 2>/dev/null || true
     IFS= read -r ans || ans=""
     case $ans in y | Y | yes | YES) ;; *) say "not converted (no confirmation; -y skips the question)"; finish 0 ;; esac
   fi
@@ -588,7 +624,7 @@ convert_main() {
     R=([state]=converting [startedAt]="$(utc)" [convertedAt]="" [version]="" [channel]="" [sha256]="" [source]=""
        [jsEnabled]="$(unit_enabled "$JS_SVC")" [jsActive]="$(unit_active "$JS_SVC")" [rsPreexisting]="$rs_exists"
        [serviceUser]="${user:-root}" [installed]="")
-    pre_tmp=$(mktemp)
+    pre_tmp=$(mktemp); PRE_TMP=$pre_tmp
     prev=$(latest_reverted)
     prev_pre=${prev/record.reverted-/pre.manifest.reverted-}
     if [ "$rs_exists" = yes ] && [ -n "$prev" ] && [ -f "$prev_pre" ]; then
@@ -607,10 +643,11 @@ convert_main() {
     else
       manifest | mfilter purge > "$pre_tmp"
     fi
-    if [ ! -d "$REC_DIR" ]; then install -d -m 0700 -o root -g root "$REC_DIR"; REC_DIR_CREATED=1; fi
+    # Flags first, then the action: a signal can land between any two commands.
     REC_CREATED=1
+    if [ ! -d "$REC_DIR" ]; then REC_DIR_CREATED=1; install -d -m 0700 -o root -g root "$REC_DIR"; fi
     install -m 0600 -o root -g root "$pre_tmp" "$PRE"
-    rm -f "$pre_tmp"
+    rm -f "$pre_tmp"; PRE_TMP=""
     rec_save
     note "$REC written (state=converting jsEnabled=${R[jsEnabled]} jsActive=${R[jsActive]} rsPreexisting=${R[rsPreexisting]} serviceUser=${R[serviceUser]})"
     if [ "${R[rsPreexisting]}" = yes ]; then
@@ -702,14 +739,18 @@ convert_main() {
   PHASE=start
   say "== 8. systemctl"
   sctl daemon-reload || abort_convert "systemctl daemon-reload failed: $SCTL_ERR"
-  if [ "$(unit_enabled "$JS_SVC")" = enabled ]; then
-    sctl disable "$JS_SVC" || abort_convert "systemctl disable $JS_SVC failed: $SCTL_ERR"
-    note "$JS_SVC disabled"
-  fi
+  # M2 (review-wp1): enable the incoming unit BEFORE disabling the outgoing
+  # one, back to back, so a power cut never leaves a device with no agent
+  # enabled. Both enabled for a moment is harmless: Conflicts= lets only one
+  # of them run in the boot transaction, and a re-run converges.
   if [ "$(unit_enabled "$RS_SVC")" != enabled ]; then
     if [ ! -e "$WANTS/$RS_SVC.service" ] && [ ! -L "$WANTS/$RS_SVC.service" ]; then created "$WANTS/$RS_SVC.service"; fi
     sctl enable "$RS_SVC" || abort_convert "systemctl enable $RS_SVC failed: $SCTL_ERR"
     note "$RS_SVC enabled"
+  fi
+  if [ "$(unit_enabled "$JS_SVC")" = enabled ]; then
+    sctl disable "$JS_SVC" || abort_convert "systemctl disable $JS_SVC failed: $SCTL_ERR"
+    note "$JS_SVC disabled"
   fi
   if [ "$(unit_active "$RS_SVC")" = active ]; then
     if [ "$NEED_RESTART" = 1 ]; then
@@ -740,6 +781,7 @@ convert_main() {
   rec_save
   rm -rf "$BACKUP"
   [ -z "$DL" ] || rm -rf "$DL"
+  [ -z "$BAK" ] || rm -rf "$BAK"
   PHASE=none
   summary
   if [ "$first" = 1 ] || [ "$SWAPPED" = 1 ]; then
@@ -771,21 +813,12 @@ revert_main() {
     refuse "--purge: a Rust install predated this conversion (rsPreexisting=yes in $recf); use keep mode (plain --revert), or --force to delete only what this conversion created"
   fi
 
-  # 1. the Rust agent off (idempotent).
   if [ "$already" = 1 ]; then say "already reverted ($(basename -- "$recf")); the JS agent is left as it is"
   else say "== reverting the conversion started ${R[startedAt]} (state=${R[state]})"; fi
-  if [ "$(unit_enabled "$RS_SVC")" = enabled ]; then
-    sctl disable "$RS_SVC" || say "  ! systemctl disable $RS_SVC failed: $SCTL_ERR"
-    note "$RS_SVC disabled"
-  fi
-  case $(unit_active "$RS_SVC") in
-    inactive | failed | unknown | "") ;;
-    *) sctl stop "$RS_SVC" || say "  ! systemctl stop $RS_SVC failed: $SCTL_ERR"; note "$RS_SVC stopped" ;;
-  esac
-  if [ -e "$STAGING" ]; then rm -rf "$STAGING"; note "$STAGING (an incomplete staging) removed"; fi
-
   if [ "$already" = 0 ]; then
-    # 2. the JS enablement exactly as recorded.
+    # 1. the JS enablement exactly as recorded, FIRST (M2, review-wp1): the
+    #    JS unit is enabled again before the Rust one is disabled, so a power
+    #    cut never boots a device with no agent enabled.
     en=$(unit_enabled "$JS_SVC")
     case ${R[jsEnabled]} in
       enabled)
@@ -800,6 +833,18 @@ revert_main() {
         fi ;;
       *) say "  = recorded jsEnabled='${R[jsEnabled]}': enablement left as it is ($en)" ;;
     esac
+  fi
+  # 2. the Rust agent off (idempotent).
+  if [ "$(unit_enabled "$RS_SVC")" = enabled ]; then
+    sctl disable "$RS_SVC" || say "  ! systemctl disable $RS_SVC failed: $SCTL_ERR"
+    note "$RS_SVC disabled"
+  fi
+  case $(unit_active "$RS_SVC") in
+    inactive | failed | unknown | "") ;;
+    *) sctl stop "$RS_SVC" || say "  ! systemctl stop $RS_SVC failed: $SCTL_ERR"; note "$RS_SVC stopped" ;;
+  esac
+  if [ -e "$STAGING" ]; then rm -rf "$STAGING"; note "$STAGING (an incomplete staging) removed"; fi
+  if [ "$already" = 0 ]; then
     # 3. JS started iff it was enabled OR active (§4: an enabled JS agent is meant to run).
     if [ "${R[jsEnabled]}" = enabled ] || [ "${R[jsActive]}" = active ]; then
       if [ "$(unit_active "$JS_SVC")" != active ]; then
@@ -847,8 +892,8 @@ revert_main() {
   #    row but the record dir (purge). The e2e checks the same independently.
   if [ -f "$pref" ]; then
     say "== self-check against $pref ($mode rows)"
-    selfcheck "$pref" "$mode"
-    [ "$DIFFS" = 0 ] || ok="NO ($DIFFS differences, listed above)"
+    if ! selfcheck "$pref" "$mode"; then ok="NO (the self-check could not run)"
+    elif [ "$DIFFS" != 0 ]; then ok="NO ($DIFFS differences, listed above)"; fi
   else
     say "  - $pref missing: nothing to compare against"
     ok="NO (1 differences, listed above)"
@@ -876,16 +921,18 @@ revert_main() {
 # --status: plain key=value lines (machine-read; the one output without the
 # [install-rs] prefix, so that its first line is exactly state=…).
 status_main() {
-  local st k
+  local st k out
+  trap '' PIPE    # S2: `--status | head -n1` must still exit 0
   st=$(rec_state)
-  echo "state=$st"
-  if [ "$st" = unknown ]; then echo "(cannot read $REC_DIR: run with sudo)"; fi
-  if [ -f "$REC" ]; then echo "--- record $REC"; cat "$REC"
-  elif [ "$st" = reverted ]; then k=$(latest_reverted); echo "--- record $k"; cat "$k"; fi
-  echo "--- units"
-  for k in "$JS_SVC" "$RS_SVC"; do echo "$k: is-enabled=$(unit_enabled "$k") is-active=$(unit_active "$k")"; done
-  echo "--- build $RS_PREFIX/build-info.json"
-  if [ -r "$RS_PREFIX/build-info.json" ]; then tr -d '\n' < "$RS_PREFIX/build-info.json"; echo; else echo "(none)"; fi
+  out="state=$st"$'\n'
+  if [ "$st" = unknown ]; then out+="(cannot read $REC_DIR: run with sudo)"$'\n'; fi
+  if [ -f "$REC" ]; then out+="--- record $REC"$'\n'"$(cat "$REC")"$'\n'
+  elif [ "$st" = reverted ]; then k=$(latest_reverted); out+="--- record $k"$'\n'"$(cat "$k")"$'\n'; fi
+  out+="--- units"$'\n'
+  for k in "$JS_SVC" "$RS_SVC"; do out+="$k: is-enabled=$(unit_enabled "$k") is-active=$(unit_active "$k")"$'\n'; done
+  out+="--- build $RS_PREFIX/build-info.json"$'\n'
+  if [ -r "$RS_PREFIX/build-info.json" ]; then out+="$(tr -d '\n' < "$RS_PREFIX/build-info.json")"$'\n'; else out+="(none)"$'\n'; fi
+  printf '%s' "$out" 2>/dev/null || true
   finish 0
 }
 
@@ -919,6 +966,9 @@ main() {
     revert)
       require_root
       if [ "$PURGE" = 1 ]; then reexec_private; fi
+      # M1: a dropped session must not stop a revert halfway (the dead-man
+      # also runs it); SIGPIPE ignored so a dead output reader cannot either.
+      trap '' HUP INT TERM PIPE
       lock
       revert_main ;;
     convert)

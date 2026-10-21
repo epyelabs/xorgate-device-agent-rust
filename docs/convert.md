@@ -87,13 +87,22 @@ running the script again, or undone with `--revert`.
    `systemctl start --no-block xorgate-updater-rs.service`, nothing else), checked with
    `visudo -cf` before it lands. A refusal is a warning, not a failure. A root service user gets
    no grant.
-8. **systemctl**: `daemon-reload`, `disable xorgate-agent`, `enable xorgate-agent-rs`,
-   `start xorgate-agent-rs`. The `Conflicts=` stops the JS agent.
+8. **systemctl**: `daemon-reload`, `enable xorgate-agent-rs`, `disable xorgate-agent`,
+   `start xorgate-agent-rs`. The `Conflicts=` stops the JS agent. The incoming unit is enabled
+   before the outgoing one is disabled, back to back (the revert does the same the other way), so
+   a power cut never leaves a device with no agent enabled. Should both be enabled at boot,
+   `Conflicts=` lets only one of them run, and running the script again finishes the job.
 9. **Verify**: within 90 s `xorgate-agent-rs` must be `active` and `xorgate-agent` inactive. If
    not, the script reverts by itself (keep mode, JS restored) and exits 4.
 
 If a step from 4 to 7 fails, the script puts `/opt/xorgate-rs` back, removes the files that run
-created, and exits 1.
+created, restores the files it overwrote (a device with an earlier Rust install, like the bench),
+and exits 1.
+
+An interrupted session is handled the same way: SIGHUP (a dropped ssh or LTE link), SIGINT or
+SIGTERM during a conversion runs that step's cleanup, and from step 8 on it reverts to the JS agent
+(exit 4). `--revert` ignores those signals and finishes. Over a flaky link, run the script inside
+`tmux` or with `nohup … > install-rs.log 2>&1` anyway, so you can read its output afterwards.
 
 It never writes `/etc/xorgate`, `/opt/xorgate`, `/usr/local/bin/xorgate`, the JS unit or its
 drop-ins, `xorgate-updater.service`, sudoers 020–023, or the modem, logind, NetworkManager, udev
@@ -173,7 +182,11 @@ The script then compares the JS-owned files against `pre.manifest` and prints ev
 what is not byte-identical. Like the JS agent, the Rust agent writes two kinds of `/etc/xorgate`
 files at run time: `hardware.json` when the cloud sends a hardware block, and `pipelines/` on
 `xorgate-rs pipeline set`. A difference there is expected when that happened during the
-conversion, and the JS agent reads the same files. Any other difference needs a look.
+conversion, and the JS agent reads the same files. The hardware reconciler also rewrites
+`pipelines/<key>.{gst,camera,gst.direct}` on every reconcile, and the self-check runs right after
+`start xorgate-agent`, so it can race the JS agent's own startup writes there: re-run `--revert`
+(a no-op that repeats the check) a minute later before you chase a `pipelines/` difference. Any
+other difference needs a look.
 
 Running `--revert` again is a no-op (exit 0).
 

@@ -40,7 +40,7 @@ q=0; args=()
 for a in "$@"; do case $a in --quiet|-q) q=1 ;; --no-pager|--no-block) ;; *) args+=("$a") ;; esac; done
 verb=${args[0]:-}; u=${args[1]:-}; u=${u%.service}
 conflicts() { sed -n 's/^Conflicts=//p' "$D/$1.service" 2>/dev/null | tr ' ' '\n' | sed 's/\.service$//'; }
-stop() { rm -f "$S/active/$1"; }
+stop() { [ -z "${STUB_SLOW:-}" ] || sleep 2; rm -f "$S/active/$1"; }
 start() {
   [ -f "$D/$1.service" ] || { echo "Unit $1.service not found." >&2; return 5; }
   local x c
@@ -53,20 +53,30 @@ start() {
   for c in xorgate-agent xorgate-agent-rs; do conflicts "$c" | grep -qx "$1" && stop "$c"; done
   touch "$S/active/$1"
 }
+act() {
 case $verb in
-  daemon-reload) exit 0 ;;
+  daemon-reload) return 0 ;;
   is-enabled)
-    [ -f "$D/$u.service" ] || { echo "Failed to get unit file state for $u.service: No such file or directory" >&2; exit 1; }
-    if [ -L "$W/$u.service" ]; then [ $q = 1 ] || echo enabled; exit 0; fi
-    [ $q = 1 ] || echo disabled; exit 1 ;;
-  is-active) if [ -f "$S/active/$u" ]; then [ $q = 1 ] || echo active; exit 0; fi; [ $q = 1 ] || echo inactive; exit 3 ;;
+    [ -f "$D/$u.service" ] || { echo "Failed to get unit file state for $u.service: No such file or directory" >&2; return 1; }
+    if [ -L "$W/$u.service" ]; then [ $q = 1 ] || echo enabled; return 0; fi
+    [ $q = 1 ] || echo disabled; return 1 ;;
+  is-active) if [ -f "$S/active/$u" ]; then [ $q = 1 ] || echo active; return 0; fi; [ $q = 1 ] || echo inactive; return 3 ;;
   enable) mkdir -p "$W"; ln -sfn "$D/$u.service" "$W/$u.service" ;;
   disable) rm -f "$W/$u.service" ;;
   start) start "$u" ;;
   stop) stop "$u" ;;
   restart) stop "$u"; start "$u" ;;
-  *) echo "stub: unsupported: $*" >&2; exit 1 ;;
+  *) echo "stub: unsupported: $*" >&2; return 1 ;;
 esac
+}
+act "$@"; rc=$?
+# Power-cut simulation (M2): CUT_AFTER=<n> SIGKILLs the install-rs.sh run
+# ($S/target.pid) right after the n-th systemctl call has taken effect.
+if [ -n "${CUT_AFTER:-}" ]; then
+  n=$(( $(cat "$S/count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$S/count"
+  if [ "$n" = "$CUT_AFTER" ]; then echo "$*" > "$S/cut"; kill -KILL "$(cat "$S/target.pid")" 2>/dev/null; fi
+fi
+exit $rc
 STUB
 chmod 0755 "$T/bin/systemctl"
 export PATH="$T/bin:$PATH"
@@ -91,6 +101,13 @@ mkbuild good "xorgate-rs 0.0.0-test (fake)" 0
 mkbuild runfails "xorgate-rs 0.0.0-test (fake)" 1
 mkbuild banner "something-else 1.0" 0
 mkbuild nomember "xorgate-rs 0.0.0-test (fake)" 0 install-rs.sh
+# A unit without Conflicts=: JS keeps running, so step 9 loops (signal cases).
+mkbuild noconflict "xorgate-rs 0.0.0-test (fake)" 0
+# shellcheck disable=SC2016  # the fake binary's $(sleep 3) runs in IT, not here
+mkbuild slowsmoke '$(sleep 3)xorgate-rs 0.0.0-test (fake)' 0
+sed -i '/^Conflicts=/d' "$T/build-noconflict/systemd/xorgate-agent-rs.service"
+tar --owner=0 --group=0 -czf "$T/dist/xorgate-agent-rs-noconflict.tar.gz" -C "$T/build-noconflict" .
+(cd "$T/dist" && sha256sum xorgate-agent-rs-noconflict.tar.gz > xorgate-agent-rs-noconflict.tar.gz.sha256)
 cp "$T/dist/xorgate-agent-rs-good.tar.gz" "$T/dist/xorgate-agent-rs-latest.tar.gz"
 (cd "$T/dist" && sha256sum xorgate-agent-rs-latest.tar.gz > xorgate-agent-rs-latest.tar.gz.sha256)
 GOOD="$T/dist/xorgate-agent-rs-good.tar.gz"
@@ -246,6 +263,95 @@ if [ "$NET" = 1 ]; then
   run "$O" -y --tag nope; expect $? 1 "--tag with no artifact: 404"; has "$O" "404); check the version/tag and bucket" "404: download failed, fail-closed"
   kill "$HTTP" 2>/dev/null
 fi
+
+echo "== M1 signals: HUP / TERM during step 9 → auto keep-mode revert (exit 4), JS enabled + active"
+for sig in HUP TERM; do
+  provision pi
+  bash "$INSTALL_RS" -y --tarball "$T/dist/xorgate-agent-rs-noconflict.tar.gz" > "$O" 2>&1 < /dev/null & pid=$!
+  for _ in $(seq 1 100); do grep -q '== 9. verify' "$O" && break; sleep 0.2; done
+  kill -"$sig" "$pid"; wait "$pid"; expect $? 4 "SIG$sig at step 9 (was rc $([ $sig = HUP ] && echo 129 || echo 143) with no revert)"
+  [ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)/$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)" = enabled/active/disabled/inactive ]
+  expect $? 0 "SIG$sig: JS enabled + active, rs disabled + inactive"
+  ls /var/lib/xorgate-rs-install/record.reverted-* >/dev/null 2>&1; expect $? 0 "SIG$sig: the record was reverted"
+done
+provision pi; M0=$(snap)
+bash "$INSTALL_RS" -y --tarball "$T/dist/xorgate-agent-rs-slowsmoke.tar.gz" > "$O" 2>&1 < /dev/null & pid=$!
+for _ in $(seq 1 100); do grep -q 'checking the staged build runs' "$O" && break; sleep 0.05; done
+kill -TERM "$pid"; wait "$pid"; rc=$?
+expect "$rc" 1 "SIGTERM during the step-3 smoke-exec"
+if true; then
+  [ "$(snap)" = "$M0" ]; expect $? 0 "SIGTERM early: device byte-unchanged"
+  [ -z "$(diff <(echo "$M0") <(snap))" ] || { diff <(echo "$M0") <(snap) | sed 's/^/    /'; sed 's/^/    | /' "$O"; }
+fi
+# A revert ignores HUP/TERM (the dead-man, a dropped ssh session): signal it
+# while the stub's `stop` is slow (STUB_SLOW=1), mid-revert.
+provision pi; run "$O" -y --tarball "$GOOD"
+STUB_SLOW=1 bash "$INSTALL_RS" --revert > "$O" 2>&1 < /dev/null & pid=$!
+for _ in $(seq 1 100); do grep -q 'xorgate-agent enabled (as recorded)' "$O" && break; sleep 0.05; done
+kill -HUP "$pid"; sleep 0.2; kill -TERM "$pid"; wait "$pid"; expect $? 0 "revert signalled HUP + TERM midway: completes"
+has "$O" "reverted: xorgate-agent enabled + active; xorgate-agent-rs disabled (files kept). JS install matches the pre-conversion record: yes" "  ... with the I1 revert line"
+# Output to a dead terminal / closed pipe must not kill a revert midway.
+provision pi; run "$O" -y --tarball "$GOOD"
+bash "$INSTALL_RS" --revert 2>&1 < /dev/null | head -c 1 > /dev/null; expect "${PIPESTATUS[0]}" 0 "revert with its output reader gone: still completes"
+[ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)/$(systemctl is-enabled xorgate-agent-rs)" = enabled/active/disabled ]
+expect $? 0 "  ... and JS is enabled + active, rs disabled"
+
+echo "== S2: --status | head -n1 exits 0"
+for _ in $(seq 1 20); do bash "$INSTALL_RS" --status | head -n1 > /dev/null; [ "${PIPESTATUS[0]}" = 0 ] || { failc "--status | head -n1 rc ${PIPESTATUS[0]}"; break; }; done
+pass "--status | head -n1: rc 0 (x20 or the FAIL above)"
+
+echo "== M2 power cut after EVERY systemctl call: an agent stays enabled, a re-run converges"
+boot() { # power back on: nothing running, enabled units start (Conflicts= decides)
+  rm -f "$T/state/active"/*
+  local u; for u in xorgate-agent-rs xorgate-agent; do [ "$(systemctl is-enabled "$u" 2>/dev/null)" = enabled ] && systemctl start "$u" 2>/dev/null; done
+  return 0
+}
+cut_run() { # <n> <args…> → rc; $T/state/cut exists iff the cut fired
+  local n=$1; shift
+  rm -f "$T/state/count" "$T/state/cut"
+  CUT_AFTER=$n bash "$INSTALL_RS" "$@" > "$O" 2>&1 < /dev/null & echo $! > "$T/state/target.pid"
+  wait "$(cat "$T/state/target.pid")"
+}
+for dir in convert revert; do
+  for n in $(seq 1 60); do
+    provision pi
+    if [ $dir = revert ]; then run "$O" -y --tarball "$GOOD" || failc "power-cut $dir: setup convert"; set -- --revert; else set -- -y --tarball "$GOOD"; fi
+    cut_run "$n" "$@"; rc=$?
+    if [ ! -f "$T/state/cut" ]; then
+      expect "$rc" 0 "power-cut $dir: $((n - 1)) systemctl calls, each cut tested; the uncut run"
+      break
+    fi
+    what=$(cat "$T/state/cut")
+    { [ -L /etc/systemd/system/multi-user.target.wants/xorgate-agent.service ] || [ -L /etc/systemd/system/multi-user.target.wants/xorgate-agent-rs.service ]; } \
+      || failc "power-cut $dir after call $n ($what): NO agent unit enabled"
+    boot
+    bash "$INSTALL_RS" "$@" > "$O" 2>&1 < /dev/null; rc=$?
+    if [ $dir = convert ]; then st=enabled/active/disabled/inactive; else st=disabled/inactive/enabled/active; fi
+    [ "$rc" = 0 ] && [ "$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)/$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = "$st" ] \
+      || { failc "power-cut $dir after call $n ($what): re-run rc $rc did not converge"; sed 's/^/    | /' "$O"; }
+  done
+done
+pass "power-cut: every cut kept an agent enabled and converged (or the FAILs above)"
+grep -n 'enable\|disable' "$T/state/systemctl.log" > /dev/null
+
+echo "== S1: bench shape (Rust pre-installed) + a write failure at step 6 → byte-exact rollback"
+provision pi
+mkdir -p /opt/xorgate-rs && tar -xzf "$T/dist/xorgate-agent-rs-noconflict.tar.gz" -C /opt/xorgate-rs
+sed 's/^Conflicts=xorgate-agent.service$/# BENCH: stripped/' "$SRC/systemd/xorgate-agent-rs.service" > /etc/systemd/system/xorgate-agent-rs.service
+mkdir -p /etc/systemd/system/xorgate-agent-rs.service.d
+cp "$SRC/systemd/bench/90-bench-dev.conf" /etc/systemd/system/xorgate-agent-rs.service.d/
+# shellcheck disable=SC2016  # the bench wrapper's $ are literal
+printf '#!/usr/bin/env bash\nexec env XORGATE_HOME="${XORGATE_HOME:-/var/lib/xorgate-rs}" /opt/xorgate-rs/bin/xorgate-rs "$@"\n' > /usr/local/bin/xorgate-rs; chmod 0755 /usr/local/bin/xorgate-rs
+echo "not a dir" > /etc/systemd/system/xorgate-updater-rs.service.d     # makes step 6's mkdir fail
+systemctl enable xorgate-agent-rs; M0=$(snap)
+run "$O" -y --tarball "$GOOD"; expect $? 1 "step-6 write failure on a bench-shaped device"
+has "$O" "the ones it overwrote are restored" "rollback names the restore"
+[ "$(snap)" = "$M0" ]; expect $? 0 "bench shape: unit, wrapper, drop-ins and /opt/xorgate-rs byte-exact as before"
+[ -z "$(diff <(echo "$M0") <(snap))" ] || diff <(echo "$M0") <(snap) | sed 's/^/    /'
+
+echo "== N7: no record, rs enabled, JS not → refused (a revert could not restore JS)"
+provision pi; run "$O" -y --tarball "$GOOD"; rm -rf /var/lib/xorgate-rs-install; M0=$(snap)
+run "$O" -y --tarball "$GOOD"; expect $? 3 "record deleted on a converted device"; [ "$(snap)" = "$M0" ]; expect $? 0 "nothing changed"
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail
