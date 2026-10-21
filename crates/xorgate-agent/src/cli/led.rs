@@ -192,22 +192,25 @@ pub async fn run(rest: &[String], deps: LedCliDeps) -> i32 {
         code = &mut body => return code,
         _ = &mut signal => {}
     }
-    // `shutdown`: `driver.stop(); void driver.blank().finally(() =>
-    // process.exit(0))` — the main flow keeps running (its pattern sees the
-    // stop and unwinds into its own trailing blank) until the shutdown
-    // blank lands and the process exits.
+    // `shutdown` (`led.ts:70-74`): `driver.stop(); void driver.blank()
+    // .finally(() => process.exit(0))`. D36 (orchestrator option B, the TS's
+    // "exit wins" outcome): exactly ONE dark blank lands, then the process
+    // exits. The body is not polled again, so the pattern never reaches its
+    // own trailing blank (`led.ts:104-105`; in the TS it races execa's
+    // `cleanup: true` kill at exit), and a step write still in flight is
+    // killed when the runtime drops (`exec::run` `kill_on_drop`, the TS's
+    // execa cleanup): it never lands after the blank. Bounded by
+    // [`SHUTDOWN_DEADLINE`] even when every pinctrl hangs.
     driver.stop();
-    let shut = driver.blank(false);
-    tokio::pin!(shut);
-    let mut body_done = false;
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut shut => return 0,
-            _ = &mut body, if !body_done => body_done = true,
-        }
-    }
+    let _ = tokio::time::timeout(SHUTDOWN_DEADLINE, driver.blank(false)).await;
+    0
 }
+
+/// The signalled exit's overall bound: the TS's own worst case with a hung
+/// `pinctrl` — the shutdown blank's `timeoutMs: 2000` (`led.ts:221`) plus
+/// its fail-safe all-pins blank's 2000 (`led.ts:375-379`), then
+/// `process.exit` (measured TS exit +4.03 s; review-gate-fixes final check).
+pub const SHUTDOWN_DEADLINE: Duration = Duration::from_millis(4000);
 
 /// The part of `ledCommand` after init (`led.ts:76-105`).
 async fn body(

@@ -301,6 +301,13 @@ source = "phase-1/evidence/accepted-divergences.md"
   matcher = "d30_shed_tick_session_end"
   pinned_by = "D30 (accepted-divergences.md); media_diff::tests::d30_shed_tick_session_end_only_for_a_late_js_restore"
 
+  [[rule.row]]
+  id = "D30"
+  what = "the same D30 cache seen in the recorded rail VALUES (F-E2-1, Phase 4 gate rec-disk run 1, replay-20261021T074334Z): a released pmic value v (between released u and w, ~2 s apart) that the JS recorder never wrote, because its sample < 1 s after v's release still carried u (the shared 1 s system.sample() cache was computed before the release, system.ts:104-113) and its next sample had NO system (the D30 system-less sample, telemetry-recorder.ts:102). Matched ONLY `metrics.system.rail_5v.value(values)`, JS LACKING and Rust HOLDING (never Rust-lacking, never JS-vs-JS or Rust-vs-Rust): a one-sided hunk of ONE Rust step whose value is a released pmic value with a released predecessor u and successor w, every Rust sample of it in [release(v), release(w) + 1000 ms); on the JS side the samples in that window are, IN ORDER, one or more stale u (taken < 1000 ms after release(v)), then one or more without system, then only w (at/after release(w)) (review-gate-fixes F-R3); every value compared exactly as a 2-dp number (a Rust 5.111 is never the released 5.11). A value the replay never released then (an extra or wrong rail value), a JS sample in the window with any other value, another order, or no system-less JS sample stays UNTOLERATED. No number widened (the 1000 ms is the TS cache gate itself). Gate-fixes 2026-10-21"
+  streams = ["rec-telemetry"]
+  matcher = "d30_rec_value_gap"
+  pinned_by = "D30 (accepted-divergences.md); media_diff::tests::d30_rec_value_gap_only_for_a_js_d30_skip"
+
 [[rule]]
 id = "T8"
 title = "Phase 2 orchestrator decisions"

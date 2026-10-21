@@ -101,12 +101,15 @@ fi
 # (the `+` expansion keeps macOS bash 3.2 happy with an empty array under set -u)
 tar -czf "$OUT_DIR/$TARBALL" ${TAR_OPTS[@]+"${TAR_OPTS[@]}"} -C "$STAGE" "${MEMBERS[@]}"
 
-echo "Contents:" >&2
-tar -tzf "$OUT_DIR/$TARBALL" | head -30 >&2
-# Keys install-rs.sh / scripts/bench/install.sh extract and expect.
-# List once: `tar -tzf | grep -q` under pipefail fails spuriously (grep -q exits
-# on the first match and tar dies of SIGPIPE).
+# List once, into a variable: piping `tar -tzf` into anything that stops
+# reading early (`grep -q`, `head -30`) under pipefail fails spuriously — the
+# reader exits and tar dies of SIGPIPE (rc 141). F-E1-1 (Phase 4 gate): the old
+# `tar -tzf | head -30` aborted every pack once the tarball passed 30 entries
+# (system/ vendored, 35). A real listing error still aborts here (set -e).
 LISTING=$(tar -tzf "$OUT_DIR/$TARBALL")
+echo "Contents ($(wc -l <<<"$LISTING" | tr -d ' ') entries; first 30):" >&2
+sed -n '1,30p' <<<"$LISTING" >&2
+# Keys install-rs.sh / scripts/bench/install.sh extract and expect.
 for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service python/bno085_read.py; do
   grep -qx "$required" <<<"$LISTING" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
 done

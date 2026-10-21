@@ -3,8 +3,12 @@
 # homes and diff stdout / stderr (ANSI stripped), exit code and the resulting
 # settings.json bytes after every step. Runs INSIDE the rig container:
 #
-#   docker compose -f tools/replay/docker-compose.yml run --rm -T --entrypoint bash rig \
+#   docker compose -p <proj> -f tools/replay/docker-compose.yml run --rm -T --entrypoint bash rig \
 #     /rig/tools/cli-matrix.sh [--a js|rust] [--b js|rust] [--out /rig/out/cli-matrix-<ts>]
+#   docker compose -p <proj> -f tools/replay/docker-compose.yml down -v --remove-orphans
+#
+# (`run` starts the mosquitto dependency; the `down -v` afterwards removes it
+# AND its two anonymous volumes — without `-v` they leak, F-RIG-1.)
 #
 # Default A=js (`node dist/cli.js` @ 89b5c64), B=rust (`xorgate-rs`). Each side
 # runs the list top to bottom in ONE home (settings accumulate like on a
