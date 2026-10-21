@@ -1264,6 +1264,83 @@ fn group_inputs(group: &str) -> &'static [&'static str] {
     }
 }
 
+/// T7/D30 `d30_rec_value_gap` (F-E2-1, Phase 4 gate rec-disk run 1,
+/// replay-20261021T074334Z): the rail value a JS recorder never wrote
+/// because of D30 itself. The tape releases one pmic value `v` between `u`
+/// and `w` (consecutive in the released series, ~2 s apart); the JS
+/// recorder's sample taken < 1 s after `v`'s release still carries `u` (the
+/// shared 1 s `system.sample()` cache was computed before the release —
+/// system.ts:104-113), and its next sample carries NO `system` at all (D30's
+/// system-less sample: it arrived during the other consumer's in-flight
+/// compute, telemetry-recorder.ts:102), so `v` is absent on the JS side
+/// only. Covered ONLY when all hold:
+/// - `metrics.system.rail_5v.value`; the LACKING side is `js`, the HOLDING
+///   side `rust` (D30 is the TS cache; never Rust-lacking, never JS-vs-JS
+///   or Rust-vs-Rust);
+/// - the hunk is ONE step on the holder (one-sided), whose value is a
+///   released pmic value `v` (`%.2f`) with a released predecessor `u` and
+///   successor `w`, and every holder sample of that step lies in
+///   [release(v), release(w) + 1000 ms) — a value the replay never released
+///   at that time (an extra or wrong rail value) is never covered;
+/// - on the lacking side, every sample in that window either carries no
+///   `system` group, or carries `u` taken < 1000 ms after release(v) (stale
+///   cache), or carries `w` taken at/after release(w); at least one sample
+///   is in the window and at least one of them lacks `system` (the D30
+///   drop, counted in that session's `(samples without system)` row).
+fn d30_rec_value_gap(
+    p: &str,
+    (lack_kind, lack): (&str, &[(i64, BTreeMap<String, String>)]),
+    (hold_kind, hold): (&str, &[(i64, BTreeMap<String, String>)]),
+    only: &[Step],
+    pmic: &[(i64, String)],
+) -> bool {
+    const RAIL: &str = "metrics.system.rail_5v.value";
+    if p != RAIL || lack_kind != "js" || hold_kind != "rust" {
+        return false;
+    }
+    let [(v, n, ts0)] = only else {
+        return false;
+    };
+    let norm = |t: &str| t.parse::<f64>().ok().map(|x| format!("{x:.2}"));
+    let Some(v) = norm(v) else {
+        return false;
+    };
+    // `v`'s release, its predecessor and successor in the released series.
+    let Some(k) = (1..pmic.len().saturating_sub(1))
+        .rev()
+        .find(|&k| pmic[k].1 == v && pmic[k].0 <= *ts0)
+    else {
+        return false;
+    };
+    let (u, (rv, _), (rw, w)) = (&pmic[k - 1].1, &pmic[k], &pmic[k + 1]);
+    let (lo, hi) = (*rv, *rw + 1000);
+    // The holder's samples of that step (the n samples from ts0 on).
+    let held: Vec<i64> = hold
+        .iter()
+        .filter(|(t, o)| *t >= *ts0 && o.get(p).and_then(|x| norm(x)).as_ref() == Some(&v))
+        .take(*n)
+        .map(|(t, _)| *t)
+        .collect();
+    if held.len() != *n || held.iter().any(|t| *t < lo || *t >= hi) {
+        return false;
+    }
+    let in_window: Vec<&(i64, BTreeMap<String, String>)> =
+        lack.iter().filter(|(t, _)| *t >= lo && *t < hi).collect();
+    let system_less =
+        |o: &BTreeMap<String, String>| !o.keys().any(|k| k.starts_with("metrics.system."));
+    let explained = in_window.iter().all(|(t, o)| {
+        if system_less(o) {
+            return true;
+        }
+        match o.get(p).and_then(|x| norm(x)) {
+            Some(x) if x == *u => *t < *rv + 1000,
+            Some(x) if x == *w => *t >= *rw,
+            _ => false,
+        }
+    });
+    !in_window.is_empty() && explained && in_window.iter().any(|(_, o)| system_less(o))
+}
+
 /// Recorded telemetry VALUES (review-wp6 G1, phase file "telemetry segments …
 /// sample `metrics` per T3/T4"), per telemetry session over each stretch of
 /// consecutive segment seqs present on BOTH sides:
@@ -1286,10 +1363,16 @@ fn rec_values(
     (ea, eb): &(Timeline, Timeline),
     play: &PlayInfo,
     facts: &crate::diff::InputFacts,
+    kinds: (&str, &str),
+    pmic: &[(i64, String)],
     table: &Table,
     rep: &mut Report,
 ) {
     let id = "T4/rec-sample";
+    let d30_gap_row = table
+        .matcher_rows("d30_rec_value_gap", "rec-telemetry")
+        .first()
+        .cloned();
     let collision = row_tol(table, id, "collisionMs", 0.0) as i64;
     let has = has_row(table, id);
     let common: Vec<u64> = a.keys().filter(|k| b.contains_key(k)).copied().collect();
@@ -1418,11 +1501,31 @@ fn rec_values(
                         } else {
                             only_b.iter().all(|s| raced(&la, s.2))
                         }));
+                // T7/D30 `d30_rec_value_gap` (F-E2-1): the JS side skipped
+                // one released rail value through D30 (stale cache + a
+                // system-less sample), the Rust side shows it.
+                let d30_gap = !ok
+                    && one_sided
+                    && d30_gap_row.is_some()
+                    && if only_b.is_empty() {
+                        d30_rec_value_gap(p, (kinds.1, &lb), (kinds.0, &la), &only_a, pmic)
+                    } else {
+                        d30_rec_value_gap(p, (kinds.0, &la), (kinds.1, &lb), &only_b, pmic)
+                    };
                 let fmt = |v: &[Step]| {
                     v.iter()
                         .map(|s| format!("{}×{}@{}", s.0, s.1, s.2))
                         .collect::<Vec<_>>()
                         .join(" ")
+                };
+                let tol = if ok {
+                    id.to_string()
+                } else if d30_gap {
+                    d30_gap_row
+                        .clone()
+                        .unwrap_or_else(|| UNTOLERATED.to_string())
+                } else {
+                    UNTOLERATED.to_string()
                 };
                 rep.push(mm(
                     "rec-telemetry",
@@ -1430,7 +1533,7 @@ fn rec_values(
                     &format!("{p}(values)"),
                     fmt(&only_a),
                     fmt(&only_b),
-                    if ok { id } else { UNTOLERATED },
+                    &tol,
                 ));
             }
         }
@@ -2331,8 +2434,19 @@ pub fn diff_media(
         gps_timeline(&bounded)
     };
     let ep = (timeline("A", a), timeline("B", b));
+    let pmic = pmic_series_with_boot(play);
     for sid in va.keys().filter(|k| vb.contains_key(*k)) {
-        rec_values(sid, (&va[sid], &vb[sid]), &ep, play, &facts, table, rep);
+        rec_values(
+            sid,
+            (&va[sid], &vb[sid]),
+            &ep,
+            play,
+            &facts,
+            (a.kind.as_str(), b.kind.as_str()),
+            &pmic,
+            table,
+            rep,
+        );
     }
 
     // ---- S3 (T14)
@@ -2986,19 +3100,42 @@ fn d30_js_reference(
 /// The tape's released pmic rail values, deduplicated to their changes:
 /// `(release wall ms, "%.2f")`.
 fn pmic_series(play: &PlayInfo) -> Vec<(i64, String)> {
+    pmic_series_from(play, false)
+}
+
+/// [`pmic_series`] plus the PREFILLED boot value(s) (no release: present
+/// from the play's start, `diff::release_walls`) at `play.start_wall` — the
+/// rail the agents read before the first released change
+/// (`d30_rec_value_gap` needs the predecessor of the first change).
+fn pmic_series_with_boot(play: &PlayInfo) -> Vec<(i64, String)> {
+    pmic_series_from(play, true)
+}
+
+fn pmic_series_from(play: &PlayInfo, boot: bool) -> Vec<(i64, String)> {
     use xorgate_hal::tape::TapeEvent;
     let Ok(t) = xorgate_hal::tape::Tape::read(Path::new(&play.tape)) else {
         return Vec::new();
     };
     let walls = crate::diff::release_walls(&t.records, &play.releases);
     let mut out: Vec<(i64, String)> = Vec::new();
+    let mut released = false;
     for (r, w) in t.records.iter().zip(walls) {
-        let (TapeEvent::Exec { argv, stdout, .. }, Some(w)) = (&r.ev, w) else {
+        let TapeEvent::Exec { argv, stdout, .. } = &r.ev else {
             continue;
         };
         if argv.get(1).map(String::as_str) != Some("pmic_read_adc") {
             continue;
         }
+        // Unreleased BEFORE the first release = prefilled (boot); after it
+        // = never released (past the run's end): skipped.
+        let w = match w {
+            Some(w) => {
+                released = true;
+                w
+            }
+            None if boot && !released => play.start_wall,
+            None => continue,
+        };
         let Some(v) = xorgate_core::system::parse_pmic_adc(stdout)
             .and_then(|adc| xorgate_core::system::rail_5v_from(&adc))
         else {
@@ -3229,6 +3366,153 @@ mod tests {
 
     /// review-wp6 M2: only the starvation SIGNATURE is a D30 drop — isolated,
     /// 900–999 ms after the previous sample; mono in ns like the recorders.
+    /// F-E2-1 (Phase 4 gate, rec-disk run 1 = replay-20261021T074334Z,
+    /// `<sid:telemetry#0>/segs0-2`): the JS recorder skipped the released
+    /// rail value 5.11 through D30 — its 620.188 sample still carried the
+    /// pre-release 5.10 (cache computed before the 619.452 release), its
+    /// 621.200 sample had no `system` — while Rust wrote 5.11 at 620.097.
+    /// The samples below are that run's (ts − 1792568600000); the series is
+    /// the tape's released pmic values. Tolerated as T7/D30 ONLY for that
+    /// shape; a real extra or wrong rail value stays UNTOLERATED.
+    #[test]
+    fn d30_rec_value_gap_only_for_a_js_d30_skip() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        const T0: i64 = 1_792_568_600_000;
+        let seg = |rows: &[(i64, Option<f64>)]| -> BTreeMap<u64, String> {
+            let mut t = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (i, (ts, rail)) in rows.iter().enumerate() {
+                let sys = rail
+                    .map(|v| {
+                        format!(",\"system\":{{\"rail_5v\":{{\"value\":{v},\"unit\":\"V\"}}}}")
+                    })
+                    .unwrap_or_default();
+                t.push_str(&format!(
+                    "{{\"ts\":{},\"mono\":{},\"seq\":{i},\"metrics\":{{\"gps\":{{\"fix\":{{\"value\":3}}}}{sys}}}}}\n",
+                    T0 + ts,
+                    (T0 + ts) * 1_000_000
+                ));
+            }
+            BTreeMap::from([(0u64, t)])
+        };
+        let js = [
+            (19_193, Some(5.1)),
+            (20_188, Some(5.1)),
+            (21_200, None),
+            (22_202, Some(5.12)),
+            (23_208, Some(5.12)),
+            (24_218, Some(5.13)),
+            (25_217, Some(5.13)),
+            (26_221, Some(5.1)),
+            (27_223, Some(5.1)),
+            (28_224, Some(5.11)),
+            (29_224, Some(5.11)),
+            (30_228, Some(5.12)),
+        ];
+        let rs = [
+            (19_095, Some(5.1)),
+            (20_097, Some(5.11)),
+            (21_100, Some(5.12)),
+            (22_106, Some(5.12)),
+            (23_109, Some(5.13)),
+            (24_113, Some(5.13)),
+            (25_114, Some(5.1)),
+            (26_118, Some(5.1)),
+            (27_125, Some(5.11)),
+            (28_131, Some(5.11)),
+            (29_134, Some(5.12)),
+            (30_138, Some(5.12)),
+        ];
+        let pmic: Vec<(i64, String)> = [
+            (17_000, "5.10"),
+            (19_452, "5.11"),
+            (20_978, "5.12"),
+            (22_979, "5.13"),
+            (24_976, "5.10"),
+            (26_976, "5.11"),
+            (28_978, "5.12"),
+        ]
+        .iter()
+        .map(|(w, v)| (T0 + w, v.to_string()))
+        .collect();
+        let run = |a: &[(i64, Option<f64>)],
+                   b: &[(i64, Option<f64>)],
+                   kinds: (&str, &str),
+                   pmic: &[(i64, String)]| {
+            let mut rep = Report::default();
+            let ep = (Timeline::new(), Timeline::new());
+            rec_values(
+                "<sid:telemetry#0>",
+                (&seg(a), &seg(b)),
+                &ep,
+                &PlayInfo::default(),
+                &crate::diff::InputFacts::default(),
+                kinds,
+                pmic,
+                &table,
+                &mut rep,
+            );
+            rep.mismatches
+                .into_iter()
+                .map(|m| format!("{} {} A={} B={}", m.path, m.tol, m.a, m.b))
+                .collect::<Vec<_>>()
+        };
+        let row = |tol: &str| {
+            vec![format!(
+                "metrics.system.rail_5v.value(values) {tol} A= B=5.11×1@{}",
+                T0 + 20_097
+            )]
+        };
+        // The gate row: JS (A) lacks 5.11, Rust (B) holds it.
+        assert_eq!(run(&js, &rs, ("js", "rust"), &pmic), row("T7/D30"));
+        // Either column order.
+        assert_eq!(
+            run(&rs, &js, ("rust", "js"), &pmic),
+            vec![format!(
+                "metrics.system.rail_5v.value(values) T7/D30 A=5.11×1@{} B=",
+                T0 + 20_097
+            )]
+        );
+        // Never for JS-vs-JS, Rust-vs-Rust, or a RUST side lacking it.
+        assert_eq!(run(&js, &rs, ("js", "js"), &pmic), row(UNTOLERATED));
+        assert_eq!(run(&js, &rs, ("rust", "rust"), &pmic), row(UNTOLERATED));
+        assert_eq!(run(&js, &rs, ("rust", "js"), &pmic), row(UNTOLERATED));
+        // No released series to prove the value: untolerated.
+        assert_eq!(run(&js, &rs, ("js", "rust"), &[]), row(UNTOLERATED));
+        // A value the replay never released (an extra/wrong rail value).
+        let mut wrong = rs;
+        wrong[1].1 = Some(5.14);
+        assert_eq!(
+            run(&js, &wrong, ("js", "rust"), &pmic),
+            vec![format!(
+                "metrics.system.rail_5v.value(values) {UNTOLERATED} A= B=5.14×1@{}",
+                T0 + 20_097
+            )]
+        );
+        // The released value at the WRONG time (Rust shows 5.11 after 5.12
+        // was released + the 1 s cache): untolerated.
+        let late: Vec<(i64, Option<f64>)> = rs
+            .iter()
+            .map(|(t, v)| if *t == 20_097 { (22_050, *v) } else { (*t, *v) })
+            .filter(|(t, _)| *t != 21_100 && *t != 22_106)
+            .collect();
+        let late_js: Vec<(i64, Option<f64>)> =
+            js.iter().copied().filter(|(t, _)| *t != 22_202).collect();
+        assert!(run(&late_js, &late, ("js", "rust"), &pmic)
+            .iter()
+            .any(|r| r.starts_with(&format!(
+                "metrics.system.rail_5v.value(values) {UNTOLERATED}"
+            ))));
+        // No system-less JS sample in the window (the JS skipped it with
+        // stale values only): not D30's drop → untolerated.
+        let mut stale = js;
+        stale[2].1 = Some(5.1);
+        assert_eq!(run(&stale, &rs, ("js", "rust"), &pmic), row(UNTOLERATED));
+    }
+
     #[test]
     fn d30_starved_drop_signature_only() {
         let smp = |mono_ms: f64, sys: bool| {
