@@ -1,0 +1,17 @@
+#!/bin/bash
+# node-stub, installed as /usr/bin/node in the convert-e2e image (a
+# JS-provisioned device has NodeSource's node there; install-script.ts:93-98).
+# It stands in for the JS agent so the e2e can tell whether JS runs:
+#   node /opt/xorgate/dist/worker.js   → stays up until SIGTERM, so
+#                                        `pgrep -f 'node /opt/xorgate/dist/worker.js'`
+#                                        is the JS-running signal
+#   node /opt/xorgate/dist/cli.js …    → exits 0 (the `xorgate` wrapper's
+#                                        `led boot` / `led exit-state` hooks)
+# Its cmdline is "/bin/bash /usr/bin/node /opt/xorgate/dist/worker.js".
+case "${1:-}" in
+  /opt/xorgate/dist/worker.js)
+    trap 'exit 0' TERM INT
+    echo "node-stub: JS worker up (pid $$, uid $(id -u))"
+    while :; do sleep 1 & wait $!; done ;;
+  *) exit 0 ;;
+esac

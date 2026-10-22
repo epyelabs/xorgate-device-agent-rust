@@ -29,5 +29,6 @@ if command -v shellcheck >/dev/null; then
 fi
 # Phase 5 WP3: the dist scripts + their test (bash -n + shellcheck -x).
 for f in scripts/dist-manifest.sh scripts/dist-check.sh scripts/dist-guard.sh scripts/tests/dist.sh; do bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "$f"; } >"$LOGS/sc-dist.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-dist.log"; }; done
+for f in tools/convert-e2e/*.sh tools/convert-e2e/shims/*; do bash -n "$f" && pass "bash -n $f" || failc "bash -n $f"; done; if command -v shellcheck >/dev/null; then shellcheck -x -s bash tools/convert-e2e/*.sh tools/convert-e2e/shims/* >"$LOGS/sc-convert-e2e.log" 2>&1 && pass "shellcheck (tools/convert-e2e)" || { failc "shellcheck tools/convert-e2e:"; cat "$LOGS/sc-convert-e2e.log"; }; fi  # Phase 5 WP2 (G1)
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

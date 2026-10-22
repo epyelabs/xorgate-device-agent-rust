@@ -1,0 +1,447 @@
+#!/bin/bash
+# systemctl shim for tools/convert-e2e (no systemd in the container). Models
+# what install-rs.sh relies on, after systemd 252 (Debian bookworm), and logs
+# every call's argv to /run/e2e/systemctl.log. Anything it does not model
+# fails LOUDLY (exit 64, `UNMODELLED` in the log) so a case cannot pass on a
+# silently ignored call.
+#
+# Unit files: /etc/systemd/system/<u> then /lib/systemd/system/<u>; drop-ins
+# /etc/systemd/system/<u>.d/*.conf in lexical order (systemd.unit(5)
+# "drop-in"). Parsing: `[Section]`, `Key=Value`, `#`/`;` comments; an EMPTY
+# assignment resets a [Service] list (Environment=, EnvironmentFile=,
+# StateDirectory=, ExecStart…=) and a single-valued key to its default
+# (User= → root), but NOT a [Unit] dependency such as Conflicts= (252). No line continuations (none of the units uses one).
+#
+#   enable [--now] <u>…    [Install] WantedBy=/RequiredBy= → creates
+#                          /etc/systemd/system/<T>.wants|requires/<u> →
+#                          /etc/systemd/system/<u> (absolute, as systemd);
+#                          no [Install] → systemd's warning, exit 0;
+#                          no unit file → exit 1
+#   disable [--now] <u>…   removes every <u> symlink in *.wants/ *.requires/
+#   is-enabled [-q] <u>    enabled | static | disabled (exit 1) | masked;
+#                          no unit file → stderr + exit 1 (systemd 252)
+#   is-active [-q] <u>     active | inactive | failed | activating (exit 3)
+#   start/stop/restart/try-restart <u>
+#     Conflicts= BOTH ways (systemd.unit(5): "If a unit has a Conflicts=
+#     setting on another unit, starting the former will stop the latter and
+#     vice versa"): start A stops every active B with B∈Conflicts(A) or
+#     A∈Conflicts(B).
+#     Modelled ExecStart (run for real): /opt/xorgate-rs/bin/xorgate-rs …,
+#     /usr/local/bin/xorgate-rs …, /usr/bin/env node … (node = the node-stub);
+#     any other unit (sim7600-lte, …) is only marked active, never executed.
+#     Environment = PATH + Environment= (unit, then drop-ins) overridden by
+#     EnvironmentFile= (systemd.exec(5): files override Environment=); a
+#     missing non-`-` EnvironmentFile fails the start. User=/Group= = the last
+#     assignment (unit, then drop-ins); StateDirectory= created + chowned with
+#     StateDirectoryMode=; WorkingDirectory=; ExecStartPre=/ExecStopPost= run
+#     (a `-` prefix ignores failure). Type=oneshot runs ExecStart synchronously
+#     (--no-block: in the background) and its exit status is the start's;
+#     simple/notify/exec run in the background as User=, and notify reports
+#     success only if the process is still alive after 3 s (no NOTIFY_SOCKET:
+#     READY=1 is approximated by "did not die").
+#   daemon-reload          snapshots each unit's config; a later start of a
+#                          unit whose files changed since → `STALE <u>` logged
+#   show [-p P[,P]…] [--value] <u>   ActiveState SubState MainPID
+#                          ActiveEnterTimestamp UnitFileState LoadState
+#                          FragmentPath User
+#   status <u>, reset-failed, reload (exit 5 if the unit is absent), --version
+#   reboot|poweroff|halt|kexec   FORBIDDEN (logged, exit 1)
+#
+# Fault injection (case.sh writes these; each fires once):
+#   /run/e2e/inject   lines "<fail|crash|hup|int|term> <ERE over the call's argv>":
+#                     fail  = this call fails (exit 1, systemd-like stderr)
+#                     crash = after this call, kill -9 every install-rs.sh
+#                             bash (a power cut / OOM kill mid-script)
+#                     hup|int|term = after this call, SIGHUP/SIGINT/SIGTERM the
+#                             install-rs.sh main bash (ssh drop / kill)
+#   /run/e2e/crash-at N  crash after the N-th systemctl call (any verb) made
+#                     while it is armed, counted in /run/e2e/sc-count
+# After every enable/disable: "ENABLED js=<state> rs=<state>" is logged (the
+# M2 hand-over order: never both disabled while one was enabled).
+# pid files hold "<pid> <starttime>" so a reused pid is never taken for the
+# service (or killed).
+set -uo pipefail
+export LC_ALL=C
+E=/run/e2e
+SD=$E/sd
+J=$E/journal
+mkdir -p "$SD" "$J"
+echo "$*" >>"$E/systemctl.log"
+CALL="$*"
+
+INSTALLER_RE='^(/usr/bin/|/bin/)?bash .*install-rs[^ ]*'
+installer_main() { pgrep -o -f "$INSTALLER_RE"; }
+inject_match() { # <action> → 0 (and the line consumed) if an inject line matches this call
+  local f=$E/inject a re l n=0 hit=0
+  [ -s "$f" ] || return 1
+  : >"$f.new"
+  while IFS= read -r l; do
+    a=${l%% *}; re=${l#* }
+    if [ $hit = 0 ] && [ "$a" = "$1" ] && [[ "$CALL" =~ $re ]]; then hit=1; continue; fi
+    printf '%s\n' "$l" >>"$f.new"
+    n=$((n + 1))
+  done <"$f"
+  mv -f "$f.new" "$f"
+  [ $hit = 1 ]
+}
+after_call() { # post-call faults
+  local rc=$1 n
+  if [ -s "$E/crash-at" ]; then
+    n=$(( $(cat "$E/sc-count" 2>/dev/null || echo 0) + 1 )); echo $n >"$E/sc-count"
+    if [ "$(cat "$E/crash-at")" = "$n" ]; then
+      rm -f "$E/crash-at"; echo "INJECT crash after #$n: $CALL" >>"$E/systemctl.log"
+      touch "$E/crashed"; pkill -9 -f "$INSTALLER_RE"
+    fi
+  fi
+  case "$VERB" in enable|disable)
+    echo "ENABLED js=$(is_enabled xorgate-agent.service 2>/dev/null || true) rs=$(is_enabled xorgate-agent-rs.service 2>/dev/null || true)" >>"$E/systemctl.log" ;;
+  esac
+  if inject_match crash; then echo "INJECT crash after: $CALL" >>"$E/systemctl.log"; touch "$E/crashed"; pkill -9 -f "$INSTALLER_RE"; fi
+  if inject_match hup; then echo "INJECT SIGHUP after: $CALL" >>"$E/systemctl.log"; kill -HUP "$(installer_main)" 2>/dev/null; touch "$E/signalled"; fi
+  if inject_match int; then echo "INJECT SIGINT after: $CALL" >>"$E/systemctl.log"; kill -INT "$(installer_main)" 2>/dev/null; touch "$E/signalled"; fi
+  if inject_match term; then echo "INJECT SIGTERM after: $CALL" >>"$E/systemctl.log"; kill -TERM "$(installer_main)" 2>/dev/null; touch "$E/signalled"; fi
+  exit "$rc"
+}
+unmodelled() { echo "UNMODELLED $*" >>"$E/systemctl.log"; echo "systemctl shim: UNMODELLED: $*" >&2; exit 64; }
+
+QUIET=0 NOBLOCK=0 NOW=0 VALUE=0
+PROPS=()
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -q|--quiet) QUIET=1 ;;
+    --no-block) NOBLOCK=1 ;;
+    --now) NOW=1 ;;
+    --value) VALUE=1 ;;
+    --no-pager|--no-legend|--plain|--full|-l|--system|--no-ask-password) ;;
+    -p|--property) PROPS+=("${2//,/ }"); shift ;;
+    --property=*) PROPS+=("${1#--property=}") ;;
+    -n|--lines) shift ;;
+    --version) echo "systemd 252 (252.39-1~deb12u1) [convert-e2e shim]"; exit 0 ;;
+    -*) unmodelled "option $1" ;;
+    *) ARGS+=("$1") ;;
+  esac
+  shift
+done
+[ ${#ARGS[@]} -gt 0 ] || unmodelled "no verb"
+VERB=${ARGS[0]}
+UNITS=("${ARGS[@]:1}")
+
+norm() { case "$1" in *.service|*.target|*.socket|*.timer|*.path|*.mount) echo "$1" ;; *) echo "$1.service" ;; esac; }
+unit_file() {
+  local d
+  for d in /etc/systemd/system /lib/systemd/system; do
+    if [ -e "$d/$1" ] || [ -L "$d/$1" ]; then echo "$d/$1"; return 0; fi
+  done
+  return 1
+}
+# conf <u>: "Section<TAB>Key<TAB>Value" for the unit file, then its drop-ins.
+conf() {
+  local f d
+  f=$(unit_file "$1") || return 0
+  {
+    cat "$f"
+    for d in "/etc/systemd/system/$1.d"/*.conf; do [ -f "$d" ] && { echo; cat "$d"; }; done
+  } | awk '
+    { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, "") }
+    /^$/ || /^[#;]/ { next }
+    /^\[.*\]$/ { sec = substr($0, 2, length($0) - 2); next }
+    { i = index($0, "="); if (i == 0) next
+      k = substr($0, 1, i - 1); v = substr($0, i + 1)
+      sub(/[ \t]+$/, "", k); sub(/^[ \t]+/, "", v)
+      print sec "\t" k "\t" v }'
+}
+# last <u> <Section> <Key>: the effective single value ("" = default).
+last() { conf "$1" | awk -F'\t' -v s="$2" -v k="$3" '$1 == s && $2 == k { v = $3 } END { print v }'; }
+# list <u> <Section> <Key>: the accumulated values, one per line. An empty
+# assignment resets the list — EXCEPT a [Unit] dependency (Conflicts=, …):
+# systemd 252 silently ignores an empty one in a drop-in (verified on the
+# bench 2026-10-08, scripts/bench/install.sh:156-163), so the bench
+# 90-bench-dev.conf's `Conflicts=` does NOT clear the shipped unit's.
+list() { conf "$1" | awk -F'\t' -v s="$2" -v k="$3" '$1 == s && $2 == k { if ($3 == "") { if (s != "Unit") n = 0 } else a[++n] = $3 } END { for (i = 1; i <= n; i++) print a[i] }'; }
+cfg_hash() { { unit_file "$1" >/dev/null && cat "$(unit_file "$1")"; cat "/etc/systemd/system/$1.d"/*.conf 2>/dev/null; } | sha256sum | cut -d' ' -f1; }
+
+starttime() { awk '{print $22}' "/proc/$1/stat" 2>/dev/null; }
+alive() { [ -n "$1" ] && [ -r "/proc/$1/stat" ] && [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != Z ]; }
+pid_of() { # the recorded pid, only while it is still THAT process (pid reuse)
+  local pid st
+  read -r pid st <"$SD/$1.pid" 2>/dev/null || return 0
+  if [ -n "$st" ] && [ -r "/proc/$pid/stat" ] && [ "$(starttime "$pid")" != "$st" ]; then echo 999999999; return 0; fi
+  echo "$pid"
+}
+state() { # active | inactive | failed | activating
+  local u=$1 pid
+  [ -e "$SD/$u.active" ] && { echo active; return; }
+  pid=$(pid_of "$u")
+  if [ -n "$pid" ]; then
+    if alive "$pid"; then echo active; return; fi
+    if [ "$(last "$u" Service Restart)" = always ]; then echo activating; else echo failed; fi
+    return
+  fi
+  [ -e "$SD/$u.failed" ] && { echo failed; return; }
+  echo inactive
+}
+is_active() { [ "$(state "$1")" = active ]; }
+modelled() {
+  case "$1" in
+    /opt/xorgate-rs/bin/xorgate-rs*|/usr/local/bin/xorgate-rs*|"/usr/bin/env node "*) return 0 ;;
+  esac
+  return 1
+}
+
+# build_env <u>: ENVV=(K=V…) as systemd would hand the service; 1 on a missing
+# required EnvironmentFile.
+build_env() {
+  local u=$1 user v kv line f opt
+  user=$(last "$u" Service User); user=${user:-root}
+  ENVV=("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" "LANG=C.UTF-8")
+  if [ -n "$(last "$u" Service User)" ]; then
+    ENVV+=("USER=$user" "LOGNAME=$user" "HOME=$(getent passwd "$user" | cut -d: -f6)" "SHELL=$(getent passwd "$user" | cut -d: -f7)")
+  fi
+  while IFS= read -r v; do
+    while IFS= read -r kv; do [ -n "$kv" ] && ENVV+=("$kv"); done < <(printf '%s' "$v" | xargs -n1 printf '%s\n')
+  done < <(list "$u" Service Environment)
+  while IFS= read -r f; do
+    opt=0
+    case "$f" in -*) opt=1; f=${f#-} ;; esac
+    if [ ! -r "$f" ]; then
+      [ $opt = 1 ] && continue
+      echo "$u: Failed to load environment files: $f" >>"$J/$u.log"
+      return 1
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=${line#"${line%%[![:space:]]*}"}
+      case "$line" in ''|'#'*|';'*) continue ;; esac
+      kv=${line%%=*}; v=${line#*=}
+      case "$v" in \"*\") v=${v:1:${#v}-2} ;; \'*\') v=${v:1:${#v}-2} ;; esac
+      ENVV+=("$kv=$v")
+    done <"$f"
+  done < <(list "$u" Service EnvironmentFile)
+  return 0
+}
+# exec_as_user <u> <cmd…>: become the service process: the unit's user,
+# environment and working directory (exec chain, so the pid is kept).
+exec_as_user() {
+  local u=$1 user group wd; shift
+  user=$(last "$u" Service User); user=${user:-root}
+  group=$(last "$u" Service Group); group=${group:-$(id -gn "$user")}
+  wd=$(last "$u" Service WorkingDirectory); wd=${wd#-}
+  cd "${wd:-/}" || exit 200
+  if [ "$user" = root ]; then exec env -i "${ENVV[@]}" "$@"; fi
+  exec setpriv --reuid="$user" --regid="$group" --init-groups env -i "${ENVV[@]}" "$@"
+}
+as_user() { ( exec_as_user "$@" ); }
+FUNCS="$(declare -f exec_as_user as_user last list conf unit_file)"
+run_hooks() { # <u> <Key> → 1 if a non-`-` hook failed
+  local u=$1 k=$2 c ign
+  while IFS= read -r c; do
+    ign=0
+    case "$c" in -*) ign=1; c=${c#-} ;; esac
+    read -ra W <<<"$c"
+    if ! timeout 20 bash -c "export LC_ALL=C; $(declare -p ENVV); $FUNCS; exec_as_user \"\$@\"" _ "$u" "${W[@]}" >>"$J/$u.log" 2>&1; then
+      [ $ign = 1 ] || return 1
+    fi
+  done < <(list "$u" Service "$k")
+  return 0
+}
+job_failed() {
+  echo "Job for $1 failed because the control process exited with error code." >&2
+  echo "See \"systemctl status $1\" and \"journalctl -xeu $1\" for details." >&2
+  return 1
+}
+
+do_stop() {
+  local u=$1 pid
+  pid=$(pid_of "$u")
+  if [ -n "$pid" ] && alive "$pid"; then
+    kill -TERM "$pid" 2>/dev/null
+    for _ in $(seq 100); do alive "$pid" || break; sleep 0.1; done
+    alive "$pid" && kill -KILL "$pid" 2>/dev/null
+    for _ in $(seq 20); do alive "$pid" || break; sleep 0.1; done
+  fi
+  local was=0
+  { [ -n "$pid" ] || [ -e "$SD/$u.active" ]; } && was=1
+  rm -f "$SD/$u.pid" "$SD/$u.active" "$SD/$u.failed"
+  if [ $was = 1 ] && unit_file "$u" >/dev/null && build_env "$u"; then
+    ENVV+=("SERVICE_RESULT=success")
+    run_hooks "$u" ExecStopPost || true
+  fi
+  return 0
+}
+
+do_start() {
+  local u=$1 f typ cmd b sd mode user group
+  f=$(unit_file "$u") || { echo "Failed to start $u: Unit $u not found." >&2; return 5; }
+  if [ -e "$SD/$u.loaded" ] && [ "$(cat "$SD/$u.loaded")" != "$(cfg_hash "$u")" ]; then
+    echo "STALE $u" >>"$E/systemctl.log"
+    echo "Warning: The unit file, source configuration file or drop-ins of $u changed on disk. Run 'systemctl daemon-reload' to reload units." >&2
+  fi
+  is_active "$u" && return 0
+  # Conflicts= both ways.
+  local mine; mine=$(list "$u" Unit Conflicts | tr ' ' '\n' | sed '/^$/d')
+  for b in "$SD"/*.pid "$SD"/*.active; do
+    [ -e "$b" ] || continue
+    b=$(basename "$b"); b=${b%.pid}; b=${b%.active}
+    [ "$b" = "$u" ] && continue
+    is_active "$b" || continue
+    if grep -qxF "$b" <<<"$mine" || list "$b" Unit Conflicts | tr ' ' '\n' | grep -qxF "$u"; then
+      echo "CONFLICT-STOP $b (start $u)" >>"$E/systemctl.log"
+      do_stop "$b"
+    fi
+  done
+  rm -f "$SD/$u.failed"
+  cmd=$(list "$u" Service ExecStart | tail -n1)
+  if ! modelled "$cmd"; then
+    touch "$SD/$u.active"; date -u '+%a %Y-%m-%d %H:%M:%S UTC' >"$SD/$u.since"
+    return 0
+  fi
+  build_env "$u" || { touch "$SD/$u.failed"; job_failed "$u"; return 1; }
+  user=$(last "$u" Service User); user=${user:-root}
+  group=$(last "$u" Service Group); group=${group:-$(id -gn "$user")}
+  mode=$(last "$u" Service StateDirectoryMode); mode=${mode:-0755}
+  while IFS= read -r sd; do
+    for sd in $sd; do install -d -m "$mode" -o "$user" -g "$group" "/var/lib/$sd"; done
+  done < <(list "$u" Service StateDirectory)
+  run_hooks "$u" ExecStartPre || { touch "$SD/$u.failed"; job_failed "$u"; return 1; }
+  cmd=${cmd#-}
+  read -ra W <<<"$cmd"
+  typ=$(last "$u" Service Type); typ=${typ:-simple}
+  if [ "$typ" = oneshot ]; then
+    if [ $NOBLOCK = 1 ]; then
+      ( as_user "$u" "${W[@]}" >>"$J/$u.log" 2>&1 & )
+      return 0
+    fi
+    as_user "$u" "${W[@]}" >>"$J/$u.log" 2>&1
+    local rc=$?
+    echo "ONESHOT $u rc=$rc" >>"$E/systemctl.log"
+    [ $rc = 0 ] || { touch "$SD/$u.failed"; job_failed "$u"; return 1; }
+    return 0
+  fi
+  rm -f "$SD/$u.pid.new"
+  # setsid -f: the service is orphaned at once (reaped by the container's
+  # init, docker run --init), so a dead service never lingers as a zombie.
+  setsid -f bash -c "echo \$\$ >'$SD/$u.pid.new'; export LC_ALL=C; $(declare -p ENVV W); $FUNCS; exec 0</dev/null >>'$J/$u.log' 2>&1; exec_as_user '$u' \"\${W[@]}\""
+  for _ in $(seq 50); do [ -s "$SD/$u.pid.new" ] && break; sleep 0.1; done
+  local np; np=$(cat "$SD/$u.pid.new" 2>/dev/null)
+  rm -f "$SD/$u.pid.new"
+  [ -n "$np" ] || { touch "$SD/$u.failed"; job_failed "$u"; return 1; }
+  echo "$np $(starttime "$np")" >"$SD/$u.pid"
+  if [ "$typ" = notify ]; then sleep 3; else sleep 0.5; fi
+  if alive "$(pid_of "$u")"; then
+    date -u '+%a %Y-%m-%d %H:%M:%S UTC' >"$SD/$u.since"
+    return 0
+  fi
+  [ "$typ" = notify ] && { job_failed "$u"; return 1; }
+  return 0
+}
+
+want_dirs() { find /etc/systemd/system -mindepth 1 -maxdepth 1 -type d \( -name '*.wants' -o -name '*.requires' \) 2>/dev/null; }
+is_enabled() { # prints the state; exit 0 for enabled/static
+  local u=$1 f d
+  f=$(unit_file "$u") || { echo "Failed to get unit file state for $u: No such file or directory" >&2; return 1; }
+  if [ -L "$f" ] && [ "$(readlink "$f")" = /dev/null ]; then echo masked; return 1; fi
+  for d in $(want_dirs); do [ -L "$d/$u" ] && { echo enabled; return 0; }; done
+  if [ -z "$(list "$u" Install WantedBy)$(list "$u" Install RequiredBy)$(list "$u" Install Alias)" ]; then echo static; return 0; fi
+  echo disabled
+  return 1
+}
+
+rc=0
+if inject_match fail; then
+  echo "INJECT fail: $CALL" >>"$E/systemctl.log"
+  echo "Failed to $VERB ${UNITS[*]:-}: Injected failure (convert-e2e)." >&2
+  exit 1
+fi
+case "$VERB" in
+  daemon-reload)
+    rm -f "$SD"/*.loaded
+    for f in /etc/systemd/system/*.service; do
+      [ -e "$f" ] || continue
+      u=$(basename "$f"); cfg_hash "$u" >"$SD/$u.loaded"
+    done ;;
+  enable|disable)
+    for u in "${UNITS[@]}"; do
+      u=$(norm "$u")
+      f=$(unit_file "$u") || { echo "Failed to $VERB unit: Unit file $u does not exist." >&2; rc=1; continue; }
+      if [ "$VERB" = enable ]; then
+        tg=$( { list "$u" Install WantedBy | sed 's/^/wants /'; list "$u" Install RequiredBy | sed 's/^/requires /'; } )
+        if [ -z "$tg" ]; then
+          echo "The unit files have no installation config (WantedBy=, RequiredBy=, Also=, Alias= settings in the [Install] section, and DefaultInstance= for template units). This means they are not meant to be enabled or disabled using systemctl." >&2
+        fi
+        while read -r kind targets; do
+          [ -n "${targets:-}" ] || continue
+          for t1 in $targets; do
+            l=/etc/systemd/system/$t1.$kind/$u
+            [ -L "$l" ] && [ "$(readlink "$l")" = "$f" ] && continue
+            mkdir -p "/etc/systemd/system/$t1.$kind"
+            ln -sfn "$f" "$l"
+            echo "Created symlink $l → $f." >&2
+          done
+        done <<<"$tg"
+        [ $NOW = 1 ] && { do_start "$u" || rc=1; }
+      else
+        for d in $(want_dirs); do
+          if [ -L "$d/$u" ]; then rm -f "$d/$u"; echo "Removed \"$d/$u\"." >&2; fi
+        done
+        [ $NOW = 1 ] && do_stop "$u"
+      fi
+    done ;;
+  is-enabled)
+    u=$(norm "${UNITS[0]}")
+    out=$(is_enabled "$u"); rc=$?
+    [ $QUIET = 1 ] || { [ -n "$out" ] && echo "$out"; } ;;
+  is-active)
+    rc=3
+    for u in "${UNITS[@]}"; do
+      s=$(state "$(norm "$u")")
+      [ $QUIET = 1 ] || echo "$s"
+      [ "$s" = active ] && rc=0
+    done ;;
+  is-failed)
+    s=$(state "$(norm "${UNITS[0]}")"); [ $QUIET = 1 ] || echo "$s"; [ "$s" = failed ] && rc=0 || rc=1 ;;
+  start)
+    for u in "${UNITS[@]}"; do do_start "$(norm "$u")" || rc=$?; done ;;
+  stop)
+    for u in "${UNITS[@]}"; do do_stop "$(norm "$u")"; done ;;
+  restart)
+    for u in "${UNITS[@]}"; do u=$(norm "$u"); unit_file "$u" >/dev/null || { echo "Failed to restart $u: Unit $u not found." >&2; rc=5; continue; }; do_stop "$u"; do_start "$u" || rc=$?; done ;;
+  try-restart)
+    for u in "${UNITS[@]}"; do u=$(norm "$u"); if is_active "$u"; then do_stop "$u"; do_start "$u" || rc=$?; fi; done ;;
+  reload)
+    for u in "${UNITS[@]}"; do u=$(norm "$u"); unit_file "$u" >/dev/null || { echo "Failed to reload $u: Unit $u not found." >&2; rc=5; }; done ;;
+  reset-failed)
+    for u in "${UNITS[@]}"; do rm -f "$SD/$(norm "$u").failed"; done ;;
+  show)
+    u=$(norm "${UNITS[0]}")
+    [ ${#PROPS[@]} -gt 0 ] || PROPS=(ActiveState SubState MainPID ActiveEnterTimestamp UnitFileState LoadState FragmentPath User)
+    # shellcheck disable=SC2048  # split "-p A,B" (stored as "A B") into words
+    for p in ${PROPS[*]}; do
+      case "$p" in
+        ActiveState) v=$(state "$u") ;;
+        SubState) case "$(state "$u")" in active) v=running ;; activating) v=auto-restart ;; failed) v=failed ;; *) v=dead ;; esac ;;
+        MainPID) v=0; is_active "$u" && [ -s "$SD/$u.pid" ] && v=$(pid_of "$u") ;;
+        ActiveEnterTimestamp) v=$(cat "$SD/$u.since" 2>/dev/null || true) ;;
+        UnitFileState) v=$(is_enabled "$u" 2>/dev/null || true) ;;
+        LoadState) if unit_file "$u" >/dev/null; then v=loaded; else v=not-found; fi ;;
+        FragmentPath) v=$(unit_file "$u" || true) ;;
+        User) v=$(last "$u" Service User) ;;
+        *) unmodelled "show property $p" ;;
+      esac
+      if [ $VALUE = 1 ]; then echo "$v"; else echo "$p=$v"; fi
+    done ;;
+  status)
+    u=$(norm "${UNITS[0]}")
+    if ! unit_file "$u" >/dev/null; then echo "Unit $u could not be found." >&2; rc=4
+    else
+      s=$(state "$u")
+      echo "● $u - $(last "$u" Unit Description)"
+      echo "     Loaded: loaded ($(unit_file "$u"); $(is_enabled "$u" 2>/dev/null))"
+      echo "     Active: $s"
+      tail -n 10 "$J/$u.log" 2>/dev/null
+      [ "$s" = active ] && rc=0 || rc=3
+    fi ;;
+  reboot|poweroff|halt|kexec|suspend|hibernate)
+    echo "FORBIDDEN $VERB" >>"$E/systemctl.log"; echo "systemctl shim: $VERB is FORBIDDEN in the e2e" >&2; rc=1 ;;
+  *) unmodelled "verb $VERB" ;;
+esac
+after_call $rc

@@ -1,0 +1,33 @@
+#!/bin/bash
+# journalctl shim (convert-e2e): the systemctl shim appends each unit's
+# stdout/stderr to /run/e2e/journal/<unit>.log; this prints it.
+#   journalctl -u <unit> [-n N] [--no-pager] [-b] [-o cat] [-q] [-x] [-e]
+# Logged to /run/e2e/journalctl.log. -f (follow) is not modelled (exit 64).
+set -uo pipefail
+mkdir -p /run/e2e
+echo "$*" >>/run/e2e/journalctl.log
+units=() n=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -u|--unit) units+=("$2"); shift ;;
+    --unit=*) units+=("${1#--unit=}") ;;
+    -n|--lines) n=$2; shift ;;
+    --lines=*) n=${1#--lines=} ;;
+    -n[0-9]*) n=${1#-n} ;;
+    -f|--follow) echo "journalctl shim: UNMODELLED -f" >&2; exit 64 ;;
+    -xeu) units+=("$2"); shift ;;
+    -o) shift ;;
+    *) ;;
+  esac
+  shift
+done
+for u in ${units[@]+"${units[@]}"}; do
+  case "$u" in *.*) ;; *) u=$u.service ;; esac
+  f=/run/e2e/journal/$u.log
+  if [ -s "$f" ]; then
+    if [ -n "$n" ]; then tail -n "$n" "$f"; else cat "$f"; fi
+  else
+    echo "-- No entries --"
+  fi
+done
+exit 0
