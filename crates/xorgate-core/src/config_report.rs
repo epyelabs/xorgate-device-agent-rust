@@ -952,7 +952,7 @@ pub fn build_effective(
     }
     // `if (obd) out.obd = obd;` — the collector's report; the local-edit
     // fold-back reads settings.json, never this block.
-    if let Some(obd) = obd {
+    if let Some(obd) = obd.filter(|v| !v.is_null()) {
         out.insert("obd".into(), obd.clone());
     }
     out

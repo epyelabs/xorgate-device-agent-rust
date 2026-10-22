@@ -178,6 +178,10 @@ impl CommandTask {
         );
         let mut effects: VecDeque<Effect> = d.effects.into();
         let mut mark = d.refresh_mark;
+        // `obd_scan` / `obd_forget` (`worker.ts:1219` @ 09da38d): the job is
+        // STARTED synchronously (its start event / goOff run now), before the
+        // accepted ack is published — all before the next command is handled.
+        let mut obd_job: Option<ObdJob> = None;
 
         // Synchronous prefix: ledger write, logs and events up to the first ack.
         while let Some(e) = effects.pop_front() {
@@ -196,6 +200,7 @@ impl CommandTask {
                     effects.push_front(Effect::Ack { status, reason });
                     break;
                 }
+                Effect::ObdJob(name) => obd_job = self.fx.start_obd_job(name),
                 other => {
                     // Every other effect follows an ack in the TS order.
                     effects.push_front(other);
@@ -233,6 +238,9 @@ impl CommandTask {
                 note_ack_outcome(&cmd, f.await);
             }
             fx.run(&cmd, effects).await;
+            if let Some(job) = obd_job {
+                fx.finish_obd_job(&cmd, job).await;
+            }
         });
     }
 }
@@ -270,8 +278,6 @@ impl Effects {
     /// The effects after the first ack, in order (`worker.ts:1053-1125`,
     /// `runSmsRead` `:924-945`). Stamps are `Date.now()` at the time (`t`).
     async fn run(&self, cmd: &DeviceCommand, mut effects: VecDeque<Effect>) {
-        // The started OBD job, awaited once the ack after it has gone out.
-        let mut obd_job: Option<ObdJob> = None;
         while let Some(e) = effects.pop_front() {
             match e {
                 Effect::Log(level, line) => log(level, &line),
@@ -295,16 +301,8 @@ impl Effects {
                         cmd.request_id
                     );
                 }
-                Effect::ObdJob(name) => {
-                    // `source.obdScan?.()` / `source.obdForget?.()` (`:1219`):
-                    // started BEFORE the ack, awaited after it.
-                    if let Some(obd) = &self.obd {
-                        obd_job = Some(if name == DeviceCommandName::ObdScan {
-                            ObdJob::Scan(obd.scan())
-                        } else {
-                            ObdJob::Forget(obd.forget())
-                        });
-                    }
+                Effect::ObdJob(_) => {
+                    // Unreachable: started on the command task's synchronous prefix.
                 }
                 Effect::Execute(call) => {
                     // `executeCommand(cmd.command)` (`:1102`), O3 unit.
@@ -325,19 +323,32 @@ impl Effects {
                 }
             }
         }
-        if let Some(job) = obd_job {
-            // `.then(...)` (`worker.ts:1228-1239` @ 09da38d).
-            let summary = match job {
-                ObdJob::Scan(f) => obd_scan_summary(f.await.candidates.len()),
-                ObdJob::Forget(f) => obd_forget_summary(f.await.as_deref()),
-            };
-            info!(
-                "{}",
-                obd_job_done_log(cmd.command, &cmd.request_id, &summary)
-            );
-            self.ctx.state.flush(self.ctx.now_ms(), true);
-            self.reports.request(ReportOrigin::Boot);
-        }
+    }
+
+    /// `source.obdScan?.()` / `source.obdForget?.()` (`worker.ts:1219` @
+    /// 09da38d): calls the collector NOW (its synchronous part runs here).
+    fn start_obd_job(&self, name: DeviceCommandName) -> Option<ObdJob> {
+        let obd = self.obd.as_ref()?;
+        Some(if name == DeviceCommandName::ObdScan {
+            ObdJob::Scan(obd.scan())
+        } else {
+            ObdJob::Forget(obd.forget())
+        })
+    }
+
+    /// `job.then(...)` (`worker.ts:1228-1239` @ 09da38d): the summary line,
+    /// a forced flush and `configSync.request("boot")`.
+    async fn finish_obd_job(&self, cmd: &DeviceCommand, job: ObdJob) {
+        let summary = match job {
+            ObdJob::Scan(f) => obd_scan_summary(f.await.candidates.len()),
+            ObdJob::Forget(f) => obd_forget_summary(f.await.as_deref()),
+        };
+        info!(
+            "{}",
+            obd_job_done_log(cmd.command, &cmd.request_id, &summary)
+        );
+        self.ctx.state.flush(self.ctx.now_ms(), true);
+        self.reports.request(ReportOrigin::Boot);
     }
 
     /// `writeFileSync(join(runtimeHome(), "refresh-modem.flag"), String(now))`

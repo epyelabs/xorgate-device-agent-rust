@@ -266,7 +266,12 @@ pub trait ObdControl: Send + Sync + 'static {
     /// returning the future.
     fn scan(&self) -> BoxFut<'static, ObdScanResult>;
     /// `collector.forget()` — resolves to the forgotten MAC (`None` = no
-    /// adapter was configured).
+    /// adapter was configured). Like `scan()`, the TS `async forget()` runs
+    /// its synchronous part at CALL time, before the command ack: the
+    /// not-configured latch, `goOff` (helper SIGINT) and its event
+    /// (`adapter <mac> forgotten; …` / `forget: no adapter was configured`).
+    /// An implementation does all of that before returning the future; only
+    /// the bond removal is awaited.
     fn forget(&self) -> BoxFut<'static, Option<String>>;
 }
 

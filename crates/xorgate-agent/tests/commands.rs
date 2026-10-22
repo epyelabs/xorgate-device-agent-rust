@@ -79,6 +79,16 @@ struct Rig {
 }
 
 fn rig(tag: &str, device: &str, mode: RunMode, wall0: i64) -> Rig {
+    rig_obd(tag, device, mode, wall0, None)
+}
+
+fn rig_obd(
+    tag: &str,
+    device: &str,
+    mode: RunMode,
+    wall0: i64,
+    obd: Option<Arc<dyn xorgate_agent::ctx::ObdControl>>,
+) -> Rig {
     let home = scratch(tag);
     let mut ctx = test_ctx(&home, device, Arc::new(NoopHooks), null_tape());
     let mut env: AgentEnv = (*ctx.env).clone();
@@ -95,7 +105,7 @@ fn rig(tag: &str, device: &str, mode: RunMode, wall0: i64) -> Rig {
         CommandPlaneDeps {
             mqtt: MqttHandle::new(link.clone()),
             reports,
-            obd: None,
+            obd,
         },
         runner.clone(),
     );
@@ -482,4 +492,88 @@ async fn link_down_before_the_ack_resends_it_and_delivers_the_sms_once() {
     assert!(b.seen.try_recv().is_err(), "each delivered once");
     ctx.cancel.cancel();
     assert!(end.shutdown(Duration::from_secs(2)).await);
+}
+
+/// A fake OBD collector: `scan()` / `forget()` note their synchronous start
+/// on the shared timeline at CALL time (the TS async functions run up to
+/// their first await when called) and resolve at once.
+struct FakeObd(Arc<std::sync::OnceLock<Timeline>>);
+
+impl xorgate_agent::ctx::ObdControl for FakeObd {
+    fn status(&self) -> xorgate_core::telemetry::ObdStatus {
+        unreachable!()
+    }
+    fn report(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+    fn reapply(&self) {}
+    fn scan(&self) -> xorgate_agent::ctx::BoxFut<'static, xorgate_core::obd::ObdScanResult> {
+        push(self.0.get().unwrap(), "obd.scan started");
+        Box::pin(async {
+            xorgate_core::obd::ObdScanResult {
+                ts: 1.0,
+                candidates: vec![],
+                error: None,
+            }
+        })
+    }
+    fn forget(&self) -> xorgate_agent::ctx::BoxFut<'static, Option<String>> {
+        push(self.0.get().unwrap(), "obd.forget started");
+        Box::pin(async { None })
+    }
+}
+
+/// review-wp1 S1 (`worker.ts:1217-1229` @ 09da38d): the TS starts the OBD
+/// job and publishes the accepted ack synchronously, before it handles the
+/// next command. A command arriving right after `obd_scan` — with the
+/// first ack's PUBACK still pending — finds the job started and the ack
+/// already published, in that order.
+#[tokio::test(start_paused = true)]
+async fn obd_job_starts_and_acks_before_the_next_command() {
+    let slot: Arc<std::sync::OnceLock<Timeline>> = Default::default();
+    let r = rig_obd(
+        "p5b-obd-order",
+        "dev-1",
+        RunMode::Real,
+        T0,
+        Some(Arc::new(FakeObd(slot.clone()))),
+    );
+    // The fake shares the rig's timeline, so job starts and publishes interleave on it.
+    slot.set(r.timeline.clone()).unwrap();
+    *r.link.ack.lock().unwrap() = None; // no PUBACK: the ack stays pending (3 s)
+    let msg = |cmd: &str, id: &str| {
+        format!(
+            r#"{{"v":1,"requestId":"{id}","command":"{cmd}","ts":{T0},"expiresAt":{}}}"#,
+            T0 + 60_000
+        )
+        .into_bytes()
+    };
+    r.plane.on_message(msg("obd_scan", "r-scan"));
+    r.plane.on_message(msg("obd_forget", "r-forget"));
+    settle().await; // no time passes: both acks still un-PUBACKed
+    let tl = r.timeline.lock().unwrap().clone();
+    assert_eq!(
+        tl,
+        vec![
+            "obd.scan started".to_string(),
+            "publish_acked dev-1/command/response".to_string(),
+            "obd.forget started".to_string(),
+            "publish_acked dev-1/command/response".to_string(),
+        ]
+    );
+    let pubs = publishes(&r.link);
+    assert_eq!(pubs.len(), 2, "{pubs:?}");
+    assert!(
+        pubs[0].1.contains(r#""requestId":"r-scan""#)
+            && pubs[0].1.contains(r#""status":"accepted""#)
+    );
+    assert!(
+        pubs[1].1.contains(r#""requestId":"r-forget""#)
+            && pubs[1].1.contains(r#""status":"accepted""#)
+    );
+    // Once the acks time out, both jobs finish: one report request each.
+    let mut rx = r.reports;
+    tokio::time::advance(Duration::from_millis(3_000)).await;
+    settle().await;
+    assert_eq!(drain(&mut rx), 2);
 }
