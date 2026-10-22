@@ -1,6 +1,7 @@
-//! The PURE half of `src/hardware/sms-modem.ts` (692 lines): the AT answer
-//! parsers, the per-request limit clamp, the `…/sms` wire payload and the
-//! sim/replay fixture inbox.
+//! The PURE half of `src/hardware/sms-modem.ts` (931 lines @ 09da38d): the AT
+//! answer parsers, the per-request limit clamp, the `…/sms` wire payload
+//! (`action` on every reply, `cleared` on a clear) and the sim/replay fixture
+//! inbox with its process-lifetime "cleared" flag.
 //!
 //! Left to Phase 4's HAL (I/O, timers, processes — `sms-modem.ts` lines):
 //! `resolveSmsPort` (`:76`, sysfs walk — the SMS tty is resolved by USB
@@ -10,9 +11,12 @@
 //! `acquireSmsLock` (`:431`) and `SmsReader` (`:487`). The constants those
 //! need are defined HERE so the strings exist once.
 //!
-//! Read-only contract (`sms-modem.ts:11-16`): reads use `AT+CMGRO`; `CMGF`
-//! and `CPMS` mem1 are read first and restored; nothing is deleted or
-//! written. Privacy (contract §6): nothing here logs.
+//! Read-only contract for READS (`sms-modem.ts:11-16` @ 09da38d): reads use
+//! `AT+CMGRO`; `CMGF` and `CPMS` mem1 are read first and restored; a read
+//! deletes nothing and writes nothing. The one destructive operation, the
+//! explicit clear (`sms-modem.ts:18-20, 436-544`), lives in
+//! `xorgate_hal::at_clear` and nowhere else (phase-5b §6). Privacy (contract
+//! §6): nothing here logs.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -60,6 +64,40 @@ pub struct SmsSweep {
     pub partial: bool,
     /// All messages, newest first.
     pub messages: Vec<SmsMessage>,
+    /// Clear only (`sms-modem.ts:57-61` @ 09da38d): messages present in each
+    /// store right before its delete, in delete order (SM, then ME). A store
+    /// the modem does not have is absent. `None` on a read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleared: Option<ClearedCounts>,
+}
+
+/// `Partial<Record<SmsStorage, number>>` of `SmsSweep.cleared`, in insertion
+/// order (the JS object key order).
+pub type ClearedCounts = IndexMap<SmsStorage, u64>;
+
+/// `SMS_DELETE_TIMEOUT_MS` (`sms-modem.ts:446` @ 09da38d): the per-store
+/// delete timeout. A delete-all erases records one by one; a full ME (23) or
+/// SIM (40) store can take several seconds, so the 3 s read timeout would cut
+/// a delete that is still working.
+pub const SMS_DELETE_TIMEOUT_MS: u64 = 25_000;
+
+/// `SmsAction` (`sms-modem.ts:741` @ 09da38d): which operation a `…/sms`
+/// reply answers. Absent on older agents = `read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmsAction {
+    #[default]
+    Read,
+    Clear,
+}
+
+impl SmsAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SmsAction::Read => "read",
+            SmsAction::Clear => "clear",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -281,9 +319,9 @@ pub fn clamp_sms_limit_num(v: f64) -> u32 {
     v.trunc().max(1.0).min(f64::from(SMS_LIMIT_MAX)) as u32
 }
 
-/// `SmsResultPayload` (`sms-modem.ts:556-569`): the `…/sms` message. Key
-/// order = `buildUncapped`'s literal (`:599-612`), which is the interface
-/// order.
+/// `SmsResultPayload` (`sms-modem.ts:743-760` @ 09da38d): the `…/sms`
+/// message. Key order = `buildUncapped`'s literal (`:790-808`): `action`
+/// right after `ts` on EVERY reply, `cleared` last and on a clear only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SmsResultPayload {
@@ -291,6 +329,8 @@ pub struct SmsResultPayload {
     pub device_id: String,
     pub request_id: String,
     pub ts: i64,
+    /// device-sms-clear contract §2: `read` or `clear`.
+    pub action: SmsAction,
     pub status: SmsReadStatus,
     /// `null` on success; on failure the sweep's error, or the status word
     /// when the sweep carried none.
@@ -301,15 +341,32 @@ pub struct SmsResultPayload {
     pub skipped: u64,
     pub partial: bool,
     pub messages: Vec<SmsMessage>,
+    /// Clear only: `sweep.cleared ?? {}` (`sms-modem.ts:807` @ 09da38d).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleared: Option<ClearedCounts>,
 }
 
-/// The per-request half of `buildSmsPayload`'s `req` (`sms-modem.ts:582`).
+/// `SmsPayloadRequest` (`sms-modem.ts:771-777` @ 09da38d).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SmsPayloadRequest {
     pub device_id: String,
     pub request_id: String,
-    /// Re-clamped inside (`:611`), so an unclamped value is safe here.
+    /// Re-clamped inside (`:806`), so an unclamped value is safe here.
     pub limit: u32,
+    /// The TS `action?` (default `"read"`).
+    pub action: SmsAction,
+}
+
+impl SmsPayloadRequest {
+    /// A `read` request (`action` omitted in the TS call).
+    pub fn read(device_id: impl Into<String>, request_id: impl Into<String>, limit: u32) -> Self {
+        Self {
+            device_id: device_id.into(),
+            request_id: request_id.into(),
+            limit,
+            action: SmsAction::Read,
+        }
+    }
 }
 
 /// Serialized-size ceiling for one result (`SMS_PAYLOAD_MAX_BYTES`,
@@ -318,7 +375,7 @@ pub struct SmsPayloadRequest {
 /// dropped from the cut until it fits, and `partial` is set.
 pub const SMS_PAYLOAD_MAX_BYTES: usize = 120 * 1024;
 
-/// `buildSmsPayload` (`sms-modem.ts:580-592`): the uncapped payload, then
+/// `buildSmsPayload` (`sms-modem.ts:779-788` @ 09da38d): the uncapped payload, then
 /// drop messages from the END (oldest) while the serialised size exceeds
 /// [`SMS_PAYLOAD_MAX_BYTES`], flagging `partial`. The size bookkeeping is the
 /// TS's (`size -= byteLength(JSON.stringify(dropped)) + 1`), and
@@ -338,7 +395,7 @@ pub fn build_sms_payload(sweep: &SmsSweep, req: &SmsPayloadRequest) -> SmsResult
     p
 }
 
-/// `buildUncapped` (`sms-modem.ts:594-613`).
+/// `buildUncapped` (`sms-modem.ts:790-809` @ 09da38d).
 fn build_uncapped(sweep: &SmsSweep, req: &SmsPayloadRequest) -> SmsResultPayload {
     let ok = sweep.status == SmsReadStatus::Ok;
     SmsResultPayload {
@@ -346,6 +403,7 @@ fn build_uncapped(sweep: &SmsSweep, req: &SmsPayloadRequest) -> SmsResultPayload
         device_id: req.device_id.clone(),
         request_id: req.request_id.clone(),
         ts: sweep.finished_at,
+        action: req.action,
         status: sweep.status,
         error: if ok {
             None
@@ -368,6 +426,9 @@ fn build_uncapped(sweep: &SmsSweep, req: &SmsPayloadRequest) -> SmsResultPayload
         } else {
             Vec::new()
         },
+        // `...(action === "clear" ? { cleared: sweep.cleared ?? {} } : {})`
+        cleared: (req.action == SmsAction::Clear)
+            .then(|| sweep.cleared.clone().unwrap_or_default()),
     }
 }
 
@@ -453,6 +514,125 @@ pub fn fixture_sms_sweep(now: i64) -> SmsSweep {
         skipped: 0,
         partial: false,
         messages,
+        cleared: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture inbox state for sim (`sms-modem.ts:890-931` @ 09da38d)
+// ---------------------------------------------------------------------------
+
+/// `FIXTURE_TOTALS` (`sms-modem.ts:902`).
+const FIXTURE_TOTALS: (u64, u64) = (40, 23);
+
+/// `emptyFixture(now)` (`sms-modem.ts:904-915`): the stores at 0 used.
+fn empty_fixture(now: i64) -> SmsSweep {
+    let mut storage = StorageCounts::new();
+    storage.insert(
+        SmsStorage::SM,
+        StoreCount {
+            used: 0,
+            total: FIXTURE_TOTALS.0,
+        },
+    );
+    storage.insert(
+        SmsStorage::ME,
+        StoreCount {
+            used: 0,
+            total: FIXTURE_TOTALS.1,
+        },
+    );
+    SmsSweep {
+        status: SmsReadStatus::Ok,
+        error: None,
+        finished_at: now,
+        duration_ms: 0,
+        storage,
+        skipped: 0,
+        partial: false,
+        messages: Vec::new(),
+        cleared: None,
+    }
+}
+
+/// `fixtureSmsRead(now)` (`sms-modem.ts:917-920`): what a read answers off
+/// hardware — the fixture inbox, or the empty stores once `cleared` (the TS
+/// module variable `fixtureInboxCleared`, which the Rust command plane owns
+/// for the life of the process, I7).
+pub fn fixture_sms_read(now: i64, cleared: bool) -> SmsSweep {
+    if cleared {
+        empty_fixture(now)
+    } else {
+        fixture_sms_sweep(now)
+    }
+}
+
+/// `fixtureSmsClear(now)` (`sms-modem.ts:922-927`): a clear off hardware —
+/// reports the fixture's counts (`{SM, ME}`, 0 once already cleared), then
+/// empties it by setting `cleared`.
+pub fn fixture_sms_clear(now: i64, cleared: &mut bool) -> SmsSweep {
+    let before = fixture_sms_read(now, *cleared).storage;
+    *cleared = true;
+    let used = |m: SmsStorage| before.get(&m).map(|c| c.used).unwrap_or(0);
+    let mut counts = ClearedCounts::new();
+    counts.insert(SmsStorage::SM, used(SmsStorage::SM));
+    counts.insert(SmsStorage::ME, used(SmsStorage::ME));
+    SmsSweep {
+        cleared: Some(counts),
+        ..empty_fixture(now)
+    }
+}
+
+/// The `runSms` summary line (`worker.ts:1047-1056` @ 09da38d), WITHOUT the
+/// `[agent] ` prefix (it is the state.json event `msg` as is):
+/// `<command> <id>: status=<s>[ cleared=SM:n,ME:m] total=… sent=… unread=…
+/// skipped=… partial=… durationMs=…[ error=…]`. `cleared=` appears only
+/// when the payload carries `cleared` (a clear), `none` when it is empty.
+/// Counts / status / duration only — never a number or a body (contract §6).
+pub fn sms_result_line(command: &str, request_id: &str, p: &SmsResultPayload) -> String {
+    let unread = p.messages.iter().filter(|m| m.unread).count();
+    let cleared = match &p.cleared {
+        None => String::new(),
+        Some(c) if c.is_empty() => " cleared=none".to_string(),
+        Some(c) => format!(
+            " cleared={}",
+            c.iter()
+                .map(|(k, v)| format!("{}:{v}", k.as_str()))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    };
+    let mut line = format!(
+        "{command} {request_id}: status={}{cleared} total={} sent={} unread={unread} skipped={} partial={} durationMs={}",
+        status_str(p.status),
+        p.total,
+        p.messages.len(),
+        p.skipped,
+        p.partial,
+        p.duration_ms,
+    );
+    if p.status != SmsReadStatus::Ok {
+        // `${payload.error}` — a failed payload always carries `error ?? status`.
+        line.push_str(" error=");
+        line.push_str(p.error.as_deref().unwrap_or("null"));
+    }
+    line
+}
+
+/// `[agent] ${command} ${requestId}: publish failed: ${err.message}`
+/// (`worker.ts:1064` @ 09da38d).
+pub fn sms_publish_failed_log(command: &str, request_id: &str, message: &str) -> String {
+    format!("[agent] {command} {request_id}: publish failed: {message}")
+}
+
+/// The wire word of a status (`SmsReadStatus` serde names).
+pub fn status_str(s: SmsReadStatus) -> &'static str {
+    match s {
+        SmsReadStatus::Ok => "ok",
+        SmsReadStatus::NoModem => "no_modem",
+        SmsReadStatus::NoSim => "no_sim",
+        SmsReadStatus::ModemBusy => "modem_busy",
+        SmsReadStatus::Error => "error",
     }
 }
 

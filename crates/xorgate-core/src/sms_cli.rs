@@ -1,6 +1,8 @@
-//! The pure half of `xorgate sms [--limit N] [--json]` — `src/commands/sms.ts`
-//! @ 89b5c64 (Phase 4 WP2): flag parsing, the `--json` text, the status line
-//! and the table. The agent's `cli/sms.rs` runs the reader and prints these.
+//! The pure half of `xorgate sms [--limit N] [--json]` and `xorgate sms clear
+//! [--yes]` — `src/commands/sms.ts` @ 09da38d (Phase 4 WP2; Phase 5b WP3 adds
+//! the clear): flag parsing, the `--json` text, the status line, the table,
+//! the clear's confirmation rules and its result line. The agent's
+//! `cli/sms.rs` runs the reader (and the prompt) and prints these.
 //!
 //! JS string semantics are kept where they show: lengths, padding and the
 //! `oneLine` cut count UTF-16 code units (a cut through a surrogate pair
@@ -13,14 +15,149 @@
 use crate::js;
 use crate::sms::{clamp_sms_limit_num, SmsReadStatus, SmsResultPayload, SMS_LIMIT_DEFAULT};
 
-/// The usage text (`sms.ts:35-41`). Q9: a local-only hint, so it names this
-/// binary (`xorgate-rs sms`) instead of the TS's `xorgate sms`.
+/// The usage text (`sms.ts:101-110` @ 09da38d). Q9 / D34: a local-only hint,
+/// so it names this binary (`xorgate-rs sms`) instead of the TS's
+/// `xorgate sms` (the second usage line keeps the TS's 7-space indent).
 pub const SMS_HELP: &str = "Usage: xorgate-rs sms [--limit N] [--json]
+       xorgate-rs sms clear [--yes]
 
 Read the SIM7600's stored SMS (SIM + modem storage), newest first, without
 marking anything read. N is 1..50 (default 10). --json prints the exact
 payload the agent publishes for a cloud read_sms request.
+'clear' deletes every stored SMS (see 'xorgate-rs sms clear --help').
 Port: the SIMCom interface-05 tty (override with XORGATE_SMS_PORT).";
+
+/// The clear's usage text (`sms.ts:52-58` @ 09da38d), D34-renamed.
+/// `delete_cmd` is `xorgate_hal::at_clear::delete_all_text()`: the delete
+/// command is spelled in exactly one file of the workspace (phase-5b §6
+/// point 1), so the help borrows it from there instead of repeating it.
+pub fn sms_clear_help(delete_cmd: &str) -> String {
+    format!(
+        "Usage: xorgate-rs sms clear [--yes]
+
+Delete EVERY stored SMS on the SIM7600 (SIM store SM, then modem store ME)
+with {delete_cmd}, then re-read the stores to show they are empty. Use it when
+a full store (e.g. ME 23/23) stops new messages arriving. Irreversible.
+Asks for confirmation unless --yes is given. Prints counts only."
+    )
+}
+
+/// The interactive question (`sms.ts:66`), written to stdout without a newline.
+pub const SMS_CLEAR_PROMPT: &str =
+    "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ";
+/// No TTY and no `--yes` (`sms.ts:62`): stderr, exit 1.
+pub const SMS_CLEAR_REFUSED: &str =
+    "sms clear: refusing without --yes (no terminal to confirm on)";
+/// Anything but a yes (`sms.ts:67`): stdout, exit 0.
+pub const SMS_CLEAR_CANCELLED: &str = "sms clear: cancelled";
+
+/// `rest[0] === "clear"` (`sms.ts:99`): the clear subcommand is recognised
+/// BEFORE any flag parsing; the remainder goes to [`SmsClearArgs::parse`].
+pub fn clear_rest(rest: &[String]) -> Option<&[String]> {
+    match rest.first() {
+        Some(a) if a == "clear" => Some(&rest[1..]),
+        _ => None,
+    }
+}
+
+/// What `smsClearCommand` reads from its argv (`sms.ts:50-70` @ 09da38d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmsClearArgs {
+    /// `--help` / `-h` anywhere: print [`sms_clear_help`], exit 0, no clear.
+    pub help: bool,
+    /// `--yes` / `-y` anywhere: no confirmation.
+    pub yes: bool,
+}
+
+impl SmsClearArgs {
+    pub fn parse(rest: &[String]) -> Self {
+        Self {
+            help: rest.iter().any(|a| a == "--help" || a == "-h"),
+            yes: rest.iter().any(|a| a == "--yes" || a == "-y"),
+        }
+    }
+}
+
+/// What the CLI does before touching the modem (`sms.ts:51-69`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearGate {
+    /// Print [`sms_clear_help`]; exit 0.
+    Help,
+    /// `--yes`: clear without asking.
+    Proceed,
+    /// No `--yes`, stdin is a TTY: ask [`SMS_CLEAR_PROMPT`] and clear only on
+    /// a yes ([`confirm_answer`]), else print [`SMS_CLEAR_CANCELLED`], exit 0.
+    Ask,
+    /// No `--yes`, no TTY: [`SMS_CLEAR_REFUSED`] on stderr, exit 1.
+    Refuse,
+}
+
+/// The gate: help first, then `--yes`, then the TTY (`process.stdin.isTTY`).
+pub fn clear_gate(args: SmsClearArgs, stdin_is_tty: bool) -> ClearGate {
+    if args.help {
+        ClearGate::Help
+    } else if args.yes {
+        ClearGate::Proceed
+    } else if stdin_is_tty {
+        ClearGate::Ask
+    } else {
+        ClearGate::Refuse
+    }
+}
+
+/// `/^y(es)?$/i.test(answer.trim())` (`sms.ts:40`): `y` / `yes` in any case,
+/// JS-trimmed; anything else (an empty line, EOF) is a no.
+pub fn confirm_answer(answer: &str) -> bool {
+    let a = js::trim(answer);
+    a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes")
+}
+
+/// The clear's result line (`sms.ts:71-79` @ 09da38d), from the payload built
+/// with `limit: 1, action: "clear"`: `sms clear: <status>[ (<error>)] ·
+/// cleared SM n, ME m · now SM u/t, ME u/t · <ms> ms` (`cleared nothing` /
+/// `now no stores` when empty). Exit code: [`exit_code`].
+pub fn render_clear_line(p: &SmsResultPayload) -> String {
+    let cleared = p
+        .cleared
+        .as_ref()
+        .map(|c| {
+            c.iter()
+                .map(|(k, v)| format!("{} {v}", k.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let err = match p.error.as_deref() {
+        Some(e) if !e.is_empty() => format!(" ({e})"),
+        _ => String::new(),
+    };
+    format!(
+        "sms clear: {}{err} · cleared {} · now {} · {} ms",
+        status_word(p.status),
+        if cleared.is_empty() {
+            "nothing"
+        } else {
+            &cleared
+        },
+        stores_line(p),
+        p.duration_ms,
+    )
+}
+
+/// `storesLine(storage)` (`sms.ts:25-31`): `SM 7/40, ME 23/23` or `no stores`.
+fn stores_line(p: &SmsResultPayload) -> String {
+    let s = p
+        .storage
+        .iter()
+        .map(|(k, v)| format!("{} {}/{}", k.as_str(), v.used, v.total))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if s.is_empty() {
+        "no stores".to_string()
+    } else {
+        s
+    }
+}
 
 /// The `deviceId` / `requestId` the CLI builds its payload with (`sms.ts:47`).
 pub const CLI_DEVICE_ID: &str = "local";

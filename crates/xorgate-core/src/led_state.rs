@@ -1,5 +1,6 @@
-//! RGB status LED — the policy, as one pure function. 1:1 port of
-//! `src/lib/led-state.ts` (199 lines).
+//! RGB status LED — the policy, as one pure function, plus its telemetry
+//! encoding. 1:1 port of `src/lib/led-state.ts` (293 lines @ 09da38d; the
+//! encoding `:200-293` is Phase 5b WP3).
 //!
 //! **The LED is a renderer, not a policy engine.** Every condition below is
 //! already computed and already published by the module that owns it; this
@@ -219,6 +220,128 @@ pub fn resolve_led_state(s: &LedSignals) -> LedState {
     }
 
     state("healthy")
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry encoding (`led-state.ts:201-293` @ 09da38d,
+// plans/include-led-status-in-telemetry D2/D3).
+//
+// FROZEN CONTRACT: the core service, @xorgate/react, xorgate-web, alocate-web
+// and alocate-mobile all decode these two numbers. Never renumber; only append.
+// ---------------------------------------------------------------------------
+
+/// `LED_STATE_CODES` (`led-state.ts:222-230`): `system.led_state`, a
+/// SEVERITY-ASCENDING code (NOT the ladder's `pri`, which is precedence), so
+/// `max` is the right bucket aggregate and `> 0` means "struggling". Keyed by
+/// `LedState.reason`, in the TS literal order. `config-applied` is absent on
+/// purpose (a ~0.5 s overlay, not a state); `agent-down` (6) is reserved —
+/// painted by systemd after a crash, never observed by the agent itself.
+pub const LED_STATE_CODES: [(&str, u32); 7] = [
+    ("healthy", 0),
+    ("starting", 1),
+    ("gps-wait", 2),
+    ("network", 3),
+    ("thermal", 4),
+    ("undervoltage", 5),
+    ("agent-down", 6),
+];
+
+/// `LED_STATE_CODES[reason]` — `None` for a reason without a code.
+pub fn led_state_code(reason: &str) -> Option<u32> {
+    LED_STATE_CODES
+        .iter()
+        .find(|(r, _)| *r == reason)
+        .map(|(_, c)| *c)
+}
+
+/// `HEALTH_FLAG_BITS` (`led-state.ts:238-257`): `system.health_flags`, a
+/// bitmask of the RAW inputs the ladder sees, so conditions a first-match
+/// ladder collapses stay visible. Values are the bit's mask; TS key order.
+pub mod health_flag {
+    /// `recording.liveBlock.reason === "undervoltage"`.
+    pub const UNDERVOLTAGE: u32 = 1 << 0;
+    /// `recording.liveBlock.reason === "thermal"`.
+    pub const THERMAL: u32 = 1 << 1;
+    /// LTE daemon status `disconnected` or `connecting`.
+    pub const LTE_DOWN: u32 = 1 << 2;
+    /// Cloud (MQTT) link not `connected`.
+    pub const MQTT_DOWN: u32 = 1 << 3;
+    /// GNSS receiver present and without a fix (`gnss: None` = clear).
+    pub const GPS_NO_FIX: u32 = 1 << 4;
+    /// `recording.liveBlock.reason === "gps-gate"`.
+    pub const GPS_GATE_HOLD: u32 = 1 << 5;
+    /// LTE daemon status `dead_zone` (a settled verdict).
+    pub const DEAD_ZONE: u32 = 1 << 6;
+    /// `recording.powerShed` is set (any stage, any cause).
+    pub const POWER_SHED: u32 = 1 << 7;
+    /// `recording.liveBlock` is present (any reason, known or not).
+    pub const LIVE_BLOCK: u32 = 1 << 8;
+}
+
+/// `HEALTH_FLAG_BITS` as `(name, mask)` in the TS literal order.
+pub const HEALTH_FLAG_BITS: [(&str, u32); 9] = [
+    ("undervoltage", health_flag::UNDERVOLTAGE),
+    ("thermal", health_flag::THERMAL),
+    ("lte_down", health_flag::LTE_DOWN),
+    ("mqtt_down", health_flag::MQTT_DOWN),
+    ("gps_no_fix", health_flag::GPS_NO_FIX),
+    ("gps_gate_hold", health_flag::GPS_GATE_HOLD),
+    ("dead_zone", health_flag::DEAD_ZONE),
+    ("power_shed", health_flag::POWER_SHED),
+    ("live_block", health_flag::LIVE_BLOCK),
+];
+
+/// `LedTelemetry` (`led-state.ts:259-262`): the two `system` leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LedTelemetry {
+    pub led_state: u32,
+    pub health_flags: u32,
+}
+
+/// `encodeLedTelemetry(state, s)` (`led-state.ts:273-293`): a resolved state
+/// plus the signals it was resolved from → the two numeric leaves. Pure; the
+/// flags read the same inputs the ladder consumed. An unknown reason (only
+/// via a typo or a future rung) encodes as 0 — fail open.
+pub fn encode_led_telemetry(state: &LedState, s: &LedSignals) -> LedTelemetry {
+    use health_flag as F;
+    let led_state = led_state_code(state.reason).unwrap_or(0);
+    let block = s.recording.live_block.as_ref();
+    let block_reason = block.map(|b| b.reason.as_str());
+    let lte_status = s.lte.as_ref().and_then(|l| l.status.as_deref());
+    let mut flags = 0;
+    if block_reason == Some("undervoltage") {
+        flags |= F::UNDERVOLTAGE;
+    }
+    if block_reason == Some("thermal") {
+        flags |= F::THERMAL;
+    }
+    if matches!(lte_status, Some("disconnected" | "connecting")) {
+        flags |= F::LTE_DOWN;
+    }
+    if s.connection != ConnectionState::Connected {
+        flags |= F::MQTT_DOWN;
+    }
+    if s.gnss.is_some_and(|g| !g.fix) {
+        flags |= F::GPS_NO_FIX;
+    }
+    if block_reason == Some("gps-gate") {
+        flags |= F::GPS_GATE_HOLD;
+    }
+    if lte_status == Some("dead_zone") {
+        flags |= F::DEAD_ZONE;
+    }
+    // `typeof s.recording?.powerShed === "string"`
+    if s.recording.power_shed.is_some() {
+        flags |= F::POWER_SHED;
+    }
+    // `block != null && typeof block === "object"`
+    if block.is_some() {
+        flags |= F::LIVE_BLOCK;
+    }
+    LedTelemetry {
+        led_state,
+        health_flags: flags,
+    }
 }
 
 #[cfg(test)]

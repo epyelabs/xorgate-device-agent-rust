@@ -609,6 +609,7 @@ pub fn sms_reader_unavailable_sweep(now: WallMs, duration_ms: i64) -> SmsSweep {
         skipped: 0,
         partial: false,
         messages: Vec::new(),
+        cleared: None,
     }
 }
 

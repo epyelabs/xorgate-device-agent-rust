@@ -257,7 +257,11 @@ fn build_recording_manager(
         time_source: Arc::new(time_source.clone()),
         upload,
         video: Some(video),
-        sample_groups: policy_sources::sample_groups_fn(source.clone()),
+        // The LED leaves join the `system` group here, not in the collectors.
+        sample_groups: policy_sources::sample_groups_with_led_fn(source.clone(), {
+            let hooks = ctx.hooks.clone();
+            Arc::new(move || hooks.led_telemetry())
+        }),
         power_sample: policy_sources::power_sample_fn(source.clone(), real),
         boot_sources: policy_sources::boot_sources(ctx, source),
         on_status,
@@ -639,6 +643,8 @@ async fn run(args: &[String]) -> Result<i32> {
     // clock-stepper and camera-mount call sites (`worker.ts:150-199, 427-432,
     // 536-651, 713-726, 866-889, 1296-1302`).
     let ops = Arc::new(OpsHooks::new(hooks.clone()));
+    // `ledTelemetryNow()`: sim mode is always healthy (`LED_TELEMETRY_SIM`).
+    ops.set_led_sim(cfg.mode != RunMode::Real);
     ctx.hooks = ops.clone();
 
     // `source` (`worker.ts:270-326`): real collectors, or the empty sim source (O7).

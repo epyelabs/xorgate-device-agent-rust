@@ -1,4 +1,6 @@
-//! The I/O half of `src/hardware/sms-modem.ts` @ 89b5c64 (Phase 4 WP2, I3):
+//! The I/O half of `src/hardware/sms-modem.ts` @ 89b5c64 (Phase 4 WP2, I3;
+//! Phase 5b WP3 @ 09da38d: `AtSession` gains the per-call timeout of
+//! `sms-modem.ts:258-276`, nothing else changed here):
 //! port resolution by USB identity, the serial transport, the AT session, the
 //! read-only store sweep and the cross-process lock. The pure half (stores,
 //! constants, parsers, payload) is `xorgate_core::sms`; PDU decoding is
@@ -18,7 +20,9 @@
 //! `AT+CMGRO` (SIMCom "read only"), which leaves REC UNREAD as is; the
 //! commands that would mark read / delete / write are never sent (a unit
 //! test greps this file's literals). The only settings touched are `CMGF`
-//! and `CPMS` mem1; both are read first and restored.
+//! and `CPMS` mem1; both are read first and restored. The explicit clear
+//! (Phase 5b) is NOT here: it is `crate::at_clear`, the one module allowed to
+//! spell the delete command, which drives this module's `AtSession`.
 //!
 //! Privacy (contract §6): nothing here logs.
 
@@ -92,7 +96,7 @@ impl AtError {
     /// How `SmsReader.runSweep`'s catch maps an error that escaped the sweep
     /// (`sms-modem.ts:533-535`): an `AtTimeoutError` → `error` + its message;
     /// anything else → `error` + `message.slice(0, 120)`.
-    fn into_read_error(self) -> SmsReadError {
+    pub(crate) fn into_read_error(self) -> SmsReadError {
         match self {
             AtError::Timeout(m) => SmsReadError::new(SmsReadStatus::Error, m),
             AtError::Transport(m) => SmsReadError::new(SmsReadStatus::Error, slice_utf16(&m, 120)),
@@ -102,7 +106,7 @@ impl AtError {
 
 /// `s.slice(0, n)` over UTF-16 code units (a split surrogate becomes U+FFFD
 /// on the way out, as Node prints it).
-fn slice_utf16(s: &str, n: usize) -> String {
+pub(crate) fn slice_utf16(s: &str, n: usize) -> String {
     let units: Vec<u16> = s.encode_utf16().take(n).collect();
     String::from_utf16_lossy(&units)
 }
@@ -610,7 +614,23 @@ impl<'t> AtSession<'t> {
         prefix: Option<&str>,
         with_pdu: bool,
     ) -> Result<AtResponse, AtError> {
-        let deadline = tokio::time::Instant::now() + self.timeout;
+        let timeout = self.timeout;
+        self.command_with_timeout(cmd, prefix, with_pdu, timeout)
+            .await
+    }
+
+    /// `command(cmd, prefix, withPdu, timeoutMs)` (`sms-modem.ts:258-276` @
+    /// 09da38d): the same, with a per-call timeout instead of the session's
+    /// (e.g. longer for a slow delete). [`AtSession::command`] = this with
+    /// the session's timeout.
+    pub async fn command_with_timeout(
+        &mut self,
+        cmd: &str,
+        prefix: Option<&str>,
+        with_pdu: bool,
+        timeout: Duration,
+    ) -> Result<AtResponse, AtError> {
+        let deadline = tokio::time::Instant::now() + timeout;
         let timeout_err = || {
             AtError::Timeout(format!(
                 "timeout on {}",
@@ -919,6 +939,7 @@ pub async fn sweep_transport(
         skipped: assembled.skipped as u64,
         partial,
         messages: assembled.messages,
+        cleared: None,
     })
 }
 

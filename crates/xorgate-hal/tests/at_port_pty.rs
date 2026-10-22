@@ -125,6 +125,7 @@ async fn rust_read(port: &str) -> String {
             device_id: "local".into(),
             request_id: "cli".into(),
             limit: LIMIT,
+            action: xorgate_core::sms::SmsAction::Read,
         },
     ))
 }

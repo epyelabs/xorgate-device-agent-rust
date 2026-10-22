@@ -18,6 +18,15 @@
 //! real-mode `read_sms` answers the "sms reader not available in this build"
 //! sweep; replay mode never starts (O7), so the container-exit branch is
 //! unreachable and only logged.
+//!
+//! **`clear_sms` (Phase 5b WP3, `runSms` @ 09da38d `worker.ts:1027-1067`):**
+//! the `Effect::ClearSms` interpreter. It runs only AFTER the ledger claim and
+//! the accepted ack (core `decide_command`: a QoS-1 redelivery is a ledger
+//! duplicate and never yields the effect, so it can never clear twice nor eat
+//! messages that arrived since). Real mode → the process's one reader's
+//! `clear(ClearRequest::AcceptedCommand)`; sim → the fixture inbox, emptied
+//! for the rest of the process (the `fixtureInboxCleared` module flag of the
+//! TS, owned here). The reply carries `action:"clear"` and `cleared`.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -31,23 +40,26 @@ use tracing::{debug, error, info, warn};
 use xorgate_core::clock::Clock;
 use xorgate_core::command_flow::{
     decide_command, execution_outcome, ledger_write_failed, obd_forget_summary, obd_job_done_log,
-    obd_scan_summary, read_sms_level, read_sms_line, read_sms_publish_failed_log,
-    refresh_flag_failed_log, sms_sweep, ConsoleLevel, Effect, RefreshWindow,
-    SmsSource as SmsDecision, AGENT_PREFIX,
+    obd_scan_summary, read_sms_level, refresh_flag_failed_log, sms_sweep, ConsoleLevel, Effect,
+    RefreshWindow, SmsSource as SmsDecision, AGENT_PREFIX,
 };
 use xorgate_core::commands::{
     is_expired, parse_command, AckStatus, CommandAck, DeviceCommand, DeviceCommandName, Ledger,
     ACK_FLUSH_TIMEOUT_MS,
 };
 use xorgate_core::config_report::ReportOrigin;
-use xorgate_core::sms::{build_sms_payload, SmsPayloadRequest};
+use std::sync::atomic::{AtomicBool, Ordering};
+use xorgate_core::sms::{
+    build_sms_payload, fixture_sms_clear, fixture_sms_read, sms_publish_failed_log,
+    sms_result_line, SmsAction, SmsPayloadRequest, SmsSweep,
+};
 use xorgate_hal::io::{node_fd_message, node_fs_message};
 use xorgate_hal::ledger_file;
 use xorgate_hal::privileged::{PrivilegedArgv, PrivilegedRunner, SudoRunner};
 
 use crate::ctx::{AgentCtx, BoxFut, CommandPlane, CommandPlaneDeps, ObdControl, ReportRequester};
 use crate::mqtt_plane::{AckOutcome, MqttHandle, PublishFailure, QoS};
-use crate::ops::sms::SmsReader;
+use crate::ops::sms::{ClearRequest, SmsReader};
 
 /// Where a real-mode `read_sms` sweep comes from (I4; `worker.ts:917, 929-930`).
 /// `sim` / `replay` always answer from `fixtureSmsSweep` (core
@@ -108,6 +120,7 @@ fn start_inner(
             reports: deps.reports,
             runner,
             sms,
+            fixture_cleared: Arc::new(AtomicBool::new(false)),
             obd: deps.obd,
         },
         last_refresh: None,
@@ -254,6 +267,9 @@ struct Effects {
     runner: Arc<dyn PrivilegedRunner>,
     /// The real-mode sweep source (I4).
     sms: SmsSource,
+    /// `fixtureInboxCleared` (`sms-modem.ts:900` @ 09da38d): a sim-mode
+    /// `clear_sms` empties the fixture inbox for the rest of this process.
+    fixture_cleared: Arc<AtomicBool>,
     /// The OBD collector (Phase 5b I4); `None` = no `peripherals.obd`.
     obd: Option<Arc<dyn ObdControl>>,
 }
@@ -293,13 +309,17 @@ impl Effects {
                     source,
                     request_id,
                     limit,
-                } => self.run_sms_read(source, &request_id, limit).await,
-                Effect::ClearSms { .. } => {
-                    // Phase 5b WP3 implements `runSms` for `clear_sms`.
-                    warn!(
-                        "{AGENT_PREFIX}clear_sms {}: not implemented in this build",
-                        cmd.request_id
-                    );
+                } => {
+                    self.run_sms(SmsAction::Read, source, &request_id, limit)
+                        .await
+                }
+                Effect::ClearSms {
+                    source,
+                    request_id,
+                    limit,
+                } => {
+                    self.run_sms(SmsAction::Clear, source, &request_id, limit)
+                        .await
                 }
                 Effect::ObdJob(_) => {
                     // Unreachable: started on the command task's synchronous prefix.
@@ -383,15 +403,48 @@ impl Effects {
         });
     }
 
-    /// `runSmsRead` (`worker.ts:924-945`): sweep (O4 / fixture), log + event,
-    /// publish QoS 1 on `…/sms` once (mqtt.js-style offline queueing lives
-    /// in the client, `xorgate_cloud::mqtt`, WP1 follow-up — no retry here;
-    /// the `NotConnected` arm below is unreachable since then).
-    async fn run_sms_read(&self, source: SmsDecision, request_id: &str, limit: u32) {
-        // `config.mode === "real" ? await smsReader.read() : fixtureSmsSweep(Date.now())`
-        let sweep = match (source, &self.sms) {
-            (SmsDecision::Reader, SmsSource::Real(reader)) => (*reader.read().await).clone(),
-            (source, _) => sms_sweep(source, &*self.ctx.clock),
+    /// `runSms` (`worker.ts:1027-1067` @ 09da38d): sweep or clear (sim: the
+    /// fixture inbox), log + event, publish QoS 1 on `…/sms` once (mqtt.js-
+    /// style offline queueing lives in the client, `xorgate_cloud::mqtt` — no
+    /// retry here). Logs counts/status/duration only (contract §6; the
+    /// `cleared` counts are fine per clear §6).
+    async fn run_sms(&self, action: SmsAction, source: SmsDecision, request_id: &str, limit: u32) {
+        let command = match action {
+            SmsAction::Read => DeviceCommandName::ReadSms,
+            SmsAction::Clear => DeviceCommandName::ClearSms,
+        }
+        .to_string();
+        let sweep: SmsSweep = match (action, source, &self.sms) {
+            // `real ? await smsReader.clear() : fixtureSmsClear(Date.now())`
+            (SmsAction::Clear, SmsDecision::Reader, SmsSource::Real(reader)) => (*reader
+                .clear(ClearRequest::AcceptedCommand {
+                    request_id: request_id.to_string(),
+                })
+                .await)
+                .clone(),
+            (SmsAction::Clear, SmsDecision::Fixture, _) => {
+                let mut cleared = self.fixture_cleared.load(Ordering::SeqCst);
+                let s = fixture_sms_clear(self.ctx.now_ms(), &mut cleared);
+                self.fixture_cleared.store(cleared, Ordering::SeqCst);
+                s
+            }
+            // `real ? await smsReader.read() : fixtureSmsRead(Date.now())`
+            (SmsAction::Read, SmsDecision::Reader, SmsSource::Real(reader)) => {
+                (*reader.read().await).clone()
+            }
+            (SmsAction::Read, SmsDecision::Fixture, _) => fixture_sms_read(
+                self.ctx.now_ms(),
+                self.fixture_cleared.load(Ordering::SeqCst),
+            ),
+            // No reader wired (tests only; the worker always wires one in
+            // real mode): the O4 sweep, `cleared: {}` on a clear.
+            (action, source, SmsSource::Unavailable) => {
+                let mut s = sms_sweep(source, &*self.ctx.clock);
+                if action == SmsAction::Clear {
+                    s.cleared = Some(Default::default());
+                }
+                s
+            }
         };
         let payload = build_sms_payload(
             &sweep,
@@ -399,9 +452,10 @@ impl Effects {
                 device_id: self.ctx.env.config.device_id.clone(),
                 request_id: request_id.to_string(),
                 limit,
+                action,
             },
         );
-        let line = read_sms_line(request_id, &payload);
+        let line = sms_result_line(&command, request_id, &payload);
         info!("{AGENT_PREFIX}{line}");
         let t = self.ctx.now_ms();
         self.ctx.state.note(read_sms_level(&payload), line, t);
@@ -412,7 +466,7 @@ impl Effects {
                 PublishFailure::NotConnected => "not connected".to_string(),
                 PublishFailure::Failed(m) => m,
             };
-            warn!("{}", read_sms_publish_failed_log(request_id, &msg));
+            warn!("{}", sms_publish_failed_log(&command, request_id, &msg));
         }
     }
 }

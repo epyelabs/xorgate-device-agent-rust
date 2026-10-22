@@ -442,6 +442,7 @@ async fn real_mode_read_sms_publishes_the_readers_sweep() {
             device_id: "dev-sms".into(),
             request_id: "req-real".into(),
             limit: 2,
+            action: xorgate_core::sms::SmsAction::Read,
         },
     );
     assert_eq!(sms[0].1, serde_json::to_vec(&want).unwrap());
@@ -479,6 +480,7 @@ fn sms_cli_goldens() {
                     device_id: "local".into(),
                     request_id: "cli".into(),
                     limit: args.limit,
+                    action: xorgate_core::sms::SmsAction::Read,
                 },
             );
             let lines = if args.json {

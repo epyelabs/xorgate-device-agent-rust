@@ -6,6 +6,7 @@
 //! nothing here decides anything. Every reader fails OPEN: a missing file or
 //! tool yields `None` and the caller omits the field (agent-anatomy §10.3).
 
+pub mod at_clear;
 pub mod at_port;
 pub mod atomic_write;
 pub mod boot_config_io;

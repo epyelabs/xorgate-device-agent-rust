@@ -122,6 +122,7 @@ impl Sim<'_> {
                             device_id: self.device.to_string(),
                             request_id: request_id.clone(),
                             limit,
+                            action: xorgate_core::sms::SmsAction::Read,
                         },
                     );
                     let line = read_sms_line(&request_id, &p);
@@ -213,6 +214,7 @@ fn decision_serialisation_cases() {
             device_id: "d".into(),
             request_id: "r".into(),
             limit: 10,
+            action: xorgate_core::sms::SmsAction::Read,
         },
     );
     assert_eq!(
