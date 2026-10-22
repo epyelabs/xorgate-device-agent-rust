@@ -50,9 +50,7 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 fn cmd() -> ClearRequest {
-    ClearRequest::AcceptedCommand {
-        request_id: "r".into(),
-    }
+    ClearRequest::accepted_command()
 }
 
 fn clear_payload(s: &SmsSweep) -> String {
@@ -586,4 +584,65 @@ async fn the_fake_modem_refuses_a_delete_unless_allow_clear_is_set() {
     assert!(m.deletes.is_empty());
     assert_eq!(m.spec.stores["SM"].slots.len(), 7, "nothing deleted");
     assert_eq!(m.mem1, "SR", "restored anyway");
+}
+
+// ---------------------------------------------------------------------------
+// §6 point 4: the delete runs under the 25 s DELETE timeout, not the 3 s
+// command timeout (review-wp3 M1). Scaled: command 30 ms, delete 400 ms, the
+// modem answers each delete after 100 ms — between the two.
+// ---------------------------------------------------------------------------
+
+fn slow_erase() -> FakeSpec {
+    bench_spec(|s| s.delete_delay_ms = Some(100))
+}
+
+fn scaled() -> ClearOptions {
+    ClearOptions {
+        command_timeout_ms: 30,
+        delete_timeout_ms: 400,
+        ..ClearOptions::default()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_delete_is_waited_for_under_the_delete_timeout() {
+    let t0 = tokio::time::Instant::now();
+    let (r, m) = run_clear(slow_erase(), scaled()).await;
+    let o = r.unwrap();
+    assert_eq!(o.delete_error, None, "both deletes answered inside 400 ms");
+    assert_eq!(json!(o.cleared), json!({"SM": 7, "ME": 23}));
+    assert_eq!(m.deletes, ["SM", "ME"]);
+    assert!(m.spec.stores["SM"].slots.is_empty() && m.spec.stores["ME"].slots.is_empty());
+    assert_eq!(m.mem1, "SR");
+    assert!(
+        t0.elapsed() >= std::time::Duration::from_millis(200),
+        "both waits happened"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_delete_through_the_reader_clears_both_stores() {
+    let modem = Arc::new(Mutex::new(FakeModem::new(slow_erase())));
+    let closed = Arc::new(AtomicBool::new(false));
+    let reader = reader_with(
+        single(modem.clone(), closed),
+        1,
+        &json!({"commandTimeoutMs": 30, "deleteTimeoutMs": 400}),
+    );
+    let s = reader.clear(cmd()).await;
+    assert_eq!((s.status, s.error.as_deref()), (SmsReadStatus::Ok, None));
+    assert_eq!(json!(s.cleared), json!({"SM": 7, "ME": 23}));
+    assert_eq!(modem.lock().unwrap().deletes, ["SM", "ME"]);
+}
+
+/// The production wiring uses the TS constants: 25 000 ms per delete, 3 s for
+/// every other command of the clear.
+#[test]
+fn production_deps_use_the_25_s_delete_timeout() {
+    let d = SmsReaderDeps::system(None, TestClock::new(0), xorgate_hal::io::null_tape());
+    assert_eq!(d.delete_timeout_ms, 25_000);
+    assert_eq!(d.clear_command_timeout_ms, 3_000);
+    let o = ClearOptions::default();
+    assert_eq!((o.delete_timeout_ms, o.command_timeout_ms), (25_000, 3_000));
+    assert_eq!(load()["SMS_DELETE_TIMEOUT_MS"], 25_000, "the TS constant");
 }

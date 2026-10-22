@@ -62,6 +62,11 @@ pub struct FakeSpec {
     pub allow_clear: bool,
     #[serde(default)]
     pub write_error: BTreeMap<String, String>,
+    /// The delete answers only after this many ms (a slow flash erase;
+    /// review-wp3 M1): with the in-memory transport the reply chunk becomes
+    /// readable at write time + this delay.
+    #[serde(default)]
+    pub delete_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -240,7 +245,8 @@ impl Clock for TestClock {
 pub struct MemTransport {
     pub modem: Arc<Mutex<FakeModem>>,
     pub closed: Arc<AtomicBool>,
-    queue: VecDeque<Vec<u8>>,
+    /// Reply chunks + when they become readable (`None` = at once).
+    queue: VecDeque<(Vec<u8>, Option<tokio::time::Instant>)>,
     /// `onCommand: () => (t += tickMs)`.
     tick: Option<(Arc<TestClock>, i64)>,
 }
@@ -261,14 +267,17 @@ impl AtTransport for MemTransport {
         Box::pin(async move {
             let s = String::from_utf8_lossy(data);
             let cmd = s.strip_suffix('\r').unwrap_or(&s).to_string();
-            let reply = {
+            let (reply, delay) = {
                 let mut m = self.modem.lock().unwrap();
                 // `this.log.push(cmd); this.o.onCommand?.(cmd);` (the log is
                 // pushed inside `command`; nothing observes the order).
                 if let Some((c, ms)) = &self.tick {
                     c.advance(*ms);
                 }
-                m.command(&cmd)
+                let delay = (cmd == "AT+CMGD=0,4")
+                    .then_some(m.spec.delete_delay_ms)
+                    .flatten();
+                (m.command(&cmd), delay)
             };
             match reply {
                 Reply::None => Ok(()),
@@ -279,7 +288,10 @@ impl AtTransport for MemTransport {
                         chunk.extend_from_slice(l.as_bytes());
                         chunk.extend_from_slice(b"\r\n");
                     }
-                    self.queue.push_back(chunk);
+                    let at = delay.map(|ms| {
+                        tokio::time::Instant::now() + std::time::Duration::from_millis(ms)
+                    });
+                    self.queue.push_back((chunk, at));
                     Ok(())
                 }
             }
@@ -288,10 +300,15 @@ impl AtTransport for MemTransport {
 
     fn read_chunk(&mut self) -> BoxFut<'_, io::Result<Vec<u8>>> {
         Box::pin(async move {
-            match self.queue.pop_front() {
-                Some(c) => Ok(c),
+            // Cancel-safe: a delayed chunk stays queued while we wait.
+            let at = match self.queue.front() {
+                Some((_, at)) => *at,
                 None => std::future::pending().await,
+            };
+            if let Some(at) = at {
+                tokio::time::sleep_until(at).await;
             }
+            Ok(self.queue.pop_front().expect("front").0)
         })
     }
 

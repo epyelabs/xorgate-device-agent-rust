@@ -416,12 +416,9 @@ impl Effects {
         .to_string();
         let sweep: SmsSweep = match (action, source, &self.sms) {
             // `real ? await smsReader.clear() : fixtureSmsClear(Date.now())`
-            (SmsAction::Clear, SmsDecision::Reader, SmsSource::Real(reader)) => (*reader
-                .clear(ClearRequest::AcceptedCommand {
-                    request_id: request_id.to_string(),
-                })
-                .await)
-                .clone(),
+            (SmsAction::Clear, SmsDecision::Reader, SmsSource::Real(reader)) => {
+                (*reader.clear(ClearRequest::accepted_command()).await).clone()
+            }
             (SmsAction::Clear, SmsDecision::Fixture, _) => {
                 let mut cleared = self.fixture_cleared.load(Ordering::SeqCst);
                 let s = fixture_sms_clear(self.ctx.now_ms(), &mut cleared);

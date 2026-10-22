@@ -115,43 +115,125 @@ fn only_the_delete_all_form_exists() {
     );
 }
 
-/// Who calls what: the full caller list, so a new caller fails here first.
-#[test]
-fn the_clear_has_exactly_the_designed_callers() {
-    let mut transport_callers = Vec::new();
-    let mut at_clear_users = Vec::new();
-    let mut request_builders = Vec::new();
+/// Code only: `//` comment lines dropped (docs may point at the module).
+fn code_of(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The function a byte offset sits in: the last `fn <name>` before it, or
+/// `<use>` for an import line.
+fn site(code: &str, at: usize) -> String {
+    let line_start = code[..at].rfind('\n').map_or(0, |i| i + 1);
+    if code[line_start..].trim_start().starts_with("use ") {
+        return "<use>".into();
+    }
+    let before = &code[..at];
+    let mut name = "<top>".to_string();
+    let mut i = 0;
+    while let Some(j) = before[i..].find("fn ") {
+        let k = i + j;
+        let boundary = k == 0
+            || !before.as_bytes()[k - 1].is_ascii_alphanumeric()
+                && before.as_bytes()[k - 1] != b'_';
+        if boundary {
+            let rest = &before[k + 3..];
+            let id: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !id.is_empty() {
+                name = id;
+            }
+        }
+        i = k + 3;
+    }
+    name
+}
+
+/// Every (file, function, token) in production code that names the clear's
+/// token or calls a clear with an argument.
+fn clear_sites() -> Vec<String> {
+    let mut out = Vec::new();
     for (rel, text) in sources() {
         if exempt(&rel) {
             continue;
         }
-        if rel != AT_CLEAR && text.contains("clear_transport(") {
+        let code = code_of(&text);
+        let short = rel.trim_start_matches("crates/xorgate-agent/src/");
+        // Every mention of the token type, and every constructor call
+        // (however the type is spelled or aliased), outside its definition.
+        if rel != "crates/xorgate-agent/src/ops/sms.rs" {
+            for (at, _) in code.match_indices("ClearRequest") {
+                out.push(format!("{short} {} ClearRequest", site(&code, at)));
+            }
+        }
+        for ctor in ["accepted_command(", "confirmed_cli("] {
+            for (at, _) in code.match_indices(ctor) {
+                let prefix = &code[..at];
+                if prefix.ends_with("fn ") {
+                    continue; // the definition
+                }
+                out.push(format!("{short} {} {ctor}", site(&code, at)));
+            }
+        }
+        // Every `.clear(<arg>)` and UFCS `SmsReader::clear(` in the agent
+        // crate — the only crate that can see `SmsReader` (core / hal / cloud
+        // do not depend on it; the replay rig is exempt) — is listed.
+        if !rel.starts_with("crates/xorgate-agent/") {
+            continue;
+        }
+        for (at, _) in code.match_indices(".clear(") {
+            let next = code[at + 7..].trim_start();
+            if !next.starts_with(')') {
+                out.push(format!("{short} {} .clear(arg)", site(&code, at)));
+            }
+        }
+        for (at, _) in code.match_indices("SmsReader::clear") {
+            out.push(format!("{short} {} SmsReader::clear", site(&code, at)));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Who calls what: the full list, by file and function, so a new caller —
+/// however it spells the token — fails here first.
+#[test]
+fn the_clear_has_exactly_the_designed_callers() {
+    assert_eq!(
+        clear_sites(),
+        [
+            // `xorgate-rs sms clear` after `--yes` / an interactive yes.
+            "cli/sms.rs <use> ClearRequest",
+            "cli/sms.rs clear_main .clear(arg)",
+            "cli/sms.rs clear_main ClearRequest",
+            "cli/sms.rs clear_main confirmed_cli(",
+            // The accepted, ledger-claimed `clear_sms` (Effect::ClearSms).
+            "command_plane.rs <use> ClearRequest",
+            "command_plane.rs run_sms .clear(arg)",
+            "command_plane.rs run_sms ClearRequest",
+            "command_plane.rs run_sms accepted_command(",
+        ]
+    );
+    let mut transport_callers = Vec::new();
+    let mut at_clear_users = Vec::new();
+    for (rel, text) in sources() {
+        if exempt(&rel) || rel == AT_CLEAR {
+            continue;
+        }
+        let code = code_of(&text);
+        if code.contains("clear_transport(") {
             transport_callers.push(rel.clone());
         }
-        // Code lines only: doc comments may point at the module.
-        let code = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if code.contains("at_clear") && rel != AT_CLEAR && rel != "crates/xorgate-hal/src/lib.rs" {
+        if code.contains("at_clear") && rel != "crates/xorgate-hal/src/lib.rs" {
             at_clear_users.push(rel.clone());
-        }
-        for v in [
-            "ClearRequest::AcceptedCommand",
-            "ClearRequest::ConfirmedCli",
-        ] {
-            for _ in text
-                .matches(&format!("{v} {{"))
-                .chain(text.matches(&format!("{v})")))
-            {
-                request_builders.push(format!("{rel} {v}"));
-            }
         }
     }
     transport_callers.sort();
     at_clear_users.sort();
-    request_builders.sort();
     assert_eq!(transport_callers, ["crates/xorgate-agent/src/ops/sms.rs"]);
     assert_eq!(
         at_clear_users,
@@ -161,25 +243,46 @@ fn the_clear_has_exactly_the_designed_callers() {
             "crates/xorgate-agent/src/ops/sms.rs",
         ]
     );
-    assert_eq!(
-        request_builders,
-        [
-            "crates/xorgate-agent/src/cli/sms.rs ClearRequest::ConfirmedCli",
-            "crates/xorgate-agent/src/command_plane.rs ClearRequest::AcceptedCommand",
-        ]
-    );
     // The CLI only borrows the TEXT of the command.
     let cli =
         std::fs::read_to_string(workspace().join("crates/xorgate-agent/src/cli/sms.rs")).unwrap();
     assert!(cli.contains("use xorgate_hal::at_clear::delete_all_text;"));
     assert!(!cli.contains("clear_transport") && !cli.contains("CMGD"));
-    // The command plane builds its request only in the `clear_sms` arm of
-    // `run_sms`, which only `Effect::ClearSms` reaches.
-    let cp = std::fs::read_to_string(workspace().join("crates/xorgate-agent/src/command_plane.rs"))
+    // ops/sms.rs: `clear_transport` only inside `clear_body`, reached only
+    // from `run_op(Op::Clear)`, which only `clear()` tracks.
+    let ops = code_of(
+        &std::fs::read_to_string(workspace().join("crates/xorgate-agent/src/ops/sms.rs")).unwrap(),
+    );
+    let calls: Vec<String> = ops
+        .match_indices("clear_transport(")
+        .map(|(at, _)| site(&ops, at))
+        .collect();
+    assert_eq!(calls, ["clear_body"]);
+    let tracks: Vec<String> = ops
+        .match_indices("Op::Clear, prev")
+        .map(|(at, _)| site(&ops, at))
+        .collect();
+    assert_eq!(tracks, ["clear"], "only clear() starts a Clear op");
+}
+
+/// The token has a private field and no Clone/Copy/Default: only the two
+/// constructors make one.
+#[test]
+fn the_token_is_constructor_only() {
+    let ops =
+        std::fs::read_to_string(workspace().join("crates/xorgate-agent/src/ops/sms.rs")).unwrap();
+    let i = ops.find("pub struct ClearRequest {").expect("struct");
+    let head = &ops[..i];
+    let derive = head[head.rfind("#[derive(").unwrap()..]
+        .lines()
+        .next()
         .unwrap();
-    let arm = cp.find("(SmsAction::Clear, SmsDecision::Reader, SmsSource::Real(reader))");
-    let req = cp.find("ClearRequest::AcceptedCommand {");
-    assert!(arm.is_some_and(|a| req.is_some_and(|r| r > a && r - a < 200)));
+    assert_eq!(derive, "#[derive(Debug)]");
+    assert!(ops[i..].starts_with("pub struct ClearRequest {\n    _entry: Entry,\n}"));
+    assert!(
+        !ops.contains("impl Clone for ClearRequest")
+            && !ops.contains("impl Default for ClearRequest")
+    );
 }
 
 /// Phase 4's read-only rule for the reader module still holds for the files

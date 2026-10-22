@@ -19,14 +19,6 @@ use xorgate_hal::read_lossy::read_text;
 use super::manager::{PowerSampleFn, SampleGroupsFn};
 use crate::ctx::{AgentCtx, TelemetrySource};
 
-/// `sampleGroups: () => source.sampleGroups()` (`worker.ts:476`).
-pub fn sample_groups_fn(source: Arc<dyn TelemetrySource>) -> SampleGroupsFn {
-    Arc::new(move || {
-        let s = source.clone();
-        Box::pin(async move { s.sample_groups().await })
-    })
-}
-
 /// `sampleGroups: async () => withLedSampleGroups(await
 /// source.sampleGroups(), ledTelemetryNow())` (`worker.ts:540-545` @
 /// 09da38d): the LED leaves join the recorded `system` group, reusing its

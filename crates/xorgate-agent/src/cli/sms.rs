@@ -111,7 +111,7 @@ fn clear_main(rest: &[String]) -> i32 {
         }
     };
     let home = crate::env::runtime_home();
-    let sweep = rt.block_on(async { cli_reader(&home).clear(ClearRequest::ConfirmedCli).await });
+    let sweep = rt.block_on(async { cli_reader(&home).clear(ClearRequest::confirmed_cli()).await });
     let payload = build_sms_payload(
         &sweep,
         &SmsPayloadRequest {

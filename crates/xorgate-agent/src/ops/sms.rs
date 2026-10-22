@@ -138,16 +138,39 @@ enum Op {
     Clear,
 }
 
-/// Why a clear runs — the two entry points of phase-5b §6 point 2, named so
-/// the caller grep (`tests/sms_clear_safety.rs`) can list them. Carries no
-/// behaviour: both run the same clear.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClearRequest {
-    /// An ACCEPTED `clear_sms` from the command plane, after the ledger's
-    /// duplicate check (a QoS-1 redelivery never reaches here).
-    AcceptedCommand { request_id: String },
-    /// `xorgate-rs sms clear` with `--yes` / `-y` or an interactive yes.
+/// The authorisation token [`SmsReader::clear`] demands (phase-5b §6 point
+/// 2). It has a private field and no `Clone` / `Copy` / `Default`, so the ONLY
+/// way to obtain one is one of the two constructors below — one per designed
+/// entry point — and each is called from exactly one function in the
+/// workspace (pinned by file and function in `tests/sms_clear_safety.rs`).
+/// It carries no data and changes no behaviour: holding it is the point.
+#[derive(Debug)]
+pub struct ClearRequest {
+    _entry: Entry,
+}
+
+#[derive(Debug)]
+enum Entry {
+    AcceptedCommand,
     ConfirmedCli,
+}
+
+impl ClearRequest {
+    /// An ACCEPTED `clear_sms` from the command plane (`run_sms`), after the
+    /// ledger's duplicate check — a QoS-1 redelivery never reaches here.
+    pub fn accepted_command() -> Self {
+        Self {
+            _entry: Entry::AcceptedCommand,
+        }
+    }
+
+    /// `xorgate-rs sms clear` (`cli::sms::clear_main`) after `--yes` / `-y`
+    /// or an interactive yes.
+    pub fn confirmed_cli() -> Self {
+        Self {
+            _entry: Entry::ConfirmedCli,
+        }
+    }
 }
 
 /// The tracked in-flight operation (`inflight: {op, p}`).
@@ -225,9 +248,10 @@ impl SmsReader {
     /// `clear()` (`sms-modem.ts:643-655`): delete every stored message (SM,
     /// then ME), then sweep. DESTRUCTIVE. Joins a running or queued clear;
     /// queued behind a running read; drops the cached read now and again
-    /// when it starts. `why` names the entry point (phase-5b §6 point 2).
+    /// when it starts. `why` is the entry point's token (phase-5b §6 point
+    /// 2): consumed here, it carries no data and changes nothing.
     pub fn clear(self: &Arc<Self>, why: ClearRequest) -> BoxFut<'static, Arc<SmsSweep>> {
-        let _ = why;
+        drop(why);
         let mut st = self.lock();
         if let Some(cur) = &st.inflight {
             if cur.op == Op::Clear {

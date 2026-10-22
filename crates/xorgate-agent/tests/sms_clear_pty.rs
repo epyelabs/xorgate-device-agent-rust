@@ -117,7 +117,7 @@ async fn rust_clear(port: &str) -> String {
     );
     deps.lock_path = None;
     let reader = SmsReader::new(deps);
-    let sweep = reader.clear(ClearRequest::ConfirmedCli).await;
+    let sweep = reader.clear(ClearRequest::confirmed_cli()).await;
     let clear = render_json(&build_sms_payload(
         &sweep,
         &SmsPayloadRequest {
