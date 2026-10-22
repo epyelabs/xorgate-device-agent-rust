@@ -402,8 +402,6 @@ impl Gate {
         self
     }
 
-    /// Have both agents published telemetry at least once (booted,
-    /// connected, ticking)?
     /// Is `now` at least `ms` away (circular, mod the 1 s tick) from BOTH
     /// agents' predicted next tick? Unknown phase (< 2 ticks seen) = yes.
     pub fn mid_period(&self, now: i64, ms: i64) -> bool {
@@ -416,8 +414,10 @@ impl Gate {
         })
     }
 
-    pub fn both_ticking(&self) -> bool {
-        self.track.iter().all(|t| t.last_ts.is_some())
+    /// Has agent `idx` published telemetry at least once (booted, connected,
+    /// ticking)? Both = the pre-5b NMEA/IMU delivery rule ([`inputs_ticking`]).
+    pub fn ticking(&self, idx: usize) -> bool {
+        self.track[idx].last_ts.is_some()
     }
 
     /// A telemetry publish of agent `idx` with payload `ts` arrived at `now`.
@@ -598,6 +598,8 @@ struct Agent {
     p4: p4::AgentP4,
     /// Phase 5b: this side's JS build (`PlayArgs::js_dir_for`).
     js_dir: PathBuf,
+    /// Phase 5b: cached [`Agent::held_ticking`] answer.
+    held_cache: Option<(std::time::Instant, bool)>,
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -894,6 +896,7 @@ impl Agent {
             pty_open_cache: None,
             p4: p4_state,
             js_dir: args.js_dir_for(label).to_path_buf(),
+            held_cache: None,
         })
     }
 
@@ -979,6 +982,32 @@ impl Agent {
             });
         self.pty_open_cache = Some((now, open));
         open
+    }
+
+    /// Phase 5b (clock trust, X5): is this agent ticking while its telemetry
+    /// publish is HELD? The TS builds the payload and `setLatest`s it (state
+    /// file throttled to 250 ms) BEFORE the trust gate returns
+    /// (ts:src/worker.ts:1397-1411 @09da38d), so a connected agent whose
+    /// state.json `seq` advances past 1 is ticking even though no telemetry
+    /// reaches the broker. Without this the symmetric NMEA/IMU delivery waited
+    /// for a publish that the hold never lets happen (no GPS → no gps step →
+    /// no trust: the p4-clock-* tapes deadlocked, sweep-A 2026-10-22).
+    fn held_ticking(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if let Some((at, v)) = self.held_cache {
+            if now.duration_since(at) < Duration::from_millis(200) {
+                return v;
+            }
+        }
+        let v = fs::read(self.home.join("state.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .is_some_and(|st| {
+                st.get("connection").and_then(Value::as_str) == Some("connected")
+                    && st.get("seq").and_then(Value::as_u64).unwrap_or(0) >= 2
+            });
+        self.held_cache = Some((now, v));
+        v
     }
 
     fn nmea(&mut self, line: &str) {
@@ -1947,7 +1976,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 // phase). If one agent has not opened it for 5 s while the
                 // other has, feed the other alone so a never-opened port
                 // shows up in the diff instead of hiding both gps groups.
-                let ticking = caps.gate.lock().map(|g| g.both_ticking()).unwrap_or(true);
+                let ticking = inputs_ticking(&caps.gate, &mut agents);
                 let open: Vec<bool> = agents
                     .iter_mut()
                     .map(|a| ticking && a.pty_is_open())
@@ -1975,7 +2004,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 // Same symmetric rule as NMEA: a line goes to both helpers or
                 // to neither (each agent spawns its helper at its own pace);
                 // after 5 s of asymmetry the connected one is fed alone.
-                let ticking = caps.gate.lock().map(|g| g.both_ticking()).unwrap_or(true);
+                let ticking = inputs_ticking(&caps.gate, &mut agents);
                 let mut conn = Vec::new();
                 for a in &agents {
                     conn.push(ticking && a.imu_connected().await);
@@ -2249,6 +2278,23 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// May NMEA / IMU lines flow (both agents booted and ticking)? An agent
+/// counts once it has published telemetry, or — while its publish is held by
+/// the clock trust gate — once its state file shows it ticking connected
+/// ([`Agent::held_ticking`]). Both publishing = the pre-5b rule, unchanged.
+fn inputs_ticking(gate: &Mutex<Gate>, agents: &mut [Agent]) -> bool {
+    let Ok(g) = gate.lock() else { return true };
+    let pub_ticking = [g.ticking(0), g.ticking(1)];
+    drop(g);
+    if pub_ticking.iter().all(|t| *t) {
+        return true;
+    }
+    agents
+        .iter_mut()
+        .zip(pub_ticking)
+        .all(|(a, t)| t || a.held_ticking())
 }
 
 fn apply_state(agents: &[Agent], ev: &TapeEvent, shift_s: i64) -> Result<()> {
@@ -2605,7 +2651,12 @@ mod tests {
         let w = W::parse_from(base);
         assert_eq!(w.play.js_dir_for("a"), Path::new("/rig/cache/js-89b5c64"));
         assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-89b5c64"));
-        let w = W::parse_from(base.iter().copied().chain(["--js-dir", "/j/js-x", "--js-dir-b", "/j/js-09da38d"]));
+        let w = W::parse_from(base.iter().copied().chain([
+            "--js-dir",
+            "/j/js-x",
+            "--js-dir-b",
+            "/j/js-09da38d",
+        ]));
         assert_eq!(w.play.js_dir_for("a"), Path::new("/j/js-x"));
         assert_eq!(w.play.js_dir_for("b"), Path::new("/j/js-09da38d"));
         let w = W::parse_from(base.iter().copied().chain(["--js-dir-a", "/j/js-89b5c64"]));

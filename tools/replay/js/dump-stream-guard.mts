@@ -18,7 +18,10 @@ const ROOT = process.cwd();
 const src = readFileSync(join(ROOT, "src/worker.ts"), "utf8").split("\n");
 const start = src.findIndex((l) => l.startsWith("config.media.streamGuard = (streamKey) => {"));
 const end = src.findIndex((l, i) => i > start && l === "};");
-if (start !== 208 || end !== 219) throw new Error(`unexpected slice ${start + 1}-${end + 1}`);
+// The slice is pinned per JS ref (Phase 5b: 09da38d moved it to :224-235).
+const SLICES: Record<string, [number, number]> = { "89b5c64": [208, 219], "09da38d": [223, 234] };
+const [sIdx, eIdx] = SLICES[(process.env.JS_COMMIT_FULL ?? "89b5c64").slice(0, 7)] ?? [-1, -1];
+if (start !== sIdx || end !== eIdx) throw new Error(`unexpected slice ${start + 1}-${end + 1}`);
 const body = transformSync(src.slice(start, end + 1).join("\n"), { loader: "ts" }).code;
 const make = new Function(
   "config",

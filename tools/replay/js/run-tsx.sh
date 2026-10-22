@@ -60,5 +60,8 @@ JS="${RIG_JS_CACHE:-$HERE/../.cache}/js-${JS_SHA:-89b5c64}"
 if grep -q '"\./src/' "$DRIVER"; then DEST=.rig-driver-$(basename "$DRIVER"); else DEST=.rig-drivers/$(basename "$DRIVER"); fi
 mkdir -p "$JS/.rig-drivers"
 cp "$DRIVER" "$JS/$DEST"
-docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform linux/arm64 -e TZ=UTC -v "$JS:/js" -w /js node:20-bookworm \
+# The full sha of the ref (drivers that pin per-ref line slices read it).
+JS_REPO="${JS_REPO:-$(cd "$HERE/../../../.." && pwd)/xorgate-device-agent}"
+JS_COMMIT_FULL=$(git -C "$JS_REPO" rev-parse "${JS_SHA:-89b5c64}" 2>/dev/null || echo "${JS_SHA:-89b5c64}")
+docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform linux/arm64 -e TZ=UTC -e JS_COMMIT_FULL="$JS_COMMIT_FULL" -v "$JS:/js" -w /js node:20-bookworm \
   npx --no-install tsx "$DEST" "$@"

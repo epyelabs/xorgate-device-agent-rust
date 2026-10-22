@@ -21,14 +21,19 @@ mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 JS_SHA="${JS_SHA:-89b5c64}"
 JS_SHA="$JS_SHA" "$HERE/../js-build.sh" >/dev/null
 JS="${RIG_JS_CACHE:-$HERE/../.cache}/js-$JS_SHA"
+JS_REPO="${JS_REPO:-$(cd "$HERE/../../../.." && pwd)/xorgate-device-agent}"
+JS_COMMIT_FULL=$(git -C "$JS_REPO" rev-parse "$JS_SHA")
 [ -f "$JS/dist/cli.js" ] || { echo "no JS build at $JS" >&2; exit 1; }
-docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform linux/arm64 -e TZ=UTC \
+docker run --rm -i --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform linux/arm64 -e TZ=UTC -e JS_COMMIT_FULL="$JS_COMMIT_FULL" \
   -v "$JS:/js" -v "$HERE:/drivers:ro" -v "$OUT:/out" -w /js node:20-bookworm bash -s <<'IN'
 set -u
 mkdir -p .rig-drivers /out/_print /out/_log
 cp /drivers/*.mts /drivers/*.ts /drivers/wp1-scenarios.json /drivers/wp5-cli/*.mts .rig-drivers/
-cp /drivers/dump-gps-scenarios.mts .rig-driver-dump-gps-scenarios.mts
-chmod -R a+rwX .rig-drivers .rig-driver-dump-gps-scenarios.mts
+# the `./src/…` importers run from the scratch root (as run-tsx.sh places them)
+for d in dump-gps-scenarios.mts dump-capture-ladder.mts wp1-dump-recording-flow.ts wp1-rate-quirk.ts; do
+  cp "/drivers/$d" ".rig-driver-$d"; chmod a+rw ".rig-driver-$d"
+done
+chmod -R a+rwX .rig-drivers
 FAIL=0
 # tsx <who root|node> <driver path> <dest|-> [args…]: stdout → /out/<dest>
 tsx() {
@@ -45,7 +50,7 @@ tsx() {
   [ $rc = 0 ] || FAIL=1
 }
 tsx root .rig-drivers/dump-camera-mount.mts camera_mount/camera-mount.json
-tsx root .rig-drivers/dump-capture-ladder.mts capture_ladder/ladder.json
+tsx root .rig-driver-dump-capture-ladder.mts capture_ladder/ladder.json
 tsx node .rig-drivers/dump-cli-set.mts cli_set/set-command.json
 tsx node .rig-drivers/dump-cli-status.mts cli_set/status-render.json
 tsx root .rig-drivers/dump-command-flow.mts command_flow/handle-command.json
@@ -65,14 +70,14 @@ tsx root .rig-drivers/dump-stream-guard.mts stream_guard/verdict.json
 tsx root .rig-drivers/dump-update-plan.mts update_plan/update.json
 tsx root .rig-drivers/dump-upload-keys.mts upload_keys/upload-keys.json
 tsx root .rig-drivers/dump-upload-step.mts upload_step/uploader-drain.json
-mkdir -p /out/recording_flow; tsx root .rig-drivers/wp1-dump-recording-flow.ts - .rig-drivers/wp1-scenarios.json /out/recording_flow/manager.json
+mkdir -p /out/recording_flow; tsx root .rig-driver-wp1-dump-recording-flow.ts - .rig-drivers/wp1-scenarios.json /out/recording_flow/manager.json
 tsx root .rig-drivers/dump-cli-pipeline.mts cli_pipeline/cli-pipeline.json
 tsx root .rig-drivers/dump-iface-for-ip.mts network/iface_for_ip.json
 FORCE_COLOR=0 tsx root .rig-drivers/dump-monitor-frames.mts -
-tsx root .rig-drivers/probe-exec-timeout.mts -
+tsx root .rig-drivers/probe-exec-timeout.mts camera_mount/exec-timeout.json
 tsx root .rig-drivers/probe-exec.mts -
 tsx root .rig-drivers/example-cloud-config.mts -
-tsx root .rig-drivers/wp1-rate-quirk.ts -
+tsx root .rig-driver-wp1-rate-quirk.ts -
 # vitest drivers: into test/, run, move the JSON out, remove again.
 for t in zz-review-supersede zz-wp1-dump-led-cli zz-wp1-dump-led-traces; do
   cp "/drivers/$t.test.ts" test/
