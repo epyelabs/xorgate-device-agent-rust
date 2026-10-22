@@ -93,9 +93,17 @@ pub struct PlayArgs {
     pub a: AgentKind,
     #[arg(long, value_enum, default_value = "rust")]
     pub b: AgentKind,
-    /// The JS build (`dist/worker.js`, `dist/cli.js`, `node_modules/`).
+    /// The JS build (`dist/worker.js`, `dist/cli.js`, `node_modules/`) of
+    /// both JS sides unless `--js-dir-a` / `--js-dir-b` names one per side.
     #[arg(long, default_value = "/rig/cache/js-89b5c64")]
     pub js_dir: PathBuf,
+    /// Phase 5b (dual ref): the JS build agent A runs (default `--js-dir`),
+    /// so a JS-vs-JS run can pair two refs (`run-rig.sh --a js@<ref>`).
+    #[arg(long)]
+    pub js_dir_a: Option<PathBuf>,
+    /// Phase 5b: the JS build agent B runs (default `--js-dir`).
+    #[arg(long)]
+    pub js_dir_b: Option<PathBuf>,
     #[arg(long, default_value = "/rig/cache/bin/xorgate-rs")]
     pub rs_bin: PathBuf,
     #[arg(long, default_value = "node")]
@@ -165,6 +173,18 @@ pub struct PlayArgs {
     /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
     #[arg(long)]
     pub camrotate: Option<PathBuf>,
+}
+
+impl PlayArgs {
+    /// The JS build the agent labelled `label` (`a` / `b`) runs.
+    pub fn js_dir_for(&self, label: &str) -> &Path {
+        let side = match label {
+            "a" => self.js_dir_a.as_deref(),
+            "b" => self.js_dir_b.as_deref(),
+            _ => None,
+        };
+        side.unwrap_or(&self.js_dir)
+    }
 }
 
 pub const DEVICE_A: &str = "00000000-0000-4000-8000-00000000000a";
@@ -576,6 +596,8 @@ struct Agent {
     pty_open_cache: Option<(std::time::Instant, bool)>,
     /// Phase 4: Pi namespace dir + the SMS pty kept open (`p4.rs`).
     p4: p4::AgentP4,
+    /// Phase 5b: this side's JS build (`PlayArgs::js_dir_for`).
+    js_dir: PathBuf,
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -834,7 +856,7 @@ impl Agent {
         let camrotate = args.camrotate.clone().or_else(|| {
             [
                 PathBuf::from("/rig/system/xorgate-camrotate"),
-                args.js_dir.join("system/xorgate-camrotate"),
+                args.js_dir_for(label).join("system/xorgate-camrotate"),
             ]
             .into_iter()
             .find(|p| p.is_file())
@@ -848,6 +870,7 @@ impl Agent {
             dir.join("meta.json"),
             serde_json::to_vec_pretty(&json!({
                 "label": label, "kind": kind.as_str(), "deviceId": device_id,
+                "jsDir": (kind == AgentKind::Js).then(|| args.js_dir_for(label).display().to_string()),
                 "home": home, "ptyPath": pty_path, "env": env.iter().cloned().collect::<BTreeMap<_, _>>(),
             }))?,
         )?;
@@ -870,6 +893,7 @@ impl Agent {
             pty_unopened: 0,
             pty_open_cache: None,
             p4: p4_state,
+            js_dir: args.js_dir_for(label).to_path_buf(),
         })
     }
 
@@ -891,7 +915,7 @@ impl Agent {
                 };
                 (
                     args.node.clone(),
-                    vec![args.js_dir.join(entry).display().to_string()],
+                    vec![self.js_dir.join(entry).display().to_string()],
                 )
             }
             AgentKind::Rust => (
@@ -2565,5 +2589,27 @@ mod tests {
             Some("0")
         );
         assert_eq!(gga_quality("$GPRMC,1"), None);
+    }
+
+    /// Phase 5b: per-side JS builds (JS-vs-JS across two refs); a side
+    /// without its own flag keeps `--js-dir`.
+    #[test]
+    fn js_dir_per_side() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct W {
+            #[command(flatten)]
+            play: PlayArgs,
+        }
+        let base = ["x", "--tape", "t", "--out", "o"];
+        let w = W::parse_from(base);
+        assert_eq!(w.play.js_dir_for("a"), Path::new("/rig/cache/js-89b5c64"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-89b5c64"));
+        let w = W::parse_from(base.iter().copied().chain(["--js-dir", "/j/js-x", "--js-dir-b", "/j/js-09da38d"]));
+        assert_eq!(w.play.js_dir_for("a"), Path::new("/j/js-x"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/j/js-09da38d"));
+        let w = W::parse_from(base.iter().copied().chain(["--js-dir-a", "/j/js-89b5c64"]));
+        assert_eq!(w.play.js_dir_for("a"), Path::new("/j/js-89b5c64"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-89b5c64"));
     }
 }

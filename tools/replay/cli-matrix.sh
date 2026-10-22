@@ -10,7 +10,9 @@
 # (`run` starts the mosquitto dependency; the `down -v` afterwards removes it
 # AND its two anonymous volumes — without `-v` they leak, F-RIG-1.)
 #
-# Default A=js (`node dist/cli.js` @ 89b5c64), B=rust (`xorgate-rs`). Each side
+# Default A=js (`node dist/cli.js` @ $JS_REF, default 89b5c64, from the shared
+# build mounted at /rig/jscache = $RIG_JS_CACHE; `js@<ref>` pins a side, Phase
+# 5b), B=rust (`xorgate-rs`). Pass JS_REF with `run -e JS_REF=<sha>`. Each side
 # runs the list top to bottom in ONE home (settings accumulate like on a
 # device). Steps run as the unprivileged `node` user unless marked `root`
 # (root against a node-owned home = the "you don't need sudo" note). Rows
@@ -35,9 +37,10 @@ known_row() { # T8/<row>
   local row=${1#*/}
   [ "${1%%/*}" = T8 ] && grep -q "^  id = \"$row\"" "$TOL"
 }
-JS_CLI="node /rig/cache/js-89b5c64/dist/cli.js"
+JS_REF="${JS_REF:-89b5c64}"
+JS_CLI="node /rig/jscache/js-$JS_REF/dist/cli.js"
 RS_CLI="${RS_CLI:-/rig/cache/bin/xorgate-rs}"   # override: a branch build (e.g. WP6 before merge)
-cli_for() { case "$1" in js) echo "$JS_CLI" ;; rust) echo "$RS_CLI" ;; esac; }
+cli_for() { case "$1" in js) echo "$JS_CLI" ;; js@?*) echo "node /rig/jscache/js-${1#js@}/dist/cli.js" ;; rust) echo "$RS_CLI" ;; esac; }
 
 # who | expect | argv…   (expect: "-" = must match)
 CASES=$(cat <<'LIST'
