@@ -32,6 +32,10 @@
 #   WP5 wp5-cli/ (dump-cli-pipeline, dump-iface-for-ip, dump-monitor-frames,
 #       e2e-cli-wp5.sh + run-side.sh + cases.txt)
 #   WP6 dump-sms-modem.mts → fixtures/replay/p4-sms-modem.json (the p4-sms tape's FakeModem)
+# Phase 5b drivers (JS_SHA=09da38d):
+#   WP2 zz-p5b-dump-obd.test.ts (VITEST: copy into <scratch>/test/, `npx --no-install vitest run
+#       test/zz-p5b-dump-obd.test.ts`) → test/zz-p5b-obd-{pure,traces,mock}.json →
+#       fixtures/obd/{pure,supervisor-traces,mock-stream}.json
 # A driver taking a data file (WP1's scenarios) gets it by its /js-relative path:
 #   cp wp1-scenarios.json into the scratch copy first, or pass `.rig-drivers/<name>` after
 #   copying it there (run-tsx.sh copies only the driver itself).
