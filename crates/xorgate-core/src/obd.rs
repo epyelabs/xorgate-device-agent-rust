@@ -23,7 +23,7 @@
 //! TS by `tools/replay/js/zz-p5b-dump-obd.test.ts`).
 
 use indexmap::IndexMap;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::js::{number_to_string, object_key_order, parsed_key_order, to_fixed, trim};
@@ -67,29 +67,16 @@ pub const MAX_INVENTORY_KEYS: usize = 200;
 /// Re-publish the report every Nth audit line (`REPORT_EVERY_AUDITS`, `:80`).
 pub const REPORT_EVERY_AUDITS: u64 = 10;
 
-/// `OBD_MAC_RE` (`daemon/settings.ts`): `^([0-9A-F]{2}:){5}[0-9A-F]{2}$` —
-/// UPPERCASE only. The same closed alphabet guards every MAC that reaches a
-/// subprocess argv (`removeObdBond` re-validates).
+/// `OBD_MAC_RE.test(s)` (`daemon/settings.ts:373`): UPPERCASE hex pairs.
+/// The same closed alphabet guards every MAC that reaches a subprocess argv
+/// (`removeObdBond` re-validates).
 pub fn is_obd_mac(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 17
-        && b.iter().enumerate().all(|(i, &c)| {
-            if i % 3 == 2 {
-                c == b':'
-            } else {
-                c.is_ascii_digit() || (b'A'..=b'F').contains(&c)
-            }
-        })
+    crate::settings::obd_mac_re_test(s)
 }
 
 /// `/^[a-z_][a-z0-9_]*$/` — a helper field identifier.
 pub fn is_obd_field_name(s: &str) -> bool {
-    let mut it = s.bytes();
-    match it.next() {
-        Some(c) if c.is_ascii_lowercase() || c == b'_' => {}
-        _ => return false,
-    }
-    it.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    crate::settings::obd_field_re_test(s)
 }
 
 /// `last_stop` of an audit line: `{ ts?, reason? }` (key order ts, reason).
@@ -443,39 +430,7 @@ pub fn read_obd_env_config(env: &ObdEnv) -> ObdHelperConfig {
     }
 }
 
-/// The `obd` settings namespace as `parseObdSettings` leaves it (every field
-/// optional; `adapterMac: null` kept as an explicit "no adapter"). The parser
-/// itself (validation, clamps) is the settings loader's (WP1); this is the
-/// shape [`resolve_obd_config`] reads.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ObdSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    /// `None` = absent, `Some(None)` = `null`.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present_nullable"
-    )]
-    pub adapter_mac: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pin: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub poll_hz: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fields: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub power_source: Option<String>,
-}
-
-fn present_nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(d).map(Some)
-}
+pub use crate::settings::ObdSettings;
 
 /// `Required<ObdSettings>` — the namespace as resolved (defaults filled), the
 /// first six keys of `effective.obd`. Key order = `OBD_DEFAULTS`.
@@ -492,7 +447,7 @@ pub struct ObdSettingsResolved {
 }
 
 /// `OBD_DEFAULTS` (`daemon/settings.ts`): the cloud contract's defaults.
-pub fn obd_defaults() -> ObdSettingsResolved {
+pub fn obd_defaults_resolved() -> ObdSettingsResolved {
     ObdSettingsResolved {
         enabled: false,
         adapter_mac: None,
@@ -572,7 +527,7 @@ pub fn resolve_obd_config(settings: Option<&ObdSettings>, env: &ObdEnv) -> ObdRe
             settings,
         };
     };
-    let d = obd_defaults();
+    let d = obd_defaults_resolved();
     let resolved = ObdSettingsResolved {
         enabled: s.enabled.unwrap_or(d.enabled),
         adapter_mac: match &s.adapter_mac {
@@ -582,7 +537,9 @@ pub fn resolve_obd_config(settings: Option<&ObdSettings>, env: &ObdEnv) -> ObdRe
         pin: s.pin.clone().unwrap_or(d.pin),
         poll_hz: s.poll_hz.unwrap_or(d.poll_hz),
         fields: s.fields.clone().unwrap_or(d.fields),
-        power_source: s.power_source.clone().unwrap_or(d.power_source),
+        power_source: s
+            .power_source
+            .map_or(d.power_source, |p| p.as_str().to_string()),
     };
     let helper = ObdHelperConfig {
         adapter: resolved.adapter_mac.clone(),
