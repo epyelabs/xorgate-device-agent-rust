@@ -458,5 +458,8 @@ async fn the_publish_tick_writes_state_obd_and_requests_a_report_on_the_edge() {
     tick.run().await;
     assert!(reports.try_recv().is_err());
     let v = serde_json::to_value(c2.state.snapshot()).unwrap();
-    assert!(v.get("obd").is_none(), "no top-level `obd` without the peripheral");
+    assert!(
+        v.get("obd").is_none(),
+        "no top-level `obd` without the peripheral"
+    );
 }
