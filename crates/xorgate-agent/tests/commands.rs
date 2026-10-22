@@ -95,6 +95,7 @@ fn rig(tag: &str, device: &str, mode: RunMode, wall0: i64) -> Rig {
         CommandPlaneDeps {
             mqtt: MqttHandle::new(link.clone()),
             reports,
+            obd: None,
         },
         runner.clone(),
     );
@@ -422,6 +423,7 @@ async fn link_down_before_the_ack_resends_it_and_delivers_the_sms_once() {
         CommandPlaneDeps {
             mqtt: MqttHandle::new(Arc::new(RealTransport(publisher.clone()))),
             reports,
+            obd: None,
         },
         Arc::new(RecordingRunner::new()),
     );

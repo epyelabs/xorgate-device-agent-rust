@@ -114,6 +114,7 @@ fn recording() -> RecordingStatus {
         last_upload_at: None,
         boot_defer: None,
         power_shed: None,
+        clock_hold: false,
         live_block: None,
     }
 }

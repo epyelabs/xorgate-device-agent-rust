@@ -557,6 +557,7 @@ async fn run(args: &[String]) -> Result<i32> {
                 msg: format!("agent starting (mode={})", cfg.mode.as_str()),
             }],
             recording: None,
+            obd: None,
         },
         paths.state.clone(),
     );
@@ -743,6 +744,7 @@ async fn run(args: &[String]) -> Result<i32> {
             scope: scope.clone(),
             reports: reports.clone(),
             report_rx,
+            obd: None,
         },
     );
     // `requestConfigReport = (origin) => configSync.request(origin);` (`:746`):
@@ -770,6 +772,7 @@ async fn run(args: &[String]) -> Result<i32> {
         CommandPlaneDeps {
             mqtt: mqtt.clone(),
             reports: reports.clone(),
+            obd: None,
         },
         runner.clone(),
         sms,

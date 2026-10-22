@@ -269,6 +269,7 @@ mod tests {
             latest: None,
             recent_events: vec![],
             recording: None,
+            obd: None,
         }
     }
 

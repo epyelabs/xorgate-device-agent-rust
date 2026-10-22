@@ -411,6 +411,7 @@ async fn real_mode_read_sms_publishes_the_readers_sweep() {
         CommandPlaneDeps {
             mqtt: MqttHandle::new(link.clone()),
             reports,
+            obd: None,
         },
         Arc::new(RecordingRunner::default()),
         SmsSource::Real(reader.clone()),

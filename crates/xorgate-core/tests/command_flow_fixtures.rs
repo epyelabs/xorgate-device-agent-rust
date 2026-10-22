@@ -140,6 +140,10 @@ impl Sim<'_> {
                 Effect::ContainerExit { reason, code } => {
                     self.trace.push(format!("shutdown {reason} {code}"))
                 }
+                // Phase 5b: not exercised by the 89b5c64 fixture (WP1 re-dumps it).
+                Effect::ClearSms { .. } | Effect::ObdJob(_) => {
+                    unreachable!("no clear_sms / obd_* step in this fixture")
+                }
             }
         }
         true
@@ -176,6 +180,7 @@ fn handle_command_message_trace_matches_worker_ts() {
                     last: sim.last_refresh,
                 },
                 sim.mode,
+                false,
             );
             if sim.run(parsed.as_ref(), d.effects, s) {
                 if let Some(m) = d.refresh_mark {

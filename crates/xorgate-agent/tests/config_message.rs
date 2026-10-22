@@ -323,6 +323,7 @@ fn rig(tag: &str) -> Rig {
         scope: scope.clone(),
         reports: requester,
         report_rx: rx2,
+        obd: None,
     };
     let mut o: ConfigSyncOptions = options_for(&ctx, &deps);
     let sent = Arc::new(Mutex::new(vec![]));
@@ -566,6 +567,7 @@ async fn plane_wiring_through_config_plane() {
             scope,
             reports: requester.clone(),
             report_rx,
+            obd: None,
         },
     );
     plane.on_connect();

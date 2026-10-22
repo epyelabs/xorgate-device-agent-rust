@@ -194,6 +194,46 @@ pub fn read_sms_level(p: &SmsResultPayload) -> ActivityLevel {
     }
 }
 
+/// `[agent] ${command} rejected (${requestId}): no OBD peripheral on this
+/// device` (`worker.ts:1221` @ 09da38d) — `obd_scan` / `obd_forget` without
+/// the collector.
+pub fn obd_rejected_log(command: DeviceCommandName, request_id: &str) -> String {
+    format!("{AGENT_PREFIX}{command} rejected ({request_id}): no OBD peripheral on this device")
+}
+
+/// `${command} rejected: no OBD peripheral on this device` (`worker.ts:1222` @ 09da38d).
+pub fn obd_rejected_event(command: DeviceCommandName) -> String {
+    format!("{command} rejected: no OBD peripheral on this device")
+}
+
+/// `scan: ${n} candidate(s)` (`worker.ts:1231-1233` @ 09da38d).
+pub fn obd_scan_summary(candidates: usize) -> String {
+    format!("scan: {candidates} candidate(s)")
+}
+
+/// `forget: ${mac ?? "no adapter"}` (`worker.ts:1234` @ 09da38d).
+pub fn obd_forget_summary(mac: Option<&str>) -> String {
+    format!("forget: {}", mac.unwrap_or("no adapter"))
+}
+
+/// `[agent] ${command} ${requestId}: ${summary}` (`worker.ts:1235` @ 09da38d),
+/// `console.log`; followed by `store.flush(t, true)` and
+/// `configSync.request("boot")`.
+pub fn obd_job_done_log(command: DeviceCommandName, request_id: &str, summary: &str) -> String {
+    format!("{AGENT_PREFIX}{command} {request_id}: {summary}")
+}
+
+/// `[agent] ${command} ${requestId} crashed: ${err.message}` (`console.error`;
+/// `worker.ts:1203, 1243` @ 09da38d — the SMS and OBD job nets).
+pub fn job_crashed_log(command: DeviceCommandName, request_id: &str, message: &str) -> String {
+    format!("{AGENT_PREFIX}{command} {request_id} crashed: {message}")
+}
+
+/// `${command} crashed: ${err.message}` (warn event; `worker.ts:1204, 1244` @ 09da38d).
+pub fn job_crashed_event(command: DeviceCommandName, message: &str) -> String {
+    format!("{command} crashed: {message}")
+}
+
 /// `[agent] read_sms ${requestId}: publish failed: ${err.message}` (`worker.ts:942`).
 pub fn read_sms_publish_failed_log(request_id: &str, message: &str) -> String {
     format!("{AGENT_PREFIX}read_sms {request_id}: publish failed: {message}")
@@ -266,6 +306,25 @@ pub enum Effect {
         request_id: String,
         limit: u32,
     },
+    /// `void runSms({...cmd, command: "clear_sms"})` (`worker.ts:1200-1206` @
+    /// 09da38d): clear (real → the reader's `clear()`, else the fixture
+    /// clear), log + event, publish `action:"clear"`. A crash →
+    /// [`job_crashed_log`] / [`job_crashed_event`]. Comes AFTER the accepted
+    /// ack and the ledger claim (invariant §6.2: a redelivery never clears twice).
+    ClearSms {
+        source: SmsSource,
+        request_id: String,
+        limit: u32,
+    },
+    /// `obd_scan` / `obd_forget` with the collector present (`worker.ts:1219-1247`
+    /// @ 09da38d). The TS STARTS the job (`source.obdScan?.()`) before the
+    /// ack, so the job's synchronous start event (`scanning for Bluetooth
+    /// adapters …`) precedes the ack: the interpreter calls
+    /// `ObdControl::scan()` / `forget()` here, then runs the following
+    /// `Ack accepted`, then awaits the job → [`obd_job_done_log`] with
+    /// [`obd_scan_summary`] / [`obd_forget_summary`], flush, request report
+    /// `boot`; a crash → [`job_crashed_log`] + event + request report `boot`.
+    ObdJob(DeviceCommandName),
     /// `executeCommand(cmd.command)` then [`execution_outcome`] (`worker.ts:1102-1125`).
     /// The call is the TS-exact plan; the agent substitutes the O3 unit.
     Execute(PrivilegedCall),
@@ -330,6 +389,7 @@ pub fn decide_command(
     ledger: &Ledger,
     refresh: RefreshWindow,
     mode: RunMode,
+    obd_present: bool,
 ) -> CommandDecision {
     let mut d = CommandDecision::new(parsed);
     // 1. malformed (`:990-997`): no trustworthy requestId to ack against.
@@ -435,6 +495,37 @@ pub fn decide_command(
                 request_id: cmd.request_id.clone(),
                 limit: cmd.args.map(|a| a.limit).unwrap_or(SMS_LIMIT_DEFAULT),
             });
+        }
+        // 8b. clear_sms (`worker.ts:1195-1207` @ 09da38d): the read path's twin.
+        DeviceCommandName::ClearSms => {
+            d.ack(AckStatus::Accepted, None);
+            d.push(Effect::ClearSms {
+                source: if mode == RunMode::Real {
+                    SmsSource::Reader
+                } else {
+                    SmsSource::Fixture
+                },
+                request_id: cmd.request_id.clone(),
+                limit: cmd.args.map(|a| a.limit).unwrap_or(SMS_LIMIT_DEFAULT),
+            });
+        }
+        // 8c. obd_scan / obd_forget (`worker.ts:1217-1249` @ 09da38d).
+        DeviceCommandName::ObdScan | DeviceCommandName::ObdForget => {
+            if !obd_present {
+                d.note(
+                    ConsoleLevel::Warn,
+                    obd_rejected_log(name, &cmd.request_id),
+                    ActivityLevel::Warn,
+                    obd_rejected_event(name),
+                );
+                d.ack(
+                    AckStatus::Rejected,
+                    Some(RejectReason::NoObdPeripheral.as_str().to_string()),
+                );
+                return d;
+            }
+            d.push(Effect::ObdJob(name));
+            d.ack(AckStatus::Accepted, None);
         }
         _ => {
             d.ack(AckStatus::Accepted, None);
@@ -613,6 +704,7 @@ mod tests {
                 last: Some(20_000),
             },
             RunMode::Real,
+            false,
         );
         assert!(matches!(d.effects[0], Effect::PersistLedger(_)));
         assert_eq!(d.refresh_mark, None);
@@ -630,6 +722,7 @@ mod tests {
             &Ledger::empty(),
             RefreshWindow { now: 0, last: None },
             RunMode::Real,
+            false,
         );
         assert_eq!(d.refresh_mark, Some(0));
     }

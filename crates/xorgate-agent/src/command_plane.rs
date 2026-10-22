@@ -30,12 +30,14 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use xorgate_core::clock::Clock;
 use xorgate_core::command_flow::{
-    decide_command, execution_outcome, ledger_write_failed, read_sms_level, read_sms_line,
-    read_sms_publish_failed_log, refresh_flag_failed_log, sms_sweep, ConsoleLevel, Effect,
-    RefreshWindow, SmsSource as SmsDecision, AGENT_PREFIX,
+    decide_command, execution_outcome, ledger_write_failed, obd_forget_summary, obd_job_done_log,
+    obd_scan_summary, read_sms_level, read_sms_line, read_sms_publish_failed_log,
+    refresh_flag_failed_log, sms_sweep, ConsoleLevel, Effect, RefreshWindow,
+    SmsSource as SmsDecision, AGENT_PREFIX,
 };
 use xorgate_core::commands::{
-    is_expired, parse_command, AckStatus, CommandAck, DeviceCommand, Ledger, ACK_FLUSH_TIMEOUT_MS,
+    is_expired, parse_command, AckStatus, CommandAck, DeviceCommand, DeviceCommandName, Ledger,
+    ACK_FLUSH_TIMEOUT_MS,
 };
 use xorgate_core::config_report::ReportOrigin;
 use xorgate_core::sms::{build_sms_payload, SmsPayloadRequest};
@@ -43,7 +45,7 @@ use xorgate_hal::io::{node_fd_message, node_fs_message};
 use xorgate_hal::ledger_file;
 use xorgate_hal::privileged::{PrivilegedArgv, PrivilegedRunner, SudoRunner};
 
-use crate::ctx::{AgentCtx, CommandPlane, CommandPlaneDeps, ReportRequester};
+use crate::ctx::{AgentCtx, BoxFut, CommandPlane, CommandPlaneDeps, ObdControl, ReportRequester};
 use crate::mqtt_plane::{AckOutcome, MqttHandle, PublishFailure, QoS};
 use crate::ops::sms::SmsReader;
 
@@ -106,6 +108,7 @@ fn start_inner(
             reports: deps.reports,
             runner,
             sms,
+            obd: deps.obd,
         },
         last_refresh: None,
     };
@@ -165,7 +168,14 @@ impl CommandTask {
             now: ctx.clock.mono_ms() as i64,
             last: self.last_refresh,
         };
-        let d = decide_command(parsed.as_ref(), now, &ledger, window, ctx.env.config.mode);
+        let d = decide_command(
+            parsed.as_ref(),
+            now,
+            &ledger,
+            window,
+            ctx.env.config.mode,
+            self.fx.obd.is_some(),
+        );
         let mut effects: VecDeque<Effect> = d.effects.into();
         let mut mark = d.refresh_mark;
 
@@ -236,6 +246,14 @@ struct Effects {
     runner: Arc<dyn PrivilegedRunner>,
     /// The real-mode sweep source (I4).
     sms: SmsSource,
+    /// The OBD collector (Phase 5b I4); `None` = no `peripherals.obd`.
+    obd: Option<Arc<dyn ObdControl>>,
+}
+
+/// A started `obd_scan` / `obd_forget` job (`worker.ts:1219` @ 09da38d).
+enum ObdJob {
+    Scan(BoxFut<'static, xorgate_core::obd::ObdScanResult>),
+    Forget(BoxFut<'static, Option<String>>),
 }
 
 impl Effects {
@@ -252,6 +270,8 @@ impl Effects {
     /// The effects after the first ack, in order (`worker.ts:1053-1125`,
     /// `runSmsRead` `:924-945`). Stamps are `Date.now()` at the time (`t`).
     async fn run(&self, cmd: &DeviceCommand, mut effects: VecDeque<Effect>) {
+        // The started OBD job, awaited once the ack after it has gone out.
+        let mut obd_job: Option<ObdJob> = None;
         while let Some(e) = effects.pop_front() {
             match e {
                 Effect::Log(level, line) => log(level, &line),
@@ -268,6 +288,24 @@ impl Effects {
                     request_id,
                     limit,
                 } => self.run_sms_read(source, &request_id, limit).await,
+                Effect::ClearSms { .. } => {
+                    // Phase 5b WP3 implements `runSms` for `clear_sms`.
+                    warn!(
+                        "{AGENT_PREFIX}clear_sms {}: not implemented in this build",
+                        cmd.request_id
+                    );
+                }
+                Effect::ObdJob(name) => {
+                    // `source.obdScan?.()` / `source.obdForget?.()` (`:1219`):
+                    // started BEFORE the ack, awaited after it.
+                    if let Some(obd) = &self.obd {
+                        obd_job = Some(if name == DeviceCommandName::ObdScan {
+                            ObdJob::Scan(obd.scan())
+                        } else {
+                            ObdJob::Forget(obd.forget())
+                        });
+                    }
+                }
                 Effect::Execute(call) => {
                     // `executeCommand(cmd.command)` (`:1102`), O3 unit.
                     let res = self
@@ -286,6 +324,19 @@ impl Effects {
                     // Only ever first, handled on the command task.
                 }
             }
+        }
+        if let Some(job) = obd_job {
+            // `.then(...)` (`worker.ts:1228-1239` @ 09da38d).
+            let summary = match job {
+                ObdJob::Scan(f) => obd_scan_summary(f.await.candidates.len()),
+                ObdJob::Forget(f) => obd_forget_summary(f.await.as_deref()),
+            };
+            info!(
+                "{}",
+                obd_job_done_log(cmd.command, &cmd.request_id, &summary)
+            );
+            self.ctx.state.flush(self.ctx.now_ms(), true);
+            self.reports.request(ReportOrigin::Boot);
         }
     }
 

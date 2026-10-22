@@ -1287,6 +1287,7 @@ impl Inner {
             last_upload_at: u.last_upload_at,
             boot_defer: snap.boot_defer.clone(),
             power_shed: snap.power_shed.clone(),
+            clock_hold: false,
             live_block: snap.live_block.clone(),
         }
     }
