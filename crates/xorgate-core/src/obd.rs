@@ -189,7 +189,11 @@ impl ObdMessage {
                 }
                 // `{ type, ...rest }` is a fresh object: V8 enumerates its
                 // array-index keys first.
-                return Value::Object(object_key_order(m.into_iter().collect()).into_iter().collect());
+                return Value::Object(
+                    object_key_order(m.into_iter().collect())
+                        .into_iter()
+                        .collect(),
+                );
             }
             ObdMessage::Sample { fields, ts } => {
                 m.insert("type".into(), "sample".into());
@@ -223,6 +227,11 @@ impl ObdMessage {
         }
         Value::Object(m)
     }
+}
+
+/// `isLink(v)`: `v === 0 || v === 1 || v === 2` (`-0` and `2.0` included).
+pub fn obd_link(v: f64) -> Option<u8> {
+    [0u8, 1, 2].into_iter().find(|&l| f64::from(l) == v)
 }
 
 fn str_of(v: Option<&Value>) -> Option<String> {
@@ -276,13 +285,7 @@ pub fn parse_obd_line(line: &str) -> Option<ObdMessage> {
             if !OBD_HELPER_STATES.contains(&state) {
                 return None;
             }
-            let link = obj.get("link")?.as_f64()?;
-            let link = match link {
-                l if l == 0.0 => 0,
-                l if l == 1.0 => 1,
-                l if l == 2.0 => 2,
-                _ => return None,
-            };
+            let link = obd_link(obj.get("link")?.as_f64()?)?;
             Some(ObdMessage::Status {
                 state: state.to_string(),
                 link,
@@ -303,10 +306,13 @@ pub fn parse_obd_line(line: &str) -> Option<ObdMessage> {
         "audit" => {
             let counters = finite_entries(obj.get("counters"))?;
             let inventory = finite_entries(obj.get("inventory")).unwrap_or_default();
-            let last_stop = obj.get("last_stop").and_then(Value::as_object).map(|ls| LastStop {
-                ts: number_of(ls.get("ts")),
-                reason: str_of(ls.get("reason")),
-            });
+            let last_stop = obj
+                .get("last_stop")
+                .and_then(Value::as_object)
+                .map(|ls| LastStop {
+                    ts: number_of(ls.get("ts")),
+                    reason: str_of(ls.get("reason")),
+                });
             Some(ObdMessage::Audit {
                 counters,
                 inventory,
@@ -426,7 +432,12 @@ pub fn read_obd_env_config(env: &ObdEnv) -> ObdHelperConfig {
         pin,
         poll_hz,
         fields: (!fields.is_empty()).then_some(fields),
-        power_source: if ps == "constant" { "constant" } else { "switched" }.to_string(),
+        power_source: if ps == "constant" {
+            "constant"
+        } else {
+            "switched"
+        }
+        .to_string(),
     }
 }
 
@@ -815,7 +826,13 @@ fn js_string(v: &Value) -> String {
 /// `arr.join(sep)`: `null`/`undefined` elements print as "".
 fn js_join(a: &[Value], sep: &str) -> String {
     a.iter()
-        .map(|v| if v.is_null() { String::new() } else { js_string(v) })
+        .map(|v| {
+            if v.is_null() {
+                String::new()
+            } else {
+                js_string(v)
+            }
+        })
         .collect::<Vec<_>>()
         .join(sep)
 }
@@ -832,7 +849,7 @@ fn truthy(v: &Value) -> bool {
 }
 
 /// `x ?? fallback` for a JSON member (`null`/absent → fallback).
-fn present<'a>(v: Option<&'a Value>) -> Option<&'a Value> {
+fn present(v: Option<&Value>) -> Option<&Value> {
     v.filter(|v| !v.is_null())
 }
 
@@ -909,7 +926,8 @@ pub fn request_rate(prev: Option<&AuditSnapshot>, cur: Option<&AuditSnapshot>) -
     let cur_req = *cur?.counters.get("requests")?;
     let prev_req = *prev?.counters.get("requests")?;
     let dt = cur?.ts - prev?.ts;
-    if !(dt > 0.0) {
+    // `!(dt > 0)`: NaN fails too.
+    if dt.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return None;
     }
     let dr = cur_req - prev_req;
@@ -922,9 +940,10 @@ pub fn request_rate(prev: Option<&AuditSnapshot>, cur: Option<&AuditSnapshot>) -
 /// `obdStatusLine(obd)` (`commands/status.ts:132-137`): the `obd` status line,
 /// e.g. `obd        live  link 2  10.0 req/s  err 0  forbidden 0  14.1 V  adapter …`.
 pub fn obd_status_line(obd: &ObdStatus) -> String {
-    let rate = obd
-        .req_per_sec
-        .map_or_else(|| "— req/s".to_string(), |r| format!("{} req/s", to_fixed(r, 1)));
+    let rate = obd.req_per_sec.map_or_else(
+        || "— req/s".to_string(),
+        |r| format!("{} req/s", to_fixed(r, 1)),
+    );
     let volts = obd
         .voltage
         .map_or_else(|| "— V".to_string(), |v| format!("{} V", to_fixed(v, 1)));
@@ -1073,7 +1092,10 @@ pub fn obd_status_detail_lines(obd: &ObdStatus, since_iso: &str) -> Vec<String> 
         out.push(format!(
             "  audit      #{seq}  voltage_low {}  last_stop {}",
             obd.voltage_low_events.unwrap_or(0),
-            obd.last_stop.clone().flatten().unwrap_or_else(|| "—".into())
+            obd.last_stop
+                .clone()
+                .flatten()
+                .unwrap_or_else(|| "—".into())
         ));
     }
     out

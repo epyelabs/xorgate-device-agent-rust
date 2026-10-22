@@ -302,6 +302,7 @@ async fn gps_sky_file_needs_an_existing_home() {
             gps: true,
             signal: false,
             system_rails: None,
+            obd: false,
         },
         Backends {
             nmea: opener.clone(),
@@ -439,6 +440,7 @@ fn io_capabilities_follow_the_hardware_block() {
             gps: true,
             signal: true,
             system_rails: Some(true),
+            obd: false,
         }
     );
     let block = xorgate_core::hardware_block::parse_hardware_block(&serde_json::json!({

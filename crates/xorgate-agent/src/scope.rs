@@ -64,6 +64,12 @@ impl ScopeHandle {
     }
 
     /// `telemetryScope.topic` — where the next telemetry publish goes.
+    /// `requestConfigReport?.(origin)` for the publish tick's OBD report edge
+    /// (`worker.ts:1402` @ 09da38d) — the requester this handle already holds.
+    pub fn request_report(&self, origin: ReportOrigin) {
+        self.reports.request(origin);
+    }
+
     pub fn topic(&self) -> String {
         self.lock().topic()
     }

@@ -37,8 +37,7 @@ use crate::js::{number_to_string, object_key_order};
 use crate::obd::{
     bound_inventory, obd_exit, obd_field_unit, profile_summary, request_rate, resolve_obd_config,
     AuditSnapshot, LastStop, ObdEnv, ObdHelperConfig, ObdMessage, ObdOff, ObdResolvedConfig,
-    ObdScanCandidate, ObdScanResult, ObdSettings, ObdSource, MAX_INVENTORY_KEYS,
-    OBD_SCAN_SECONDS,
+    ObdScanCandidate, ObdScanResult, ObdSettings, ObdSource, MAX_INVENTORY_KEYS, OBD_SCAN_SECONDS,
 };
 use crate::round::js_math_round;
 use crate::telemetry::{MetricGroup, MetricLeaf, ObdStatus};
@@ -515,7 +514,13 @@ impl ObdSupervisor {
                     .and_then(Value::as_array)
                     .map(|a| {
                         a.iter()
-                            .map(|v| if v.is_null() { String::new() } else { js_string(v) })
+                            .map(|v| {
+                                if v.is_null() {
+                                    String::new()
+                                } else {
+                                    js_string(v)
+                                }
+                            })
                             .collect::<Vec<_>>()
                             .join(",")
                     })
@@ -542,11 +547,8 @@ impl ObdSupervisor {
                     at_mono: now.mono_ms,
                 });
                 self.stamp += 1;
-                match sample_link {
-                    Some(l) if l == 0.0 => self.set_link(0),
-                    Some(l) if l == 1.0 => self.set_link(1),
-                    Some(l) if l == 2.0 => self.set_link(2),
-                    _ => {}
+                if let Some(l) = sample_link.and_then(crate::obd::obd_link) {
+                    self.set_link(l);
                 }
             }
             ObdMessage::Audit {
@@ -618,7 +620,8 @@ impl ObdSupervisor {
         }
         if let Some(a) = self.absent {
             if matches!(state, "pairing" | "probing" | "live" | "ecu_silent") {
-                let mins = js_math_round(now.mono_ms.saturating_sub(a.since_mono) as f64 / 60_000.0);
+                let mins =
+                    js_math_round(now.mono_ms.saturating_sub(a.since_mono) as f64 / 60_000.0);
                 self.absent = None;
                 self.event(
                     ObdLevel::Info,
@@ -868,7 +871,10 @@ impl ObdSupervisor {
     /// a sample < 5 s old while a helper runs, finite numbers only, with units.
     pub fn map_latest(&self, now: ObdNow) -> MetricGroup {
         let mut out = MetricGroup::new();
-        out.insert("link".into(), MetricLeaf::new(f64::from(self.current_link())));
+        out.insert(
+            "link".into(),
+            MetricLeaf::new(f64::from(self.current_link())),
+        );
         let Some(s) = &self.sample else { return out };
         if self.handle.is_none() || now.mono_ms.saturating_sub(s.at_mono) >= SAMPLE_FRESH_MS {
             return out;
@@ -888,7 +894,9 @@ impl ObdSupervisor {
 
     fn voltage(&self) -> Option<f64> {
         let f = &self.sample.as_ref()?.fields;
-        f.get("module_voltage").or_else(|| f.get("adapter_voltage")).copied()
+        f.get("module_voltage")
+            .or_else(|| f.get("adapter_voltage"))
+            .copied()
     }
 
     fn req_per_sec(&self) -> Option<f64> {
@@ -903,7 +911,11 @@ impl ObdSupervisor {
     /// `status()` (`:691-710`).
     pub fn status(&self) -> ObdStatus {
         let audit = self.audit.as_ref();
-        let c = |k: &str| audit.and_then(|a| a.counters.get(k).copied()).unwrap_or(0.0);
+        let c = |k: &str| {
+            audit
+                .and_then(|a| a.counters.get(k).copied())
+                .unwrap_or(0.0)
+        };
         ObdStatus {
             state: self.state.clone(),
             link: self.current_link(),
@@ -938,7 +950,10 @@ impl ObdSupervisor {
         };
         m.insert("status".into(), Value::String(self.state.clone()));
         m.insert("link".into(), Value::from(self.current_link()));
-        m.insert("source".into(), Value::String(self.resolved.source.as_str().into()));
+        m.insert(
+            "source".into(),
+            Value::String(self.resolved.source.as_str().into()),
+        );
         let h = &self.resolved.helper;
         let mut adapter = Map::new();
         adapter.insert(
@@ -1011,7 +1026,13 @@ fn js_string(v: &Value) -> String {
         Value::Null => "null".into(),
         Value::Array(a) => a
             .iter()
-            .map(|v| if v.is_null() { String::new() } else { js_string(v) })
+            .map(|v| {
+                if v.is_null() {
+                    String::new()
+                } else {
+                    js_string(v)
+                }
+            })
             .collect::<Vec<_>>()
             .join(","),
         Value::Object(_) => "[object Object]".into(),

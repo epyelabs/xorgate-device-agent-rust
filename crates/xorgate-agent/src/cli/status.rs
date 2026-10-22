@@ -428,6 +428,13 @@ pub fn render(st: &DaemonStatus, now: f64, ctx: &RenderCtx) -> Vec<String> {
                 if !parts.is_empty() {
                     out.push(format!("  video      {}", parts.join("   ")));
                 }
+                // `if (state.obd) console.log(\`  ${obdStatusLine(state.obd)}\`)`
+                // (`status.ts:116` @ 09da38d).
+                if let Some(obd) = g("obd").filter(|v| truthy(Some(v))).and_then(|v| {
+                    serde_json::from_value::<xorgate_core::telemetry::ObdStatus>(v.clone()).ok()
+                }) {
+                    out.push(format!("  {}", xorgate_core::obd::obd_status_line(&obd)));
+                }
                 if truthy(g("lastError")) {
                     out.push(format!(
                         "  last error {}",

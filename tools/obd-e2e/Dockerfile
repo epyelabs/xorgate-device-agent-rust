@@ -6,10 +6,13 @@
 # lives in /opt/elm-venv ONLY (test-only, never on a device, README Q1/§4);
 # the helper itself is stdlib-only and runs under the system python3.
 # No BlueZ: nothing here can pair or scan (`bluetoothctl` is absent).
+# H12 also runs a throwaway local mosquitto (TLS + client certs, like AWS IoT
+# Core) so the agent's real MQTT path publishes telemetry + the config report.
 FROM --platform=linux/arm64 debian:bookworm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      python3 python3-venv ca-certificates procps \
+      python3 python3-venv ca-certificates procps openssl \
+      mosquitto mosquitto-clients \
       libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
  && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/elm-venv \

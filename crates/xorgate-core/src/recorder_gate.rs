@@ -39,9 +39,9 @@ pub fn native_cadence_hz() -> IndexMap<String, f64> {
         ("system", 1.0),
         ("obd", 1.0),
     ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect()
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
 }
 
 /// `Math.round(1000 / this.opts.rateHz)` (`telemetry-recorder.ts:71`): the

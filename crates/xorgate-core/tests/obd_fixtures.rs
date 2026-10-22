@@ -76,7 +76,12 @@ fn env_config_and_argv_match_ts() {
     }
     for c in p["argv"].as_array().unwrap() {
         let cfg: ObdHelperConfig = serde_json::from_value(c["cfg"].clone()).unwrap();
-        assert_eq!(build_obd_helper_args(&cfg), strs(&c["argv"]), "{}", c["cfg"]);
+        assert_eq!(
+            build_obd_helper_args(&cfg),
+            strs(&c["argv"]),
+            "{}",
+            c["cfg"]
+        );
     }
 }
 
@@ -89,7 +94,13 @@ fn resolve_matches_ts() {
             v => Some(serde_json::from_value(v.clone()).unwrap()),
         };
         let r = resolve_obd_config(settings.as_ref(), &env_of(&c["env"]));
-        assert_eq!(jv(&r), j(&c["out"]), "settings {} env {}", c["settings"], c["env"]);
+        assert_eq!(
+            jv(&r),
+            j(&c["out"]),
+            "settings {} env {}",
+            c["settings"],
+            c["env"]
+        );
     }
 }
 
@@ -101,7 +112,11 @@ fn normalize_scan_candidates_matches_ts() {
             Value::String(s) if s == "<undefined>" => Value::Null,
             v => v.clone(),
         };
-        assert_eq!(jv(&normalize_scan_candidates(&raw)), j(&c["out"]), "raw {raw}");
+        assert_eq!(
+            jv(&normalize_scan_candidates(&raw)),
+            j(&c["out"]),
+            "raw {raw}"
+        );
     }
 }
 
@@ -138,7 +153,9 @@ fn collector_pure_helpers_match_ts() {
         assert_eq!(got, c["out"].as_str().unwrap());
     }
     for c in p["bound"].as_array().unwrap() {
-        let inv = snapshot(&json!({"inventory": c["inventory"], "ts": 0})).unwrap().inventory;
+        let inv = snapshot(&json!({"inventory": c["inventory"], "ts": 0}))
+            .unwrap()
+            .inventory;
         let got = bound_inventory(&inv, c["max"].as_u64().unwrap() as usize);
         assert_eq!(jv(&got), j(&c["out"]), "{}", c["inventory"]);
     }
@@ -151,7 +168,13 @@ fn collector_pure_helpers_match_ts() {
             (!v.is_null()).then(|| serde_json::from_value(v.clone()).unwrap())
         };
         let got = obd_report_due(st(&c["prev"]).as_ref(), st(&c["next"]).as_ref());
-        assert_eq!(got, c["out"].as_bool().unwrap(), "{} → {}", c["prev"], c["next"]);
+        assert_eq!(
+            got,
+            c["out"].as_bool().unwrap(),
+            "{} → {}",
+            c["prev"],
+            c["next"]
+        );
     }
     for c in p["statusLine"].as_array().unwrap() {
         let st: ObdStatus = serde_json::from_value(c["status"].clone()).unwrap();
@@ -172,7 +195,10 @@ fn obd_cli_helpers_match_ts() {
     }
     for c in p["tables"].as_array().unwrap() {
         let cands: Vec<ObdScanCandidate> = serde_json::from_value(c["candidates"].clone()).unwrap();
-        assert_eq!(format_scan_table(&cands, "xorgate"), c["out"].as_str().unwrap());
+        assert_eq!(
+            format_scan_table(&cands, "xorgate"),
+            c["out"].as_str().unwrap()
+        );
     }
 }
 
@@ -367,7 +393,9 @@ fn supervisor_traces_match_ts() {
                     let sc = &meta["scanner"];
                     let res = match sc["error"].as_str() {
                         Some(e) => Err(e.to_string()),
-                        None => Ok(serde_json::from_value(sc["candidates"].clone()).unwrap_or_default()),
+                        None => Ok(
+                            serde_json::from_value(sc["candidates"].clone()).unwrap_or_default()
+                        ),
                     };
                     let (r, a) = h.sup.scan_end(h.now(), res);
                     h.apply(a);
@@ -403,7 +431,9 @@ fn supervisor_traces_match_ts() {
             let runs: Vec<Value> = h
                 .runs
                 .iter()
-                .map(|r| json!({"cfg": serde_json::to_value(&r.cfg).unwrap(), "stopped": r.stopped}))
+                .map(
+                    |r| json!({"cfg": serde_json::to_value(&r.cfg).unwrap(), "stopped": r.stopped}),
+                )
                 .collect();
             assert_eq!(j(&Value::Array(runs)), j(&obs["runs"]), "{ctx}: runs");
             assert_eq!(h.reads, obs["reads"].as_u64().unwrap(), "{ctx}: reads");
@@ -457,13 +487,18 @@ fn d37_intervals_ignore_a_wall_clock_step() {
     );
     // The wall clock jumps +1 h, 100 ms of real time later.
     let stepped = at(3_601_000.0, 100);
-    assert!(sup.map_latest(stepped).contains_key("rpm"), "sample still fresh");
+    assert!(
+        sup.map_latest(stepped).contains_key("rpm"),
+        "sample still fresh"
+    );
     sup.tick(stepped, &mut read);
     assert_eq!(reads, 1, "no settings re-read: 100 ms on mono");
     // A quick exit (100 ms on mono) is a quick failure, not "after 3600 s".
     let a = sup.on_exit(stepped, handle, Some(2));
     assert!(
-        a.iter().any(|x| matches!(x, ObdAction::Log { line, .. } if line.contains("retry 1/3 in 2000 ms"))),
+        a.iter().any(
+            |x| matches!(x, ObdAction::Log { line, .. } if line.contains("retry 1/3 in 2000 ms"))
+        ),
         "{a:?}"
     );
     assert_eq!(sup.status().since, 3_601_000.0, "since is wall");
@@ -479,4 +514,69 @@ fn recorder_cadence_has_obd_at_1_hz() {
         c.keys().map(String::as_str).collect::<Vec<_>>(),
         ["imu", "gps", "lte", "system", "obd"]
     );
+}
+
+/// CF80: the worst-case `effective.obd` — a full probe profile, a 200-key
+/// inventory (the bound; more keys are cut) with 9-digit counts, 20 scan
+/// candidates with 64-char names — stays far below the backend's
+/// `MAX_REPORT_BYTES` (32 768) for the whole report. The TS publishes the
+/// report whatever its size (no cap check in `config-sync.ts`), and so does
+/// the Rust; this pins the headroom: `effective.obd` ≤ 16 KiB leaves the rest
+/// of the report (a few KiB on a CM5) under the cap.
+#[test]
+fn cf80_worst_case_effective_obd_is_bounded() {
+    let env = ObdEnv {
+        serial: Some("/dev/pts/12".into()),
+        adapter: Some("10:21:3E:4F:33:65".into()),
+        ..Default::default()
+    };
+    let now = ObdNow {
+        wall_ms: 1_760_000_000_000.0,
+        mono_ms: 0,
+    };
+    let mut sup = ObdSupervisor::new(env, now);
+    sup.tick(now, &mut || Ok(None));
+    let feed = |sup: &mut ObdSupervisor, line: String| {
+        sup.on_message(now, parse_obd_line(&line).unwrap());
+    };
+    let f = load("pure.json");
+    for line in f["parse"].as_array().unwrap()[..7].iter() {
+        feed(&mut sup, line["line"].as_str().unwrap().to_string());
+    }
+    let inventory: serde_json::Map<String, Value> = (0..400)
+        .map(|i| {
+            (
+                format!("{:02X}{:02X}1", i / 256 + 1, i % 256),
+                json!(999_999_999 - i),
+            )
+        })
+        .collect();
+    feed(
+        &mut sup,
+        json!({"type": "audit", "ts": 1.5e9, "counters": {
+            "requests": 999_999_999, "ok": 999_999_999, "no_data": 999_999_999, "timeouts": 999_999_999,
+            "err_adapter": 999_999_999, "err_protocol": 999_999_999, "err_identity": 999_999_999,
+            "err_voltage": 999_999_999, "reconnects": 999_999_999, "forbidden_attempts": 999_999_999,
+            "budget_violations": 999_999_999, "bytes_tx": 999_999_999, "voltage_low_events": 999_999_999},
+            "inventory": inventory, "last_stop": {"ts": 1.5e9, "reason": "x".repeat(200)}})
+        .to_string(),
+    );
+    sup.scan_begin().unwrap();
+    let candidates = (0..20)
+        .map(|i| ObdScanCandidate {
+            mac: format!("10:21:3E:4F:33:{i:02X}"),
+            name: "N".repeat(64),
+            rssi: Some(-100.0),
+        })
+        .collect();
+    sup.scan_end(now, Ok(candidates));
+    let r = sup.report();
+    assert_eq!(
+        r["audit"]["inventory"].as_object().unwrap().len(),
+        MAX_INVENTORY_KEYS
+    );
+    assert_eq!(r["scan"]["candidates"].as_array().unwrap().len(), 20);
+    let bytes = j(&r).len();
+    eprintln!("CF80 worst-case effective.obd = {bytes} bytes");
+    assert!(bytes <= 16_384, "{bytes}");
 }

@@ -13,6 +13,7 @@
 pub mod led;
 pub mod logs;
 pub mod manage;
+pub mod obd;
 pub mod pipeline;
 pub mod process_inspect;
 pub mod recording;
@@ -127,6 +128,7 @@ pub fn main(argv: &[String]) -> i32 {
         Some("set") => set::main(&rest),
         Some("led") => led::main(&rest),
         Some("sms") => sms::main(&rest),
+        Some("obd") => obd::main(&rest),
         Some("update") => update::main(&rest),
         Some("pipeline") => pipeline::main(&rest),
         Some("recording") => recording::main(&rest),

@@ -202,7 +202,7 @@ async fn renders_header_and_sidebar_and_opens_a_module_detail() {
     assert!(frame.contains("mqtt"));
     assert!(frame.contains("pid"));
     for t in [
-        "IMU", "GPS", "LTE", "System", "Media", "Activity", "Settings",
+        "IMU", "GPS", "LTE", "System", "OBD", "Media", "Activity", "Settings",
     ] {
         assert!(frame.contains(t), "sidebar lists {t}\n{frame}");
     }
@@ -462,7 +462,12 @@ async fn a_failed_mode_save_is_shown_and_the_tui_keeps_running() {
         .await
     });
     delay(150).await;
-    for _ in 0..6 {
+    // Down to Settings (index 7 since the OBD module, Phase 5b).
+    let settings = MODULES
+        .iter()
+        .position(|m| *m == ModuleId::Settings)
+        .unwrap();
+    for _ in 0..settings {
         tx.send(Input::Key(Key::Char('j'))).unwrap();
     }
     tx.send(Input::Key(Key::Enter)).unwrap(); // operating on Settings

@@ -709,6 +709,7 @@ async fn read_error_sets_last_error() {
         scope: r.scope.clone(),
         source: r.source.clone(),
         seq: Default::default(),
+        obd_last: Default::default(),
     };
     tick.run().await;
     let snap = r.ctx.state.snapshot();

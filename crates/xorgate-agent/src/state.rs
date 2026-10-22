@@ -56,6 +56,11 @@ impl StateStore {
         self.snap.recording = Some(recording);
     }
 
+    /// `setObd` (`state.ts:94-98` @ 09da38d): `None` removes the key.
+    pub fn set_obd(&mut self, obd: Option<xorgate_core::telemetry::ObdStatus>) {
+        self.snap.obd = obd;
+    }
+
     /// `setLatest` (`state.ts:96-99`).
     pub fn set_latest(&mut self, payload: TelemetryPayload) {
         self.snap.seq = payload.seq;
@@ -168,6 +173,11 @@ impl StateHandle {
 
     pub fn set_latest(&self, payload: TelemetryPayload) {
         self.lock().set_latest(payload);
+    }
+
+    /// `store.setObd(obd)` (Phase 5b).
+    pub fn set_obd(&self, obd: Option<xorgate_core::telemetry::ObdStatus>) {
+        self.lock().set_obd(obd);
     }
 
     pub fn set_recording(&self, recording: RecordingStatus) {

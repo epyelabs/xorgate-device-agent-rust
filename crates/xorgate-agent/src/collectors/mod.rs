@@ -8,8 +8,9 @@
 //! | `gps` | [`gps::GpsCollector`] — the NMEA tty, TTFF, sky tracker + `gnss-sky.json` | `collectors/gps.ts`, `hardware/gps.ts` |
 //! | `lte` | [`lte::LteCollector`] — the modem daemon's telemetry.json | `collectors/lte.ts` |
 //! | `system` | [`system::SystemCollector`] — /proc, /sys, statvfs, vcgencmd, device tree | `collectors/system.ts` |
+//! | `obd` | [`obd::ObdCollector`] — the supervised `obd_read.py` helper (Phase 5b) | `collectors/obd.ts`, `hardware/obd.ts` |
 //!
-//! Read order is imu → gps → lte → system (`index.ts:125-129`); a group whose
+//! Read order is imu → gps → lte → system → obd (`index.ts:157-168` @ 09da38d); a group whose
 //! read is empty is omitted. `media` is the KVS media supervisor's block when
 //! media is enabled (`index.ts:134-135`; Phase 3: built by the worker, handed
 //! in through [`start_with_media`]), else the idle block; the worker overlays
@@ -19,10 +20,16 @@
 //! so real mode enables all of them; the hardware block only gates the IMU
 //! (`imu: null` → no collector, no i2cdetect probe) and the PMIC rails
 //! (`rails: false`), exactly as `worker.ts:281-287`.
+//!
+//! Phase 5b (RUST-PORT collector-creation seam, `index.ts:162-168` @ 09da38d):
+//! the `obd` collector exists ONLY when the BOOT-time hardware block declares
+//! `peripherals.obd`; without it the collector list, and so the payload, is
+//! byte-for-byte the pre-OBD one.
 
 pub mod gps;
 pub mod imu;
 pub mod lte;
+pub mod obd;
 pub mod system;
 
 use std::sync::Arc;
@@ -60,6 +67,9 @@ pub struct IoCapabilities {
     /// `system`: `block ? { rails: block.rails } : true` → `Some(rails)`;
     /// `None` = no system collector (never in real mode).
     pub system_rails: Option<bool>,
+    /// `hardware.peripherals?.obd` (Phase 5b, `index.ts:165`): the OBD
+    /// collector exists only when the boot-time block declares it.
+    pub obd: bool,
 }
 
 impl IoCapabilities {
@@ -72,6 +82,7 @@ impl IoCapabilities {
             gps: true,
             signal: true,
             system_rails: Some(block.is_none_or(|b| b.rails)),
+            obd: block.is_some_and(|b| b.peripherals.as_ref().is_some_and(|p| p.obd.is_some())),
         }
     }
 }
@@ -99,6 +110,8 @@ pub struct Collectors {
     imu: Option<Arc<imu::ImuCollector>>,
     gps: Option<Arc<gps::GpsCollector>>,
     system: Option<Arc<system::SystemCollector>>,
+    /// The OBD collector (Phase 5b): `Some` only with `peripherals.obd`.
+    obd: Option<Arc<obd::ObdCollector>>,
     /// The KVS media supervisor (`index.ts:131-135`): `Some` only when media
     /// is enabled; `None` → the idle `media` block.
     media: Option<Arc<dyn MediaControl>>,
@@ -138,6 +151,7 @@ impl Collectors {
             .imu
             .then(|| Arc::new(imu::ImuCollector::new(ctx, backends.imu.clone())));
         let lte = caps.signal.then(|| Arc::new(lte::LteCollector::new(ctx)));
+        let obd = caps.obd.then(|| Arc::new(obd::ObdCollector::new(ctx)));
 
         let mut order: Vec<Arc<dyn Collector>> = Vec::new();
         if let Some(c) = &imu {
@@ -152,11 +166,15 @@ impl Collectors {
         if let Some(c) = &system {
             order.push(c.clone());
         }
+        if let Some(c) = &obd {
+            order.push(c.clone());
+        }
         Self {
             order,
             imu,
             gps,
             system,
+            obd,
             media: None,
         }
     }
@@ -230,6 +248,14 @@ impl TelemetrySource for Collectors {
         Some(GnssView { fix, sky })
     }
 
+    /// `obdStatus/obdReport/obdReapply/obdScan/obdForget` (`index.ts:231-245`
+    /// @ 09da38d): the collector, or `None` without `peripherals.obd`.
+    fn obd(&self) -> Option<Arc<dyn crate::ctx::ObdControl>> {
+        self.obd
+            .clone()
+            .map(|o| o as Arc<dyn crate::ctx::ObdControl>)
+    }
+
     /// `stop()` (`index.ts:164-166`) stops only the media supervisor (Phase
     /// 3). The TS process exit then takes the IMU helper down (execa's
     /// `cleanup`) and closes the tty; here the same happens explicitly: the
@@ -244,6 +270,10 @@ impl TelemetrySource for Collectors {
         }
         if let Some(gps) = &self.gps {
             gps.stop();
+        }
+        // `obd?.stop()` (`index.ts:205` @ 09da38d): SIGINT, the helper ATZs.
+        if let Some(obd) = &self.obd {
+            obd.stop();
         }
     }
 }

@@ -772,7 +772,8 @@ async fn run(args: &[String]) -> Result<i32> {
             scope: scope.clone(),
             reports: reports.clone(),
             report_rx,
-            obd: None,
+            // `source.obdReport?.()` / `source.obdReapply?.()` (Phase 5b I4).
+            obd: source.obd(),
         },
     );
     // `requestConfigReport = (origin) => configSync.request(origin);` (`:746`):
@@ -800,7 +801,8 @@ async fn run(args: &[String]) -> Result<i32> {
         CommandPlaneDeps {
             mqtt: mqtt.clone(),
             reports: reports.clone(),
-            obd: None,
+            // `source.obdScan?.()` / `source.obdForget?.()` (Phase 5b I4).
+            obd: source.obd(),
         },
         runner.clone(),
         sms,
