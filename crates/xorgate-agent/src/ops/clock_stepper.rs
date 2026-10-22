@@ -351,6 +351,22 @@ pub fn system_probe_ntp(
     })
 }
 
+/// [`time_source_on_stepped`] plus `clockTrust?.noteStep(stepSource)` —
+/// "a stepped clock is a trusted clock" (`worker.ts:546` @ 09da38d), after
+/// the time-source note and the background refresh, as in the TS.
+pub fn time_source_on_stepped_with_trust(
+    ts: crate::recording::time_source::TimeSourceHandle,
+    trust: Option<crate::ops::clock_trust::ClockTrust>,
+) -> Box<dyn Fn(SteppedClockSource, f64) + Send + Sync> {
+    let base = time_source_on_stepped(ts);
+    Box::new(move |source, offset_ms| {
+        base(source, offset_ms);
+        if let Some(t) = &trust {
+            t.note_step(source);
+        }
+    })
+}
+
 /// The worker's `onStepped` (`worker.ts:541-545`, CF58 / D26):
 /// `timeSource.noteStep(stepSource)` FIRST (future finalizations are stamped
 /// honestly at once), then `void timeSource.refresh().catch(() => {})` in the

@@ -190,6 +190,9 @@ pub type LiveShedFn = Arc<dyn Fn(bool) + Send + Sync>;
 pub type DisabledCamerasFn = Arc<dyn Fn(&[String]) + Send + Sync>;
 /// `onStatus(status)`.
 pub type StatusFn = Arc<dyn Fn(&RecordingStatus) + Send + Sync>;
+/// `clockTrusted: () => boolean` (`manager.ts:190-197` @ 09da38d): the clock
+/// trust gate (`ClockTrust::trusted`, which may flip to fallback).
+pub type ClockTrustedFn = Arc<dyn Fn() -> bool + Send + Sync>;
 /// `powerSample()` (the shed policy's ~1 Hz reading).
 pub type PowerSampleFn = Arc<dyn Fn() -> BoxFut<'static, Option<PowerSampleReading>> + Send + Sync>;
 
@@ -321,6 +324,10 @@ pub struct RecordingManagerOpts {
     pub poll_ms: Option<u64>,
     pub shed_sample_ms: Option<u64>,
     pub time_probe_timeout_ms: Option<u64>,
+    /// The clock trust gate (Phase 5b, I5): the telemetry recorder is not
+    /// started while this returns false; re-evaluated on every settings
+    /// poll. `None` = always trusted (sim, tests).
+    pub clock_trusted: Option<ClockTrustedFn>,
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +343,8 @@ pub struct RecordingSnapshot {
     pub boot_defer: Option<String>,
     pub power_shed: Option<String>,
     pub live_block: Option<LiveBlock>,
+    /// `this.cfg.telemetry.enabled` — the `clockHold` half `status()` needs.
+    pub telemetry_enabled: bool,
 }
 
 #[derive(Default)]
@@ -375,6 +384,8 @@ struct State {
     shed_cfg_key: String,
     last_settings_key: String,
     disk_timer: Option<CancellationToken>,
+    /// `clockHoldNoted` (`manager.ts:363` @ 09da38d): one "held" event per hold.
+    clock_hold_noted: bool,
 }
 
 enum Msg {
@@ -413,6 +424,7 @@ struct Inner {
     on_event: EventFn,
     clock: Arc<dyn Clock + Send + Sync>,
     backend: Arc<dyn RecordingBackend>,
+    clock_trusted: Option<ClockTrustedFn>,
     poll_ms: u64,
     shed_sample_ms: u64,
     time_probe_timeout_ms: u64,
@@ -520,6 +532,7 @@ impl RecordingManager {
             shed_cfg_key,
             last_settings_key: String::new(),
             disk_timer: None,
+            clock_hold_noted: false,
             cfg: cfg.clone(),
         };
         let (msgs, msg_rx) = mpsc::unbounded_channel();
@@ -540,6 +553,7 @@ impl RecordingManager {
             on_event: opts.on_event,
             clock,
             backend: opts.backend,
+            clock_trusted: opts.clock_trusted,
             poll_ms: opts.poll_ms.unwrap_or(flow::SETTINGS_POLL_MS),
             shed_sample_ms: opts.shed_sample_ms.unwrap_or(flow::SHED_SAMPLE_MS),
             time_probe_timeout_ms: opts
@@ -864,7 +878,28 @@ impl Inner {
             return self.apply(&mut st);
         }
         self.apply_video(&mut st);
+        // ... and the clock trust gate releases on its own too (NTP landed)
+        // (`manager.ts:356-360` @ 09da38d).
+        if st.cfg.telemetry.enabled && st.recorder.is_none() && self.clock_ok(&mut st) {
+            self.start_recorder(&mut st);
+            self.notify_status(&st);
+        }
         Ok(())
+    }
+
+    /// `clockOk()` (`manager.ts:365-376` @ 09da38d): the clock trust gate,
+    /// with its one "held" info event per hold.
+    fn clock_ok(&self, st: &mut State) -> bool {
+        let ok = self.clock_trusted.as_ref().is_none_or(|f| f());
+        if ok {
+            st.clock_hold_noted = false;
+            return true;
+        }
+        if !st.clock_hold_noted {
+            st.clock_hold_noted = true;
+            self.event(ActivityLevel::Info, flow::CLOCK_HOLD_EVENT);
+        }
+        false
     }
 
     /// `apply()` (`manager.ts:424-456`). `Err` = `stopRecorder`'s finalize
@@ -888,7 +923,8 @@ impl Inner {
         if let Some(why) = plan.stop {
             self.stop_recorder(st, why)?;
         }
-        if plan.start {
+        // `want && !this.recorder && this.clockOk()` (`manager.ts:476` @ 09da38d).
+        if plan.start && self.clock_ok(st) {
             self.start_recorder(st);
         }
         self.apply_video(st);
@@ -1257,6 +1293,7 @@ impl Inner {
             boot_defer: st.boot_defer_status.clone(),
             power_shed: st.shed_status.clone(),
             live_block: st.live_block.clone(),
+            telemetry_enabled: st.cfg.telemetry.enabled,
         };
         self.snapshot.send_if_modified(|cur| {
             if *cur == snap {
@@ -1287,7 +1324,12 @@ impl Inner {
             last_upload_at: u.last_upload_at,
             boot_defer: snap.boot_defer.clone(),
             power_shed: snap.power_shed.clone(),
-            clock_hold: false,
+            // `cfg.telemetry.enabled && recorder === null && !clockTrusted()`
+            // (`manager.ts:442-446` @ 09da38d) — the gate is consulted (and
+            // may flip to fallback) only when the first two hold.
+            clock_hold: snap.telemetry_enabled
+                && !snap.enabled
+                && !self.clock_trusted.as_ref().is_none_or(|f| f()),
             live_block: snap.live_block.clone(),
         }
     }

@@ -10,7 +10,8 @@
 //! | `reconcile_camera_mount` | `void reconcileCameraMountNow()` — config path (`:889`) + the 60 s poll (`:648-651`) |
 //! | `reconcile_camera_mount_boot` | `await reconcileCameraMountNow()` (`:432`) |
 //! | `camera_mount_state` | ConfigSync `cameraMount: () => cameraMountState` (`:713`) |
-//! | `report_hints` | ConfigSync `hints()` (`:719-726`) + `clockStepperArmed: clockStepper?.status().armed` |
+//! | `report_hints` | ConfigSync `hints()` (`:719-726`) + `clockStepperArmed: clockStepper?.status().armed` + `clockTrust: clockTrust?.status().state` (Phase 5b, `worker.ts:792-798` @ 09da38d) |
+//! | `publish_clock_gate` | the publish tick's `if (clockTrust && !clockTrust.trusted()) { clockTrust.noteHeld(); return; }` (Phase 5b, `worker.ts:1406-1412` @ 09da38d) |
 //!
 //! The leaves (WP1 `LedManager`, WP3 `ClockStepper` / `CameraMountReconciler`)
 //! are reached through the three small traits below, bound late (the TS
@@ -32,6 +33,7 @@ use xorgate_core::telemetry::{RecordingStatus, TelemetryMedia};
 use xorgate_core::types::CameraMountState;
 
 use crate::ctx::{BoxFut, PhaseHooks, ReportRequester};
+use crate::ops::clock_trust::ClockTrust;
 use crate::recording::hooks::RecordingHooks;
 
 /// The worker's view of the status LED manager (WP1 `LedManager`, I2).
@@ -80,6 +82,9 @@ pub struct OpsHooks {
     /// `requestConfigReport` (`:168`): `null` until the report plane exists
     /// (`:746`) — a change seen before that (the boot pass) requests nothing.
     reports: Arc<OnceLock<ReportRequester>>,
+    /// `clockTrust` (`worker.ts:476` @ 09da38d): bound in real mode only
+    /// (else `null`: never held, no hint).
+    clock_trust: OnceLock<ClockTrust>,
 }
 
 impl OpsHooks {
@@ -94,7 +99,19 @@ impl OpsHooks {
             stepper: OnceLock::new(),
             camera: OnceLock::new(),
             reports: Arc::new(OnceLock::new()),
+            clock_trust: OnceLock::new(),
         }
+    }
+
+    /// The clock trust gate (real mode only), bound right after it is built
+    /// and started (`worker.ts:476-487` @ 09da38d).
+    pub fn bind_clock_trust(&self, trust: ClockTrust) {
+        let _ = self.clock_trust.set(trust);
+    }
+
+    /// The bound clock trust gate, if any (recorder gate, stepper hook).
+    pub fn clock_trust(&self) -> Option<&ClockTrust> {
+        self.clock_trust.get()
     }
 
     /// The camera-mount reconciler (real mode only), before the boot pass.
@@ -213,7 +230,19 @@ impl PhaseHooks for OpsHooks {
     fn report_hints(&self) -> ReportHints {
         ReportHints {
             clock_stepper_armed: self.stepper.get().map(|s| s.armed()),
+            // `clockTrust: clockTrust?.status().state` (`worker.ts:797` @ 09da38d).
+            clock_trust: self.clock_trust.get().map(|t| t.status().state),
             ..self.rec.report_hints()
+        }
+    }
+
+    fn publish_clock_gate(&self) -> bool {
+        match self.clock_trust.get() {
+            Some(t) if !t.trusted() => {
+                t.note_held();
+                false
+            }
+            _ => true,
         }
     }
 

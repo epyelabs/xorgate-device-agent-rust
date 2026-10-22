@@ -424,6 +424,14 @@ pub trait PhaseHooks: Send + Sync + 'static {
     fn report_hints(&self) -> ReportHints {
         ReportHints::default()
     }
+    /// The publish tick's clock trust gate (Phase 5b, `worker.ts:1406-1412`
+    /// @ 09da38d): `true` = publish; `false` = withheld (the hook has already
+    /// counted it with `noteHeld()`). Called AFTER `seq += 1`, `setLatest`
+    /// and the OBD status edge, BEFORE `telemetryScope.noteTick` (CF72).
+    /// Without a clock trust gate (sim, Phase 2–4 hooks): always `true`.
+    fn publish_clock_gate(&self) -> bool {
+        true
+    }
     /// `led.tick()` from the 1 s heartbeat (`:635`).
     fn led_tick(&self) {}
     /// `led.configApplied()` on a real cloud-config change (`:866`).

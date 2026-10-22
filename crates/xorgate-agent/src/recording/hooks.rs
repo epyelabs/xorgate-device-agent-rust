@@ -365,6 +365,8 @@ impl PhaseHooks for RecordingHooks {
             power_shed: snap.power_shed,
             // `clockStepper?.status().armed` — Phase 4.
             clock_stepper_armed: None,
+            // `clockTrust?.status().state` — Phase 5b (`OpsHooks`).
+            clock_trust: None,
         }
     }
 

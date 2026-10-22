@@ -85,6 +85,9 @@ pub struct ConfigSyncOptions {
     pub hints: Option<Arc<dyn Fn() -> ReportHints + Send + Sync>>,
     pub camera_mount: Option<Arc<dyn Fn() -> Option<CameraMountState> + Send + Sync>>,
     pub telemetry_scope: Option<Arc<dyn Fn() -> Option<TelemetryScopeReport> + Send + Sync>>,
+    /// `obd: () => source.obdReport?.() ?? null` (`worker.ts:790` @ 09da38d):
+    /// the OBD collector's `effective.obd` (I2, opaque); a snapshot read.
+    pub obd: Option<Arc<dyn Fn() -> Option<serde_json::Value> + Send + Sync>>,
     pub on_event: Option<EventFn>,
     /// `Date.now()` (report `ts`, `lastReportTs`).
     pub now: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -127,6 +130,7 @@ impl ConfigSyncOptions {
             hints: None,
             camera_mount: None,
             telemetry_scope: None,
+            obd: None,
             on_event: None,
             now: Arc::new(crate::now_ms),
             state_path,
@@ -244,6 +248,23 @@ impl ConfigSync {
     /// `shouldApply(rev)` (`:1283-1285`): the rev guard.
     pub fn should_apply(&self, rev: Option<u64>) -> bool {
         xorgate_core::config_report::should_apply_rev(rev, self.lock().state.last_applied_rev)
+    }
+
+    /// `unheldNamespaces(parsed)` (`config-sync.ts:1445-1455` @ 09da38d): the
+    /// upgrade exception to the rev guard — the keys of an already-applied
+    /// document this build understands but the device has never held. An
+    /// unreadable/invalid settings.json → none.
+    pub fn unheld_namespaces(&self, parsed: &CloudConfig) -> Vec<&'static str> {
+        let Ok(settings) = self.read_settings() else {
+            // `if (!read.ok) return [];` — `ok` is false for absent too.
+            return Vec::new();
+        };
+        let core = self.lock();
+        xorgate_core::config_report::unheld_namespaces(
+            parsed,
+            &settings,
+            core.state.namespaces.as_ref(),
+        )
     }
 
     /// `noteCloudConfig(rev, raw, parsed, applied)` (`:1293-1318`): remember
@@ -506,6 +527,7 @@ impl ConfigSync {
                 telemetry_scope: opts.telemetry_scope.as_ref().and_then(|f| f()),
                 mode: opts.mode.clone(),
                 changed: res.changed,
+                obd: opts.obd.as_ref().and_then(|f| f()),
             },
             &opts.build,
         );

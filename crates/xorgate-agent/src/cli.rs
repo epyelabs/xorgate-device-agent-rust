@@ -56,7 +56,7 @@ pub fn split_command(av: &[String]) -> (Option<String>, Vec<String>) {
     (None, av.to_vec())
 }
 
-/// `usage()` (`cli.tsx:120-162`), listing the verbs this binary has. The
+/// `usage()` (`cli.tsx:123-171` @ 09da38d), listing the verbs this binary has. The
 /// TS lines are kept where they hold for the Rust binary; `start`/`stop`/
 /// `restart` are systemd's (README §3.3), `manage` has no daemon controls
 /// (Q10), `logs` falls back to the journal (O9); the `update` lines are
@@ -84,6 +84,11 @@ Commands:
              automatically; these are for bench work. Inert off-device.
   sms        Read the modem's stored SMS, newest first, without marking them read:
              'sms [--limit N] [--json]' (N 1..50, default 10). Bench tool; prints text.
+             'sms clear [--yes]' deletes ALL stored SMS (SIM + modem); counts only.
+  obd        Vehicle OBD2 adapter: 'obd scan [--seconds N] [--json]' lists nearby Bluetooth
+             devices (never pairs); 'obd status' prints the obd line + last vehicle profile.
+             Settings: 'set obd.enabled on', 'set obd.adapter <MAC>', 'set obd.pin <digits>',
+             'set obd.poll-hz <0.2-2>', 'set obd.power-source <switched|constant>'.
   logs       Print the daemon log   (-f follow, -n N lines, --clear truncate;
              the journal of xorgate-agent-rs when there is no agent.log)
   update     Fetch the latest agent build, install it, and restart the service
