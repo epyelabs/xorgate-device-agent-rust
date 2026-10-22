@@ -733,3 +733,96 @@ fn noop_hooks_are_inert() {
     assert_eq!(h.report_hints(), Default::default());
     assert!(h.final_recording_status().is_none());
 }
+
+/// Phase 5b (`worker.ts:1374-1412` @ 09da38d): while the clock trust gate
+/// HOLDS, a tick builds the payload (`seq += 1`, `setLatest`) and returns
+/// before the publish — so there is no publish callback and state.json is
+/// NOT re-flushed by the tick (the file keeps the earlier snapshot until
+/// trust). A `[clock]` event during the hold still writes it (`onEvent` →
+/// `store.event` + forced flush), as in the TS. Checked on the file's bytes
+/// BEFORE any shutdown flush.
+#[tokio::test(start_paused = true)]
+async fn a_held_tick_advances_seq_but_does_not_write_state_json() {
+    use xorgate_agent::ops::clock_stepper::agent_event_sink;
+    use xorgate_agent::ops::clock_trust::{ClockTrust, ClockTrustOptions, TrustProbe};
+    use xorgate_agent::ops::hooks::OpsHooks;
+    use xorgate_agent::recording::RecordingHooks;
+
+    let slot: Arc<std::sync::OnceLock<Arc<OpsHooks>>> = Default::default();
+    let s2 = slot.clone();
+    let r = rig_with("p5b-held-flush", "dev-h", move |_t| {
+        let clock = Arc::new(xorgate_agent::ctx::AgentClock::following_tokio(
+            1_800_000_000_000,
+        ));
+        let rec = Arc::new(RecordingHooks::new(None, None, Arc::new(|| None), clock));
+        let ops = Arc::new(OpsHooks::new(rec));
+        let _ = s2.set(ops.clone());
+        ops as Arc<dyn PhaseHooks>
+    });
+    let ops = slot.get().unwrap().clone();
+    // A probe that never syncs and throws on the 2nd call (a `[clock]` warn
+    // event while still held).
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c2 = calls.clone();
+    let probe: TrustProbe = Box::new(move || {
+        let n = c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if n == 1 {
+                Err("timedatectl: boom".to_string())
+            } else {
+                Ok(xorgate_core::session::ProbedTimeSource::Unsynced)
+            }
+        })
+    });
+    let trust = ClockTrust::new(ClockTrustOptions::new(
+        probe,
+        r.ctx.clock.clone(),
+        agent_event_sink(r.ctx.state.clone(), r.ctx.clock.clone()),
+    ));
+    ops.bind_clock_trust(trust.clone());
+    r.link.set(LinkState::Connected);
+    r.ctx.state.set_connection(
+        xorgate_core::telemetry::ConnectionState::Connected,
+        r.ctx.now_ms(),
+    );
+
+    let path = r.ctx.paths.state.clone();
+    r.ctx.state.flush(r.ctx.now_ms(), true);
+    let before = std::fs::read(&path).unwrap();
+    let tick = PublishTick {
+        ctx: r.ctx.clone(),
+        mqtt: r.mqtt.clone(),
+        scope: r.scope.clone(),
+        source: r.source.clone(),
+        seq: Default::default(),
+    };
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_millis(1_000)).await;
+        tick.run().await;
+    }
+    // In memory: seq + latest advanced on every held tick; nothing published.
+    let snap = r.ctx.state.snapshot();
+    assert_eq!(snap.latest.as_ref().unwrap().seq, 2);
+    assert_eq!(snap.seq, 2);
+    assert_eq!(snap.published, 0);
+    assert!(r.link.topics().is_empty());
+    assert_eq!(trust.status().held, 3);
+    // On disk: untouched by the held ticks.
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "a held tick wrote state.json"
+    );
+
+    // A `[clock]` event during the hold flushes (with the advanced seq).
+    trust.tick().await; // probe #1: unsynced → nothing
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    trust.tick().await; // probe #2 throws → warn event → forced flush
+    assert!(!trust.trusted());
+    let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(after["seq"], 2);
+    assert_eq!(
+        after["recentEvents"].as_array().unwrap().last().unwrap()["msg"],
+        "[clock] trust probe failed: timedatectl: boom"
+    );
+}
