@@ -27,6 +27,10 @@ RULES = [
      "clock trust events"),
     ("X5", r"^report$", r"timeSync|clockTrust|hints", None, "timeSync held detail / hints.clockTrust"),
     ("X5", r"^state$", r"clockHold", None, "recording.clockHold"),
+    # Clock-gated tapes (NTP unsynced at start): B withholds its telemetry until
+    # trust — the A-only payloads and the lower publish count.
+    ("X5", r"^telemetry$", r"^\(message\)$", None, "telemetry withheld while the clock is untrusted"),
+    ("X5", r"^state$", r"^published$", None, "publish count lower by the held samples"),
     ("X8", r"^events$", r"signal read failed", None, "LedManager resolves on LED-less hosts"),
     # X8 side effect (sweep-A finding): LedManager.tick now runs signals() on an
     # LED-less host every second -> source.gnssView() -> skyNow(), which writes
