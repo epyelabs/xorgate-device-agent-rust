@@ -28,10 +28,13 @@ use serde_json::{Map, Value};
 
 use crate::boot_config::{CameraMountState, CameraMountVerdict};
 use crate::build_info::BuildInfo;
+use crate::clock_trust::ClockTrustState;
 use crate::cloud_config::CloudConfig;
 use crate::js::{self, trim as js_trim};
 use crate::js::{date_parse_ms, number_to_string, object_key_order, parsed_key_order};
-use crate::settings::{AgentSettings, CameraMountSettings, CellularSettings};
+use crate::settings::{
+    AgentSettings, CameraMountSettings, CellularSettings, ObdSettings, OBD_NAMESPACE_KEYS,
+};
 use crate::telemetry::JsNumber;
 use crate::telemetry_scope::TelemetryScopeReport;
 use crate::types::{ApnState, SimRegistration, SimState};
@@ -444,6 +447,84 @@ pub fn diff_namespaces(base: &Map<String, Value>, next: &Map<String, Value>) -> 
     out
 }
 
+/// `unheldNamespaces` (`config-sync.ts:323-347` @ 09da38d): namespaces a
+/// desired document carries that this device has NEVER held — absent from
+/// settings.json AND absent from the sync baseline. Only an agent UPGRADE
+/// produces that combination (the previous build's tolerant parser dropped
+/// the key but still stamped the rev as applied). Never fires before a
+/// baseline exists; `null` (the cloud's revert marker, `Some(None)`) is not
+/// "carried". Registry order.
+pub fn unheld_namespaces(
+    parsed: &CloudConfig,
+    settings: &AgentSettings,
+    baseline: Option<&Map<String, Value>>,
+) -> Vec<&'static str> {
+    let Some(baseline) = baseline else {
+        return Vec::new();
+    };
+    let held = namespaces_of(settings);
+    CONFIG_NAMESPACE_KEYS
+        .iter()
+        .copied()
+        .filter(|key| {
+            carried_namespace(parsed, key)
+                && !held.contains_key(*key)
+                && !baseline.contains_key(*key)
+        })
+        .collect()
+}
+
+/// `doc[key] !== undefined && doc[key] !== null` on a parsed `CloudConfig`.
+fn carried_namespace(parsed: &CloudConfig, key: &str) -> bool {
+    match key {
+        "gnssAntBias" => parsed.gnss_ant_bias.is_some(),
+        "imuMount" => matches!(parsed.imu_mount, Some(Some(_))),
+        "recording" => matches!(parsed.recording, Some(Some(_))),
+        "lteRecovery" => matches!(parsed.lte_recovery, Some(Some(_))),
+        "timeSync" => matches!(parsed.time_sync, Some(Some(_))),
+        "cellular" => matches!(parsed.cellular, Some(Some(_))),
+        "cameraMount" => matches!(parsed.camera_mount, Some(Some(_))),
+        "simulation" => matches!(parsed.simulation, Some(Some(_))),
+        "obd" => matches!(parsed.obd, Some(Some(_))),
+        _ => false,
+    }
+}
+
+/// The adoption subset the worker applies under the rev guard's upgrade
+/// exception (`worker.ts:948-956` @ 09da38d): `Object.fromEntries(adopt.map(
+/// key => [key, parsed[key]]))` — ONLY those keys (no `rev`, no envelope),
+/// in `adopt` order. Its JSON is the "cloud config applied:" summary.
+pub fn adoption_subset(parsed: &CloudConfig, adopt: &[&str]) -> CloudConfig {
+    let mut out = CloudConfig::default();
+    for key in adopt {
+        match *key {
+            "gnssAntBias" => out.gnss_ant_bias = parsed.gnss_ant_bias,
+            "imuMount" => out.imu_mount = parsed.imu_mount,
+            "recording" => out.recording = parsed.recording.clone(),
+            "lteRecovery" => out.lte_recovery = parsed.lte_recovery.clone(),
+            "timeSync" => out.time_sync = parsed.time_sync.clone(),
+            "cellular" => out.cellular = parsed.cellular.clone(),
+            "cameraMount" => out.camera_mount = parsed.camera_mount.clone(),
+            "simulation" => out.simulation = parsed.simulation.clone(),
+            "obd" => out.obd = parsed.obd.clone(),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `[agent] cloud config rev <rev> already applied, but it carries
+/// namespace(s) this build never held: <keys> — adopting` (`worker.ts:953-955`
+/// @ 09da38d). `rev` prints like the TS template (`undefined` cannot occur:
+/// the guard only skips a positive rev).
+pub fn unheld_adopt_log(rev: Option<u64>, adopt: &[&str]) -> String {
+    let rev = rev.map_or_else(|| "undefined".to_string(), |r| r.to_string());
+    format!(
+        "[agent] cloud config rev {rev} already applied, but it carries namespace(s) this build never held: {} — adopting",
+        adopt.join(", ")
+    )
+}
+
 /// The decision inside `ensureConfigSyncBaseline` (`config-sync.ts:328-341`):
 /// a sync state that has no namespace baseline adopts the current file
 /// silently (`namespaces` + `settingsHash`); one that has is returned as-is.
@@ -782,24 +863,35 @@ pub struct ReportHints {
     /// `ClockStepper.status().armed` — false once NTP synced this boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock_stepper_armed: Option<bool>,
+    /// `ClockTrust.status().state` (`config-sync.ts:586-591` @ 09da38d):
+    /// "held" while the live publish and the recorder wait for a trusted
+    /// wall clock, "fallback" past the 5 min cap, "trusted". `None` in sim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_trust: Option<ClockTrustState>,
 }
 
-/// `AGENT_CAPABILITIES` (`config-sync.ts:595`): optional features this build
-/// advertises as `effective.agent.capabilities`; the cloud gates commands on
-/// them (`sms.read` = the `read_sms` command + `…/sms` result).
-pub const AGENT_CAPABILITIES: &[&str] = &["sms.read"];
+/// `AGENT_CAPABILITIES` (`config-sync.ts:631-639` @ 09da38d): optional
+/// features this build advertises as `effective.agent.capabilities` on
+/// EVERY device; the cloud gates commands on them: `sms.read` = `read_sms`
+/// and its `…/sms` result, `sms.clear` = `clear_sms`, `obd.scan` and
+/// `obd.forget` = the two OBD one-shots (which still need the model's
+/// `peripherals.obd`; the cloud gates on that, not here).
+pub const AGENT_CAPABILITIES: &[&str] = &["sms.read", "sms.clear", "obd.scan", "obd.forget"];
 
 /// `buildEffective` (`config-sync.ts:597`): what settings.json actually holds
 /// right now, with `gnssAntBias` / `cellular.apn` / `cameraMount` overridden
 /// by what is IN FORCE, plus the reported-only blocks (`agent`,
 /// `telemetryScope`, `sim`, `uplink`, `apn`). An ABSENT namespace means
 /// "device defaults". `build` replaces the TS `loadBuildInfo()` call (`:639`).
+/// `obd` is the OBD collector's report (I2: opaque, already in the TS key
+/// order), present only with the peripheral (`config-sync.ts:699-709` @ 09da38d).
 pub fn build_effective(
     settings: &AgentSettings,
     modem: &ModemBiasSample,
     mode: Option<&str>,
     camera_mount: Option<&CameraMountState>,
     telemetry_scope: Option<&TelemetryScopeReport>,
+    obd: Option<&Value>,
     build: &BuildInfo,
 ) -> Map<String, Value> {
     let to = |v: &dyn erased::Ser| v.to_json();
@@ -857,6 +949,11 @@ pub fn build_effective(
     }
     if let Some(apn) = &modem.apn {
         out.insert("apn".into(), to(apn));
+    }
+    // `if (obd) out.obd = obd;` — the collector's report; the local-edit
+    // fold-back reads settings.json, never this block.
+    if let Some(obd) = obd {
+        out.insert("obd".into(), obd.clone());
     }
     out
 }
@@ -1001,6 +1098,7 @@ fn parsed_namespace(parsed: &CloudConfig, key: &str) -> Option<Option<Value>> {
         "cellular" => triple(&parsed.cellular),
         "cameraMount" => triple(&parsed.camera_mount),
         "simulation" => triple(&parsed.simulation),
+        "obd" => triple(&parsed.obd),
         _ => None,
     }
 }
@@ -1020,6 +1118,7 @@ pub fn build_status(
     at: i64,
     hints: &ReportHints,
     camera_mount: Option<&CameraMountState>,
+    settings: Option<&AgentSettings>,
 ) -> IndexMap<String, NamespaceStatus> {
     let mut out = IndexMap::new();
     let Some(desired) = desired else {
@@ -1034,8 +1133,16 @@ pub fn build_status(
 
         if parsed == Some(None) && is_empty_object(raw) {
             // The cloud's "revert to device defaults" marker: the apply dropped
-            // the local key — that is the revert SUCCEEDING.
-            let st = if effective.get(*key).is_none() {
+            // the local key — that is the revert SUCCEEDING. `effective.obd`
+            // is the collector's report and exists whether or not the
+            // namespace is held, so for obd "still holding" means
+            // settings.json (`config-sync.ts:857-860` @ 09da38d; CF74).
+            let still_held = if *key == "obd" {
+                settings.is_some_and(|s| s.obd.is_some())
+            } else {
+                effective.get(*key).is_some()
+            };
+            let st = if !still_held {
                 NamespaceStatus::applied(at)
             } else {
                 NamespaceStatus::adjusted(
@@ -1091,6 +1198,20 @@ pub fn build_status(
             continue;
         }
 
+        if *key == "obd" {
+            let desired_obd: ObdSettings = serde_json::from_value(parsed).expect("parsed obd");
+            out.insert(
+                key_s,
+                obd_status(
+                    &desired_obd,
+                    settings.and_then(|s| s.obd.as_ref()),
+                    effective.get("obd"),
+                    at,
+                ),
+            );
+            continue;
+        }
+
         if *key == "cellular" {
             let desired_cell: CellularSettings =
                 serde_json::from_value(parsed).expect("parsed cellular");
@@ -1115,6 +1236,82 @@ pub fn build_status(
         out.insert(key_s, st);
     }
     out
+}
+
+/// `rejected` reason when no OBD collector reports (`config-sync.ts:1024-1027` @ 09da38d).
+pub const OBD_NO_PERIPHERAL_REASON: &str = "obd: this device's hardware block declares no OBD peripheral (peripherals.obd) — the namespace is saved but nothing on the device reads it";
+
+/// `obdStatus` (`config-sync.ts:998-1067` @ 09da38d): the `obd` namespace's
+/// verdict.
+///  - no collector report      -> rejected (no `peripherals.obd`);
+///  - settings.json differs    -> adjusted (local edit / not held yet);
+///  - collector not caught up  -> adjusted (two texts keyed on `source`);
+///  - otherwise                -> applied, with a runtime detail when the
+///    setting is in force but not yet doing anything useful.
+///
+/// `report` is the opaque `effective.obd` (I2); only the six namespace
+/// keys, `status` and `source` are read.
+pub fn obd_status(
+    desired: &ObdSettings,
+    held: Option<&ObdSettings>,
+    report: Option<&Value>,
+    at: i64,
+) -> NamespaceStatus {
+    let Some(report) = report else {
+        return NamespaceStatus::rejected(at, OBD_NO_PERIPHERAL_REASON.into());
+    };
+    let to = |s: &ObdSettings| serde_json::to_value(s).expect("obd settings serialise");
+    // `deepEqual(held, desired)`: `undefined` vs an object is unequal.
+    let held_matches = held.is_some_and(|h| deep_equal(&to(h), &to(desired)));
+    if !held_matches {
+        let detail = if held.is_none() {
+            "saved, but the device is not holding this namespace yet"
+        } else {
+            "the device is holding a different value (changed locally?)"
+        };
+        return NamespaceStatus::adjusted(at, detail.into());
+    }
+    let want = desired.with_defaults();
+    let want_v = to(&want);
+    // `have[key] = report[key]` for the six keys: an absent report key is
+    // `undefined`, which `deepEqual` sees as an own key holding undefined —
+    // never equal to a defined value (`want` has all six).
+    let have_matches = OBD_NAMESPACE_KEYS
+        .iter()
+        .all(|k| match (report.get(*k), want_v.get(*k)) {
+            (Some(h), Some(w)) => deep_equal(h, w),
+            _ => false,
+        });
+    if !have_matches {
+        let detail = if report.get("source").and_then(Value::as_str) == Some("env") {
+            "saved; the OBD collector is still on the env seam (XORGATE_OBD_*) and picks the namespace up on its next tick"
+        } else {
+            "saved; the OBD collector applies it on its next tick (about a second)"
+        };
+        return NamespaceStatus::adjusted(at, detail.into());
+    }
+    let status = report.get("status").and_then(Value::as_str);
+    let enabled = want.enabled == Some(true);
+    let mac = want.adapter_mac.clone().flatten();
+    let detail = match (enabled, mac) {
+        (true, Some(mac)) => match status {
+            Some("not_configured") => Some(format!(
+                "in force, but the device forgot adapter {mac} (obd_forget) — clear or change the adapter to pair again"
+            )),
+            Some("adapter_not_found") | Some("backoff") => Some(
+                "in force, but the adapter is not reachable right now (unplugged, out of range or not powered)".into(),
+            ),
+            Some("parked") => Some(
+                "in force, but the helper is parked after repeated failures (see the device events)".into(),
+            ),
+            _ => None,
+        },
+        (true, None) => Some("in force; no adapter configured, so nothing is polled (link 0)".into()),
+        (false, _) => None,
+    };
+    let mut st = NamespaceStatus::applied(at);
+    st.detail = detail;
+    st
 }
 
 /// `cameraMountStatus` (`config-sync.ts:879`): `adjusted` + `detail` is the
@@ -1297,13 +1494,31 @@ pub fn latch_detail(key: &str, hints: &ReportHints) -> Option<String> {
         }
         return (!parts.is_empty()).then(|| format!("in force, but {}", parts.join("; ")));
     }
-    if key == "timeSync" && hints.clock_stepper_armed == Some(false) {
-        return Some(
-            "in force, but the clock stepper stood down for this boot (NTP is synchronized)".into(),
-        );
+    if key == "timeSync" {
+        // `config-sync.ts:1165-1174` @ 09da38d: the clock trust hold first.
+        match hints.clock_trust {
+            Some(ClockTrustState::Held) => {
+                return Some(CLOCK_TRUST_HELD_DETAIL.into());
+            }
+            Some(ClockTrustState::Fallback) => {
+                return Some(CLOCK_TRUST_FALLBACK_DETAIL.into());
+            }
+            _ => {}
+        }
+        if hints.clock_stepper_armed == Some(false) {
+            return Some(
+                "in force, but the clock stepper stood down for this boot (NTP is synchronized)"
+                    .into(),
+            );
+        }
     }
     None
 }
+
+/// `timeSync` detail while the clock trust gate holds (`config-sync.ts:1167` @ 09da38d).
+pub const CLOCK_TRUST_HELD_DETAIL: &str = "in force, but the wall clock is not trusted yet: telemetry publish and recording are held until NTP/GPS/NITZ lands (5 min cap)";
+/// `timeSync` detail in clock trust fallback (`config-sync.ts:1170` @ 09da38d).
+pub const CLOCK_TRUST_FALLBACK_DETAIL: &str = "in force, but no NTP/GPS/NITZ sync landed within 5 min: publishing on an untrusted clock (timestamps may be early)";
 
 // --- report builder ---------------------------------------------------------
 
@@ -1339,6 +1554,14 @@ pub struct ReportInput {
         serialize_with = "js::json_map_opt::serialize"
     )]
     pub changed: Option<Map<String, Value>>,
+    /// OBD collector report (`ReportInput.obd`, `config-sync.ts:1208` @
+    /// 09da38d); reported-only, absent without the peripheral.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js::json_value_opt::serialize"
+    )]
+    pub obd: Option<Value>,
 }
 
 /// `buildConfigReport` (`config-sync.ts:1059`): assemble a complete report.
@@ -1350,6 +1573,7 @@ pub fn build_config_report(input: &ReportInput, build: &BuildInfo) -> ConfigRepo
         input.mode.as_deref(),
         input.camera_mount.as_ref(),
         input.telemetry_scope.as_ref(),
+        input.obd.as_ref(),
         build,
     );
     let status = build_status(
@@ -1359,6 +1583,7 @@ pub fn build_config_report(input: &ReportInput, build: &BuildInfo) -> ConfigRepo
         input.ts,
         input.hints.as_ref().unwrap_or(&ReportHints::default()),
         input.camera_mount.as_ref(),
+        Some(&input.settings),
     );
     // Only a local report carries `changed`.
     let changed = match (&input.origin, &input.changed) {
@@ -1451,7 +1676,10 @@ mod tests {
         assert!(should_apply_rev(Some(0), 99));
         assert!(should_apply_rev(Some(43), 42));
         assert!(!should_apply_rev(Some(42), 42));
-        assert_eq!(AGENT_CAPABILITIES, ["sms.read"]);
+        assert_eq!(
+            AGENT_CAPABILITIES,
+            ["sms.read", "sms.clear", "obd.scan", "obd.forget"]
+        );
         assert_eq!(MODEM_TELEMETRY_STALE_MS, 180_000);
     }
 

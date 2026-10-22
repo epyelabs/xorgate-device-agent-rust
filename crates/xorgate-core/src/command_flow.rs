@@ -662,6 +662,137 @@ mod tests {
         }
     }
 
+    /// `worker.ts:1217-1226` @ 09da38d: without the collector, `obd_scan` /
+    /// `obd_forget` are claimed, logged "accepted", then rejected on the ack
+    /// with `no OBD peripheral` (+ the warn log and event, verbatim).
+    #[test]
+    fn obd_commands_without_the_collector_are_rejected() {
+        for (name, wire) in [
+            (DeviceCommandName::ObdScan, "obd_scan"),
+            (DeviceCommandName::ObdForget, "obd_forget"),
+        ] {
+            let c = cmd(&format!(
+                r#"{{"v":1,"requestId":"r-1","command":"{wire}","ts":{T0},"expiresAt":{}}}"#,
+                T0 + 60_000
+            ));
+            let d = decide_command(
+                Some(&c),
+                T0 + 1,
+                &Ledger::empty(),
+                RefreshWindow { now: 0, last: None },
+                RunMode::Real,
+                false,
+            );
+            assert!(matches!(d.effects[0], Effect::PersistLedger(_)));
+            assert_eq!(
+                d.effects[1..],
+                [
+                    Effect::Log(
+                        ConsoleLevel::Info,
+                        format!("[agent] {wire} command accepted (r-1)")
+                    ),
+                    Effect::Event(ActivityLevel::Info, format!("{wire} command accepted")),
+                    Effect::Log(
+                        ConsoleLevel::Warn,
+                        format!("[agent] {wire} rejected (r-1): no OBD peripheral on this device")
+                    ),
+                    Effect::Event(
+                        ActivityLevel::Warn,
+                        format!("{wire} rejected: no OBD peripheral on this device")
+                    ),
+                    Effect::Ack {
+                        status: AckStatus::Rejected,
+                        reason: Some("no OBD peripheral".into())
+                    },
+                ]
+            );
+            // With the collector: the job starts BEFORE the accepted ack.
+            let d = decide_command(
+                Some(&c),
+                T0 + 1,
+                &Ledger::empty(),
+                RefreshWindow { now: 0, last: None },
+                RunMode::Sim,
+                true,
+            );
+            assert_eq!(
+                d.effects[3..],
+                [
+                    Effect::ObdJob(name),
+                    Effect::Ack {
+                        status: AckStatus::Accepted,
+                        reason: None
+                    },
+                ]
+            );
+        }
+        assert_eq!(obd_scan_summary(3), "scan: 3 candidate(s)");
+        assert_eq!(obd_forget_summary(None), "forget: no adapter");
+        assert_eq!(
+            obd_forget_summary(Some("AA:BB:CC:DD:EE:FF")),
+            "forget: AA:BB:CC:DD:EE:FF"
+        );
+        assert_eq!(
+            obd_job_done_log(DeviceCommandName::ObdScan, "r-1", "scan: 0 candidate(s)"),
+            "[agent] obd_scan r-1: scan: 0 candidate(s)"
+        );
+    }
+
+    /// `worker.ts:1195-1207` @ 09da38d: `clear_sms` acks, then runs the clear
+    /// (real → the reader, sim → the fixture inbox); a duplicate never
+    /// reaches it (the ledger claim comes first).
+    #[test]
+    fn clear_sms_acks_then_clears_and_a_duplicate_never_clears() {
+        let c = cmd(&format!(
+            r#"{{"v":1,"requestId":"r-2","command":"clear_sms","ts":{T0},"expiresAt":{},"args":{{"limit":500}}}}"#,
+            T0 + 60_000
+        ));
+        let d = decide_command(
+            Some(&c),
+            T0 + 1,
+            &Ledger::empty(),
+            RefreshWindow { now: 0, last: None },
+            RunMode::Real,
+            false,
+        );
+        assert_eq!(
+            d.effects[3..],
+            [
+                Effect::Ack {
+                    status: AckStatus::Accepted,
+                    reason: None
+                },
+                Effect::ClearSms {
+                    source: SmsSource::Reader,
+                    request_id: "r-2".into(),
+                    limit: 50
+                },
+            ]
+        );
+        let Effect::PersistLedger(ledger) = &d.effects[0] else {
+            panic!("claim first")
+        };
+        let again = decide_command(
+            Some(&c),
+            T0 + 2,
+            ledger,
+            RefreshWindow { now: 0, last: None },
+            RunMode::Real,
+            false,
+        );
+        assert!(again
+            .effects
+            .iter()
+            .all(|e| !matches!(e, Effect::ClearSms { .. })));
+        assert_eq!(
+            again.effects.last(),
+            Some(&Effect::Ack {
+                status: AckStatus::Rejected,
+                reason: Some("duplicate".into())
+            })
+        );
+    }
+
     #[test]
     fn real_mode_sms_sweep_measures_its_span_fixture_stays_zero() {
         let c = TickingClock {

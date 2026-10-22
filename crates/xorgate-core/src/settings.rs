@@ -661,6 +661,192 @@ pub fn parse_simulation_settings(v: &Value) -> Option<SimulationSettings> {
 }
 
 // ---------------------------------------------------------------------------
+// obd — `settings.ts:329-412` @ 09da38d
+// ---------------------------------------------------------------------------
+
+/// `OBD_POLL_HZ_MIN` (`settings.ts:375` @ 09da38d).
+pub const OBD_POLL_HZ_MIN: f64 = 0.2;
+/// `OBD_POLL_HZ_MAX` (`settings.ts:376` @ 09da38d).
+pub const OBD_POLL_HZ_MAX: f64 = 2.0;
+/// `OBD_MAC_RE` (`settings.ts:373`): `/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/`.
+pub const OBD_MAC_RE: &str = "^([0-9A-F]{2}:){5}[0-9A-F]{2}$";
+/// `OBD_PIN_RE` (`settings.ts:374`): `/^[0-9]{4,6}$/`.
+pub const OBD_PIN_RE: &str = "^[0-9]{4,6}$";
+/// `OBD_FIELD_RE` (`settings.ts:378`): `/^[a-z_][a-z0-9_]*$/`.
+pub const OBD_FIELD_RE: &str = "^[a-z_][a-z0-9_]*$";
+
+/// `OBD_MAC_RE.test(s)` — uppercase hex pairs, colon-separated, 17 chars.
+pub fn obd_mac_re_test(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 17
+        && b.iter().enumerate().all(|(i, c)| {
+            if i % 3 == 2 {
+                *c == b':'
+            } else {
+                c.is_ascii_digit() || (b'A'..=b'F').contains(c)
+            }
+        })
+}
+
+/// `OBD_PIN_RE.test(s)` — 4 to 6 ASCII digits.
+pub fn obd_pin_re_test(s: &str) -> bool {
+    (4..=6).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_digit())
+}
+
+/// `OBD_FIELD_RE.test(s)` — a helper identifier.
+pub fn obd_field_re_test(s: &str) -> bool {
+    let mut it = s.bytes();
+    match it.next() {
+        Some(c) if c.is_ascii_lowercase() || c == b'_' => {}
+        _ => return false,
+    }
+    it.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+}
+
+/// `ObdPowerSource` (`settings.ts:359`): ignition-switched 12 V (default)
+/// or constant/hardwired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ObdPowerSource {
+    Switched,
+    Constant,
+}
+
+impl ObdPowerSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ObdPowerSource::Switched => "switched",
+            ObdPowerSource::Constant => "constant",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "switched" => Some(ObdPowerSource::Switched),
+            "constant" => Some(ObdPowerSource::Constant),
+            _ => None,
+        }
+    }
+}
+
+/// `ObdSettings` (`settings.ts:344-357` @ 09da38d): the `obd` namespace.
+/// Every field optional; key order = `parseObdSettings`' insertion order
+/// (enabled, adapterMac, pin, pollHz, fields, powerSource). `adapter_mac`
+/// is the TS `string | null | undefined` triple: `Some(None)` = an explicit
+/// "no adapter" (`null`), kept as `null`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ObdSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "nullable_present"
+    )]
+    pub adapter_mac: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "js_num_opt")]
+    pub poll_hz: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_source: Option<ObdPowerSource>,
+}
+
+/// A present JSON `null` → `Some(None)` (with `#[serde(default)]` an absent
+/// key stays `None`).
+fn nullable_present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// `OBD_DEFAULTS` (`settings.ts:362-369` @ 09da38d) — the cloud contract's
+/// device defaults (`Required<ObdSettings>`), pinned by `tests/config_contract.rs`.
+pub fn obd_defaults() -> ObdSettings {
+    ObdSettings {
+        enabled: Some(false),
+        adapter_mac: Some(None),
+        pin: Some("1234".to_string()),
+        poll_hz: Some(1.0),
+        fields: Some(Vec::new()),
+        power_source: Some(ObdPowerSource::Switched),
+    }
+}
+
+/// The six namespace keys as the report and the contract spell them
+/// (`OBD_NAMESPACE_KEYS = Object.keys(OBD_DEFAULTS)`, `config-sync.ts:999`).
+pub const OBD_NAMESPACE_KEYS: [&str; 6] = [
+    "enabled",
+    "adapterMac",
+    "pin",
+    "pollHz",
+    "fields",
+    "powerSource",
+];
+
+impl ObdSettings {
+    /// `{ ...OBD_DEFAULTS, ...self }` (`config-sync.ts:1043`): every field
+    /// filled, the delivered ones winning.
+    pub fn with_defaults(&self) -> ObdSettings {
+        let d = obd_defaults();
+        ObdSettings {
+            enabled: self.enabled.or(d.enabled),
+            adapter_mac: self.adapter_mac.clone().or(d.adapter_mac),
+            pin: self.pin.clone().or(d.pin),
+            poll_hz: self.poll_hz.or(d.poll_hz),
+            fields: self.fields.clone().or(d.fields),
+            power_source: self.power_source.or(d.power_source),
+        }
+    }
+}
+
+/// `parseObdSettings` (`settings.ts:388-412` @ 09da38d): forgiving on the
+/// numbers (`pollHz` clamped to [0.2, 2]) and STRICT on the two strings
+/// that reach bluetoothctl — a malformed MAC or PIN is DROPPED, never
+/// repaired. `adapterMac: null` is kept. Arrays are refused outright (the
+/// TS checks `Array.isArray`). `None` when nothing valid remains.
+pub fn parse_obd_settings(v: &Value) -> Option<ObdSettings> {
+    let Value::Object(src) = v else {
+        return None;
+    };
+    let mut out = ObdSettings {
+        enabled: boolean(src.get("enabled")),
+        ..ObdSettings::default()
+    };
+    match src.get("adapterMac") {
+        Some(Value::Null) => out.adapter_mac = Some(None),
+        Some(Value::String(raw)) => {
+            let mac = crate::js::trim(raw).to_uppercase();
+            if obd_mac_re_test(&mac) {
+                out.adapter_mac = Some(Some(mac));
+            }
+        }
+        _ => {}
+    }
+    out.pin = string(src.get("pin"))
+        .filter(|p| obd_pin_re_test(p))
+        .map(str::to_string);
+    out.poll_hz = num(src.get("pollHz")).map(|h| clamp(h, OBD_POLL_HZ_MIN, OBD_POLL_HZ_MAX));
+    if let Some(Value::Array(list)) = src.get("fields") {
+        let mut fields: Vec<String> = Vec::new();
+        for f in list {
+            if let Value::String(f) = f {
+                if obd_field_re_test(f) && !fields.contains(f) {
+                    fields.push(f.clone());
+                }
+            }
+        }
+        out.fields = Some(fields);
+    }
+    out.power_source = string(src.get("powerSource")).and_then(ObdPowerSource::parse);
+    (out != ObdSettings::default()).then_some(out)
+}
+
+// ---------------------------------------------------------------------------
 // AgentSettings — `settings.ts:329-392`, allowlist `:616-637`
 // ---------------------------------------------------------------------------
 
@@ -690,6 +876,9 @@ pub struct AgentSettings {
     pub camera_mount: Option<CameraMountSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simulation: Option<SimulationSettings>,
+    /// Vehicle OBD-II adapter (`settings.ts:477-482` @ 09da38d).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obd: Option<ObdSettings>,
 }
 
 /// `parseSettingsObject` (`settings.ts:616`): the allowlist rewriter — every
@@ -707,6 +896,7 @@ pub fn parse_settings_object(obj: &serde_json::Map<String, Value>) -> AgentSetti
         cellular: parse_cellular_settings(get("cellular")),
         camera_mount: parse_camera_mount_settings(get("cameraMount")),
         simulation: parse_simulation_settings(get("simulation")),
+        obd: parse_obd_settings(get("obd")),
     }
 }
 
