@@ -35,6 +35,7 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use xorgate_core::clock::Clock;
@@ -48,7 +49,6 @@ use xorgate_core::commands::{
     ACK_FLUSH_TIMEOUT_MS,
 };
 use xorgate_core::config_report::ReportOrigin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use xorgate_core::sms::{
     build_sms_payload, fixture_sms_clear, fixture_sms_read, sms_publish_failed_log,
     sms_result_line, SmsAction, SmsPayloadRequest, SmsSweep,

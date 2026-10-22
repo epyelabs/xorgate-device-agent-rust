@@ -112,9 +112,7 @@ async fn rust_clear(port: &str) -> String {
     let port = PathBuf::from(port);
     let mut deps = SmsReaderDeps::with(
         Box::new(move || Some(port.clone())),
-        Box::new(|p: PathBuf| {
-            Box::pin(async move { open_serial_transport(&p).await })
-        }),
+        Box::new(|p: PathBuf| Box::pin(async move { open_serial_transport(&p).await })),
         TestClock::new(FIXED_NOW),
     );
     deps.lock_path = None;
@@ -208,9 +206,15 @@ async fn pty_clear_end_to_end_is_byte_equal_to_the_ts_reader() {
         .take_while(|c| !c.starts_with("AT+CMGF"))
         .collect();
     assert_eq!(
-        clear_part.iter().filter(|c| c.starts_with("AT+CMGD")).count(),
+        clear_part
+            .iter()
+            .filter(|c| c.starts_with("AT+CMGD"))
+            .count(),
         2,
         "exactly one delete per store"
     );
-    assert!(m.log.iter().all(|c| c == "AT+CMGD=0,4" || !c.contains("CMGD")));
+    assert!(m
+        .log
+        .iter()
+        .all(|c| c == "AT+CMGD=0,4" || !c.contains("CMGD")));
 }

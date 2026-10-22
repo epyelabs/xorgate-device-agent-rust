@@ -591,7 +591,10 @@ async fn every_led_manager_it_matches_the_ts_trace() {
                 pins: vec![12, 16],
                 high: false,
             };
-            let i = want_calls.iter().position(|c| *c == stale).expect("D31 stale fall");
+            let i = want_calls
+                .iter()
+                .position(|c| *c == stale)
+                .expect("D31 stale fall");
             want_calls.remove(i);
             let f = want_calls
                 .iter_mut()
@@ -673,19 +676,37 @@ async fn every_led_manager_it_matches_the_ts_trace() {
                 assert!(calls.is_empty());
                 assert_eq!(got.extra["before"], Value::Null);
                 assert_eq!(got.extra["reason1"], "gps-wait");
-                assert_eq!(got.extra["t1"], serde_json::json!({"led_state": 2, "health_flags": 16}));
-                assert_eq!(got.extra["t2"], serde_json::json!({"led_state": 3, "health_flags": 8}));
+                assert_eq!(
+                    got.extra["t1"],
+                    serde_json::json!({"led_state": 2, "health_flags": 16})
+                );
+                assert_eq!(
+                    got.extra["t2"],
+                    serde_json::json!({"led_state": 3, "health_flags": 8})
+                );
             }
             "led-manager.test.ts:273" => {
-                assert_eq!(got.extra["t"], serde_json::json!({"led_state": 3, "health_flags": 4}));
+                assert_eq!(
+                    got.extra["t"],
+                    serde_json::json!({"led_state": 3, "health_flags": 4})
+                );
             }
             "led-manager.test.ts:282" => {
-                assert_eq!(got.extra["t0"], serde_json::json!({"led_state": 0, "health_flags": 0}));
+                assert_eq!(
+                    got.extra["t0"],
+                    serde_json::json!({"led_state": 0, "health_flags": 0})
+                );
                 assert_eq!(got.extra["reason1"], "network");
-                assert_eq!(got.extra["t1"], serde_json::json!({"led_state": 3, "health_flags": 8}));
+                assert_eq!(
+                    got.extra["t1"],
+                    serde_json::json!({"led_state": 3, "health_flags": 8})
+                );
             }
             "led-manager.test.ts:299" => {
-                assert_eq!(got.extra["t"], serde_json::json!({"led_state": 2, "health_flags": 16}));
+                assert_eq!(
+                    got.extra["t"],
+                    serde_json::json!({"led_state": 2, "health_flags": 16})
+                );
                 assert!(logged("signal read failed"));
             }
             "led-manager.test.ts:312" => {

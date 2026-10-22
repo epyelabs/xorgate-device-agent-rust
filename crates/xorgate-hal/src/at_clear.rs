@@ -117,7 +117,8 @@ pub async fn clear_transport(
     transport: &mut dyn AtTransport,
     opts: ClearOptions,
 ) -> Result<ClearOutcome, SmsReadError> {
-    let mut at = AtSession::new(transport, opts.command_timeout_ms).with_tape(&opts.port, opts.tape);
+    let mut at =
+        AtSession::new(transport, opts.command_timeout_ms).with_tape(&opts.port, opts.tape);
     let delete_timeout = Duration::from_millis(opts.delete_timeout_ms);
 
     match at.command("ATE0", None, false).await {

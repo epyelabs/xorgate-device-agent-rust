@@ -224,16 +224,6 @@ pub fn read_sms_publish_failed_log(request_id: &str, message: &str) -> String {
     format!("{AGENT_PREFIX}read_sms {request_id}: publish failed: {message}")
 }
 
-fn sms_status_str(s: SmsReadStatus) -> &'static str {
-    match s {
-        SmsReadStatus::Ok => "ok",
-        SmsReadStatus::NoModem => "no_modem",
-        SmsReadStatus::NoSim => "no_sim",
-        SmsReadStatus::ModemBusy => "modem_busy",
-        SmsReadStatus::Error => "error",
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Effects
 // ---------------------------------------------------------------------------

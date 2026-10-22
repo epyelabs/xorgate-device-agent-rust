@@ -48,7 +48,11 @@ fn sources() -> Vec<(String, String)> {
     let root = workspace();
     let mut out = Vec::new();
     walk(&root.join("crates"), &root, &mut out);
-    assert!(out.len() > 100, "walked the workspace ({} files)", out.len());
+    assert!(
+        out.len() > 100,
+        "walked the workspace ({} files)",
+        out.len()
+    );
     out
 }
 
@@ -69,15 +73,25 @@ fn the_delete_command_is_spelled_once_in_at_clear_only() {
         if rel == AT_CLEAR {
             seen_at_clear = true;
             // Exactly one command literal, on the const line.
-            assert_eq!(text.matches("\"AT+CMGD").count(), 1, "{rel}: command literals");
+            assert_eq!(
+                text.matches("\"AT+CMGD").count(),
+                1,
+                "{rel}: command literals"
+            );
             assert_eq!(text.matches(THE_LINE).count(), 1, "{rel}: the const line");
             // Every other CMGD is the constant's name.
             let names = text.matches("CMGD_DELETE_ALL").count();
             assert_eq!(text.matches("CMGD").count(), names + 1, "{rel}: stray CMGD");
-            assert!(!text.contains("#[cfg(test)]"), "{rel}: no test-only code here");
+            assert!(
+                !text.contains("#[cfg(test)]"),
+                "{rel}: no test-only code here"
+            );
             continue;
         }
-        assert!(!text.contains("CMGD"), "{rel} names the delete command (only {AT_CLEAR} may)");
+        assert!(
+            !text.contains("CMGD"),
+            "{rel} names the delete command (only {AT_CLEAR} may)"
+        );
         // Split spellings / other delete flags.
         for bad in ["GD=0,", "GD=1", "\"AT+CM\"", "\"+CM\"", "\"CM\""] {
             assert!(!text.contains(bad), "{rel} contains {bad:?}");
@@ -123,8 +137,14 @@ fn the_clear_has_exactly_the_designed_callers() {
         if code.contains("at_clear") && rel != AT_CLEAR && rel != "crates/xorgate-hal/src/lib.rs" {
             at_clear_users.push(rel.clone());
         }
-        for v in ["ClearRequest::AcceptedCommand", "ClearRequest::ConfirmedCli"] {
-            for _ in text.matches(&format!("{v} {{")).chain(text.matches(&format!("{v})"))) {
+        for v in [
+            "ClearRequest::AcceptedCommand",
+            "ClearRequest::ConfirmedCli",
+        ] {
+            for _ in text
+                .matches(&format!("{v} {{"))
+                .chain(text.matches(&format!("{v})")))
+            {
                 request_builders.push(format!("{rel} {v}"));
             }
         }
@@ -149,8 +169,8 @@ fn the_clear_has_exactly_the_designed_callers() {
         ]
     );
     // The CLI only borrows the TEXT of the command.
-    let cli = std::fs::read_to_string(workspace().join("crates/xorgate-agent/src/cli/sms.rs"))
-        .unwrap();
+    let cli =
+        std::fs::read_to_string(workspace().join("crates/xorgate-agent/src/cli/sms.rs")).unwrap();
     assert!(cli.contains("use xorgate_hal::at_clear::delete_all_text;"));
     assert!(!cli.contains("clear_transport") && !cli.contains("CMGD"));
     // The command plane builds its request only in the `clear_sms` arm of

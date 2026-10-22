@@ -544,10 +544,7 @@ fn sms_cli_goldens() {
             // Q9: the usage names this binary.
             (vec![SMS_HELP.replace("xorgate-rs sms", "xorgate sms")], 0)
         } else {
-            let p = build_sms_payload(
-                &sweep,
-                &SmsPayloadRequest::read("local", "cli", args.limit),
-            );
+            let p = build_sms_payload(&sweep, &SmsPayloadRequest::read("local", "cli", args.limit));
             let lines = if args.json {
                 vec![render_json(&p)]
             } else {

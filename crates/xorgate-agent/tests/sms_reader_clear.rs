@@ -74,7 +74,10 @@ fn assert_sweep(got: &SmsSweep, want: &Value, name: &str) {
     assert_eq!(serde_json::to_value(got).unwrap(), *want, "{name}: sweep");
     for k in ["storage", "cleared"] {
         assert_eq!(
-            serde_json::to_value(got).unwrap().get(k).map(|v| v.to_string()),
+            serde_json::to_value(got)
+                .unwrap()
+                .get(k)
+                .map(|v| v.to_string()),
             want.get(k).map(|v| v.to_string()),
             "{name}: {k} order"
         );
@@ -87,10 +90,9 @@ fn assert_sweep(got: &SmsSweep, want: &Value, name: &str) {
 fn want_error(e: &Value) -> SmsReadError {
     let msg = e["message"].as_str().unwrap();
     match e["kind"].as_str().unwrap() {
-        "SmsReadError" => SmsReadError::new(
-            serde_json::from_value(e["status"].clone()).unwrap(),
-            msg,
-        ),
+        "SmsReadError" => {
+            SmsReadError::new(serde_json::from_value(e["status"].clone()).unwrap(), msg)
+        }
         _ => SmsReadError::new(SmsReadStatus::Error, msg),
     }
 }
@@ -173,17 +175,35 @@ async fn every_clear_case_matches_the_ts() {
         // SmsReader.clear over a fresh modem, fixed clock.
         let modem2 = Arc::new(Mutex::new(FakeModem::new(spec)));
         let closed = Arc::new(AtomicBool::new(false));
-        let reader = reader_with(single(modem2.clone(), closed.clone()), fixed, &c["input"]["opts"]);
+        let reader = reader_with(
+            single(modem2.clone(), closed.clone()),
+            fixed,
+            &c["input"]["opts"],
+        );
         let sweep = reader.clear(cmd()).await;
         let r = &want["reader"];
         assert_sweep(&sweep, &r["sweep"], name);
-        assert_eq!(clear_payload(&sweep), r["payload"].to_string(), "{name}: payload bytes");
+        assert_eq!(
+            clear_payload(&sweep),
+            r["payload"].to_string(),
+            "{name}: payload bytes"
+        );
         let m = modem2.lock().unwrap();
         assert_eq!(m.log, strings(&r["log"]), "{name}: reader log");
         assert_eq!(m.deletes, strings(&r["deletes"]), "{name}: reader deletes");
-        assert_eq!(json!({"cmgf": m.cmgf, "mem1": m.mem1}), r["end"], "{name}: reader end");
-        assert_eq!(closed.load(Ordering::SeqCst), r["closed"].as_bool().unwrap());
-        assert!(reader.last().is_none(), "{name}: a clear never feeds the reuse window");
+        assert_eq!(
+            json!({"cmgf": m.cmgf, "mem1": m.mem1}),
+            r["end"],
+            "{name}: reader end"
+        );
+        assert_eq!(
+            closed.load(Ordering::SeqCst),
+            r["closed"].as_bool().unwrap()
+        );
+        assert!(
+            reader.last().is_none(),
+            "{name}: a clear never feeds the reuse window"
+        );
     }
 }
 
@@ -224,9 +244,20 @@ fn assert_opened(opened: &Opened, want: &Value, name: &str) {
     for (i, ((m, closed), w)) in o.iter().zip(want).enumerate() {
         let m = m.lock().unwrap();
         assert_eq!(m.log, strings(&w["log"]), "{name}: open {i} log");
-        assert_eq!(m.deletes, strings(&w["deletes"]), "{name}: open {i} deletes");
-        assert_eq!(json!({"cmgf": m.cmgf, "mem1": m.mem1}), w["end"], "{name}: open {i} end");
-        assert_eq!(closed.load(Ordering::SeqCst), w["closed"].as_bool().unwrap());
+        assert_eq!(
+            m.deletes,
+            strings(&w["deletes"]),
+            "{name}: open {i} deletes"
+        );
+        assert_eq!(
+            json!({"cmgf": m.cmgf, "mem1": m.mem1}),
+            w["end"],
+            "{name}: open {i} end"
+        );
+        assert_eq!(
+            closed.load(Ordering::SeqCst),
+            w["closed"].as_bool().unwrap()
+        );
     }
 }
 
@@ -250,7 +281,11 @@ async fn reader_clear_its_match_the_ts() {
         let (reader, opened) = bench_reader(spec, TestClock::new(1_000_000));
         let sweep = reader.clear(cmd()).await;
         assert_sweep(&sweep, &c["expected"]["sweep"], name);
-        assert_eq!(clear_payload(&sweep), c["expected"]["payload"].to_string(), "{name}");
+        assert_eq!(
+            clear_payload(&sweep),
+            c["expected"]["payload"].to_string(),
+            "{name}"
+        );
         assert_opened(&opened, &c["expected"]["opened"], name);
     }
 }
@@ -294,7 +329,10 @@ async fn never_joins_an_in_flight_read_a_read_during_a_clear_waits_and_sweeps_af
     assert!(!Arc::ptr_eq(&r2, &c1));
     assert!(r2.cleared.is_none());
     assert!(r2.messages.is_empty());
-    assert!(Arc::ptr_eq(&r3, &r2), "the reuse window serves the post-clear read");
+    assert!(
+        Arc::ptr_eq(&r3, &r2),
+        "the reuse window serves the post-clear read"
+    );
     assert_eq!(w["r3IsR2"], true);
     assert_opened(&opened, &w["opened"], "queue");
     let deletes: Vec<usize> = opened
@@ -361,7 +399,10 @@ fn bench_spec(extra: impl FnOnce(&mut FakeSpec)) -> FakeSpec {
     s
 }
 
-async fn run_clear(spec: FakeSpec, o: ClearOptions) -> (Result<ClearOutcome, SmsReadError>, FakeModem) {
+async fn run_clear(
+    spec: FakeSpec,
+    o: ClearOptions,
+) -> (Result<ClearOutcome, SmsReadError>, FakeModem) {
     let modem = Arc::new(Mutex::new(FakeModem::new(spec)));
     let mut t = MemTransport::new(modem.clone(), None);
     let r = clear_transport(&mut t, o).await;
@@ -381,7 +422,10 @@ fn short() -> ClearOptions {
 async fn mem1_restored_after_a_clean_clear() {
     let (r, m) = run_clear(bench_spec(|s| s.mem1 = Some("ME".into())), short()).await;
     assert!(r.unwrap().delete_error.is_none());
-    assert_eq!((m.log.last().unwrap().as_str(), m.mem1.as_str()), ("AT+CPMS=\"ME\"", "ME"));
+    assert_eq!(
+        (m.log.last().unwrap().as_str(), m.mem1.as_str()),
+        ("AT+CPMS=\"ME\"", "ME")
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -403,15 +447,31 @@ async fn mem1_restored_after_a_delete_error() {
 #[tokio::test(start_paused = true)]
 async fn mem1_restored_after_a_delete_timeout_and_the_phase_stops() {
     let (r, m) = run_clear(bench_spec(|s| s.hang = vec!["AT+CMGD=0,4".into()]), short()).await;
-    assert_eq!(r.unwrap().delete_error.as_deref(), Some("delete SM failed (timeout)"));
-    assert!(!m.log.contains(&"AT+CPMS=\"ME\"".to_string()), "a late OK must not answer ME");
-    assert_eq!((m.log.last().unwrap().as_str(), m.mem1.as_str()), ("AT+CPMS=\"SR\"", "SR"));
+    assert_eq!(
+        r.unwrap().delete_error.as_deref(),
+        Some("delete SM failed (timeout)")
+    );
+    assert!(
+        !m.log.contains(&"AT+CPMS=\"ME\"".to_string()),
+        "a late OK must not answer ME"
+    );
+    assert_eq!(
+        (m.log.last().unwrap().as_str(), m.mem1.as_str()),
+        ("AT+CPMS=\"SR\"", "SR")
+    );
 }
 
 #[tokio::test(start_paused = true)]
 async fn mem1_restored_after_a_select_timeout() {
-    let (r, m) = run_clear(bench_spec(|s| s.hang = vec!["AT+CPMS=\"ME\"".into()]), short()).await;
-    assert_eq!(r.unwrap().delete_error.as_deref(), Some("delete ME failed (select timeout)"));
+    let (r, m) = run_clear(
+        bench_spec(|s| s.hang = vec!["AT+CPMS=\"ME\"".into()]),
+        short(),
+    )
+    .await;
+    assert_eq!(
+        r.unwrap().delete_error.as_deref(),
+        Some("delete ME failed (select timeout)")
+    );
     assert_eq!(m.log.last().unwrap(), "AT+CPMS=\"SR\"");
 }
 
@@ -419,12 +479,16 @@ async fn mem1_restored_after_a_select_timeout() {
 async fn mem1_restored_after_a_select_error() {
     let (r, m) = run_clear(
         bench_spec(|s| {
-            s.answers.insert("AT+CPMS=\"SM\"".into(), vec!["ERROR".into()]);
+            s.answers
+                .insert("AT+CPMS=\"SM\"".into(), vec!["ERROR".into()]);
         }),
         short(),
     )
     .await;
-    assert_eq!(r.unwrap().delete_error.as_deref(), Some("delete SM failed (select: ERROR)"));
+    assert_eq!(
+        r.unwrap().delete_error.as_deref(),
+        Some("delete SM failed (select: ERROR)")
+    );
     assert_eq!(m.mem1, "SR");
 }
 
@@ -432,7 +496,8 @@ async fn mem1_restored_after_a_select_error() {
 async fn mem1_restored_before_a_transport_error_is_rethrown() {
     let (r, m) = run_clear(
         bench_spec(|s| {
-            s.write_error.insert("AT+CMGD=0,4".into(), "EIO: i/o error, write".into());
+            s.write_error
+                .insert("AT+CMGD=0,4".into(), "EIO: i/o error, write".into());
         }),
         short(),
     )
@@ -441,7 +506,10 @@ async fn mem1_restored_before_a_transport_error_is_rethrown() {
         r.unwrap_err(),
         SmsReadError::new(SmsReadStatus::Error, "EIO: i/o error, write")
     );
-    assert_eq!((m.log.last().unwrap().as_str(), m.mem1.as_str()), ("AT+CPMS=\"SR\"", "SR"));
+    assert_eq!(
+        (m.log.last().unwrap().as_str(), m.mem1.as_str()),
+        ("AT+CPMS=\"SR\"", "SR")
+    );
 }
 
 /// A transport that panics on the delete: the restore still runs, then the
@@ -472,9 +540,16 @@ async fn mem1_restored_when_the_phase_panics_then_the_panic_resumes() {
         let _ = clear_transport(&mut t, short()).await;
     })
     .await;
-    assert!(joined.is_err_and(|e| e.is_panic()), "the panic is not swallowed");
+    assert!(
+        joined.is_err_and(|e| e.is_panic()),
+        "the panic is not swallowed"
+    );
     let m = modem.lock().unwrap();
-    assert_eq!(m.log.last().unwrap(), "AT+CPMS=\"SR\"", "restored before unwinding");
+    assert_eq!(
+        m.log.last().unwrap(),
+        "AT+CPMS=\"SR\"",
+        "restored before unwinding"
+    );
     assert_eq!(m.mem1, "SR");
 }
 

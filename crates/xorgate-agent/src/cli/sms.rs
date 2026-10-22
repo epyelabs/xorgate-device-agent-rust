@@ -52,9 +52,7 @@ pub fn main(rest: &[String]) -> i32 {
         }
     };
     let home = crate::env::runtime_home();
-    let sweep = rt.block_on(async {
-        cli_reader(&home).read().await
-    });
+    let sweep = rt.block_on(async { cli_reader(&home).read().await });
     let payload = build_sms_payload(
         &sweep,
         &SmsPayloadRequest::read(CLI_DEVICE_ID, CLI_REQUEST_ID, args.limit),

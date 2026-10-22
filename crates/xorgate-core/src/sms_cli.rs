@@ -46,8 +46,7 @@ Asks for confirmation unless --yes is given. Prints counts only."
 pub const SMS_CLEAR_PROMPT: &str =
     "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ";
 /// No TTY and no `--yes` (`sms.ts:62`): stderr, exit 1.
-pub const SMS_CLEAR_REFUSED: &str =
-    "sms clear: refusing without --yes (no terminal to confirm on)";
+pub const SMS_CLEAR_REFUSED: &str = "sms clear: refusing without --yes (no terminal to confirm on)";
 /// Anything but a yes (`sms.ts:67`): stdout, exit 0.
 pub const SMS_CLEAR_CANCELLED: &str = "sms clear: cancelled";
 
