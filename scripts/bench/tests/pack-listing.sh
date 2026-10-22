@@ -24,7 +24,11 @@ printf '#!/bin/sh\necho fake\n' > "$FAKE/bin/xorgate-rs"
 echo '[Unit]' > "$FAKE/systemd/xorgate-agent-rs.service"
 echo '[Unit]' > "$FAKE/systemd/xorgate-updater-rs.service"
 echo '[Service]' > "$FAKE/systemd/bench/90-bench-dev.conf"
+mkdir -p "$FAKE/python/obd"
 echo '# imu' > "$FAKE/python/bno085_read.py"
+echo '# obd' > "$FAKE/python/obd_read.py"; echo '# scan' > "$FAKE/python/obd_scan.py"
+echo '# session' > "$FAKE/python/obd/session.py"
+(cd "$FAKE/python" && sha bno085_read.py obd_read.py obd_scan.py obd/session.py > SHA256SUMS)
 printf '{"version": "t3st", "channel": "ci", "builtAt": "2026-10-21T00:00:00Z", "packageVersion": "0.0.0"}\n' \
   > "$FAKE/target/pack/build-info.json"
 vendor() { # <dir> <n files>
@@ -60,6 +64,20 @@ rm -rf "$FAKE/dist"
 PATH="$SHIMS:$PATH" pack >"$LOGS/out2" 2>"$LOGS/err2"; rc=$?
 [ "$rc" != 0 ]; expect $? "pack.sh rc=$rc when tar -tzf fails (want non-zero)"
 [ ! -f "$FAKE/dist/xorgate-agent-rs-t3st.tar.gz.sha256" ]; expect $? "no .sha256 sidecar after a listing failure"
+
+echo "== python/ is a verified vendored tree (Phase 5b WP2, I9)"
+LIST=$(tar -tzf "$T") # never `tar | grep -q` under pipefail (SIGPIPE, F-E1-1)
+for m in python/obd_read.py python/obd/session.py python/obd_scan.py python/SHA256SUMS; do
+  grep -qx "$m" <<<"$LIST"; expect $? "$m packed"
+done
+rm -rf "$FAKE/dist"; cp "$FAKE/python/obd_read.py" "$LOGS/obd_read.bak"; echo tampered >> "$FAKE/python/obd_read.py"
+pack >"$LOGS/out4" 2>"$LOGS/err4"; rc=$?
+[ "$rc" != 0 ] && grep -q "pack: python/ does not match python/SHA256SUMS" "$LOGS/err4"; expect $? "pack.sh rc=$rc on a python/ blob that differs from SHA256SUMS"
+cp "$LOGS/obd_read.bak" "$FAKE/python/obd_read.py"
+rm -rf "$FAKE/dist"; rm "$FAKE/python/obd_scan.py"; sed -i.bak '/obd_scan.py/d' "$FAKE/python/SHA256SUMS"
+pack >"$LOGS/out5" 2>"$LOGS/err5"; rc=$?
+[ "$rc" != 0 ] && grep -q "pack: missing python/obd_scan.py" "$LOGS/err5"; expect $? "pack.sh rc=$rc without the required python/obd_scan.py"
+echo '# scan' > "$FAKE/python/obd_scan.py"; mv "$FAKE/python/SHA256SUMS.bak" "$FAKE/python/SHA256SUMS"
 
 echo "== a missing vendored member still fails the pack"
 rm -rf "$FAKE/dist"; echo "0000  ghost" >> "$FAKE/system/SHA256SUMS"
