@@ -1,0 +1,1583 @@
+{
+  "jsCommit": "09da38d",
+  "jsSourceFile": [
+    "src/hardware/obd.ts"
+  ],
+  "t0": 1791892800000,
+  "runs": [
+    {
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "stopAt": 21500,
+      "ms": 25000,
+      "msgs": [
+        {
+          "t": 0,
+          "msg": {
+            "type": "ready",
+            "helper": "obd_read",
+            "version": "mock",
+            "allowlist_sha256": "mock"
+          }
+        },
+        {
+          "t": 0,
+          "msg": {
+            "type": "status",
+            "state": "connecting",
+            "link": 0,
+            "detail": "mock",
+            "ts": 1791892800
+          }
+        },
+        {
+          "t": 300,
+          "msg": {
+            "type": "status",
+            "state": "probing",
+            "link": 1,
+            "detail": "mock",
+            "ts": 1791892800.3
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "profile",
+            "ts": 1791892800.6,
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF",
+              "ati": "ELM327 v1.5 (mock)",
+              "at1": "mock"
+            },
+            "protocol": {
+              "dpn": "A6",
+              "dp": "AUTO, ISO 15765-4 (CAN 11/500)"
+            },
+            "responders": [
+              "7E8"
+            ],
+            "pids_by_ecu": {
+              "7E8": [
+                "0C",
+                "0D",
+                "05",
+                "2F",
+                "42",
+                "A6"
+              ]
+            },
+            "supported_fields": [
+              "rpm",
+              "speed",
+              "coolant_temp",
+              "fuel_level",
+              "module_voltage",
+              "odometer"
+            ],
+            "unsupported_fields": [],
+            "powertrain": "ice",
+            "rate_req_s": 10
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "status",
+            "state": "live",
+            "link": 2,
+            "detail": "mock",
+            "ts": 1791892800.6
+          }
+        },
+        {
+          "t": 1000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801,
+            "fields": {
+              "rpm": 921,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 2000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892802,
+            "fields": {
+              "rpm": 923,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.13,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 3000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892803,
+            "fields": {
+              "rpm": 904,
+              "speed": 0,
+              "coolant_temp": 42,
+              "fuel_level": 61.2,
+              "module_voltage": 14.14,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 4000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892804,
+            "fields": {
+              "rpm": 881,
+              "speed": 0,
+              "coolant_temp": 42,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 5000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892805,
+            "fields": {
+              "rpm": 876,
+              "speed": 0,
+              "coolant_temp": 43,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 6000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892806,
+            "fields": {
+              "rpm": 893,
+              "speed": 0,
+              "coolant_temp": 43,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 7000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892807,
+            "fields": {
+              "rpm": 916,
+              "speed": 0,
+              "coolant_temp": 44,
+              "fuel_level": 61.2,
+              "module_voltage": 14.14,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 8000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892808,
+            "fields": {
+              "rpm": 925,
+              "speed": 0,
+              "coolant_temp": 44,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 9000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892809,
+            "fields": {
+              "rpm": 910,
+              "speed": 0,
+              "coolant_temp": 45,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 10000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892810,
+            "fields": {
+              "rpm": 886,
+              "speed": 0,
+              "coolant_temp": 45,
+              "fuel_level": 61.2,
+              "module_voltage": 14.09,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 10000,
+          "msg": {
+            "type": "audit",
+            "ts": 1791892810,
+            "counters": {
+              "requests": 60,
+              "ok": 60,
+              "no_data": 0,
+              "timeouts": 0,
+              "err_adapter": 0,
+              "err_protocol": 0,
+              "err_identity": 0,
+              "err_voltage": 0,
+              "reconnects": 0,
+              "forbidden_attempts": 0,
+              "budget_violations": 0,
+              "bytes_tx": 360
+            },
+            "inventory": {
+              "010C1": 10,
+              "010D1": 10
+            },
+            "last_stop": null
+          }
+        },
+        {
+          "t": 11000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892811,
+            "fields": {
+              "rpm": 875,
+              "speed": 0,
+              "coolant_temp": 46,
+              "fuel_level": 61.2,
+              "module_voltage": 14.07,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 12000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892812,
+            "fields": {
+              "rpm": 887,
+              "speed": 0,
+              "coolant_temp": 46,
+              "fuel_level": 61.2,
+              "module_voltage": 14.06,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 13000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892813,
+            "fields": {
+              "rpm": 911,
+              "speed": 0,
+              "coolant_temp": 47,
+              "fuel_level": 61.2,
+              "module_voltage": 14.05,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 14000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892814,
+            "fields": {
+              "rpm": 925,
+              "speed": 0,
+              "coolant_temp": 47,
+              "fuel_level": 61.2,
+              "module_voltage": 14.05,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 15000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892815,
+            "fields": {
+              "rpm": 916,
+              "speed": 0,
+              "coolant_temp": 48,
+              "fuel_level": 61.2,
+              "module_voltage": 14.05,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 16000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892816,
+            "fields": {
+              "rpm": 893,
+              "speed": 0,
+              "coolant_temp": 48,
+              "fuel_level": 61.2,
+              "module_voltage": 14.06,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 17000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892817,
+            "fields": {
+              "rpm": 876,
+              "speed": 0,
+              "coolant_temp": 49,
+              "fuel_level": 61.2,
+              "module_voltage": 14.07,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 18000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892818,
+            "fields": {
+              "rpm": 881,
+              "speed": 0,
+              "coolant_temp": 49,
+              "fuel_level": 61.2,
+              "module_voltage": 14.09,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 19000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892819,
+            "fields": {
+              "rpm": 904,
+              "speed": 0,
+              "coolant_temp": 50,
+              "fuel_level": 61.2,
+              "module_voltage": 14.1,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 20000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892820,
+            "fields": {
+              "rpm": 923,
+              "speed": 0,
+              "coolant_temp": 50,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 20000,
+          "msg": {
+            "type": "audit",
+            "ts": 1791892820,
+            "counters": {
+              "requests": 120,
+              "ok": 120,
+              "no_data": 0,
+              "timeouts": 0,
+              "err_adapter": 0,
+              "err_protocol": 0,
+              "err_identity": 0,
+              "err_voltage": 0,
+              "reconnects": 0,
+              "forbidden_attempts": 0,
+              "budget_violations": 0,
+              "bytes_tx": 720
+            },
+            "inventory": {
+              "010C1": 20,
+              "010D1": 20
+            },
+            "last_stop": null
+          }
+        },
+        {
+          "t": 21000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892821,
+            "fields": {
+              "rpm": 921,
+              "speed": 0,
+              "coolant_temp": 51,
+              "fuel_level": 61.2,
+              "module_voltage": 14.13,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 2,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "stopAt": 12000,
+      "ms": 12000,
+      "msgs": [
+        {
+          "t": 0,
+          "msg": {
+            "type": "ready",
+            "helper": "obd_read",
+            "version": "mock",
+            "allowlist_sha256": "mock"
+          }
+        },
+        {
+          "t": 0,
+          "msg": {
+            "type": "status",
+            "state": "connecting",
+            "link": 0,
+            "detail": "mock",
+            "ts": 1791892800
+          }
+        },
+        {
+          "t": 300,
+          "msg": {
+            "type": "status",
+            "state": "probing",
+            "link": 1,
+            "detail": "mock",
+            "ts": 1791892800.3
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "profile",
+            "ts": 1791892800.6,
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF",
+              "ati": "ELM327 v1.5 (mock)",
+              "at1": "mock"
+            },
+            "protocol": {
+              "dpn": "A6",
+              "dp": "AUTO, ISO 15765-4 (CAN 11/500)"
+            },
+            "responders": [
+              "7E8"
+            ],
+            "pids_by_ecu": {
+              "7E8": [
+                "0C",
+                "0D",
+                "05",
+                "2F",
+                "42",
+                "A6"
+              ]
+            },
+            "supported_fields": [
+              "rpm",
+              "speed",
+              "coolant_temp",
+              "fuel_level",
+              "module_voltage",
+              "odometer"
+            ],
+            "unsupported_fields": [],
+            "powertrain": "ice",
+            "rate_req_s": 10
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "status",
+            "state": "live",
+            "link": 2,
+            "detail": "mock",
+            "ts": 1791892800.6
+          }
+        },
+        {
+          "t": 1000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801,
+            "fields": {
+              "rpm": 921,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.5,
+            "fields": {
+              "rpm": 925,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 2000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892802,
+            "fields": {
+              "rpm": 923,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.13,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 2500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892802.5,
+            "fields": {
+              "rpm": 915,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.14,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 3000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892803,
+            "fields": {
+              "rpm": 904,
+              "speed": 0,
+              "coolant_temp": 42,
+              "fuel_level": 61.2,
+              "module_voltage": 14.14,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 3500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892803.5,
+            "fields": {
+              "rpm": 891,
+              "speed": 0,
+              "coolant_temp": 42,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 4000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892804,
+            "fields": {
+              "rpm": 881,
+              "speed": 0,
+              "coolant_temp": 42,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 4500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892804.5,
+            "fields": {
+              "rpm": 876,
+              "speed": 0,
+              "coolant_temp": 42,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 5000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892805,
+            "fields": {
+              "rpm": 876,
+              "speed": 0,
+              "coolant_temp": 43,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 5500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892805.5,
+            "fields": {
+              "rpm": 882,
+              "speed": 0,
+              "coolant_temp": 43,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 6000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892806,
+            "fields": {
+              "rpm": 893,
+              "speed": 0,
+              "coolant_temp": 43,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 6500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892806.5,
+            "fields": {
+              "rpm": 905,
+              "speed": 0,
+              "coolant_temp": 43,
+              "fuel_level": 61.2,
+              "module_voltage": 14.14,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 7000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892807,
+            "fields": {
+              "rpm": 916,
+              "speed": 0,
+              "coolant_temp": 44,
+              "fuel_level": 61.2,
+              "module_voltage": 14.14,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 7500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892807.5,
+            "fields": {
+              "rpm": 923,
+              "speed": 0,
+              "coolant_temp": 44,
+              "fuel_level": 61.2,
+              "module_voltage": 14.13,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 8000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892808,
+            "fields": {
+              "rpm": 925,
+              "speed": 0,
+              "coolant_temp": 44,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 8500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892808.5,
+            "fields": {
+              "rpm": 920,
+              "speed": 0,
+              "coolant_temp": 44,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 9000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892809,
+            "fields": {
+              "rpm": 910,
+              "speed": 0,
+              "coolant_temp": 45,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 9500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892809.5,
+            "fields": {
+              "rpm": 898,
+              "speed": 0,
+              "coolant_temp": 45,
+              "fuel_level": 61.2,
+              "module_voltage": 14.1,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 10000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892810,
+            "fields": {
+              "rpm": 886,
+              "speed": 0,
+              "coolant_temp": 45,
+              "fuel_level": 61.2,
+              "module_voltage": 14.09,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 10000,
+          "msg": {
+            "type": "audit",
+            "ts": 1791892810,
+            "counters": {
+              "requests": 114,
+              "ok": 114,
+              "no_data": 0,
+              "timeouts": 0,
+              "err_adapter": 0,
+              "err_protocol": 0,
+              "err_identity": 0,
+              "err_voltage": 0,
+              "reconnects": 0,
+              "forbidden_attempts": 0,
+              "budget_violations": 0,
+              "bytes_tx": 684
+            },
+            "inventory": {
+              "010C1": 19,
+              "010D1": 19
+            },
+            "last_stop": null
+          }
+        },
+        {
+          "t": 10500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892810.5,
+            "fields": {
+              "rpm": 878,
+              "speed": 0,
+              "coolant_temp": 45,
+              "fuel_level": 61.2,
+              "module_voltage": 14.08,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 11000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892811,
+            "fields": {
+              "rpm": 875,
+              "speed": 0,
+              "coolant_temp": 46,
+              "fuel_level": 61.2,
+              "module_voltage": 14.07,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 11500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892811.5,
+            "fields": {
+              "rpm": 878,
+              "speed": 0,
+              "coolant_temp": 46,
+              "fuel_level": 61.2,
+              "module_voltage": 14.07,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 12000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892812,
+            "fields": {
+              "rpm": 887,
+              "speed": 0,
+              "coolant_temp": 46,
+              "fuel_level": 61.2,
+              "module_voltage": 14.06,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "cfg": {
+        "adapter": null,
+        "serial": "/dev/pts/1",
+        "pin": "1234",
+        "pollHz": 0.2,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "stopAt": 22000,
+      "ms": 22000,
+      "msgs": [
+        {
+          "t": 0,
+          "msg": {
+            "type": "ready",
+            "helper": "obd_read",
+            "version": "mock",
+            "allowlist_sha256": "mock"
+          }
+        },
+        {
+          "t": 0,
+          "msg": {
+            "type": "status",
+            "state": "connecting",
+            "link": 0,
+            "detail": "mock",
+            "ts": 1791892800
+          }
+        },
+        {
+          "t": 300,
+          "msg": {
+            "type": "status",
+            "state": "probing",
+            "link": 1,
+            "detail": "mock",
+            "ts": 1791892800.3
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "profile",
+            "ts": 1791892800.6,
+            "adapter": {
+              "mac": "00:00:00:00:00:00",
+              "ati": "ELM327 v1.5 (mock)",
+              "at1": "mock"
+            },
+            "protocol": {
+              "dpn": "A6",
+              "dp": "AUTO, ISO 15765-4 (CAN 11/500)"
+            },
+            "responders": [
+              "7E8"
+            ],
+            "pids_by_ecu": {
+              "7E8": [
+                "0C",
+                "0D",
+                "05",
+                "2F",
+                "42",
+                "A6"
+              ]
+            },
+            "supported_fields": [
+              "rpm",
+              "speed",
+              "coolant_temp",
+              "fuel_level",
+              "module_voltage",
+              "odometer"
+            ],
+            "unsupported_fields": [],
+            "powertrain": "ice",
+            "rate_req_s": 10
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "status",
+            "state": "live",
+            "link": 2,
+            "detail": "mock",
+            "ts": 1791892800.6
+          }
+        },
+        {
+          "t": 5000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892805,
+            "fields": {
+              "rpm": 876,
+              "speed": 0,
+              "coolant_temp": 43,
+              "fuel_level": 61.2,
+              "module_voltage": 14.15,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 10000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892810,
+            "fields": {
+              "rpm": 886,
+              "speed": 0,
+              "coolant_temp": 45,
+              "fuel_level": 61.2,
+              "module_voltage": 14.09,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 10000,
+          "msg": {
+            "type": "audit",
+            "ts": 1791892810,
+            "counters": {
+              "requests": 12,
+              "ok": 12,
+              "no_data": 0,
+              "timeouts": 0,
+              "err_adapter": 0,
+              "err_protocol": 0,
+              "err_identity": 0,
+              "err_voltage": 0,
+              "reconnects": 0,
+              "forbidden_attempts": 0,
+              "budget_violations": 0,
+              "bytes_tx": 72
+            },
+            "inventory": {
+              "010C1": 2,
+              "010D1": 2
+            },
+            "last_stop": null
+          }
+        },
+        {
+          "t": 15000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892815,
+            "fields": {
+              "rpm": 916,
+              "speed": 0,
+              "coolant_temp": 48,
+              "fuel_level": 61.2,
+              "module_voltage": 14.05,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 20000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892820,
+            "fields": {
+              "rpm": 923,
+              "speed": 0,
+              "coolant_temp": 50,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 20000,
+          "msg": {
+            "type": "audit",
+            "ts": 1791892820,
+            "counters": {
+              "requests": 24,
+              "ok": 24,
+              "no_data": 0,
+              "timeouts": 0,
+              "err_adapter": 0,
+              "err_protocol": 0,
+              "err_identity": 0,
+              "err_voltage": 0,
+              "reconnects": 0,
+              "forbidden_attempts": 0,
+              "budget_violations": 0,
+              "bytes_tx": 144
+            },
+            "inventory": {
+              "010C1": 4,
+              "010D1": 4
+            },
+            "last_stop": null
+          }
+        }
+      ]
+    },
+    {
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 30,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "stopAt": 1500,
+      "ms": 1500,
+      "msgs": [
+        {
+          "t": 0,
+          "msg": {
+            "type": "ready",
+            "helper": "obd_read",
+            "version": "mock",
+            "allowlist_sha256": "mock"
+          }
+        },
+        {
+          "t": 0,
+          "msg": {
+            "type": "status",
+            "state": "connecting",
+            "link": 0,
+            "detail": "mock",
+            "ts": 1791892800
+          }
+        },
+        {
+          "t": 300,
+          "msg": {
+            "type": "status",
+            "state": "probing",
+            "link": 1,
+            "detail": "mock",
+            "ts": 1791892800.3
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "profile",
+            "ts": 1791892800.6,
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF",
+              "ati": "ELM327 v1.5 (mock)",
+              "at1": "mock"
+            },
+            "protocol": {
+              "dpn": "A6",
+              "dp": "AUTO, ISO 15765-4 (CAN 11/500)"
+            },
+            "responders": [
+              "7E8"
+            ],
+            "pids_by_ecu": {
+              "7E8": [
+                "0C",
+                "0D",
+                "05",
+                "2F",
+                "42",
+                "A6"
+              ]
+            },
+            "supported_fields": [
+              "rpm",
+              "speed",
+              "coolant_temp",
+              "fuel_level",
+              "module_voltage",
+              "odometer"
+            ],
+            "unsupported_fields": [],
+            "powertrain": "ice",
+            "rate_req_s": 10
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "status",
+            "state": "live",
+            "link": 2,
+            "detail": "mock",
+            "ts": 1791892800.6
+          }
+        },
+        {
+          "t": 600,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.6,
+            "fields": {
+              "rpm": 914,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 650,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.65,
+            "fields": {
+              "rpm": 915,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 700,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.7,
+            "fields": {
+              "rpm": 916,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 750,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.75,
+            "fields": {
+              "rpm": 917,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 800,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.8,
+            "fields": {
+              "rpm": 918,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 850,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.85,
+            "fields": {
+              "rpm": 919,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 900,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.9,
+            "fields": {
+              "rpm": 920,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.11,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 950,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892800.95,
+            "fields": {
+              "rpm": 920,
+              "speed": 0,
+              "coolant_temp": 40,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1000,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801,
+            "fields": {
+              "rpm": 921,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1050,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.05,
+            "fields": {
+              "rpm": 922,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1100,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.1,
+            "fields": {
+              "rpm": 922,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1150,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.15,
+            "fields": {
+              "rpm": 923,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1200,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.2,
+            "fields": {
+              "rpm": 923,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1250,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.25,
+            "fields": {
+              "rpm": 924,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1300,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.3,
+            "fields": {
+              "rpm": 924,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1350,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.35,
+            "fields": {
+              "rpm": 924,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1400,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.4,
+            "fields": {
+              "rpm": 925,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1450,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.45,
+            "fields": {
+              "rpm": 925,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        },
+        {
+          "t": 1500,
+          "msg": {
+            "type": "sample",
+            "ts": 1791892801.5,
+            "fields": {
+              "rpm": 925,
+              "speed": 0,
+              "coolant_temp": 41,
+              "fuel_level": 61.2,
+              "module_voltage": 14.12,
+              "odometer": 48213.4,
+              "link": 2
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

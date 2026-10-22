@@ -1,0 +1,4012 @@
+{
+  "jsCommit": "09da38d",
+  "jsSourceFile": [
+    "src/hardware/obd.ts",
+    "src/agent/collectors/obd.ts",
+    "src/commands/obd.ts",
+    "src/commands/status.ts"
+  ],
+  "parse": [
+    {
+      "line": "{\"type\":\"ready\",\"helper\":\"obd_read\",\"version\":\"0.1.0\",\"allowlist_sha256\":\"abc123\"}",
+      "out": {
+        "type": "ready",
+        "helper": "obd_read",
+        "version": "0.1.0",
+        "allowlist_sha256": "abc123"
+      }
+    },
+    {
+      "line": "{\"type\":\"status\",\"state\":\"live\",\"link\":2,\"detail\":\"7E8 answering\",\"ts\":1760000000}",
+      "out": {
+        "type": "status",
+        "state": "live",
+        "link": 2,
+        "detail": "7E8 answering",
+        "ts": 1760000000
+      }
+    },
+    {
+      "line": "{\"type\":\"status\",\"state\":\"ecu_silent\",\"link\":1,\"detail\":\"3 misses\",\"ts\":1760000100}",
+      "out": {
+        "type": "status",
+        "state": "ecu_silent",
+        "link": 1,
+        "detail": "3 misses",
+        "ts": 1760000100
+      }
+    },
+    {
+      "line": "{\"type\":\"profile\",\"ts\":1760000001,\"adapter\":{\"mac\":\"AA:BB:CC:DD:EE:FF\",\"ati\":\"ELM327 v1.5\",\"at1\":\"OBDII to RS232\"},\"protocol\":{\"dpn\":\"A6\",\"dp\":\"AUTO, ISO 15765-4 (CAN 11/500)\"},\"responders\":[\"7E8\",\"7E9\"],\"pids_by_ecu\":{\"7E8\":[\"04\",\"05\",\"0C\"]},\"supported_fields\":[\"rpm\",\"speed\"],\"unsupported_fields\":[\"fuel_rate\"],\"powertrain\":\"ice\",\"rate_req_s\":28.1}",
+      "out": {
+        "type": "profile",
+        "ts": 1760000001,
+        "adapter": {
+          "mac": "AA:BB:CC:DD:EE:FF",
+          "ati": "ELM327 v1.5",
+          "at1": "OBDII to RS232"
+        },
+        "protocol": {
+          "dpn": "A6",
+          "dp": "AUTO, ISO 15765-4 (CAN 11/500)"
+        },
+        "responders": [
+          "7E8",
+          "7E9"
+        ],
+        "pids_by_ecu": {
+          "7E8": [
+            "04",
+            "05",
+            "0C"
+          ]
+        },
+        "supported_fields": [
+          "rpm",
+          "speed"
+        ],
+        "unsupported_fields": [
+          "fuel_rate"
+        ],
+        "powertrain": "ice",
+        "rate_req_s": 28.1
+      }
+    },
+    {
+      "line": "{\"type\":\"sample\",\"ts\":1760000002,\"fields\":{\"rpm\":926,\"speed\":0,\"coolant_temp\":88,\"fuel_level\":61.5,\"module_voltage\":14.12,\"odometer\":48213.4,\"mil\":0,\"link\":2}}",
+      "out": {
+        "type": "sample",
+        "fields": {
+          "rpm": 926,
+          "speed": 0,
+          "coolant_temp": 88,
+          "fuel_level": 61.5,
+          "module_voltage": 14.12,
+          "odometer": 48213.4,
+          "mil": 0,
+          "link": 2
+        },
+        "ts": 1760000002
+      }
+    },
+    {
+      "line": "{\"type\":\"audit\",\"ts\":1760000060,\"counters\":{\"requests\":600,\"ok\":598,\"no_data\":2,\"timeouts\":0,\"err_adapter\":0,\"err_protocol\":0,\"err_identity\":0,\"err_voltage\":0,\"reconnects\":1,\"forbidden_attempts\":0,\"budget_violations\":0,\"bytes_tx\":3600},\"inventory\":{\"010C1\":100,\"010D1\":100},\"last_stop\":{\"ts\":1760000030,\"reason\":\"BUS ERROR\"}}",
+      "out": {
+        "type": "audit",
+        "counters": {
+          "requests": 600,
+          "ok": 598,
+          "no_data": 2,
+          "timeouts": 0,
+          "err_adapter": 0,
+          "err_protocol": 0,
+          "err_identity": 0,
+          "err_voltage": 0,
+          "reconnects": 1,
+          "forbidden_attempts": 0,
+          "budget_violations": 0,
+          "bytes_tx": 3600
+        },
+        "inventory": {
+          "010C1": 100,
+          "010D1": 100
+        },
+        "last_stop": {
+          "ts": 1760000030,
+          "reason": "BUS ERROR"
+        },
+        "ts": 1760000060
+      }
+    },
+    {
+      "line": "{\"type\":\"error\",\"code\":6,\"error\":\"forbidden command ATSH7E0\"}",
+      "out": {
+        "type": "error",
+        "code": 6,
+        "error": "forbidden command ATSH7E0"
+      }
+    },
+    {
+      "line": "{\"type\":\"sample\",\"fields\":{\"rpm\":900,\"vin\":\"WVG\",\"gear\":null,\"speed\":\"12\",\"nan\":null,\"link\":2}}",
+      "out": {
+        "type": "sample",
+        "fields": {
+          "rpm": 900,
+          "link": 2
+        }
+      }
+    },
+    {
+      "line": "{\"type\":\"audit\",\"ts\":1,\"counters\":{\"requests\":1},\"last_stop\":null}",
+      "out": {
+        "type": "audit",
+        "counters": {
+          "requests": 1
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 1
+      }
+    },
+    {
+      "line": "Traceback (most recent call last):",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"sample\",\"fields\":{\"rpm\":9",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"telemetry_v2\"}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"status\",\"state\":\"flying\",\"link\":2}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"status\",\"state\":\"live\",\"link\":3}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"sample\"}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"audit\"}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"error\",\"error\":\"no code\"}",
+      "out": null
+    },
+    {
+      "line": "",
+      "out": null
+    },
+    {
+      "line": "[1,2]",
+      "out": null
+    },
+    {
+      "line": "   {\"type\":\"status\",\"state\":\"backoff\",\"link\":0,\"detail\":7,\"ts\":\"x\"}  ",
+      "out": {
+        "type": "status",
+        "state": "backoff",
+        "link": 0
+      }
+    },
+    {
+      "line": "{\"type\":\"status\",\"state\":\"live\",\"link\":2.0}",
+      "out": {
+        "type": "status",
+        "state": "live",
+        "link": 2
+      }
+    },
+    {
+      "line": "{\"type\":\"status\",\"state\":\"live\",\"link\":\"2\"}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"status\",\"link\":1,\"state\":\"probing\",\"extra\":true}",
+      "out": {
+        "type": "status",
+        "state": "probing",
+        "link": 1
+      }
+    },
+    {
+      "line": "{\"type\":\"ready\"}",
+      "out": {
+        "type": "ready"
+      }
+    },
+    {
+      "line": "{\"type\":\"ready\",\"helper\":1,\"version\":\"0.2.0\",\"allowlist_sha256\":null}",
+      "out": {
+        "type": "ready",
+        "version": "0.2.0"
+      }
+    },
+    {
+      "line": "{\"type\":\"profile\"}",
+      "out": {
+        "type": "profile"
+      }
+    },
+    {
+      "line": "{\"type\":\"profile\",\"rate_req_s\":5,\"10\":\"x\",\"2\":\"y\",\"zeta\":{\"b\":1,\"1\":2},\"type2\":[1,{\"3\":0,\"a\":1}]}",
+      "out": {
+        "2": "y",
+        "10": "x",
+        "type": "profile",
+        "rate_req_s": 5,
+        "zeta": {
+          "1": 2,
+          "b": 1
+        },
+        "type2": [
+          1,
+          {
+            "3": 0,
+            "a": 1
+          }
+        ]
+      }
+    },
+    {
+      "line": "{\"type\":\"sample\",\"fields\":{\"b\":1,\"10\":2,\"a\":-0.5,\"2\":3e3,\"big\":1.5e300,\"neg\":-12}}",
+      "out": {
+        "type": "sample",
+        "fields": {
+          "2": 3000,
+          "10": 2,
+          "b": 1,
+          "a": -0.5,
+          "big": 1.5e+300,
+          "neg": -12
+        }
+      }
+    },
+    {
+      "line": "{\"type\":\"sample\",\"fields\":[]}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"sample\",\"fields\":{},\"ts\":12.5}",
+      "out": {
+        "type": "sample",
+        "fields": {},
+        "ts": 12.5
+      }
+    },
+    {
+      "line": "{\"type\":\"audit\",\"counters\":{\"requests\":\"1\",\"ok\":2},\"inventory\":{\"z\":1,\"010C1\":\"x\",\"5\":2},\"last_stop\":{\"reason\":5,\"ts\":3}}",
+      "out": {
+        "type": "audit",
+        "counters": {
+          "ok": 2
+        },
+        "inventory": {
+          "5": 2,
+          "z": 1
+        },
+        "last_stop": {
+          "ts": 3
+        }
+      }
+    },
+    {
+      "line": "{\"type\":\"audit\",\"counters\":{},\"inventory\":[1],\"last_stop\":\"BUS\"}",
+      "out": {
+        "type": "audit",
+        "counters": {},
+        "inventory": {},
+        "last_stop": null
+      }
+    },
+    {
+      "line": "{\"type\":\"audit\",\"counters\":[],\"inventory\":{}}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"error\",\"code\":4.5}",
+      "out": {
+        "type": "error",
+        "code": 4.5,
+        "error": ""
+      }
+    },
+    {
+      "line": "{\"type\":\"error\",\"code\":\"6\",\"error\":\"x\"}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"error\",\"code\":2,\"error\":null}",
+      "out": {
+        "type": "error",
+        "code": 2,
+        "error": ""
+      }
+    },
+    {
+      "line": "{\"type\":null}",
+      "out": null
+    },
+    {
+      "line": "null",
+      "out": null
+    },
+    {
+      "line": "{}",
+      "out": null
+    },
+    {
+      "line": "{\"type\":\"sample\",\"fields\":{\"rpm\":1},\"type\":\"ready\"}",
+      "out": {
+        "type": "ready"
+      }
+    },
+    {
+      "line": "\t{\"type\":\"status\",\"state\":\"ecu_silent\",\"link\":1}\r",
+      "out": {
+        "type": "status",
+        "state": "ecu_silent",
+        "link": 1
+      }
+    }
+  ],
+  "env": [
+    {
+      "env": {},
+      "cfg": {
+        "adapter": null,
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": false,
+      "argv": [
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "aa:bb:cc:dd:ee:ff",
+        "XORGATE_OBD_PIN": "0000",
+        "XORGATE_OBD_POLL_HZ": "2",
+        "XORGATE_OBD_FIELDS": "rpm, speed,coolant_temp",
+        "XORGATE_OBD_POWER_SOURCE": "constant"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "0000",
+        "pollHz": 2,
+        "fields": [
+          "rpm",
+          "speed",
+          "coolant_temp"
+        ],
+        "powerSource": "constant"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "0000",
+        "--poll-hz",
+        "2",
+        "--fields",
+        "rpm,speed,coolant_temp",
+        "--power-source",
+        "constant"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "not-a-mac",
+        "XORGATE_OBD_SERIAL": "/dev/pts/7",
+        "XORGATE_OBD_POLL_HZ": "500",
+        "XORGATE_OBD_POWER_SOURCE": "solar"
+      },
+      "cfg": {
+        "adapter": null,
+        "serial": "/dev/pts/7",
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--serial",
+        "/dev/pts/7",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "  10:21:3e:4f:33:65  ",
+        "XORGATE_OBD_POLL_HZ": "0.5"
+      },
+      "cfg": {
+        "adapter": "10:21:3E:4F:33:65",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 0.5,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "10:21:3E:4F:33:65",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "0.5",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "10-21-3E-4F-33-65"
+      },
+      "cfg": {
+        "adapter": null,
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": false,
+      "argv": [
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "20",
+        "XORGATE_OBD_PIN": "  "
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 20,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "20",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "20.0001"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "0"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "-1"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "1e1"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 10,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "10",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "0x2"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 2,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "2",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": " 3 "
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 3,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "3",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "abc"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POLL_HZ": "Infinity"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_FIELDS": ",,RPM, rpm ,_x1,9bad,a-b,speed,"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": [
+          "rpm",
+          "_x1",
+          "speed"
+        ],
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--fields",
+        "rpm,_x1,speed",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_FIELDS": " , "
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POWER_SOURCE": " constant "
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "constant"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "constant"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_POWER_SOURCE": "Constant"
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_SERIAL": "  "
+      },
+      "cfg": {
+        "adapter": null,
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": false,
+      "argv": [
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "env": {
+        "XORGATE_OBD_SERIAL": " /dev/pts/3 ",
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": " 4321 "
+      },
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": "/dev/pts/3",
+        "pin": "4321",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "configured": true,
+      "argv": [
+        "--serial",
+        "/dev/pts/3",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    }
+  ],
+  "argv": [
+    {
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": null,
+        "powerSource": "switched"
+      },
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "1234",
+        "--poll-hz",
+        "1",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": "/dev/pts/1",
+        "pin": "1234",
+        "pollHz": 0.5,
+        "fields": [
+          "rpm"
+        ],
+        "powerSource": "constant"
+      },
+      "argv": [
+        "--serial",
+        "/dev/pts/1",
+        "--poll-hz",
+        "0.5",
+        "--fields",
+        "rpm",
+        "--power-source",
+        "constant"
+      ]
+    },
+    {
+      "cfg": {
+        "adapter": null,
+        "serial": null,
+        "pin": "1234",
+        "pollHz": 0.2,
+        "fields": [],
+        "powerSource": "switched"
+      },
+      "argv": [
+        "--poll-hz",
+        "0.2",
+        "--fields",
+        "",
+        "--power-source",
+        "switched"
+      ]
+    },
+    {
+      "cfg": {
+        "adapter": "AA:BB:CC:DD:EE:FF",
+        "serial": null,
+        "pin": "000000",
+        "pollHz": 1.3333333333333333,
+        "fields": [
+          "a",
+          "b"
+        ],
+        "powerSource": "switched"
+      },
+      "argv": [
+        "--adapter",
+        "AA:BB:CC:DD:EE:FF",
+        "--pin",
+        "000000",
+        "--poll-hz",
+        "1.3333333333333333",
+        "--fields",
+        "a,b",
+        "--power-source",
+        "switched"
+      ]
+    }
+  ],
+  "resolve": [
+    {
+      "settings": "<undefined>",
+      "env": {
+        "XORGATE_OBD_ADAPTER": "aa:bb:cc:dd:ee:ff",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "env",
+        "helper": {
+          "adapter": "AA:BB:CC:DD:EE:FF",
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 2,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": "AA:BB:CC:DD:EE:FF",
+          "pin": "1234",
+          "pollHz": 2,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": "<undefined>",
+      "env": {},
+      "out": {
+        "run": false,
+        "off": "not_configured",
+        "source": "env",
+        "helper": {
+          "adapter": null,
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": false,
+          "adapterMac": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": true,
+        "adapterMac": "10:21:3E:4F:33:65",
+        "powerSource": "switched"
+      },
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "settings",
+        "helper": {
+          "adapter": "10:21:3E:4F:33:65",
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": "10:21:3E:4F:33:65",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": false,
+        "adapterMac": "10:21:3E:4F:33:65"
+      },
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": false,
+        "off": "disabled",
+        "source": "settings",
+        "helper": {
+          "adapter": "10:21:3E:4F:33:65",
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": false,
+          "adapterMac": "10:21:3E:4F:33:65",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": true,
+        "adapterMac": null
+      },
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": false,
+        "off": "not_configured",
+        "source": "settings",
+        "helper": {
+          "adapter": null,
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": true
+      },
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": false,
+        "off": "not_configured",
+        "source": "settings",
+        "helper": {
+          "adapter": null,
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": true,
+        "adapterMac": "10:21:3E:4F:33:65",
+        "fields": [
+          "rpm",
+          "speed"
+        ]
+      },
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "settings",
+        "helper": {
+          "adapter": "10:21:3E:4F:33:65",
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [
+            "rpm",
+            "speed"
+          ],
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": "10:21:3E:4F:33:65",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [
+            "rpm",
+            "speed"
+          ],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {},
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": false,
+        "off": "disabled",
+        "source": "settings",
+        "helper": {
+          "adapter": null,
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": false,
+          "adapterMac": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "adapterMac": "10:21:3E:4F:33:65"
+      },
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": false,
+        "off": "disabled",
+        "source": "settings",
+        "helper": {
+          "adapter": "10:21:3E:4F:33:65",
+          "serial": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": false,
+          "adapterMac": "10:21:3E:4F:33:65",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": true,
+        "adapterMac": "10:21:3E:4F:33:65",
+        "pin": "123456",
+        "pollHz": 0.2,
+        "fields": [],
+        "powerSource": "constant"
+      },
+      "env": {
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_PIN": "9999",
+        "XORGATE_OBD_POLL_HZ": "2"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "settings",
+        "helper": {
+          "adapter": "10:21:3E:4F:33:65",
+          "serial": null,
+          "pin": "123456",
+          "pollHz": 0.2,
+          "fields": null,
+          "powerSource": "constant"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": "10:21:3E:4F:33:65",
+          "pin": "123456",
+          "pollHz": 0.2,
+          "fields": [],
+          "powerSource": "constant"
+        }
+      }
+    },
+    {
+      "settings": "<undefined>",
+      "env": {
+        "XORGATE_OBD_SERIAL": "/dev/pts/4"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "env",
+        "helper": {
+          "adapter": null,
+          "serial": "/dev/pts/4",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": true,
+        "adapterMac": null
+      },
+      "env": {
+        "XORGATE_OBD_SERIAL": "/dev/pts/4"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "settings",
+        "helper": {
+          "adapter": null,
+          "serial": "/dev/pts/4",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": false,
+        "adapterMac": null
+      },
+      "env": {
+        "XORGATE_OBD_SERIAL": "/dev/pts/4"
+      },
+      "out": {
+        "run": false,
+        "off": "disabled",
+        "source": "settings",
+        "helper": {
+          "adapter": null,
+          "serial": "/dev/pts/4",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": false,
+          "adapterMac": null,
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": {
+        "enabled": true,
+        "adapterMac": "10:21:3E:4F:33:65"
+      },
+      "env": {
+        "XORGATE_OBD_SERIAL": "/dev/pts/4",
+        "XORGATE_OBD_PIN": "1111"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "settings",
+        "helper": {
+          "adapter": "10:21:3E:4F:33:65",
+          "serial": "/dev/pts/4",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": null,
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": "10:21:3E:4F:33:65",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched"
+        }
+      }
+    },
+    {
+      "settings": "<undefined>",
+      "env": {
+        "XORGATE_OBD_SERIAL": "/dev/pts/4",
+        "XORGATE_OBD_ADAPTER": "AA:BB:CC:DD:EE:FF",
+        "XORGATE_OBD_FIELDS": "rpm"
+      },
+      "out": {
+        "run": true,
+        "off": null,
+        "source": "env",
+        "helper": {
+          "adapter": "AA:BB:CC:DD:EE:FF",
+          "serial": "/dev/pts/4",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [
+            "rpm"
+          ],
+          "powerSource": "switched"
+        },
+        "settings": {
+          "enabled": true,
+          "adapterMac": "AA:BB:CC:DD:EE:FF",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [
+            "rpm"
+          ],
+          "powerSource": "switched"
+        }
+      }
+    }
+  ],
+  "normalize": [
+    {
+      "raw": [
+        {
+          "mac": "10:21:3e:4f:33:65",
+          "name": "OBDII",
+          "rssi": -58
+        },
+        {
+          "mac": "10:21:3E:4F:33:65",
+          "name": "OBDII dup",
+          "rssi": -10
+        },
+        {
+          "mac": "6C:3B:00:00:00:01",
+          "name": "6C-3B-00-00-00-01",
+          "rssi": -40
+        },
+        {
+          "mac": "6C:3B:00:00:00:02",
+          "name": "",
+          "rssi": -40
+        },
+        {
+          "mac": "not a mac",
+          "name": "x",
+          "rssi": -1
+        },
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "V-LINK"
+        },
+        {
+          "mac": "AA:AA:AA:AA:AA:01",
+          "name": "TV",
+          "rssi": -70.4
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0A",
+          "name": "dev0",
+          "rssi": -80
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0B",
+          "name": "dev1",
+          "rssi": -81
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0C",
+          "name": "dev2",
+          "rssi": -82
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0D",
+          "name": "dev3",
+          "rssi": -83
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0E",
+          "name": "dev4",
+          "rssi": -84
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0F",
+          "name": "dev5",
+          "rssi": -85
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:10",
+          "name": "dev6",
+          "rssi": -86
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:11",
+          "name": "dev7",
+          "rssi": -87
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:12",
+          "name": "dev8",
+          "rssi": -88
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:13",
+          "name": "dev9",
+          "rssi": -89
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:14",
+          "name": "dev10",
+          "rssi": -90
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:15",
+          "name": "dev11",
+          "rssi": -91
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:16",
+          "name": "dev12",
+          "rssi": -92
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:17",
+          "name": "dev13",
+          "rssi": -93
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:18",
+          "name": "dev14",
+          "rssi": -94
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:19",
+          "name": "dev15",
+          "rssi": -95
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1A",
+          "name": "dev16",
+          "rssi": -96
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1B",
+          "name": "dev17",
+          "rssi": -97
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1C",
+          "name": "dev18",
+          "rssi": -98
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1D",
+          "name": "dev19",
+          "rssi": -99
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1E",
+          "name": "dev20",
+          "rssi": -100
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1F",
+          "name": "dev21",
+          "rssi": -101
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:20",
+          "name": "dev22",
+          "rssi": -102
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:21",
+          "name": "dev23",
+          "rssi": -103
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:22",
+          "name": "dev24",
+          "rssi": -104
+        }
+      ],
+      "out": [
+        {
+          "mac": "10:21:3E:4F:33:65",
+          "name": "OBDII",
+          "rssi": -58
+        },
+        {
+          "mac": "AA:AA:AA:AA:AA:01",
+          "name": "TV",
+          "rssi": -70
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0A",
+          "name": "dev0",
+          "rssi": -80
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0B",
+          "name": "dev1",
+          "rssi": -81
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0C",
+          "name": "dev2",
+          "rssi": -82
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0D",
+          "name": "dev3",
+          "rssi": -83
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0E",
+          "name": "dev4",
+          "rssi": -84
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:0F",
+          "name": "dev5",
+          "rssi": -85
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:10",
+          "name": "dev6",
+          "rssi": -86
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:11",
+          "name": "dev7",
+          "rssi": -87
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:12",
+          "name": "dev8",
+          "rssi": -88
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:13",
+          "name": "dev9",
+          "rssi": -89
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:14",
+          "name": "dev10",
+          "rssi": -90
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:15",
+          "name": "dev11",
+          "rssi": -91
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:16",
+          "name": "dev12",
+          "rssi": -92
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:17",
+          "name": "dev13",
+          "rssi": -93
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:18",
+          "name": "dev14",
+          "rssi": -94
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:19",
+          "name": "dev15",
+          "rssi": -95
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1A",
+          "name": "dev16",
+          "rssi": -96
+        },
+        {
+          "mac": "BB:BB:BB:BB:BB:1B",
+          "name": "dev17",
+          "rssi": -97
+        }
+      ]
+    },
+    {
+      "raw": "garbage",
+      "out": []
+    },
+    {
+      "raw": [
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "V-LINK"
+        }
+      ],
+      "out": [
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "V-LINK",
+          "rssi": null
+        }
+      ]
+    },
+    {
+      "raw": null,
+      "out": []
+    },
+    {
+      "raw": {
+        "mac": "00:1D:A5:68:98:8B",
+        "name": "V-LINK"
+      },
+      "out": []
+    },
+    {
+      "raw": [
+        null,
+        1,
+        "x",
+        {
+          "mac": 5,
+          "name": "n"
+        },
+        {
+          "mac": " 00:1d:a5:68:98:8b ",
+          "name": "  padded  ",
+          "rssi": -70.5
+        },
+        {
+          "mac": "00:1D:A5:68:98:8C",
+          "name": "aa:bb",
+          "rssi": "-3"
+        },
+        {
+          "mac": "00:1D:A5:68:98:8D",
+          "name": "00:1d:a5:68:98:8d",
+          "rssi": -1
+        },
+        {
+          "mac": "00:1D:A5:68:98:8E",
+          "name": "00-1d-a5-68-98-8e",
+          "rssi": -1
+        },
+        {
+          "mac": "00:1D:A5:68:98:8F",
+          "name": 7,
+          "rssi": -1
+        },
+        {
+          "mac": "00:1D:A5:68:98:90",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "rssi": -60.5
+        },
+        {
+          "mac": "00:1D:A5:68:98:91",
+          "name": "same",
+          "rssi": -60
+        },
+        {
+          "mac": "00:1D:A5:68:98:89",
+          "name": "same2",
+          "rssi": -60
+        },
+        {
+          "mac": "00:1D:A5:68:98:88",
+          "name": "nul"
+        },
+        {
+          "mac": "00:1D:A5:68:98:87",
+          "name": "nul2",
+          "rssi": null
+        },
+        {
+          "mac": "00:1D:A5:68:98:86",
+          "name": "inf",
+          "rssi": null
+        }
+      ],
+      "out": [
+        {
+          "mac": "00:1D:A5:68:98:89",
+          "name": "same2",
+          "rssi": -60
+        },
+        {
+          "mac": "00:1D:A5:68:98:90",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "rssi": -60
+        },
+        {
+          "mac": "00:1D:A5:68:98:91",
+          "name": "same",
+          "rssi": -60
+        },
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "padded",
+          "rssi": -70
+        },
+        {
+          "mac": "00:1D:A5:68:98:86",
+          "name": "inf",
+          "rssi": null
+        },
+        {
+          "mac": "00:1D:A5:68:98:87",
+          "name": "nul2",
+          "rssi": null
+        },
+        {
+          "mac": "00:1D:A5:68:98:88",
+          "name": "nul",
+          "rssi": null
+        },
+        {
+          "mac": "00:1D:A5:68:98:8C",
+          "name": "aa:bb",
+          "rssi": null
+        }
+      ]
+    },
+    {
+      "raw": [
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "",
+          "rssi": -1
+        },
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "second",
+          "rssi": -2
+        }
+      ],
+      "out": [
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "second",
+          "rssi": -2
+        }
+      ]
+    }
+  ],
+  "auditLines": [
+    {
+      "seq": 3,
+      "audit": {
+        "counters": {
+          "requests": 10,
+          "ok": 9,
+          "no_data": 1
+        },
+        "inventory": {
+          "010C1": 10
+        },
+        "last_stop": null,
+        "ts": 1
+      },
+      "rate": 1.25,
+      "out": "audit #3: req 10 (1.3 req/s) ok 9 no_data 1 timeouts 0 err 0 forbidden 0 reconnects 0 voltage_low 0 inventory 1 last_stop —"
+    },
+    {
+      "seq": 1,
+      "audit": {
+        "counters": {
+          "err_voltage": 1,
+          "forbidden_attempts": 1,
+          "voltage_low_events": 3
+        },
+        "inventory": {
+          "010C1": 10
+        },
+        "last_stop": {
+          "reason": "voltage: x"
+        },
+        "ts": 1
+      },
+      "rate": null,
+      "out": "audit #1: req 0 (— req/s) ok 0 no_data 0 timeouts 0 err 1 forbidden 1 reconnects 0 voltage_low 3 inventory 1 last_stop voltage: x"
+    },
+    {
+      "seq": 12,
+      "audit": {
+        "counters": {
+          "requests": 1.5,
+          "ok": 0.25,
+          "err_adapter": 2,
+          "err_protocol": 3,
+          "err_identity": 4,
+          "budget_violations": 7,
+          "reconnects": 9,
+          "timeouts": 1e+21
+        },
+        "inventory": {},
+        "last_stop": {
+          "ts": 1
+        },
+        "ts": 5
+      },
+      "rate": 0.05,
+      "out": "audit #12: req 1.5 (0.1 req/s) ok 0.25 no_data 0 timeouts 1e+21 err 9 forbidden 7 reconnects 9 voltage_low 0 inventory 0 last_stop —"
+    },
+    {
+      "seq": 2,
+      "audit": {
+        "counters": {
+          "requests": 10,
+          "ok": 9,
+          "no_data": 1
+        },
+        "inventory": {
+          "010C1": 10
+        },
+        "last_stop": null,
+        "ts": 1
+      },
+      "rate": 12.25,
+      "out": "audit #2: req 10 (12.3 req/s) ok 9 no_data 1 timeouts 0 err 0 forbidden 0 reconnects 0 voltage_low 0 inventory 1 last_stop —"
+    },
+    {
+      "seq": 2,
+      "audit": {
+        "counters": {
+          "requests": 10,
+          "ok": 9,
+          "no_data": 1
+        },
+        "inventory": {
+          "010C1": 10
+        },
+        "last_stop": null,
+        "ts": 1
+      },
+      "rate": 0,
+      "out": "audit #2: req 10 (0.0 req/s) ok 9 no_data 1 timeouts 0 err 0 forbidden 0 reconnects 0 voltage_low 0 inventory 1 last_stop —"
+    }
+  ],
+  "bound": [
+    {
+      "inventory": {
+        "a": 1,
+        "b": 5,
+        "c": 3
+      },
+      "max": 2,
+      "out": {
+        "b": 5,
+        "c": 3
+      }
+    },
+    {
+      "inventory": {
+        "x": 1
+      },
+      "max": 10,
+      "out": {
+        "x": 1
+      }
+    },
+    {
+      "inventory": {
+        "b": 1,
+        "a": 1,
+        "c": 1
+      },
+      "max": 2,
+      "out": {
+        "a": 1,
+        "b": 1
+      }
+    },
+    {
+      "inventory": {
+        "9": 1,
+        "10": 1,
+        "z": 9,
+        "010C1": 9
+      },
+      "max": 3,
+      "out": {
+        "10": 1,
+        "010C1": 9,
+        "z": 9
+      }
+    },
+    {
+      "inventory": {
+        "9": 1,
+        "10": 1,
+        "z": 9
+      },
+      "max": 10,
+      "out": {
+        "9": 1,
+        "10": 1,
+        "z": 9
+      }
+    },
+    {
+      "inventory": {
+        "01001": 0,
+        "01011": 1,
+        "01021": 2,
+        "01031": 3,
+        "01041": 4,
+        "01051": 5,
+        "01061": 6,
+        "01071": 7,
+        "01081": 8,
+        "01091": 9,
+        "010a1": 10,
+        "010b1": 11,
+        "010c1": 12,
+        "010d1": 13,
+        "010e1": 14,
+        "010f1": 15,
+        "01101": 16,
+        "01111": 17,
+        "01121": 18,
+        "01131": 19,
+        "01141": 20,
+        "01151": 21,
+        "01161": 22,
+        "01171": 23,
+        "01181": 24,
+        "01191": 25,
+        "011a1": 26,
+        "011b1": 27,
+        "011c1": 28,
+        "011d1": 29,
+        "011e1": 30,
+        "011f1": 31,
+        "01201": 32,
+        "01211": 33,
+        "01221": 34,
+        "01231": 35,
+        "01241": 36,
+        "01251": 37,
+        "01261": 38,
+        "01271": 39,
+        "01281": 40,
+        "01291": 41,
+        "012a1": 42,
+        "012b1": 43,
+        "012c1": 44,
+        "012d1": 45,
+        "012e1": 46,
+        "012f1": 47,
+        "01301": 48,
+        "01311": 49,
+        "01321": 50,
+        "01331": 51,
+        "01341": 52,
+        "01351": 53,
+        "01361": 54,
+        "01371": 55,
+        "01381": 56,
+        "01391": 57,
+        "013a1": 58,
+        "013b1": 59,
+        "013c1": 60,
+        "013d1": 61,
+        "013e1": 62,
+        "013f1": 63,
+        "01401": 64,
+        "01411": 65,
+        "01421": 66,
+        "01431": 67,
+        "01441": 68,
+        "01451": 69,
+        "01461": 70,
+        "01471": 71,
+        "01481": 72,
+        "01491": 73,
+        "014a1": 74,
+        "014b1": 75,
+        "014c1": 76,
+        "014d1": 77,
+        "014e1": 78,
+        "014f1": 79,
+        "01501": 80,
+        "01511": 81,
+        "01521": 82,
+        "01531": 83,
+        "01541": 84,
+        "01551": 85,
+        "01561": 86,
+        "01571": 87,
+        "01581": 88,
+        "01591": 89,
+        "015a1": 90,
+        "015b1": 91,
+        "015c1": 92,
+        "015d1": 93,
+        "015e1": 94,
+        "015f1": 95,
+        "01601": 96,
+        "01611": 97,
+        "01621": 98,
+        "01631": 99,
+        "01641": 100,
+        "01651": 101,
+        "01661": 102,
+        "01671": 103,
+        "01681": 104,
+        "01691": 105,
+        "016a1": 106,
+        "016b1": 107,
+        "016c1": 108,
+        "016d1": 109,
+        "016e1": 110,
+        "016f1": 111,
+        "01701": 112,
+        "01711": 113,
+        "01721": 114,
+        "01731": 115,
+        "01741": 116,
+        "01751": 117,
+        "01761": 118,
+        "01771": 119,
+        "01781": 120,
+        "01791": 121,
+        "017a1": 122,
+        "017b1": 123,
+        "017c1": 124,
+        "017d1": 125,
+        "017e1": 126,
+        "017f1": 127,
+        "01801": 128,
+        "01811": 129,
+        "01821": 130,
+        "01831": 131,
+        "01841": 132,
+        "01851": 133,
+        "01861": 134,
+        "01871": 135,
+        "01881": 136,
+        "01891": 137,
+        "018a1": 138,
+        "018b1": 139,
+        "018c1": 140,
+        "018d1": 141,
+        "018e1": 142,
+        "018f1": 143,
+        "01901": 144,
+        "01911": 145,
+        "01921": 146,
+        "01931": 147,
+        "01941": 148,
+        "01951": 149,
+        "01961": 150,
+        "01971": 151,
+        "01981": 152,
+        "01991": 153,
+        "019a1": 154,
+        "019b1": 155,
+        "019c1": 156,
+        "019d1": 157,
+        "019e1": 158,
+        "019f1": 159,
+        "01a01": 160,
+        "01a11": 161,
+        "01a21": 162,
+        "01a31": 163,
+        "01a41": 164,
+        "01a51": 165,
+        "01a61": 166,
+        "01a71": 167,
+        "01a81": 168,
+        "01a91": 169,
+        "01aa1": 170,
+        "01ab1": 171,
+        "01ac1": 172,
+        "01ad1": 173,
+        "01ae1": 174,
+        "01af1": 175,
+        "01b01": 176,
+        "01b11": 177,
+        "01b21": 178,
+        "01b31": 179,
+        "01b41": 180,
+        "01b51": 181,
+        "01b61": 182,
+        "01b71": 183,
+        "01b81": 184,
+        "01b91": 185,
+        "01ba1": 186,
+        "01bb1": 187,
+        "01bc1": 188,
+        "01bd1": 189,
+        "01be1": 190,
+        "01bf1": 191,
+        "01c01": 192,
+        "01c11": 193,
+        "01c21": 194,
+        "01c31": 195,
+        "01c41": 196,
+        "01c51": 197,
+        "01c61": 198,
+        "01c71": 199,
+        "01c81": 200,
+        "01c91": 201,
+        "01ca1": 202,
+        "01cb1": 203,
+        "01cc1": 204,
+        "01cd1": 205,
+        "01ce1": 206,
+        "01cf1": 207,
+        "01d01": 208,
+        "01d11": 209,
+        "01d21": 210,
+        "01d31": 211,
+        "01d41": 212,
+        "01d51": 213,
+        "01d61": 214,
+        "01d71": 215,
+        "01d81": 216,
+        "01d91": 217,
+        "01da1": 218,
+        "01db1": 219,
+        "01dc1": 220,
+        "01dd1": 221,
+        "01de1": 222,
+        "01df1": 223,
+        "01e01": 224,
+        "01e11": 225,
+        "01e21": 226,
+        "01e31": 227,
+        "01e41": 228,
+        "01e51": 229,
+        "01e61": 230,
+        "01e71": 231,
+        "01e81": 232,
+        "01e91": 233,
+        "01ea1": 234,
+        "01eb1": 235,
+        "01ec1": 236,
+        "01ed1": 237,
+        "01ee1": 238,
+        "01ef1": 239,
+        "01f01": 240,
+        "01f11": 241,
+        "01f21": 242,
+        "01f31": 243,
+        "01f41": 244,
+        "01f51": 245,
+        "01f61": 246,
+        "01f71": 247,
+        "01f81": 248,
+        "01f91": 249,
+        "01fa1": 250,
+        "01fb1": 251,
+        "01fc1": 252,
+        "01fd1": 253,
+        "01fe1": 254,
+        "01ff1": 255,
+        "011001": 256,
+        "011011": 257,
+        "011021": 258,
+        "011031": 259,
+        "011041": 260,
+        "011051": 261,
+        "011061": 262,
+        "011071": 263,
+        "011081": 264,
+        "011091": 265,
+        "0110a1": 266,
+        "0110b1": 267,
+        "0110c1": 268,
+        "0110d1": 269,
+        "0110e1": 270,
+        "0110f1": 271,
+        "011101": 272,
+        "011111": 273,
+        "011121": 274,
+        "011131": 275,
+        "011141": 276,
+        "011151": 277,
+        "011161": 278,
+        "011171": 279,
+        "011181": 280,
+        "011191": 281,
+        "0111a1": 282,
+        "0111b1": 283,
+        "0111c1": 284,
+        "0111d1": 285,
+        "0111e1": 286,
+        "0111f1": 287,
+        "011201": 288,
+        "011211": 289,
+        "011221": 290,
+        "011231": 291,
+        "011241": 292,
+        "011251": 293,
+        "011261": 294,
+        "011271": 295,
+        "011281": 296,
+        "011291": 297,
+        "0112a1": 298,
+        "0112b1": 299,
+        "0112c1": 300,
+        "0112d1": 301,
+        "0112e1": 302,
+        "0112f1": 303,
+        "011301": 304,
+        "011311": 305,
+        "011321": 306,
+        "011331": 307,
+        "011341": 308,
+        "011351": 309,
+        "011361": 310,
+        "011371": 311,
+        "011381": 312,
+        "011391": 313,
+        "0113a1": 314,
+        "0113b1": 315,
+        "0113c1": 316,
+        "0113d1": 317,
+        "0113e1": 318,
+        "0113f1": 319,
+        "011401": 320,
+        "011411": 321,
+        "011421": 322,
+        "011431": 323,
+        "011441": 324,
+        "011451": 325,
+        "011461": 326,
+        "011471": 327,
+        "011481": 328,
+        "011491": 329,
+        "0114a1": 330,
+        "0114b1": 331,
+        "0114c1": 332,
+        "0114d1": 333,
+        "0114e1": 334,
+        "0114f1": 335,
+        "011501": 336,
+        "011511": 337,
+        "011521": 338,
+        "011531": 339,
+        "011541": 340,
+        "011551": 341,
+        "011561": 342,
+        "011571": 343,
+        "011581": 344,
+        "011591": 345,
+        "0115a1": 346,
+        "0115b1": 347,
+        "0115c1": 348,
+        "0115d1": 349
+      },
+      "max": 200,
+      "out": {
+        "0115d1": 349,
+        "0115c1": 348,
+        "0115b1": 347,
+        "0115a1": 346,
+        "011591": 345,
+        "011581": 344,
+        "011571": 343,
+        "011561": 342,
+        "011551": 341,
+        "011541": 340,
+        "011531": 339,
+        "011521": 338,
+        "011511": 337,
+        "011501": 336,
+        "0114f1": 335,
+        "0114e1": 334,
+        "0114d1": 333,
+        "0114c1": 332,
+        "0114b1": 331,
+        "0114a1": 330,
+        "011491": 329,
+        "011481": 328,
+        "011471": 327,
+        "011461": 326,
+        "011451": 325,
+        "011441": 324,
+        "011431": 323,
+        "011421": 322,
+        "011411": 321,
+        "011401": 320,
+        "0113f1": 319,
+        "0113e1": 318,
+        "0113d1": 317,
+        "0113c1": 316,
+        "0113b1": 315,
+        "0113a1": 314,
+        "011391": 313,
+        "011381": 312,
+        "011371": 311,
+        "011361": 310,
+        "011351": 309,
+        "011341": 308,
+        "011331": 307,
+        "011321": 306,
+        "011311": 305,
+        "011301": 304,
+        "0112f1": 303,
+        "0112e1": 302,
+        "0112d1": 301,
+        "0112c1": 300,
+        "0112b1": 299,
+        "0112a1": 298,
+        "011291": 297,
+        "011281": 296,
+        "011271": 295,
+        "011261": 294,
+        "011251": 293,
+        "011241": 292,
+        "011231": 291,
+        "011221": 290,
+        "011211": 289,
+        "011201": 288,
+        "0111f1": 287,
+        "0111e1": 286,
+        "0111d1": 285,
+        "0111c1": 284,
+        "0111b1": 283,
+        "0111a1": 282,
+        "011191": 281,
+        "011181": 280,
+        "011171": 279,
+        "011161": 278,
+        "011151": 277,
+        "011141": 276,
+        "011131": 275,
+        "011121": 274,
+        "011111": 273,
+        "011101": 272,
+        "0110f1": 271,
+        "0110e1": 270,
+        "0110d1": 269,
+        "0110c1": 268,
+        "0110b1": 267,
+        "0110a1": 266,
+        "011091": 265,
+        "011081": 264,
+        "011071": 263,
+        "011061": 262,
+        "011051": 261,
+        "011041": 260,
+        "011031": 259,
+        "011021": 258,
+        "011011": 257,
+        "011001": 256,
+        "01ff1": 255,
+        "01fe1": 254,
+        "01fd1": 253,
+        "01fc1": 252,
+        "01fb1": 251,
+        "01fa1": 250,
+        "01f91": 249,
+        "01f81": 248,
+        "01f71": 247,
+        "01f61": 246,
+        "01f51": 245,
+        "01f41": 244,
+        "01f31": 243,
+        "01f21": 242,
+        "01f11": 241,
+        "01f01": 240,
+        "01ef1": 239,
+        "01ee1": 238,
+        "01ed1": 237,
+        "01ec1": 236,
+        "01eb1": 235,
+        "01ea1": 234,
+        "01e91": 233,
+        "01e81": 232,
+        "01e71": 231,
+        "01e61": 230,
+        "01e51": 229,
+        "01e41": 228,
+        "01e31": 227,
+        "01e21": 226,
+        "01e11": 225,
+        "01e01": 224,
+        "01df1": 223,
+        "01de1": 222,
+        "01dd1": 221,
+        "01dc1": 220,
+        "01db1": 219,
+        "01da1": 218,
+        "01d91": 217,
+        "01d81": 216,
+        "01d71": 215,
+        "01d61": 214,
+        "01d51": 213,
+        "01d41": 212,
+        "01d31": 211,
+        "01d21": 210,
+        "01d11": 209,
+        "01d01": 208,
+        "01cf1": 207,
+        "01ce1": 206,
+        "01cd1": 205,
+        "01cc1": 204,
+        "01cb1": 203,
+        "01ca1": 202,
+        "01c91": 201,
+        "01c81": 200,
+        "01c71": 199,
+        "01c61": 198,
+        "01c51": 197,
+        "01c41": 196,
+        "01c31": 195,
+        "01c21": 194,
+        "01c11": 193,
+        "01c01": 192,
+        "01bf1": 191,
+        "01be1": 190,
+        "01bd1": 189,
+        "01bc1": 188,
+        "01bb1": 187,
+        "01ba1": 186,
+        "01b91": 185,
+        "01b81": 184,
+        "01b71": 183,
+        "01b61": 182,
+        "01b51": 181,
+        "01b41": 180,
+        "01b31": 179,
+        "01b21": 178,
+        "01b11": 177,
+        "01b01": 176,
+        "01af1": 175,
+        "01ae1": 174,
+        "01ad1": 173,
+        "01ac1": 172,
+        "01ab1": 171,
+        "01aa1": 170,
+        "01a91": 169,
+        "01a81": 168,
+        "01a71": 167,
+        "01a61": 166,
+        "01a51": 165,
+        "01a41": 164,
+        "01a31": 163,
+        "01a21": 162,
+        "01a11": 161,
+        "01a01": 160,
+        "019f1": 159,
+        "019e1": 158,
+        "019d1": 157,
+        "019c1": 156,
+        "019b1": 155,
+        "019a1": 154,
+        "01991": 153,
+        "01981": 152,
+        "01971": 151,
+        "01961": 150
+      }
+    }
+  ],
+  "rate": [
+    {
+      "prev": {
+        "counters": {
+          "requests": 10
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 100
+      },
+      "cur": {
+        "counters": {
+          "requests": 70
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 106
+      },
+      "out": 10
+    },
+    {
+      "prev": null,
+      "cur": {
+        "counters": {
+          "requests": 70
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 106
+      },
+      "out": null
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 70
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 106
+      },
+      "cur": {
+        "counters": {
+          "requests": 10
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 100
+      },
+      "out": null
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 10
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 100
+      },
+      "cur": {
+        "counters": {
+          "requests": 70
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 100
+      },
+      "out": null
+    },
+    {
+      "prev": {
+        "counters": {},
+        "inventory": {},
+        "last_stop": null,
+        "ts": 100
+      },
+      "cur": {
+        "counters": {
+          "requests": 70
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 106
+      },
+      "out": null
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 10
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 100
+      },
+      "cur": {
+        "counters": {},
+        "inventory": {},
+        "last_stop": null,
+        "ts": 106
+      },
+      "out": null
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 0
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 1000
+      },
+      "cur": {
+        "counters": {
+          "requests": 600
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 1060
+      },
+      "out": 10
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 0
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 0
+      },
+      "cur": {
+        "counters": {
+          "requests": 1
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 3
+      },
+      "out": 0.3
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 0
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 0
+      },
+      "cur": {
+        "counters": {
+          "requests": 5
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 2
+      },
+      "out": 2.5
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 0
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 0
+      },
+      "cur": {
+        "counters": {
+          "requests": 1
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 0.0001
+      },
+      "out": 10000
+    },
+    {
+      "prev": {
+        "counters": {
+          "requests": 0
+        },
+        "inventory": {},
+        "last_stop": null,
+        "ts": 1
+      },
+      "cur": null,
+      "out": null
+    }
+  ],
+  "reportDue": [
+    {
+      "prev": null,
+      "next": null,
+      "out": false
+    },
+    {
+      "prev": null,
+      "next": {
+        "state": "connecting",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "connecting",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": null,
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "connecting",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "adapter_not_found",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "adapter_not_found",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "backoff",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "probing",
+        "link": 1,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "ecu_silent",
+        "link": 1,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "retrying",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "parked",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "parked",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "parked",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "parked",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "starting",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "retrying",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "exited",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 0
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 1
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 1
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 2
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 9
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 10
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 10
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 11
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 19
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 20
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 5
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 5
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 0
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 20
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 10
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 0
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 0
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 1
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 1,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 1,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "voltageLowEvents": 0
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "voltageLowEvents": 1
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "voltageLowEvents": 0
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "lastStop": null
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "lastStop": "voltage: 11.5 V"
+      },
+      "out": true
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "lastStop": null
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "lastStop": "a"
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3,
+        "lastStop": "a"
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": 17,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": 18,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "out": false
+    },
+    {
+      "prev": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": 12,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "next": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": 9.8,
+        "detail": null,
+        "since": 0,
+        "helperVersion": null,
+        "auditSeq": 3
+      },
+      "out": false
+    }
+  ],
+  "statusLine": [
+    {
+      "status": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": 10,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": 14.12,
+        "detail": null,
+        "since": 0,
+        "helperVersion": "0.1.0"
+      },
+      "out": "obd        live  link 2  10.0 req/s  err 0  forbidden 0  14.1 V"
+    },
+    {
+      "status": {
+        "state": "connecting",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": "0.1.0"
+      },
+      "out": "obd        connecting  link 0  — req/s  err 0  forbidden 0  — V"
+    },
+    {
+      "status": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": 10,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": 14.12,
+        "detail": null,
+        "since": 0,
+        "helperVersion": "0.1.0",
+        "adapter": "10:21:3E:4F:33:65"
+      },
+      "out": "obd        live  link 2  10.0 req/s  err 0  forbidden 0  14.1 V  adapter 10:21:3E:4F:33:65"
+    },
+    {
+      "status": {
+        "state": "disabled",
+        "link": 0,
+        "reqPerSec": null,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": null,
+        "detail": null,
+        "since": 0,
+        "helperVersion": "0.1.0",
+        "adapter": null
+      },
+      "out": "obd        disabled  link 0  — req/s  err 0  forbidden 0  — V"
+    },
+    {
+      "status": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": 0.25,
+        "errors": 0,
+        "forbidden": 0,
+        "voltage": 12.25,
+        "detail": null,
+        "since": 0,
+        "helperVersion": "0.1.0",
+        "adapter": ""
+      },
+      "out": "obd        live  link 2  0.3 req/s  err 0  forbidden 0  12.3 V"
+    },
+    {
+      "status": {
+        "state": "live",
+        "link": 2,
+        "reqPerSec": 28.1,
+        "errors": 12,
+        "forbidden": 3,
+        "voltage": 9.95,
+        "detail": null,
+        "since": 0,
+        "helperVersion": "0.1.0",
+        "adapter": "/dev/pts/4"
+      },
+      "out": "obd        live  link 2  28.1 req/s  err 12  forbidden 3  9.9 V  adapter /dev/pts/4"
+    }
+  ],
+  "profiles": [
+    {
+      "profile": null,
+      "out": null
+    },
+    {
+      "profile": {
+        "protocol": {
+          "dpn": "A6",
+          "dp": "AUTO, ISO 15765-4 (CAN 11/500)"
+        },
+        "responders": [
+          "7E8",
+          "7E9"
+        ],
+        "supported_fields": [
+          "rpm",
+          "speed"
+        ],
+        "unsupported_fields": [
+          "fuel_rate"
+        ],
+        "powertrain": "ice",
+        "adapter": {
+          "ati": "ELM327 v1.5"
+        }
+      },
+      "out": "AUTO, ISO 15765-4 (CAN 11/500) · ECUs 7E8,7E9 · 2/3 fields · ice · ELM327 v1.5"
+    },
+    {
+      "profile": {},
+      "out": "protocol ? · ECUs none · 0/0 fields · unknown"
+    },
+    {
+      "profile": {
+        "protocol": {
+          "dpn": "A6"
+        },
+        "responders": [],
+        "adapter": {
+          "ati": ""
+        }
+      },
+      "out": "A6 · ECUs none · 0/0 fields · unknown"
+    },
+    {
+      "profile": {
+        "protocol": {},
+        "supported_fields": [],
+        "unsupported_fields": [
+          "a",
+          "b"
+        ],
+        "powertrain": "ev"
+      },
+      "out": "protocol ? · ECUs none · 0/2 fields · ev"
+    },
+    {
+      "profile": {
+        "ts": 1760000001,
+        "adapter": {
+          "mac": "AA:BB:CC:DD:EE:FF",
+          "ati": "ELM327 v1.5",
+          "at1": "OBDII to RS232"
+        },
+        "protocol": {
+          "dpn": "A6",
+          "dp": "AUTO, ISO 15765-4 (CAN 11/500)"
+        },
+        "responders": [
+          "7E8",
+          "7E9"
+        ],
+        "pids_by_ecu": {
+          "7E8": [
+            "04",
+            "05",
+            "0C"
+          ]
+        },
+        "supported_fields": [
+          "rpm",
+          "speed"
+        ],
+        "unsupported_fields": [
+          "fuel_rate"
+        ],
+        "powertrain": "ice",
+        "rate_req_s": 28.1
+      },
+      "out": "AUTO, ISO 15765-4 (CAN 11/500) · ECUs 7E8,7E9 · 2/3 fields · ice · ELM327 v1.5"
+    }
+  ],
+  "obdArgs": [
+    {
+      "args": [],
+      "out": {
+        "cmd": "help"
+      }
+    },
+    {
+      "args": [
+        "--help"
+      ],
+      "out": {
+        "cmd": "help"
+      }
+    },
+    {
+      "args": [
+        "-h"
+      ],
+      "out": {
+        "cmd": "help"
+      }
+    },
+    {
+      "args": [
+        "help"
+      ],
+      "out": {
+        "cmd": "help"
+      }
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "out": {
+        "cmd": "status"
+      }
+    },
+    {
+      "args": [
+        "status",
+        "extra"
+      ],
+      "out": {
+        "cmd": "status"
+      }
+    },
+    {
+      "args": [
+        "scan"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 25,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--json",
+        "--seconds",
+        "10"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 10,
+        "json": true
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds=120"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 120,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        "0"
+      ],
+      "out": {
+        "cmd": "error",
+        "message": "--seconds must be 1..120, got '0'"
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        "x"
+      ],
+      "out": {
+        "cmd": "error",
+        "message": "--seconds must be 1..120, got 'x'"
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds"
+      ],
+      "out": {
+        "cmd": "error",
+        "message": "--seconds must be 1..120, got ''"
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds="
+      ],
+      "out": {
+        "cmd": "error",
+        "message": "--seconds must be 1..120, got ''"
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        "121"
+      ],
+      "out": {
+        "cmd": "error",
+        "message": "--seconds must be 1..120, got '121'"
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        "1.5"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 1.5,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        " 7 "
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 7,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        "1e1"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 10,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        "0x10"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 16,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds=5",
+        "--seconds",
+        "9"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 9,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--seconds",
+        "9",
+        "--seconds=5"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 9,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "--json"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 25,
+        "json": true
+      }
+    },
+    {
+      "args": [
+        "scan",
+        "extra"
+      ],
+      "out": {
+        "cmd": "scan",
+        "seconds": 25,
+        "json": false
+      }
+    },
+    {
+      "args": [
+        "pair",
+        "10:21:3E:4F:33:65"
+      ],
+      "out": {
+        "cmd": "error",
+        "message": "unknown obd subcommand 'pair'"
+      }
+    },
+    {
+      "args": [
+        "SCAN"
+      ],
+      "out": {
+        "cmd": "error",
+        "message": "unknown obd subcommand 'SCAN'"
+      }
+    }
+  ],
+  "tables": [
+    {
+      "candidates": [
+        {
+          "mac": "10:21:3E:4F:33:65",
+          "name": "OBDII",
+          "rssi": -58
+        },
+        {
+          "mac": "00:1D:A5:68:98:8B",
+          "name": "V-LINK",
+          "rssi": null
+        }
+      ],
+      "out": "MAC                RSSI   NAME\n10:21:3E:4F:33:65   -58   OBDII\n00:1D:A5:68:98:8B     —   V-LINK\n\npick the adapter by its label, then: xorgate set obd.adapter <MAC>   (never pairs by name)"
+    },
+    {
+      "candidates": [],
+      "out": "no named Bluetooth devices found (is the adapter powered? ELM327 dongles need the car's OBD port live)"
+    },
+    {
+      "candidates": [
+        {
+          "mac": "10:21:3E:4F:33:65",
+          "name": "A",
+          "rssi": -5
+        },
+        {
+          "mac": "10:21:3E:4F:33:66",
+          "name": "B",
+          "rssi": -100
+        },
+        {
+          "mac": "10:21:3E:4F:33:67",
+          "name": "C",
+          "rssi": -10000
+        },
+        {
+          "mac": "10:21:3E:4F:33:68",
+          "name": "D",
+          "rssi": 0
+        }
+      ],
+      "out": "MAC                RSSI   NAME\n10:21:3E:4F:33:65    -5   A\n10:21:3E:4F:33:66  -100   B\n10:21:3E:4F:33:67  -10000   C\n10:21:3E:4F:33:68     0   D\n\npick the adapter by its label, then: xorgate set obd.adapter <MAC>   (never pairs by name)"
+    }
+  ]
+}
