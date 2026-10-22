@@ -7,6 +7,9 @@ use serde::Deserialize;
 
 /// The JS repo commit every Phase 1 fixture was extracted from.
 pub const JS_COMMIT: &str = "89b5c6407ef88e20f7168bd767d22a7be04ebcb6";
+/// The Phase 5b reference (`09da38d`): fixtures dumped or re-dumped there
+/// carry it (CF78 re-stamps the rest at the end of the phase).
+pub const JS_COMMIT_P5B: &str = "09da38dcc8b75c248625a3a0bee43b70e7def55d";
 
 #[derive(Deserialize)]
 pub struct Tagged<C> {
@@ -35,7 +38,11 @@ pub fn fixture<C: for<'de> Deserialize<'de>>(rel: &str) -> Tagged<C> {
     let f: Tagged<C> =
         serde_json::from_str(&fixture_text(rel)).unwrap_or_else(|e| panic!("{path}: {e}"));
     assert!(f.js_source_file.contains(".ts"), "{path}: jsSourceFile");
-    assert_eq!(f.js_commit, JS_COMMIT, "{path}: jsCommit");
+    assert!(
+        f.js_commit == JS_COMMIT || f.js_commit == JS_COMMIT_P5B,
+        "{path}: jsCommit {}",
+        f.js_commit
+    );
     assert!(!f.generated_by.is_empty(), "{path}: generatedBy");
     assert!(!f.cases.is_empty(), "{path}: no cases");
     f

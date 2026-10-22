@@ -10,14 +10,35 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_xorgate-rs");
 
 fn run_offline(tag: &str, mode: Option<&str>) -> (Vec<serde_json::Value>, serde_json::Value, i32) {
+    run_offline_ntp(tag, mode, "yes")
+}
+
+/// `ntp` = what a `timedatectl` shim first on PATH answers for
+/// `NTPSynchronized` (the real-mode clock trust gate probes it, Phase 5b).
+fn run_offline_ntp(
+    tag: &str,
+    mode: Option<&str>,
+    ntp: &str,
+) -> (Vec<serde_json::Value>, serde_json::Value, i32) {
     let dir = std::env::temp_dir().join(format!("xg-offline-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let home = dir.join("home");
+    let shims = dir.join("shims");
+    std::fs::create_dir_all(&shims).unwrap();
+    let shim = shims.join("timedatectl");
+    std::fs::write(&shim, format!("#!/bin/sh\necho {ntp}\n")).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut path = std::ffi::OsString::from(&shims);
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
     let mut cmd = Command::new(BIN);
     cmd.args(["run", "--offline"])
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("PATH", path)
         .env("HOME", &dir)
         .env("XORGATE_HOME", &home)
         .env("HARDWARE_MANIFEST", dir.join("none.json"))
@@ -107,4 +128,22 @@ fn offline_real_mode_publishes_the_system_group() {
     assert_eq!(code, 0);
     assert!(lines[1]["metrics"]["system"]["cpu_usage"]["value"].is_number());
     assert_eq!(state["mode"], "real");
+}
+
+/// Phase 5b clock trust gate (`worker.ts:1406-1412` @ 09da38d): in real mode
+/// with `NTPSynchronized=no` the local snapshot advances (`seq`, `latest`)
+/// but nothing is published within the 5 min grace window.
+#[test]
+fn offline_real_mode_holds_the_publish_until_the_clock_is_trusted() {
+    if !std::path::Path::new("/proc/stat").exists() {
+        return; // off-Linux dev box
+    }
+    let (lines, state, code) = run_offline_ntp("real-held", Some("real"), "no");
+    assert_eq!(code, 0);
+    assert!(lines.is_empty(), "published while held: {lines:?}");
+    assert_eq!(state["published"], 0);
+    assert!(
+        state["latest"]["seq"].as_u64().unwrap() >= 1,
+        "seq advances across held ticks"
+    );
 }

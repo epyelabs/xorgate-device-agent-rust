@@ -403,6 +403,8 @@ pub struct Rig {
     pub backend_override: Option<Arc<dyn RecordingBackend>>,
     /// Upload options instead of the `upload` flag's always-OK put.
     pub upload_override: Option<xorgate_cloud::s3::UploadOptions>,
+    /// The clock trust gate (Phase 5b); `None` = always trusted.
+    pub clock_trusted: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl Rig {
@@ -436,6 +438,7 @@ impl Rig {
             live_shed_hook: None,
             backend_override: None,
             upload_override: None,
+            clock_trusted: None,
         }
     }
 
@@ -544,6 +547,7 @@ impl Rig {
             poll_ms: Some(self.poll_ms),
             shed_sample_ms: Some(self.shed_sample_ms),
             time_probe_timeout_ms: self.time_probe_timeout_ms,
+            clock_trusted: self.clock_trusted.clone(),
         })
     }
 

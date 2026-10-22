@@ -183,15 +183,26 @@ fn scratch(tag: &str) -> PathBuf {
 
 #[test]
 fn set_command_fixture() {
+    run_fixture("set-command.json", 40);
+}
+
+/// `fixtures/cli_set/set-obd.json` — `xorgate set obd.*` + the 09da38d
+/// usage / unknown-key strings (Phase 5b WP1, `dump-p5b-spine-cli-set.mts`).
+#[test]
+fn set_obd_fixture() {
+    run_fixture("set-obd.json", 40);
+}
+
+fn run_fixture(file: &str, min_cases: usize) {
     let path = format!(
-        "{}/../../fixtures/cli_set/set-command.json",
+        "{}/../../fixtures/cli_set/{file}",
         env!("CARGO_MANIFEST_DIR")
     );
     let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert!(fx.cases.len() >= 40);
+    assert!(fx.cases.len() >= min_cases);
     let mut failures = Vec::new();
     for (i, c) in fx.cases.iter().enumerate() {
-        let home = scratch(&format!("fx{i}"));
+        let home = scratch(&format!("fx-{file}-{i}"));
         if let Some(s) = &c.input.settings {
             std::fs::write(settings_path(&home), s).unwrap();
         }

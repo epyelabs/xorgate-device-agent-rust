@@ -6,7 +6,7 @@
   "timeSyncDefaultsJson": "{\"offlineSources\":true,\"stepThresholdSecs\":10,\"maxStepsPerBoot\":4}",
   "videoPresetsJson": "[{\"name\":\"1080p30-4mbps\",\"width\":1920,\"height\":1080,\"fps\":30,\"bitrateKbps\":4000},{\"name\":\"1080p15-2mbps\",\"width\":1920,\"height\":1080,\"fps\":15,\"bitrateKbps\":2000},{\"name\":\"720p30-2mbps\",\"width\":1280,\"height\":720,\"fps\":30,\"bitrateKbps\":2000},{\"name\":\"720p15-2mbps\",\"width\":1280,\"height\":720,\"fps\":15,\"bitrateKbps\":2000},{\"name\":\"720p15-1mbps\",\"width\":1280,\"height\":720,\"fps\":15,\"bitrateKbps\":1000}]",
   "defaultVideoPreset": "720p15-1mbps",
-  "configApplyClassesJson": "{\"gnssAntBias\":\"modem-poll\",\"imuMount\":\"agent-poll\",\"recording\":\"agent-poll\",\"lteRecovery\":\"modem-poll\",\"timeSync\":\"agent-poll\",\"cellular\":\"modem-poll\",\"cameraMount\":\"agent-poll\",\"simulation\":\"agent-poll\"}",
+  "configApplyClassesJson": "{\"gnssAntBias\":\"modem-poll\",\"imuMount\":\"agent-poll\",\"recording\":\"agent-poll\",\"lteRecovery\":\"modem-poll\",\"timeSync\":\"agent-poll\",\"cellular\":\"modem-poll\",\"cameraMount\":\"agent-poll\",\"simulation\":\"agent-poll\",\"obd\":\"agent-poll\"}",
   "configNamespaceKeys": [
     "gnssAntBias",
     "imuMount",
@@ -15,7 +15,8 @@
     "timeSync",
     "cellular",
     "cameraMount",
-    "simulation"
+    "simulation",
+    "obd"
   ],
   "cases": [
     {
@@ -536,5 +537,6 @@
       "input": "{\"mode\":\"real\",\"recording\":\"on\"}",
       "expectedJson": "{\"mode\":\"real\"}"
     }
-  ]
+  ],
+  "constantsJsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d"
 }

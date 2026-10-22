@@ -130,6 +130,7 @@ async fn real_stack_records_offline_finalizes_and_uploads_on_reconnect() {
         poll_ms: None,
         shed_sample_ms: None,
         time_probe_timeout_ms: None,
+        clock_trusted: None,
     });
     m.start().await;
     let sid = m.status().session_id.expect("recording");

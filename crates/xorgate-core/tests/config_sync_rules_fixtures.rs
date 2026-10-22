@@ -98,6 +98,7 @@ fn rules_fixture() {
                             ..Default::default()
                         },
                         desired: None,
+                        obd: None,
                         hints: None,
                         mode: None,
                         camera_mount: None,

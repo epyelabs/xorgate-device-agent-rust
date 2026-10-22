@@ -1,7 +1,7 @@
 {
   "jsSourceFile": "src/commands/set.ts (setCommand :391-531, setRecordingCommand :109, setCameraEnable :227, setCameraMountCommand :266, setTimeSyncCommand :316, setApnCommand + watch :533-671) over src/daemon/settings.ts loadSettings/saveSettings",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  "generatedBy": "npx tsx dump-cli-set.mts in a git-archive scratch copy of 89b5c64, non-root, fake timers (phase-2 WP6; script in evidence/wp6-tools, handed to WP7)",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "npx tsx dump-cli-set.mts in a git-archive scratch copy of 89b5c64, non-root, fake timers (phase-2 WP6; script in evidence/wp6-tools, handed to WP7); re-dumped @ 09da38d from the recorded inputs by tools/replay/js/dump-p5b-spine-cli-set.mts --redump (Phase 5b WP1)",
   "cases": [
     {
       "name": "no args → usage",
@@ -17,7 +17,7 @@
         "lines": [
           {
             "stream": "err",
-            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)"
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>, obd.<enabled|adapter|pin|poll-hz|fields|power-source> <value>)"
           }
         ],
         "exitCode": 1,
@@ -42,7 +42,7 @@
         "lines": [
           {
             "stream": "err",
-            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)"
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>, obd.<enabled|adapter|pin|poll-hz|fields|power-source> <value>)"
           }
         ],
         "exitCode": 1,
@@ -67,7 +67,7 @@
         "lines": [
           {
             "stream": "err",
-            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)"
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>, obd.<enabled|adapter|pin|poll-hz|fields|power-source> <value>)"
           }
         ],
         "exitCode": 1,
@@ -92,7 +92,7 @@
         "lines": [
           {
             "stream": "err",
-            "text": "unknown setting 'nonsense' (supported: mode, gps-antenna, gps-fix-reset-policy, deadzone-profile, apn, wifi, recording.*, timeSync.*, cameraMount.*)"
+            "text": "unknown setting 'nonsense' (supported: mode, gps-antenna, gps-fix-reset-policy, deadzone-profile, apn, wifi, recording.*, timeSync.*, cameraMount.*, obd.*)"
           }
         ],
         "exitCode": 1,

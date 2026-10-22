@@ -342,6 +342,7 @@ fn rig(tag: &str) -> Rig {
         ctx: ctx.clone(),
         sync: sync.clone(),
         scope,
+        obd: None,
     };
     Rig {
         ctx,
@@ -620,4 +621,176 @@ fn boot_upload_options_runs() {
     let (ctx, home) = ctx_in("wp3-upload", Arc::new(xorgate_agent::ctx::NoopHooks));
     config_plane::boot_upload_options(&ctx);
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// --- Phase 5b: the `unheldNamespaces` rev-guard exception (worker.ts:938-971 @ 09da38d)
+
+/// A fake OBD collector: counts `reapply()` (`source.obdReapply?.()`).
+struct FakeObd(Arc<std::sync::atomic::AtomicUsize>);
+
+impl xorgate_agent::ctx::ObdControl for FakeObd {
+    fn status(&self) -> xorgate_core::telemetry::ObdStatus {
+        unreachable!("not read by the config plane")
+    }
+    fn report(&self) -> Value {
+        serde_json::json!({})
+    }
+    fn reapply(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn scan(&self) -> xorgate_agent::ctx::BoxFut<'static, xorgate_core::obd::ObdScanResult> {
+        unreachable!()
+    }
+    fn forget(&self) -> xorgate_agent::ctx::BoxFut<'static, Option<String>> {
+        unreachable!()
+    }
+}
+
+/// An already-applied rev carrying a namespace this build never held (absent
+/// from settings.json AND the baseline) adopts EXACTLY that key: the log line,
+/// a `cloud config applied:` summary of the SUBSET, the LED flash, the reapply
+/// hooks and the report. A redelivery is then plain rev-guarded; `null` (an
+/// all-invalid object) is never "carried"; no baseline → no adoption.
+#[tokio::test(start_paused = true)]
+async fn unheld_namespaces_are_adopted_under_an_applied_rev() {
+    let mut r = rig("p5b-unheld");
+    let ctx = r.ctx.clone();
+    std::fs::write(&ctx.paths.settings, r#"{"mode":"real","gnssAntBias":true}"#).unwrap();
+    std::fs::write(
+        &ctx.paths.config_sync,
+        r#"{"lastAppliedRev":51,"lastReportTs":0,"namespaces":{"gnssAntBias":true}}"#,
+    )
+    .unwrap();
+    // Rebuild the plane over the seeded sync file (the state loads at construction).
+    let reapplies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    r.sync = rebuild_sync(&r);
+    r.handler = MessageHandler {
+        ctx: ctx.clone(),
+        sync: r.sync.clone(),
+        scope: r.handler.scope.clone(),
+        obd: Some(Arc::new(FakeObd(reapplies.clone()))),
+    };
+    let doc = r#"{"v":1,"rev":51,"gnssAntBias":true,"obd":{"enabled":true,"adapterMac":"10:21:3e:4f:33:65"},"timeSync":{}}"#;
+    r.handler.handle(doc.as_bytes());
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        r.take(),
+        vec![
+            "hooks.led_config_applied",
+            "hooks.reapply_recording",
+            "hooks.reconcile_camera_mount",
+            "report cloud rev=51",
+        ]
+    );
+    assert_eq!(reapplies.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        std::fs::read_to_string(&ctx.paths.settings).unwrap(),
+        r#"{"mode":"real","gnssAntBias":true,"obd":{"enabled":true,"adapterMac":"10:21:3E:4F:33:65"}}"#
+    );
+    assert_eq!(
+        state_events(&ctx).last().unwrap(),
+        r#"cloud config applied: {"obd":{"enabled":true,"adapterMac":"10:21:3E:4F:33:65"}}"#
+    );
+    assert_eq!(
+        xorgate_core::config_report::unheld_adopt_log(Some(51), &["obd"]),
+        "[agent] cloud config rev 51 already applied, but it carries namespace(s) this build never held: obd — adopting"
+    );
+    // `timeSync: {}` parsed to null: not carried, not adopted, rev unchanged.
+    assert_eq!(r.sync.last_applied_rev(), 51);
+
+    // Redelivery: obd is held now → plain "already applied", no write.
+    r.handler.handle(doc.as_bytes());
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        r.take(),
+        vec![
+            "hooks.reapply_recording",
+            "hooks.reconcile_camera_mount",
+            "report cloud rev=51",
+        ]
+    );
+    assert_eq!(reapplies.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_adoption_without_a_baseline() {
+    let mut r = rig("p5b-unheld-nobase");
+    let ctx = r.ctx.clone();
+    std::fs::write(&ctx.paths.settings, r#"{"mode":"real"}"#).unwrap();
+    std::fs::write(
+        &ctx.paths.config_sync,
+        r#"{"lastAppliedRev":51,"lastReportTs":0}"#,
+    )
+    .unwrap();
+    r.sync = rebuild_sync(&r);
+    r.handler = MessageHandler {
+        ctx: ctx.clone(),
+        sync: r.sync.clone(),
+        scope: r.handler.scope.clone(),
+        obd: None,
+    };
+    r.handler
+        .handle(br#"{"v":1,"rev":51,"obd":{"enabled":true}}"#);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        r.take(),
+        vec![
+            "hooks.reapply_recording",
+            "hooks.reconcile_camera_mount",
+            "report cloud rev=51",
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&ctx.paths.settings).unwrap(),
+        r#"{"mode":"real"}"#
+    );
+}
+
+/// A live hardware block that adds or drops `peripherals.obd` only warns
+/// (the collector is built once from the BOOT block).
+#[tokio::test(start_paused = true)]
+async fn a_live_obd_peripheral_change_asks_for_a_restart() {
+    let r = rig("p5b-hw-obd");
+    let ctx = &r.ctx;
+    std::fs::write(&ctx.paths.settings, r#"{"mode":"real"}"#).unwrap();
+    let with_obd = r#"{"v":1,"hardware":{"v":2,"platform":"rpi-cm4","encoder":"hw-h264","rails":false,"statusLed":null,"imu":"bno085","video":[],"peripherals":{"obd":{"adapter":"elm327","transport":"bt-spp"}}}}"#;
+    r.handler.handle(with_obd.as_bytes());
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let ev = state_events(ctx);
+    let i = ev
+        .iter()
+        .position(|m| m == "hardware block updated: rpi-cm4/hw-h264")
+        .expect("updated");
+    assert_eq!(
+        ev[i + 1],
+        "hardware block changed peripherals.obd — restart the agent to apply"
+    );
+}
+
+/// A fresh `ConfigSync` for an existing rig (re-reads config-sync.json),
+/// publishing into the rig's timeline like `rig()` does.
+fn rebuild_sync(r: &Rig) -> ConfigSync {
+    let (requester, _) = ReportRequester::channel();
+    let (_r2, rx2) = ReportRequester::channel();
+    let link = FakeLink::new(r.timeline.clone());
+    link.set(LinkState::Connected);
+    let deps = ConfigPlaneDeps {
+        mqtt: MqttHandle::new(link),
+        scope: r.handler.scope.clone(),
+        reports: requester,
+        report_rx: rx2,
+        obd: None,
+    };
+    let mut o: ConfigSyncOptions = options_for(&r.ctx, &deps);
+    let (s, t) = (r.sent.clone(), r.timeline.clone());
+    o.publish = Arc::new(move |_topic, payload| {
+        let v: Value = serde_json::from_slice(&payload).unwrap();
+        push(
+            &t,
+            format!("report {} rev={}", v["origin"].as_str().unwrap(), v["rev"]),
+        );
+        s.lock().unwrap().push(v);
+        Ok(())
+    });
+    ConfigSync::new(o)
 }
