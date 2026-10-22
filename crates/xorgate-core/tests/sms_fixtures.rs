@@ -55,7 +55,7 @@ fn sms_modem_test_ts_pure_subset() {
     assert_eq!(f.extra["SMS_LIMIT_MAX"], SMS_LIMIT_MAX);
     assert_eq!(f.extra["SMS_TEXT_MAX"], xorgate_core::sms_pdu::SMS_TEXT_MAX);
     assert_eq!(f.extra["SMS_DELETE_TIMEOUT_MS"], SMS_DELETE_TIMEOUT_MS);
-    assert_eq!(f.js_commit, "09da38d");
+    assert_eq!(f.js_commit, common::JS_COMMIT_P5B);
     let mut ops = std::collections::BTreeMap::<String, usize>::new();
     for c in &f.cases {
         *ops.entry(c.op.clone()).or_default() += 1;

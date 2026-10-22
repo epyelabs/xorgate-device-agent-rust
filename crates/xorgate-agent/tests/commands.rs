@@ -302,7 +302,7 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
         r.ctx.cancel.cancel();
     }
     assert_eq!(
-        checked, 31,
+        checked, 43,
         "steps replayed (replay-mode + ledger-error cases excluded)"
     );
 }

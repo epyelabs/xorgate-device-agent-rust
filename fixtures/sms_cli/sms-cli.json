@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "src/commands/sms.ts:1-93 (smsCommand, flagValue, oneLine) over src/hardware/sms-modem.ts buildSmsPayload/clampSmsLimit",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "tools/replay/js/run-tsx.sh tools/replay/js/dump-sms-cli.mts (phase-4 WP2; SmsReader.prototype.read replaced by the case's sweep)",
   "sweeps": {
     "fixture": {
@@ -214,6 +214,91 @@
       "skipped": 1,
       "partial": false,
       "messages": []
+    },
+    "clear_ok": {
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1790858096000,
+      "durationMs": 2345,
+      "storage": {
+        "SM": {
+          "used": 0,
+          "total": 40
+        },
+        "ME": {
+          "used": 0,
+          "total": 23
+        }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+        "SM": 7,
+        "ME": 23
+      }
+    },
+    "clear_delete_error": {
+      "status": "error",
+      "error": "delete ME failed (+CMS ERROR: 321)",
+      "finishedAt": 1790858096000,
+      "durationMs": 812,
+      "storage": {
+        "SM": {
+          "used": 0,
+          "total": 40
+        },
+        "ME": {
+          "used": 23,
+          "total": 23
+        }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+        "SM": 7,
+        "ME": 23
+      }
+    },
+    "clear_no_sim": {
+      "status": "no_sim",
+      "error": "sim not ready",
+      "finishedAt": 1790858096000,
+      "durationMs": 9,
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+    },
+    "clear_me_only": {
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1790858096000,
+      "durationMs": 40,
+      "storage": {
+        "ME": {
+          "used": 0,
+          "total": 23
+        }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+        "ME": 23
+      }
+    },
+    "clear_no_cleared_key": {
+      "status": "no_modem",
+      "error": "no SIMCom interface 05 tty",
+      "finishedAt": 1790858096000,
+      "durationMs": 0,
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": []
     }
   },
   "cases": [
@@ -249,7 +334,7 @@
       },
       "expected": {
         "stdout": [
-          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 1234,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 3,\n      \"total\": 40\n    },\n    \"ME\": {\n      \"used\": 2,\n      \"total\": 23\n    }\n  },\n  \"total\": 4,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": [\n    {\n      \"id\": \"SM:2\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        2\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"Simulated device: this is a fixture inbox, not a real modem.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"SM:0+SM:1\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        0,\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-09-30T10:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:4\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        4\n      ],\n      \"from\": \"5550100\",\n      \"fromType\": \"national\",\n      \"sentAt\": \"2026-09-22T12:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Fixture with unicode: café, 東京, 👍\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:1\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        1\n      ],\n      \"from\": \"+15550100002\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-08-22T12:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Oldest fixture message.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"action\": \"read\",\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 1234,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 3,\n      \"total\": 40\n    },\n    \"ME\": {\n      \"used\": 2,\n      \"total\": 23\n    }\n  },\n  \"total\": 4,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": [\n    {\n      \"id\": \"SM:2\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        2\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"Simulated device: this is a fixture inbox, not a real modem.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"SM:0+SM:1\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        0,\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-09-30T10:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:4\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        4\n      ],\n      \"from\": \"5550100\",\n      \"fromType\": \"national\",\n      \"sentAt\": \"2026-09-22T12:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Fixture with unicode: café, 東京, 👍\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:1\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        1\n      ],\n      \"from\": \"+15550100002\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-08-22T12:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Oldest fixture message.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
         ],
         "exitCode": 0
       }
@@ -356,7 +441,7 @@
       },
       "expected": {
         "stdout": [
-          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 1234,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 3,\n      \"total\": 40\n    },\n    \"ME\": {\n      \"used\": 2,\n      \"total\": 23\n    }\n  },\n  \"total\": 4,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": [\n    {\n      \"id\": \"SM:2\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        2\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"Simulated device: this is a fixture inbox, not a real modem.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"SM:0+SM:1\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        0,\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-09-30T10:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"action\": \"read\",\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 1234,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 3,\n      \"total\": 40\n    },\n    \"ME\": {\n      \"used\": 2,\n      \"total\": 23\n    }\n  },\n  \"total\": 4,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": [\n    {\n      \"id\": \"SM:2\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        2\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"Simulated device: this is a fixture inbox, not a real modem.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"SM:0+SM:1\",\n      \"storage\": \"SM\",\n      \"indexes\": [\n        0,\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"international\",\n      \"sentAt\": \"2026-09-30T10:34:56+00:00\",\n      \"unread\": false,\n      \"text\": \"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
         ],
         "exitCode": 0
       }
@@ -484,7 +569,7 @@
       },
       "expected": {
         "stdout": [
-          "Usage: xorgate sms [--limit N] [--json]\n\nRead the SIM7600's stored SMS (SIM + modem storage), newest first, without\nmarking anything read. N is 1..50 (default 10). --json prints the exact\npayload the agent publishes for a cloud read_sms request.\nPort: the SIMCom interface-05 tty (override with XORGATE_SMS_PORT)."
+          "Usage: xorgate sms [--limit N] [--json]\n       xorgate sms clear [--yes]\n\nRead the SIM7600's stored SMS (SIM + modem storage), newest first, without\nmarking anything read. N is 1..50 (default 10). --json prints the exact\npayload the agent publishes for a cloud read_sms request.\n'clear' deletes every stored SMS (see 'xorgate sms clear --help').\nPort: the SIMCom interface-05 tty (override with XORGATE_SMS_PORT)."
         ],
         "exitCode": 0
       }
@@ -502,7 +587,7 @@
       },
       "expected": {
         "stdout": [
-          "Usage: xorgate sms [--limit N] [--json]\n\nRead the SIM7600's stored SMS (SIM + modem storage), newest first, without\nmarking anything read. N is 1..50 (default 10). --json prints the exact\npayload the agent publishes for a cloud read_sms request.\nPort: the SIMCom interface-05 tty (override with XORGATE_SMS_PORT)."
+          "Usage: xorgate sms [--limit N] [--json]\n       xorgate sms clear [--yes]\n\nRead the SIM7600's stored SMS (SIM + modem storage), newest first, without\nmarking anything read. N is 1..50 (default 10). --json prints the exact\npayload the agent publishes for a cloud read_sms request.\n'clear' deletes every stored SMS (see 'xorgate sms clear --help').\nPort: the SIMCom interface-05 tty (override with XORGATE_SMS_PORT)."
         ],
         "exitCode": 0
       }
@@ -540,7 +625,7 @@
       },
       "expected": {
         "stdout": [
-          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 87,\n  \"storage\": {\n    \"ME\": {\n      \"used\": 5,\n      \"total\": 23\n    },\n    \"SM\": {\n      \"used\": 0,\n      \"total\": 40\n    }\n  },\n  \"total\": 5,\n  \"skipped\": 2,\n  \"partial\": true,\n  \"messages\": [\n    {\n      \"id\": \"ME:0\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        0\n      ],\n      \"from\": \"VERYLONGALPHANUMERICSENDER\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": false,\n      \"text\": \"line one\\r\\nline two\\tTAB\\fff\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:1\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": null,\n      \"unread\": true,\n      \"text\": \"\\u0001\\u0002 bytes\",\n      \"binary\": true,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:2+ME:3\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        2,\n        3\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\n      \"binary\": false,\n      \"incomplete\": true,\n      \"truncated\": true\n    },\n    {\n      \"id\": \"ME:4\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        4\n      ],\n      \"from\": \"東京👍\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍👍 emoji at the cut\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:5\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        5\n      ],\n      \"from\": \"\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"action\": \"read\",\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 87,\n  \"storage\": {\n    \"ME\": {\n      \"used\": 5,\n      \"total\": 23\n    },\n    \"SM\": {\n      \"used\": 0,\n      \"total\": 40\n    }\n  },\n  \"total\": 5,\n  \"skipped\": 2,\n  \"partial\": true,\n  \"messages\": [\n    {\n      \"id\": \"ME:0\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        0\n      ],\n      \"from\": \"VERYLONGALPHANUMERICSENDER\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": false,\n      \"text\": \"line one\\r\\nline two\\tTAB\\fff\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:1\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        1\n      ],\n      \"from\": \"+15550100001\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": null,\n      \"unread\": true,\n      \"text\": \"\\u0001\\u0002 bytes\",\n      \"binary\": true,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:2+ME:3\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        2,\n        3\n      ],\n      \"from\": \"XORGATE\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\n      \"binary\": false,\n      \"incomplete\": true,\n      \"truncated\": true\n    },\n    {\n      \"id\": \"ME:4\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        4\n      ],\n      \"from\": \"東京👍\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍👍 emoji at the cut\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    },\n    {\n      \"id\": \"ME:5\",\n      \"storage\": \"ME\",\n      \"indexes\": [\n        5\n      ],\n      \"from\": \"\",\n      \"fromType\": \"alphanumeric\",\n      \"sentAt\": \"2026-10-01T12:04:56+00:00\",\n      \"unread\": true,\n      \"text\": \"\",\n      \"binary\": false,\n      \"incomplete\": false,\n      \"truncated\": false\n    }\n  ]\n}"
         ],
         "exitCode": 0
       }
@@ -572,7 +657,7 @@
       },
       "expected": {
         "stdout": [
-          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 3,\n  \"storage\": {},\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": []\n}"
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"action\": \"read\",\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 3,\n  \"storage\": {},\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": []\n}"
         ],
         "exitCode": 0
       }
@@ -604,7 +689,7 @@
       },
       "expected": {
         "stdout": [
-          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"no_modem\",\n  \"error\": \"no SIMCom interface 05 tty\",\n  \"durationMs\": 0,\n  \"storage\": {},\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": []\n}"
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"action\": \"read\",\n  \"status\": \"no_modem\",\n  \"error\": \"no SIMCom interface 05 tty\",\n  \"durationMs\": 0,\n  \"storage\": {},\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": []\n}"
         ],
         "exitCode": 1
       }
@@ -636,7 +721,7 @@
       },
       "expected": {
         "stdout": [
-          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"status\": \"no_sim\",\n  \"error\": \"no_sim\",\n  \"durationMs\": 12,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 1,\n      \"total\": 2\n    }\n  },\n  \"total\": 0,\n  \"skipped\": 1,\n  \"partial\": false,\n  \"messages\": []\n}"
+          "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1790858096000,\n  \"action\": \"read\",\n  \"status\": \"no_sim\",\n  \"error\": \"no_sim\",\n  \"durationMs\": 12,\n  \"storage\": {\n    \"SM\": {\n      \"used\": 1,\n      \"total\": 2\n    }\n  },\n  \"total\": 0,\n  \"skipped\": 1,\n  \"partial\": false,\n  \"messages\": []\n}"
         ],
         "exitCode": 1
       }
@@ -703,6 +788,361 @@
           "ME:5       unread  2026-10-01T12:04:56+00:00                      "
         ],
         "exitCode": 0
+      }
+    },
+    {
+      "name": "clear_ok [clear --yes]",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear",
+          "--yes"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: ok · cleared SM 7, ME 23 · now SM 0/40, ME 0/23 · 2345 ms"
+        ],
+        "exitCode": 0,
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear_delete_error [clear --yes]",
+      "input": {
+        "sweep": "clear_delete_error",
+        "argv": [
+          "clear",
+          "--yes"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: error (delete ME failed (+CMS ERROR: 321)) · cleared SM 7, ME 23 · now SM 0/40, ME 23/23 · 812 ms"
+        ],
+        "exitCode": 1,
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear_no_sim [clear --yes]",
+      "input": {
+        "sweep": "clear_no_sim",
+        "argv": [
+          "clear",
+          "--yes"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: no_sim (sim not ready) · cleared nothing · now no stores · 9 ms"
+        ],
+        "exitCode": 1,
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear_me_only [clear --yes]",
+      "input": {
+        "sweep": "clear_me_only",
+        "argv": [
+          "clear",
+          "--yes"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: ok · cleared ME 23 · now ME 0/23 · 40 ms"
+        ],
+        "exitCode": 0,
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear_no_cleared_key [clear --yes]",
+      "input": {
+        "sweep": "clear_no_cleared_key",
+        "argv": [
+          "clear",
+          "--yes"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: no_modem (no SIMCom interface 05 tty) · cleared nothing · now no stores · 0 ms"
+        ],
+        "exitCode": 1,
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear_ok [clear -y]",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear",
+          "-y"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: ok · cleared SM 7, ME 23 · now SM 0/40, ME 0/23 · 2345 ms"
+        ],
+        "exitCode": 0,
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear_ok [clear --json --yes] (flags of the read are ignored)",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear",
+          "--json",
+          "--yes"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: ok · cleared SM 7, ME 23 · now SM 0/40, ME 0/23 · 2345 ms"
+        ],
+        "exitCode": 0,
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear [clear] no TTY, no --yes: refused, nothing cleared",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [],
+        "exitCode": 1,
+        "stderr": [
+          "sms clear: refusing without --yes (no terminal to confirm on)"
+        ],
+        "cleared": 0
+      }
+    },
+    {
+      "name": "clear [clear --help]",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear",
+          "--help"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "Usage: xorgate sms clear [--yes]\n\nDelete EVERY stored SMS on the SIM7600 (SIM store SM, then modem store ME)\nwith AT+CMGD=0,4, then re-read the stores to show they are empty. Use it when\na full store (e.g. ME 23/23) stops new messages arriving. Irreversible.\nAsks for confirmation unless --yes is given. Prints counts only."
+        ],
+        "exitCode": 0,
+        "cleared": 0
+      }
+    },
+    {
+      "name": "clear [clear -h --yes]: help wins",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear",
+          "-h",
+          "--yes"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "Usage: xorgate sms clear [--yes]\n\nDelete EVERY stored SMS on the SIM7600 (SIM store SM, then modem store ME)\nwith AT+CMGD=0,4, then re-read the stores to show they are empty. Use it when\na full store (e.g. ME 23/23) stops new messages arriving. Irreversible.\nAsks for confirmation unless --yes is given. Prints counts only."
+        ],
+        "exitCode": 0,
+        "cleared": 0
+      }
+    },
+    {
+      "name": "clear [--yes clear]: not the subcommand (a read)",
+      "input": {
+        "sweep": "fixture",
+        "argv": [
+          "--yes",
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null
+      },
+      "expected": {
+        "stdout": [
+          "sms: ok · port /dev/ttyUSB3 · SM 3/40, ME 2/23 · 4 message(s) · 1234 ms",
+          "ID         STATUS  SENT                       FROM          TEXT",
+          "SM:2       unread  2026-10-01T12:04:56+00:00  XORGATE       Simulated device: this is a fixture inbox, not a …",
+          "SM:0+SM:1  read    2026-09-30T10:34:56+00:00  +15550100001  Your data plan renews tomorrow. This fixture mess…",
+          "ME:4       read    2026-09-22T12:34:56+00:00  5550100       Fixture with unicode: café, 東京, 👍",
+          "ME:1       read    2026-08-22T12:34:56+00:00  +15550100002  Oldest fixture message."
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "clear [clear] TTY answers \"y\\n\"",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null,
+        "ttyAnswer": "y\n"
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: ok · cleared SM 7, ME 23 · now SM 0/40, ME 0/23 · 2345 ms"
+        ],
+        "exitCode": 0,
+        "prompt": "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ",
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear [clear] TTY answers \"YES\\n\"",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null,
+        "ttyAnswer": "YES\n"
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: ok · cleared SM 7, ME 23 · now SM 0/40, ME 0/23 · 2345 ms"
+        ],
+        "exitCode": 0,
+        "prompt": "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ",
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear [clear] TTY answers \"  Yes  \\n\"",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null,
+        "ttyAnswer": "  Yes  \n"
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: ok · cleared SM 7, ME 23 · now SM 0/40, ME 0/23 · 2345 ms"
+        ],
+        "exitCode": 0,
+        "prompt": "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ",
+        "cleared": 1
+      }
+    },
+    {
+      "name": "clear [clear] TTY answers \"n\\n\"",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null,
+        "ttyAnswer": "n\n"
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: cancelled"
+        ],
+        "exitCode": 0,
+        "prompt": "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ",
+        "cleared": 0
+      }
+    },
+    {
+      "name": "clear [clear] TTY answers \"\\n\"",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null,
+        "ttyAnswer": "\n"
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: cancelled"
+        ],
+        "exitCode": 0,
+        "prompt": "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ",
+        "cleared": 0
+      }
+    },
+    {
+      "name": "clear [clear] TTY answers \"yess\\n\"",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null,
+        "ttyAnswer": "yess\n"
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: cancelled"
+        ],
+        "exitCode": 0,
+        "prompt": "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ",
+        "cleared": 0
+      }
+    },
+    {
+      "name": "clear [clear] TTY answers \"ye\\n\"",
+      "input": {
+        "sweep": "clear_ok",
+        "argv": [
+          "clear"
+        ],
+        "port": "/dev/ttyUSB3",
+        "columns": null,
+        "ttyAnswer": "ye\n"
+      },
+      "expected": {
+        "stdout": [
+          "sms clear: cancelled"
+        ],
+        "exitCode": 0,
+        "prompt": "Delete ALL stored SMS on this modem (SIM and modem storage)? [y/N] ",
+        "cleared": 0
       }
     }
   ]

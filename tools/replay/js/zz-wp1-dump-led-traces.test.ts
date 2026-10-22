@@ -362,12 +362,79 @@ M("an unreadable LTE file fails open", "led-manager.test.ts:242", async (tr) => 
   led.tick();
   await settle(30);
 });
-M("never calls the signal function when inert", "led-manager.test.ts:254", async (tr) => {
-  const h = harness(tr, () => healthy(), false);
-  await h.led.start();
-  h.led.tick();
-  tr.extra.counts = h.counts();
-});
+// ---- Phase 5b WP3 (@ 09da38d): the 89b5c64 it "never calls the signal
+// function when inert" was REPLACED by these five (led-manager.test.ts:254-321).
+// Run at 89b5c64 they throw (no telemetry()): dump them at 09da38d only.
+const P5B = typeof (LedManager.prototype as unknown as { telemetry?: unknown }).telemetry === "function";
+if (!P5B) {
+  M("never calls the signal function when inert", "led-manager.test.ts:254", async (tr) => {
+    const h = harness(tr, () => healthy(), false);
+    await h.led.start();
+    h.led.tick();
+    tr.extra.counts = h.counts();
+  });
+} else {
+  type Tel = { telemetry(): unknown; snapshot(): { state: { reason: string } } | null };
+  const tel = (l: unknown) => (l as Tel).telemetry();
+  const reason = (l: unknown) => (l as Tel).snapshot()?.state.reason ?? null;
+  M("still resolves the state when inert, for telemetry — but never touches a pin", "led-manager.test.ts:254", async (tr) => {
+    let signals = healthy({ gnss: { fix: false, sky: "open" } as never });
+    const h = harness(tr, () => signals, false);
+    await h.led.start();
+    tr.extra.before = tel(h.led);
+    h.led.tick();
+    await settle();
+    tr.extra.reason1 = reason(h.led);
+    tr.extra.t1 = tel(h.led);
+    signals = healthy({ connection: "closed" });
+    h.led.tick();
+    await settle();
+    tr.extra.t2 = tel(h.led);
+    tr.extra.counts = h.counts();
+  });
+  M("telemetry carries the LTE status the manager read for itself", "led-manager.test.ts:273", async (tr) => {
+    const h = harness(tr, () => healthy(), false, async () => ({ status: "disconnected" }));
+    await h.led.start();
+    h.led.tick();
+    await settle(30);
+    h.led.tick();
+    tr.extra.t = tel(h.led);
+  });
+  M("the config-applied overlay never shows in telemetry; the state underneath does", "led-manager.test.ts:282", async (tr) => {
+    let signals = healthy();
+    const h = harness(tr, () => signals);
+    await h.led.start();
+    await settle();
+    h.led.tick();
+    tr.extra.t0 = tel(h.led);
+    h.led.configApplied();
+    signals = healthy({ connection: "closed" });
+    h.led.tick();
+    tr.extra.reason1 = reason(h.led);
+    tr.extra.t1 = tel(h.led);
+    await settle(700);
+  });
+  M("holds the last resolved telemetry when signal gathering throws", "led-manager.test.ts:299", async (tr) => {
+    let boom = false;
+    const h = harness(tr, () => {
+      if (boom) throw new Error("collector exploded");
+      return healthy({ gnss: { fix: false, sky: "open" } as never });
+    }, false);
+    await h.led.start();
+    h.led.tick();
+    boom = true;
+    h.led.tick();
+    tr.extra.t = tel(h.led);
+  });
+  M("stops resolving after stop()", "led-manager.test.ts:312", async (tr) => {
+    const h = harness(tr, () => healthy(), false);
+    await h.led.start();
+    h.led.stop();
+    h.led.tick();
+    tr.extra.counts = h.counts();
+    tr.extra.t = tel(h.led);
+  });
+}
 
 const out: { driver: unknown[]; manager: unknown[] } = { driver: [], manager: [] };
 
@@ -394,7 +461,7 @@ it("dumps", async () => {
 afterAll(() => {
   const head = (file: string) => ({
     jsSourceFile: file,
-    jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+    jsCommit: process.env.JS_COMMIT ?? "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
     generatedBy:
       "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-wp1-dump-led-traces.test.ts (vitest fake timers) in a git-archive scratch copy of 89b5c64: each it() re-run step by step against the REAL LedDriver/LedManager with a recording writer; setTimeout/settle waits → advanceTimersByTimeAsync; trace = writer calls {t,pins,high} + log lines {t,msg} in virtual ms",
   });

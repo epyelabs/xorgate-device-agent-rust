@@ -14,7 +14,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use xorgate_core::command_flow::*;
 use xorgate_core::commands::{load_ledger, parse_command, CommandAck, DeviceCommand, RunResult};
-use xorgate_core::sms::{build_sms_payload, SmsPayloadRequest};
+use xorgate_core::sms::{
+    build_sms_payload, fixture_sms_clear, fixture_sms_read, sms_result_line, SmsAction,
+    SmsPayloadRequest,
+};
 use xorgate_core::telemetry::{ActivityLevel, RunMode};
 
 #[derive(Deserialize)]
@@ -65,9 +68,49 @@ struct Sim<'a> {
     last_refresh: Option<i64>,
     timers: Vec<i64>,
     trace: Vec<String>,
+    /// The TS `fixtureInboxCleared` module flag (per scenario in the dump).
+    fixture_cleared: bool,
 }
 
 impl Sim<'_> {
+    /// `runSms` (`worker.ts:1027-1067` @ 09da38d) as the command plane runs it,
+    /// with the O4 real-mode sweep (the dump's `SmsReader` stub).
+    fn run_sms(&mut self, action: SmsAction, source: SmsSource, id: &str, limit: u32, at: i64) {
+        let clock = xorgate_core::clock::FixedClock::new(at, 0);
+        let sweep = match (action, source) {
+            (SmsAction::Read, SmsSource::Fixture) => fixture_sms_read(at, self.fixture_cleared),
+            (SmsAction::Clear, SmsSource::Fixture) => {
+                fixture_sms_clear(at, &mut self.fixture_cleared)
+            }
+            (action, SmsSource::Reader) => {
+                let mut s = sms_sweep(SmsSource::Reader, &clock);
+                if action == SmsAction::Clear {
+                    s.cleared = Some(Default::default());
+                }
+                s
+            }
+        };
+        let p = build_sms_payload(
+            &sweep,
+            &SmsPayloadRequest {
+                device_id: self.device.to_string(),
+                request_id: id.to_string(),
+                limit,
+                action,
+            },
+        );
+        let command = match action {
+            SmsAction::Read => "read_sms",
+            SmsAction::Clear => "clear_sms",
+        };
+        let line = sms_result_line(command, id, &p);
+        self.trace.push(format!("log.info {AGENT_PREFIX}{line}"));
+        self.trace
+            .push(format!("event {} {line}", level(read_sms_level(&p))));
+        self.trace
+            .push(format!("sms {}", serde_json::to_string(&p).unwrap()));
+    }
+
     fn fire_due(&mut self, until: i64) {
         self.timers.sort();
         while self.timers.first().is_some_and(|&d| d <= until) {
@@ -113,25 +156,12 @@ impl Sim<'_> {
                     source,
                     request_id,
                     limit,
-                } => {
-                    let sweep =
-                        sms_sweep(source, &xorgate_core::clock::FixedClock::new(step.at, 0));
-                    let p = build_sms_payload(
-                        &sweep,
-                        &SmsPayloadRequest {
-                            device_id: self.device.to_string(),
-                            request_id: request_id.clone(),
-                            limit,
-                            action: xorgate_core::sms::SmsAction::Read,
-                        },
-                    );
-                    let line = read_sms_line(&request_id, &p);
-                    self.trace.push(format!("log.info {AGENT_PREFIX}{line}"));
-                    self.trace
-                        .push(format!("event {} {line}", level(read_sms_level(&p))));
-                    self.trace
-                        .push(format!("sms {}", serde_json::to_string(&p).unwrap()));
-                }
+                } => self.run_sms(SmsAction::Read, source, &request_id, limit, step.at),
+                Effect::ClearSms {
+                    source,
+                    request_id,
+                    limit,
+                } => self.run_sms(SmsAction::Clear, source, &request_id, limit, step.at),
                 Effect::Execute(call) => {
                     self.trace.push(format!("exec {}", call.argv().join(" ")));
                     let res = step.exec.as_ref().expect("exec result");
@@ -141,10 +171,8 @@ impl Sim<'_> {
                 Effect::ContainerExit { reason, code } => {
                     self.trace.push(format!("shutdown {reason} {code}"))
                 }
-                // Phase 5b: not exercised by the 89b5c64 fixture (WP1 re-dumps it).
-                Effect::ClearSms { .. } | Effect::ObdJob(_) => {
-                    unreachable!("no clear_sms / obd_* step in this fixture")
-                }
+                // obd_* WITH the collector: not in this fixture (no peripheral).
+                Effect::ObdJob(_) => unreachable!("no obd job without a peripheral"),
             }
         }
         true
@@ -155,7 +183,9 @@ impl Sim<'_> {
 fn handle_command_message_trace_matches_worker_ts() {
     let f = common::fixture::<Case>("command_flow/handle-command.json");
     let device = f.extra["deviceId"].as_str().unwrap().to_string();
-    assert_eq!(f.extra["jsLines"], Value::from("902-1126"));
+    // Re-dumped at 09da38d (Phase 5b WP3): the same section, moved.
+    assert_eq!(f.extra["jsLines"], Value::from("1005-1292"));
+    assert_eq!(f.js_commit, common::JS_COMMIT_P5B);
     let mut steps = 0;
     for c in &f.cases {
         let mode = RunMode::parse(&c.mode).unwrap();
@@ -166,6 +196,7 @@ fn handle_command_message_trace_matches_worker_ts() {
             last_refresh: None,
             timers: vec![],
             trace: vec![],
+            fixture_cleared: false,
         };
         for (i, s) in c.steps.iter().enumerate() {
             sim.trace.clear();
@@ -196,7 +227,7 @@ fn handle_command_message_trace_matches_worker_ts() {
         assert_eq!(sim.trace, c.after, "{} — after", c.name);
         assert_eq!(sim.ledger_text, c.ledger_final, "{} — ledger", c.name);
     }
-    assert_eq!((f.cases.len(), steps), (18, 39));
+    assert_eq!((f.cases.len(), steps), (24, 52));
 }
 
 #[test]

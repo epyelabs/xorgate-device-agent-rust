@@ -459,16 +459,86 @@ async fn real_mode_read_sms_publishes_the_readers_sweep() {
 
 #[test]
 fn sms_cli_goldens() {
+    use xorgate_core::sms_cli::{
+        clear_gate, clear_rest, confirm_answer, render_clear_line, sms_clear_help, ClearGate,
+        SmsClearArgs, SMS_CLEAR_CANCELLED, SMS_CLEAR_PROMPT, SMS_CLEAR_REFUSED,
+    };
     let f = load("sms_cli/sms-cli.json");
+    assert_eq!(f["jsCommit"], "09da38dcc8b75c248625a3a0bee43b70e7def55d");
     let sweeps = f["sweeps"].as_object().unwrap();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 25);
+    assert_eq!(cases.len(), 43);
+    let mut clear_cases = 0;
     for c in cases {
         let name = c["name"].as_str().unwrap();
         let input = &c["input"];
+        let want = &c["expected"];
         let sweep: SmsSweep =
             serde_json::from_value(sweeps[input["sweep"].as_str().unwrap()].clone()).unwrap();
         let argv = strings(&input["argv"]);
+        // `xorgate-rs sms clear …` (`sms.ts:50-80` @ 09da38d), as `cli/sms.rs`
+        // drives it: the gate, the prompt, the clear, the line.
+        if let Some(rest) = clear_rest(&argv) {
+            clear_cases += 1;
+            let tty = input.get("ttyAnswer").and_then(Value::as_str);
+            let (mut out, mut err, mut prompt, mut cleared) = (vec![], vec![], String::new(), 0);
+            let mut proceed = false;
+            let code = match clear_gate(SmsClearArgs::parse(rest), tty.is_some()) {
+                ClearGate::Help => {
+                    // D34: the usage names this binary.
+                    out.push(
+                        sms_clear_help(xorgate_hal::at_clear::delete_all_text())
+                            .replace("xorgate-rs sms", "xorgate sms"),
+                    );
+                    0
+                }
+                ClearGate::Refuse => {
+                    err.push(SMS_CLEAR_REFUSED.to_string());
+                    1
+                }
+                ClearGate::Ask => {
+                    prompt = SMS_CLEAR_PROMPT.to_string();
+                    if confirm_answer(tty.unwrap()) {
+                        proceed = true;
+                        0
+                    } else {
+                        out.push(SMS_CLEAR_CANCELLED.to_string());
+                        0
+                    }
+                }
+                ClearGate::Proceed => {
+                    proceed = true;
+                    0
+                }
+            };
+            let code = if proceed {
+                cleared = 1;
+                let p = build_sms_payload(
+                    &sweep,
+                    &SmsPayloadRequest {
+                        device_id: "local".into(),
+                        request_id: "cli".into(),
+                        limit: 1,
+                        action: xorgate_core::sms::SmsAction::Clear,
+                    },
+                );
+                out.push(render_clear_line(&p));
+                exit_code(&p)
+            } else {
+                code
+            };
+            assert_eq!(out, strings(&want["stdout"]), "{name}");
+            assert_eq!(Value::from(code), want["exitCode"], "{name}: exit");
+            let want_err = want.get("stderr").map(strings).unwrap_or_default();
+            assert_eq!(err, want_err, "{name}: stderr");
+            assert_eq!(
+                prompt,
+                want.get("prompt").and_then(Value::as_str).unwrap_or(""),
+                "{name}: prompt"
+            );
+            assert_eq!(Value::from(cleared), want["cleared"], "{name}: clears");
+            continue;
+        }
         let args = SmsCliArgs::parse(&argv);
         let (lines, code) = if args.help {
             // Q9: the usage names this binary.
@@ -476,12 +546,7 @@ fn sms_cli_goldens() {
         } else {
             let p = build_sms_payload(
                 &sweep,
-                &SmsPayloadRequest {
-                    device_id: "local".into(),
-                    request_id: "cli".into(),
-                    limit: args.limit,
-                    action: xorgate_core::sms::SmsAction::Read,
-                },
+                &SmsPayloadRequest::read("local", "cli", args.limit),
             );
             let lines = if args.json {
                 vec![render_json(&p)]
@@ -493,7 +558,11 @@ fn sms_cli_goldens() {
         };
         // `console.log` of a multi-line string is one entry in the capture.
         let got: Vec<String> = lines;
-        assert_eq!(got, strings(&c["expected"]["stdout"]), "{name}");
-        assert_eq!(Value::from(code), c["expected"]["exitCode"], "{name}: exit");
+        assert_eq!(got, strings(&want["stdout"]), "{name}");
+        assert_eq!(Value::from(code), want["exitCode"], "{name}: exit");
+        if let Some(n) = want.get("cleared") {
+            assert_eq!(*n, Value::from(0), "{name}: a read never clears");
+        }
     }
+    assert_eq!(clear_cases, 17);
 }

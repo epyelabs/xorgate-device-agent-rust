@@ -165,23 +165,8 @@ pub fn exec_failed_event(command: DeviceCommandName, reason: &str) -> String {
 /// the prefix. Counts / status / duration only — never a number or a body
 /// (contract §6).
 pub fn read_sms_line(request_id: &str, p: &SmsResultPayload) -> String {
-    let unread = p.messages.iter().filter(|m| m.unread).count();
-    let mut line = format!(
-        "read_sms {request_id}: status={} total={} sent={} unread={unread} skipped={} partial={} durationMs={}",
-        sms_status_str(p.status),
-        p.total,
-        p.messages.len(),
-        p.skipped,
-        p.partial,
-        p.duration_ms,
-    );
-    if p.status != SmsReadStatus::Ok {
-        // `${payload.error}` — `null` prints "null" (never reached: a failed
-        // payload always carries `error ?? status`).
-        line.push_str(" error=");
-        line.push_str(p.error.as_deref().unwrap_or("null"));
-    }
-    line
+    // Phase 5b: one implementation for both commands (`runSms` @ 09da38d).
+    crate::sms::sms_result_line("read_sms", request_id, p)
 }
 
 /// The read_sms event level (`worker.ts:939`): `info` when ok, else `warn`.

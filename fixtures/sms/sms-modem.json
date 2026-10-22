@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "src/hardware/sms-modem.ts (pure subset: parseCpmsQuery, clampSmsLimit, buildSmsPayload, fixtureSmsSweep/Read/Clear)",
-  "jsCommit": "09da38d",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "tools/replay/js/dump-sms-p5b.mts <old fixture> (phase-5b WP3): every case's input re-run through the REAL TS; the Phase 1 cases keep their inputs, the p5b: cases are new",
   "SMS_PAYLOAD_MAX_BYTES": 122880,
   "SMS_LIMIT_DEFAULT": 10,

@@ -1,0 +1,7978 @@
+{
+ "jsSourceFile": "src/hardware/sms-modem.ts clearTransport + SmsReader.clear over test/sms-modem.test.ts FakeModem",
+ "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+ "generatedBy": "tools/replay/js/dump-sms-clear.mts (phase-5b WP3; FakeModem verbatim from the test file + `answers`/`allowClear`/`writeError` extensions)",
+ "SMS_DELETE_TIMEOUT_MS": 25000,
+ "fixedNow": 1760000000000,
+ "cases": [
+  {
+   "name": "deletes SM then ME, reports what was there, and restores mem1 without touching CMGF",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "cmgf": 1,
+     "mem1": "SR"
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SM",
+     "ME"
+    ],
+    "end": {
+     "cmgf": 1,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      },
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "ok",
+      "error": null,
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CMGF=0",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"SR\"",
+      "AT+CMGF=1"
+     ],
+     "deletes": [
+      "SM",
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 1,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "restores mem1 when a delete fails, names the store, and still clears the other one",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "mem1": "ME",
+     "cmgdError": {
+      "SM": "+CMS ERROR: 500"
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "deleteError": "delete SM failed (+CMS ERROR: 500)"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\""
+    ],
+    "deletes": [
+     "SM",
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "ME"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 7,
+        "total": 40
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [
+       {
+        "id": "SM:6",
+        "storage": "SM",
+        "indexes": [
+         6
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-26T12:00:00-04:00",
+        "unread": true,
+        "text": "sm6",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:5",
+        "storage": "SM",
+        "indexes": [
+         5
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-25T12:00:00-04:00",
+        "unread": true,
+        "text": "sm5",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:4",
+        "storage": "SM",
+        "indexes": [
+         4
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-24T12:00:00-04:00",
+        "unread": true,
+        "text": "sm4",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:3",
+        "storage": "SM",
+        "indexes": [
+         3
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-23T12:00:00-04:00",
+        "unread": true,
+        "text": "sm3",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:2",
+        "storage": "SM",
+        "indexes": [
+         2
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-22T12:00:00-04:00",
+        "unread": true,
+        "text": "sm2",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:1",
+        "storage": "SM",
+        "indexes": [
+         1
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-21T12:00:00-04:00",
+        "unread": true,
+        "text": "sm1",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:0",
+        "storage": "SM",
+        "indexes": [
+         0
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-20T12:00:00-04:00",
+        "unread": true,
+        "text": "sm0",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       }
+      ],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      },
+      "status": "error",
+      "error": "delete SM failed (+CMS ERROR: 500)",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "delete SM failed (+CMS ERROR: 500)",
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 7,
+        "total": 40
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGRO=0",
+      "AT+CMGRO=1",
+      "AT+CMGRO=2",
+      "AT+CMGRO=3",
+      "AT+CMGRO=4",
+      "AT+CMGRO=5",
+      "AT+CMGRO=6",
+      "AT+CPMS=\"ME\""
+     ],
+     "deletes": [
+      "SM",
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "ME"
+     }
+    }
+   }
+  },
+  {
+   "name": "stops after a delete that times out, and still restores mem1",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "hang": [
+      "AT+CMGD=0,4"
+     ]
+    },
+    "opts": {
+     "commandTimeoutMs": 30,
+     "deleteTimeoutMs": 40
+    }
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7
+     },
+     "deleteError": "delete SM failed (timeout)"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 23,
+        "total": 23
+       },
+       "SM": {
+        "used": 7,
+        "total": 40
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [
+       {
+        "id": "SM:6",
+        "storage": "SM",
+        "indexes": [
+         6
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-26T12:00:00-04:00",
+        "unread": true,
+        "text": "sm6",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:5",
+        "storage": "SM",
+        "indexes": [
+         5
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-25T12:00:00-04:00",
+        "unread": true,
+        "text": "sm5",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:4",
+        "storage": "SM",
+        "indexes": [
+         4
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-24T12:00:00-04:00",
+        "unread": true,
+        "text": "sm4",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:3",
+        "storage": "SM",
+        "indexes": [
+         3
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-23T12:00:00-04:00",
+        "unread": true,
+        "text": "sm3",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:2",
+        "storage": "SM",
+        "indexes": [
+         2
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-22T12:00:00-04:00",
+        "unread": true,
+        "text": "sm2",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:1",
+        "storage": "SM",
+        "indexes": [
+         1
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-21T12:00:00-04:00",
+        "unread": true,
+        "text": "sm1",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:0",
+        "storage": "SM",
+        "indexes": [
+         0
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-20T12:00:00-04:00",
+        "unread": true,
+        "text": "sm0",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:14",
+        "storage": "ME",
+        "indexes": [
+         14
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-15T12:00:00-04:00",
+        "unread": false,
+        "text": "me14",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:13",
+        "storage": "ME",
+        "indexes": [
+         13
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-14T12:00:00-04:00",
+        "unread": false,
+        "text": "me13",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:12",
+        "storage": "ME",
+        "indexes": [
+         12
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-13T12:00:00-04:00",
+        "unread": false,
+        "text": "me12",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:11",
+        "storage": "ME",
+        "indexes": [
+         11
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-12T12:00:00-04:00",
+        "unread": false,
+        "text": "me11",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:10",
+        "storage": "ME",
+        "indexes": [
+         10
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-11T12:00:00-04:00",
+        "unread": false,
+        "text": "me10",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:9",
+        "storage": "ME",
+        "indexes": [
+         9
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-10T12:00:00-04:00",
+        "unread": false,
+        "text": "me9",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:8",
+        "storage": "ME",
+        "indexes": [
+         8
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-09T12:00:00-04:00",
+        "unread": false,
+        "text": "me8",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:7",
+        "storage": "ME",
+        "indexes": [
+         7
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-08T12:00:00-04:00",
+        "unread": false,
+        "text": "me7",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:22",
+        "storage": "ME",
+        "indexes": [
+         22
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-08T12:00:00-04:00",
+        "unread": false,
+        "text": "me22",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:6",
+        "storage": "ME",
+        "indexes": [
+         6
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-07T12:00:00-04:00",
+        "unread": false,
+        "text": "me6",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:21",
+        "storage": "ME",
+        "indexes": [
+         21
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-07T12:00:00-04:00",
+        "unread": false,
+        "text": "me21",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:5",
+        "storage": "ME",
+        "indexes": [
+         5
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-06T12:00:00-04:00",
+        "unread": false,
+        "text": "me5",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:20",
+        "storage": "ME",
+        "indexes": [
+         20
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-06T12:00:00-04:00",
+        "unread": false,
+        "text": "me20",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:4",
+        "storage": "ME",
+        "indexes": [
+         4
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-05T12:00:00-04:00",
+        "unread": false,
+        "text": "me4",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:19",
+        "storage": "ME",
+        "indexes": [
+         19
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-05T12:00:00-04:00",
+        "unread": false,
+        "text": "me19",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:3",
+        "storage": "ME",
+        "indexes": [
+         3
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-04T12:00:00-04:00",
+        "unread": false,
+        "text": "me3",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:18",
+        "storage": "ME",
+        "indexes": [
+         18
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-04T12:00:00-04:00",
+        "unread": false,
+        "text": "me18",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:2",
+        "storage": "ME",
+        "indexes": [
+         2
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-03T12:00:00-04:00",
+        "unread": false,
+        "text": "me2",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:17",
+        "storage": "ME",
+        "indexes": [
+         17
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-03T12:00:00-04:00",
+        "unread": false,
+        "text": "me17",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:16",
+        "storage": "ME",
+        "indexes": [
+         16
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-02T12:00:00-04:00",
+        "unread": false,
+        "text": "me16",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:1",
+        "storage": "ME",
+        "indexes": [
+         1
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-02T12:00:00-04:00",
+        "unread": false,
+        "text": "me1",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:15",
+        "storage": "ME",
+        "indexes": [
+         15
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-01T12:00:00-04:00",
+        "unread": false,
+        "text": "me15",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:0",
+        "storage": "ME",
+        "indexes": [
+         0
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-01T12:00:00-04:00",
+        "unread": false,
+        "text": "me0",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       }
+      ],
+      "cleared": {
+       "SM": 7
+      },
+      "status": "error",
+      "error": "delete SM failed (timeout)",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "delete SM failed (timeout)",
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 23,
+        "total": 23
+       },
+       "SM": {
+        "used": 7,
+        "total": 40
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGRO=0",
+      "AT+CMGRO=1",
+      "AT+CMGRO=2",
+      "AT+CMGRO=3",
+      "AT+CMGRO=4",
+      "AT+CMGRO=5",
+      "AT+CMGRO=6",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGRO=0",
+      "AT+CMGRO=1",
+      "AT+CMGRO=2",
+      "AT+CMGRO=3",
+      "AT+CMGRO=4",
+      "AT+CMGRO=5",
+      "AT+CMGRO=6",
+      "AT+CMGRO=7",
+      "AT+CMGRO=8",
+      "AT+CMGRO=9",
+      "AT+CMGRO=10",
+      "AT+CMGRO=11",
+      "AT+CMGRO=12",
+      "AT+CMGRO=13",
+      "AT+CMGRO=14",
+      "AT+CMGRO=15",
+      "AT+CMGRO=16",
+      "AT+CMGRO=17",
+      "AT+CMGRO=18",
+      "AT+CMGRO=19",
+      "AT+CMGRO=20",
+      "AT+CMGRO=21",
+      "AT+CMGRO=22",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "skips an empty store (cleared 0, no CMGD), known from CPMS? [SM is mem1 and empty]",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {}
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "mem1": "SM"
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 0,
+      "ME": 23
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SM\""
+    ],
+    "deletes": [
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SM"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "SM": {
+        "used": 0,
+        "total": 40
+       },
+       "ME": {
+        "used": 0,
+        "total": 23
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 0,
+       "ME": 23
+      },
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "ok",
+      "error": null,
+      "durationMs": 0,
+      "storage": {
+       "SM": {
+        "used": 0,
+        "total": 40
+       },
+       "ME": {
+        "used": 0,
+        "total": 23
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 0,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SM\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?"
+     ],
+     "deletes": [
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SM"
+     }
+    }
+   }
+  },
+  {
+   "name": "skips an empty store (cleared 0, no CMGD), known from CPMS? [SM unknown, found empty by the select]",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {}
+      },
+      "ME": {
+       "total": 23,
+       "slots": {}
+      }
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 0,
+      "ME": 0
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 0,
+       "ME": 0
+      },
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "ok",
+      "error": null,
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 0,
+       "ME": 0
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "throws the read statuses before anything is deleted [silent]",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "silent": true
+    },
+    "opts": {
+     "commandTimeoutMs": 30
+    }
+   },
+   "expected": {
+    "error": {
+     "kind": "SmsReadError",
+     "status": "modem_busy",
+     "message": "no response on sms port"
+    },
+    "log": [
+     "ATE0"
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {},
+      "status": "modem_busy",
+      "error": "no response on sms port",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "modem_busy",
+      "error": "no response on sms port",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+     },
+     "log": [
+      "ATE0"
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "throws the read statuses before anything is deleted [CMS 310]",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "cpmsError": "+CMS ERROR: 310"
+    },
+    "opts": {}
+   },
+   "expected": {
+    "error": {
+     "kind": "SmsReadError",
+     "status": "no_sim",
+     "message": "sim not ready"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?"
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {},
+      "status": "no_sim",
+      "error": "sim not ready",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "no_sim",
+      "error": "sim not ready",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?"
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: CPMS? plain ERROR → error, nothing deleted",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "cpmsError": "ERROR"
+    },
+    "opts": {}
+   },
+   "expected": {
+    "error": {
+     "kind": "SmsReadError",
+     "status": "error",
+     "message": "CPMS? failed: ERROR"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?"
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {},
+      "status": "error",
+      "error": "CPMS? failed: ERROR",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "CPMS? failed: ERROR",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?"
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: CPMS? unanswered → AtTimeoutError text, nothing deleted",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "hang": [
+      "AT+CPMS?"
+     ]
+    },
+    "opts": {
+     "commandTimeoutMs": 30
+    }
+   },
+   "expected": {
+    "error": {
+     "kind": "AtTimeoutError",
+     "message": "timeout on AT+CPMS?"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?"
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {},
+      "status": "error",
+      "error": "timeout on AT+CPMS?",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "timeout on AT+CPMS?",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?"
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: unparseable CPMS? answer",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "answers": {
+      "AT+CPMS?": [
+       "+CPMS: 1,2,3",
+       "OK"
+      ]
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "error": {
+     "kind": "SmsReadError",
+     "status": "error",
+     "message": "unparseable CPMS? answer"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?"
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {},
+      "status": "error",
+      "error": "unparseable CPMS? answer",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "unparseable CPMS? answer",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?"
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: SM select timeout stops the phase (no ME), mem1 still restored",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "hang": [
+      "AT+CPMS=\"SM\""
+     ]
+    },
+    "opts": {
+     "commandTimeoutMs": 30
+    }
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {},
+     "deleteError": "delete SM failed (select timeout)"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {},
+      "status": "error",
+      "error": "delete SM failed (select timeout)",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "delete SM failed (select timeout)",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\""
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: ME select timeout after an SM delete: SM cleared, restore sent",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "hang": [
+      "AT+CPMS=\"ME\""
+     ]
+    },
+    "opts": {
+     "commandTimeoutMs": 30
+    }
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7
+     },
+     "deleteError": "delete ME failed (select timeout)"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SM"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7
+      },
+      "status": "error",
+      "error": "delete ME failed (select timeout)",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "delete ME failed (select timeout)",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"ME\"",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [
+      "SM"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: SM select no-sim is skipped (no cleared.SM), ME still cleared",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "mem1": "ME",
+     "answers": {
+      "AT+CPMS=\"SM\"": [
+       "+CMS ERROR: 310"
+      ],
+      "AT+CPMS?": [
+       "+CPMS: \"ME\",23,23,\"ME\",23,23,\"ME\",23,23",
+       "OK"
+      ]
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "ME": 23
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\""
+    ],
+    "deletes": [
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "ME"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "ME": 23
+      },
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "ok",
+      "error": null,
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"ME\"",
+      "AT+CPMS=\"ME\""
+     ],
+     "deletes": [
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "ME"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: SM select ERROR is recorded, ME still cleared",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "answers": {
+      "AT+CPMS=\"SM\"": [
+       "ERROR"
+      ]
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "ME": 23
+     },
+     "deleteError": "delete SM failed (select: ERROR)"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "ME": 23
+      },
+      "status": "error",
+      "error": "delete SM failed (select: ERROR)",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "delete SM failed (select: ERROR)",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: both deletes fail: joined with '; '",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "cmgdError": {
+      "SM": "+CMS ERROR: 321",
+      "ME": "ERROR"
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "deleteError": "delete SM failed (+CMS ERROR: 321); delete ME failed (ERROR)"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SM",
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 23,
+        "total": 23
+       },
+       "SM": {
+        "used": 7,
+        "total": 40
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [
+       {
+        "id": "SM:6",
+        "storage": "SM",
+        "indexes": [
+         6
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-26T12:00:00-04:00",
+        "unread": true,
+        "text": "sm6",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:5",
+        "storage": "SM",
+        "indexes": [
+         5
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-25T12:00:00-04:00",
+        "unread": true,
+        "text": "sm5",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:4",
+        "storage": "SM",
+        "indexes": [
+         4
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-24T12:00:00-04:00",
+        "unread": true,
+        "text": "sm4",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:3",
+        "storage": "SM",
+        "indexes": [
+         3
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-23T12:00:00-04:00",
+        "unread": true,
+        "text": "sm3",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:2",
+        "storage": "SM",
+        "indexes": [
+         2
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-22T12:00:00-04:00",
+        "unread": true,
+        "text": "sm2",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:1",
+        "storage": "SM",
+        "indexes": [
+         1
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-21T12:00:00-04:00",
+        "unread": true,
+        "text": "sm1",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "SM:0",
+        "storage": "SM",
+        "indexes": [
+         0
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-20T12:00:00-04:00",
+        "unread": true,
+        "text": "sm0",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:14",
+        "storage": "ME",
+        "indexes": [
+         14
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-15T12:00:00-04:00",
+        "unread": false,
+        "text": "me14",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:13",
+        "storage": "ME",
+        "indexes": [
+         13
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-14T12:00:00-04:00",
+        "unread": false,
+        "text": "me13",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:12",
+        "storage": "ME",
+        "indexes": [
+         12
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-13T12:00:00-04:00",
+        "unread": false,
+        "text": "me12",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:11",
+        "storage": "ME",
+        "indexes": [
+         11
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-12T12:00:00-04:00",
+        "unread": false,
+        "text": "me11",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:10",
+        "storage": "ME",
+        "indexes": [
+         10
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-11T12:00:00-04:00",
+        "unread": false,
+        "text": "me10",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:9",
+        "storage": "ME",
+        "indexes": [
+         9
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-10T12:00:00-04:00",
+        "unread": false,
+        "text": "me9",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:8",
+        "storage": "ME",
+        "indexes": [
+         8
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-09T12:00:00-04:00",
+        "unread": false,
+        "text": "me8",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:7",
+        "storage": "ME",
+        "indexes": [
+         7
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-08T12:00:00-04:00",
+        "unread": false,
+        "text": "me7",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:22",
+        "storage": "ME",
+        "indexes": [
+         22
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-08T12:00:00-04:00",
+        "unread": false,
+        "text": "me22",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:6",
+        "storage": "ME",
+        "indexes": [
+         6
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-07T12:00:00-04:00",
+        "unread": false,
+        "text": "me6",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:21",
+        "storage": "ME",
+        "indexes": [
+         21
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-07T12:00:00-04:00",
+        "unread": false,
+        "text": "me21",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:5",
+        "storage": "ME",
+        "indexes": [
+         5
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-06T12:00:00-04:00",
+        "unread": false,
+        "text": "me5",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:20",
+        "storage": "ME",
+        "indexes": [
+         20
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-06T12:00:00-04:00",
+        "unread": false,
+        "text": "me20",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:4",
+        "storage": "ME",
+        "indexes": [
+         4
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-05T12:00:00-04:00",
+        "unread": false,
+        "text": "me4",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:19",
+        "storage": "ME",
+        "indexes": [
+         19
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-05T12:00:00-04:00",
+        "unread": false,
+        "text": "me19",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:3",
+        "storage": "ME",
+        "indexes": [
+         3
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-04T12:00:00-04:00",
+        "unread": false,
+        "text": "me3",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:18",
+        "storage": "ME",
+        "indexes": [
+         18
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-04T12:00:00-04:00",
+        "unread": false,
+        "text": "me18",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:2",
+        "storage": "ME",
+        "indexes": [
+         2
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-03T12:00:00-04:00",
+        "unread": false,
+        "text": "me2",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:17",
+        "storage": "ME",
+        "indexes": [
+         17
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-03T12:00:00-04:00",
+        "unread": false,
+        "text": "me17",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:16",
+        "storage": "ME",
+        "indexes": [
+         16
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-02T12:00:00-04:00",
+        "unread": false,
+        "text": "me16",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:1",
+        "storage": "ME",
+        "indexes": [
+         1
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-02T12:00:00-04:00",
+        "unread": false,
+        "text": "me1",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:15",
+        "storage": "ME",
+        "indexes": [
+         15
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-01T12:00:00-04:00",
+        "unread": false,
+        "text": "me15",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       },
+       {
+        "id": "ME:0",
+        "storage": "ME",
+        "indexes": [
+         0
+        ],
+        "from": "+15550100001",
+        "fromType": "international",
+        "sentAt": "2026-08-01T12:00:00-04:00",
+        "unread": false,
+        "text": "me0",
+        "binary": false,
+        "incomplete": false,
+        "truncated": false
+       }
+      ],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      },
+      "status": "error",
+      "error": "delete SM failed (+CMS ERROR: 321); delete ME failed (ERROR)",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "delete SM failed (+CMS ERROR: 321); delete ME failed (ERROR)",
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 23,
+        "total": 23
+       },
+       "SM": {
+        "used": 7,
+        "total": 40
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGRO=0",
+      "AT+CMGRO=1",
+      "AT+CMGRO=2",
+      "AT+CMGRO=3",
+      "AT+CMGRO=4",
+      "AT+CMGRO=5",
+      "AT+CMGRO=6",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGRO=0",
+      "AT+CMGRO=1",
+      "AT+CMGRO=2",
+      "AT+CMGRO=3",
+      "AT+CMGRO=4",
+      "AT+CMGRO=5",
+      "AT+CMGRO=6",
+      "AT+CMGRO=7",
+      "AT+CMGRO=8",
+      "AT+CMGRO=9",
+      "AT+CMGRO=10",
+      "AT+CMGRO=11",
+      "AT+CMGRO=12",
+      "AT+CMGRO=13",
+      "AT+CMGRO=14",
+      "AT+CMGRO=15",
+      "AT+CMGRO=16",
+      "AT+CMGRO=17",
+      "AT+CMGRO=18",
+      "AT+CMGRO=19",
+      "AT+CMGRO=20",
+      "AT+CMGRO=21",
+      "AT+CMGRO=22",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [
+      "SM",
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: select answer without counts falls back to CPMS? counts (ME known)",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "answers": {
+      "AT+CPMS=\"ME\"": [
+       "OK"
+      ]
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SM",
+     "SM"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 23,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      },
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "ok",
+      "error": null,
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 23,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGRO=0",
+      "AT+CMGRO=1",
+      "AT+CMGRO=2",
+      "AT+CMGRO=3",
+      "AT+CMGRO=4",
+      "AT+CMGRO=5",
+      "AT+CMGRO=6",
+      "AT+CMGRO=7",
+      "AT+CMGRO=8",
+      "AT+CMGRO=9",
+      "AT+CMGRO=10",
+      "AT+CMGRO=11",
+      "AT+CMGRO=12",
+      "AT+CMGRO=13",
+      "AT+CMGRO=14",
+      "AT+CMGRO=15",
+      "AT+CMGRO=16",
+      "AT+CMGRO=17",
+      "AT+CMGRO=18",
+      "AT+CMGRO=19",
+      "AT+CMGRO=20",
+      "AT+CMGRO=21",
+      "AT+CMGRO=22",
+      "AT+CMGRO=23",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [
+      "SM",
+      "SM"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: select answer without counts and no known count: deleted anyway, cleared 0",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "answers": {
+      "AT+CPMS=\"SM\"": [
+       "OK"
+      ]
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 0,
+      "ME": 23
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SR",
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 0,
+       "ME": 23
+      },
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "ok",
+      "error": null,
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 0,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [
+      "SR",
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: URCs before every answer do not change the clear",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "urcs": [
+      "+CMTI: \"SM\",3",
+      "RDY"
+     ]
+    },
+    "opts": {}
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SM",
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      },
+      "status": "ok",
+      "error": null,
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "ok",
+      "error": null,
+      "durationMs": 0,
+      "storage": {
+       "ME": {
+        "used": 0,
+        "total": 23
+       },
+       "SM": {
+        "used": 0,
+        "total": 40
+       }
+      },
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [
+      "SM",
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: a transport error on the delete is rethrown after the restore",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "writeError": {
+      "AT+CMGD=0,4": "EIO: i/o error, write"
+     }
+    },
+    "opts": {}
+   },
+   "expected": {
+    "error": {
+     "kind": "Error",
+     "message": "EIO: i/o error, write"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {},
+      "status": "error",
+      "error": "EIO: i/o error, write",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "EIO: i/o error, write",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {}
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\""
+     ],
+     "deletes": [],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: the post-clear sweep fails (CMGF? unanswered): error, cleared kept",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "hang": [
+      "AT+CMGF?"
+     ]
+    },
+    "opts": {
+     "commandTimeoutMs": 30
+    }
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "deleteError": null
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SM",
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      },
+      "status": "error",
+      "error": "post-clear read failed: timeout on AT+CMGF?",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "post-clear read failed: timeout on AT+CMGF?",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?"
+     ],
+     "deletes": [
+      "SM",
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "extra: delete error AND a failing post-clear sweep: the delete error wins",
+   "kind": "clear",
+   "input": {
+    "fake": {
+     "allowClear": true,
+     "stores": {
+      "SM": {
+       "total": 40,
+       "slots": {
+        "0": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280022100006903F3360C"
+        },
+        "1": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280122100006903F3760C"
+        },
+        "2": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280222100006903F3B60C"
+        },
+        "3": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280322100006903F3F60C"
+        },
+        "4": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280422100006903F3360D"
+        },
+        "5": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280522100006903F3760D"
+        },
+        "6": {
+         "stat": 0,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280622100006903F3B60D"
+        }
+       }
+      },
+      "ME": {
+       "total": 23,
+       "slots": {
+        "0": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006903ED320C"
+        },
+        "1": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006903ED720C"
+        },
+        "2": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006903EDB20C"
+        },
+        "3": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006903EDF20C"
+        },
+        "4": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006903ED320D"
+        },
+        "5": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006903ED720D"
+        },
+        "6": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006903EDB20D"
+        },
+        "7": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006903EDF20D"
+        },
+        "8": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280902100006903ED320E"
+        },
+        "9": {
+         "stat": 1,
+         "length": 22,
+         "pdu": "07915178850007F1040B915155100000F100006280012100006903ED720E"
+        },
+        "10": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280112100006904ED720C06"
+        },
+        "11": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280212100006904ED722C06"
+        },
+        "12": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280312100006904ED724C06"
+        },
+        "13": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280412100006904ED726C06"
+        },
+        "14": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280512100006904ED728C06"
+        },
+        "15": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280102100006904ED72AC06"
+        },
+        "16": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280202100006904ED72CC06"
+        },
+        "17": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280302100006904ED72EC06"
+        },
+        "18": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280402100006904ED720C07"
+        },
+        "19": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280502100006904ED722C07"
+        },
+        "20": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280602100006904EDB20C06"
+        },
+        "21": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280702100006904EDB22C06"
+        },
+        "22": {
+         "stat": 1,
+         "length": 23,
+         "pdu": "07915178850007F1040B915155100000F100006280802100006904EDB24C06"
+        }
+       }
+      }
+     },
+     "hang": [
+      "AT+CMGF?"
+     ],
+     "cmgdError": {
+      "ME": "+CMS ERROR: 321"
+     }
+    },
+    "opts": {
+     "commandTimeoutMs": 30
+    }
+   },
+   "expected": {
+    "outcome": {
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "deleteError": "delete ME failed (+CMS ERROR: 321)"
+    },
+    "log": [
+     "ATE0",
+     "AT+CPMS?",
+     "AT+CPMS=\"SM\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"ME\"",
+     "AT+CMGD=0,4",
+     "AT+CPMS=\"SR\""
+    ],
+    "deletes": [
+     "SM",
+     "ME"
+    ],
+    "end": {
+     "cmgf": 0,
+     "mem1": "SR"
+    },
+    "reader": {
+     "sweep": {
+      "storage": {},
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      },
+      "status": "error",
+      "error": "delete ME failed (+CMS ERROR: 321)",
+      "finishedAt": 1760000000000,
+      "durationMs": 0
+     },
+     "payload": {
+      "v": 1,
+      "deviceId": "d",
+      "requestId": "r",
+      "ts": 1760000000000,
+      "action": "clear",
+      "status": "error",
+      "error": "delete ME failed (+CMS ERROR: 321)",
+      "durationMs": 0,
+      "storage": {},
+      "total": 0,
+      "skipped": 0,
+      "partial": false,
+      "messages": [],
+      "cleared": {
+       "SM": 7,
+       "ME": 23
+      }
+     },
+     "log": [
+      "ATE0",
+      "AT+CPMS?",
+      "AT+CPMS=\"SM\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"ME\"",
+      "AT+CMGD=0,4",
+      "AT+CPMS=\"SR\"",
+      "ATE0",
+      "AT+CMGF?"
+     ],
+     "deletes": [
+      "SM",
+      "ME"
+     ],
+     "closed": true,
+     "end": {
+      "cmgf": 0,
+      "mem1": "SR"
+     }
+    }
+   }
+  },
+  {
+   "name": "clears, then sweeps on the same port: ok, cleared counts, empty post-clear storage",
+   "kind": "reader_clear",
+   "input": {
+    "spec": {}
+   },
+   "expected": {
+    "sweep": {
+     "storage": {
+      "ME": {
+       "used": 0,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "status": "ok",
+     "error": null,
+     "finishedAt": 1000000,
+     "durationMs": 0
+    },
+    "payload": {
+     "v": 1,
+     "deviceId": "d",
+     "requestId": "r",
+     "ts": 1000000,
+     "action": "clear",
+     "status": "ok",
+     "error": null,
+     "durationMs": 0,
+     "storage": {
+      "ME": {
+       "used": 0,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "total": 0,
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     }
+    },
+    "opened": [
+     {
+      "log": [
+       "ATE0",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"ME\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"SR\"",
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [
+       "SM",
+       "ME"
+      ],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "reports error naming the store, with what was there and the state after",
+   "kind": "reader_clear",
+   "input": {
+    "spec": {
+     "cmgdError": {
+      "ME": "+CMS ERROR: 321"
+     }
+    }
+   },
+   "expected": {
+    "sweep": {
+     "storage": {
+      "ME": {
+       "used": 23,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [
+      {
+       "id": "ME:14",
+       "storage": "ME",
+       "indexes": [
+        14
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-15T12:00:00-04:00",
+       "unread": false,
+       "text": "me14",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:13",
+       "storage": "ME",
+       "indexes": [
+        13
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-14T12:00:00-04:00",
+       "unread": false,
+       "text": "me13",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:12",
+       "storage": "ME",
+       "indexes": [
+        12
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-13T12:00:00-04:00",
+       "unread": false,
+       "text": "me12",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:11",
+       "storage": "ME",
+       "indexes": [
+        11
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-12T12:00:00-04:00",
+       "unread": false,
+       "text": "me11",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:10",
+       "storage": "ME",
+       "indexes": [
+        10
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-11T12:00:00-04:00",
+       "unread": false,
+       "text": "me10",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:9",
+       "storage": "ME",
+       "indexes": [
+        9
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-10T12:00:00-04:00",
+       "unread": false,
+       "text": "me9",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:8",
+       "storage": "ME",
+       "indexes": [
+        8
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-09T12:00:00-04:00",
+       "unread": false,
+       "text": "me8",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:7",
+       "storage": "ME",
+       "indexes": [
+        7
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-08T12:00:00-04:00",
+       "unread": false,
+       "text": "me7",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:22",
+       "storage": "ME",
+       "indexes": [
+        22
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-08T12:00:00-04:00",
+       "unread": false,
+       "text": "me22",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:6",
+       "storage": "ME",
+       "indexes": [
+        6
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-07T12:00:00-04:00",
+       "unread": false,
+       "text": "me6",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:21",
+       "storage": "ME",
+       "indexes": [
+        21
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-07T12:00:00-04:00",
+       "unread": false,
+       "text": "me21",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:5",
+       "storage": "ME",
+       "indexes": [
+        5
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-06T12:00:00-04:00",
+       "unread": false,
+       "text": "me5",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:20",
+       "storage": "ME",
+       "indexes": [
+        20
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-06T12:00:00-04:00",
+       "unread": false,
+       "text": "me20",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:4",
+       "storage": "ME",
+       "indexes": [
+        4
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-05T12:00:00-04:00",
+       "unread": false,
+       "text": "me4",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:19",
+       "storage": "ME",
+       "indexes": [
+        19
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-05T12:00:00-04:00",
+       "unread": false,
+       "text": "me19",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:3",
+       "storage": "ME",
+       "indexes": [
+        3
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-04T12:00:00-04:00",
+       "unread": false,
+       "text": "me3",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:18",
+       "storage": "ME",
+       "indexes": [
+        18
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-04T12:00:00-04:00",
+       "unread": false,
+       "text": "me18",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:2",
+       "storage": "ME",
+       "indexes": [
+        2
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-03T12:00:00-04:00",
+       "unread": false,
+       "text": "me2",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:17",
+       "storage": "ME",
+       "indexes": [
+        17
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-03T12:00:00-04:00",
+       "unread": false,
+       "text": "me17",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:16",
+       "storage": "ME",
+       "indexes": [
+        16
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-02T12:00:00-04:00",
+       "unread": false,
+       "text": "me16",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:1",
+       "storage": "ME",
+       "indexes": [
+        1
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-02T12:00:00-04:00",
+       "unread": false,
+       "text": "me1",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:15",
+       "storage": "ME",
+       "indexes": [
+        15
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-01T12:00:00-04:00",
+       "unread": false,
+       "text": "me15",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:0",
+       "storage": "ME",
+       "indexes": [
+        0
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-01T12:00:00-04:00",
+       "unread": false,
+       "text": "me0",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      }
+     ],
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "status": "error",
+     "error": "delete ME failed (+CMS ERROR: 321)",
+     "finishedAt": 1000000,
+     "durationMs": 0
+    },
+    "payload": {
+     "v": 1,
+     "deviceId": "d",
+     "requestId": "r",
+     "ts": 1000000,
+     "action": "clear",
+     "status": "error",
+     "error": "delete ME failed (+CMS ERROR: 321)",
+     "durationMs": 0,
+     "storage": {
+      "ME": {
+       "used": 23,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "total": 0,
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     }
+    },
+    "opened": [
+     {
+      "log": [
+       "ATE0",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"ME\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"SR\"",
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CPMS=\"ME\"",
+       "AT+CMGRO=0",
+       "AT+CMGRO=1",
+       "AT+CMGRO=2",
+       "AT+CMGRO=3",
+       "AT+CMGRO=4",
+       "AT+CMGRO=5",
+       "AT+CMGRO=6",
+       "AT+CMGRO=7",
+       "AT+CMGRO=8",
+       "AT+CMGRO=9",
+       "AT+CMGRO=10",
+       "AT+CMGRO=11",
+       "AT+CMGRO=12",
+       "AT+CMGRO=13",
+       "AT+CMGRO=14",
+       "AT+CMGRO=15",
+       "AT+CMGRO=16",
+       "AT+CMGRO=17",
+       "AT+CMGRO=18",
+       "AT+CMGRO=19",
+       "AT+CMGRO=20",
+       "AT+CMGRO=21",
+       "AT+CMGRO=22",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [
+       "SM",
+       "ME"
+      ],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "maps a no-SIM modem to no_sim with nothing deleted",
+   "kind": "reader_clear",
+   "input": {
+    "spec": {
+     "cpmsError": "+CMS ERROR: 310"
+    }
+   },
+   "expected": {
+    "sweep": {
+     "storage": {},
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {},
+     "status": "no_sim",
+     "error": "sim not ready",
+     "finishedAt": 1000000,
+     "durationMs": 0
+    },
+    "payload": {
+     "v": 1,
+     "deviceId": "d",
+     "requestId": "r",
+     "ts": 1000000,
+     "action": "clear",
+     "status": "no_sim",
+     "error": "sim not ready",
+     "durationMs": 0,
+     "storage": {},
+     "total": 0,
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {}
+    },
+    "opened": [
+     {
+      "log": [
+       "ATE0",
+       "AT+CPMS?"
+      ],
+      "deletes": [],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "drops the cached read: a read right after a clear sweeps afresh",
+   "kind": "reader_drop_cache",
+   "input": {
+    "t0": 1000000
+   },
+   "expected": {
+    "before": {
+     "storage": {
+      "ME": {
+       "used": 23,
+       "total": 23
+      },
+      "SM": {
+       "used": 7,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [
+      {
+       "id": "SM:6",
+       "storage": "SM",
+       "indexes": [
+        6
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-26T12:00:00-04:00",
+       "unread": true,
+       "text": "sm6",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:5",
+       "storage": "SM",
+       "indexes": [
+        5
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-25T12:00:00-04:00",
+       "unread": true,
+       "text": "sm5",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:4",
+       "storage": "SM",
+       "indexes": [
+        4
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-24T12:00:00-04:00",
+       "unread": true,
+       "text": "sm4",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:3",
+       "storage": "SM",
+       "indexes": [
+        3
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-23T12:00:00-04:00",
+       "unread": true,
+       "text": "sm3",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:2",
+       "storage": "SM",
+       "indexes": [
+        2
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-22T12:00:00-04:00",
+       "unread": true,
+       "text": "sm2",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:1",
+       "storage": "SM",
+       "indexes": [
+        1
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-21T12:00:00-04:00",
+       "unread": true,
+       "text": "sm1",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:0",
+       "storage": "SM",
+       "indexes": [
+        0
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-20T12:00:00-04:00",
+       "unread": true,
+       "text": "sm0",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:14",
+       "storage": "ME",
+       "indexes": [
+        14
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-15T12:00:00-04:00",
+       "unread": false,
+       "text": "me14",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:13",
+       "storage": "ME",
+       "indexes": [
+        13
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-14T12:00:00-04:00",
+       "unread": false,
+       "text": "me13",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:12",
+       "storage": "ME",
+       "indexes": [
+        12
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-13T12:00:00-04:00",
+       "unread": false,
+       "text": "me12",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:11",
+       "storage": "ME",
+       "indexes": [
+        11
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-12T12:00:00-04:00",
+       "unread": false,
+       "text": "me11",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:10",
+       "storage": "ME",
+       "indexes": [
+        10
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-11T12:00:00-04:00",
+       "unread": false,
+       "text": "me10",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:9",
+       "storage": "ME",
+       "indexes": [
+        9
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-10T12:00:00-04:00",
+       "unread": false,
+       "text": "me9",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:8",
+       "storage": "ME",
+       "indexes": [
+        8
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-09T12:00:00-04:00",
+       "unread": false,
+       "text": "me8",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:7",
+       "storage": "ME",
+       "indexes": [
+        7
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-08T12:00:00-04:00",
+       "unread": false,
+       "text": "me7",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:22",
+       "storage": "ME",
+       "indexes": [
+        22
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-08T12:00:00-04:00",
+       "unread": false,
+       "text": "me22",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:6",
+       "storage": "ME",
+       "indexes": [
+        6
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-07T12:00:00-04:00",
+       "unread": false,
+       "text": "me6",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:21",
+       "storage": "ME",
+       "indexes": [
+        21
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-07T12:00:00-04:00",
+       "unread": false,
+       "text": "me21",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:5",
+       "storage": "ME",
+       "indexes": [
+        5
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-06T12:00:00-04:00",
+       "unread": false,
+       "text": "me5",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:20",
+       "storage": "ME",
+       "indexes": [
+        20
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-06T12:00:00-04:00",
+       "unread": false,
+       "text": "me20",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:4",
+       "storage": "ME",
+       "indexes": [
+        4
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-05T12:00:00-04:00",
+       "unread": false,
+       "text": "me4",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:19",
+       "storage": "ME",
+       "indexes": [
+        19
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-05T12:00:00-04:00",
+       "unread": false,
+       "text": "me19",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:3",
+       "storage": "ME",
+       "indexes": [
+        3
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-04T12:00:00-04:00",
+       "unread": false,
+       "text": "me3",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:18",
+       "storage": "ME",
+       "indexes": [
+        18
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-04T12:00:00-04:00",
+       "unread": false,
+       "text": "me18",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:2",
+       "storage": "ME",
+       "indexes": [
+        2
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-03T12:00:00-04:00",
+       "unread": false,
+       "text": "me2",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:17",
+       "storage": "ME",
+       "indexes": [
+        17
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-03T12:00:00-04:00",
+       "unread": false,
+       "text": "me17",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:16",
+       "storage": "ME",
+       "indexes": [
+        16
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-02T12:00:00-04:00",
+       "unread": false,
+       "text": "me16",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:1",
+       "storage": "ME",
+       "indexes": [
+        1
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-02T12:00:00-04:00",
+       "unread": false,
+       "text": "me1",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:15",
+       "storage": "ME",
+       "indexes": [
+        15
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-01T12:00:00-04:00",
+       "unread": false,
+       "text": "me15",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:0",
+       "storage": "ME",
+       "indexes": [
+        0
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-01T12:00:00-04:00",
+       "unread": false,
+       "text": "me0",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      }
+     ],
+     "status": "ok",
+     "error": null,
+     "finishedAt": 1000000,
+     "durationMs": 0
+    },
+    "clear": {
+     "storage": {
+      "ME": {
+       "used": 0,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "status": "ok",
+     "error": null,
+     "finishedAt": 1001000,
+     "durationMs": 0
+    },
+    "after": {
+     "storage": {
+      "ME": {
+       "used": 0,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "status": "ok",
+     "error": null,
+     "finishedAt": 1002000,
+     "durationMs": 0
+    },
+    "afterIsBefore": false,
+    "opened": [
+     {
+      "log": [
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CMGRO=0",
+       "AT+CMGRO=1",
+       "AT+CMGRO=2",
+       "AT+CMGRO=3",
+       "AT+CMGRO=4",
+       "AT+CMGRO=5",
+       "AT+CMGRO=6",
+       "AT+CPMS=\"ME\"",
+       "AT+CMGRO=0",
+       "AT+CMGRO=1",
+       "AT+CMGRO=2",
+       "AT+CMGRO=3",
+       "AT+CMGRO=4",
+       "AT+CMGRO=5",
+       "AT+CMGRO=6",
+       "AT+CMGRO=7",
+       "AT+CMGRO=8",
+       "AT+CMGRO=9",
+       "AT+CMGRO=10",
+       "AT+CMGRO=11",
+       "AT+CMGRO=12",
+       "AT+CMGRO=13",
+       "AT+CMGRO=14",
+       "AT+CMGRO=15",
+       "AT+CMGRO=16",
+       "AT+CMGRO=17",
+       "AT+CMGRO=18",
+       "AT+CMGRO=19",
+       "AT+CMGRO=20",
+       "AT+CMGRO=21",
+       "AT+CMGRO=22",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     },
+     {
+      "log": [
+       "ATE0",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"ME\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"SR\"",
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [
+       "SM",
+       "ME"
+      ],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     },
+     {
+      "log": [
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "never joins an in-flight read; a read during a clear waits and sweeps afresh",
+   "kind": "reader_queue",
+   "input": {
+    "t0": 1000000
+   },
+   "expected": {
+    "r1": {
+     "storage": {
+      "ME": {
+       "used": 23,
+       "total": 23
+      },
+      "SM": {
+       "used": 7,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [
+      {
+       "id": "SM:6",
+       "storage": "SM",
+       "indexes": [
+        6
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-26T12:00:00-04:00",
+       "unread": true,
+       "text": "sm6",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:5",
+       "storage": "SM",
+       "indexes": [
+        5
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-25T12:00:00-04:00",
+       "unread": true,
+       "text": "sm5",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:4",
+       "storage": "SM",
+       "indexes": [
+        4
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-24T12:00:00-04:00",
+       "unread": true,
+       "text": "sm4",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:3",
+       "storage": "SM",
+       "indexes": [
+        3
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-23T12:00:00-04:00",
+       "unread": true,
+       "text": "sm3",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:2",
+       "storage": "SM",
+       "indexes": [
+        2
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-22T12:00:00-04:00",
+       "unread": true,
+       "text": "sm2",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:1",
+       "storage": "SM",
+       "indexes": [
+        1
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-21T12:00:00-04:00",
+       "unread": true,
+       "text": "sm1",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "SM:0",
+       "storage": "SM",
+       "indexes": [
+        0
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-20T12:00:00-04:00",
+       "unread": true,
+       "text": "sm0",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:14",
+       "storage": "ME",
+       "indexes": [
+        14
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-15T12:00:00-04:00",
+       "unread": false,
+       "text": "me14",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:13",
+       "storage": "ME",
+       "indexes": [
+        13
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-14T12:00:00-04:00",
+       "unread": false,
+       "text": "me13",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:12",
+       "storage": "ME",
+       "indexes": [
+        12
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-13T12:00:00-04:00",
+       "unread": false,
+       "text": "me12",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:11",
+       "storage": "ME",
+       "indexes": [
+        11
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-12T12:00:00-04:00",
+       "unread": false,
+       "text": "me11",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:10",
+       "storage": "ME",
+       "indexes": [
+        10
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-11T12:00:00-04:00",
+       "unread": false,
+       "text": "me10",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:9",
+       "storage": "ME",
+       "indexes": [
+        9
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-10T12:00:00-04:00",
+       "unread": false,
+       "text": "me9",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:8",
+       "storage": "ME",
+       "indexes": [
+        8
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-09T12:00:00-04:00",
+       "unread": false,
+       "text": "me8",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:7",
+       "storage": "ME",
+       "indexes": [
+        7
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-08T12:00:00-04:00",
+       "unread": false,
+       "text": "me7",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:22",
+       "storage": "ME",
+       "indexes": [
+        22
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-08T12:00:00-04:00",
+       "unread": false,
+       "text": "me22",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:6",
+       "storage": "ME",
+       "indexes": [
+        6
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-07T12:00:00-04:00",
+       "unread": false,
+       "text": "me6",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:21",
+       "storage": "ME",
+       "indexes": [
+        21
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-07T12:00:00-04:00",
+       "unread": false,
+       "text": "me21",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:5",
+       "storage": "ME",
+       "indexes": [
+        5
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-06T12:00:00-04:00",
+       "unread": false,
+       "text": "me5",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:20",
+       "storage": "ME",
+       "indexes": [
+        20
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-06T12:00:00-04:00",
+       "unread": false,
+       "text": "me20",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:4",
+       "storage": "ME",
+       "indexes": [
+        4
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-05T12:00:00-04:00",
+       "unread": false,
+       "text": "me4",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:19",
+       "storage": "ME",
+       "indexes": [
+        19
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-05T12:00:00-04:00",
+       "unread": false,
+       "text": "me19",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:3",
+       "storage": "ME",
+       "indexes": [
+        3
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-04T12:00:00-04:00",
+       "unread": false,
+       "text": "me3",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:18",
+       "storage": "ME",
+       "indexes": [
+        18
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-04T12:00:00-04:00",
+       "unread": false,
+       "text": "me18",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:2",
+       "storage": "ME",
+       "indexes": [
+        2
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-03T12:00:00-04:00",
+       "unread": false,
+       "text": "me2",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:17",
+       "storage": "ME",
+       "indexes": [
+        17
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-03T12:00:00-04:00",
+       "unread": false,
+       "text": "me17",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:16",
+       "storage": "ME",
+       "indexes": [
+        16
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-02T12:00:00-04:00",
+       "unread": false,
+       "text": "me16",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:1",
+       "storage": "ME",
+       "indexes": [
+        1
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-02T12:00:00-04:00",
+       "unread": false,
+       "text": "me1",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:15",
+       "storage": "ME",
+       "indexes": [
+        15
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-01T12:00:00-04:00",
+       "unread": false,
+       "text": "me15",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      },
+      {
+       "id": "ME:0",
+       "storage": "ME",
+       "indexes": [
+        0
+       ],
+       "from": "+15550100001",
+       "fromType": "international",
+       "sentAt": "2026-08-01T12:00:00-04:00",
+       "unread": false,
+       "text": "me0",
+       "binary": false,
+       "incomplete": false,
+       "truncated": false
+      }
+     ],
+     "status": "ok",
+     "error": null,
+     "finishedAt": 1000000,
+     "durationMs": 0
+    },
+    "c": {
+     "storage": {
+      "ME": {
+       "used": 0,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {
+      "SM": 7,
+      "ME": 23
+     },
+     "status": "ok",
+     "error": null,
+     "finishedAt": 1000000,
+     "durationMs": 0
+    },
+    "r2": {
+     "storage": {
+      "ME": {
+       "used": 0,
+       "total": 23
+      },
+      "SM": {
+       "used": 0,
+       "total": 40
+      }
+     },
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "status": "ok",
+     "error": null,
+     "finishedAt": 1000000,
+     "durationMs": 0
+    },
+    "clearsJoined": true,
+    "r2IsC": false,
+    "r3IsR2": true,
+    "opened": [
+     {
+      "log": [
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CMGRO=0",
+       "AT+CMGRO=1",
+       "AT+CMGRO=2",
+       "AT+CMGRO=3",
+       "AT+CMGRO=4",
+       "AT+CMGRO=5",
+       "AT+CMGRO=6",
+       "AT+CPMS=\"ME\"",
+       "AT+CMGRO=0",
+       "AT+CMGRO=1",
+       "AT+CMGRO=2",
+       "AT+CMGRO=3",
+       "AT+CMGRO=4",
+       "AT+CMGRO=5",
+       "AT+CMGRO=6",
+       "AT+CMGRO=7",
+       "AT+CMGRO=8",
+       "AT+CMGRO=9",
+       "AT+CMGRO=10",
+       "AT+CMGRO=11",
+       "AT+CMGRO=12",
+       "AT+CMGRO=13",
+       "AT+CMGRO=14",
+       "AT+CMGRO=15",
+       "AT+CMGRO=16",
+       "AT+CMGRO=17",
+       "AT+CMGRO=18",
+       "AT+CMGRO=19",
+       "AT+CMGRO=20",
+       "AT+CMGRO=21",
+       "AT+CMGRO=22",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     },
+     {
+      "log": [
+       "ATE0",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"ME\"",
+       "AT+CMGD=0,4",
+       "AT+CPMS=\"SR\"",
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [
+       "SM",
+       "ME"
+      ],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     },
+     {
+      "log": [
+       "ATE0",
+       "AT+CMGF?",
+       "AT+CPMS?",
+       "AT+CPMS=\"SM\"",
+       "AT+CPMS=\"SR\""
+      ],
+      "deletes": [],
+      "closed": true,
+      "end": {
+       "cmgf": 0,
+       "mem1": "SR"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "reports modem_busy when another process holds the lock, and opens nothing",
+   "kind": "reader_locked",
+   "input": {
+    "now": 7
+   },
+   "expected": {
+    "sweep": {
+     "storage": {},
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {},
+     "status": "modem_busy",
+     "error": "another sms read is running",
+     "finishedAt": 7,
+     "durationMs": 0
+    },
+    "opens": 0
+   }
+  },
+  {
+   "name": "extra: no port → no_modem with cleared {}",
+   "kind": "reader_noport",
+   "input": {
+    "now": 5
+   },
+   "expected": {
+    "sweep": {
+     "storage": {},
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {},
+     "status": "no_modem",
+     "error": "no SIMCom interface 05 tty",
+     "finishedAt": 5,
+     "durationMs": 0
+    },
+    "payload": {
+     "v": 1,
+     "deviceId": "d",
+     "requestId": "r",
+     "ts": 5,
+     "action": "clear",
+     "status": "no_modem",
+     "error": "no SIMCom interface 05 tty",
+     "durationMs": 0,
+     "storage": {},
+     "total": 0,
+     "skipped": 0,
+     "partial": false,
+     "messages": [],
+     "cleared": {}
+    }
+   }
+  }
+ ]
+}

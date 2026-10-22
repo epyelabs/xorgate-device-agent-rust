@@ -2,8 +2,14 @@
 //! TS `FakeModem`), as a pure engine: one command in → the reply lines out,
 //! the store state and the command log kept. Shared by the `at_port` unit
 //! tests (an in-memory `AtTransport`) and `tests/at_port_pty.rs` (the far
-//! end of a pty pair). Plus the dump driver's one marked extension:
-//! `answers` (a scripted reply for an exact command).
+//! end of a pty pair). Plus the dump drivers' marked extensions:
+//! `answers` (a scripted reply for an exact command), and for the Phase 5b
+//! clear (`test/sms-modem.test.ts` @ 09da38d): `cmgdError` (answer the
+//! delete-all on that store with this final instead of deleting), the
+//! `deletes` record, `writeError` (a write of that command fails) and the
+//! RIG RULE `allowClear` (phase-5b §6.7): without it a delete is a THROW —
+//! the command is logged, nothing is deleted and the transport write fails —
+//! so a read path that ever deletes fails its test.
 //!
 //! Semantics (phase-1/evidence/wp5.md §AT-transcript shapes): defaults
 //! `cmgf 0`, `mem1 "SR"`; `AT+CPMS?` → `+CPMS: "<mem1>",u,t,"ME",u,t,"ME",u,t`
@@ -50,6 +56,12 @@ pub struct FakeSpec {
     pub answers: BTreeMap<String, Vec<String>>,
     pub tick_ms: Option<i64>,
     pub t0: Option<i64>,
+    #[serde(default)]
+    pub cmgd_error: BTreeMap<String, String>,
+    #[serde(default)]
+    pub allow_clear: bool,
+    #[serde(default)]
+    pub write_error: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +70,8 @@ pub struct FakeModem {
     pub log: Vec<String>,
     pub cmgf: u8,
     pub mem1: String,
+    /// Store selected (mem1) at each delete, in order.
+    pub deletes: Vec<String>,
 }
 
 /// What one command produced.
@@ -77,6 +91,7 @@ impl FakeModem {
             mem1: spec.mem1.clone().unwrap_or_else(|| "SR".to_string()),
             spec,
             log: Vec::new(),
+            deletes: Vec::new(),
         }
     }
 
@@ -100,6 +115,9 @@ impl FakeModem {
     /// `write(data)` (`sms-modem.test.ts:75-102`), `data` without the `\r`.
     pub fn command(&mut self, cmd: &str) -> Reply {
         self.log.push(cmd.to_string());
+        if let Some(e) = self.spec.write_error.get(cmd) {
+            return Reply::Throw(e.clone());
+        }
         if self.spec.silent || self.spec.hang.iter().any(|h| h == cmd) {
             return Reply::None;
         }
@@ -157,6 +175,19 @@ impl FakeModem {
                     "OK".to_string(),
                 ]),
                 None => out.push("ERROR".to_string()),
+            }
+        } else if cmd == "AT+CMGD=0,4" {
+            if !self.spec.allow_clear {
+                return Reply::Throw("rig: delete without allowClear".to_string());
+            }
+            self.deletes.push(self.mem1.clone());
+            if let Some(e) = self.spec.cmgd_error.get(&self.mem1) {
+                out.push(e.clone());
+            } else {
+                if let Some(st) = self.spec.stores.get_mut(&self.mem1) {
+                    st.slots.clear();
+                }
+                out.push("OK".to_string());
             }
         } else {
             out.push("ERROR".to_string());

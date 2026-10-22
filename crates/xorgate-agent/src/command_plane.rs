@@ -24,7 +24,7 @@
 //! the accepted ack (core `decide_command`: a QoS-1 redelivery is a ledger
 //! duplicate and never yields the effect, so it can never clear twice nor eat
 //! messages that arrived since). Real mode → the process's one reader's
-//! `clear(ClearRequest::AcceptedCommand)`; sim → the fixture inbox, emptied
+//! `clear()` (an accepted-command `ClearRequest`); sim → the fixture inbox, emptied
 //! for the rest of the process (the `fixtureInboxCleared` module flag of the
 //! TS, owned here). The reply carries `action:"clear"` and `cleared`.
 
