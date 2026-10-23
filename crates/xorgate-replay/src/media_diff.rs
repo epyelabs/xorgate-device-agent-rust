@@ -1841,6 +1841,14 @@ fn rec_values_m(
                 .groups
                 .get(&g)
                 .map_or(0, |v| v.iter().filter(|w| **w >= lo && **w <= hi).count());
+            // Phase 5b WP4: gps presence explained sample by sample on EACH
+            // side by the tape (`carry_consistent`) — the two recorders read
+            // at their own phases on either side of an NMEA epoch.
+            let carry_ok = g == "gps"
+                && has_row(table, REC_INPUT_BETWEEN)
+                && !facts.gps_advances.is_empty()
+                && carry_consistent(&la, &facts.gps_advances, "gps")
+                && carry_consistent(&lb, &facts.gps_advances, "gps");
             rep.push(mm(
                 "rec-telemetry",
                 &at,
@@ -1849,6 +1857,8 @@ fn rec_values_m(
                 nb.to_string(),
                 if na.abs_diff(nb) <= trans {
                     "T4"
+                } else if carry_ok {
+                    REC_INPUT_BETWEEN
                 } else {
                     UNTOLERATED
                 },
@@ -2087,6 +2097,34 @@ fn read_instants(l: &RecSamples) -> Vec<i64> {
         })
         .collect()
 }
+
+/// Phase 5b WP4: does every recorded sample's presence of `metrics.<group>`
+/// follow from the tape at THIS side's read instants? The TS recorder writes
+/// a group only when its cache advanced since the last sample
+/// (ts:src/recording/telemetry-recorder.ts:96-106); so sample i must carry
+/// the group when an advance fell in (read[i−1], read[i]] and must not when
+/// none did. Within CARRY_EPS_MS of either read either is accepted (a read is
+/// estimated, `read_instants`). The first sample is not judged.
+fn carry_consistent(l: &RecSamples, advances: &[i64], group: &str) -> bool {
+    let pre = format!("metrics.{group}.");
+    let reads = read_instants(l);
+    let any_in = |lo: i64, hi: i64| {
+        let i = advances.partition_point(|w| *w <= lo);
+        advances.get(i).is_some_and(|w| *w <= hi)
+    };
+    (1..l.len()).all(|i| {
+        let carries = l[i].1.keys().any(|k| k.starts_with(&pre));
+        let (lo, hi) = (reads[i - 1], reads[i]);
+        if carries {
+            any_in(lo - CARRY_EPS_MS, hi + CARRY_EPS_MS)
+        } else {
+            !any_in(lo + CARRY_EPS_MS, hi - CARRY_EPS_MS)
+        }
+    })
+}
+
+/// `carry_consistent`'s read-instant uncertainty (the oracle's +50 ms).
+const CARRY_EPS_MS: i64 = 50;
 
 /// R-P3G-2 row id (T4's media rule `T4/rec-input-between`).
 const REC_INPUT_BETWEEN: &str = "T4/rec-input-between";
@@ -5830,6 +5868,57 @@ kind = "decisions"
 
     /// R-P3G-2: a sample's read instant is its fire on the 1 s grid (the
     /// lower envelope), not its post-await `ts`.
+    /// gps presence oracle: a sample carries `metrics.gps` exactly when the
+    /// tape advanced the gps cache since the previous read (±50 ms).
+    #[test]
+    fn carry_consistent_follows_the_tape_advances_only() {
+        let s = |ts: i64, gps: bool| {
+            let mut m = BTreeMap::new();
+            m.insert(
+                "metrics.system.cpu_temp.value".to_string(),
+                "50".to_string(),
+            );
+            if gps {
+                m.insert("metrics.gps.fix_quality.value".to_string(), "1".to_string());
+            }
+            (ts, m)
+        };
+        // Reads at 1000, 2000, 3000, 4000; advances at 1500 and 3500.
+        let adv = [1_500, 3_500];
+        let ok: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, true),
+            s(3_000, false),
+            s(4_000, true),
+        ];
+        assert!(carry_consistent(&ok, &adv, "gps"));
+        // A sample carrying gps with no advance since the previous read: no.
+        let extra: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, true),
+            s(3_000, true),
+            s(4_000, true),
+        ];
+        assert!(!carry_consistent(&extra, &adv, "gps"));
+        // A sample MISSING gps after an advance: no.
+        let missing: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, false),
+            s(3_000, false),
+            s(4_000, true),
+        ];
+        assert!(!carry_consistent(&missing, &adv, "gps"));
+        // An advance 20 ms before a read: either is accepted.
+        let edge = [1_980, 3_500];
+        let a: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, false),
+            s(3_000, true),
+            s(4_000, true),
+        ];
+        assert!(carry_consistent(&a, &edge, "gps"));
+    }
+
     #[test]
     fn read_instants_are_the_lower_envelope_of_the_grid() {
         // A 1 s grid from 1 000 with per-tick sampling latencies 0,150,5,300,10,3,2.

@@ -201,6 +201,10 @@ pub struct InputFacts {
     /// the tape's lines in release order, mapped like `mapLatest`
     /// (gps_group.rs, `gps.ts:261-300`): the recorded-gps input oracle.
     pub gps_snaps: Vec<(i64, BTreeMap<String, String>)>,
+    /// Phase 5b WP4: release instants that ADVANCE the TS gps cache
+    /// (ts:src/agent/collectors/gps.ts:160-190 — every `onFix`, and a GSV
+    /// while the fix has no position), sorted.
+    pub gps_advances: Vec<i64>,
     /// Wall ms (sorted) of every released record that feeds a telemetry value
     /// read at a tick — NMEA, LTE file, exec, dt, i2cdetect, IMU helper
     /// spawn/exit (not the continuous IMU sample lines): the re-pair's timing
@@ -483,8 +487,14 @@ impl InputFacts {
             let mut sky = xorgate_core::sky_state::SkyTracker::with_defaults(0);
             for (w, line) in lines {
                 let mut changed = agg.update(line);
+                if changed {
+                    out.gps_advances.push(w);
+                }
                 if let Some(g) = xorgate_core::nmea::parse_gsv(line) {
                     sky.note(&g, w.max(0) as u64);
+                    if !xorgate_core::nmea::has_position(&agg.fix) {
+                        out.gps_advances.push(w);
+                    }
                     changed = true;
                 }
                 if changed {
