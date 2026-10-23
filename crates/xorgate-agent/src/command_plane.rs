@@ -59,7 +59,8 @@ use xorgate_hal::privileged::{PrivilegedArgv, PrivilegedRunner, SudoRunner};
 
 use crate::ctx::{AgentCtx, BoxFut, CommandPlane, CommandPlaneDeps, ObdControl, ReportRequester};
 use crate::mqtt_plane::{AckOutcome, MqttHandle, PublishFailure, QoS};
-use crate::ops::sms::{ClearRequest, SmsReader};
+use crate::ops::sms::SmsReader;
+use xorgate_hal::sms_clear_token::{AcceptedClearSms, ClearRequest};
 
 /// Where a real-mode `read_sms` sweep comes from (I4; `worker.ts:917, 929-930`).
 /// `sim` / `replay` always answer from `fixtureSmsSweep` (core
@@ -310,15 +311,22 @@ impl Effects {
                     request_id,
                     limit,
                 } => {
-                    self.run_sms(SmsAction::Read, source, &request_id, limit)
+                    self.run_sms(SmsAction::Read, source, &request_id, limit, None)
                         .await
                 }
-                Effect::ClearSms {
-                    source,
-                    request_id,
-                    limit,
-                } => {
-                    self.run_sms(SmsAction::Clear, source, &request_id, limit)
+                e @ Effect::ClearSms { .. } => {
+                    // The type-level proof that this clear was accepted and
+                    // ledger-claimed: only an `Effect::ClearSms` yields one.
+                    let proof = AcceptedClearSms::from_effect(&e);
+                    let Effect::ClearSms {
+                        source,
+                        request_id,
+                        limit,
+                    } = e
+                    else {
+                        unreachable!("matched above")
+                    };
+                    self.run_sms(SmsAction::Clear, source, &request_id, limit, proof)
                         .await
                 }
                 Effect::ObdJob(_) => {
@@ -408,7 +416,15 @@ impl Effects {
     /// style offline queueing lives in the client, `xorgate_cloud::mqtt` — no
     /// retry here). Logs counts/status/duration only (contract §6; the
     /// `cleared` counts are fine per clear §6).
-    async fn run_sms(&self, action: SmsAction, source: SmsDecision, request_id: &str, limit: u32) {
+    /// `proof`: the accepted-`clear_sms` proof, `Some` only for a clear.
+    async fn run_sms(
+        &self,
+        action: SmsAction,
+        source: SmsDecision,
+        request_id: &str,
+        limit: u32,
+        proof: Option<AcceptedClearSms>,
+    ) {
         let command = match action {
             SmsAction::Read => DeviceCommandName::ReadSms,
             SmsAction::Clear => DeviceCommandName::ClearSms,
@@ -416,9 +432,10 @@ impl Effects {
         .to_string();
         let sweep: SmsSweep = match (action, source, &self.sms) {
             // `real ? await smsReader.clear() : fixtureSmsClear(Date.now())`
-            (SmsAction::Clear, SmsDecision::Reader, SmsSource::Real(reader)) => {
-                (*reader.clear(ClearRequest::accepted_command()).await).clone()
-            }
+            (SmsAction::Clear, SmsDecision::Reader, SmsSource::Real(reader)) => match proof {
+                Some(p) => (*reader.clear(ClearRequest::accepted_command(p)).await).clone(),
+                None => unreachable!("an Effect::ClearSms always carries its proof"),
+            },
             (SmsAction::Clear, SmsDecision::Fixture, _) => {
                 let mut cleared = self.fixture_cleared.load(Ordering::SeqCst);
                 let s = fixture_sms_clear(self.ctx.now_ms(), &mut cleared);

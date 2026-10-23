@@ -50,6 +50,7 @@ use xorgate_hal::at_port::{
     ResolvePortOptions, SmsLock, SmsReadError, SweepOptions,
 };
 use xorgate_hal::io::{null_tape, TapeSink};
+use xorgate_hal::sms_clear_token::ClearRequest;
 
 use crate::ctx::BoxFut;
 
@@ -138,37 +139,19 @@ enum Op {
     Clear,
 }
 
-/// The authorisation token [`SmsReader::clear`] demands (phase-5b §6 point
-/// 2). It has a private field and no `Clone` / `Copy` / `Default`, so the ONLY
-/// way to obtain one is one of the two constructors below — one per designed
-/// entry point — and each is called from exactly one function in the
-/// workspace (pinned by file and function in `tests/sms_clear_safety.rs`).
-/// It carries no data and changes no behaviour: holding it is the point.
-#[derive(Debug)]
-pub struct ClearRequest {
-    _entry: Entry,
+/// What a tracked op runs: a read, or a clear carrying the token
+/// `clear_transport` will consume (`xorgate_hal::sms_clear_token`). A clear
+/// without a token cannot be expressed.
+enum Work {
+    Read,
+    Clear(ClearRequest),
 }
 
-#[derive(Debug)]
-enum Entry {
-    AcceptedCommand,
-    ConfirmedCli,
-}
-
-impl ClearRequest {
-    /// An ACCEPTED `clear_sms` from the command plane (`run_sms`), after the
-    /// ledger's duplicate check — a QoS-1 redelivery never reaches here.
-    pub fn accepted_command() -> Self {
-        Self {
-            _entry: Entry::AcceptedCommand,
-        }
-    }
-
-    /// `xorgate-rs sms clear` (`cli::sms::clear_main`) after `--yes` / `-y`
-    /// or an interactive yes.
-    pub fn confirmed_cli() -> Self {
-        Self {
-            _entry: Entry::ConfirmedCli,
+impl Work {
+    fn op(&self) -> Op {
+        match self {
+            Work::Read => Op::Read,
+            Work::Clear(_) => Op::Clear,
         }
     }
 }
@@ -238,7 +221,7 @@ impl SmsReader {
                         return Box::pin(async move { last });
                     }
                 }
-                let rx = self.track(&mut st, Op::Read, None);
+                let rx = self.track(&mut st, Work::Read, None);
                 drop(st);
                 Box::pin(wait(rx))
             }
@@ -249,9 +232,9 @@ impl SmsReader {
     /// then ME), then sweep. DESTRUCTIVE. Joins a running or queued clear;
     /// queued behind a running read; drops the cached read now and again
     /// when it starts. `why` is the entry point's token (phase-5b §6 point
-    /// 2): consumed here, it carries no data and changes nothing.
+    /// 2; `xorgate_hal::sms_clear_token`): carried to `clear_transport`,
+    /// which spends it; a clear that joins a running one drops it unused.
     pub fn clear(self: &Arc<Self>, why: ClearRequest) -> BoxFut<'static, Arc<SmsSweep>> {
-        let ClearRequest { _entry: _ } = why;
         let mut st = self.lock();
         if let Some(cur) = &st.inflight {
             if cur.op == Op::Clear {
@@ -262,7 +245,7 @@ impl SmsReader {
         }
         st.last = None;
         let prev = st.inflight.as_ref().map(|c| c.rx.clone());
-        let rx = self.track(&mut st, Op::Clear, prev);
+        let rx = self.track(&mut st, Work::Clear(why), prev);
         drop(st);
         Box::pin(wait(rx))
     }
@@ -274,9 +257,10 @@ impl SmsReader {
     fn track(
         self: &Arc<Self>,
         st: &mut State,
-        op: Op,
+        work: Work,
         after: Option<watch::Receiver<Option<Arc<SmsSweep>>>>,
     ) -> watch::Receiver<Option<Arc<SmsSweep>>> {
+        let op = work.op();
         let (tx, rx) = watch::channel(None);
         st.next_id += 1;
         let id = st.next_id;
@@ -293,15 +277,12 @@ impl SmsReader {
             if let Some(prev) = after {
                 let _ = wait(prev).await;
             }
-            let sweep = match op {
-                Op::Read => me.run_op(Op::Read).await,
-                Op::Clear => {
-                    // `this.last = null` again: the read we waited for may
-                    // have just cached itself.
-                    me.lock().last = None;
-                    me.run_op(Op::Clear).await
-                }
-            };
+            if op == Op::Clear {
+                // `this.last = null` again: the read we waited for may have
+                // just cached itself.
+                me.lock().last = None;
+            }
+            let sweep = me.run_op(work).await;
             // `.finally` runs before the awaiting callers resume.
             drop(guard);
             let _ = tx.send(Some(sweep));
@@ -312,7 +293,8 @@ impl SmsReader {
     /// `runOp(op, body)` (`sms-modem.ts:688-732`): resolve → lock → open →
     /// body → `finish` (stamps; `last` for a read only) → close the
     /// transport → release the lock.
-    async fn run_op(self: &Arc<Self>, op: Op) -> Arc<SmsSweep> {
+    async fn run_op(self: &Arc<Self>, work: Work) -> Arc<SmsSweep> {
+        let op = work.op();
         let clock = self.deps.clock.clone();
         let start = clock.mono_ms();
         let finish = |r: Result<SmsSweep, SmsReadError>| -> Arc<SmsSweep> {
@@ -364,9 +346,9 @@ impl SmsReader {
             }
         };
         let port = port.to_string_lossy().into_owned();
-        let r = match op {
-            Op::Read => self.sweep_body(&mut *transport, &port).await,
-            Op::Clear => self.clear_body(&mut *transport, &port).await,
+        let r = match work {
+            Work::Read => self.sweep_body(&mut *transport, &port).await,
+            Work::Clear(token) => self.clear_body(&mut *transport, &port, token).await,
         };
         let sweep = finish(r);
         // `finally { await transport?.close().catch(() => {}); release(); }`
@@ -409,6 +391,7 @@ impl SmsReader {
         &self,
         t: &mut dyn AtTransport,
         port: &str,
+        token: ClearRequest,
     ) -> Result<SmsSweep, SmsReadError> {
         let opts = ClearOptions {
             command_timeout_ms: self.deps.clear_command_timeout_ms,
@@ -419,7 +402,7 @@ impl SmsReader {
         let ClearOutcome {
             cleared,
             delete_error,
-        } = clear_transport(t, opts).await?;
+        } = clear_transport(t, opts, token).await?;
         Ok(match sweep_transport(t, self.sweep_options(port)).await {
             Ok(mut r) => {
                 r.status = if delete_error.is_some() {

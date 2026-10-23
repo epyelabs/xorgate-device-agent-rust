@@ -9,10 +9,13 @@
 //! `.rs` file for it and fails the build otherwise, and lists the callers of
 //! [`clear_transport`] (only `xorgate_agent::ops::sms::SmsReader`).
 //!
-//! Who may reach it (§6 point 2): `SmsReader::clear()`, called only by the
-//! command plane on an ACCEPTED, ledger-deduplicated `clear_sms`, and by
-//! `xorgate-rs sms clear` with `--yes` or an interactive yes. Never the read
-//! path, the reuse window, the sweep, startup, shutdown or the manage TUI.
+//! Who may reach it (§6 point 2) — enforced by the COMPILER: the command
+//! constant is private, [`clear_transport`] is its only sender and takes a
+//! [`ClearRequest`] by value, and a `ClearRequest` can only be minted in
+//! `crate::sms_clear_token` from a proof of an accepted, ledger-claimed
+//! `clear_sms` or of a confirmed `xorgate-rs sms clear` (see that module).
+//! Nothing else (read path, reuse window, sweep, startup, shutdown, manage
+//! TUI) can hold one; a source test pins the mint sites.
 //!
 //! Port rules (§6 point 3) are the read's: the transport handed in was opened
 //! on what `at_port::resolve_sms_port` returned (interface 05 by USB identity
@@ -56,10 +59,11 @@ use xorgate_core::sms_pdu::SmsStorage;
 
 use crate::at_port::{AtError, AtResponse, AtSession, AtTransport, SmsReadError};
 use crate::io::{null_tape, TapeSink};
+use crate::sms_clear_token::ClearRequest;
 
 /// The delete-all command: every message of the store `CPMS` mem1 selects.
 /// THE ONLY spelling of the delete command in the workspace (§6 point 1).
-pub const CMGD_DELETE_ALL: &str = "AT+CMGD=0,4";
+const CMGD_DELETE_ALL: &str = "AT+CMGD=0,4";
 
 /// The delete command as TEXT, for `xorgate-rs sms clear --help` (which
 /// prints it, `sms.ts:55`), so no other file has to spell it.
@@ -116,7 +120,10 @@ pub struct ClearOutcome {
 pub async fn clear_transport(
     transport: &mut dyn AtTransport,
     opts: ClearOptions,
+    token: ClearRequest,
 ) -> Result<ClearOutcome, SmsReadError> {
+    // The authorisation is spent whatever happens next.
+    token.spend();
     let mut at =
         AtSession::new(transport, opts.command_timeout_ms).with_tape(&opts.port, opts.tape);
     let delete_timeout = Duration::from_millis(opts.delete_timeout_ms);

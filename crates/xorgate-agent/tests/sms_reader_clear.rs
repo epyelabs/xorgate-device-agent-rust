@@ -22,10 +22,12 @@ use std::sync::{Arc, Mutex};
 
 use fake_modem::{FakeModem, FakeSpec, MemTransport, Store, TestClock};
 use serde_json::{json, Value};
-use xorgate_agent::ops::sms::{ClearRequest, OpenTransportFn, SmsReader, SmsReaderDeps};
+use xorgate_agent::ops::sms::{OpenTransportFn, SmsReader, SmsReaderDeps};
 use xorgate_core::sms::{build_sms_payload, SmsAction, SmsPayloadRequest, SmsReadStatus, SmsSweep};
+use xorgate_core::sms_cli::ClearGate;
 use xorgate_hal::at_clear::{clear_transport, ClearOptions, ClearOutcome};
 use xorgate_hal::at_port::{AtTransport, BoxFut, SmsReadError};
+use xorgate_hal::sms_clear_token::{ClearRequest, CliConfirmation};
 
 fn load() -> Value {
     let p = format!(
@@ -50,7 +52,7 @@ fn strings(v: &Value) -> Vec<String> {
 }
 
 fn cmd() -> ClearRequest {
-    ClearRequest::accepted_command()
+    ClearRequest::confirmed_cli(CliConfirmation::from_gate(ClearGate::Proceed, None).unwrap())
 }
 
 fn clear_payload(s: &SmsSweep) -> String {
@@ -151,7 +153,7 @@ async fn every_clear_case_matches_the_ts() {
         // clearTransport over one transport.
         let modem = Arc::new(Mutex::new(FakeModem::new(spec.clone())));
         let mut t = MemTransport::new(modem.clone(), None);
-        let got = clear_transport(&mut t, opts_of(&c["input"]["opts"])).await;
+        let got = clear_transport(&mut t, opts_of(&c["input"]["opts"]), cmd()).await;
         match (&got, want.get("outcome")) {
             (Ok(o), Some(w)) => assert_eq!(outcome_json(o), *w, "{name}: outcome"),
             (Err(e), None) => assert_eq!(*e, want_error(&want["error"]), "{name}: error"),
@@ -403,7 +405,7 @@ async fn run_clear(
 ) -> (Result<ClearOutcome, SmsReadError>, FakeModem) {
     let modem = Arc::new(Mutex::new(FakeModem::new(spec)));
     let mut t = MemTransport::new(modem.clone(), None);
-    let r = clear_transport(&mut t, o).await;
+    let r = clear_transport(&mut t, o, cmd()).await;
     let m = modem.lock().unwrap().clone();
     (r, m)
 }
@@ -535,7 +537,7 @@ async fn mem1_restored_when_the_phase_panics_then_the_panic_resumes() {
     let m2 = modem.clone();
     let joined = tokio::spawn(async move {
         let mut t = PanicOnDelete(MemTransport::new(m2, None));
-        let _ = clear_transport(&mut t, short()).await;
+        let _ = clear_transport(&mut t, short(), cmd()).await;
     })
     .await;
     assert!(

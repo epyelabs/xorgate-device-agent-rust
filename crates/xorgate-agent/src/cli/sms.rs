@@ -18,16 +18,17 @@ use std::sync::Arc;
 
 use xorgate_core::sms::{build_sms_payload, SmsAction, SmsPayloadRequest};
 use xorgate_core::sms_cli::{
-    clear_gate, clear_rest, confirm_answer, exit_code, render_clear_line, render_json,
-    render_table, sms_clear_help, ClearGate, SmsClearArgs, SmsCliArgs, CLI_DEVICE_ID,
-    CLI_REQUEST_ID, SMS_CLEAR_CANCELLED, SMS_CLEAR_PROMPT, SMS_CLEAR_REFUSED, SMS_HELP,
+    clear_gate, clear_rest, exit_code, render_clear_line, render_json, render_table,
+    sms_clear_help, ClearGate, SmsClearArgs, SmsCliArgs, CLI_DEVICE_ID, CLI_REQUEST_ID,
+    SMS_CLEAR_CANCELLED, SMS_CLEAR_PROMPT, SMS_CLEAR_REFUSED, SMS_HELP,
 };
 use xorgate_hal::at_clear::delete_all_text;
 use xorgate_hal::at_port::{resolve_sms_port, ResolvePortOptions};
 use xorgate_hal::io::null_tape;
 
 use crate::ctx::AgentClock;
-use crate::ops::sms::{lock_path, ClearRequest, SmsReader, SmsReaderDeps};
+use crate::ops::sms::{lock_path, SmsReader, SmsReaderDeps};
+use xorgate_hal::sms_clear_token::{ClearRequest, CliConfirmation};
 
 /// `smsCommand(rest)` → exit code (`process.exitCode = 1` unless `ok`).
 pub fn main(rest: &[String]) -> i32 {
@@ -83,7 +84,7 @@ fn cli_reader(home: &std::path::Path) -> Arc<SmsReader> {
 /// `smsClearCommand(rest)` (`sms.ts:50-80` @ 09da38d) → exit code.
 fn clear_main(rest: &[String]) -> i32 {
     let gate = clear_gate(SmsClearArgs::parse(rest), std::io::stdin().is_terminal());
-    match gate {
+    let answer = match gate {
         ClearGate::Help => {
             let _ = super::logs::write_lines([sms_clear_help(delete_all_text())]);
             return 0;
@@ -92,14 +93,14 @@ fn clear_main(rest: &[String]) -> i32 {
             eprintln!("{SMS_CLEAR_REFUSED}");
             return 1;
         }
-        ClearGate::Ask => {
-            if !ask(SMS_CLEAR_PROMPT) {
-                let _ = super::logs::write_lines([SMS_CLEAR_CANCELLED.to_string()]);
-                return 0;
-            }
-        }
-        ClearGate::Proceed => {}
-    }
+        ClearGate::Ask => Some(ask(SMS_CLEAR_PROMPT)),
+        ClearGate::Proceed => None,
+    };
+    // The type-level proof of `--yes` or an interactive yes.
+    let Some(confirmed) = CliConfirmation::from_gate(gate, answer.as_deref()) else {
+        let _ = super::logs::write_lines([SMS_CLEAR_CANCELLED.to_string()]);
+        return 0;
+    };
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -111,7 +112,8 @@ fn clear_main(rest: &[String]) -> i32 {
         }
     };
     let home = crate::env::runtime_home();
-    let sweep = rt.block_on(async { cli_reader(&home).clear(ClearRequest::confirmed_cli()).await });
+    let token = ClearRequest::confirmed_cli(confirmed);
+    let sweep = rt.block_on(async { cli_reader(&home).clear(token).await });
     let payload = build_sms_payload(
         &sweep,
         &SmsPayloadRequest {
@@ -126,17 +128,17 @@ fn clear_main(rest: &[String]) -> i32 {
 }
 
 /// `confirm(question)` (`sms.ts:36-44`): the question on stdout (no
-/// newline), one line from stdin; `y` / `yes` (any case, trimmed) is a yes.
-/// EOF or a read error is a no.
-fn ask(question: &str) -> bool {
+/// newline), one line from stdin (EOF or a read error = an empty answer);
+/// `CliConfirmation::from_gate` applies `/^y(es)?$/i` after trim.
+fn ask(question: &str) -> String {
     use std::io::{BufRead, Write};
     let mut out = std::io::stdout();
     let _ = out.write_all(question.as_bytes());
     let _ = out.flush();
     let mut line = String::new();
     match std::io::stdin().lock().read_line(&mut line) {
-        Ok(_) => confirm_answer(&line),
-        Err(_) => false,
+        Ok(_) => line,
+        Err(_) => String::new(),
     }
 }
 

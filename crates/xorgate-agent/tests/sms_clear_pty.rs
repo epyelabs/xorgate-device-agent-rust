@@ -28,10 +28,12 @@ use std::sync::{Arc, Mutex};
 
 use fake_modem::{FakeModem, FakeSpec, Reply, TestClock};
 use serde_json::Value;
-use xorgate_agent::ops::sms::{ClearRequest, SmsReader, SmsReaderDeps};
+use xorgate_agent::ops::sms::{SmsReader, SmsReaderDeps};
 use xorgate_core::sms::{build_sms_payload, SmsAction, SmsPayloadRequest};
 use xorgate_core::sms_cli::render_json;
+use xorgate_core::sms_cli::ClearGate;
 use xorgate_hal::at_port::open_serial_transport;
+use xorgate_hal::sms_clear_token::{ClearRequest, CliConfirmation};
 
 const FIXED_NOW: i64 = 1_760_000_000_000;
 const LIMIT: u32 = 10;
@@ -117,7 +119,11 @@ async fn rust_clear(port: &str) -> String {
     );
     deps.lock_path = None;
     let reader = SmsReader::new(deps);
-    let sweep = reader.clear(ClearRequest::confirmed_cli()).await;
+    let sweep = reader
+        .clear(ClearRequest::confirmed_cli(
+            CliConfirmation::from_gate(ClearGate::Proceed, None).unwrap(),
+        ))
+        .await;
     let clear = render_json(&build_sms_payload(
         &sweep,
         &SmsPayloadRequest {
