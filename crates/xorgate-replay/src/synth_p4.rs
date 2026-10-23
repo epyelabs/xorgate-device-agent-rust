@@ -562,7 +562,7 @@ fn add_p5b(
         "p5b-obd-cmds" | "p5b-obd-cmds-noperiph" => {
             let periph = scenario == "p5b-obd-cmds";
             obd_device(b, &mut m, periph);
-            let mut obd = json!({"bluetoothctl": {
+            let obd = json!({"bluetoothctl": {
                 "scan": [
                     format!("[NEW] Device {OBD_MAC_A} OBDII"),
                     format!("[CHG] Device {OBD_MAC_A} RSSI: -58"),
