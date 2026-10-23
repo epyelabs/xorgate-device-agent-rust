@@ -1941,11 +1941,16 @@ fn segment_oracle_ok(
     carrying.iter().all(|i| ok.contains(i))
 }
 
-/// The fix-derived gps leaves the NMEA oracle verifies (`gps_fix_leaves`).
+/// The gps leaves the NMEA oracle verifies: the fix-derived ones
+/// (`gps_fix_leaves`) and (Phase 5b WP4) the sky reductions `sats_heard` /
+/// `snr_max` (`gps_sky_leaves`). `sky_state` stays out: its hysteresis
+/// advances at each read instant, not at a tape release.
 const GPS_FIX_LEAVES: &[&str] = &[
     "fix_quality",
     "satellites",
     "satellites_in_view",
+    "sats_heard",
+    "snr_max",
     "hdop",
     "lat",
     "lon",

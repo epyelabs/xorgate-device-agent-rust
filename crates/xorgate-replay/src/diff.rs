@@ -305,6 +305,22 @@ pub fn gps_fix_leaves(fix: &xorgate_core::nmea::GpsFix) -> BTreeMap<String, Stri
         .collect()
 }
 
+/// The sky leaves of `mapLatest` (`gps_group::map_latest`: `sats_heard` =
+/// heard, `snr_max` = the best C/N0) as the JS-number TEXT the agent writes.
+pub fn gps_sky_leaves(sky: &xorgate_core::sky_state::SkySnapshot) -> BTreeMap<String, String> {
+    let text = |v: f64| {
+        serde_json::to_value(xorgate_core::telemetry::MetricLeaf::new(v))
+            .map(|x| x["value"].to_string())
+            .unwrap_or_default()
+    };
+    let mut m = BTreeMap::new();
+    m.insert("sats_heard".to_string(), text(f64::from(sky.heard)));
+    if let Some(v) = sky.max_snr {
+        m.insert("snr_max".to_string(), text(v));
+    }
+    m
+}
+
 impl InputFacts {
     /// Read `play.tape` (load_run resolves it) and derive the facts.
     pub fn for_play(play: &PlayInfo) -> Self {
@@ -459,9 +475,22 @@ impl InputFacts {
             let mut lines: Vec<(i64, &str)> = nmea.iter().map(|(_, w, l)| (*w, *l)).collect();
             lines.sort_by_key(|(w, _)| *w);
             let mut agg = xorgate_core::nmea::FixAggregator::new();
+            // Phase 5b WP4: the SKY leaves too (`snr_max`, `sats_heard`), from
+            // the same SkyTracker the agents run (sky-state.ts, port
+            // xorgate-core::sky_state) over the tape's GSV cycles at their
+            // release instants — the window tape's `snr_max` rows were reads
+            // on either side of a cycle commit.
+            let mut sky = xorgate_core::sky_state::SkyTracker::with_defaults(0);
             for (w, line) in lines {
-                if agg.update(line) {
-                    out.gps_snaps.push((w, gps_fix_leaves(&agg.fix)));
+                let mut changed = agg.update(line);
+                if let Some(g) = xorgate_core::nmea::parse_gsv(line) {
+                    sky.note(&g, w.max(0) as u64);
+                    changed = true;
+                }
+                if changed {
+                    let mut m = gps_fix_leaves(&agg.fix);
+                    m.extend(gps_sky_leaves(&sky.snapshot(w.max(0) as u64)));
+                    out.gps_snaps.push((w, m));
                 }
             }
         }
