@@ -326,6 +326,42 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &["p4", "nmea-fixonly", "lte", "clock"],
         "config-sync upgrade exception: retained rev 3 already applied (seeded sync baseline) carrying a never-held `obd` namespace → exactly `obd` adopted; a 2nd delivery adopts nothing",
     ),
+    (
+        "p5b-obd-emulator",
+        90,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD: peripherals.obd + an ELM327-emulator per agent (taos-2022) on XORGATE_OBD_SERIAL, the real helper → obd group at link 2 with the Taos values, effective.obd, state.json obd",
+    ),
+    (
+        "p5b-obd-crank",
+        120,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD: taos-2022-crank (start-stop auto-stop + one crank voltage dip) → the helper must not stop",
+    ),
+    (
+        "p5b-obd-badproto",
+        90,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD: taos-2022-badproto (ATDPN A3) → helper exit 4 → parked 600 s",
+    ),
+    (
+        "p5b-obd-config",
+        150,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD namespace: env seam (no settings.obd) → set → adapter change (helper restart) → enabled:false (link 0, disabled) → null (back to the env seam) → bad MAC dropped (adjusted)",
+    ),
+    (
+        "p5b-obd-cmds",
+        100,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD commands with the peripheral: obd_scan via the bluetoothctl shim (candidates in effective.obd.scan), obd_forget → bond removed, not_configured",
+    ),
+    (
+        "p5b-obd-cmds-noperiph",
+        40,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD commands without peripherals.obd: obd_scan and obd_forget → rejected (no OBD peripheral)",
+    ),
 ];
 
 /// The Phase 3 scenarios (all carry `media-hw`).

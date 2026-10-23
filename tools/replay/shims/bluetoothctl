@@ -1,0 +1,28 @@
+#!/bin/sh
+# Rig shim: bluetoothctl (Phase 5b WP4, OBD tapes only: the player installs it
+# only when the tape has `meta.rig.obd`). NEVER real BlueZ: the rig image has
+# no bluez, and this shim only prints what the tape's meta put in
+# $RIG_STATE/bt/ (scan.txt after `scan on`, devices.txt for `devices`,
+# remove.out + remove.code for `remove <MAC>`). Every invocation and stdin
+# line is logged to $RIG_BT_LOG; `pair` / `trust` / `connect` are logged
+# FORBIDDEN (the agent must never pair; phase file §6) and refused.
+BT="${RIG_STATE:-/nonexistent}/bt"
+log() { printf '%s %s\n' "$(date +%s%3N)" "$*" >> "${RIG_BT_LOG:-/dev/null}"; }
+if [ $# -gt 0 ]; then
+  log "argv $*"
+  case "$1" in
+    remove) cat "$BT/remove.out" 2>/dev/null; exit "$(cat "$BT/remove.code" 2>/dev/null || echo 0)" ;;
+    pair|trust|connect) log "FORBIDDEN argv $*"; echo "rig: $1 refused" >&2; exit 1 ;;
+    *) exit 0 ;;
+  esac
+fi
+while IFS= read -r line; do
+  log "stdin $line"
+  case "$line" in
+    "scan on") cat "$BT/scan.txt" 2>/dev/null ;;
+    devices) cat "$BT/devices.txt" 2>/dev/null ;;
+    quit|exit) exit 0 ;;
+    pair*|trust*|connect*) log "FORBIDDEN stdin $line" ;;
+  esac
+done
+exit 0

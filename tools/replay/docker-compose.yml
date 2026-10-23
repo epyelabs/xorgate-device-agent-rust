@@ -33,7 +33,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.rig
-    image: xorgate-replay-rig:node20-bookworm-gst
+    # Phase 5b: RIG_IMAGE lets a worktree whose Dockerfile.rig differs (the
+    # ELM327-emulator venv) keep its own tag instead of re-tagging the shared one.
+    image: ${RIG_IMAGE:-xorgate-replay-rig:node20-bookworm-gst}
     platform: linux/arm64
     labels:
       xorgate.agent: ${XORGATE_AGENT_LABEL:-rig}
@@ -66,6 +68,9 @@ services:
       # shim executes for E12.
       - ../../system:/rig/system:ro
       - ./.cache:/rig/cache
+      # Phase 5b: the Rust repo's vendored python/ (the OBD helper the Rust
+      # side runs; the JS side runs its own build's python/).
+      - ../../python:/rig/python:ro
       # Phase 5b: the shared JS builds (`js-<sha>/`, one per ref; js-build.sh).
       - ${RIG_JS_CACHE:-./.cache}:/rig/jscache:ro
       - ./.cache/certs:/rig/certs:ro

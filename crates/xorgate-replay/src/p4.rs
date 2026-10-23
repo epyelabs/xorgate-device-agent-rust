@@ -145,6 +145,8 @@ pub enum ModemMode {
 pub struct P4Plan {
     pub pi: Option<PiPlan>,
     pub modem: Option<ModemMode>,
+    /// Phase 5b: `meta.rig.obd` (`p5b.rs`).
+    pub obd: Option<crate::p5b::ObdPlan>,
 }
 
 impl P4Plan {
@@ -158,12 +160,19 @@ impl P4Plan {
             .and_then(|v| serde_json::from_value::<ModemSpec>(v.clone()).ok())
             .map(ModemMode::Fake)
             .or_else(|| transcript_of(tape).map(ModemMode::Transcript));
-        Self { pi, modem }
+        Self {
+            pi,
+            modem,
+            obd: crate::p5b::ObdPlan::of(tape),
+        }
     }
 
-    /// The shims only a Pi-namespaced run puts on PATH.
+    /// The shims only a Pi-namespaced run puts on PATH (and, Phase 5b, the
+    /// `bluetoothctl` shim only an OBD tape does: without it the tool is
+    /// ABSENT, as in the rig image).
     pub fn skip_shim(&self, name: &str) -> bool {
-        self.pi.is_none() && matches!(name, "pinctrl" | "gpioinfo" | "dtoverlay")
+        (self.pi.is_none() && matches!(name, "pinctrl" | "gpioinfo" | "dtoverlay"))
+            || (self.obd.is_none() && name == "bluetoothctl")
     }
 }
 

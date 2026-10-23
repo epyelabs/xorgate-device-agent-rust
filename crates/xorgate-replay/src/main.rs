@@ -16,6 +16,7 @@ mod inspect;
 mod media;
 mod media_diff;
 mod p4;
+mod p5b;
 mod play;
 mod record;
 mod rewrite;

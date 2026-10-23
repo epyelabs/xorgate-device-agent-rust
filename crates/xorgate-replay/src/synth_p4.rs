@@ -503,9 +503,125 @@ fn add_p5b(
             cfg(b, 400, &doc);
             cfg(b, 30_400, &doc);
         }
+        // OBD (H8, H12's rig half): the real helper on an emulator per side.
+        "p5b-obd-emulator" | "p5b-obd-crank" | "p5b-obd-badproto" => {
+            let sc = match scenario {
+                "p5b-obd-crank" => "taos-2022-crank",
+                "p5b-obd-badproto" => "taos-2022-badproto",
+                _ => "taos-2022",
+            };
+            obd_device(b, &mut m, true);
+            m.rig.insert("obd".into(), json!({"scenario": sc}));
+            seed_obd_settings(&mut m, &json!({"enabled": true, "adapterMac": OBD_MAC_A}));
+        }
+        // The `obd` namespace (H8): starts on the env seam (no settings.obd;
+        // ts:src/agent/collectors/obd.ts settings precedence), then the cloud
+        // sets it, changes the adapter, disables it, reverts it (null) and
+        // sends a malformed MAC. SERIAL overrides the adapter throughout.
+        "p5b-obd-config" => {
+            obd_device(b, &mut m, true);
+            m.rig.insert(
+                "obd".into(),
+                json!({"scenario": "taos-2022", "env": {"XORGATE_OBD_ADAPTER": OBD_MAC_ENV}}),
+            );
+            let base = obd_base_rec();
+            let doc = |rev: i64, obd: Value| {
+                let mut d = json!({"v": 1, "rev": rev, "recording": base});
+                d["obd"] = obd;
+                d
+            };
+            cfg(b, 400, &json!({"v": 1, "rev": 1, "recording": base}));
+            cfg(
+                b,
+                30_400,
+                &doc(2, json!({"enabled": true, "adapterMac": OBD_MAC_A})),
+            );
+            cfg(
+                b,
+                60_400,
+                &doc(3, json!({"enabled": true, "adapterMac": OBD_MAC_B})),
+            );
+            cfg(
+                b,
+                85_400,
+                &doc(4, json!({"enabled": false, "adapterMac": OBD_MAC_B})),
+            );
+            cfg(b, 105_400, &doc(5, Value::Null));
+            cfg(
+                b,
+                125_400,
+                &doc(6, json!({"enabled": true, "adapterMac": "zz:bad:mac"})),
+            );
+        }
+        // OBD commands (H8): a scan through the bluetoothctl shim (the real
+        // obd_scan.py → obd/scan.py transcript parser), then a forget.
+        "p5b-obd-cmds" | "p5b-obd-cmds-noperiph" => {
+            let periph = scenario == "p5b-obd-cmds";
+            obd_device(b, &mut m, periph);
+            let mut obd = json!({"bluetoothctl": {
+                "scan": [
+                    format!("[NEW] Device {OBD_MAC_A} OBDII"),
+                    format!("[CHG] Device {OBD_MAC_A} RSSI: -58"),
+                    "[NEW] Device 66:55:44:33:22:11 66-55-44-33-22-11",
+                    "[NEW] Device 00:1D:A5:00:00:09 V-LINK",
+                    "[CHG] Device 00:1D:A5:00:00:09 RSSI: -71",
+                ],
+                "devices": [
+                    format!("Device {OBD_MAC_A} OBDII"),
+                    "Device 00:1D:A5:00:00:09 V-LINK",
+                    "Device 00:1D:A5:00:00:77 OLD-BONDED",
+                ],
+            }});
+            if periph {
+                obd["scenario"] = json!("taos-2022");
+                seed_obd_settings(&mut m, &json!({"enabled": true, "adapterMac": OBD_MAC_A}));
+            }
+            m.rig.insert("obd".into(), obd);
+            cfg(
+                b,
+                400,
+                &json!({"v": 1, "rev": 1, "recording": obd_base_rec()}),
+            );
+            cmd(b, 10_200, "synth-p5b-obd-scan-1", "obd_scan", None)?;
+            let forget_at = if periph { 60_200 } else { 20_200 };
+            cmd(b, forget_at, "synth-p5b-obd-forget-1", "obd_forget", None)?;
+        }
         _ => {}
     }
     Ok(m)
+}
+
+const OBD_MAC_A: &str = "00:1D:A5:68:98:8B";
+const OBD_MAC_B: &str = "00:1D:A5:00:00:02";
+const OBD_MAC_ENV: &str = "00:1D:A5:00:00:01";
+
+/// An OBD tape's device: the media hardware block (cameras listed, NO kvs
+/// channels, video off) + `peripherals.obd` when `periph`.
+fn obd_device(b: &mut Builder, m: &mut P4Meta, periph: bool) {
+    let mut hw = media_hardware_block();
+    if periph {
+        hw["peripherals"] = json!({"obd": {"adapter": "elm327", "transport": "bt-spp"}});
+    }
+    m.hardware = Some(hw);
+    m.no_channels = true;
+    camera_inputs(b);
+}
+
+fn obd_base_rec() -> Value {
+    json!({
+        "telemetry": {"enabled": false, "rateHz": 1},
+        "video": {"enabled": false},
+        "upload": {"mode": "off"},
+    })
+}
+
+/// Seed settings.json's `obd` (the namespace the collector reads).
+fn seed_obd_settings(m: &mut P4Meta, obd: &Value) {
+    let home = m.home.get_or_insert_with(Map::new);
+    home.insert(
+        "settings.json".into(),
+        json!(json!({"obd": obd, "recording": obd_base_rec()}).to_string()),
+    );
 }
 
 /// `p5b-clock-*`: the telemetry recorder on (video off), so the hold shows on

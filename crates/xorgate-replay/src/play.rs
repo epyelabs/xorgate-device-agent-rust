@@ -62,7 +62,7 @@ use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 use crate::diff::PlayInfo;
 use crate::media::{self, MediaPlan, ObsAgent};
 use crate::watch::{self, WatchGate};
-use crate::{aws, p4, rewrite};
+use crate::{aws, p4, p5b, rewrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AgentKind {
@@ -106,6 +106,10 @@ pub struct PlayArgs {
     pub js_dir_b: Option<PathBuf>,
     #[arg(long, default_value = "/rig/cache/bin/xorgate-rs")]
     pub rs_bin: PathBuf,
+    /// Phase 5b: the Rust repo's vendored `python/` (the OBD helper a Rust
+    /// side runs; falls back to the JS build's while it lacks `obd_read.py`).
+    #[arg(long, default_value = "/rig/python")]
+    pub rs_python: PathBuf,
     #[arg(long, default_value = "node")]
     pub node: String,
     /// The real broker (capture client + proxy upstream).
@@ -687,6 +691,8 @@ struct Agent {
     p4: p4::AgentP4,
     /// Phase 5b: this side's JS build (`PlayArgs::js_dir_for`).
     js_dir: PathBuf,
+    /// Phase 5b: this side's ELM327 emulator (OBD tapes), stopped on drop.
+    _obd_emu: Option<p5b::Emu>,
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -955,6 +961,27 @@ impl Agent {
             env.retain(|(ek, _)| *ek != k);
             env.push((k, v));
         }
+        // Phase 5b (p5b.rs): the OBD helper + emulator + bluetoothctl answers.
+        let mut obd_emu = None;
+        if let Some(obd) = &p4plan.obd {
+            let js_py = args.js_dir_for(label).join("python");
+            let src = match kind {
+                AgentKind::Js => js_py,
+                AgentKind::Rust => p5b::helper_source(&args.rs_python, &args.js_dir.join("python")),
+            };
+            let tools = args
+                .shims
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            let (emu, obd_env) =
+                p5b::prepare_agent(obd, &work, &dir, &state, &args.fake_python, &src, &tools)?;
+            obd_emu = emu;
+            for (k, v) in obd_env {
+                env.retain(|(ek, _)| *ek != k);
+                env.push((k, v));
+            }
+        }
         fs::write(
             dir.join("meta.json"),
             serde_json::to_vec_pretty(&json!({
@@ -983,6 +1010,7 @@ impl Agent {
             pty_open_cache: None,
             p4: p4_state,
             js_dir: args.js_dir_for(label).to_path_buf(),
+            _obd_emu: obd_emu,
         })
     }
 
