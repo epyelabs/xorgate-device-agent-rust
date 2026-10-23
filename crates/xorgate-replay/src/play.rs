@@ -1586,6 +1586,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         _ => None,
     }) == Some(true);
     let plan = MediaPlan::of(&tape);
+    // Phase 5b WP4: the tape's external child exits, per side and per attempt
+    // (media.rs `exit_plan`); only an exit no recorded spawn explains is still
+    // re-enacted at tape time.
+    let (exit_plan, unattributed_exits) = media::exit_plan(&tape);
+    let unattributed_exits: BTreeSet<u64> = unattributed_exits.into_iter().collect();
     let p4plan = p4::P4Plan::of(&tape);
     if p4plan.pi.is_some() {
         // The bind-mount target of each agent's namespace (pi-ns.sh).
@@ -1856,6 +1861,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // time) — the only record of the hold gate's effect on line inputs.
     let mut releases = std::io::BufWriter::new(File::create(args.out.join("releases.ndjson"))?);
     let cutoff = args.max_s.map(|s| s * 1000).unwrap_or(u64::MAX);
+    let mut exit_runners: Vec<media::ExitRunner> = (0..agents.len())
+        .map(|_| media::ExitRunner::default())
+        .collect();
     // Phase 5b: the OBD helpers' stdout follows the hold gate (obd-gate.py).
     let has_obd = !args.no_gate && p5b::ObdPlan::of(&tape).is_some();
     let mut obd_gate = ObdGate::new(obd_gate_path(&args.work));
@@ -1966,6 +1974,13 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // it forms a pair hold only when asked near a lead tick, so on a
             // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
+            if !exit_plan.is_empty() {
+                for (a, runner) in agents.iter().zip(exit_runners.iter_mut()) {
+                    for rec in runner.poll(&a.obs(), &plan, &exit_plan, now) {
+                        plog(format!("external child exit (per attempt): {rec}"));
+                    }
+                }
+            }
             let open_now = tel_open(now);
             if has_obd {
                 // Closed inside a tick pair AND while a config-report pair is
@@ -2292,9 +2307,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // (crash, EOF): re-enacted on both agents at tape time (media.rs).
             TapeEvent::ChildExit(x) if x.external => {
                 transitions.push(now);
-                for a in &agents {
-                    let rec = media::external_exit(&a.obs(), &plan, x);
-                    plog(format!("external child exit at t={}: {}", r.t, rec));
+                if unattributed_exits.contains(&r.t) {
+                    for a in &agents {
+                        let rec = media::external_exit(&a.obs(), &plan, x);
+                        plog(format!("external child exit at t={}: {}", r.t, rec));
+                    }
                 }
             }
             // Phase 3 output kinds: compared by the diff, not replayed.

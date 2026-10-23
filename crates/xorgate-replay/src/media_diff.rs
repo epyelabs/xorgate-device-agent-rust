@@ -459,7 +459,9 @@ impl MediaCapture {
             .collect();
         let external_cap: BTreeSet<u32> = procs
             .iter()
-            .filter(|v| v["k"] == "external" && v["role"] == "capture")
+            // `ok: false` = a planned per-attempt exit found its pid already
+            // gone (media.rs `deliver_exit`): that child ended on its own.
+            .filter(|v| v["k"] == "external" && v["role"] == "capture" && v["ok"] != false)
             .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
             .collect();
         for s in spawns.iter_mut() {
