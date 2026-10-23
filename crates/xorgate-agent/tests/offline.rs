@@ -90,8 +90,13 @@ fn offline_prints_one_payload_per_tick_and_stops_cleanly() {
         assert_eq!(p["v"], 1);
         assert_eq!(p["deviceId"], "sim-local");
         assert_eq!(p["seq"], i);
-        // `sim` mode (TS default): collectors off (O7) → empty metrics, idle media.
-        assert_eq!(p["metrics"], serde_json::json!({}));
+        // `sim` mode (TS default): collectors off (O7) → only the LED leaves
+        // (`LED_TELEMETRY_SIM`, always healthy; `worker.ts:367-379` @
+        // 09da38d, Phase 5b X1), idle media.
+        assert_eq!(
+            p["metrics"],
+            serde_json::json!({"system": {"led_state": {"value": 0}, "health_flags": {"value": 0}}})
+        );
         assert_eq!(
             p["media"],
             serde_json::json!({"kvs":{"value":false},"recording":{"value":false},"streams":[]})

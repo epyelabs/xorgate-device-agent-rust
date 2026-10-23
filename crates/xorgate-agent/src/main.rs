@@ -4,6 +4,8 @@
 //! Phase 2 verbs: `run [flags]` (the worker), `status`, `logs`, `set` and
 //! `-v`/`--version` (build identity).
 
+#![deny(unsafe_code)]
+
 fn main() {
     // `process.argv.slice(2)`; non-UTF-8 arguments are decoded lossily.
     let argv: Vec<String> = std::env::args_os()

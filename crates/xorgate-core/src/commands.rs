@@ -54,7 +54,7 @@ pub enum DeviceCommandName {
     /// port and publish on `…/sms`; in-process.
     ReadSms,
     /// DESTRUCTIVE sibling of `read_sms` (`commands.ts:63-69` @ 09da38d):
-    /// `AT+CMGD=0,4` on SM then ME, sweep, reply on `…/sms` with
+    /// delete-all (`xorgate_hal::at_clear`) on SM then ME, sweep, reply on `…/sms` with
     /// `action:"clear"`; in-process, never via sudo.
     ClearSms,
     /// OBD collector one-shot (`commands.ts:71-79` @ 09da38d): a 25 s

@@ -27,6 +27,9 @@ struct Req {
     #[serde(rename = "requestId")]
     request_id: String,
     limit: u32,
+    /// `action?` (09da38d; default `"read"`).
+    #[serde(default)]
+    action: SmsAction,
 }
 
 impl Req {
@@ -35,6 +38,7 @@ impl Req {
             device_id: self.device_id,
             request_id: self.request_id,
             limit: self.limit,
+            action: self.action,
         }
     }
 }
@@ -50,6 +54,8 @@ fn sms_modem_test_ts_pure_subset() {
     assert_eq!(f.extra["SMS_LIMIT_DEFAULT"], SMS_LIMIT_DEFAULT);
     assert_eq!(f.extra["SMS_LIMIT_MAX"], SMS_LIMIT_MAX);
     assert_eq!(f.extra["SMS_TEXT_MAX"], xorgate_core::sms_pdu::SMS_TEXT_MAX);
+    assert_eq!(f.extra["SMS_DELETE_TIMEOUT_MS"], SMS_DELETE_TIMEOUT_MS);
+    assert_eq!(f.js_commit, common::JS_COMMIT_P5B);
     let mut ops = std::collections::BTreeMap::<String, usize>::new();
     for c in &f.cases {
         *ops.entry(c.op.clone()).or_default() += 1;
@@ -110,14 +116,34 @@ fn sms_modem_test_ts_pure_subset() {
                     "uncappedBytes": json(&uncapped).len(),
                 }))
             }
+            // 09da38d: the sim fixture inbox, the TS module flag carried
+            // across the steps (`fixtureInboxCleared`; here the caller's bool).
+            "fixtureSmsRead" => {
+                let now = c.input["now"].as_i64().unwrap();
+                let mut cleared = false;
+                let mut out = Vec::new();
+                for step in c.input["steps"].as_array().unwrap() {
+                    let step = step.as_str().unwrap();
+                    out.push(match step {
+                        "read" => serde_json::json!({"step": step, "sweep": fixture_sms_read(now, cleared)}),
+                        "clear" => serde_json::json!({"step": step, "sweep": fixture_sms_clear(now, &mut cleared)}),
+                        _ => {
+                            cleared = false;
+                            serde_json::json!({"step": step})
+                        }
+                    });
+                }
+                json(&out)
+            }
             other => panic!("unknown op {other}"),
         };
         assert_eq!(got, c.expected_json, "{}", c.name);
     }
-    assert_eq!(f.cases.len(), 34);
+    assert_eq!(f.cases.len(), 44);
+    assert_eq!(ops["fixtureSmsRead"], 2);
     assert_eq!(ops["parseCpmsQuery"], 7);
     assert_eq!(ops["clampSmsLimit"], 17);
-    assert_eq!(ops["buildSmsPayload"], 6);
+    assert_eq!(ops["buildSmsPayload"], 14);
     assert_eq!(ops["buildSmsPayloadCap"], 1);
     assert_eq!(ops["fixtureSmsSweep"], 3);
 }

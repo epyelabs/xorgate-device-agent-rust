@@ -32,6 +32,12 @@
 #   WP5 wp5-cli/ (dump-cli-pipeline, dump-iface-for-ip, dump-monitor-frames,
 #       e2e-cli-wp5.sh + run-side.sh + cases.txt)
 #   WP6 dump-sms-modem.mts → fixtures/replay/p4-sms-modem.json (the p4-sms tape's FakeModem)
+# Phase 5b WP3 drivers (JS_SHA=09da38d, JS_COMMIT=<full sha> for the stamp):
+#   dump-sms-p5b.mts <old fixture> → fixtures/sms/sms-modem.json; dump-sms-clear.mts →
+#   fixtures/sms_reader/sms-clear-io.json; dump-led-telemetry.mts → fixtures/led_telemetry/;
+#   dump-sms-cli.mts and dump-command-flow.mts now run at either ref; sms-pty-clear.mts
+#   (driven by crates/xorgate-agent/tests/sms_clear_pty.rs); zz-wp1-dump-led-traces.test.ts
+#   gains the 09da38d led-manager its (vitest, as above).
 # A driver taking a data file (WP1's scenarios) gets it by its /js-relative path:
 #   cp wp1-scenarios.json into the scratch copy first, or pass `.rig-drivers/<name>` after
 #   copying it there (run-tsx.sh copies only the driver itself).

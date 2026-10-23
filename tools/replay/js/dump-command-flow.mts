@@ -9,6 +9,14 @@
 // clampSmsLimit, buildSmsPayload, fixtureSmsSweep, containerExitCode) are the
 // real modules @ 89b5c64. Run from a `git archive 89b5c64` scratch copy:
 //   npx tsx <this file> > fixtures/command_flow/handle-command.json
+//
+// Phase 5b WP3 (@ 09da38d, WP1 hand-off): the slice is located by its two
+// marker lines at either ref (902-1126 @ 89b5c64, 1005-1293 @ 09da38d); the
+// stubs gain `SmsReader.clear`, the real `fixtureSmsRead` / `fixtureSmsClear`
+// (module flag reset per scenario) and an OBD-less `source`; `jsCommit` comes
+// from JS_COMMIT (no git in the container); new scenarios: clear_sms real /
+// sim / ledger duplicate, read after a sim clear, obd_* without a peripheral.
+//   JS_COMMIT=<full sha> run-tsx … dump-command-flow.mts > fixtures/command_flow/handle-command.json
 import { readFileSync, mkdtempSync, writeFileSync as realWrite, rmSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,13 +25,22 @@ import { transformSync } from "esbuild";
 import {
   parseCommand, isExpired, claimCommand, executeCommand, containerExitCode,
 } from "../src/agent/commands.ts";
-import { clampSmsLimit, buildSmsPayload, fixtureSmsSweep } from "../src/hardware/sms-modem.ts";
+import * as smsModem from "../src/hardware/sms-modem.ts";
+const { clampSmsLimit, buildSmsPayload, fixtureSmsSweep } = smsModem;
+// 09da38d only (undefined at 89b5c64, where the slice never references them).
+const fixtureSmsRead = (smsModem as Record<string, unknown>).fixtureSmsRead;
+const fixtureSmsClear = (smsModem as Record<string, unknown>).fixtureSmsClear;
+const resetFixtureSmsInbox = (smsModem as Record<string, unknown>).resetFixtureSmsInbox as (() => void) | undefined;
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const src = readFileSync(join(ROOT, "src/worker.ts"), "utf8").split("\n");
 const startIdx = src.findIndex((l) => l.startsWith("/** How long to wait for the ack's PUBACK"));
 const endIdx = src.findIndex((l) => l.startsWith("// Registered once; the subscriptions"));
-if (startIdx !== 901 || endIdx !== 1127) throw new Error(`unexpected slice ${startIdx + 1}-${endIdx}`);
+const SLICES: Record<string, [number, number]> = { "89b5c64": [901, 1127], "09da38d": [1004, 1293] };
+if (!Object.values(SLICES).some(([a, b]) => a === startIdx && b === endIdx)) {
+  throw new Error(`unexpected slice ${startIdx + 1}-${endIdx}`);
+}
+const JS_LINES = `${startIdx + 1}-${endIdx - 1}`;
 const sliceTs = src.slice(startIdx, endIdx).join("\n");
 const sliceJs = transformSync(sliceTs, { loader: "ts", format: "esm" }).code;
 
@@ -49,6 +66,7 @@ const o4Sweep = (now: number) => ({
 });
 
 async function runScenario(sc: Scenario) {
+  resetFixtureSmsInbox?.(); // the module flag is per process in the TS: one per scenario here
   const home = mkdtempSync(join(tmpdir(), "wp4-cf-"));
   process.env.XORGATE_HOME = home;
   const ledgerPath = join(home, "commands.json");
@@ -99,7 +117,13 @@ async function runScenario(sc: Scenario) {
     shutdown: (reason: string, code: number) => trace.push(`shutdown ${reason} ${code}`),
     writeFileSync: (p: string, c: string) => trace.push(`flag ${basename(p)} ${c}`),
     join, runtimeHome: () => home,
-    SmsReader: class { read() { return Promise.resolve(o4Sweep(clock)); } },
+    SmsReader: class {
+      read() { return Promise.resolve(o4Sweep(clock)); }
+      // The O4 shape of a clear: `finish` adds `cleared: {}` for op clear.
+      clear() { return Promise.resolve({ ...o4Sweep(clock), cleared: {} }); }
+    },
+    // No `peripherals.obd`: every `source.obd*?.()` is undefined.
+    source: {},
     parseCommand, isExpired,
     claimCommand: (id: string, now: number) => {
       if (step.ledgerError !== undefined) throw new Error(step.ledgerError);
@@ -115,7 +139,7 @@ async function runScenario(sc: Scenario) {
         if (!step.exec) throw new Error("step reached exec without an exec result");
         return step.exec;
       }),
-    containerExitCode, clampSmsLimit, buildSmsPayload, fixtureSmsSweep,
+    containerExitCode, clampSmsLimit, buildSmsPayload, fixtureSmsSweep, fixtureSmsRead, fixtureSmsClear,
   };
   const names = Object.keys(stubs);
   const factory = new Function(...names, `${sliceJs}\nreturn { handleCommandMessage };`);
@@ -254,17 +278,45 @@ const scenarios: Scenario[] = [
     { at: T0 + 4000, payload: cmd({ requestId: "req-4", command: "power_off" }) },
     { at: T0 + 5000, payload: cmd({ requestId: "req-5" }) },
   ] },
+  // ---- Phase 5b WP3 (@ 09da38d) ----
+  { name: "clear_sms real mode (O4 sweep, cleared {})", mode: "real", steps: [
+    { at: T0 + 1000, payload: cmd({ command: "clear_sms", args: { limit: 5 } }) },
+  ] },
+  { name: "clear_sms sim mode empties the fixture inbox; a later read is empty; a 2nd clear clears 0", mode: "sim", steps: [
+    { at: T0 + 1000, payload: cmd({ command: "read_sms", args: { limit: 1 } }) },
+    { at: T0 + 2000, payload: cmd({ requestId: "req-2", command: "clear_sms" }) },
+    { at: T0 + 3000, payload: cmd({ requestId: "req-3", command: "read_sms" }) },
+    { at: T0 + 4000, payload: cmd({ requestId: "req-4", command: "clear_sms", args: { limit: 99 } }) },
+  ] },
+  { name: "clear_sms redelivered (same requestId): ledger duplicate, never a second clear", mode: "sim", steps: [
+    { at: T0 + 1000, payload: cmd({ command: "clear_sms" }) },
+    { at: T0 + 1500, payload: cmd({ command: "clear_sms" }) },
+    { at: T0 + 2000, payload: cmd({ requestId: "req-2", command: "read_sms" }) },
+  ] },
+  { name: "clear_sms expired: rejected, not claimed, nothing cleared", mode: "sim", steps: [
+    { at: T0 + 60_001, payload: cmd({ command: "clear_sms" }) },
+    { at: T0 + 60_002, payload: cmd({ requestId: "req-2", command: "read_sms", ts: T0 + 60_000, expiresAt: T0 + 120_000 }) },
+  ] },
+  { name: "clear_sms replay mode answers from the fixture", mode: "replay", steps: [
+    { at: T0 + 1000, payload: cmd({ command: "clear_sms" }) },
+  ] },
+  { name: "obd_scan / obd_forget without the OBD peripheral: rejected", mode: "real", steps: [
+    { at: T0 + 1000, payload: cmd({ command: "obd_scan" }) },
+    { at: T0 + 2000, payload: cmd({ requestId: "req-2", command: "obd_forget" }) },
+  ] },
 ];
 
+// The 09da38d-only scenarios cannot run at 89b5c64 (unknown commands there).
+if (!fixtureSmsRead) scenarios.splice(scenarios.findIndex((x) => x.name.startsWith("clear_sms real")));
 const cases = [];
 for (const sc of scenarios) cases.push(await runScenario(sc));
-const jsCommit = execSync("git -C /Users/vynci/vynci/xorgate/device/xorgate-device-agent rev-parse 89b5c64").toString().trim();
+const jsCommit = process.env.JS_COMMIT ?? execSync("git -C /Users/vynci/vynci/xorgate/device/xorgate-device-agent rev-parse 89b5c64").toString().trim();
 console.log(JSON.stringify({
   jsSourceFile: "src/worker.ts",
-  jsLines: "902-1126",
+  jsLines: JS_LINES,
   jsCommit,
   generatedBy:
-    "phase-2/evidence/wp4-tools/dump-command-flow.mts (npx tsx in a git-archive 89b5c64 scratch copy): the REAL worker.ts:902-1126 text, types stripped by esbuild, evaluated over recording stubs; commands.ts/sms-modem.ts helpers are the real modules",
+    `tools/replay/js/dump-command-flow.mts (phase-2 WP4; phase-5b WP3 @ 09da38d) in the shared git-archive scratch copy: the REAL worker.ts:${JS_LINES} text, types stripped by esbuild, evaluated over recording stubs; commands.ts/sms-modem.ts helpers are the real modules`,
   deviceId: DEVICE,
   cases,
 }, null, 2));

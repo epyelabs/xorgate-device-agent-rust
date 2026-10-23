@@ -29,6 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use xorgate_core::config_report::{ReportHints, ReportOrigin};
+use xorgate_core::led_state::LedTelemetry;
+use xorgate_core::led_telemetry::{LED_TELEMETRY_SIM, LED_TELEMETRY_STARTING};
 use xorgate_core::telemetry::{RecordingStatus, TelemetryMedia};
 use xorgate_core::types::CameraMountState;
 
@@ -46,6 +48,11 @@ pub trait LedControl: Send + Sync + 'static {
     fn config_applied(&self);
     /// `led.stop()` (best-effort blank at shutdown).
     fn stop(&self);
+    /// `led.telemetry()` (Phase 5b I6): the last resolved state's leaves,
+    /// `None` before the first tick.
+    fn telemetry(&self) -> Option<LedTelemetry> {
+        None
+    }
 }
 
 /// The worker's view of the offline clock stepper (WP3 `ClockStepper`, I6).
@@ -73,6 +80,9 @@ pub struct OpsHooks {
     led: OnceLock<Arc<dyn LedControl>>,
     /// `let ledStarting = true;` (`:567`): cleared after the first heartbeat tick.
     led_starting: Arc<AtomicBool>,
+    /// `config.mode !== "real"` for `ledTelemetryNow()` (sim → always
+    /// healthy). Real until [`OpsHooks::set_led_sim`].
+    led_sim: AtomicBool,
     /// `clockStepper` (`:536`): bound in real mode only (else `null`).
     stepper: OnceLock<Arc<dyn StepperControl>>,
     /// The reconciler; unbound off real mode (`reconcileCameraMountNow`'s
@@ -96,6 +106,7 @@ impl OpsHooks {
             rec,
             led: OnceLock::new(),
             led_starting: Arc::new(AtomicBool::new(true)),
+            led_sim: AtomicBool::new(false),
             stepper: OnceLock::new(),
             camera: OnceLock::new(),
             reports: Arc::new(OnceLock::new()),
@@ -112,6 +123,11 @@ impl OpsHooks {
     /// The bound clock trust gate, if any (recorder gate, stepper hook).
     pub fn clock_trust(&self) -> Option<&ClockTrust> {
         self.clock_trust.get()
+    }
+
+    /// `sim` mode: `ledTelemetryNow()` answers `LED_TELEMETRY_SIM`.
+    pub fn set_led_sim(&self, sim: bool) {
+        self.led_sim.store(sim, Ordering::SeqCst);
     }
 
     /// The camera-mount reconciler (real mode only), before the boot pass.
@@ -254,6 +270,21 @@ impl PhaseHooks for OpsHooks {
         self.led_starting.store(false, Ordering::SeqCst);
     }
 
+    /// `ledTelemetryNow()` (`worker.ts:367-379` @ 09da38d): real →
+    /// `ledTelemetrySource?.() ?? LED_TELEMETRY_STARTING` (the source is
+    /// late-bound, like the TS), sim → `LED_TELEMETRY_SIM`.
+    fn led_telemetry(&self) -> Option<LedTelemetry> {
+        if self.led_sim.load(Ordering::SeqCst) {
+            return Some(LED_TELEMETRY_SIM);
+        }
+        Some(
+            self.led
+                .get()
+                .and_then(|l| l.telemetry())
+                .unwrap_or(LED_TELEMETRY_STARTING),
+        )
+    }
+
     fn led_config_applied(&self) {
         if let Some(led) = self.led.get() {
             led.config_applied();
@@ -281,6 +312,9 @@ impl LedControl for crate::ops::led::LedManager {
     }
     fn stop(&self) {
         crate::ops::led::LedManager::stop(self)
+    }
+    fn telemetry(&self) -> Option<LedTelemetry> {
+        crate::ops::led::LedManager::telemetry(self)
     }
 }
 

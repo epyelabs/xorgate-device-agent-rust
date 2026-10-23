@@ -7,9 +7,10 @@
 //! stores + a stored SUBMIT + a two-part UCS2 concat; text mode on entry).
 //!
 //! Expected bytes: `fixtures/sms_reader/pty-e2e.json` = what the REAL TS
-//! `SmsReader` @ 89b5c64 printed (`tools/replay/js/sms-pty-read.mts`, fixed
-//! clock) against this same fake modem on a pty, plus the AT command log the
-//! modem received. Regenerate (needs node + the 89b5c64 scratch build, e.g.
+//! `SmsReader` printed (`tools/replay/js/sms-pty-read.mts`, fixed clock;
+//! re-dumped @ 09da38d in Phase 5b WP3 — the reply gains `action:"read"`)
+//! against this same fake modem on a pty, plus the AT command log the modem
+//! received and (since Phase 5b) EVERY raw byte written to it (`rawHex`). Regenerate (needs node + the 89b5c64 scratch build, e.g.
 //! inside `xorgate-replay-rig:node20-bookworm`):
 //!
 //! ```text
@@ -59,20 +60,23 @@ fn pty_spec() -> FakeSpec {
 
 /// A FakeModem on the master side of a fresh pty; returns the slave path,
 /// the slave fd (kept open so the pair lives) and the modem.
-fn pty_modem(spec: FakeSpec) -> (PathBuf, OwnedFd, Arc<Mutex<FakeModem>>) {
+type Raw = Arc<Mutex<Vec<u8>>>;
+
+fn pty_modem(spec: FakeSpec) -> (PathBuf, OwnedFd, Arc<Mutex<FakeModem>>, Raw) {
     let pty = nix::pty::openpty(None, None).expect("openpty");
     let slave_path = std::fs::read_link(format!("/proc/self/fd/{}", pty.slave.as_raw_fd()))
         .expect("pty slave name");
     let modem = Arc::new(Mutex::new(FakeModem::new(spec)));
-    let m = modem.clone();
+    let raw: Raw = Default::default();
+    let (m, r) = (modem.clone(), raw.clone());
     let master = File::from(pty.master);
-    std::thread::spawn(move || serve(master, &m));
-    (slave_path, pty.slave, modem)
+    std::thread::spawn(move || serve(master, &m, &r));
+    (slave_path, pty.slave, modem, raw)
 }
 
 /// Commands end in `\r` (`cmd\r`); each gets the TS FakeModem's reply lines,
 /// `\r\n`-terminated, in one write. Ends when the pty is gone (EIO).
-fn serve(master: File, modem: &Mutex<FakeModem>) {
+fn serve(master: File, modem: &Mutex<FakeModem>, raw: &Mutex<Vec<u8>>) {
     let mut r = &master;
     let mut w = &master;
     let mut pending = Vec::new();
@@ -82,6 +86,7 @@ fn serve(master: File, modem: &Mutex<FakeModem>) {
             Ok(0) | Err(_) => return,
             Ok(n) => n,
         };
+        raw.lock().unwrap().extend_from_slice(&buf[..n]);
         pending.extend_from_slice(&buf[..n]);
         while let Some(i) = pending.iter().position(|&b| b == b'\r') {
             let cmd: Vec<u8> = pending.drain(..=i).collect();
@@ -125,6 +130,7 @@ async fn rust_read(port: &str) -> String {
             device_id: "local".into(),
             request_id: "cli".into(),
             limit: LIMIT,
+            action: xorgate_core::sms::SmsAction::Read,
         },
     ))
 }
@@ -135,7 +141,7 @@ async fn pty_end_to_end_matches_the_ts_reader() {
 
     // Optional: regenerate the expectation from the REAL TS on its own pty.
     if let Ok(js) = std::env::var("XORGATE_SMS_PTY_JS") {
-        let (slave, _keep, modem) = pty_modem(spec.clone());
+        let (slave, _keep, modem, raw) = pty_modem(spec.clone());
         let out = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&js)
@@ -152,12 +158,14 @@ async fn pty_end_to_end_matches_the_ts_reader() {
         let log = modem.lock().unwrap().log.clone();
         let rec = serde_json::json!({
             "jsSourceFile": "src/hardware/sms-modem.ts SmsReader + openSerialTransport (real stty + O_RDWR|O_NOCTTY on a pty slave)",
-            "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+            "jsCommit": std::env::var("XORGATE_SMS_PTY_JS_COMMIT")
+                .unwrap_or_else(|_| "09da38dcc8b75c248625a3a0bee43b70e7def55d".into()),
             "generatedBy": "crates/xorgate-hal/tests/at_port_pty.rs with XORGATE_SMS_PTY_JS running tools/replay/js/sms-pty-read.mts (phase-4 WP2)",
             "limit": LIMIT,
             "fixedNow": FIXED_NOW,
             "stdout": stdout,
             "log": log,
+            "rawHex": hex::encode(&*raw.lock().unwrap()),
         });
         if let Ok(path) = std::env::var("XORGATE_SMS_PTY_OUT") {
             std::fs::write(&path, serde_json::to_string_pretty(&rec).unwrap() + "\n").unwrap();
@@ -169,7 +177,7 @@ async fn pty_end_to_end_matches_the_ts_reader() {
     )
     .unwrap();
 
-    let (slave, _keep, modem) = pty_modem(spec);
+    let (slave, _keep, modem, raw) = pty_modem(spec);
     let json = rust_read(&slave.to_string_lossy()).await;
     // `console.log(text)` adds the newline.
     assert_eq!(
@@ -180,6 +188,12 @@ async fn pty_end_to_end_matches_the_ts_reader() {
     let log = modem.lock().unwrap().log.clone();
     let want_log: Vec<String> = serde_json::from_value(want["log"].clone()).unwrap();
     assert_eq!(log, want_log, "AT command sequence");
+    // The full transcript, byte for byte (`\r` terminators included).
+    assert_eq!(
+        hex::encode(&*raw.lock().unwrap()),
+        want["rawHex"].as_str().expect("rawHex"),
+        "AT transcript bytes"
+    );
     // Text mode on entry: PDU mode for the reads, text mode restored last;
     // mem1 restored before it.
     assert_eq!(log.last().map(String::as_str), Some("AT+CMGF=1"));

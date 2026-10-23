@@ -1,5 +1,8 @@
 //! `LedManager` against the REAL TS manager (`src/agent/led-manager.ts`
-//! @ 89b5c64): `fixtures/led_manager/led-manager.json` holds the 12 it()s of
+//! @ 09da38d since Phase 5b WP3 — the 89b5c64 it "never calls the signal
+//! function when inert" was replaced by the five telemetry its
+//! `led-manager.test.ts:254-321`; the other 11 traces re-dumped byte-identical):
+//! `fixtures/led_manager/led-manager.json` holds the 16 it()s of
 //! `test/led-manager.test.ts` re-run step by step under vitest fake timers
 //! (each `settle(N)` = advance N virtual ms) with a real `LedDriver` over a
 //! recording writer — every writer call `{t, pins, high}` and every manager
@@ -240,6 +243,26 @@ fn dead_zone_reader(reads: Arc<AtomicUsize>) -> ReadLteFn {
     })
 }
 
+/// `led.telemetry()` as the dump records it (`null` before the first tick).
+fn tel(led: &LedManager) -> Value {
+    serde_json::to_value(led.telemetry()).unwrap()
+}
+
+/// `led.snapshot()?.state.reason ?? null`.
+fn reason(led: &LedManager) -> Value {
+    led.snapshot()
+        .map(|s| Value::from(s.state.reason))
+        .unwrap_or(Value::Null)
+}
+
+/// `h.counts()`: signal calls + LTE reads so far.
+fn counts(h: &Harness) -> Value {
+    serde_json::json!({
+        "signalCalls": h.signal_calls.load(Ordering::SeqCst),
+        "lteReads": h.lte_reads.load(Ordering::SeqCst),
+    })
+}
+
 async fn run_case(name: &str) -> Trace {
     let t0 = Instant::now();
     let mut extra = serde_json::Map::new();
@@ -422,17 +445,99 @@ async fn run_case(name: &str) -> Trace {
             settle(30).await;
             h
         }
-        "never calls the signal function when inert" => {
-            let h = harness(t0, Arc::new(healthy), false, None);
+        // ---- 09da38d (Phase 5b WP3): resolve on every host ----
+        "still resolves the state when inert, for telemetry — but never touches a pin" => {
+            let unfixed = Sig {
+                gnss: Some(GnssView {
+                    fix: false,
+                    sky: SkyState::Clear,
+                }),
+                ..healthy()
+            };
+            let (c, src) = cell(unfixed);
+            let h = harness(t0, src, false, None);
+            h.led.start().await;
+            extra.insert("before".into(), tel(&h.led));
+            h.led.tick();
+            settle(20).await;
+            extra.insert("reason1".into(), reason(&h.led));
+            extra.insert("t1".into(), tel(&h.led));
+            *c.lock().unwrap() = closed();
+            h.led.tick();
+            settle(20).await;
+            extra.insert("t2".into(), tel(&h.led));
+            extra.insert("counts".into(), counts(&h));
+            h
+        }
+        "telemetry carries the LTE status the manager read for itself" => {
+            let h = harness(
+                t0,
+                Arc::new(healthy),
+                false,
+                Some(Box::new(|| {
+                    Box::pin(async {
+                        Ok(Some(LteStatusView {
+                            status: Some("disconnected".into()),
+                        }))
+                    })
+                })),
+            );
             h.led.start().await;
             h.led.tick();
-            let mut counts = serde_json::Map::new();
-            counts.insert(
-                "signalCalls".into(),
-                h.signal_calls.load(Ordering::SeqCst).into(),
+            settle(30).await;
+            h.led.tick();
+            extra.insert("t".into(), tel(&h.led));
+            h
+        }
+        "the config-applied overlay never shows in telemetry; the state underneath does" => {
+            let (c, src) = cell(healthy());
+            let h = harness(t0, src, true, None);
+            h.led.start().await;
+            settle(20).await;
+            h.led.tick();
+            extra.insert("t0".into(), tel(&h.led));
+            h.led.config_applied();
+            *c.lock().unwrap() = closed();
+            h.led.tick();
+            extra.insert("reason1".into(), reason(&h.led));
+            extra.insert("t1".into(), tel(&h.led));
+            settle(700).await;
+            h
+        }
+        "holds the last resolved telemetry when signal gathering throws" => {
+            let boom = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let b = boom.clone();
+            let h = harness(
+                t0,
+                Arc::new(move || {
+                    if b.load(Ordering::SeqCst) {
+                        panic!("collector exploded");
+                    }
+                    Sig {
+                        gnss: Some(GnssView {
+                            fix: false,
+                            sky: SkyState::Clear,
+                        }),
+                        ..healthy()
+                    }
+                }),
+                false,
+                None,
             );
-            counts.insert("lteReads".into(), h.lte_reads.load(Ordering::SeqCst).into());
-            extra.insert("counts".into(), Value::Object(counts));
+            h.led.start().await;
+            h.led.tick();
+            boom.store(true, Ordering::SeqCst);
+            h.led.tick();
+            extra.insert("t".into(), tel(&h.led));
+            h
+        }
+        "stops resolving after stop()" => {
+            let h = harness(t0, Arc::new(healthy), false, None);
+            h.led.start().await;
+            h.led.stop();
+            h.led.tick();
+            extra.insert("counts".into(), counts(&h));
+            extra.insert("t".into(), tel(&h.led));
             h
         }
         other => panic!("no Rust replay for fixture case '{other}'"),
@@ -467,12 +572,38 @@ fn lv(r: u8, g: u8, b: u8) -> std::collections::BTreeMap<u32, u8> {
 #[tokio::test(start_paused = true)]
 async fn every_led_manager_it_matches_the_ts_trace() {
     let fx = fixture();
-    assert_eq!(fx.cases.len(), 12);
+    assert_eq!(fx.cases.len(), 16);
     for case in &fx.cases {
         let got = run_case(&case.name).await;
         let want = &case.expected;
+        let mut want_calls = want.calls.clone();
+        if case.ts == "led-manager.test.ts:282" {
+            // D31 (accepted, review-wp1 M1): the it() renders healthy and
+            // fires the overlay in ONE tick, so the heartbeat's first step is
+            // superseded before its task runs. The TS still writes that
+            // step's fall group ([12,16] low) after the flash's white rise —
+            // the flash shows GREEN — and the flash's own fall then lowers
+            // only [21]. Rust drops the stale fall (white flash), and the
+            // flash's fall lowers all three. Same logs, same telemetry, both
+            // dark at 170 ms.
+            let stale = Call {
+                t: 20,
+                pins: vec![12, 16],
+                high: false,
+            };
+            let i = want_calls
+                .iter()
+                .position(|c| *c == stale)
+                .expect("D31 stale fall");
+            want_calls.remove(i);
+            let f = want_calls
+                .iter_mut()
+                .find(|c| c.t == 170 && c.pins == [21] && !c.high)
+                .expect("TS flash fall");
+            f.pins = vec![12, 21, 16];
+        }
         assert_eq!(
-            got.calls, want.calls,
+            got.calls, want_calls,
             "{} ({}): writer calls",
             case.name, case.ts
         );
@@ -540,8 +671,47 @@ async fn every_led_manager_it_matches_the_ts_trace() {
                 assert!(!logged("→ network"));
             }
             "led-manager.test.ts:242" => assert!(logged("→ healthy")),
+            // 09da38d: the state resolves on every host, the pins stay put.
             "led-manager.test.ts:254" => {
+                assert!(calls.is_empty());
+                assert_eq!(got.extra["before"], Value::Null);
+                assert_eq!(got.extra["reason1"], "gps-wait");
+                assert_eq!(
+                    got.extra["t1"],
+                    serde_json::json!({"led_state": 2, "health_flags": 16})
+                );
+                assert_eq!(
+                    got.extra["t2"],
+                    serde_json::json!({"led_state": 3, "health_flags": 8})
+                );
+            }
+            "led-manager.test.ts:273" => {
+                assert_eq!(
+                    got.extra["t"],
+                    serde_json::json!({"led_state": 3, "health_flags": 4})
+                );
+            }
+            "led-manager.test.ts:282" => {
+                assert_eq!(
+                    got.extra["t0"],
+                    serde_json::json!({"led_state": 0, "health_flags": 0})
+                );
+                assert_eq!(got.extra["reason1"], "network");
+                assert_eq!(
+                    got.extra["t1"],
+                    serde_json::json!({"led_state": 3, "health_flags": 8})
+                );
+            }
+            "led-manager.test.ts:299" => {
+                assert_eq!(
+                    got.extra["t"],
+                    serde_json::json!({"led_state": 2, "health_flags": 16})
+                );
+                assert!(logged("signal read failed"));
+            }
+            "led-manager.test.ts:312" => {
                 assert_eq!(got.extra["counts"]["signalCalls"], 0);
+                assert_eq!(got.extra["t"], Value::Null);
             }
             other => panic!("unexpected ts ref {other}"),
         }

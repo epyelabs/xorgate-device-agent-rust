@@ -1,0 +1,1651 @@
+{
+ "jsSourceFile": "src/lib/led-state.ts (encodeLedTelemetry) + src/agent/led-telemetry.ts + src/recording/telemetry-recorder.ts",
+ "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+ "generatedBy": "tools/replay/js/dump-led-telemetry.mts (phase-5b WP3): the inputs of test/led-telemetry.test.ts + extras through the REAL modules",
+ "LED_STATE_CODES": {
+  "healthy": 0,
+  "starting": 1,
+  "gps-wait": 2,
+  "network": 3,
+  "thermal": 4,
+  "undervoltage": 5,
+  "agent-down": 6
+ },
+ "HEALTH_FLAG_BITS": {
+  "undervoltage": 1,
+  "thermal": 2,
+  "lte_down": 4,
+  "mqtt_down": 8,
+  "gps_no_fix": 16,
+  "gps_gate_hold": 32,
+  "dead_zone": 64,
+  "power_shed": 128,
+  "live_block": 256
+ },
+ "ladderReasons": [
+  "starting",
+  "agent-down",
+  "undervoltage",
+  "thermal",
+  "network",
+  "gps-wait",
+  "healthy",
+  "config-applied"
+ ],
+ "LED_TELEMETRY_STARTING": {
+  "led_state": 1,
+  "health_flags": 0
+ },
+ "LED_TELEMETRY_SIM": {
+  "led_state": 0,
+  "health_flags": 0
+ },
+ "cases": [
+  {
+   "op": "encode",
+   "name": "healthy → 0 / 0",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "healthy"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 0
+   }
+  },
+  {
+   "op": "encode",
+   "name": "starting → 1",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": true
+    },
+    "state": {
+     "colour": "white",
+     "pattern": "solid",
+     "reason": "starting"
+    }
+   },
+   "expected": {
+    "led_state": 1,
+    "health_flags": 0
+   }
+  },
+  {
+   "op": "encode",
+   "name": "starting, cloud connecting → 1 + mqtt_down",
+   "input": {
+    "signals": {
+     "connection": "connecting",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": true
+    },
+    "state": {
+     "colour": "white",
+     "pattern": "solid",
+     "reason": "starting"
+    }
+   },
+   "expected": {
+    "led_state": 1,
+    "health_flags": 8
+   }
+  },
+  {
+   "op": "encode",
+   "name": "gps-wait from an unfixed receiver",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": false,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "blue",
+     "pattern": "blink-slow",
+     "reason": "gps-wait"
+    }
+   },
+   "expected": {
+    "led_state": 2,
+    "health_flags": 16
+   }
+  },
+  {
+   "op": "encode",
+   "name": "gps-wait from the GPS gate",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "gps-gate",
+       "detail": "",
+       "since": 0
+      }
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "blue",
+     "pattern": "blink-slow",
+     "reason": "gps-wait"
+    }
+   },
+   "expected": {
+    "led_state": 2,
+    "health_flags": 288
+   }
+  },
+  {
+   "op": "encode",
+   "name": "network from LTE disconnected",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "disconnected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "purple",
+     "pattern": "blink-fast",
+     "reason": "network"
+    }
+   },
+   "expected": {
+    "led_state": 3,
+    "health_flags": 4
+   }
+  },
+  {
+   "op": "encode",
+   "name": "network from LTE connecting",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connecting"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "purple",
+     "pattern": "blink-fast",
+     "reason": "network"
+    }
+   },
+   "expected": {
+    "led_state": 3,
+    "health_flags": 4
+   }
+  },
+  {
+   "op": "encode",
+   "name": "network from the cloud link alone (connecting)",
+   "input": {
+    "signals": {
+     "connection": "connecting",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "purple",
+     "pattern": "blink-fast",
+     "reason": "network"
+    }
+   },
+   "expected": {
+    "led_state": 3,
+    "health_flags": 8
+   }
+  },
+  {
+   "op": "encode",
+   "name": "network from the cloud link alone (reconnecting)",
+   "input": {
+    "signals": {
+     "connection": "reconnecting",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "purple",
+     "pattern": "blink-fast",
+     "reason": "network"
+    }
+   },
+   "expected": {
+    "led_state": 3,
+    "health_flags": 8
+   }
+  },
+  {
+   "op": "encode",
+   "name": "network from the cloud link alone (closed)",
+   "input": {
+    "signals": {
+     "connection": "closed",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "purple",
+     "pattern": "blink-fast",
+     "reason": "network"
+    }
+   },
+   "expected": {
+    "led_state": 3,
+    "health_flags": 8
+   }
+  },
+  {
+   "op": "encode",
+   "name": "network from the cloud link alone (error)",
+   "input": {
+    "signals": {
+     "connection": "error",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "purple",
+     "pattern": "blink-fast",
+     "reason": "network"
+    }
+   },
+   "expected": {
+    "led_state": 3,
+    "health_flags": 8
+   }
+  },
+  {
+   "op": "encode",
+   "name": "thermal",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "thermal",
+       "detail": "",
+       "since": 0
+      }
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "cyan",
+     "pattern": "blink-slow",
+     "reason": "thermal"
+    }
+   },
+   "expected": {
+    "led_state": 4,
+    "health_flags": 258
+   }
+  },
+  {
+   "op": "encode",
+   "name": "thermal with the shed it carries",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "thermal",
+       "detail": "",
+       "since": 0
+      },
+      "powerShed": "no-live"
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "cyan",
+     "pattern": "blink-slow",
+     "reason": "thermal"
+    }
+   },
+   "expected": {
+    "led_state": 4,
+    "health_flags": 386
+   }
+  },
+  {
+   "op": "encode",
+   "name": "undervoltage from the verdict",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "undervoltage",
+       "detail": "",
+       "since": 0
+      }
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "red",
+     "pattern": "blink-fast",
+     "reason": "undervoltage"
+    }
+   },
+   "expected": {
+    "led_state": 5,
+    "health_flags": 257
+   }
+  },
+  {
+   "op": "encode",
+   "name": "undervoltage from a bare power shed",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "powerShed": "no-live"
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "red",
+     "pattern": "blink-fast",
+     "reason": "undervoltage"
+    }
+   },
+   "expected": {
+    "led_state": 5,
+    "health_flags": 128
+   }
+  },
+  {
+   "op": "encode",
+   "name": "agent-down encodes as 6",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "pri": "1",
+     "reason": "agent-down",
+     "label": "Agent not running",
+     "colour": "red",
+     "pattern": "solid"
+    }
+   },
+   "expected": {
+    "led_state": 6,
+    "health_flags": 0
+   }
+  },
+  {
+   "op": "encode",
+   "name": "a network outage masks an unfixed GPS in the code, not in the flags",
+   "input": {
+    "signals": {
+     "connection": "reconnecting",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "disconnected"
+     },
+     "gnss": {
+      "fix": false,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "purple",
+     "pattern": "blink-fast",
+     "reason": "network"
+    }
+   },
+   "expected": {
+    "led_state": 3,
+    "health_flags": 28
+   }
+  },
+  {
+   "op": "encode",
+   "name": "a power shed on a GPS-gated device shows red; the gate stays visible",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "gps-gate",
+       "detail": "",
+       "since": 0
+      },
+      "powerShed": "no-live"
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": false,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "red",
+     "pattern": "blink-fast",
+     "reason": "undervoltage"
+    }
+   },
+   "expected": {
+    "led_state": 5,
+    "health_flags": 432
+   }
+  },
+  {
+   "op": "encode",
+   "name": "a dead zone is green with the cloud down; both flagged",
+   "input": {
+    "signals": {
+     "connection": "closed",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "dead_zone"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "healthy"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 72
+   }
+  },
+  {
+   "op": "encode",
+   "name": "an unknown liveBlock reason sets only live_block",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "kvs-master-failed",
+       "detail": "",
+       "since": 0
+      }
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "healthy"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 256
+   }
+  },
+  {
+   "op": "encode",
+   "name": "no receiver and an unreadable LTE file are clear",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": null,
+     "gnss": null,
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "healthy"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 0
+   }
+  },
+  {
+   "op": "encode",
+   "name": "every flag at once",
+   "input": {
+    "signals": {
+     "connection": "closed",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "thermal",
+       "detail": "",
+       "since": 0
+      },
+      "powerShed": "parked:no-live"
+     },
+     "lte": {
+      "status": "connecting"
+     },
+     "gnss": {
+      "fix": false,
+      "sky": "blocked"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "cyan",
+     "pattern": "blink-slow",
+     "reason": "thermal"
+    }
+   },
+   "expected": {
+    "led_state": 4,
+    "health_flags": 414
+   }
+  },
+  {
+   "op": "encode",
+   "name": "an unknown reason encodes as 0",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "nope"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 0
+   }
+  },
+  {
+   "op": "encode",
+   "name": "extra: lte with no status is clear",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {},
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "healthy"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 0
+   }
+  },
+  {
+   "op": "encode",
+   "name": "extra: lte status unknown word",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "registering"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "healthy"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 0
+   }
+  },
+  {
+   "op": "encode",
+   "name": "extra: dead zone with LTE fine and cloud fine",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null
+     },
+     "lte": {
+      "status": "dead_zone"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "green",
+     "pattern": "heartbeat",
+     "reason": "healthy"
+    }
+   },
+   "expected": {
+    "led_state": 0,
+    "health_flags": 64
+   }
+  },
+  {
+   "op": "encode",
+   "name": "extra: undervoltage verdict + shed + gps unfixed + cloud down",
+   "input": {
+    "signals": {
+     "connection": "error",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "undervoltage",
+       "detail": "",
+       "since": 0
+      },
+      "powerShed": "parked"
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": false,
+      "sky": "open"
+     },
+     "starting": false
+    },
+    "state": {
+     "colour": "red",
+     "pattern": "blink-fast",
+     "reason": "undervoltage"
+    }
+   },
+   "expected": {
+    "led_state": 5,
+    "health_flags": 409
+   }
+  },
+  {
+   "op": "encode",
+   "name": "extra: starting masks a thermal block",
+   "input": {
+    "signals": {
+     "connection": "connected",
+     "recording": {
+      "enabled": true,
+      "sessionId": "s1",
+      "backlogBytes": 0,
+      "backlogSegments": 0,
+      "droppedSegments": 0,
+      "uploading": false,
+      "lastUploadAt": null,
+      "liveBlock": {
+       "reason": "thermal",
+       "detail": "",
+       "since": 0
+      }
+     },
+     "lte": {
+      "status": "connected"
+     },
+     "gnss": {
+      "fix": true,
+      "sky": "open"
+     },
+     "starting": true
+    },
+    "state": {
+     "colour": "white",
+     "pattern": "solid",
+     "reason": "starting"
+    }
+   },
+   "expected": {
+    "led_state": 1,
+    "health_flags": 258
+   }
+  },
+  {
+   "op": "withLedLeaves",
+   "name": "adds both leaves to system, unit-less",
+   "input": {
+    "metrics": {
+     "system": {
+      "cpu_usage": {
+       "value": 12.3,
+       "unit": "%"
+      },
+      "cpu_temp": {
+       "value": 61.2,
+       "unit": "°C"
+      },
+      "ram_usage": {
+       "value": 40,
+       "unit": "%"
+      },
+      "disk_usage": {
+       "value": 50,
+       "unit": "%"
+      },
+      "throttled": {
+       "value": 0
+      }
+     },
+     "gps": {
+      "fix_quality": {
+       "value": 1
+      }
+     }
+    },
+    "t": {
+     "led_state": 3,
+     "health_flags": 12
+    }
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "cpu_usage": {
+       "value": 12.3,
+       "unit": "%"
+      },
+      "cpu_temp": {
+       "value": 61.2,
+       "unit": "°C"
+      },
+      "ram_usage": {
+       "value": 40,
+       "unit": "%"
+      },
+      "disk_usage": {
+       "value": 50,
+       "unit": "%"
+      },
+      "throttled": {
+       "value": 0
+      },
+      "led_state": {
+       "value": 3
+      },
+      "health_flags": {
+       "value": 12
+      }
+     },
+     "gps": {
+      "fix_quality": {
+       "value": 1
+      }
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedLeaves",
+   "name": "creates the system group when the collector produced none",
+   "input": {
+    "metrics": {},
+    "t": {
+     "led_state": 1,
+     "health_flags": 0
+    }
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "led_state": {
+       "value": 1
+      },
+      "health_flags": {
+       "value": 0
+      }
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedLeaves",
+   "name": "replay (null) passes recorded system.* through untouched",
+   "input": {
+    "metrics": {
+     "system": {
+      "cpu_usage": {
+       "value": 12.3,
+       "unit": "%"
+      },
+      "cpu_temp": {
+       "value": 61.2,
+       "unit": "°C"
+      },
+      "ram_usage": {
+       "value": 40,
+       "unit": "%"
+      },
+      "disk_usage": {
+       "value": 50,
+       "unit": "%"
+      },
+      "throttled": {
+       "value": 0
+      },
+      "led_state": {
+       "value": 4
+      },
+      "health_flags": {
+       "value": 2
+      }
+     }
+    },
+    "t": null
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "cpu_usage": {
+       "value": 12.3,
+       "unit": "%"
+      },
+      "cpu_temp": {
+       "value": 61.2,
+       "unit": "°C"
+      },
+      "ram_usage": {
+       "value": 40,
+       "unit": "%"
+      },
+      "disk_usage": {
+       "value": 50,
+       "unit": "%"
+      },
+      "throttled": {
+       "value": 0
+      },
+      "led_state": {
+       "value": 4
+      },
+      "health_flags": {
+       "value": 2
+      }
+     }
+    },
+    "same": true
+   }
+  },
+  {
+   "op": "withLedLeaves",
+   "name": "the simulator is healthy",
+   "input": {
+    "metrics": {},
+    "t": {
+     "led_state": 0,
+     "health_flags": 0
+    }
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "led_state": {
+       "value": 0
+      },
+      "health_flags": {
+       "value": 0
+      }
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedLeaves",
+   "name": "extra: system after another group keeps its position",
+   "input": {
+    "metrics": {
+     "imu": {
+      "a": {
+       "value": 1
+      }
+     },
+     "system": {
+      "cpu_usage": {
+       "value": 1,
+       "unit": "%"
+      }
+     },
+     "lte": {
+      "rssi": {
+       "value": -70
+      }
+     }
+    },
+    "t": {
+     "led_state": 0,
+     "health_flags": 0
+    }
+   },
+   "expected": {
+    "out": {
+     "imu": {
+      "a": {
+       "value": 1
+      }
+     },
+     "system": {
+      "cpu_usage": {
+       "value": 1,
+       "unit": "%"
+      },
+      "led_state": {
+       "value": 0
+      },
+      "health_flags": {
+       "value": 0
+      }
+     },
+     "lte": {
+      "rssi": {
+       "value": -70
+      }
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedLeaves",
+   "name": "extra: no system among other groups → appended last",
+   "input": {
+    "metrics": {
+     "imu": {
+      "a": {
+       "value": 1
+      }
+     },
+     "gps": {
+      "fix_quality": {
+       "value": 1
+      }
+     }
+    },
+    "t": {
+     "led_state": 2,
+     "health_flags": 48
+    }
+   },
+   "expected": {
+    "out": {
+     "imu": {
+      "a": {
+       "value": 1
+      }
+     },
+     "gps": {
+      "fix_quality": {
+       "value": 1
+      }
+     },
+     "system": {
+      "led_state": {
+       "value": 2
+      },
+      "health_flags": {
+       "value": 48
+      }
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedLeaves",
+   "name": "extra: existing leaves are overwritten in place",
+   "input": {
+    "metrics": {
+     "system": {
+      "cpu_usage": {
+       "value": 12.3,
+       "unit": "%"
+      },
+      "cpu_temp": {
+       "value": 61.2,
+       "unit": "°C"
+      },
+      "ram_usage": {
+       "value": 40,
+       "unit": "%"
+      },
+      "disk_usage": {
+       "value": 50,
+       "unit": "%"
+      },
+      "throttled": {
+       "value": 0
+      },
+      "led_state": {
+       "value": 4
+      },
+      "health_flags": {
+       "value": 2
+      }
+     }
+    },
+    "t": {
+     "led_state": 1,
+     "health_flags": 0
+    }
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "cpu_usage": {
+       "value": 12.3,
+       "unit": "%"
+      },
+      "cpu_temp": {
+       "value": 61.2,
+       "unit": "°C"
+      },
+      "ram_usage": {
+       "value": 40,
+       "unit": "%"
+      },
+      "disk_usage": {
+       "value": 50,
+       "unit": "%"
+      },
+      "throttled": {
+       "value": 0
+      },
+      "led_state": {
+       "value": 1
+      },
+      "health_flags": {
+       "value": 0
+      }
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedSampleGroups",
+   "name": "keeps the system sample's freshness stamp and copies",
+   "input": {
+    "groups": {
+     "system": {
+      "fields": {
+       "cpu_usage": {
+        "value": 1,
+        "unit": "%"
+       }
+      },
+      "updatedMono": 7
+     }
+    },
+    "t": {
+     "led_state": 2,
+     "health_flags": 16
+    },
+    "nowMono": 99
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "fields": {
+       "cpu_usage": {
+        "value": 1,
+        "unit": "%"
+       },
+       "led_state": {
+        "value": 2
+       },
+       "health_flags": {
+        "value": 16
+       }
+      },
+      "updatedMono": 7
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedSampleGroups",
+   "name": "null passes through",
+   "input": {
+    "groups": {
+     "system": {
+      "fields": {
+       "cpu_usage": {
+        "value": 1,
+        "unit": "%"
+       }
+      },
+      "updatedMono": 7
+     }
+    },
+    "t": null,
+    "nowMono": 99
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "fields": {
+       "cpu_usage": {
+        "value": 1,
+        "unit": "%"
+       }
+      },
+      "updatedMono": 7
+     }
+    },
+    "same": true
+   }
+  },
+  {
+   "op": "withLedSampleGroups",
+   "name": "extra: no system group → synthesised at nowMono, appended last",
+   "input": {
+    "groups": {
+     "imu": {
+      "fields": {
+       "a": {
+        "value": 1
+       }
+      },
+      "updatedMono": 3
+     }
+    },
+    "t": {
+     "led_state": 3,
+     "health_flags": 8
+    },
+    "nowMono": 99
+   },
+   "expected": {
+    "out": {
+     "imu": {
+      "fields": {
+       "a": {
+        "value": 1
+       }
+      },
+      "updatedMono": 3
+     },
+     "system": {
+      "fields": {
+       "led_state": {
+        "value": 3
+       },
+       "health_flags": {
+        "value": 8
+       }
+      },
+      "updatedMono": 99
+     }
+    },
+    "same": false
+   }
+  },
+  {
+   "op": "withLedSampleGroups",
+   "name": "extra: system among others keeps position",
+   "input": {
+    "groups": {
+     "system": {
+      "fields": {},
+      "updatedMono": 5
+     },
+     "imu": {
+      "fields": {
+       "a": {
+        "value": 1
+       }
+      },
+      "updatedMono": 6
+     }
+    },
+    "t": {
+     "led_state": 1,
+     "health_flags": 0
+    },
+    "nowMono": 99
+   },
+   "expected": {
+    "out": {
+     "system": {
+      "fields": {
+       "led_state": {
+        "value": 1
+       },
+       "health_flags": {
+        "value": 0
+       }
+      },
+      "updatedMono": 5
+     },
+     "imu": {
+      "fields": {
+       "a": {
+        "value": 1
+       }
+      },
+      "updatedMono": 6
+     }
+    },
+    "same": false
+   }
+  }
+ ],
+ "recorder": {
+  "ticks": 30,
+  "systemLines": [
+   {
+    "ts": 10000,
+    "system": {
+     "cpu_usage": {
+      "value": 5,
+      "unit": "%"
+     },
+     "led_state": {
+      "value": 0
+     },
+     "health_flags": {
+      "value": 0
+     }
+    }
+   },
+   {
+    "ts": 11000,
+    "system": {
+     "cpu_usage": {
+      "value": 5,
+      "unit": "%"
+     },
+     "led_state": {
+      "value": 3
+     },
+     "health_flags": {
+      "value": 8
+     }
+    }
+   },
+   {
+    "ts": 12000,
+    "system": {
+     "cpu_usage": {
+      "value": 5,
+      "unit": "%"
+     },
+     "led_state": {
+      "value": 3
+     },
+     "health_flags": {
+      "value": 8
+     }
+    }
+   }
+  ]
+ }
+}

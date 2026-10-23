@@ -1,0 +1,40 @@
+{
+  "jsSourceFile": "src/hardware/sms-modem.ts SmsReader.clear + read + openSerialTransport (real stty + O_RDWR|O_NOCTTY on a pty slave)",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "crates/xorgate-agent/tests/sms_clear_pty.rs with XORGATE_SMS_PTY_CLEAR_JS running tools/replay/js/sms-pty-clear.mts (phase-5b WP3)",
+  "limit": 10,
+  "fixedNow": 1760000000000,
+  "stdout": "{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1760000000000,\n  \"action\": \"clear\",\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 0,\n  \"storage\": {\n    \"ME\": {\n      \"used\": 0,\n      \"total\": 25\n    },\n    \"SM\": {\n      \"used\": 0,\n      \"total\": 40\n    }\n  },\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": [],\n  \"cleared\": {\n    \"SM\": 8,\n    \"ME\": 25\n  }\n}\n{\n  \"v\": 1,\n  \"deviceId\": \"local\",\n  \"requestId\": \"cli\",\n  \"ts\": 1760000000000,\n  \"action\": \"read\",\n  \"status\": \"ok\",\n  \"error\": null,\n  \"durationMs\": 0,\n  \"storage\": {\n    \"ME\": {\n      \"used\": 0,\n      \"total\": 25\n    },\n    \"SM\": {\n      \"used\": 0,\n      \"total\": 40\n    }\n  },\n  \"total\": 0,\n  \"skipped\": 0,\n  \"partial\": false,\n  \"messages\": []\n}\n",
+  "log": [
+    "ATE0",
+    "AT+CPMS?",
+    "AT+CPMS=\"SM\"",
+    "AT+CMGD=0,4",
+    "AT+CPMS=\"ME\"",
+    "AT+CMGD=0,4",
+    "AT+CPMS=\"SR\"",
+    "ATE0",
+    "AT+CMGF?",
+    "AT+CPMS?",
+    "AT+CMGF=0",
+    "AT+CPMS=\"SM\"",
+    "AT+CPMS=\"SR\"",
+    "AT+CMGF=1",
+    "ATE0",
+    "AT+CMGF?",
+    "AT+CPMS?",
+    "AT+CMGF=0",
+    "AT+CPMS=\"SM\"",
+    "AT+CPMS=\"SR\"",
+    "AT+CMGF=1"
+  ],
+  "deletes": [
+    "SM",
+    "ME"
+  ],
+  "end": {
+    "cmgf": 1,
+    "mem1": "SR"
+  },
+  "rawHex": "415445300d41542b43504d533f0d41542b43504d533d22534d220d41542b434d47443d302c340d41542b43504d533d224d45220d41542b434d47443d302c340d41542b43504d533d225352220d415445300d41542b434d47463f0d41542b43504d533f0d41542b434d47463d300d41542b43504d533d22534d220d41542b43504d533d225352220d41542b434d47463d310d415445300d41542b434d47463f0d41542b43504d533f0d41542b434d47463d300d41542b43504d533d22534d220d41542b43504d533d225352220d41542b434d47463d310d"
+}

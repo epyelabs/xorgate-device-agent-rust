@@ -165,23 +165,8 @@ pub fn exec_failed_event(command: DeviceCommandName, reason: &str) -> String {
 /// the prefix. Counts / status / duration only — never a number or a body
 /// (contract §6).
 pub fn read_sms_line(request_id: &str, p: &SmsResultPayload) -> String {
-    let unread = p.messages.iter().filter(|m| m.unread).count();
-    let mut line = format!(
-        "read_sms {request_id}: status={} total={} sent={} unread={unread} skipped={} partial={} durationMs={}",
-        sms_status_str(p.status),
-        p.total,
-        p.messages.len(),
-        p.skipped,
-        p.partial,
-        p.duration_ms,
-    );
-    if p.status != SmsReadStatus::Ok {
-        // `${payload.error}` — `null` prints "null" (never reached: a failed
-        // payload always carries `error ?? status`).
-        line.push_str(" error=");
-        line.push_str(p.error.as_deref().unwrap_or("null"));
-    }
-    line
+    // Phase 5b: one implementation for both commands (`runSms` @ 09da38d).
+    crate::sms::sms_result_line("read_sms", request_id, p)
 }
 
 /// The read_sms event level (`worker.ts:939`): `info` when ok, else `warn`.
@@ -239,16 +224,6 @@ pub fn read_sms_publish_failed_log(request_id: &str, message: &str) -> String {
     format!("{AGENT_PREFIX}read_sms {request_id}: publish failed: {message}")
 }
 
-fn sms_status_str(s: SmsReadStatus) -> &'static str {
-    match s {
-        SmsReadStatus::Ok => "ok",
-        SmsReadStatus::NoModem => "no_modem",
-        SmsReadStatus::NoSim => "no_sim",
-        SmsReadStatus::ModemBusy => "modem_busy",
-        SmsReadStatus::Error => "error",
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Effects
 // ---------------------------------------------------------------------------
@@ -273,6 +248,21 @@ pub enum SmsSource {
     Reader,
     /// `sim` / `replay`: [`fixture_sms_sweep`] at the time of the sweep.
     Fixture,
+}
+
+/// The accepted-path marker of [`Effect::ClearSms`]: its field is private
+/// and its one constructor is private to this module, called only by
+/// [`decide_command`]'s `clear_sms` arm (pinned by
+/// `xorgate-agent/tests/sms_clear_safety.rs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearClaim {
+    _private: (),
+}
+
+impl ClearClaim {
+    fn after_claim() -> Self {
+        Self { _private: () }
+    }
 }
 
 /// One side effect of the command handler, in TS order.
@@ -315,6 +305,12 @@ pub enum Effect {
         source: SmsSource,
         request_id: String,
         limit: u32,
+        /// Proof that [`decide_command`] produced this effect on its accepted
+        /// path (after the expiry check and the ledger claim). Only this
+        /// module can build one, so no other code can construct an
+        /// `Effect::ClearSms` (review-wp3 F2; enum variants have no
+        /// struct-update syntax). Carries no data.
+        claim: ClearClaim,
     },
     /// `obd_scan` / `obd_forget` with the collector present (`worker.ts:1219-1247`
     /// @ 09da38d). The TS STARTS the job (`source.obdScan?.()`) before the
@@ -507,6 +503,7 @@ pub fn decide_command(
                 },
                 request_id: cmd.request_id.clone(),
                 limit: cmd.args.map(|a| a.limit).unwrap_or(SMS_LIMIT_DEFAULT),
+                claim: ClearClaim::after_claim(),
             });
         }
         // 8c. obd_scan / obd_forget (`worker.ts:1217-1249` @ 09da38d).
@@ -609,6 +606,7 @@ pub fn sms_reader_unavailable_sweep(now: WallMs, duration_ms: i64) -> SmsSweep {
         skipped: 0,
         partial: false,
         messages: Vec::new(),
+        cleared: None,
     }
 }
 
@@ -765,7 +763,8 @@ mod tests {
                 Effect::ClearSms {
                     source: SmsSource::Reader,
                     request_id: "r-2".into(),
-                    limit: 50
+                    limit: 50,
+                    claim: ClearClaim::after_claim(),
                 },
             ]
         );

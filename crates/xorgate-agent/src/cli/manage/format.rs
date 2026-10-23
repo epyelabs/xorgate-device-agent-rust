@@ -162,6 +162,7 @@ pub fn gauge(value: Option<f64>, min: f64, max: f64) -> f64 {
 }
 
 /// `clock(ts)` (`modules.tsx:570-575`): local `HH:MM:SS` of an epoch-ms.
+#[allow(unsafe_code)]
 pub fn clock(ts: f64) -> String {
     if !ts.is_finite() {
         return "NaN:NaN:NaN".to_string();

@@ -87,6 +87,7 @@ impl CaptureChild for GstChild {
         self.0.signal_reported(sig, report);
     }
 
+    #[allow(unsafe_code)]
     fn renice(&self, nice: i32) -> io::Result<()> {
         let Some(pid) = self.0.pid() else {
             return Ok(());

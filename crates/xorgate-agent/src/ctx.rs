@@ -206,6 +206,12 @@ pub struct GroupSample {
     pub updated_mono: tokio::time::Instant,
 }
 
+impl xorgate_core::led_telemetry::LedSampleGroup for GroupSample {
+    fn fields_mut(&mut self) -> &mut MetricGroup {
+        &mut self.fields
+    }
+}
+
 /// The telemetry source the publish tick reads (`source` in `worker.ts:270`):
 /// the real collectors (WP2) in `real` mode, an empty source in `sim` (O7).
 pub trait TelemetrySource: Send + Sync + 'static {
@@ -439,6 +445,14 @@ pub trait PhaseHooks: Send + Sync + 'static {
     }
     /// `led.tick()` from the 1 s heartbeat (`:635`).
     fn led_tick(&self) {}
+    /// `ledTelemetryNow()` (`worker.ts:367-379` @ 09da38d, Phase 5b I6): the
+    /// `system.led_state` / `system.health_flags` leaves for the live publish
+    /// and the recorder — real mode → the LED manager's last resolved state
+    /// or `LED_TELEMETRY_STARTING`; sim → `LED_TELEMETRY_SIM`. `None` (the
+    /// TS replay pass-through; here the inert Phase 2 hooks) adds nothing.
+    fn led_telemetry(&self) -> Option<xorgate_core::led_state::LedTelemetry> {
+        None
+    }
     /// `led.configApplied()` on a real cloud-config change (`:866`).
     fn led_config_applied(&self) {}
     /// Shutdown steps `led.stop()` (`:1299`) and `recording.stop()` (`:1308`).

@@ -2,8 +2,14 @@
 //! TS `FakeModem`), as a pure engine: one command in → the reply lines out,
 //! the store state and the command log kept. Shared by the `at_port` unit
 //! tests (an in-memory `AtTransport`) and `tests/at_port_pty.rs` (the far
-//! end of a pty pair). Plus the dump driver's one marked extension:
-//! `answers` (a scripted reply for an exact command).
+//! end of a pty pair). Plus the dump drivers' marked extensions:
+//! `answers` (a scripted reply for an exact command), and for the Phase 5b
+//! clear (`test/sms-modem.test.ts` @ 09da38d): `cmgdError` (answer the
+//! delete-all on that store with this final instead of deleting), the
+//! `deletes` record, `writeError` (a write of that command fails) and the
+//! RIG RULE `allowClear` (phase-5b §6.7): without it a delete is a THROW —
+//! the command is logged, nothing is deleted and the transport write fails —
+//! so a read path that ever deletes fails its test.
 //!
 //! Semantics (phase-1/evidence/wp5.md §AT-transcript shapes): defaults
 //! `cmgf 0`, `mem1 "SR"`; `AT+CPMS?` → `+CPMS: "<mem1>",u,t,"ME",u,t,"ME",u,t`
@@ -50,6 +56,17 @@ pub struct FakeSpec {
     pub answers: BTreeMap<String, Vec<String>>,
     pub tick_ms: Option<i64>,
     pub t0: Option<i64>,
+    #[serde(default)]
+    pub cmgd_error: BTreeMap<String, String>,
+    #[serde(default)]
+    pub allow_clear: bool,
+    #[serde(default)]
+    pub write_error: BTreeMap<String, String>,
+    /// The delete answers only after this many ms (a slow flash erase;
+    /// review-wp3 M1): with the in-memory transport the reply chunk becomes
+    /// readable at write time + this delay.
+    #[serde(default)]
+    pub delete_delay_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +75,8 @@ pub struct FakeModem {
     pub log: Vec<String>,
     pub cmgf: u8,
     pub mem1: String,
+    /// Store selected (mem1) at each delete, in order.
+    pub deletes: Vec<String>,
 }
 
 /// What one command produced.
@@ -77,6 +96,7 @@ impl FakeModem {
             mem1: spec.mem1.clone().unwrap_or_else(|| "SR".to_string()),
             spec,
             log: Vec::new(),
+            deletes: Vec::new(),
         }
     }
 
@@ -100,6 +120,9 @@ impl FakeModem {
     /// `write(data)` (`sms-modem.test.ts:75-102`), `data` without the `\r`.
     pub fn command(&mut self, cmd: &str) -> Reply {
         self.log.push(cmd.to_string());
+        if let Some(e) = self.spec.write_error.get(cmd) {
+            return Reply::Throw(e.clone());
+        }
         if self.spec.silent || self.spec.hang.iter().any(|h| h == cmd) {
             return Reply::None;
         }
@@ -158,6 +181,19 @@ impl FakeModem {
                 ]),
                 None => out.push("ERROR".to_string()),
             }
+        } else if cmd == "AT+CMGD=0,4" {
+            if !self.spec.allow_clear {
+                return Reply::Throw("rig: delete without allowClear".to_string());
+            }
+            self.deletes.push(self.mem1.clone());
+            if let Some(e) = self.spec.cmgd_error.get(&self.mem1) {
+                out.push(e.clone());
+            } else {
+                if let Some(st) = self.spec.stores.get_mut(&self.mem1) {
+                    st.slots.clear();
+                }
+                out.push("OK".to_string());
+            }
         } else {
             out.push("ERROR".to_string());
         }
@@ -209,7 +245,8 @@ impl Clock for TestClock {
 pub struct MemTransport {
     pub modem: Arc<Mutex<FakeModem>>,
     pub closed: Arc<AtomicBool>,
-    queue: VecDeque<Vec<u8>>,
+    /// Reply chunks + when they become readable (`None` = at once).
+    queue: VecDeque<(Vec<u8>, Option<tokio::time::Instant>)>,
     /// `onCommand: () => (t += tickMs)`.
     tick: Option<(Arc<TestClock>, i64)>,
 }
@@ -230,14 +267,17 @@ impl AtTransport for MemTransport {
         Box::pin(async move {
             let s = String::from_utf8_lossy(data);
             let cmd = s.strip_suffix('\r').unwrap_or(&s).to_string();
-            let reply = {
+            let (reply, delay) = {
                 let mut m = self.modem.lock().unwrap();
                 // `this.log.push(cmd); this.o.onCommand?.(cmd);` (the log is
                 // pushed inside `command`; nothing observes the order).
                 if let Some((c, ms)) = &self.tick {
                     c.advance(*ms);
                 }
-                m.command(&cmd)
+                let delay = (cmd == "AT+CMGD=0,4")
+                    .then_some(m.spec.delete_delay_ms)
+                    .flatten();
+                (m.command(&cmd), delay)
             };
             match reply {
                 Reply::None => Ok(()),
@@ -248,7 +288,10 @@ impl AtTransport for MemTransport {
                         chunk.extend_from_slice(l.as_bytes());
                         chunk.extend_from_slice(b"\r\n");
                     }
-                    self.queue.push_back(chunk);
+                    let at = delay.map(|ms| {
+                        tokio::time::Instant::now() + std::time::Duration::from_millis(ms)
+                    });
+                    self.queue.push_back((chunk, at));
                     Ok(())
                 }
             }
@@ -257,10 +300,15 @@ impl AtTransport for MemTransport {
 
     fn read_chunk(&mut self) -> BoxFut<'_, io::Result<Vec<u8>>> {
         Box::pin(async move {
-            match self.queue.pop_front() {
-                Some(c) => Ok(c),
+            // Cancel-safe: a delayed chunk stays queued while we wait.
+            let at = match self.queue.front() {
+                Some((_, at)) => *at,
                 None => std::future::pending().await,
+            };
+            if let Some(at) = at {
+                tokio::time::sleep_until(at).await;
             }
+            Ok(self.queue.pop_front().expect("front").0)
         })
     }
 

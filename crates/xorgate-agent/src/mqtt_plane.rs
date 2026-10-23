@@ -501,7 +501,13 @@ impl PublishTick {
             device_id: self.ctx.env.config.device_id.clone(),
             ts,
             seq: self.seq.fetch_add(1, Ordering::SeqCst),
-            metrics: reading.metrics,
+            // `system.led_state` / `system.health_flags` on every live
+            // sample (`worker.ts:1385-1386` @ 09da38d); the reading is this
+            // tick's own copy, so no collector cache is touched.
+            metrics: xorgate_core::led_telemetry::with_led_leaves(
+                reading.metrics,
+                self.ctx.hooks.led_telemetry(),
+            ),
             media,
             recording: Some(recording),
         };

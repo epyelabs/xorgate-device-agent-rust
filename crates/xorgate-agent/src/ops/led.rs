@@ -1,5 +1,8 @@
 //! RGB status LED — the moving parts around the pure policy. Port of
-//! `src/agent/led-manager.ts` (187 lines @ 89b5c64).
+//! `src/agent/led-manager.ts` (187 lines @ 89b5c64; Phase 5b WP3 @ 09da38d:
+//! `tick()` resolves on EVERY host, LED or not, and keeps the last resolved
+//! `(state, signals)` for `system.led_state` / `system.health_flags` —
+//! `led-manager.ts:48-54, 95-137`).
 //!
 //! Split of responsibility (`led-manager.ts:4-7`):
 //! - `xorgate_core::led_state` decides WHAT to show (pure, no clocks);
@@ -28,7 +31,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tokio::time::Instant;
-use xorgate_core::led_state::{resolve_led_state, rung, LedSignals, LedState, LteStatusView};
+use xorgate_core::led_state::{
+    encode_led_telemetry, resolve_led_state, rung, LedSignals, LedState, LedTelemetry,
+    LteStatusView,
+};
 use xorgate_core::telemetry::{ConnectionState, RecordingStatus};
 use xorgate_core::types::GnssView;
 use xorgate_hal::led_driver::{BoxFut, LedDriver};
@@ -58,9 +64,38 @@ pub type ReadLteFn =
     Box<dyn Fn() -> BoxFut<'static, Result<Option<LteStatusView>, String>> + Send + Sync>;
 pub type LogFn = Box<dyn Fn(&str) + Send + Sync>;
 
+/// `resolved` (`led-manager.ts:48-54` @ 09da38d): the last state the ladder
+/// resolved and the signals it was resolved from (the I6 `snapshot()`; the
+/// TS `LedSignals` is `signals` + `lte`). Never the overlay.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedSnapshot {
+    pub state: LedState,
+    pub signals: LedSignalsOwned,
+    pub lte: Option<LteStatusView>,
+}
+
+impl LedSnapshot {
+    /// `encodeLedTelemetry(state, signals)`.
+    pub fn telemetry(&self) -> LedTelemetry {
+        encode_led_telemetry(
+            &self.state,
+            &LedSignals {
+                connection: self.signals.connection,
+                recording: &self.signals.recording,
+                lte: self.lte.clone(),
+                gnss: self.signals.gnss,
+                starting: self.signals.starting,
+            },
+        )
+    }
+}
+
 #[derive(Default)]
 struct State {
     current: Option<LedState>,
+    /// Kept on EVERY host (D4): telemetry reports the device's state, not
+    /// the light's.
+    resolved: Option<LedSnapshot>,
     overlay_running: bool,
     stopped: bool,
     /// Last LTE daemon status we read. `None` = unreadable, NOT down.
@@ -146,10 +181,13 @@ impl LedManager {
         })
     }
 
-    /// `tick()` (`led-manager.ts:83-99`): called from the 1 Hz heartbeat;
-    /// re-renders only on a real change. The overlay owns the LED while it
-    /// runs. The LTE refresh is fire-and-forget: this tick uses the
-    /// previous read's value.
+    /// `tick()` (`led-manager.ts:100-123` @ 09da38d): called from the 1 Hz
+    /// heartbeat. Resolves the state on EVERY host (telemetry needs it even
+    /// where there is no LED), stores `(state, signals)`, and only then
+    /// applies the hardware gate (inert driver → stop) and the overlay gate;
+    /// re-renders only on a real change. A signal-read failure keeps the last
+    /// resolved pair (fail open). The LTE refresh is fire-and-forget: this
+    /// tick uses the previous read's value.
     ///
     /// **Runtime (review-wp1 S1):** must be called from inside the tokio
     /// runtime (it spawns tasks; the TS method is plain sync on the event
@@ -161,46 +199,72 @@ impl LedManager {
         if !in_runtime("tick") {
             return;
         }
-        let lte = {
-            let st = self.lock();
-            if st.stopped {
-                return;
-            }
-            drop(st);
-            if !self.inner.driver.available() {
-                return;
-            }
-            let st = self.lock();
-            if st.overlay_running {
-                return;
-            }
-            st.lte.clone()
-        };
+        if self.lock().stopped {
+            return;
+        }
+        // `void this.refreshLte()` — its synchronous prefix never changes
+        // `this.lte`, so the value read below is the previous read's.
         if let Some(read) = self.refresh_lte() {
             tokio::spawn(read);
         }
+        let lte = self.lock().lte.clone();
         let signals = &self.inner.signals;
         let next = catch_unwind(AssertUnwindSafe(|| {
             let s = signals();
-            resolve_led_state(&LedSignals {
+            let next = resolve_led_state(&LedSignals {
                 connection: s.connection,
                 recording: &s.recording,
-                lte,
+                lte: lte.clone(),
                 gnss: s.gnss,
                 starting: s.starting,
-            })
+            });
+            (next, s)
         }));
-        match next {
-            Ok(next) => self.render(next),
+        let next = match next {
+            Ok((next, signals)) => {
+                self.lock().resolved = Some(LedSnapshot {
+                    state: next,
+                    signals,
+                    lte,
+                });
+                next
+            }
             Err(payload) => {
                 // Fail open: a signal-gathering bug must not light red and
-                // must not take the worker down with it.
+                // must not take the worker down with it. The last resolved
+                // state is held for telemetry too.
                 self.log(&format!(
                     "signal read failed, holding: {}",
                     panic_message(payload.as_ref())
                 ));
+                return;
             }
+        };
+        // Hardware gate: an inert driver (dev box, CM4 without a status LED)
+        // stops here, after the state is known.
+        if !self.inner.driver.available() {
+            return;
         }
+        // The overlay owns the LED until its flashes finish; a state change
+        // during it is picked up by the re-render that follows.
+        if self.lock().overlay_running {
+            return;
+        }
+        self.render(next);
+    }
+
+    /// `snapshot()` (`led-manager.ts:130-132` @ 09da38d): the last resolved
+    /// state and its inputs, `None` before the first tick. The
+    /// config-applied overlay never appears here.
+    pub fn snapshot(&self) -> Option<LedSnapshot> {
+        self.lock().resolved.clone()
+    }
+
+    /// `telemetry()` (`led-manager.ts:135-137` @ 09da38d):
+    /// `system.led_state` / `system.health_flags` for the last tick, `None`
+    /// before the first.
+    pub fn telemetry(&self) -> Option<LedTelemetry> {
+        self.lock().resolved.as_ref().map(LedSnapshot::telemetry)
     }
 
     /// `configApplied()` (`led-manager.ts:111-123`): two white flashes

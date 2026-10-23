@@ -5,6 +5,8 @@
 //! Module list: append-only, alphabetical (shared file; the orchestrator
 //! keeps every line at merge).
 
+#![deny(unsafe_code)]
+
 pub mod build_info;
 pub mod cli;
 pub mod collectors;

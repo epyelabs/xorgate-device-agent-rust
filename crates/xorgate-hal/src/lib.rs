@@ -6,6 +6,9 @@
 //! nothing here decides anything. Every reader fails OPEN: a missing file or
 //! tool yields `None` and the caller omits the field (agent-anatomy §10.3).
 
+#![deny(unsafe_code)]
+
+pub mod at_clear;
 pub mod at_port;
 pub mod atomic_write;
 pub mod boot_config_io;
@@ -35,5 +38,6 @@ pub mod read_lossy;
 pub mod segment_io;
 pub mod settings_io;
 pub mod shm_reaper;
+pub mod sms_clear_token;
 pub mod system;
 pub mod tape;

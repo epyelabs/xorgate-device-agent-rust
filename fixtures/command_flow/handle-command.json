@@ -1,8 +1,8 @@
 {
   "jsSourceFile": "src/worker.ts",
-  "jsLines": "902-1126",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  "generatedBy": "phase-2/evidence/wp4-tools/dump-command-flow.mts (npx tsx in a git-archive 89b5c64 scratch copy): the REAL worker.ts:902-1126 text, types stripped by esbuild, evaluated over recording stubs; commands.ts/sms-modem.ts helpers are the real modules",
+  "jsLines": "1005-1292",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-command-flow.mts (phase-2 WP4; phase-5b WP3 @ 09da38d) in the shared git-archive scratch copy: the REAL worker.ts:1005-1292 text, types stripped by esbuild, evaluated over recording stubs; commands.ts/sms-modem.ts helpers are the real modules",
   "deviceId": "dev-1",
   "cases": [
     {
@@ -522,7 +522,7 @@
             "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":25},\"status\":\"accepted\"}",
             "log.info [agent] read_sms req-1: status=error total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0 error=sms reader not available in this build",
             "event warn read_sms req-1: status=error total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0 error=sms reader not available in this build",
-            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"status\":\"error\",\"error\":\"sms reader not available in this build\",\"durationMs\":0,\"storage\":{},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[]}"
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"action\":\"read\",\"status\":\"error\",\"error\":\"sms reader not available in this build\",\"durationMs\":0,\"storage\":{},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[]}"
           ]
         }
       ],
@@ -543,7 +543,7 @@
             "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
             "log.info [agent] read_sms req-1: status=ok total=4 sent=4 unread=1 skipped=0 partial=false durationMs=0",
             "event info read_sms req-1: status=ok total=4 sent=4 unread=1 skipped=0 partial=false durationMs=0",
-            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:41+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-06-14T13:06:41+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2025-06-06T15:06:41+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"2025-05-06T15:06:41+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:41+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-06-14T13:06:41+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2025-06-06T15:06:41+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"2025-05-06T15:06:41+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
           ]
         },
         {
@@ -556,7 +556,7 @@
             "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":2},\"status\":\"accepted\"}",
             "log.info [agent] read_sms req-2: status=ok total=4 sent=2 unread=1 skipped=0 partial=false durationMs=0",
             "event info read_sms req-2: status=ok total=4 sent=2 unread=1 skipped=0 partial=false durationMs=0",
-            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-2\",\"ts\":1750000002000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:42+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-06-14T13:06:42+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-2\",\"ts\":1750000002000,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:42+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-06-14T13:06:42+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
           ]
         },
         {
@@ -569,7 +569,7 @@
             "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":1},\"status\":\"accepted\"}",
             "log.info [agent] read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
             "event info read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
-            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-3\",\"ts\":1750000003000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:43+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-3\",\"ts\":1750000003000,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:43+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
           ]
         }
       ],
@@ -651,7 +651,7 @@
             "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":1},\"status\":\"accepted\"}",
             "log.info [agent] read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
             "event info read_sms req-3: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
-            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-3\",\"ts\":1750000003000,\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:43+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-3\",\"ts\":1750000003000,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:43+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
           ]
         },
         {
@@ -686,6 +686,213 @@
         "report boot"
       ],
       "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000},{\"requestId\":\"req-4\",\"at\":1750000004000},{\"requestId\":\"req-5\",\"at\":1750000005000}]}"
+    },
+    {
+      "name": "clear_sms real mode (O4 sweep, cleared {})",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":5}}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] clear_sms command accepted (req-1)",
+            "event info clear_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":5},\"status\":\"accepted\"}",
+            "log.info [agent] clear_sms req-1: status=error cleared=none total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0 error=sms reader not available in this build",
+            "event warn clear_sms req-1: status=error cleared=none total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0 error=sms reader not available in this build",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"action\":\"clear\",\"status\":\"error\",\"error\":\"sms reader not available in this build\",\"durationMs\":0,\"storage\":{},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[],\"cleared\":{}}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "clear_sms sim mode empties the fixture inbox; a later read is empty; a 2nd clear clears 0",
+      "mode": "sim",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":1}}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] read_sms command accepted (req-1)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":1},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-1: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-1: status=ok total=4 sent=1 unread=1 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:36:41+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000}]}",
+            "log.info [agent] clear_sms command accepted (req-2)",
+            "event info clear_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"clear_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
+            "log.info [agent] clear_sms req-2: status=ok cleared=SM:3,ME:2 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "event info clear_sms req-2: status=ok cleared=SM:3,ME:2 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-2\",\"ts\":1750000002000,\"action\":\"clear\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":0,\"total\":40},\"ME\":{\"used\":0,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[],\"cleared\":{\"SM\":3,\"ME\":2}}"
+          ]
+        },
+        {
+          "at": 1750000003000,
+          "payload": "{\"v\":1,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000}]}",
+            "log.info [agent] read_sms command accepted (req-3)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-3\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-3: status=ok total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-3: status=ok total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-3\",\"ts\":1750000003000,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":0,\"total\":40},\"ME\":{\"used\":0,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[]}"
+          ]
+        },
+        {
+          "at": 1750000004000,
+          "payload": "{\"v\":1,\"requestId\":\"req-4\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":99}}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000},{\"requestId\":\"req-4\",\"at\":1750000004000}]}",
+            "log.info [agent] clear_sms command accepted (req-4)",
+            "event info clear_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-4\",\"command\":\"clear_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":50},\"status\":\"accepted\"}",
+            "log.info [agent] clear_sms req-4: status=ok cleared=SM:0,ME:0 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "event info clear_sms req-4: status=ok cleared=SM:0,ME:0 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-4\",\"ts\":1750000004000,\"action\":\"clear\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":0,\"total\":40},\"ME\":{\"used\":0,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[],\"cleared\":{\"SM\":0,\"ME\":0}}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000},{\"requestId\":\"req-3\",\"at\":1750000003000},{\"requestId\":\"req-4\",\"at\":1750000004000}]}"
+    },
+    {
+      "name": "clear_sms redelivered (same requestId): ledger duplicate, never a second clear",
+      "mode": "sim",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] clear_sms command accepted (req-1)",
+            "event info clear_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
+            "log.info [agent] clear_sms req-1: status=ok cleared=SM:3,ME:2 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "event info clear_sms req-1: status=ok cleared=SM:3,ME:2 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"action\":\"clear\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":0,\"total\":40},\"ME\":{\"used\":0,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[],\"cleared\":{\"SM\":3,\"ME\":2}}"
+          ]
+        },
+        {
+          "at": 1750000001500,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.warn [agent] ignoring duplicate clear_sms command req-1",
+            "event warn ignored duplicate clear_sms command",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"rejected\",\"reason\":\"duplicate\"}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"read_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000}]}",
+            "log.info [agent] read_sms command accepted (req-2)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"read_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-2: status=ok total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-2: status=ok total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-2\",\"ts\":1750000002000,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":0,\"total\":40},\"ME\":{\"used\":0,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[]}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000}]}"
+    },
+    {
+      "name": "clear_sms expired: rejected, not claimed, nothing cleared",
+      "mode": "sim",
+      "steps": [
+        {
+          "at": 1750000060001,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "log.warn [agent] rejecting expired clear_sms command (issued 60s ago)",
+            "event warn rejected expired clear_sms command (60s old)",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"rejected\",\"reason\":\"expired\"}"
+          ]
+        },
+        {
+          "at": 1750000060002,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"read_sms\",\"ts\":1750000060000,\"expiresAt\":1750000120000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-2\",\"at\":1750000060002}]}",
+            "log.info [agent] read_sms command accepted (req-2)",
+            "event info read_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000060000,\"requestId\":\"req-2\",\"command\":\"read_sms\",\"expiresAt\":1750000120000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
+            "log.info [agent] read_sms req-2: status=ok total=4 sent=4 unread=1 skipped=0 partial=false durationMs=0",
+            "event info read_sms req-2: status=ok total=4 sent=4 unread=1 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-2\",\"ts\":1750000060002,\"action\":\"read\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":3,\"total\":40},\"ME\":{\"used\":2,\"total\":23}},\"total\":4,\"skipped\":0,\"partial\":false,\"messages\":[{\"id\":\"SM:2\",\"storage\":\"SM\",\"indexes\":[2],\"from\":\"XORGATE\",\"fromType\":\"alphanumeric\",\"sentAt\":\"2025-06-15T14:37:40+00:00\",\"unread\":true,\"text\":\"Simulated device: this is a fixture inbox, not a real modem.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"SM:0+SM:1\",\"storage\":\"SM\",\"indexes\":[0,1],\"from\":\"+15550100001\",\"fromType\":\"international\",\"sentAt\":\"2025-06-14T13:07:40+00:00\",\"unread\":false,\"text\":\"Your data plan renews tomorrow. This fixture message was split in two parts and joined on the device, the way a long carrier notice would be.\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:4\",\"storage\":\"ME\",\"indexes\":[4],\"from\":\"5550100\",\"fromType\":\"national\",\"sentAt\":\"2025-06-06T15:07:40+00:00\",\"unread\":false,\"text\":\"Fixture with unicode: café, 東京, 👍\",\"binary\":false,\"incomplete\":false,\"truncated\":false},{\"id\":\"ME:1\",\"storage\":\"ME\",\"indexes\":[1],\"from\":\"+15550100002\",\"fromType\":\"international\",\"sentAt\":\"2025-05-06T15:07:40+00:00\",\"unread\":false,\"text\":\"Oldest fixture message.\",\"binary\":false,\"incomplete\":false,\"truncated\":false}]}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-2\",\"at\":1750000060002}]}"
+    },
+    {
+      "name": "clear_sms replay mode answers from the fixture",
+      "mode": "replay",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] clear_sms command accepted (req-1)",
+            "event info clear_sms command accepted",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"expiresAt\":1750000060000,\"args\":{\"limit\":10},\"status\":\"accepted\"}",
+            "log.info [agent] clear_sms req-1: status=ok cleared=SM:3,ME:2 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "event info clear_sms req-1: status=ok cleared=SM:3,ME:2 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=0",
+            "sms {\"v\":1,\"deviceId\":\"dev-1\",\"requestId\":\"req-1\",\"ts\":1750000001000,\"action\":\"clear\",\"status\":\"ok\",\"error\":null,\"durationMs\":0,\"storage\":{\"SM\":{\"used\":0,\"total\":40},\"ME\":{\"used\":0,\"total\":23}},\"total\":0,\"skipped\":0,\"partial\":false,\"messages\":[],\"cleared\":{\"SM\":3,\"ME\":2}}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}"
+    },
+    {
+      "name": "obd_scan / obd_forget without the OBD peripheral: rejected",
+      "mode": "real",
+      "steps": [
+        {
+          "at": 1750000001000,
+          "payload": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"obd_scan\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000}]}",
+            "log.info [agent] obd_scan command accepted (req-1)",
+            "event info obd_scan command accepted",
+            "log.warn [agent] obd_scan rejected (req-1): no OBD peripheral on this device",
+            "event warn obd_scan rejected: no OBD peripheral on this device",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-1\",\"command\":\"obd_scan\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"no OBD peripheral\"}"
+          ]
+        },
+        {
+          "at": 1750000002000,
+          "payload": "{\"v\":1,\"requestId\":\"req-2\",\"command\":\"obd_forget\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+          "trace": [
+            "ledger {\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000}]}",
+            "log.info [agent] obd_forget command accepted (req-2)",
+            "event info obd_forget command accepted",
+            "log.warn [agent] obd_forget rejected (req-2): no OBD peripheral on this device",
+            "event warn obd_forget rejected: no OBD peripheral on this device",
+            "ack {\"v\":1,\"deviceId\":\"dev-1\",\"ts\":1750000000000,\"requestId\":\"req-2\",\"command\":\"obd_forget\",\"expiresAt\":1750000060000,\"status\":\"rejected\",\"reason\":\"no OBD peripheral\"}"
+          ]
+        }
+      ],
+      "after": [],
+      "ledgerFinal": "{\"v\":1,\"executed\":[{\"requestId\":\"req-1\",\"at\":1750000001000},{\"requestId\":\"req-2\",\"at\":1750000002000}]}"
     }
   ]
 }

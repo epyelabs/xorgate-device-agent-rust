@@ -1,6 +1,6 @@
 {
  "jsSourceFile": "test/led-manager.test.ts",
- "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
  "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-wp1-dump-led-traces.test.ts (vitest fake timers) in a git-archive scratch copy of 89b5c64: each it() re-run step by step against the REAL LedDriver/LedManager with a recording writer; setTimeout/settle waits → advanceTimersByTimeAsync; trace = writer calls {t,pins,high} + log lines {t,msg} in virtual ms",
  "cases": [
   {
@@ -637,8 +637,201 @@
    }
   },
   {
-   "name": "never calls the signal function when inert",
+   "name": "still resolves the state when inert, for telemetry — but never touches a pin",
    "ts": "led-manager.test.ts:254",
+   "expected": {
+    "calls": [],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "inert: not a Raspberry Pi"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "before": null,
+     "reason1": "gps-wait",
+     "t1": {
+      "led_state": 2,
+      "health_flags": 16
+     },
+     "t2": {
+      "led_state": 3,
+      "health_flags": 8
+     },
+     "counts": {
+      "signalCalls": 2,
+      "lteReads": 1
+     },
+     "endMs": 40
+    }
+   }
+  },
+  {
+   "name": "telemetry carries the LTE status the manager read for itself",
+   "ts": "led-manager.test.ts:273",
+   "expected": {
+    "calls": [],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "inert: not a Raspberry Pi"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "t": {
+      "led_state": 3,
+      "health_flags": 4
+     },
+     "endMs": 30
+    }
+   }
+  },
+  {
+   "name": "the config-applied overlay never shows in telemetry; the state underneath does",
+   "ts": "led-manager.test.ts:282",
+   "expected": {
+    "calls": [
+     {
+      "t": 0,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       21
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 20,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 170,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 370,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 520,
+      "pins": [
+       12,
+       21,
+       16
+      ],
+      "high": false
+     },
+     {
+      "t": 520,
+      "pins": [
+       12,
+       16
+      ],
+      "high": true
+     },
+     {
+      "t": 520,
+      "pins": [
+       21
+      ],
+      "high": false
+     },
+     {
+      "t": 645,
+      "pins": [
+       12,
+       16
+      ],
+      "high": false
+     }
+    ],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "none → starting (white solid)"
+     },
+     {
+      "t": 20,
+      "msg": "starting → healthy (green heartbeat)"
+     },
+     {
+      "t": 520,
+      "msg": "none → network (purple blink-fast)"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "t0": {
+      "led_state": 0,
+      "health_flags": 0
+     },
+     "reason1": "network",
+     "t1": {
+      "led_state": 3,
+      "health_flags": 8
+     },
+     "endMs": 720
+    }
+   }
+  },
+  {
+   "name": "holds the last resolved telemetry when signal gathering throws",
+   "ts": "led-manager.test.ts:299",
+   "expected": {
+    "calls": [],
+    "logs": [
+     {
+      "t": 0,
+      "msg": "inert: not a Raspberry Pi"
+     },
+     {
+      "t": 0,
+      "msg": "signal read failed, holding: collector exploded"
+     }
+    ],
+    "marks": {},
+    "extra": {
+     "t": {
+      "led_state": 2,
+      "health_flags": 16
+     },
+     "endMs": 0
+    }
+   }
+  },
+  {
+   "name": "stops resolving after stop()",
+   "ts": "led-manager.test.ts:312",
    "expected": {
     "calls": [],
     "logs": [
@@ -653,6 +846,7 @@
       "signalCalls": 0,
       "lteReads": 0
      },
+     "t": null,
      "endMs": 0
     }
    }

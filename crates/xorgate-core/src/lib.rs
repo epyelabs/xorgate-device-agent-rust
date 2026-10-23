@@ -47,6 +47,7 @@ pub mod js;
 pub mod kvs_manifest;
 pub mod led;
 pub mod led_state;
+pub mod led_telemetry;
 pub mod led_wiring;
 pub mod media_ladder;
 pub mod modem;

@@ -738,6 +738,7 @@ pub fn wall_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+#[allow(unsafe_code)]
 fn host_mono_ms() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
