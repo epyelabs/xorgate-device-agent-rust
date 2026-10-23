@@ -32,7 +32,7 @@ const me: Record<number, { stat: number; length: number; pdu: string }> = {};
 for (let i = 0; i < 23; i++) me[i] = slot(`me${i}`, 1 + (i % 15), 1);
 const out = {
   jsSourceFile: "test/sms-modem.test.ts + test/sms-pdu-builder.ts",
-  jsCommit: "89b5c64",
+  jsCommit: (process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d").slice(0, 7),
   generatedBy: "tools/replay/js/dump-sms-modem.mts",
   modem: { cmgf: 1, mem1: "SR", stores: { SM: { total: 40, slots: sm }, ME: { total: 23, slots: me } } },
 };

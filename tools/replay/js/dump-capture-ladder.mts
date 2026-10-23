@@ -197,7 +197,7 @@ for (const n of CONSTANT_NAMES) {
 
 console.log(JSON.stringify({
   jsSourceFile: "src/recording/video-capture.ts (VideoCaptureSupervisor onExit :722-856, checkProgress :963-1007, isRecording/status/anyRecording :568-594, reapShmSegments :873-891, spawn events :710-715, setCameras event :439)",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "plans/device-agent-js-to-rust/phase-3/evidence/wp4-tools/dump-capture-ladder.mts via npx tsx in a git-archive 89b5c64 scratch copy (Date.now/setTimeout stubbed; private methods driven on the real class; constants read from the archive's src/recording/video-capture.ts, SWEEP_POLL_MS also observed as watchSession's setInterval period)",
   constants,
   cases: [

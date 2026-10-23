@@ -139,7 +139,7 @@ console.log(
   JSON.stringify(
     {
       jsSourceFile: "src/recording/uploader.ts (Uploader drain/scheduleRetry/pause/stop) + src/recording/telemetry-source.ts",
-      jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+      jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
       generatedBy:
         "plans/device-agent-js-to-rust/phase-3/evidence/wp3-tools/dump-upload-step.mts via tools/replay/js/run-tsx.sh (scratch git-archive copy @ 89b5c64; setTimeout patched to fire on demand)",
       sessionId: SESSION,

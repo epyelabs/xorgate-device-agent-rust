@@ -93,7 +93,7 @@ process.stdout.write(
   JSON.stringify(
     {
       jsSourceFile: "src/hardware/kvs-webrtc.ts (detectRuntime :56-77, streamChannel :85-109)",
-      jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+      jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
       generatedBy: "plans/device-agent-js-to-rust/phase-3/evidence/wp5-tools/dump-kvs-runtime.mts via tools/replay/js/run-tsx.sh (node:20-bookworm linux/arm64; no gst-launch-1.0 in the container)",
       cases,
     },

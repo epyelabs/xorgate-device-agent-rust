@@ -461,7 +461,7 @@ it("dumps", async () => {
 afterAll(() => {
   const head = (file: string) => ({
     jsSourceFile: file,
-    jsCommit: process.env.JS_COMMIT ?? "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+    jsCommit: process.env.JS_COMMIT_FULL ?? process.env.JS_COMMIT ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
     generatedBy:
       "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-wp1-dump-led-traces.test.ts (vitest fake timers) in a git-archive scratch copy of 89b5c64: each it() re-run step by step against the REAL LedDriver/LedManager with a recording writer; setTimeout/settle waits → advanceTimersByTimeAsync; trace = writer calls {t,pins,high} + log lines {t,msg} in virtual ms",
   });

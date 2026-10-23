@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the JS agent @ $JS_SHA (default 89b5c64) for the rig WITHOUT touching
+# Build the JS agent @ $JS_SHA (default 09da38d, H7 flip) for the rig WITHOUT touching
 # the JS repo (phase file §Record/replay route 1): `git archive` into
 # $RIG_JS_CACHE/js-<sha> (default tools/replay/.cache), then `npm ci && npm run
 # build` inside node:20-bookworm (linux/arm64, the rig's runtime). Idempotent:
@@ -11,7 +11,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 JS_REPO="${JS_REPO:-$(cd "$HERE/../../.." && pwd)/xorgate-device-agent}"
-JS_SHA="${JS_SHA:-89b5c64}"
+JS_SHA="${JS_SHA:-09da38d}"
 DEST="${RIG_JS_CACHE:-$HERE/.cache}/js-$JS_SHA"
 if [ "${1:-}" != "--force" ] && [ -f "$DEST/dist/worker.js" ] && [ -f "$DEST/dist/cli.js" ]; then
   echo "js: $DEST (exists)"

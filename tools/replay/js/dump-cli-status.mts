@@ -69,7 +69,7 @@ for (const c of cases) {
 }
 process.stdout.write(JSON.stringify({
   jsSourceFile: "src/commands/status.ts:28-120 (print) over src/daemon/manager.ts inspect :105-120, src/lib/format.ts (uptimeLabel, ageLabel, formatBytes)",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "npx tsx dump-cli-status.mts in a git-archive scratch copy of 89b5c64, non-root, stdout not a TTY (phase-2 WP6; script in evidence/wp6-tools, handed to WP7)",
   cases: out,
 }, null, 2) + "\n");

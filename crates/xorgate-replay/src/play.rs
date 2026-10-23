@@ -95,7 +95,7 @@ pub struct PlayArgs {
     pub b: AgentKind,
     /// The JS build (`dist/worker.js`, `dist/cli.js`, `node_modules/`) of
     /// both JS sides unless `--js-dir-a` / `--js-dir-b` names one per side.
-    #[arg(long, default_value = "/rig/cache/js-89b5c64")]
+    #[arg(long, default_value = "/rig/cache/js-09da38d")]
     pub js_dir: PathBuf,
     /// Phase 5b (dual ref): the JS build agent A runs (default `--js-dir`),
     /// so a JS-vs-JS run can pair two refs (`run-rig.sh --a js@<ref>`).
@@ -2867,8 +2867,8 @@ mod tests {
         }
         let base = ["x", "--tape", "t", "--out", "o"];
         let w = W::parse_from(base);
-        assert_eq!(w.play.js_dir_for("a"), Path::new("/rig/cache/js-89b5c64"));
-        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-89b5c64"));
+        assert_eq!(w.play.js_dir_for("a"), Path::new("/rig/cache/js-09da38d"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-09da38d"));
         let w = W::parse_from(base.iter().copied().chain([
             "--js-dir",
             "/j/js-x",
@@ -2879,7 +2879,7 @@ mod tests {
         assert_eq!(w.play.js_dir_for("b"), Path::new("/j/js-09da38d"));
         let w = W::parse_from(base.iter().copied().chain(["--js-dir-a", "/j/js-89b5c64"]));
         assert_eq!(w.play.js_dir_for("a"), Path::new("/j/js-89b5c64"));
-        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-89b5c64"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-09da38d"));
     }
 
     /// Phase 5b: an agent whose telemetry is held (clock trust) still counts

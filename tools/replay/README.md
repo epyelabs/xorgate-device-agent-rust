@@ -1,6 +1,8 @@
 # Record/replay harness (Phase 2 WP7; Phase 3 WP6 media additions)
 
-Parity evidence for the Rust port: the JS agent @ `89b5c64` and the Rust agent
+Parity evidence for the Rust port: the JS agent @ `09da38d` (the default since
+the Phase 5b H7 flip; `89b5c64` stays buildable via `JS_REF` / `js@89b5c64`
+for archaeology, it gates nothing) and the Rust agent
 run side by side on the **same recorded inputs**, and everything they publish
 and write is diffed under a tolerance table whose every row has an id. Design:
 `plans/device-agent-js-to-rust/phase-2-cloud-plane.md` §Record/replay
@@ -20,7 +22,7 @@ the player, eight synthetic media scenarios and the media streams of the diff
 ```sh
 # once: the CI build image (scripts/docker-build.sh builds it)
 tools/replay/gen-certs.sh          # rig CA + broker/agent/player certs (.cache/certs)
-tools/replay/js-build.sh           # git archive 89b5c64 → npm ci → npm run build (.cache/js-89b5c64)
+tools/replay/js-build.sh           # git archive $JS_SHA (default 09da38d) → npm ci → npm run build (.cache/js-<sha>)
 tools/replay/build-bins.sh         # xorgate-rs + xorgate-replay (linux/arm64) → .cache/bin
 
 # a tape: synthetic …
@@ -269,7 +271,7 @@ a new or wider row needs an O-decision or a reviewer's OK cited in `basis`.
 
 ## CLI matrix (C11)
 
-`cli-matrix.sh` runs both CLIs (`node dist/cli.js` @ 89b5c64, `xorgate-rs`; or
+`cli-matrix.sh` runs both CLIs (`node dist/cli.js` @ `$JS_REF`, default 09da38d, `xorgate-rs`; or
 `RS_CLI=<path>` for a branch build) inside the rig container and diffs stdout,
 stderr (ANSI stripped), exit code and settings.json bytes:
 
@@ -554,3 +556,28 @@ timed against that agent's NMEA reads afterwards, plus the tape itself
 so a kept run re-diffs completely — and the player now waits up to the capture
 stop grace (10 s) for an exited agent's process group before its SIGKILL, so a
 capture's `ended` (int vs kill) is the agent's doing, not a race with the rig.
+
+## Phase 5b: JS catch-up to `09da38d` (WP4)
+
+- **Refs.** `JS_REF` / `JS_SHA` default to `09da38d` (H7 flip). Name a side `js@<sha>`
+  (`run-rig.sh <tape> --a js@89b5c64 --b js@09da38d`) for a per-side build (`--js-dir-a/-b`);
+  `89b5c64` stays buildable for archaeology and gates nothing. Shared builds:
+  `RIG_JS_CACHE=<abs .cache>`; label runs with `XORGATE_AGENT_LABEL`.
+- **Fixture re-dump (H2, CF78).** `js/redump-all.sh <outdir>` re-runs every driver of `js/` (and the
+  Phase 1/2 generators copied from the plan evidence: `dump-wp6`, `dump-m1`, `dump-lte-scenarios`,
+  `dump-imu-scenarios`, `dump-wp5`, `dump-settings-proto`) at `$JS_SHA`; every driver stamps
+  `jsCommit` from `$JS_COMMIT_FULL`. `js/redump-compare.py <outdir> fixtures` → BYTE / STAMP / DIFF.
+  Fixtures from Phase 1 test tables with no generator keep the `89b5c64` stamp (their TS tests
+  pass at `09da38d`; list in `phase-5b/evidence/delta-inventory.md`).
+- **OBD (`src/p5b.rs`).** `meta.rig.obd` starts the ELM327-emulator 4.0.0 (`obd-emulator.py`, venv in
+  `Dockerfile.rig`) on a pty per agent (`XORGATE_OBD_SERIAL`), builds a per-side python dir (REAL
+  `obd_read.py` / `obd_scan.py` / `obd/`) and the `bluetoothctl` shim's state (pair/trust/connect
+  REFUSED). Event paths normalise the side's pty to `{obd-serial}`.
+- **FakeModem `allowClear`** (`meta.rig.modem.allowClear`): `AT+CMGD=1,4` is answered only on the
+  p5b-sms-clear tape; anywhere else it is FORBIDDEN and fails the run.
+- **Clock-trust hold (X5).** A held agent publishes nothing; `held_alive` counts any publish as a
+  tick, and the post-hold settle pairs the resume (tolerances.toml "POST-HOLD SETTLE").
+- **Tapes** (`synth p5b-*`): sms-clear, led, clock-hold, clock-fallback, unheld, obd-emulator,
+  obd-crank, obd-badproto, obd-config (cloud `obd: null` rejection), obd-cmds, obd-cmds-noperiph.
+- **Bench overlay** (`scripts/bench/p5b-overlay.sh apply|revert|status`): OBD emulator + FakeModem
+  under the shared profile only; CF76 keeps `peripherals.obd` and `XORGATE_OBD_*` out of the env.

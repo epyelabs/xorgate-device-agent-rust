@@ -268,7 +268,7 @@ for (const c of cases) {
 }
 const doc = {
   jsSourceFile: "src/recording/telemetry-recorder.ts + src/recording/segments.ts (test/recording-recorder.test.ts ×5 + scenarios)",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy:
     "npx tsx plans/device-agent-js-to-rust/phase-3/evidence/wp2-tools/dump-recorder.mts (scratch git-archive copy @ 89b5c64; handed to tools/replay/js/ via WP6)",
   cases: result,

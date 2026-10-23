@@ -20,7 +20,6 @@
 import { readFileSync, mkdtempSync, writeFileSync as realWrite, rmSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
-import { execSync } from "node:child_process";
 import { transformSync } from "esbuild";
 import {
   parseCommand, isExpired, claimCommand, executeCommand, containerExitCode,
@@ -310,7 +309,7 @@ const scenarios: Scenario[] = [
 if (!fixtureSmsRead) scenarios.splice(scenarios.findIndex((x) => x.name.startsWith("clear_sms real")));
 const cases = [];
 for (const sc of scenarios) cases.push(await runScenario(sc));
-const jsCommit = process.env.JS_COMMIT ?? execSync("git -C /Users/vynci/vynci/xorgate/device/xorgate-device-agent rev-parse 89b5c64").toString().trim();
+const jsCommit = process.env.JS_COMMIT_FULL ?? process.env.JS_COMMIT ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d";
 console.log(JSON.stringify({
   jsSourceFile: "src/worker.ts",
   jsLines: JS_LINES,

@@ -212,7 +212,7 @@ for (const s of scenarios) cases.push({ ...s, passes: await runScenario(s), pass
 const body = readFileSync(HELPER, "utf8");
 console.log(JSON.stringify({
   jsSourceFile: "test/boot-config.test.ts",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "plans/device-agent-js-to-rust/phase-4/evidence/wp3-tools/dump-camera-mount.mts via npx tsx in a scratch copy of the JS repo @89b5c64 (docker node:20-bookworm linux/arm64, TZ=UTC, mawk; node " + process.version + "; the REAL system/xorgate-camrotate run directly with XORGATE_BOOT_CONFIG as the TS test does); paths under the scratch dir are rewritten to <dir>",
   constants: { CAMROTATE_HELPER, CONFIG_TXT, HARDWARE, NOW, helperNeverReboots: !/^\s*(sudo\s+)?(systemctl\s+reboot|reboot|shutdown)\b/m.test(body) },
   cases: [],

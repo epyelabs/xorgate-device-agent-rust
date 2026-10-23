@@ -449,7 +449,7 @@ for (const [n, sc] of SCENARIOS.entries()) {
 }
 Date.now = realNow;
 
-let commit = "89b5c6407ef88e20f7168bd767d22a7be04ebcb6";
+let commit = process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d";
 out(
   JSON.stringify(
     {

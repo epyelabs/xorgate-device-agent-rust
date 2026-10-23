@@ -1,6 +1,6 @@
 #!/bin/bash
 # E3 LED CLI, SIGINT mid-pattern (Phase 4 gate harness, gate-offbench/E3-led-cli/e3run3;
-# F-E3-1 / D36): the TS `xorgate led` (node dist/cli.js @$JS_REF (default 89b5c64; `run -e JS_REF=<sha>`)) and `xorgate-rs led`
+# F-E3-1 / D36): the TS `xorgate led` (node dist/cli.js @$JS_REF (default 09da38d since the Phase 5b H7 flip; `run -e JS_REF=<sha>`)) and `xorgate-rs led`
 # (/rig/cache/bin) each run 9× under the rig's Pi namespace with the pinctrl shim
 # logging "<wall ms> <argv>"; the harness logs the SIGINT wall ms and sends it.
 # Runs INSIDE the rig container, writing to /rig/out (= $RIG_RUNS):
@@ -9,7 +9,7 @@
 #   docker compose -p <proj> -f tools/replay/docker-compose.yml down -v --remove-orphans
 #   python3 -I tools/replay/led-cli-sigint-cmp.py <dir>      # D36 comparator
 set -u
-JS_REF="${JS_REF:-89b5c64}"; JS_DIR="/rig/jscache/js-$JS_REF"   # Phase 5b: shared build per ref
+JS_REF="${JS_REF:-09da38d}"; JS_DIR="/rig/jscache/js-$JS_REF"   # Phase 5b: shared build per ref
 O=/rig/out; P=$O/pi; mkdir -p /boot/firmware
 mkdir -p $P/boot $P/dt $O/sh-full $O/sh-nopinctrl $O/st-free/exec $O/st-foreign/exec $O/st-own/exec
 printf 'Raspberry Pi Compute Module 5 Rev 1.0\0' > $P/dt/model

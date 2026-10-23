@@ -38,4 +38,4 @@ const cases = SNAPSHOTS.map((s) => {
     ipv4Of: NAMES.map((n) => [n, ipv4Of(n)]),
   };
 });
-console.log(JSON.stringify({ jsSourceFile: "src/hardware/network.ts", jsCommit: "89b5c64", generatedBy: "phase-4/evidence/wp5-tools/dump-iface-for-ip.mts → tools/replay/js/ via WP6 (Phase 4 WP5, CF22)", note: "a numeric family 4 (node<18) is normalised to \"IPv4\" in `interfaces` — the Rust snapshot type carries libuv's string family", cases }, null, 1));
+console.log(JSON.stringify({ jsSourceFile: "src/hardware/network.ts", jsCommit: (process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d").slice(0, 7), generatedBy: "phase-4/evidence/wp5-tools/dump-iface-for-ip.mts → tools/replay/js/ via WP6 (Phase 4 WP5, CF22)", note: "a numeric family 4 (node<18) is normalised to \"IPv4\" in `interfaces` — the Rust snapshot type carries libuv's string family", cases }, null, 1));

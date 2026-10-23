@@ -2,7 +2,7 @@
 # D36 / review-gate-fixes F-R1 — SIGINT while a SLOW lit pattern step is in
 # flight (the reviewer's adversarial repro). A pinctrl shim whose writes land
 # (are logged) when the child FINISHES, `dh` taking $SLOW_DH_S (0.08 s); the
-# harness waits for a `dh` to start, sends SIGINT 10 ms later. TS @$JS_REF (default 89b5c64; `run -e JS_REF=<sha>`) and
+# harness waits for a `dh` to start, sends SIGINT 10 ms later. TS @$JS_REF (default 09da38d since the Phase 5b H7 flip; `run -e JS_REF=<sha>`) and
 # xorgate-rs `blue blink-fast`, 5 cases each. Verdict per case and side: the
 # LED ends dark (the last landed write is the all-pin blank) and never
 # re-lights (no `dh` lands after a blank); Rust lands EXACTLY 1 blank (D36,
@@ -14,7 +14,7 @@
 #     run --rm -T --entrypoint bash rig /rig/tools/led-cli-sigint-slow.sh
 #   docker compose -p <proj> -f tools/replay/docker-compose.yml down -v --remove-orphans
 set -u
-JS_REF="${JS_REF:-89b5c64}"; JS_DIR="/rig/jscache/js-$JS_REF"   # Phase 5b: shared build per ref
+JS_REF="${JS_REF:-09da38d}"; JS_DIR="/rig/jscache/js-$JS_REF"   # Phase 5b: shared build per ref
 O=/rig/out; P=$O/pi; SH=$O/sh-slow
 mkdir -p /boot/firmware $P/boot $P/dt $O/st-free/exec $SH
 printf 'Raspberry Pi Compute Module 5 Rev 1.0\0' > $P/dt/model

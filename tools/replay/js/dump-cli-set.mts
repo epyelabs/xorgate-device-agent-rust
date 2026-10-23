@@ -208,7 +208,7 @@ for (const c of cases) {
 rmSync(scratch, { recursive: true, force: true });
 process.stdout.write(JSON.stringify({
   jsSourceFile: "src/commands/set.ts (setCommand :391-531, setRecordingCommand :109, setCameraEnable :227, setCameraMountCommand :266, setTimeSyncCommand :316, setApnCommand + watch :533-671) over src/daemon/settings.ts loadSettings/saveSettings",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "npx tsx dump-cli-set.mts in a git-archive scratch copy of 89b5c64, non-root, fake timers (phase-2 WP6; script in evidence/wp6-tools, handed to WP7)",
   cases: out,
 }, null, 2) + "\n");

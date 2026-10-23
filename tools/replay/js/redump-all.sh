@@ -12,13 +12,16 @@
 # again afterwards, non-root where the fixture says "non-root"). The JS copy is
 # the shared one (DISK BUDGET rule 3): the script only adds `.rig-drivers/`
 # files and, for the run's duration, three `test/zz-*` files.
+# Also the Phase 1/2 generators copied from the plan evidence (CF78: dump-wp6,
+# dump-m1, dump-lte/imu-scenarios, dump-wp5, dump-settings-proto). Every
+# driver stamps jsCommit from $JS_COMMIT_FULL (the full sha of $JS_SHA).
 # NOT covered (need a harness, see delta-inventory.md): sms-pty-read.mts (the
 # Rust pty test drives it), wp5-cli/e2e-cli-wp5.sh (run it with JS_REF instead).
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT=${1:?usage: redump-all.sh <outdir>}
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
-JS_SHA="${JS_SHA:-89b5c64}"
+JS_SHA="${JS_SHA:-09da38d}"
 JS_SHA="$JS_SHA" "$HERE/../js-build.sh" >/dev/null
 JS="${RIG_JS_CACHE:-$HERE/../.cache}/js-$JS_SHA"
 JS_REPO="${JS_REPO:-$(cd "$HERE/../../../.." && pwd)/xorgate-device-agent}"
@@ -30,7 +33,8 @@ set -u
 mkdir -p .rig-drivers /out/_print /out/_log
 cp /drivers/*.mts /drivers/*.ts /drivers/wp1-scenarios.json /drivers/wp5-cli/*.mts .rig-drivers/
 # the `./src/…` importers run from the scratch root (as run-tsx.sh places them)
-for d in dump-gps-scenarios.mts dump-capture-ladder.mts wp1-dump-recording-flow.ts wp1-rate-quirk.ts; do
+for d in dump-gps-scenarios.mts dump-capture-ladder.mts wp1-dump-recording-flow.ts wp1-rate-quirk.ts \
+         dump-lte-scenarios.mts dump-imu-scenarios.mts dump-wp5.ts; do
   cp "/drivers/$d" ".rig-driver-$d"; chmod a+rw ".rig-driver-$d"
 done
 chmod -R a+rwX .rig-drivers
@@ -78,6 +82,15 @@ tsx root .rig-drivers/probe-exec-timeout.mts camera_mount/exec-timeout.json
 tsx root .rig-drivers/probe-exec.mts -
 tsx root .rig-drivers/example-cloud-config.mts -
 tsx root .rig-driver-wp1-rate-quirk.ts -
+# Phase 1/2 generators (CF78; copied from the plan evidence): wp6 / wp5 write
+# into $OUT, m1 prints the [integration M1] extras that were merged by hand
+# into cloud_config / config_report / segments.
+OUT=/out tsx root .rig-drivers/dump-wp6.mts -
+tsx root .rig-drivers/dump-m1.mts -
+tsx root .rig-driver-dump-lte-scenarios.mts collectors/lte-scenarios.json
+tsx node .rig-driver-dump-imu-scenarios.mts collectors/imu-scenarios.json
+tsx root .rig-driver-dump-wp5.ts - /out
+tsx node .rig-drivers/dump-settings-proto.mts settings/proto-keys.json
 # vitest drivers: into test/, run, move the JSON out, remove again.
 for t in zz-review-supersede zz-wp1-dump-led-cli zz-wp1-dump-led-traces; do
   cp "/drivers/$t.test.ts" test/

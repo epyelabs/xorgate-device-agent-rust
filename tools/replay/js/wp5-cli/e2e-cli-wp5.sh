@@ -1,6 +1,6 @@
 #!/bin/sh
 # Phase 4 WP5 e2e: the REAL `xorgate-rs` (Docker-built debug binary) vs the REAL
-# TS CLI `node dist/cli.js` @89b5c64 (tools/replay/.cache/js-89b5c64, built by
+# TS CLI `node dist/cli.js` @$JS_SHA (default 09da38d; tools/replay/.cache/js-<sha>, built by
 # tools/replay/js-build.sh) on cases.txt: pipeline, recording, set wifi (fake
 # nmcli/sudo/ping on PATH — nothing real is toggled). Same container paths on
 # both sides (/w/<id>), so outputs diff directly. Expected diffs: the Q9 restart
@@ -11,7 +11,7 @@ set -eu
 T=$(cd "$(dirname "$0")" && pwd); OUT=${1:?outdir}; RS=$(pwd)
 rm -rf "$OUT"; mkdir -p "$OUT/ts" "$OUT/rs"
 # Phase 5b: the shared build per ref ($RIG_JS_CACHE/js-$JS_REF).
-JS_REF="${JS_REF:-89b5c64}"
+JS_REF="${JS_REF:-09da38d}"
 JS="${RIG_JS_CACHE:-$RS/tools/replay/.cache}/js-$JS_REF"
 [ -f "$JS/dist/cli.js" ] || JS_SHA="$JS_REF" "$RS/tools/replay/js-build.sh"
 LBL="xorgate.agent=${XORGATE_AGENT_LABEL:-rig}"

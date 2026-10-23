@@ -10,7 +10,7 @@
 # (`run` starts the mosquitto dependency; the `down -v` afterwards removes it
 # AND its two anonymous volumes — without `-v` they leak, F-RIG-1.)
 #
-# Default A=js (`node dist/cli.js` @ $JS_REF, default 89b5c64, from the shared
+# Default A=js (`node dist/cli.js` @ $JS_REF, default 09da38d (H7 flip), from the shared
 # build mounted at /rig/jscache = $RIG_JS_CACHE; `js@<ref>` pins a side, Phase
 # 5b), B=rust (`xorgate-rs`). Pass JS_REF with `run -e JS_REF=<sha>`. Each side
 # runs the list top to bottom in ONE home (settings accumulate like on a
@@ -37,7 +37,7 @@ known_row() { # T8/<row>
   local row=${1#*/}
   [ "${1%%/*}" = T8 ] && grep -q "^  id = \"$row\"" "$TOL"
 }
-JS_REF="${JS_REF:-89b5c64}"
+JS_REF="${JS_REF:-09da38d}"
 JS_CLI="node /rig/jscache/js-$JS_REF/dist/cli.js"
 RS_CLI="${RS_CLI:-/rig/cache/bin/xorgate-rs}"   # override: a branch build (e.g. WP6 before merge)
 cli_for() { case "$1" in js) echo "$JS_CLI" ;; js@?*) echo "node /rig/jscache/js-${1#js@}/dist/cli.js" ;; rust) echo "$RS_CLI" ;; esac; }

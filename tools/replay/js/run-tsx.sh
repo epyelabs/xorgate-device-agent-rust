@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run a white-box tsx driver (phase file §Record/replay route 2) against the
-# SCRATCH copy of the JS agent @ $JS_SHA (default 89b5c64;
+# SCRATCH copy of the JS agent @ $JS_SHA (default 09da38d since the Phase 5b H7 flip;
 # $RIG_JS_CACHE/js-<sha>, default tools/replay/.cache, built by ../js-build.sh)
 # — never the JS repo itself.
 #
@@ -53,7 +53,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DRIVER="${1:?usage: run-tsx.sh <driver.mts> [args…]}"; shift
 "$HERE/../js-build.sh" >/dev/null
-JS="${RIG_JS_CACHE:-$HERE/../.cache}/js-${JS_SHA:-89b5c64}"
+JS="${RIG_JS_CACHE:-$HERE/../.cache}/js-${JS_SHA:-09da38d}"
 # Drivers import the TS three ways: `join(process.cwd(), "src/…")` and
 # `"../src/…"` work from .rig-drivers/; a driver importing `"./src/…"` (WP2's
 # dump-gps-scenarios.mts) is placed at the scratch root instead.
@@ -62,6 +62,6 @@ mkdir -p "$JS/.rig-drivers"
 cp "$DRIVER" "$JS/$DEST"
 # The full sha of the ref (drivers that pin per-ref line slices read it).
 JS_REPO="${JS_REPO:-$(cd "$HERE/../../../.." && pwd)/xorgate-device-agent}"
-JS_COMMIT_FULL=$(git -C "$JS_REPO" rev-parse "${JS_SHA:-89b5c64}" 2>/dev/null || echo "${JS_SHA:-89b5c64}")
+JS_COMMIT_FULL=$(git -C "$JS_REPO" rev-parse "${JS_SHA:-09da38d}" 2>/dev/null || echo "${JS_SHA:-09da38d}")
 docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform linux/arm64 -e TZ=UTC -e JS_COMMIT_FULL="$JS_COMMIT_FULL" -v "$JS:/js" -w /js node:20-bookworm \
   npx --no-install tsx "$DEST" "$@"

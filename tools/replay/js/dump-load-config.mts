@@ -94,7 +94,7 @@ for (const c of cases) {
 rmSync(creds, { recursive: true, force: true });
 console.log(JSON.stringify({
   jsSourceFile: "src/agent/config.ts (loadConfig :197-308, parseArgs :173-191) + src/daemon/runtime.ts",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "npx tsx dump-load-config.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP1; script handed to WP7 via evidence/wp1.md)",
   cases: out,
 }, null, 2));

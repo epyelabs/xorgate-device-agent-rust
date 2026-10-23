@@ -18,7 +18,7 @@
 #
 # Phase 5b env:
 #   JS_REF=<sha>          the JS reference for a bare `js` side (default
-#                         89b5c64 until the H7 flip)
+#                         09da38d since the H7 flip; 89b5c64 stays buildable for archaeology)
 #   RIG_JS_CACHE=<abs>    the dir holding the ONE shared built copy per ref
 #                         (`js-<sha>/`, js-build.sh); default tools/replay/.cache.
 #                         Mounted read-only at /rig/jscache.
@@ -52,7 +52,7 @@ while [ $# -gt 0 ]; do
 done
 [ -f "$TAPE" ] || { echo "no tape: $TAPE" >&2; exit 2; }
 
-JS_REF="${JS_REF:-89b5c64}"
+JS_REF="${JS_REF:-09da38d}"
 RIG_JS_CACHE="${RIG_JS_CACHE:-$HERE/.cache}"
 case "$RIG_JS_CACHE" in /*) ;; *) echo "RIG_JS_CACHE must be absolute: $RIG_JS_CACHE" >&2; exit 2 ;; esac
 export RIG_JS_CACHE

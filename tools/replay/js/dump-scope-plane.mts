@@ -48,7 +48,7 @@ while (!reprobed && ticks < 10_000) {
 topics.push(s.topic);
 console.log(JSON.stringify({
   jsSourceFile: "src/agent/telemetry-scope.ts (TelemetryScope) + src/worker.ts:739-779 (noteScopeChange wording)",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "npx tsx dump-scope-plane.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP1)",
   cases: [{ name: "badCycle loop through the plane → fallback → timed re-probe",
     input: { deviceId: DEVICE, scope: WS_A, cyclePeriodMs: 3300, closeAfterMs: 1300, publishAfterMs: 1000, tickMs: 1000 },

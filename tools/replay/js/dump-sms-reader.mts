@@ -519,7 +519,7 @@ process.stdout.write(
     {
       ptySpec,
       jsSourceFile: "src/hardware/sms-modem.ts (resolveSmsPort :76-99, AtSession :212-270, sweepTransport :315-417, acquireSmsLock :431-470, SmsReader :487-541) + test/sms-modem.test.ts FakeModem :20-119",
-      jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+      jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
       generatedBy: "tools/replay/js/run-tsx.sh tools/replay/js/dump-sms-reader.mts (phase-4 WP2)",
       cases,
     },
