@@ -15,6 +15,7 @@
 //! | [`CommandPlane`] | WP4 `command_plane` | `handleCommandMessage` |
 //! | [`ReportRequester`] | (concrete) | `configSync.request(origin)` / `requestConfigReport` |
 //! | [`PhaseHooks`] | Phase 3/4 | `recording.*`, `led.*`, `reconcile*Now`, clock stepper (O5) |
+//! | [`ObdControl`] | Phase 5b WP2 `collectors::obd` | `source.obd*()` (`worker.ts:293-297` @ 09da38d) |
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -29,7 +30,10 @@ use xorgate_core::build_info::BuildInfo;
 use xorgate_core::clock::Clock;
 use xorgate_core::config_report::{ReportHints, ReportOrigin};
 use xorgate_core::hardware_block::DeviceHardwareBlock;
-use xorgate_core::telemetry::{MetricGroup, RecordingStatus, TelemetryMedia, TelemetryReading};
+use xorgate_core::obd::ObdScanResult;
+use xorgate_core::telemetry::{
+    MetricGroup, ObdStatus, RecordingStatus, TelemetryMedia, TelemetryReading,
+};
 use xorgate_core::types::{CameraMountState, GnssView, GpsClockReading, PowerSampleReading};
 use xorgate_hal::io::TapeSink;
 
@@ -239,6 +243,38 @@ pub trait MediaControl: Send + Sync + 'static {
     fn set_disabled_streams(&self, keys: &[String]);
 }
 
+/// The OBD collector as the spine uses it (Phase 5b I4; the TS
+/// `source.obdStatus/obdReport/obdReapply/obdScan/obdForget`,
+/// `worker.ts:293-297` @ 09da38d). WP2's `collectors::obd` implements it.
+///
+/// The worker holds `Option<Arc<dyn ObdControl>>`: `None` = the BOOT-time
+/// hardware block declares no `peripherals.obd` = every `source.obd*?.()`
+/// of the TS returns `null`/`undefined` → state.json without `obd`, the
+/// report without `effective.obd`, `obd_*` commands acked `rejected` with
+/// reason `no OBD peripheral`.
+pub trait ObdControl: Send + Sync + 'static {
+    /// `collector.status()` — state.json `obd` every publish tick.
+    fn status(&self) -> ObdStatus;
+    /// `collector.report()` — `effective.obd` (I2: already in the TS key
+    /// order of `collectors/obd.ts:712-731`, opaque to the config plane).
+    fn report(&self) -> serde_json::Value;
+    /// `collector.reapply()` — after EVERY cloud config message (`worker.ts:984-987`).
+    fn reapply(&self);
+    /// `collector.scan()` — joins an in-flight scan. The TS emits the
+    /// `scanning for Bluetooth adapters …` event synchronously when called
+    /// (before the command ack); an implementation does the same before
+    /// returning the future.
+    fn scan(&self) -> BoxFut<'static, ObdScanResult>;
+    /// `collector.forget()` — resolves to the forgotten MAC (`None` = no
+    /// adapter was configured). Like `scan()`, the TS `async forget()` runs
+    /// its synchronous part at CALL time, before the command ack: the
+    /// not-configured latch, `goOff` (helper SIGINT) and its event
+    /// (`adapter <mac> forgotten; …` / `forget: no adapter was configured`).
+    /// An implementation does all of that before returning the future; only
+    /// the bond removal is awaited.
+    fn forget(&self) -> BoxFut<'static, Option<String>>;
+}
+
 /// The config plane (WP3): `ConfigSync` + `handleConfigMessage`. Every method
 /// is non-blocking — an implementation pushes onto a LOSSLESS (unbounded)
 /// queue drained by its own task, which handles config messages strictly in
@@ -269,6 +305,11 @@ pub struct ConfigPlaneDeps {
     pub reports: ReportRequester,
     /// Every `request(origin)` made by others ([`ReportRequester::request`]).
     pub report_rx: mpsc::UnboundedReceiver<ReportOrigin>,
+    /// The OBD collector (Phase 5b I4): `effective.obd` provider
+    /// (`obd: () => source.obdReport?.() ?? null`, `worker.ts:790`) and the
+    /// `reapply()` after every cloud config message (`:984-987`). `None` =
+    /// no `peripherals.obd`.
+    pub obd: Option<Arc<dyn ObdControl>>,
 }
 
 /// What the worker hands the command plane (WP4).
@@ -277,6 +318,9 @@ pub struct CommandPlaneDeps {
     pub mqtt: MqttHandle,
     /// `configSync.request("boot")` for `refresh` (now and at +45 s).
     pub reports: ReportRequester,
+    /// The OBD collector for `obd_scan` / `obd_forget` (Phase 5b I4); `None`
+    /// = rejected with `no OBD peripheral` (`worker.ts:1217-1226` @ 09da38d).
+    pub obd: Option<Arc<dyn ObdControl>>,
 }
 
 /// The command plane (WP4): `handleCommandMessage`. Non-blocking: push onto a
@@ -384,6 +428,14 @@ pub trait PhaseHooks: Send + Sync + 'static {
     /// Phase 3/4 rule).
     fn report_hints(&self) -> ReportHints {
         ReportHints::default()
+    }
+    /// The publish tick's clock trust gate (Phase 5b, `worker.ts:1406-1412`
+    /// @ 09da38d): `true` = publish; `false` = withheld (the hook has already
+    /// counted it with `noteHeld()`). Called AFTER `seq += 1`, `setLatest`
+    /// and the OBD status edge, BEFORE `telemetryScope.noteTick` (CF72).
+    /// Without a clock trust gate (sim, Phase 2–4 hooks): always `true`.
+    fn publish_clock_gate(&self) -> bool {
+        true
     }
     /// `led.tick()` from the 1 s heartbeat (`:635`).
     fn led_tick(&self) {}

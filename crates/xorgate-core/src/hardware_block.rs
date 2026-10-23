@@ -100,8 +100,38 @@ pub struct StatusLedPins {
     pub b: f64,
 }
 
-/// `DeviceHardwareBlock` (`hardware-config.ts:42`). `statusLed` and `imu` are
-/// written as explicit `null` (the TS type is `X | null`, never optional).
+/// `HardwareObdPeripheral` (`hardware-config.ts:42-50` @ 09da38d): an ELM327
+/// adapter reached over Bluetooth SPP — the only shape v1 accepts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareObdPeripheral {
+    /// Always `"elm327"`.
+    pub adapter: String,
+    /// Always `"bt-spp"`.
+    pub transport: String,
+}
+
+impl HardwareObdPeripheral {
+    /// `{ adapter: "elm327", transport: "bt-spp" }`.
+    pub fn elm327_bt_spp() -> Self {
+        Self {
+            adapter: "elm327".to_string(),
+            transport: "bt-spp".to_string(),
+        }
+    }
+}
+
+/// `HardwarePeripherals` (`hardware-config.ts:52-55` @ 09da38d).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwarePeripherals {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obd: Option<HardwareObdPeripheral>,
+}
+
+/// `DeviceHardwareBlock` (`hardware-config.ts:57-72` @ 09da38d). `statusLed`
+/// and `imu` are written as explicit `null` (the TS type is `X | null`, never
+/// optional); `peripherals` is present ONLY when at least one recognised
+/// peripheral is declared, so a block without it serialises exactly as
+/// before the key existed (`hardwareBlocksEqual` compares the JSON).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceHardwareBlock {
@@ -113,6 +143,8 @@ pub struct DeviceHardwareBlock {
     /// IMU part number, or null when the model declares no IMU.
     pub imu: Option<String>,
     pub video: Vec<HardwareVideo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peripherals: Option<HardwarePeripherals>,
 }
 
 /// `defaultEncoderForPlatform` (`hardware-config.ts:62`): the CM5 has no
@@ -130,10 +162,74 @@ fn pin(v: Option<&Value>) -> Option<f64> {
     (n.fract() == 0.0 && n >= 0.0 && n.is_finite()).then_some(n)
 }
 
-/// `parseHardwareBlock` (`hardware-config.ts:75`): None (and the caller logs
-/// and falls back to legacy behavior) on ANY unrecognized enum or malformed
-/// required field — tolerant only about truly optional extras.
+/// `parsePeripherals` (`hardware-config.ts:104-128` @ 09da38d): the ONE
+/// lenient key of the block — an invalid or unknown peripheral entry is
+/// dropped with a single warning (through `warn`) and the rest of the block
+/// stays valid. `null`/absent → None, silently.
+pub fn parse_peripherals(
+    raw: Option<&Value>,
+    warn: &mut dyn FnMut(String),
+) -> Option<HardwarePeripherals> {
+    let raw = match raw {
+        None | Some(Value::Null) => return None,
+        Some(v) => v,
+    };
+    let Value::Object(entries) = raw else {
+        warn("peripherals is not an object — ignoring it (rest of the block kept)".to_string());
+        return None;
+    };
+    let mut out = HardwarePeripherals { obd: None };
+    for (key, entry) in entries {
+        if key != "obd" {
+            warn(format!(
+                "peripherals.{key} is not a known peripheral — ignoring it"
+            ));
+            continue;
+        }
+        // `entry && typeof entry === "object"` (arrays pass and fail the
+        // field test below).
+        let ok = match entry {
+            Value::Object(e) => {
+                e.get("adapter").and_then(Value::as_str) == Some("elm327")
+                    && e.get("transport").and_then(Value::as_str) == Some("bt-spp")
+            }
+            _ => false,
+        };
+        if ok {
+            out.obd = Some(HardwareObdPeripheral::elm327_bt_spp());
+        } else {
+            warn(format!(
+                "peripherals.obd {} is not {{adapter:\"elm327\",transport:\"bt-spp\"}} — ignoring it",
+                crate::js::to_json_string(entry)
+            ));
+        }
+    }
+    out.obd.is_some().then_some(out)
+}
+
+/// The default warn sink of `parseHardwareBlock` (`hardware-config.ts:135`):
+/// `console.warn(\`[hardware] ${m}\`)` — the line it writes.
+pub fn hardware_warn_line(msg: &str) -> String {
+    format!("[hardware] {msg}")
+}
+
+/// `parseHardwareBlock` (`hardware-config.ts:75`) with the TS DEFAULT warn
+/// sink's messages discarded — for callers that only need the verdict
+/// (tests, the replay inspector). Agent callers that log use
+/// [`parse_hardware_block_with`].
 pub fn parse_hardware_block(obj: &Value) -> Option<DeviceHardwareBlock> {
+    parse_hardware_block_with(obj, &mut |_| {})
+}
+
+/// `parseHardwareBlock(obj, warn)` (`hardware-config.ts:133-188` @ 09da38d):
+/// None (and the caller logs and falls back to legacy behavior) on ANY
+/// unrecognized enum or malformed required field — tolerant only about
+/// truly optional extras and, by design, `peripherals` (whose warnings go
+/// to `warn`, only once the required fields validated, like the TS).
+pub fn parse_hardware_block_with(
+    obj: &Value,
+    warn: &mut dyn FnMut(String),
+) -> Option<DeviceHardwareBlock> {
     let Value::Object(o) = obj else {
         return None;
     };
@@ -193,6 +289,8 @@ pub fn parse_hardware_block(obj: &Value) -> Option<DeviceHardwareBlock> {
         });
     }
 
+    let peripherals = parse_peripherals(o.get("peripherals"), warn);
+
     Some(DeviceHardwareBlock {
         v: 2,
         platform,
@@ -205,6 +303,7 @@ pub fn parse_hardware_block(obj: &Value) -> Option<DeviceHardwareBlock> {
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         video,
+        peripherals,
     })
 }
 

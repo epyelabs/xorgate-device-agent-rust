@@ -100,6 +100,80 @@ async fn starts_and_stops_the_recorder_live() {
     m.stop();
 }
 
+/// "holds the recorder while the clock is untrusted and starts it on the
+/// next poll once trusted (clock-trust gate)" (`test/recording-manager.test.ts`
+/// @ 09da38d).
+#[tokio::test(start_paused = true)]
+async fn holds_the_recorder_while_the_clock_is_untrusted() {
+    let mut rig = Rig::new("clockhold");
+    rig.video = false;
+    let trusted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let t = trusted.clone();
+    rig.clock_trusted = Some(Arc::new(move || t.load(Ordering::SeqCst)));
+    rig.save_recording(&json!({"telemetry": {"enabled": true, "rateHz": 20}}));
+    let m = rig.build();
+    m.start().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let st = m.status();
+    assert!(!st.enabled);
+    assert_eq!(st.session_id, None);
+    assert!(st.clock_hold);
+    // `clockHold` sits after powerShed, before liveBlock; absent when false.
+    let v = serde_json::to_value(&st).unwrap();
+    assert_eq!(v["clockHold"], json!(true));
+    assert!(
+        !rig.root().join("telemetry").exists(),
+        "no session minted on the bad clock"
+    );
+    let held = |rig: &Rig| {
+        rig.events()
+            .iter()
+            .filter(|m| m.contains("recording held"))
+            .count()
+    };
+    assert_eq!(held(&rig), 1);
+    assert!(rig.events().contains(
+        &"telemetry recording held: wall clock not trusted yet (waiting for NTP/GPS/NITZ, 5 min cap)"
+            .to_string()
+    ));
+    m.reapply().unwrap(); // unchanged settings, still untrusted: no start, no 2nd event
+    assert!(m.status().clock_hold);
+    assert_eq!(held(&rig), 1);
+
+    trusted.store(true, Ordering::SeqCst);
+    m.reapply().unwrap(); // the worker's settings poll
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let st = m.status();
+    assert!(st.enabled);
+    assert!(st.session_id.is_some());
+    assert!(!st.clock_hold);
+    assert!(
+        serde_json::to_value(&st)
+            .unwrap()
+            .get("clockHold")
+            .is_none(),
+        "absent, never false"
+    );
+    assert!(rig
+        .events()
+        .iter()
+        .any(|m| m.starts_with("telemetry recording started")));
+    m.stop();
+}
+
+/// The gate holds a recorder that is NOT wanted: no `clockHold`, no event.
+#[tokio::test(start_paused = true)]
+async fn clock_hold_is_absent_when_telemetry_is_off() {
+    let mut rig = Rig::new("clockhold-off");
+    rig.video = false;
+    rig.clock_trusted = Some(Arc::new(|| false));
+    let m = rig.build();
+    m.start().await;
+    assert!(!m.status().clock_hold);
+    assert!(rig.events().iter().all(|m| !m.contains("recording held")));
+    m.stop();
+}
+
 /// "mints a new session when rateHz changes".
 #[tokio::test(start_paused = true)]
 async fn mints_a_new_session_when_rate_changes() {

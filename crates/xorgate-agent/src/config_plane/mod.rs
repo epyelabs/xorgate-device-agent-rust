@@ -147,6 +147,10 @@ pub fn options_for(ctx: &AgentCtx, deps: &ConfigPlaneDeps) -> ConfigSyncOptions 
     o.camera_mount = Some(Arc::new(move || hooks.camera_mount_state()));
     let scope = deps.scope.clone();
     o.telemetry_scope = Some(Arc::new(move || Some(scope.report())));
+    // `obd: () => source.obdReport?.() ?? null` (`worker.ts:790` @ 09da38d).
+    if let Some(obd) = deps.obd.clone() {
+        o.obd = Some(Arc::new(move || Some(obd.report())));
+    }
     // `hints` (Phase 3/4 latches; T6 / CF30: all None in Phase 2).
     let hooks = ctx.hooks.clone();
     o.hints = Some(Arc::new(move || hooks.report_hints()));
@@ -185,6 +189,7 @@ pub fn start_with(ctx: &AgentCtx, deps: ConfigPlaneDeps, sync: ConfigSync) -> Ar
         ctx: ctx.clone(),
         sync: sync.clone(),
         scope: deps.scope.clone(),
+        obd: deps.obd.clone(),
     };
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let mut reports = deps.report_rx;

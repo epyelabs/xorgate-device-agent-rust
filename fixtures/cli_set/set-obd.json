@@ -1,0 +1,1210 @@
+{
+  "jsSourceFile": "src/commands/set.ts (setObdCommand :400-460, USAGE :107-108, setCommand unknown key :601-603) over src/daemon/settings.ts parseObdSettings/loadSettings/saveSettings",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-p5b-spine-cli-set.mts (Phase 5b WP1; runner = dump-cli-set.mts) in the shared js-09da38d copy, non-root",
+  "cases": [
+    {
+      "name": "obd.adapter lowercase → uppercased, enabled-off note",
+      "input": {
+        "args": [
+          "obd.adapter",
+          "10:21:3e:4f:33:65"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.adapter = \"10:21:3E:4F:33:65\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          },
+          {
+            "stream": "out",
+            "text": "  note: obd.enabled is off — nothing is polled until: xorgate set obd.enabled on"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"adapterMac\":\"10:21:3E:4F:33:65\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.enabled on merges after adapterMac",
+      "input": {
+        "args": [
+          "obd.enabled",
+          "on"
+        ],
+        "settings": "{\"obd\":{\"adapterMac\":\"10:21:3E:4F:33:65\"}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.enabled = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"adapterMac\":\"10:21:3E:4F:33:65\",\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.pin 4321",
+      "input": {
+        "args": [
+          "obd.pin",
+          "4321"
+        ],
+        "settings": "{\"obd\":{\"adapterMac\":\"10:21:3E:4F:33:65\",\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.pin = \"4321\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"pin\":\"4321\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz 0.5",
+      "input": {
+        "args": [
+          "obd.poll-hz",
+          "0.5"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.poll-hz = 0.5 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"pollHz\":0.5}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.power-source constant",
+      "input": {
+        "args": [
+          "obd.power-source",
+          "constant"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.power-source = \"constant\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"powerSource\":\"constant\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.fields csv trimmed",
+      "input": {
+        "args": [
+          "obd.fields",
+          "rpm,speed, fuel_level"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.fields = [\"rpm\",\"speed\",\"fuel_level\"] (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"fields\":[\"rpm\",\"speed\",\"fuel_level\"]}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.fields all → []",
+      "input": {
+        "args": [
+          "obd.fields",
+          "all"
+        ],
+        "settings": "{\"obd\":{\"fields\":[\"rpm\"]}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.fields = [] (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"fields\":[]}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.adapter none → null (no note)",
+      "input": {
+        "args": [
+          "obd.adapter",
+          "none"
+        ],
+        "settings": "{\"obd\":{\"adapterMac\":\"10:21:3E:4F:33:65\",\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.adapter = null (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"enabled\":true,\"adapterMac\":null}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.adapter null → null",
+      "input": {
+        "args": [
+          "obd.adapter",
+          "null"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.adapter = null (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"adapterMac\":null}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.adapter empty → null",
+      "input": {
+        "args": [
+          "obd.adapter",
+          ""
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.adapter = null (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"adapterMac\":null}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.adapter missing → null",
+      "input": {
+        "args": [
+          "obd.adapter"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.adapter = null (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"adapterMac\":null}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.adapter with enabled on → no note",
+      "input": {
+        "args": [
+          "obd.adapter",
+          "10:21:3E:4F:33:65"
+        ],
+        "settings": "{\"obd\":{\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.adapter = \"10:21:3E:4F:33:65\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.adapterMac alias",
+      "input": {
+        "args": [
+          "obd.adapterMac",
+          "10:21:3E:4F:33:65"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.adapterMac = \"10:21:3E:4F:33:65\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          },
+          {
+            "stream": "out",
+            "text": "  note: obd.enabled is off — nothing is polled until: xorgate set obd.enabled on"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"adapterMac\":\"10:21:3E:4F:33:65\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.pollHz alias",
+      "input": {
+        "args": [
+          "obd.pollHz",
+          "2"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.pollHz = 2 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"pollHz\":2}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.powerSource alias",
+      "input": {
+        "args": [
+          "obd.powerSource",
+          "switched"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.powerSource = \"switched\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"powerSource\":\"switched\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.enabled off",
+      "input": {
+        "args": [
+          "obd.enabled",
+          "off"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.enabled = false (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"enabled\":false}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.enabled 1",
+      "input": {
+        "args": [
+          "obd.enabled",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.enabled = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz 0.2 bound",
+      "input": {
+        "args": [
+          "obd.poll-hz",
+          "0.2"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.poll-hz = 0.2 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"pollHz\":0.2}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz 2 bound",
+      "input": {
+        "args": [
+          "obd.poll-hz",
+          "2"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.poll-hz = 2 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"pollHz\":2}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz 0x1 (hex Number)",
+      "input": {
+        "args": [
+          "obd.poll-hz",
+          "0x1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.poll-hz = 1 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"pollHz\":1}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz 1e0",
+      "input": {
+        "args": [
+          "obd.poll-hz",
+          "1e0"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.poll-hz = 1 (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"pollHz\":1}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.fields with invalid names only → [] kept",
+      "input": {
+        "args": [
+          "obd.fields",
+          "Bad,1x"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.fields = [] (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"fields\":[]}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.fields dedupe",
+      "input": {
+        "args": [
+          "obd.fields",
+          "rpm,rpm,speed"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.fields = [\"rpm\",\"speed\"] (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"obd\":{\"fields\":[\"rpm\",\"speed\"]}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd namespace appended after other keys",
+      "input": {
+        "args": [
+          "obd.pin",
+          "1111"
+        ],
+        "settings": "{\"mode\":\"real\",\"simulation\":{\"loop\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.pin = \"1111\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"simulation\":{\"loop\":true},\"obd\":{\"pin\":\"1111\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd keeps its slot and spread order",
+      "input": {
+        "args": [
+          "obd.enabled",
+          "on"
+        ],
+        "settings": "{\"obd\":{\"pin\":\"1234\"},\"mode\":\"real\"}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.enabled = true (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"pin\":\"1234\",\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd value over an invalid held namespace",
+      "input": {
+        "args": [
+          "obd.pin",
+          "1234"
+        ],
+        "settings": "{\"obd\":{\"pin\":\"x\"},\"mode\":\"real\"}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "out",
+            "text": "✓ obd.pin = \"1234\" (persisted to settings.json)"
+          },
+          {
+            "stream": "out",
+            "text": "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+          }
+        ],
+        "exitCode": 0,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"pin\":\"1234\"}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.adapter short MAC",
+      "input": {
+        "args": [
+          "obd.adapter",
+          "10:21:3E:4F:33"
+        ],
+        "settings": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.adapter' = '10:21:3E:4F:33' (expected AA:BB:CC:DD:EE:FF or none)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.pin 12",
+      "input": {
+        "args": [
+          "obd.pin",
+          "12"
+        ],
+        "settings": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.pin' = '12' (expected 4 to 6 digits)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz 5",
+      "input": {
+        "args": [
+          "obd.poll-hz",
+          "5"
+        ],
+        "settings": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "obd.poll-hz must be a number in [0.2, 2], got '5'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.power-source solar",
+      "input": {
+        "args": [
+          "obd.power-source",
+          "solar"
+        ],
+        "settings": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.power-source' = 'solar' (expected switched|constant)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.enabled maybe",
+      "input": {
+        "args": [
+          "obd.enabled",
+          "maybe"
+        ],
+        "settings": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "obd.enabled must be on|off, got 'maybe'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.bogus",
+      "input": {
+        "args": [
+          "obd.bogus",
+          "1"
+        ],
+        "settings": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown obd setting 'obd.bogus' (supported: obd.enabled, obd.adapter, obd.pin, obd.poll-hz, obd.fields, obd.power-source)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true}}",
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.pin missing",
+      "input": {
+        "args": [
+          "obd.pin"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.pin' = '' (expected 4 to 6 digits)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz missing",
+      "input": {
+        "args": [
+          "obd.poll-hz"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "obd.poll-hz must be a number in [0.2, 2], got ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.poll-hz abc",
+      "input": {
+        "args": [
+          "obd.poll-hz",
+          "abc"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "obd.poll-hz must be a number in [0.2, 2], got 'abc'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.enabled missing",
+      "input": {
+        "args": [
+          "obd.enabled"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "obd.enabled must be on|off, got ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.power-source missing",
+      "input": {
+        "args": [
+          "obd.power-source"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.power-source' = '' (expected switched|constant)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd. (empty field)",
+      "input": {
+        "args": [
+          "obd.",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown obd setting 'obd.' (supported: obd.enabled, obd.adapter, obd.pin, obd.poll-hz, obd.fields, obd.power-source)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.a.b (3 parts)",
+      "input": {
+        "args": [
+          "obd.enabled.x",
+          "on"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown obd setting 'obd.enabled.x' (supported: obd.enabled, obd.adapter, obd.pin, obd.poll-hz, obd.fields, obd.power-source)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.toString (prototype key) → invalid, not unknown",
+      "input": {
+        "args": [
+          "obd.toString",
+          "x"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.toString' = 'x'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.__proto__ (prototype key) → invalid",
+      "input": {
+        "args": [
+          "obd.__proto__",
+          "x"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.__proto__' = 'x'"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "obd.constructor missing value",
+      "input": {
+        "args": [
+          "obd.constructor"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "invalid obd setting 'obd.constructor' = ''"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "usage (no args) names obd",
+      "input": {
+        "args": [],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>, obd.<enabled|adapter|pin|poll-hz|fields|power-source> <value>)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    },
+    {
+      "name": "unknown key lists obd.*",
+      "input": {
+        "args": [
+          "nonsense",
+          "1"
+        ],
+        "settings": null,
+        "lte": [
+          null
+        ],
+        "pidfile": null
+      },
+      "expected": {
+        "lines": [
+          {
+            "stream": "err",
+            "text": "unknown setting 'nonsense' (supported: mode, gps-antenna, gps-fix-reset-policy, deadzone-profile, apn, wifi, recording.*, timeSync.*, cameraMount.*, obd.*)"
+          }
+        ],
+        "exitCode": 1,
+        "settingsAfter": null,
+        "elapsedMs": 0
+      }
+    }
+  ]
+}

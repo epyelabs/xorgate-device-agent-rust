@@ -1,4 +1,4 @@
-//! Port of `test/config-contract.test.ts` (12 `it()` + 19 `it.each` rows)
+//! Port of `test/config-contract.test.ts` @ 09da38d (13 `it()` + 19 `it.each` rows)
 //! against `fixtures/config-contract.json` — the artifact the CLOUD's config
 //! registry generates (`backend/xorgate-core-service: npm run contract:generate`)
 //! and the web app imports for its defaults, copied VERBATIM from the JS
@@ -102,6 +102,7 @@ fn declares_exactly_the_namespaces_the_worker_applies() {
             "gnssAntBias",
             "imuMount",
             "lteRecovery",
+            "obd",
             "recording",
             "simulation",
             "timeSync",
@@ -128,6 +129,54 @@ fn simulation_bounds_survive_the_device_parser() {
         assert_eq!(out.as_object().unwrap().len(), 1, "gapSeconds {v}");
         assert_eq!(out["gapSeconds"].as_f64(), Some(v), "gapSeconds {v}");
     }
+}
+
+/// `it("obd: OBD_DEFAULTS match the published defaults, bounds survive the
+/// parser, MAC normalizes like the cloud")` (config-contract.test.ts @ 09da38d).
+#[test]
+fn obd_defaults_bounds_and_mac_match_the_contract() {
+    let c = contract();
+    let obd = &c["namespaces"]["obd"];
+    assert_eq!(obd["applyClass"], "agent-poll");
+    // `expect(OBD_DEFAULTS).toEqual(obd.defaults)` — numeric `toEqual`.
+    let defaults = serde_json::to_value(obd_defaults()).unwrap();
+    assert!(
+        xorgate_core::config_report::deep_equal(&defaults, &obd["defaults"]),
+        "{defaults} vs {}",
+        obd["defaults"]
+    );
+    // The defaults round-trip through the parser.
+    let parsed = parse_obd_settings(&obd["defaults"]).expect("defaults parse");
+    assert!(xorgate_core::config_report::deep_equal(
+        &serde_json::to_value(&parsed).unwrap(),
+        &obd["defaults"]
+    ));
+    let hz = &obd["jsonSchema"]["properties"]["pollHz"];
+    for v in [
+        hz["minimum"].as_f64().unwrap(),
+        hz["maximum"].as_f64().unwrap(),
+    ] {
+        let got = parse_obd_settings(&serde_json::json!({ "pollHz": v })).unwrap();
+        let out = serde_json::to_value(&got).unwrap();
+        assert_eq!(out.as_object().unwrap().len(), 1, "pollHz {v}");
+        assert_eq!(out["pollHz"].as_f64(), Some(v), "pollHz {v}");
+    }
+    assert_eq!(
+        serde_json::to_value(
+            parse_obd_settings(&serde_json::json!({"adapterMac": "10:21:3e:4f:33:65"})).unwrap()
+        )
+        .unwrap(),
+        serde_json::json!({"adapterMac": "10:21:3E:4F:33:65"})
+    );
+    assert_eq!(
+        serde_json::to_value(parse_obd_settings(&serde_json::json!({"adapterMac": null})).unwrap())
+            .unwrap(),
+        serde_json::json!({"adapterMac": null})
+    );
+    assert_eq!(
+        obd["jsonSchema"]["properties"]["pin"]["pattern"], OBD_PIN_RE,
+        "the device PIN pattern is the cloud's"
+    );
 }
 
 #[test]

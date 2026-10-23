@@ -1,0 +1,167 @@
+{
+  "jsSourceFile": "src/agent/cloud-config.ts (parseNamespaces :280-283, applyCloudConfig obd :399-438) + test/cloud-config.test.ts",
+  "cases": [
+    {
+      "name": "normalized like local settings",
+      "op": "parseCloudConfig",
+      "input": "{\"v\":1,\"rev\":51,\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3e:4f:33:65\",\"powerSource\":\"switched\"}}",
+      "expectedJson": "{\"rev\":51,\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"powerSource\":\"switched\"}}"
+    },
+    {
+      "name": "{} → null",
+      "op": "parseCloudConfig",
+      "input": "{\"v\":1,\"rev\":51,\"obd\":{}}",
+      "expectedJson": "{\"rev\":51,\"obd\":null}"
+    },
+    {
+      "name": "all-invalid → null",
+      "op": "parseCloudConfig",
+      "input": "{\"v\":1,\"rev\":51,\"obd\":{\"pin\":\"x\"}}",
+      "expectedJson": "{\"rev\":51,\"obd\":null}"
+    },
+    {
+      "name": "string → ignored",
+      "op": "parseCloudConfig",
+      "input": "{\"v\":1,\"rev\":51,\"obd\":\"10:21:3E:4F:33:65\"}",
+      "expectedJson": "{\"rev\":51}"
+    },
+    {
+      "name": "array → ignored",
+      "op": "parseCloudConfig",
+      "input": "{\"v\":1,\"rev\":51,\"obd\":[1]}",
+      "expectedJson": "{\"rev\":51}"
+    },
+    {
+      "name": "null → ignored",
+      "op": "parseCloudConfig",
+      "input": "{\"v\":1,\"rev\":51,\"obd\":null}",
+      "expectedJson": "{\"rev\":51}"
+    },
+    {
+      "name": "obd sits between simulation and hardware in the parse",
+      "op": "parseCloudConfig",
+      "input": "{\"v\":1,\"hardware\":{\"v\":2,\"platform\":\"rpi-cm5\",\"rails\":true,\"statusLed\":null,\"imu\":null,\"video\":[]},\"obd\":{\"enabled\":true},\"simulation\":{\"loop\":true},\"rev\":3}",
+      "expectedJson": "{\"rev\":3,\"simulation\":{\"loop\":true},\"obd\":{\"enabled\":true},\"hardware\":{\"v\":2,\"platform\":\"rpi-cm5\",\"encoder\":\"sw-h264\",\"rails\":true,\"statusLed\":null,\"imu\":null,\"video\":[]}}"
+    },
+    {
+      "name": "replace whole namespace, no-op redelivery, clear on null, absent leaves alone",
+      "op": "applyCloudConfig",
+      "input": {
+        "initial": "{\"mode\":\"real\",\"obd\":{\"enabled\":false,\"adapterMac\":null,\"pollHz\":2}}",
+        "steps": [
+          {
+            "obd": {
+              "enabled": true,
+              "adapterMac": "10:21:3E:4F:33:65",
+              "powerSource": "switched"
+            }
+          },
+          {
+            "obd": {
+              "enabled": true,
+              "adapterMac": "10:21:3E:4F:33:65",
+              "powerSource": "switched"
+            }
+          },
+          {
+            "gnssAntBias": true
+          },
+          {
+            "obd": null
+          },
+          {
+            "obd": null
+          }
+        ]
+      },
+      "expected": [
+        {
+          "changed": true,
+          "fileAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"powerSource\":\"switched\"}}"
+        },
+        {
+          "changed": false,
+          "fileAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"powerSource\":\"switched\"}}"
+        },
+        {
+          "changed": true,
+          "fileAfter": "{\"mode\":\"real\",\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"powerSource\":\"switched\"},\"gnssAntBias\":true}"
+        },
+        {
+          "changed": true,
+          "fileAfter": "{\"mode\":\"real\",\"gnssAntBias\":true}"
+        },
+        {
+          "changed": false,
+          "fileAfter": "{\"mode\":\"real\",\"gnssAntBias\":true}"
+        }
+      ]
+    },
+    {
+      "name": "obd appended last on a file without it",
+      "op": "applyCloudConfig",
+      "input": {
+        "initial": "{\"simulation\":{\"loop\":false},\"mode\":\"sim\"}",
+        "steps": [
+          {
+            "obd": {
+              "pollHz": 0.5
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "changed": true,
+          "fileAfter": "{\"mode\":\"sim\",\"simulation\":{\"loop\":false},\"obd\":{\"pollHz\":0.5}}"
+        }
+      ]
+    },
+    {
+      "name": "obd key order change is a change (JSON.stringify compare)",
+      "op": "applyCloudConfig",
+      "input": {
+        "initial": "{\"obd\":{\"pin\":\"1234\",\"enabled\":true}}",
+        "steps": [
+          {
+            "obd": {
+              "enabled": true,
+              "pin": "1234"
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "changed": false,
+          "fileAfter": "{\"obd\":{\"pin\":\"1234\",\"enabled\":true}}"
+        }
+      ]
+    },
+    {
+      "name": "obd set together with timeSync",
+      "op": "applyCloudConfig",
+      "input": {
+        "initial": null,
+        "steps": [
+          {
+            "timeSync": {
+              "offlineSources": false
+            },
+            "obd": {
+              "adapterMac": null
+            }
+          }
+        ]
+      },
+      "expected": [
+        {
+          "changed": true,
+          "fileAfter": "{\"timeSync\":{\"offlineSources\":false},\"obd\":{\"adapterMac\":null}}"
+        }
+      ]
+    }
+  ],
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-p5b-spine.mts (Phase 5b WP1) in the shared js-09da38d copy via npx tsx"
+}

@@ -1,7 +1,7 @@
 {
-  "jsSourceFile": "test/config-sync.test.ts + test/config-sync-cellular.test.ts + test/camera-mount.test.ts",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP4; not committed there): every pure it() replayed through the real buildEffective / buildStatus / buildConfigReport / parse*Telemetry / shouldApplyRev / namespacesOf / diffNamespaces, plus readModemBias over a tmp file (file text → sample), loadConfigSyncState (file text → state) and ensureConfigSyncBaseline over its injected inputs; settings inputs are normalised through loadSettings (parser order) as the worker does; `build` = the TS loadBuildInfo() fallback under tsx; [extra] cases pin wording branches the vitest only regex-matched; [integration M1] cases: plans/device-agent-js-to-rust/phase-1 integration dump-m1.mts",
+  "jsSourceFile": "test/config-sync.test.ts + test/config-sync-cellular.test.ts + test/camera-mount.test.ts (Phase 1 cases re-evaluated) + src/agent/config-sync.ts @ 09da38d ([p5b] cases)",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-p5b-spine-config-report.mts (Phase 5b WP1): every Phase 1 case (originally dumped by the Phase 1 WP4 scratchpad driver @ 89b5c64) re-evaluated through the real 09da38d function its op names, on its recorded input (settings via loadSettings; files via a tmp dir), plus the [p5b] cases",
   "build": {
     "version": "0.2.0",
     "channel": "local",
@@ -1582,7 +1582,7 @@
           "packageVersion": "0.2.0"
         }
       },
-      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":5,\"rev\":3,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":5}}}"
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":5,\"rev\":3,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":5}}}"
     },
     {
       "name": "omits it entirely when the caller does not supply a mode",
@@ -1626,7 +1626,7 @@
           "$undefined": true
         }
       },
-      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}}"
     },
     {
       "name": "advertises the build's capabilities (device-sms-inbox contract §3) [real]",
@@ -1647,7 +1647,7 @@
           "$undefined": true
         }
       },
-      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}}"
     },
     {
       "name": "advertises the build's capabilities (device-sms-inbox contract §3) [sim]",
@@ -1668,7 +1668,7 @@
           "$undefined": true
         }
       },
-      "expectedJson": "{\"agent\":{\"mode\":\"sim\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+      "expectedJson": "{\"agent\":{\"mode\":\"sim\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}}"
     },
     {
       "name": "advertises the build's capabilities (device-sms-inbox contract §3) [replay]",
@@ -1689,7 +1689,7 @@
           "$undefined": true
         }
       },
-      "expectedJson": "{\"agent\":{\"mode\":\"replay\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+      "expectedJson": "{\"agent\":{\"mode\":\"replay\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}}"
     },
     {
       "name": "omits the block entirely when the caller does not track it",
@@ -1710,7 +1710,7 @@
           "$undefined": true
         }
       },
-      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]}}"
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}}"
     },
     {
       "name": "carries the topic in force, and never a status entry",
@@ -1743,7 +1743,7 @@
           "packageVersion": "0.2.0"
         }
       },
-      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":5,\"rev\":3,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]},\"telemetryScope\":{\"topic\":\"xorgate/orgs/org-1/ws/ws-a/devices/dev-1/telemetry\",\"scoped\":true,\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\"}},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":5}}}"
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":5,\"rev\":3,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]},\"telemetryScope\":{\"topic\":\"xorgate/orgs/org-1/ws/ws-a/devices/dev-1/telemetry\",\"scoped\":true,\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\"}},\"status\":{\"gnssAntBias\":{\"state\":\"applied\",\"at\":5}}}"
     },
     {
       "name": "carries the fallback block, naming the tenancy it could not reach",
@@ -1769,14 +1769,14 @@
           }
         }
       },
-      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\"]},\"telemetryScope\":{\"topic\":\"xorgate/devices/dev-1/telemetry\",\"scoped\":false,\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\",\"fallback\":{\"since\":1700000000000,\"count\":1}}}"
+      "expectedJson": "{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]},\"telemetryScope\":{\"topic\":\"xorgate/devices/dev-1/telemetry\",\"scoped\":false,\"organizationId\":\"org-1\",\"workspaceId\":\"ws-a\",\"fallback\":{\"since\":1700000000000,\"count\":1}}}"
     },
     {
       "name": "declares one for every namespace the worker applies",
       "source": "test/config-sync.test.ts",
       "op": "CONFIG_APPLY_CLASSES",
       "input": {},
-      "expectedJson": "{\"gnssAntBias\":\"modem-poll\",\"imuMount\":\"agent-poll\",\"recording\":\"agent-poll\",\"lteRecovery\":\"modem-poll\",\"timeSync\":\"agent-poll\",\"cellular\":\"modem-poll\",\"cameraMount\":\"agent-poll\",\"simulation\":\"agent-poll\"}"
+      "expectedJson": "{\"gnssAntBias\":\"modem-poll\",\"imuMount\":\"agent-poll\",\"recording\":\"agent-poll\",\"lteRecovery\":\"modem-poll\",\"timeSync\":\"agent-poll\",\"cellular\":\"modem-poll\",\"cameraMount\":\"agent-poll\",\"simulation\":\"agent-poll\",\"obd\":\"agent-poll\"}"
     },
     {
       "name": "[extra] origin local carries `changed`; empty changed is dropped",
@@ -3454,6 +3454,1253 @@
         "text": "{\"lastAppliedRev\":3,\"lastReportTs\":1234,\"namespaces\":{\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015},\"x\":100000000000000000000,\"y\":9007199254740993},\"settingsHash\":\"h\"}"
       },
       "expectedJson": "{\"lastAppliedRev\":3,\"lastReportTs\":1234,\"settingsHash\":\"h\",\"namespaces\":{\"imuMount\":{\"enabled\":true,\"rollDeg\":0.000005,\"pitchDeg\":0,\"yawDeg\":-0.0000015},\"x\":100000000000000000000,\"y\":9007199254740992}}"
+    },
+    {
+      "name": "[p5b] buildEffective carries the collector's report as effective.obd, after apn",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": "real",
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        },
+        "obd": {
+          "enabled": true,
+          "adapterMac": "AA:BB:CC:DD:EE:FF",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched",
+          "status": "live",
+          "link": 2,
+          "source": "settings",
+          "adapter": {
+            "mac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]},\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\",\"pin\":\"1234\",\"pollHz\":1,\"fields\":[],\"powerSource\":\"switched\",\"status\":\"live\",\"link\":2,\"source\":\"settings\",\"adapter\":{\"mac\":\"AA:BB:CC:DD:EE:FF\"}}}"
+    },
+    {
+      "name": "[p5b] buildEffective without a collector report has no obd key, even with the namespace held",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildEffective",
+      "input": {
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        },
+        "obd": null
+      },
+      "expectedJson": "{}"
+    },
+    {
+      "name": "[p5b] buildEffective: agent.capabilities on every device (sim mode, no obd)",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildEffective",
+      "input": {
+        "settings": {},
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "sim",
+        "cameraMount": {
+          "$undefined": true
+        },
+        "telemetryScope": {
+          "$undefined": true
+        },
+        "obd": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"agent\":{\"mode\":\"sim\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}}"
+    },
+    {
+      "name": "[p5b] obd without a collector report → rejected (no peripherals.obd)",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {},
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"rejected\",\"at\":42,\"reason\":\"obd: this device's hardware block declares no OBD peripheral (peripherals.obd) — the namespace is saved but nothing on the device reads it\"}}"
+    },
+    {
+      "name": "[p5b] obd not held in settings.json yet → adjusted",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {}
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"saved, but the device is not holding this namespace yet\"}}"
+    },
+    {
+      "name": "[p5b] obd held with a different value → adjusted (changed locally?)",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": false
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"the device is holding a different value (changed locally?)\"}}"
+    },
+    {
+      "name": "[p5b] obd held, collector not caught up (settings source) → adjusted next tick",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\",\"pollHz\":2}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pollHz": 2
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"saved; the OBD collector applies it on its next tick (about a second)\"}}"
+    },
+    {
+      "name": "[p5b] obd held, collector still on the env seam → adjusted env text",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": false,
+            "adapterMac": null,
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "env",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"saved; the OBD collector is still on the env seam (XORGATE_OBD_*) and picks the namespace up on its next tick\"}}"
+    },
+    {
+      "name": "[p5b] obd applied + forgotten adapter → applied with the forget detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "not_configured",
+            "link": 0,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42,\"detail\":\"in force, but the device forgot adapter AA:BB:CC:DD:EE:FF (obd_forget) — clear or change the adapter to pair again\"}}"
+    },
+    {
+      "name": "[p5b] obd applied + adapter_not_found → not reachable detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "adapter_not_found",
+            "link": 0,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42,\"detail\":\"in force, but the adapter is not reachable right now (unplugged, out of range or not powered)\"}}"
+    },
+    {
+      "name": "[p5b] obd applied + backoff → not reachable detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "backoff",
+            "link": 0,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42,\"detail\":\"in force, but the adapter is not reachable right now (unplugged, out of range or not powered)\"}}"
+    },
+    {
+      "name": "[p5b] obd applied + parked → parked detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "parked",
+            "link": 0,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42,\"detail\":\"in force, but the helper is parked after repeated failures (see the device events)\"}}"
+    },
+    {
+      "name": "[p5b] obd applied + live → applied, no detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42}}"
+    },
+    {
+      "name": "[p5b] obd enabled without an adapter → applied, nothing polled",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": null,
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "not_configured",
+            "link": 0,
+            "source": "settings",
+            "adapter": {
+              "mac": null
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42,\"detail\":\"in force; no adapter configured, so nothing is polled (link 0)\"}}"
+    },
+    {
+      "name": "[p5b] obd disabled → applied, no detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":false}}",
+        "effective": {
+          "obd": {
+            "enabled": false,
+            "adapterMac": null,
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "disabled",
+            "link": 0,
+            "source": "settings",
+            "adapter": {
+              "mac": null
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": false
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42}}"
+    },
+    {
+      "name": "[p5b] obd adapterMac null held → applied (defaults fill the rest)",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"adapterMac\":null}}",
+        "effective": {
+          "obd": {
+            "enabled": false,
+            "adapterMac": null,
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "disabled",
+            "link": 0,
+            "source": "settings",
+            "adapter": {
+              "mac": null
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "adapterMac": null
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42}}"
+    },
+    {
+      "name": "[p5b] obd report missing a namespace key → adjusted",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"saved; the OBD collector applies it on its next tick (about a second)\"}}"
+    },
+    {
+      "name": "[p5b] obd revert marker {} while settings.json still holds obd → adjusted (CF74)",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"asked to revert to defaults, but the device is still holding a value\"}}"
+    },
+    {
+      "name": "[p5b] obd revert marker {} with settings.json clear → applied even though effective.obd exists (CF74)",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {}
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42}}"
+    },
+    {
+      "name": "[p5b] obd revert marker {} without settings param semantics: no settings → applied",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"applied\",\"at\":42}}"
+    },
+    {
+      "name": "[p5b] obd clamped pollHz → adjusted (normalized)",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\",\"pollHz\":5}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 2,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pollHz": 2
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"the device clamped or normalized the delivered value\"}}"
+    },
+    {
+      "name": "[p5b] obd all-invalid → rejected no valid fields",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"adapterMac\":\"zz\",\"pin\":\"12\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {}
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"rejected\",\"at\":42,\"reason\":\"obd: no valid fields in the delivered value\"}}"
+    },
+    {
+      "name": "[p5b] obd lowercase MAC is normalized → adjusted",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"adapterMac\":\"aa:bb:cc:dd:ee:ff\"}}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"adjusted\",\"at\":42,\"detail\":\"the device clamped or normalized the delivered value\"}}"
+    },
+    {
+      "name": "[p5b] obd delivered as an array → rejected not a valid object",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":[1]}",
+        "effective": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF",
+            "pin": "1234",
+            "pollHz": 1,
+            "fields": [],
+            "powerSource": "switched",
+            "status": "live",
+            "link": 2,
+            "source": "settings",
+            "adapter": {
+              "mac": "AA:BB:CC:DD:EE:FF"
+            }
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 42,
+        "hints": {
+          "$undefined": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        },
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"obd\":{\"state\":\"rejected\",\"at\":42,\"reason\":\"obd: not a valid object\"}}"
+    },
+    {
+      "name": "[p5b] timeSync while the clock trust gate holds → held detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 9,
+        "hints": {
+          "clockTrust": "held",
+          "clockStepperArmed": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"applied\",\"at\":9,\"detail\":\"in force, but the wall clock is not trusted yet: telemetry publish and recording are held until NTP/GPS/NITZ lands (5 min cap)\"}}"
+    },
+    {
+      "name": "[p5b] timeSync in clock-trust fallback → fallback detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 9,
+        "hints": {
+          "clockTrust": "fallback",
+          "clockStepperArmed": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"applied\",\"at\":9,\"detail\":\"in force, but no NTP/GPS/NITZ sync landed within 5 min: publishing on an untrusted clock (timestamps may be early)\"}}"
+    },
+    {
+      "name": "[p5b] timeSync held wins over a stood-down stepper",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 9,
+        "hints": {
+          "clockTrust": "held",
+          "clockStepperArmed": false
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"applied\",\"at\":9,\"detail\":\"in force, but the wall clock is not trusted yet: telemetry publish and recording are held until NTP/GPS/NITZ lands (5 min cap)\"}}"
+    },
+    {
+      "name": "[p5b] timeSync trusted + stood-down stepper → the stepper detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 9,
+        "hints": {
+          "clockTrust": "trusted",
+          "clockStepperArmed": false
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"applied\",\"at\":9,\"detail\":\"in force, but the clock stepper stood down for this boot (NTP is synchronized)\"}}"
+    },
+    {
+      "name": "[p5b] timeSync trusted + armed stepper → applied, no detail",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildStatus",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"timeSync\":{\"offlineSources\":true}}",
+        "effective": {
+          "timeSync": {
+            "offlineSources": true
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "at": 9,
+        "hints": {
+          "clockTrust": "trusted",
+          "clockStepperArmed": true
+        },
+        "cameraMount": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"timeSync\":{\"state\":\"applied\",\"at\":9}}"
+    },
+    {
+      "name": "[p5b] buildConfigReport carries effective.obd + status.obd + 4 capabilities",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 11,
+        "origin": "boot",
+        "lastAppliedRev": 7,
+        "settings": {
+          "mode": "real",
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        },
+        "modem": {
+          "value": true,
+          "fresh": true
+        },
+        "mode": "real",
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "hints": {
+          "clockTrust": "trusted"
+        },
+        "obd": {
+          "enabled": true,
+          "adapterMac": "AA:BB:CC:DD:EE:FF",
+          "pin": "1234",
+          "pollHz": 1,
+          "fields": [],
+          "powerSource": "switched",
+          "status": "live",
+          "link": 2,
+          "source": "settings",
+          "adapter": {
+            "mac": "AA:BB:CC:DD:EE:FF"
+          }
+        },
+        "build": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":11,\"rev\":7,\"origin\":\"boot\",\"effective\":{\"gnssAntBias\":true,\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]},\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\",\"pin\":\"1234\",\"pollHz\":1,\"fields\":[],\"powerSource\":\"switched\",\"status\":\"live\",\"link\":2,\"source\":\"settings\",\"adapter\":{\"mac\":\"AA:BB:CC:DD:EE:FF\"}}},\"status\":{\"obd\":{\"state\":\"applied\",\"at\":11}}}"
+    },
+    {
+      "name": "[p5b] buildConfigReport without the peripheral: no effective.obd, obd rejected",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "buildConfigReport",
+      "input": {
+        "deviceId": "dev-1",
+        "ts": 12,
+        "origin": "cloud",
+        "lastAppliedRev": 7,
+        "settings": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        },
+        "modem": {
+          "value": null,
+          "fresh": false,
+          "detail": "modem telemetry unavailable"
+        },
+        "mode": "real",
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "build": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "{\"v\":1,\"deviceId\":\"dev-1\",\"ts\":12,\"rev\":7,\"origin\":\"cloud\",\"effective\":{\"agent\":{\"mode\":\"real\",\"build\":{\"version\":\"0.2.0\",\"channel\":\"local\",\"builtAt\":null,\"packageVersion\":\"0.2.0\"},\"capabilities\":[\"sms.read\",\"sms.clear\",\"obd.scan\",\"obd.forget\"]}},\"status\":{\"obd\":{\"state\":\"rejected\",\"at\":12,\"reason\":\"obd: this device's hardware block declares no OBD peripheral (peripherals.obd) — the namespace is saved but nothing on the device reads it\"}}}"
+    },
+    {
+      "name": "[p5b] namespacesOf includes obd last",
+      "source": "src/agent/config-sync.ts @ 09da38d",
+      "op": "namespacesOf",
+      "input": {
+        "settings": {
+          "gnssAntBias": true,
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "{\"gnssAntBias\":true,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}"
+    },
+    {
+      "name": "[p5b] never fires before a baseline exists",
+      "source": "src/agent/config-sync.ts:323-347 @ 09da38d",
+      "op": "unheldNamespaces",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "settings": {},
+        "baseline": {
+          "$undefined": true
+        }
+      },
+      "expectedJson": "[]"
+    },
+    {
+      "name": "[p5b] obd carried, absent from settings.json AND baseline → adopted",
+      "source": "src/agent/config-sync.ts:323-347 @ 09da38d",
+      "op": "unheldNamespaces",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"gnssAntBias\":true,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "settings": {
+          "gnssAntBias": true
+        },
+        "baseline": {
+          "gnssAntBias": true
+        }
+      },
+      "expectedJson": "[\"obd\"]"
+    },
+    {
+      "name": "[p5b] obd present in the baseline (deleted locally) → not adopted",
+      "source": "src/agent/config-sync.ts:323-347 @ 09da38d",
+      "op": "unheldNamespaces",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "settings": {},
+        "baseline": {
+          "obd": {
+            "enabled": true,
+            "adapterMac": "AA:BB:CC:DD:EE:FF"
+          }
+        }
+      },
+      "expectedJson": "[]"
+    },
+    {
+      "name": "[p5b] obd present in settings.json → not adopted",
+      "source": "src/agent/config-sync.ts:323-347 @ 09da38d",
+      "op": "unheldNamespaces",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"}}",
+        "settings": {
+          "obd": {
+            "enabled": false
+          }
+        },
+        "baseline": {}
+      },
+      "expectedJson": "[]"
+    },
+    {
+      "name": "[p5b] null (the revert marker parse) is not carried",
+      "source": "src/agent/config-sync.ts:323-347 @ 09da38d",
+      "op": "unheldNamespaces",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{}}",
+        "settings": {},
+        "baseline": {}
+      },
+      "expectedJson": "[]"
+    },
+    {
+      "name": "[p5b] several never-held keys come back in registry order",
+      "source": "src/agent/config-sync.ts:323-347 @ 09da38d",
+      "op": "unheldNamespaces",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"obd\":{\"enabled\":true,\"adapterMac\":\"AA:BB:CC:DD:EE:FF\"},\"timeSync\":{\"offlineSources\":false},\"recording\":{\"telemetry\":{\"enabled\":true}}}",
+        "settings": {},
+        "baseline": {}
+      },
+      "expectedJson": "[\"recording\",\"timeSync\",\"obd\"]"
+    },
+    {
+      "name": "[p5b] an empty baseline object still counts as a baseline",
+      "source": "src/agent/config-sync.ts:323-347 @ 09da38d",
+      "op": "unheldNamespaces",
+      "input": {
+        "desiredPayload": "{\"v\":1,\"rev\":7,\"lteRecovery\":{\"deadZoneProfile\":\"balanced\"}}",
+        "settings": {},
+        "baseline": {}
+      },
+      "expectedJson": "[\"lteRecovery\"]"
     }
   ]
 }

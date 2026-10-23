@@ -1,0 +1,328 @@
+{
+  "jsSourceFile": "src/daemon/settings.ts (parseObdSettings :388-412, OBD_DEFAULTS :362-369) + test/settings.test.ts + test/config-contract.test.ts",
+  "cases": [
+    {
+      "name": "contract shape: MAC uppercased, pin, pollHz, fields deduped, enum power",
+      "op": "parseObdSettings",
+      "input": {
+        "enabled": true,
+        "adapterMac": " 10:21:3e:4f:33:65 ",
+        "pin": "123456",
+        "pollHz": 0.5,
+        "fields": [
+          "rpm",
+          "speed",
+          "rpm",
+          "Bad Name",
+          7
+        ],
+        "powerSource": "constant"
+      },
+      "expectedJson": "{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"pin\":\"123456\",\"pollHz\":0.5,\"fields\":[\"rpm\",\"speed\"],\"powerSource\":\"constant\"}"
+    },
+    {
+      "name": "null MAC kept, empty fields kept",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": null,
+        "fields": []
+      },
+      "expectedJson": "{\"adapterMac\":null,\"fields\":[]}"
+    },
+    {
+      "name": "pollHz 50 clamps to max",
+      "op": "parseObdSettings",
+      "input": {
+        "pollHz": 50
+      },
+      "expectedJson": "{\"pollHz\":2}"
+    },
+    {
+      "name": "pollHz 0 clamps to min",
+      "op": "parseObdSettings",
+      "input": {
+        "pollHz": 0
+      },
+      "expectedJson": "{\"pollHz\":0.2}"
+    },
+    {
+      "name": "malformed MAC/PIN, bad enum, mistyped enabled → undefined",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": "10:21:3E:4F:33",
+        "pin": "12",
+        "powerSource": "solar",
+        "enabled": "yes"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "dashed MAC dropped, enabled kept",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": "10-21-3E-4F-33-65",
+        "enabled": true
+      },
+      "expectedJson": "{\"enabled\":true}"
+    },
+    {
+      "name": "letters PIN dropped",
+      "op": "parseObdSettings",
+      "input": {
+        "pin": "abcd",
+        "enabled": false
+      },
+      "expectedJson": "{\"enabled\":false}"
+    },
+    {
+      "name": "null → undefined",
+      "op": "parseObdSettings",
+      "input": null,
+      "expectedJson": null
+    },
+    {
+      "name": "array → undefined",
+      "op": "parseObdSettings",
+      "input": [],
+      "expectedJson": null
+    },
+    {
+      "name": "{} → undefined",
+      "op": "parseObdSettings",
+      "input": {},
+      "expectedJson": null
+    },
+    {
+      "name": "contract defaults round-trip",
+      "op": "parseObdSettings",
+      "input": {
+        "enabled": false,
+        "adapterMac": null,
+        "pin": "1234",
+        "pollHz": 1,
+        "fields": [],
+        "powerSource": "switched"
+      },
+      "expectedJson": "{\"enabled\":false,\"adapterMac\":null,\"pin\":\"1234\",\"pollHz\":1,\"fields\":[],\"powerSource\":\"switched\"}"
+    },
+    {
+      "name": "pollHz min bound",
+      "op": "parseObdSettings",
+      "input": {
+        "pollHz": 0.2
+      },
+      "expectedJson": "{\"pollHz\":0.2}"
+    },
+    {
+      "name": "pollHz max bound",
+      "op": "parseObdSettings",
+      "input": {
+        "pollHz": 2
+      },
+      "expectedJson": "{\"pollHz\":2}"
+    },
+    {
+      "name": "lowercase MAC normalizes",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": "10:21:3e:4f:33:65"
+      },
+      "expectedJson": "{\"adapterMac\":\"10:21:3E:4F:33:65\"}"
+    },
+    {
+      "name": "adapterMac null alone",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": null
+      },
+      "expectedJson": "{\"adapterMac\":null}"
+    },
+    {
+      "name": "pin 7 digits dropped",
+      "op": "parseObdSettings",
+      "input": {
+        "pin": "1234567"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "pin 4 digits kept",
+      "op": "parseObdSettings",
+      "input": {
+        "pin": "0000"
+      },
+      "expectedJson": "{\"pin\":\"0000\"}"
+    },
+    {
+      "name": "pin number type dropped",
+      "op": "parseObdSettings",
+      "input": {
+        "pin": 1234
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "pollHz NaN-ish string dropped",
+      "op": "parseObdSettings",
+      "input": {
+        "pollHz": "1"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "pollHz negative clamps",
+      "op": "parseObdSettings",
+      "input": {
+        "pollHz": -3
+      },
+      "expectedJson": "{\"pollHz\":0.2}"
+    },
+    {
+      "name": "pollHz fraction kept",
+      "op": "parseObdSettings",
+      "input": {
+        "pollHz": 0.33
+      },
+      "expectedJson": "{\"pollHz\":0.33}"
+    },
+    {
+      "name": "fields not an array dropped",
+      "op": "parseObdSettings",
+      "input": {
+        "fields": "rpm"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "fields filtered to identifiers",
+      "op": "parseObdSettings",
+      "input": {
+        "fields": [
+          "rpm",
+          "",
+          "1abc",
+          "_x",
+          "a_1",
+          "UP",
+          "a-b",
+          "rpm"
+        ]
+      },
+      "expectedJson": "{\"fields\":[\"rpm\",\"_x\",\"a_1\"]}"
+    },
+    {
+      "name": "fields all invalid → [] (key kept)",
+      "op": "parseObdSettings",
+      "input": {
+        "fields": [
+          "Bad"
+        ]
+      },
+      "expectedJson": "{\"fields\":[]}"
+    },
+    {
+      "name": "powerSource case-sensitive",
+      "op": "parseObdSettings",
+      "input": {
+        "powerSource": "Switched"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "MAC with tab/newline trim",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": "\t10:21:3E:4F:33:65\n"
+      },
+      "expectedJson": "{\"adapterMac\":\"10:21:3E:4F:33:65\"}"
+    },
+    {
+      "name": "MAC lowercase hex with spaces inside dropped",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": "10:21:3E:4F:33: 65"
+      },
+      "expectedJson": null
+    },
+    {
+      "name": "MAC with ligature ff upper-cases to FF",
+      "op": "parseObdSettings",
+      "input": {
+        "adapterMac": "10:21:3E:4F:33:ﬀ"
+      },
+      "expectedJson": "{\"adapterMac\":\"10:21:3E:4F:33:FF\"}"
+    },
+    {
+      "name": "unknown keys ignored",
+      "op": "parseObdSettings",
+      "input": {
+        "bogus": 1,
+        "enabled": true
+      },
+      "expectedJson": "{\"enabled\":true}"
+    },
+    {
+      "name": "key order follows the parser, not the input",
+      "op": "parseObdSettings",
+      "input": {
+        "powerSource": "constant",
+        "fields": [
+          "rpm"
+        ],
+        "pollHz": 1.5,
+        "pin": "9999",
+        "adapterMac": null,
+        "enabled": true
+      },
+      "expectedJson": "{\"enabled\":true,\"adapterMac\":null,\"pin\":\"9999\",\"pollHz\":1.5,\"fields\":[\"rpm\"],\"powerSource\":\"constant\"}"
+    },
+    {
+      "name": "string top level → undefined",
+      "op": "parseObdSettings",
+      "input": "obd",
+      "expectedJson": null
+    },
+    {
+      "name": "OBD_DEFAULTS",
+      "op": "OBD_DEFAULTS",
+      "input": null,
+      "expectedJson": "{\"enabled\":false,\"adapterMac\":null,\"pin\":\"1234\",\"pollHz\":1,\"fields\":[],\"powerSource\":\"switched\"}"
+    },
+    {
+      "name": "OBD_POLL_HZ bounds",
+      "op": "OBD_POLL_HZ",
+      "input": null,
+      "expectedJson": "[0.2,2]"
+    },
+    {
+      "name": "allowlist keeps obd, drops unknown keys inside, normalizes the MAC",
+      "op": "loadSettings",
+      "input": "{\"mode\":\"real\",\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3e:4f:33:65\",\"powerSource\":\"switched\",\"bogus\":1}}",
+      "expectedJson": "{\"mode\":\"real\",\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"powerSource\":\"switched\"}}",
+      "savedAfterGnss": "{\"mode\":\"real\",\"obd\":{\"enabled\":true,\"adapterMac\":\"10:21:3E:4F:33:65\",\"powerSource\":\"switched\"},\"gnssAntBias\":true}"
+    },
+    {
+      "name": "an all-invalid obd namespace is dropped",
+      "op": "loadSettings",
+      "input": "{\"mode\":\"sim\",\"obd\":{\"pin\":\"1\"}}",
+      "expectedJson": "{\"mode\":\"sim\"}",
+      "savedAfterGnss": "{\"mode\":\"sim\",\"gnssAntBias\":true}"
+    },
+    {
+      "name": "obd lands after simulation in the rewrite",
+      "op": "loadSettings",
+      "input": "{\"obd\":{\"enabled\":false},\"simulation\":{\"loop\":false},\"mode\":\"real\"}",
+      "expectedJson": "{\"mode\":\"real\",\"simulation\":{\"loop\":false},\"obd\":{\"enabled\":false}}",
+      "savedAfterGnss": "{\"mode\":\"real\",\"simulation\":{\"loop\":false},\"obd\":{\"enabled\":false},\"gnssAntBias\":true}"
+    },
+    {
+      "name": "obd null in the file is dropped",
+      "op": "loadSettings",
+      "input": "{\"obd\":null}",
+      "expectedJson": "{}",
+      "savedAfterGnss": "{\"gnssAntBias\":true}"
+    }
+  ],
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-p5b-spine.mts (Phase 5b WP1) in the shared js-09da38d copy via npx tsx"
+}

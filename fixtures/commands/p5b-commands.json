@@ -1,0 +1,114 @@
+{
+  "jsSourceFile": "src/agent/commands.ts (DeviceCommandName :79-87, parseCommand :160-179, executeCommand :257-275) + test/commands.test.ts",
+  "cases": [
+    {
+      "name": "obd_scan parses with no args",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"obd_scan\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"obd_scan\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "obd_forget ignores args",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"obd_forget\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":3}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"obd_forget\",\"ts\":1750000000000,\"expiresAt\":1750000060000}"
+    },
+    {
+      "name": "clear_sms parses",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "clear_sms limit 25",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":25}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":25}}"
+    },
+    {
+      "name": "clear_sms limit 500 clamps",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":500}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":50}}"
+    },
+    {
+      "name": "clear_sms no args → 10",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "clear_sms args array → default",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":[5]}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "clear_sms limit 0 → clamped",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":0}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":1}}"
+    },
+    {
+      "name": "clear_sms limit 2.6 → rounded",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":2.6}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":2}}"
+    },
+    {
+      "name": "clear_sms limit string → default",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":\"5\"}}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"clear_sms\",\"ts\":1750000000000,\"expiresAt\":1750000060000,\"args\":{\"limit\":10}}"
+    },
+    {
+      "name": "obd_scan expiresAt clamped to ts+120s",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"obd_scan\",\"ts\":1750000000000,\"expiresAt\":1750000999999}",
+      "expectedJson": "{\"requestId\":\"req-1\",\"command\":\"obd_scan\",\"ts\":1750000000000,\"expiresAt\":1750000120000}"
+    },
+    {
+      "name": "unknown command still null",
+      "op": "parseCommand",
+      "input": "{\"v\":1,\"requestId\":\"req-1\",\"command\":\"obd_pair\",\"ts\":1750000000000,\"expiresAt\":1750000060000}",
+      "expectedJson": null
+    },
+    {
+      "name": "executeCommand refresh never reaches the runner",
+      "op": "executeCommand",
+      "input": "refresh",
+      "expectedJson": "{\"failed\":true,\"notFound\":false,\"exitCode\":1,\"stdout\":\"\",\"stderr\":\"refresh is handled in-process, not via executeCommand\"}",
+      "calls": []
+    },
+    {
+      "name": "executeCommand read_sms never reaches the runner",
+      "op": "executeCommand",
+      "input": "read_sms",
+      "expectedJson": "{\"failed\":true,\"notFound\":false,\"exitCode\":1,\"stdout\":\"\",\"stderr\":\"read_sms is handled in-process, not via executeCommand\"}",
+      "calls": []
+    },
+    {
+      "name": "executeCommand clear_sms never reaches the runner",
+      "op": "executeCommand",
+      "input": "clear_sms",
+      "expectedJson": "{\"failed\":true,\"notFound\":false,\"exitCode\":1,\"stdout\":\"\",\"stderr\":\"clear_sms is handled in-process, not via executeCommand\"}",
+      "calls": []
+    },
+    {
+      "name": "executeCommand obd_scan never reaches the runner",
+      "op": "executeCommand",
+      "input": "obd_scan",
+      "expectedJson": "{\"failed\":true,\"notFound\":false,\"exitCode\":1,\"stdout\":\"\",\"stderr\":\"obd_scan is handled in-process, not via executeCommand\"}",
+      "calls": []
+    },
+    {
+      "name": "executeCommand obd_forget never reaches the runner",
+      "op": "executeCommand",
+      "input": "obd_forget",
+      "expectedJson": "{\"failed\":true,\"notFound\":false,\"exitCode\":1,\"stdout\":\"\",\"stderr\":\"obd_forget is handled in-process, not via executeCommand\"}",
+      "calls": []
+    }
+  ],
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-p5b-spine.mts (Phase 5b WP1) in the shared js-09da38d copy via npx tsx"
+}

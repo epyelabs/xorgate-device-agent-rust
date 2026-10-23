@@ -9,8 +9,9 @@
 //!
 //! Payload shape (`commands.ts:7-11`):
 //! `{ "v": 1, "requestId": <uuid>, "command": "reboot"|"power_off"|"refresh"|
-//! "update"|"read_sms", "ts": <epoch ms issued>, "expiresAt": <epoch ms>,
-//! "args"?: { "limit": 1..50 } }` — `args` for `read_sms` only.
+//! "update"|"read_sms"|"clear_sms"|"obd_scan"|"obd_forget", "ts": <epoch ms
+//! issued>, "expiresAt": <epoch ms>, "args"?: { "limit": 1..50 } }` — `args`
+//! for `read_sms` / `clear_sms` only (`commands.ts:7-11` @ 09da38d).
 //!
 //! Two independent guards stop a stale command from causing a surprise
 //! reboot (`commands.ts:21-32`): a TTL (`expiresAt`, clamped to
@@ -52,16 +53,29 @@ pub enum DeviceCommandName {
     /// READ-ONLY (`commands.ts:58-61`): sweep stored SMS over the spare AT
     /// port and publish on `…/sms`; in-process.
     ReadSms,
+    /// DESTRUCTIVE sibling of `read_sms` (`commands.ts:63-69` @ 09da38d):
+    /// `AT+CMGD=0,4` on SM then ME, sweep, reply on `…/sms` with
+    /// `action:"clear"`; in-process, never via sudo.
+    ClearSms,
+    /// OBD collector one-shot (`commands.ts:71-79` @ 09da38d): a 25 s
+    /// Bluetooth discovery (never pairs); in-process.
+    ObdScan,
+    /// OBD collector one-shot: stop the helper, drop the bond, report
+    /// `not_configured`; in-process.
+    ObdForget,
 }
 
 impl DeviceCommandName {
-    /// The `COMMANDS` set (`commands.ts:65-71`), in declaration order.
-    pub const ALL: [DeviceCommandName; 5] = [
+    /// The `COMMANDS` set (`commands.ts:89-98` @ 09da38d), in declaration order.
+    pub const ALL: [DeviceCommandName; 8] = [
         DeviceCommandName::Reboot,
         DeviceCommandName::PowerOff,
         DeviceCommandName::Refresh,
         DeviceCommandName::Update,
         DeviceCommandName::ReadSms,
+        DeviceCommandName::ClearSms,
+        DeviceCommandName::ObdScan,
+        DeviceCommandName::ObdForget,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -71,6 +85,9 @@ impl DeviceCommandName {
             DeviceCommandName::Refresh => "refresh",
             DeviceCommandName::Update => "update",
             DeviceCommandName::ReadSms => "read_sms",
+            DeviceCommandName::ClearSms => "clear_sms",
+            DeviceCommandName::ObdScan => "obd_scan",
+            DeviceCommandName::ObdForget => "obd_forget",
         }
     }
 
@@ -79,12 +96,24 @@ impl DeviceCommandName {
         Self::ALL.into_iter().find(|c| c.as_str() == s)
     }
 
-    /// `refresh` and `read_sms` are handled in-process by the worker
-    /// (`commands.ts:233`, `worker.ts:1047, 1074`).
+    /// `refresh`, `read_sms`, `clear_sms`, `obd_scan` and `obd_forget` are
+    /// handled in-process by the worker (`commands.ts:261-275` @ 09da38d).
     pub fn is_in_process(self) -> bool {
         matches!(
             self,
-            DeviceCommandName::Refresh | DeviceCommandName::ReadSms
+            DeviceCommandName::Refresh
+                | DeviceCommandName::ReadSms
+                | DeviceCommandName::ClearSms
+                | DeviceCommandName::ObdScan
+                | DeviceCommandName::ObdForget
+        )
+    }
+
+    /// The two commands that carry `args.limit` (`commands.ts:174` @ 09da38d).
+    pub fn takes_sms_limit(self) -> bool {
+        matches!(
+            self,
+            DeviceCommandName::ReadSms | DeviceCommandName::ClearSms
         )
     }
 }
@@ -121,7 +150,7 @@ pub struct CommandArgs {
 
 /// `DeviceCommand` (`commands.ts:86-99`). Serde order = `parseCommand`'s
 /// construction order (`:140-149`): requestId, command, ts, expiresAt,
-/// then `args` only for `read_sms`. `ts`/`expiresAt` are JS numbers
+/// then `args` only for `read_sms` / `clear_sms`. `ts`/`expiresAt` are JS numbers
 /// (finite, possibly fractional) and print like JS.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +181,10 @@ pub enum RejectReason {
     RateLimited,
     #[serde(rename = "managed by host image")]
     ManagedByHostImage,
+    /// `obd_scan` / `obd_forget` on a device without the OBD collector
+    /// (`worker.ts:1224` @ 09da38d).
+    #[serde(rename = "no OBD peripheral")]
+    NoObdPeripheral,
 }
 
 impl RejectReason {
@@ -161,6 +194,7 @@ impl RejectReason {
             RejectReason::Duplicate => "duplicate",
             RejectReason::RateLimited => "rate-limited",
             RejectReason::ManagedByHostImage => "managed by host image",
+            RejectReason::NoObdPeripheral => "no OBD peripheral",
         }
     }
 }
@@ -207,7 +241,7 @@ fn finite_number(v: Option<&Value>) -> Option<f64> {
 ///
 /// `expiresAt` is clamped to `ts + MAX_TTL_MS` here, so every downstream
 /// expiry check is against a bound this device controls. `args` is read for
-/// `read_sms` only (an object or array; anything else counts as `{}`) and
+/// `read_sms` / `clear_sms` only (an object or array; anything else counts as `{}`) and
 /// its `limit` clamped by [`clamp_sms_limit`]; every other command ignores
 /// `args` entirely (contract §1).
 pub fn parse_command(payload: &[u8]) -> Option<DeviceCommand> {
@@ -231,7 +265,7 @@ pub fn parse_command(payload: &[u8]) -> Option<DeviceCommand> {
         expires_at: expires_at.min(ts + MAX_TTL_MS as f64),
         args: None,
     };
-    if command == DeviceCommandName::ReadSms {
+    if command.takes_sms_limit() {
         // `o.args && typeof o.args === "object"`: objects AND arrays pass,
         // and `args.limit` on an array is undefined → the default.
         let limit = match o.get("args") {
@@ -466,7 +500,7 @@ const UPDATE: PrivilegedCall = PrivilegedCall {
 pub enum CommandPlan {
     /// Run this argv (`reboot`, `power_off`, `update`).
     Privileged(PrivilegedCall),
-    /// `refresh` / `read_sms`: handled in-process by the worker; routing it
+    /// `refresh` / `read_sms` / `clear_sms` / `obd_*`: handled in-process by the worker; routing it
     /// into `executeCommand` yields the failed [`RunResult`] of
     /// [`in_process_run_result`] and never reaches sudo.
     InProcess(DeviceCommandName),
@@ -475,7 +509,11 @@ pub enum CommandPlan {
 /// `executeCommand`'s dispatch (`commands.ts:233-256`) without the `run`.
 pub fn plan(command: DeviceCommandName) -> CommandPlan {
     match command {
-        DeviceCommandName::Refresh | DeviceCommandName::ReadSms => CommandPlan::InProcess(command),
+        DeviceCommandName::Refresh
+        | DeviceCommandName::ReadSms
+        | DeviceCommandName::ClearSms
+        | DeviceCommandName::ObdScan
+        | DeviceCommandName::ObdForget => CommandPlan::InProcess(command),
         DeviceCommandName::Update => CommandPlan::Privileged(UPDATE),
         DeviceCommandName::Reboot => CommandPlan::Privileged(REBOOT),
         DeviceCommandName::PowerOff => CommandPlan::Privileged(POWEROFF),

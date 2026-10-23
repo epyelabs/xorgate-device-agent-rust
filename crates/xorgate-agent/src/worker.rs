@@ -23,7 +23,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 use xorgate_cloud::mqtt::{MqttClient, MqttConfig, MqttEvent, QoS, Will};
 use xorgate_core::clock::Clock;
-use xorgate_core::hardware_block::{parse_hardware_block, DeviceHardwareBlock};
+use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::telemetry::{
     ActivityEvent, ActivityLevel, ConnectionState, JsNumber, RunMode, StateSnapshot, StatusPayload,
     TelemetryMedia, TelemetryReading,
@@ -136,24 +136,18 @@ fn ensure_home(home: &Path) -> Result<()> {
         .with_context(|| format!("create XORGATE_HOME {}", home.display()))
 }
 
-/// `loadHardwareBlock(path)` (`hardware-config.ts:129-151`): absent →
-/// `None` silently; not JSON / failing validation → `None` + one
-/// `[hardware] …` warning. (WP3's `hardware_file.rs` owns the save side.)
+/// `loadHardwareBlock(path)` (`hardware-config.ts:196-217` @ 09da38d): absent
+/// → `None` silently; not JSON / failing validation → `None` + one
+/// `[hardware] …` warning; the `peripherals` warnings of the parse go
+/// through the same `[hardware] ` sink (X9). The read lives in the HAL
+/// (`xorgate_hal::hardware_file::load_hardware_block`).
 pub fn load_hardware_block(path: &Path) -> Option<DeviceHardwareBlock> {
-    let text = read_text(path).ok()?;
-    let p = path.display();
-    let Ok(obj) = serde_json::from_str::<Value>(&text) else {
-        warn!("[hardware] {p} is not valid JSON — ignoring; using legacy hardware behavior");
-        return None;
-    };
-    let block = parse_hardware_block(&obj);
-    if block.is_none() {
-        warn!("[hardware] {p} failed validation — ignoring; using legacy hardware behavior");
-    }
-    block
+    xorgate_hal::hardware_file::load_hardware_block(path, &mut |m| {
+        warn!("{}", xorgate_core::hardware_block::hardware_warn_line(&m))
+    })
 }
 
-/// The boot log line of a loaded hardware block (`worker.ts:115-121`).
+/// The boot log line of a loaded hardware block (`worker.ts:126-134` @ 09da38d).
 pub fn hardware_block_line(b: &DeviceHardwareBlock) -> String {
     let cameras = b
         .video
@@ -162,13 +156,20 @@ pub fn hardware_block_line(b: &DeviceHardwareBlock) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "[agent] hardware block: {} encoder={} cameras={} rails={} led={} imu={}",
+        "[agent] hardware block: {} encoder={} cameras={} rails={} led={} imu={}{}",
         b.platform.as_str(),
         b.encoder.as_str(),
         if cameras.is_empty() { "none" } else { &cameras },
         b.rails,
         if b.status_led.is_some() { "yes" } else { "no" },
         b.imu.as_deref().unwrap_or("none"),
+        // `(hardwareBlock.peripherals?.obd ? " obd=elm327/bt-spp" : "")`
+        // (`worker.ts:132` @ 09da38d).
+        if b.peripherals.as_ref().is_some_and(|p| p.obd.is_some()) {
+            " obd=elm327/bt-spp"
+        } else {
+            ""
+        },
     )
 }
 
@@ -207,6 +208,7 @@ fn build_recording_manager(
     media: Option<Arc<dyn MediaControl>>,
     upload: Option<xorgate_cloud::s3::UploadOptions>,
     time_source: crate::recording::time_source::TimeSourceHandle,
+    clock_trust: Option<crate::ops::clock_trust::ClockTrust>,
 ) -> RecordingManager {
     let cfg = &ctx.env.config;
     let real = cfg.mode == RunMode::Real;
@@ -271,6 +273,9 @@ fn build_recording_manager(
         poll_ms: None,
         shed_sample_ms: None,
         time_probe_timeout_ms: None,
+        // `clockTrusted: () => clockTrust?.trusted() ?? true` (`worker.ts:542` @ 09da38d).
+        clock_trusted: clock_trust
+            .map(|t| Arc::new(move || t.trusted()) as crate::recording::manager::ClockTrustedFn),
     })
 }
 
@@ -312,6 +317,7 @@ fn clock_stepper(
     source: Arc<dyn TelemetrySource>,
     runner: Arc<dyn xorgate_hal::privileged::PrivilegedRunner>,
     time_source: crate::recording::time_source::TimeSourceHandle,
+    clock_trust: Option<crate::ops::clock_trust::ClockTrust>,
 ) -> crate::ops::clock_stepper::ClockStepper {
     use crate::ops::clock_stepper as cs;
     let settings = ctx.paths.settings.clone();
@@ -337,7 +343,7 @@ fn clock_stepper(
         }),
         probe_ntp: cs::system_probe_ntp(ctx.tape.clone()),
         runner,
-        on_stepped: cs::time_source_on_stepped(time_source),
+        on_stepped: cs::time_source_on_stepped_with_trust(time_source, clock_trust),
         on_event: cs::agent_event_sink(ctx.state.clone(), ctx.clock.clone()),
         clock: ctx.clock.clone(),
         tape: ctx.tape.clone(),
@@ -557,6 +563,7 @@ async fn run(args: &[String]) -> Result<i32> {
                 msg: format!("agent starting (mode={})", cfg.mode.as_str()),
             }],
             recording: None,
+            obd: None,
         },
         paths.state.clone(),
     );
@@ -676,6 +683,21 @@ async fn run(args: &[String]) -> Result<i32> {
         ctx.clock.clone(),
         ctx.tape.clone(),
     );
+    // Clock trust gate (`worker.ts:471-487` @ 09da38d): until NTP (or a
+    // GPS/NITZ step) lands, the live publish and the telemetry recorder are
+    // HELD, for at most 5 min; real mode only (sim runs on the host clock).
+    let clock_trust = (cfg.mode == RunMode::Real).then(|| {
+        use crate::ops::clock_trust as ct;
+        ct::ClockTrust::new(ct::ClockTrustOptions::new(
+            ct::system_probe(ctx.tape.clone()),
+            ctx.clock.clone(),
+            crate::ops::clock_stepper::agent_event_sink(ctx.state.clone(), ctx.clock.clone()),
+        ))
+    });
+    if let Some(t) = &clock_trust {
+        t.start();
+        ops.bind_clock_trust(t.clone());
+    }
     // The privileged runner (exact-args sudo; `sudo` tape records, I9).
     let runner: Arc<dyn xorgate_hal::privileged::PrivilegedRunner> =
         Arc::new(xorgate_hal::privileged::TapedRunner::new(
@@ -703,6 +725,7 @@ async fn run(args: &[String]) -> Result<i32> {
         media.clone(),
         upload,
         time_source.clone(),
+        clock_trust.clone(),
     ));
     // Errors the TS leaves uncaught in the manager (the 5 s poll, M1): exit 1.
     let mut recording_fatal = hooks.manager().and_then(|m| m.take_fatal());
@@ -710,7 +733,13 @@ async fn run(args: &[String]) -> Result<i32> {
 
     // Offline clock stepper (`:536-555`): real mode only.
     if cfg.mode == RunMode::Real {
-        let stepper = clock_stepper(&ctx, source.clone(), runner.clone(), time_source.clone());
+        let stepper = clock_stepper(
+            &ctx,
+            source.clone(),
+            runner.clone(),
+            time_source.clone(),
+            clock_trust.clone(),
+        );
         stepper.start();
         ops.bind_stepper(Arc::new(stepper));
     }
@@ -743,6 +772,7 @@ async fn run(args: &[String]) -> Result<i32> {
             scope: scope.clone(),
             reports: reports.clone(),
             report_rx,
+            obd: None,
         },
     );
     // `requestConfigReport = (origin) => configSync.request(origin);` (`:746`):
@@ -770,6 +800,7 @@ async fn run(args: &[String]) -> Result<i32> {
         CommandPlaneDeps {
             mqtt: mqtt.clone(),
             reports: reports.clone(),
+            obd: None,
         },
         runner.clone(),
         sms,
@@ -855,6 +886,10 @@ async fn run(args: &[String]) -> Result<i32> {
         }
     })
     .await;
+    // `clockTrust?.stop()` (`worker.ts:1497` @ 09da38d), after `recording.stop()`.
+    if let Some(t) = &clock_trust {
+        t.stop();
+    }
     ctx.tracker.close();
     let _ = tokio::time::timeout(Duration::from_millis(500), ctx.tracker.wait()).await;
     ctx.tape.close();

@@ -17,7 +17,7 @@ use xorgate_core::build_info::BuildInfo;
 use xorgate_core::cloud_config::parse_cloud_message;
 use xorgate_core::config_report::*;
 use xorgate_core::js;
-use xorgate_core::settings::AgentSettings;
+use xorgate_core::settings::{load_settings_from, AgentSettings, SettingsRead};
 use xorgate_core::telemetry_scope::TelemetryScopeReport;
 use xorgate_core::types::CameraMountState;
 
@@ -79,12 +79,14 @@ fn config_report_suites() {
                 let scope: Option<TelemetryScopeReport> = present(i, "telemetryScope")
                     .filter(|v| !v.is_null())
                     .map(from);
+                let obd = present(i, "obd").filter(|v| !v.is_null());
                 Some(js::map_to_json_string(&build_effective(
                     &settings,
                     &modem,
                     mode.as_deref(),
                     cam.as_ref(),
                     scope.as_ref(),
+                    obd.as_ref(),
                     &build,
                 )))
             }
@@ -96,6 +98,8 @@ fn config_report_suites() {
                 let hints: ReportHints = present(i, "hints").map(from).unwrap_or_default();
                 let cam: Option<CameraMountState> =
                     present(i, "cameraMount").filter(|v| !v.is_null()).map(from);
+                let settings_opt: Option<AgentSettings> = present(i, "settings")
+                    .map(|v| load_settings_from(SettingsRead::Text(&v.to_string())));
                 Some(json(&build_status(
                     desired.as_ref(),
                     &effective,
@@ -103,6 +107,7 @@ fn config_report_suites() {
                     at,
                     &hints,
                     cam.as_ref(),
+                    settings_opt.as_ref(),
                 )))
             }
             "buildConfigReport" => {
@@ -182,6 +187,16 @@ fn config_report_suites() {
                     save
                 ))
             }
+            "unheldNamespaces" => {
+                let d = desired_from(i.get("desiredPayload")).expect("payload");
+                let settings = load_settings_from(SettingsRead::Text(&i["settings"].to_string()));
+                let baseline: Option<Map<String, Value>> = present(i, "baseline").map(from);
+                Some(json(&unheld_namespaces(
+                    &d.parsed,
+                    &settings,
+                    baseline.as_ref(),
+                )))
+            }
             "CONFIG_APPLY_CLASSES" => {
                 let classes: Map<String, Value> = CONFIG_APPLY_CLASSES
                     .iter()
@@ -193,8 +208,10 @@ fn config_report_suites() {
         };
         assert_eq!(got, c.expected_json, "{}", c.name);
     }
-    assert_eq!(f.cases.len(), 155);
-    assert_eq!(ops["buildEffective"], 26);
-    assert_eq!(ops["buildStatus"], 36);
-    assert_eq!(ops["buildConfigReport"], 19);
+    // Phase 1's 155 cases (re-evaluated @ 09da38d) + the [p5b] ones.
+    assert_eq!(f.cases.len(), 155 + 39, "{}", f.cases.len());
+    assert!(ops["buildEffective"] >= 26 + 3);
+    assert!(ops["buildStatus"] >= 36 + 26);
+    assert!(ops["buildConfigReport"] >= 19 + 2);
+    assert!(ops["unheldNamespaces"] >= 7);
 }

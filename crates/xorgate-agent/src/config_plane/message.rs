@@ -19,11 +19,14 @@
 //! settings, and after a restart the guarded path never re-delivers them.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use tracing::{error, info, warn};
 use xorgate_core::cloud_config::{merge, parse_cloud_message, CloudConfig};
-use xorgate_core::config_report::ReportOrigin;
-use xorgate_core::hardware_block::hardware_blocks_equal;
+use xorgate_core::config_report::{adoption_subset, unheld_adopt_log, ReportOrigin};
+use xorgate_core::hardware_block::{
+    hardware_blocks_equal, hardware_warn_line, parse_hardware_block_with,
+};
 use xorgate_core::telemetry::ActivityLevel;
 use xorgate_hal::atomic_write::atomic_write_bytes_traced;
 use xorgate_hal::hardware_file::save_hardware_block;
@@ -31,7 +34,7 @@ use xorgate_hal::kvs_manifest_io::{persist_upload_bucket, PersistOutcome};
 use xorgate_hal::settings_io::read_settings_file;
 
 use super::sync::ConfigSync;
-use crate::ctx::AgentCtx;
+use crate::ctx::{AgentCtx, ObdControl};
 use crate::scope::ScopeHandle;
 
 /// `ignoring malformed cloud config message` (`worker.ts:786`).
@@ -39,6 +42,13 @@ pub const MALFORMED_EVENT: &str = "ignoring malformed cloud config message";
 /// `invalid hardware block on config message — keeping current` (`worker.ts:829`).
 pub const INVALID_HARDWARE_EVENT: &str =
     "invalid hardware block on config message — keeping current";
+
+/// `[agent] hardware block changed peripherals.obd — restart the agent to
+/// apply` (`worker.ts:924-925` @ 09da38d): the OBD collector is built once
+/// from the BOOT-time block; a live change only says so. Event = the text
+/// without `[agent] `.
+pub const OBD_HARDWARE_CHANGED_EVENT: &str =
+    "hardware block changed peripherals.obd — restart the agent to apply";
 
 /// `JSON.stringify(parsed)` — the `cloud config applied: …` summary
 /// (`worker.ts:863`), numbers printed like JS.
@@ -73,6 +83,9 @@ pub struct MessageHandler {
     pub ctx: AgentCtx,
     pub sync: ConfigSync,
     pub scope: ScopeHandle,
+    /// The OBD collector (Phase 5b I4): `source.obdReapply?.()` after every
+    /// message and the `obdRunning` half of the hardware-change warning.
+    pub obd: Option<Arc<dyn ObdControl>>,
 }
 
 impl MessageHandler {
@@ -88,6 +101,13 @@ impl MessageHandler {
         };
         let raw = message.raw;
         let parsed = message.config;
+        // `parseHardwareBlock(hardware)` inside `parseCloudMessage`
+        // (`cloud-config.ts:284-287` @ 09da38d) warns through its DEFAULT
+        // sink, `console.warn("[hardware] …")`: the `peripherals` warnings
+        // (journal only, no event). Core's parse is silent, so replay them here.
+        if let Some(hw) = raw.get("hardware").filter(|v| v.is_object()) {
+            let _ = parse_hardware_block_with(hw, &mut |m| warn!("{}", hardware_warn_line(&m)));
+        }
 
         // uploadBucket backfill (`worker.ts:796-812`), outside the rev guard.
         if let Some(bucket) = parsed.upload_bucket.as_deref().filter(|b| !b.is_empty()) {
@@ -149,21 +169,44 @@ impl MessageHandler {
                     format!("hardware block updated: {platform}/{encoder}"),
                     now,
                 );
+                // `obdDeclared !== obdRunning` (`worker.ts:917-927` @ 09da38d).
+                let obd_declared = block.peripherals.as_ref().is_some_and(|p| p.obd.is_some());
+                if obd_declared != self.obd.is_some() {
+                    warn!("[agent] {OBD_HARDWARE_CHANGED_EVENT}");
+                    ctx.state
+                        .note(ActivityLevel::Warn, OBD_HARDWARE_CHANGED_EVENT, now);
+                }
                 // `reconcileHardwareNow()` → master bounce → `recording.reapply()` (Phase 3).
                 ctx.hooks.hardware_changed();
             }
             _ => {}
         }
 
-        // Rev guard (`worker.ts:861-899`).
+        // Rev guard (`worker.ts:938-1003` @ 09da38d).
         let should_apply = self.sync.should_apply(parsed.rev);
+        // Upgrade exception (`:944-947`): an already-applied document can
+        // carry a namespace the PREVIOUS build never persisted; adopt exactly
+        // those keys, everything else stays rev-guarded.
+        let adopt = if should_apply {
+            Vec::new()
+        } else {
+            self.sync.unheld_namespaces(&parsed)
+        };
         let mut applied = false;
         let outcome: Result<(), String> = (|| {
-            if should_apply {
-                let changed = apply_cloud_config(&parsed, &ctx.paths.settings)?;
+            if should_apply || !adopt.is_empty() {
+                let subset = if should_apply {
+                    parsed.clone()
+                } else {
+                    adoption_subset(&parsed, &adopt)
+                };
+                if !should_apply {
+                    info!("{}", unheld_adopt_log(parsed.rev, &adopt));
+                }
+                let changed = apply_cloud_config(&subset, &ctx.paths.settings)?;
                 applied = true;
                 if changed {
-                    let summary = applied_summary(&parsed);
+                    let summary = applied_summary(&subset);
                     info!("[agent] cloud config applied: {summary}");
                     ctx.state.note(
                         ActivityLevel::Info,
@@ -182,6 +225,10 @@ impl MessageHandler {
             // `void reconcileCameraMountNow()` (Phase 4) — on BOTH paths. A
             // throwing reapply skips the reconcile and lands in the catch.
             ctx.hooks.reapply_recording()?;
+            // `source.obdReapply?.()` (`:984-987` @ 09da38d).
+            if let Some(obd) = &self.obd {
+                obd.reapply();
+            }
             ctx.hooks.reconcile_camera_mount();
             Ok(())
         })();

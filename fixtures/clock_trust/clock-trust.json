@@ -1,0 +1,1252 @@
+{
+  "jsSourceFile": "src/agent/clock-trust.ts (createClockTrust :84-212) + test/clock-trust.test.ts",
+  "cases": [
+    {
+      "name": "holds until NTP, then latches with one info event",
+      "input": {
+        "answers": [
+          "unsynced",
+          "unsynced",
+          "ntp"
+        ],
+        "graceMs": 300000,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "advance",
+            "ms": 5000
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "advance",
+            "ms": 5000
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": false,
+          "events": [],
+          "probes": 0
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": false,
+            "state": "held",
+            "source": null,
+            "held": 0,
+            "heldMs": 0
+          },
+          "events": [],
+          "probes": 0
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 0
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 0
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 5000
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": false,
+          "events": [],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 5000
+          },
+          "result": null,
+          "events": [],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] ntp synchronized — clock trusted (telemetry held 10 s, 2 sample(s))"
+            }
+          ],
+          "probes": 3
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [],
+          "probes": 3
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "ntp",
+            "held": 2,
+            "heldMs": 10000
+          },
+          "events": [],
+          "probes": 3
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 3
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "ntp",
+            "held": 2,
+            "heldMs": 10000
+          },
+          "events": [],
+          "probes": 3
+        }
+      ]
+    },
+    {
+      "name": "rtc is not trust, a GPS step is",
+      "input": {
+        "answers": [
+          "rtc"
+        ],
+        "graceMs": null,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "noteStep",
+            "source": "gps"
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": false,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteStep",
+            "source": "gps"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] gps synchronized — clock trusted (telemetry held 0 s, 0 sample(s))"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "gps",
+            "held": 0,
+            "heldMs": 0
+          },
+          "events": [],
+          "probes": 1
+        }
+      ]
+    },
+    {
+      "name": "falls back after the grace window with one warn",
+      "input": {
+        "answers": [
+          "unsynced"
+        ],
+        "graceMs": 60000,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "advance",
+            "ms": 59999
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "advance",
+            "ms": 1
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "advance",
+            "ms": 100000
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 59999
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": false,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 1
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [
+            {
+              "level": "warn",
+              "msg": "[clock] no NTP/GPS/NITZ sync 60 s after start — publishing on an UNTRUSTED clock (1 sample(s) held); timestamps may be early until a sync lands"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "fallback",
+            "source": null,
+            "held": 1,
+            "heldMs": 60000
+          },
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 100000
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "fallback",
+            "source": null,
+            "held": 1,
+            "heldMs": 60000
+          },
+          "events": [],
+          "probes": 1
+        }
+      ]
+    },
+    {
+      "name": "NTP after a fallback clears the flag and says how long",
+      "input": {
+        "answers": [
+          "unsynced",
+          "ntp"
+        ],
+        "graceMs": 60000,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "advance",
+            "ms": 60000
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "advance",
+            "ms": 30000
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "trusted"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 60000
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [
+            {
+              "level": "warn",
+              "msg": "[clock] no NTP/GPS/NITZ sync 60 s after start — publishing on an UNTRUSTED clock (0 sample(s) held); timestamps may be early until a sync lands"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "fallback",
+            "source": null,
+            "held": 0,
+            "heldMs": 60000
+          },
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 30000
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] ntp synchronized 90 s after boot — clock trusted (published 30 s on an untrusted clock)"
+            }
+          ],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "ntp",
+            "held": 0,
+            "heldMs": 60000
+          },
+          "events": [],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [],
+          "probes": 2
+        }
+      ]
+    },
+    {
+      "name": "a throwing probe counts toward the grace window",
+      "input": {
+        "answers": [
+          "throw:timedatectl: boom"
+        ],
+        "graceMs": 1000,
+        "startMono": 0,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "advance",
+            "ms": 1000
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "warn",
+              "msg": "[clock] trust probe failed: timedatectl: boom"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": false,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 1000
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "warn",
+              "msg": "[clock] trust probe failed: timedatectl: boom"
+            },
+            {
+              "level": "warn",
+              "msg": "[clock] no NTP/GPS/NITZ sync 1 s after start — publishing on an UNTRUSTED clock (0 sample(s) held); timestamps may be early until a sync lands"
+            }
+          ],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "fallback",
+            "source": null,
+            "held": 0,
+            "heldMs": 1000
+          },
+          "events": [],
+          "probes": 2
+        }
+      ]
+    },
+    {
+      "name": "CLOCK_TRUST_DEFAULTS",
+      "input": null,
+      "expected": {
+        "graceMs": 300000,
+        "pollMs": 5000,
+        "slowPollMs": 30000
+      }
+    },
+    {
+      "name": "default 5 min grace: status() at 300 s flips fallback with the warn",
+      "input": {
+        "answers": [
+          "unsynced"
+        ],
+        "graceMs": null,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "advance",
+            "ms": 299999
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "advance",
+            "ms": 1
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "trusted"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 299999
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": false,
+            "state": "held",
+            "source": null,
+            "held": 3,
+            "heldMs": 299999
+          },
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 1
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "fallback",
+            "source": null,
+            "held": 3,
+            "heldMs": 300000
+          },
+          "events": [
+            {
+              "level": "warn",
+              "msg": "[clock] no NTP/GPS/NITZ sync 300 s after start — publishing on an UNTRUSTED clock (3 sample(s) held); timestamps may be early until a sync lands"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [],
+          "probes": 1
+        }
+      ]
+    },
+    {
+      "name": "nitz step while held",
+      "input": {
+        "answers": [
+          "unsynced"
+        ],
+        "graceMs": null,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "advance",
+            "ms": 12345
+          },
+          {
+            "op": "noteStep",
+            "source": "nitz"
+          },
+          {
+            "op": "status"
+          },
+          {
+            "op": "noteStep",
+            "source": "gps"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 12345
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteStep",
+            "source": "nitz"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] nitz synchronized — clock trusted (telemetry held 12 s, 1 sample(s))"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "nitz",
+            "held": 1,
+            "heldMs": 12345
+          },
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteStep",
+            "source": "gps"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "nitz",
+            "held": 1,
+            "heldMs": 12345
+          },
+          "events": [],
+          "probes": 1
+        }
+      ]
+    },
+    {
+      "name": "secs rounds like toFixed(0): 2.5 s → 3, 1.499 s → 1",
+      "input": {
+        "answers": [
+          "unsynced",
+          "ntp"
+        ],
+        "graceMs": null,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "advance",
+            "ms": 2500
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "advance",
+            "ms": 2500
+          },
+          "result": null,
+          "events": [],
+          "probes": 0
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] ntp synchronized — clock trusted (telemetry held 3 s, 0 sample(s))"
+            }
+          ],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "ntp",
+            "held": 0,
+            "heldMs": 2500
+          },
+          "events": [],
+          "probes": 2
+        }
+      ]
+    },
+    {
+      "name": "gps step after fallback: late-sync wording",
+      "input": {
+        "answers": [
+          "unsynced"
+        ],
+        "graceMs": null,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "advance",
+            "ms": 300000
+          },
+          {
+            "op": "trusted"
+          },
+          {
+            "op": "advance",
+            "ms": 45500
+          },
+          {
+            "op": "noteStep",
+            "source": "gps"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 300000
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "trusted"
+          },
+          "result": true,
+          "events": [
+            {
+              "level": "warn",
+              "msg": "[clock] no NTP/GPS/NITZ sync 300 s after start — publishing on an UNTRUSTED clock (0 sample(s) held); timestamps may be early until a sync lands"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 45500
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteStep",
+            "source": "gps"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] gps synchronized 346 s after boot — clock trusted (published 46 s on an untrusted clock)"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "gps",
+            "held": 0,
+            "heldMs": 300000
+          },
+          "events": [],
+          "probes": 1
+        }
+      ]
+    },
+    {
+      "name": "throw then ntp",
+      "input": {
+        "answers": [
+          "throw:spawn timedatectl ENOENT",
+          "ntp"
+        ],
+        "graceMs": null,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "tick"
+          },
+          {
+            "op": "advance",
+            "ms": 4000
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "warn",
+              "msg": "[clock] trust probe failed: spawn timedatectl ENOENT"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "advance",
+            "ms": 4000
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] ntp synchronized — clock trusted (telemetry held 4 s, 0 sample(s))"
+            }
+          ],
+          "probes": 2
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "ntp",
+            "held": 0,
+            "heldMs": 4000
+          },
+          "events": [],
+          "probes": 2
+        }
+      ]
+    },
+    {
+      "name": "held count keeps growing after trust",
+      "input": {
+        "answers": [
+          "ntp"
+        ],
+        "graceMs": null,
+        "startMono": 1000,
+        "steps": [
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "tick"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "noteHeld"
+          },
+          {
+            "op": "status"
+          }
+        ]
+      },
+      "expected": [
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 0
+        },
+        {
+          "step": {
+            "op": "tick"
+          },
+          "result": null,
+          "events": [
+            {
+              "level": "info",
+              "msg": "[clock] ntp synchronized — clock trusted (telemetry held 0 s, 1 sample(s))"
+            }
+          ],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "noteHeld"
+          },
+          "result": null,
+          "events": [],
+          "probes": 1
+        },
+        {
+          "step": {
+            "op": "status"
+          },
+          "result": {
+            "trusted": true,
+            "state": "trusted",
+            "source": "ntp",
+            "held": 3,
+            "heldMs": 0
+          },
+          "events": [],
+          "probes": 1
+        }
+      ]
+    }
+  ],
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-p5b-spine.mts (Phase 5b WP1) in the shared js-09da38d copy via npx tsx"
+}

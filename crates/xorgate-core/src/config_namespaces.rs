@@ -1,5 +1,5 @@
 //! The cloud config namespace registry as the agent knows it — port of
-//! `CONFIG_APPLY_CLASSES` / `CONFIG_NAMESPACE_KEYS` (`src/agent/config-sync.ts:133-153`).
+//! `CONFIG_APPLY_CLASSES` / `CONFIG_NAMESPACE_KEYS` (`src/agent/config-sync.ts:133-160` @ 09da38d).
 //! Pinned against the cloud's `config-contract.json` by `tests/config_contract.rs`.
 //! WP4 (config_report) extends this module with the rest of the reported plane.
 
@@ -45,6 +45,11 @@ pub const CONFIG_APPLY_CLASSES: &[(&str, ApplyClass)] = &[
     // Device-simulator scenario: only simulated devices are ever sent it; on
     // real hardware it is inert.
     ("simulation", ApplyClass::AgentPoll),
+    // Vehicle OBD-II adapter (`config-sync.ts:153-156` @ 09da38d): the OBD
+    // collector re-reads settings.json each tick and after every cloud
+    // message, and restarts its helper when the adapter/PIN/rate/fields/
+    // power source move.
+    ("obd", ApplyClass::AgentPoll),
 ];
 
 /// `CONFIG_NAMESPACE_KEYS` (`config-sync.ts:153`): `Object.keys(CONFIG_APPLY_CLASSES)`.
@@ -57,6 +62,7 @@ pub const CONFIG_NAMESPACE_KEYS: &[&str] = &[
     "cellular",
     "cameraMount",
     "simulation",
+    "obd",
 ];
 
 /// Apply class of a namespace key, or None for an unknown key.

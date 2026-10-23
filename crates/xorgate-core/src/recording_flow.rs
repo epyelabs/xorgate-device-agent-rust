@@ -96,6 +96,11 @@ pub struct TelemetryPlan {
     pub start: bool,
 }
 
+/// The clock trust gate's one info event per hold (`manager.ts:374` @
+/// 09da38d): `telemetry recording held: …`.
+pub const CLOCK_HOLD_EVENT: &str =
+    "telemetry recording held: wall clock not trusted yet (waiting for NTP/GPS/NITZ, 5 min cap)";
+
 /// `apply()`'s recorder block (`manager.ts:436-443`). `running_rate` is
 /// `activeRateHz` while a recorder runs (`None` = no recorder). Takes no
 /// shed, gate or video input: telemetry recording — the crash evidence — is

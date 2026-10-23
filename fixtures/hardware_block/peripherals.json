@@ -1,0 +1,669 @@
+{
+  "jsSourceFile": "src/hardware/hardware-config.ts (parsePeripherals :104-128, parseHardwareBlock :133-188, loadHardwareBlock :196-217) + test/hardware-block.test.ts",
+  "cases": [
+    {
+      "name": "absent → no peripherals key",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ]
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": []
+    },
+    {
+      "name": "{} → no peripherals key, no warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {}
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": []
+    },
+    {
+      "name": "null → no peripherals key, no warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": null
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": []
+    },
+    {
+      "name": "valid obd → parsed verbatim",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": {
+            "adapter": "elm327",
+            "transport": "bt-spp"
+          }
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}],\"peripherals\":{\"obd\":{\"adapter\":\"elm327\",\"transport\":\"bt-spp\"}}}",
+      "warnings": []
+    },
+    {
+      "name": "valid obd with extra fields → canonical {adapter, transport}",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": {
+            "transport": "bt-spp",
+            "adapter": "elm327",
+            "pin": "1234"
+          }
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}],\"peripherals\":{\"obd\":{\"adapter\":\"elm327\",\"transport\":\"bt-spp\"}}}",
+      "warnings": []
+    },
+    {
+      "name": "invalid transport → one warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": {
+            "adapter": "elm327",
+            "transport": "ble"
+          }
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals.obd {\"adapter\":\"elm327\",\"transport\":\"ble\"} is not {adapter:\"elm327\",transport:\"bt-spp\"} — ignoring it"
+      ]
+    },
+    {
+      "name": "string obd → warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": "elm327"
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals.obd \"elm327\" is not {adapter:\"elm327\",transport:\"bt-spp\"} — ignoring it"
+      ]
+    },
+    {
+      "name": "null obd → warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": null
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals.obd null is not {adapter:\"elm327\",transport:\"bt-spp\"} — ignoring it"
+      ]
+    },
+    {
+      "name": "array obd → warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": [
+            {
+              "adapter": "elm327",
+              "transport": "bt-spp"
+            }
+          ]
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals.obd [{\"adapter\":\"elm327\",\"transport\":\"bt-spp\"}] is not {adapter:\"elm327\",transport:\"bt-spp\"} — ignoring it"
+      ]
+    },
+    {
+      "name": "unknown peripheral + valid obd → one warning, obd kept",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "lidar": {
+            "adapter": "x"
+          },
+          "obd": {
+            "adapter": "elm327",
+            "transport": "bt-spp"
+          }
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}],\"peripherals\":{\"obd\":{\"adapter\":\"elm327\",\"transport\":\"bt-spp\"}}}",
+      "warnings": [
+        "peripherals.lidar is not a known peripheral — ignoring it"
+      ]
+    },
+    {
+      "name": "two unknown peripherals → two warnings",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "9": 1,
+          "lidar": true
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals.9 is not a known peripheral — ignoring it",
+        "peripherals.lidar is not a known peripheral — ignoring it"
+      ]
+    },
+    {
+      "name": "peripherals string → warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": "obd"
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals is not an object — ignoring it (rest of the block kept)"
+      ]
+    },
+    {
+      "name": "peripherals array → warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": [
+          {
+            "adapter": "elm327",
+            "transport": "bt-spp"
+          }
+        ]
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals is not an object — ignoring it (rest of the block kept)"
+      ]
+    },
+    {
+      "name": "peripherals number → warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": 5
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals is not an object — ignoring it (rest of the block kept)"
+      ]
+    },
+    {
+      "name": "bad encoder next to a valid peripheral → null, no warning",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "av1",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": {
+            "adapter": "elm327",
+            "transport": "bt-spp"
+          }
+        }
+      },
+      "expectedJson": null,
+      "warnings": []
+    },
+    {
+      "name": "bad video next to a bad peripheral → null, no warning (video first)",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          1
+        ],
+        "peripherals": {
+          "obd": 1
+        }
+      },
+      "expectedJson": null,
+      "warnings": []
+    },
+    {
+      "name": "warning text uses JSON.stringify of the entry",
+      "op": "parseHardwareBlock",
+      "input": {
+        "v": 2,
+        "platform": "rpi-cm4",
+        "encoder": "hw-h264",
+        "rails": false,
+        "statusLed": null,
+        "imu": "bno085",
+        "video": [
+          {
+            "key": "cam0",
+            "connector": "csi0",
+            "sensor": "imx290",
+            "codec": "h264",
+            "label": "Front"
+          }
+        ],
+        "peripherals": {
+          "obd": {
+            "adapter": "stn",
+            "n": 1.5,
+            "s": "é"
+          }
+        }
+      },
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "warnings": [
+        "peripherals.obd {\"adapter\":\"stn\",\"n\":1.5,\"s\":\"é\"} is not {adapter:\"elm327\",transport:\"bt-spp\"} — ignoring it"
+      ]
+    },
+    {
+      "name": "keeps a block whose only fault is a bad peripheral",
+      "op": "loadHardwareBlock",
+      "input": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}],\"peripherals\":{\"obd\":{\"adapter\":\"stn\"}}}",
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}]}",
+      "logs": [
+        "peripherals.obd {\"adapter\":\"stn\"} is not {adapter:\"elm327\",transport:\"bt-spp\"} — ignoring it"
+      ]
+    },
+    {
+      "name": "valid peripheral → no log",
+      "op": "loadHardwareBlock",
+      "input": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}],\"peripherals\":{\"obd\":{\"adapter\":\"elm327\",\"transport\":\"bt-spp\"}}}",
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm4\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}],\"peripherals\":{\"obd\":{\"adapter\":\"elm327\",\"transport\":\"bt-spp\"}}}",
+      "logs": []
+    },
+    {
+      "name": "absent file → silent",
+      "op": "loadHardwareBlock",
+      "input": null,
+      "expectedJson": null,
+      "logs": []
+    },
+    {
+      "name": "not JSON → one log",
+      "op": "loadHardwareBlock",
+      "input": "{nope",
+      "expectedJson": null,
+      "logs": [
+        "$PATH is not valid JSON — ignoring; using legacy hardware behavior"
+      ]
+    },
+    {
+      "name": "failed validation after a peripheral warning → two logs",
+      "op": "loadHardwareBlock",
+      "input": "{\"v\":2,\"platform\":\"jetson\",\"encoder\":\"hw-h264\",\"rails\":false,\"statusLed\":null,\"imu\":\"bno085\",\"video\":[{\"key\":\"cam0\",\"connector\":\"csi0\",\"sensor\":\"imx290\",\"codec\":\"h264\",\"label\":\"Front\"}],\"peripherals\":{\"x\":1}}",
+      "expectedJson": null,
+      "logs": [
+        "$PATH failed validation — ignoring; using legacy hardware behavior"
+      ]
+    },
+    {
+      "name": "integer-like peripheral key order is JSON.parse order",
+      "op": "loadHardwareBlock",
+      "input": "{\"v\":2,\"platform\":\"rpi-cm5\",\"rails\":true,\"statusLed\":null,\"imu\":null,\"video\":[],\"peripherals\":{\"zz\":1,\"10\":2,\"obd\":{\"transport\":\"bt-spp\",\"adapter\":\"elm327\"}}}",
+      "expectedJson": "{\"v\":2,\"platform\":\"rpi-cm5\",\"encoder\":\"sw-h264\",\"rails\":true,\"statusLed\":null,\"imu\":null,\"video\":[],\"peripherals\":{\"obd\":{\"adapter\":\"elm327\",\"transport\":\"bt-spp\"}}}",
+      "logs": [
+        "peripherals.10 is not a known peripheral — ignoring it",
+        "peripherals.zz is not a known peripheral — ignoring it"
+      ]
+    },
+    {
+      "name": "a declared peripheral makes the blocks differ",
+      "op": "hardwareBlocksEqual",
+      "input": [
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ],
+          "peripherals": {
+            "obd": {
+              "adapter": "elm327",
+              "transport": "bt-spp"
+            }
+          }
+        },
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        }
+      ],
+      "expectedJson": "false"
+    },
+    {
+      "name": "an empty peripherals object equals none",
+      "op": "hardwareBlocksEqual",
+      "input": [
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ],
+          "peripherals": {}
+        },
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        }
+      ],
+      "expectedJson": "true"
+    },
+    {
+      "name": "an invalid peripheral equals none",
+      "op": "hardwareBlocksEqual",
+      "input": [
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ],
+          "peripherals": {
+            "obd": 1
+          }
+        },
+        {
+          "v": 2,
+          "platform": "rpi-cm4",
+          "encoder": "hw-h264",
+          "rails": false,
+          "statusLed": null,
+          "imu": "bno085",
+          "video": [
+            {
+              "key": "cam0",
+              "connector": "csi0",
+              "sensor": "imx290",
+              "codec": "h264",
+              "label": "Front"
+            }
+          ]
+        }
+      ],
+      "expectedJson": "true"
+    }
+  ],
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  "generatedBy": "tools/replay/js/dump-p5b-spine.mts (Phase 5b WP1) in the shared js-09da38d copy via npx tsx"
+}

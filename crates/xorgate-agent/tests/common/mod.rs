@@ -101,6 +101,7 @@ pub fn test_ctx(
             latest: None,
             recent_events: vec![],
             recording: None,
+            obd: None,
         },
         p.state.clone(),
     );

@@ -7,7 +7,9 @@
 
 use std::path::Path;
 
-use xorgate_core::hardware_block::{parse_hardware_block, DeviceHardwareBlock};
+use xorgate_core::hardware_block::{
+    parse_hardware_block, parse_hardware_block_with, DeviceHardwareBlock,
+};
 
 use crate::atomic_write::{atomic_write_bytes_traced, AtomicWriteError};
 use crate::read_lossy::read_text;
@@ -56,4 +58,33 @@ pub fn read_hardware_file(path: &Path) -> HardwareFile {
         Some(b) => HardwareFile::Block(b),
         None => HardwareFile::FailedValidation,
     }
+}
+
+/// `loadHardwareBlock(path, log)` (`hardware-config.ts:196-217` @ 09da38d):
+/// absent/unreadable → `None` silently; not JSON → `log(<path> is not valid
+/// JSON — …)`; the parse's own `peripherals` warnings go to the SAME `log`
+/// (X9: the TS passes its logger as `parseHardwareBlock`'s warn sink), then
+/// a failed validation → `log(<path> failed validation — …)`. The caller's
+/// `log` adds the `[hardware] ` prefix of the TS default sink.
+pub fn load_hardware_block(
+    path: &Path,
+    log: &mut dyn FnMut(String),
+) -> Option<DeviceHardwareBlock> {
+    let text = read_text(path).ok()?;
+    let p = path.display();
+    let Ok(obj) = serde_json::from_str::<serde_json::Value>(&text) else {
+        log(format!(
+            "{p} is not valid JSON — ignoring; using legacy hardware behavior"
+        ));
+        return None;
+    };
+    // `JSON.parse` key order, so a warning's `JSON.stringify(entry)` matches.
+    let obj = xorgate_core::js::parsed_key_order(obj);
+    let block = parse_hardware_block_with(&obj, log);
+    if block.is_none() {
+        log(format!(
+            "{p} failed validation — ignoring; using legacy hardware behavior"
+        ));
+    }
+    block
 }

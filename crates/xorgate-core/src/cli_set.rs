@@ -25,9 +25,9 @@ use serde_json::{Map, Value};
 use crate::config_report::{parse_apn_telemetry, ApnBlock};
 use crate::js::{number_to_string, object_key_order, to_json_string};
 use crate::settings::{
-    apn_re_test, js_assign_drops_key, parse_camera_mount_settings, parse_recording_settings,
-    parse_time_sync_settings, stream_key_re_test, AgentSettings, RECORDING_RATE_HZ_MAX,
-    RECORDING_RATE_HZ_MIN,
+    apn_re_test, js_assign_drops_key, parse_camera_mount_settings, parse_obd_settings,
+    parse_recording_settings, parse_time_sync_settings, stream_key_re_test, AgentSettings,
+    OBD_POLL_HZ_MAX, OBD_POLL_HZ_MIN, RECORDING_RATE_HZ_MAX, RECORDING_RATE_HZ_MIN,
 };
 use crate::system::js_number;
 use crate::types::ApnState;
@@ -37,8 +37,11 @@ use crate::video_presets::{find_video_preset, video_preset_names};
 // verbatim texts
 // ---------------------------------------------------------------------------
 
-/// `USAGE` (`set.ts:94-95`).
-pub const USAGE: &str = "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>)";
+/// `USAGE` (`set.ts:107-108` @ 09da38d).
+pub const USAGE: &str = "usage: xorgate set <key> <value>   (supported: mode <sim|real>, gps-antenna <active|passive>, gps-fix-reset-policy <defer|veto-deadzone>, deadzone-profile <conservative|balanced|aggressive>, apn <value|\"\"> [--no-wait], wifi <on|off> [--force], recording.<group>.<field> <value>, timeSync.<field> <value>, cameraMount.<streamKey>.rotationDeg <0|180>, obd.<enabled|adapter|pin|poll-hz|fields|power-source> <value>)";
+
+/// The unknown-key message of `setCommand` (`set.ts:601-603` @ 09da38d).
+pub const UNKNOWN_SETTING_SUPPORTED: &str = "(supported: mode, gps-antenna, gps-fix-reset-policy, deadzone-profile, apn, wifi, recording.*, timeSync.*, cameraMount.*, obd.*)";
 
 const RECORDING_LIVE: &str =
     "  the agent applies recording changes live within ~5 s (no restart needed)";
@@ -129,6 +132,8 @@ pub enum Route {
     Recording,
     TimeSync,
     CameraMount,
+    /// `obd.*` (`set.ts:528-532` @ 09da38d).
+    Obd,
     Mode,
     Media,
     Apn,
@@ -148,6 +153,8 @@ pub fn route(key: &str) -> Route {
         Route::TimeSync
     } else if key.starts_with("cameraMount.") {
         Route::CameraMount
+    } else if key.starts_with("obd.") {
+        Route::Obd
     } else {
         match key {
             "mode" => Route::Mode,
@@ -307,6 +314,7 @@ pub fn apply(args: &SetArgs, loaded: &AgentSettings) -> KeyOutcome {
         Route::Recording => set_recording(key, value, loaded),
         Route::TimeSync => set_time_sync(key, value, loaded),
         Route::CameraMount => set_camera_mount(key, value, loaded),
+        Route::Obd => set_obd(key, value, loaded),
         Route::Mode => set_mode(value, args.no_restart, loaded),
         Route::Media => fail(
             "'media' was removed: turn cameras off individually instead, e.g. xorgate set recording.video.cameras.cam0 off",
@@ -376,7 +384,7 @@ pub fn apply(args: &SetArgs, loaded: &AgentSettings) -> KeyOutcome {
             )
         }
         Route::Unknown | Route::Wifi | Route::Apn => fail(format!(
-            "unknown setting '{key}' (supported: mode, gps-antenna, gps-fix-reset-policy, deadzone-profile, apn, wifi, recording.*, timeSync.*, cameraMount.*)"
+            "unknown setting '{key}' {UNKNOWN_SETTING_SUPPORTED}"
         )),
     }
 }
@@ -692,6 +700,141 @@ fn set_time_sync(key: &str, value: Option<&str>, loaded: &AgentSettings) -> KeyO
             "  the agent's clock stepper reads it live within ~30 s (no restart needed)"
                 .to_string(),
         ],
+        then: Then::Done,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// obd (set.ts:380-460 @ 09da38d)
+// ---------------------------------------------------------------------------
+
+/// The CLI spelling of each `obd` namespace field (`OBD_CLI_KEYS`,
+/// `set.ts:381-391` @ 09da38d).
+const OBD_CLI_KEYS: &[(&str, &str)] = &[
+    ("enabled", "enabled"),
+    ("adapter", "adapterMac"),
+    ("adapterMac", "adapterMac"),
+    ("pin", "pin"),
+    ("poll-hz", "pollHz"),
+    ("pollHz", "pollHz"),
+    ("fields", "fields"),
+    ("power-source", "powerSource"),
+    ("powerSource", "powerSource"),
+];
+
+/// Own and inherited properties of a plain JS object literal: a lookup
+/// `OBD_CLI_KEYS[name]` on one of these is TRUTHY (a function / the
+/// prototype), so the TS goes on to `parseObdSettings({[field]: raw})` with
+/// a key the parser ignores and reports "invalid", never "unknown".
+const JS_OBJECT_PROTO_KEYS: &[&str] = &[
+    "__proto__",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+    "constructor",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "toLocaleString",
+    "toString",
+    "valueOf",
+];
+
+/// `setObdCommand` (`set.ts:400-460` @ 09da38d): validate one field through
+/// the SAME parser `loadSettings` uses ([`parse_obd_settings`]), merge it
+/// into the persisted `obd` namespace (`{ ...settings.obd, ...patch }`).
+fn set_obd(key: &str, value: Option<&str>, loaded: &AgentSettings) -> KeyOutcome {
+    let parts: Vec<&str> = key.split('.').collect();
+    let name = if parts.len() == 2 { parts[1] } else { "" };
+    let field = OBD_CLI_KEYS
+        .iter()
+        .find(|(k, _)| *k == name)
+        .map(|(_, f)| *f)
+        .or_else(|| (parts.len() == 2 && JS_OBJECT_PROTO_KEYS.contains(&name)).then_some(""));
+    let Some(field) = field else {
+        return fail(format!(
+            "unknown obd setting '{key}' (supported: obd.enabled, obd.adapter, obd.pin, obd.poll-hz, obd.fields, obd.power-source)"
+        ));
+    };
+    let shown = or_empty(value);
+    let raw: Option<Value> = match field {
+        "enabled" => match parse_bool_value(value) {
+            Some(b) => Some(Value::Bool(b)),
+            None => return fail(format!("{key} must be on|off, got '{shown}'")),
+        },
+        "adapterMac" => match value {
+            None | Some("" | "none" | "null") => Some(Value::Null),
+            Some(v) => Some(Value::String(v.to_string())),
+        },
+        "pollHz" => {
+            let num = cli_number(value);
+            if !num.is_finite() || !(OBD_POLL_HZ_MIN..=OBD_POLL_HZ_MAX).contains(&num) {
+                return fail(format!(
+                    "{key} must be a number in [{}, {}], got '{shown}'",
+                    number_to_string(OBD_POLL_HZ_MIN),
+                    number_to_string(OBD_POLL_HZ_MAX)
+                ));
+            }
+            Some(num_value(num))
+        }
+        "fields" => match value {
+            None | Some("" | "all") => Some(Value::Array(Vec::new())),
+            Some(v) => Some(Value::Array(
+                v.split(',')
+                    .map(|f| Value::String(crate::js::trim(f).to_string()))
+                    .collect(),
+            )),
+        },
+        // pin, powerSource: validated by the parser below (`raw = value`,
+        // `undefined` when no value was given).
+        _ => value.map(|v| Value::String(v.to_string())),
+    };
+    // `parseObdSettings({ [field]: raw })`; a prototype-key lookup (field
+    // "") lands on a key the parser ignores.
+    let mut src = Map::new();
+    if let Some(raw) = raw {
+        if !field.is_empty() {
+            src.insert(field.to_string(), raw);
+        }
+    }
+    let patch = parse_obd_settings(&Value::Object(src)).and_then(|p| serde_json::to_value(p).ok());
+    let applied = match &patch {
+        Some(Value::Object(p)) if !field.is_empty() => p.get(field).cloned(),
+        _ => None,
+    };
+    let (Some(Value::Object(patch)), Some(applied)) = (patch, applied) else {
+        let hint = match field {
+            "adapterMac" => " (expected AA:BB:CC:DD:EE:FF or none)",
+            "pin" => " (expected 4 to 6 digits)",
+            "powerSource" => " (expected switched|constant)",
+            "fields" => " (expected a csv of field names, or all)",
+            _ => "",
+        };
+        return fail(format!("invalid obd setting '{key}' = '{shown}'{hint}"));
+    };
+    let mut doc = document(loaded);
+    let merged = spread(doc.get("obd"), patch);
+    let enabled_on = merged.get("enabled") == Some(&Value::Bool(true));
+    assign(&mut doc, "obd", Value::Object(merged));
+    let mut stdout = vec![
+        format!(
+            "✓ {key} = {} (persisted to settings.json)",
+            to_json_string(&applied)
+        ),
+        "  the agent's OBD collector reads it live within ~1 s (no restart needed; the helper restarts itself when the adapter changes)"
+            .to_string(),
+    ];
+    // `field === "adapterMac" && patch.adapterMac && settings.obd.enabled !== true`
+    if field == "adapterMac" && applied.is_string() && !enabled_on {
+        stdout.push(
+            "  note: obd.enabled is off — nothing is polled until: xorgate set obd.enabled on"
+                .to_string(),
+        );
+    }
+    KeyOutcome::Save {
+        doc,
+        stdout,
         then: Then::Done,
     }
 }

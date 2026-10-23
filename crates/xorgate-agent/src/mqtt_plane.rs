@@ -507,6 +507,13 @@ impl PublishTick {
         };
         let bytes = serde_json::to_vec(&payload).unwrap_or_default();
         self.ctx.state.set_latest(payload);
+        // Clock trust gate (`worker.ts:1406-1412` @ 09da38d): the local
+        // snapshot above is kept (and `seq` already advanced — the cloud sees
+        // the gap, CF72); only the cloud publish is withheld while the wall
+        // clock is untrusted, never past the gate's grace window.
+        if !self.ctx.hooks.publish_clock_gate() {
+            return;
+        }
         // The backoff re-probe lives on this tick (`:1233-1234`).
         self.scope.note_tick(ts);
         let mut done = self

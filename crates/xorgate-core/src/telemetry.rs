@@ -337,8 +337,17 @@ pub struct RecordingStatus {
     pub boot_defer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_shed: Option<String>,
+    /// `clockHold: true` while telemetry recording is wanted but the wall
+    /// clock is untrusted; ABSENT otherwise (never `false`;
+    /// `ts:src/recording/manager.ts:442-446` @ 09da38d).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub clock_hold: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_block: Option<LiveBlock>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl RecordingStatus {
@@ -358,6 +367,7 @@ impl RecordingStatus {
             last_upload_at: None,
             boot_defer: None,
             power_shed: None,
+            clock_hold: false,
             live_block: None,
         }
     }
@@ -523,6 +533,71 @@ pub struct StateSnapshot {
     /// On-device recording status; absent on agents predating the recording feature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording: Option<RecordingStatus>,
+    /// OBD collector health (`StateStore.setObd`, `ts:src/daemon/state.ts:94-98`
+    /// @ 09da38d): absent without the peripheral. The worker's first
+    /// `setObd` runs on the first publish tick, after the recording manager's
+    /// first `setRecording`, so the key lands after `recording`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obd: Option<ObdStatus>,
+}
+
+/// `ObdStatus` (`ts:src/agent/telemetry.ts:166-204` @ 09da38d): the OBD
+/// collector's health for `xorgate status`, the monitor and state.json. Key
+/// order = the TS interface = the collector's `status()` literal. The four
+/// P1 nullable fields are always present (`null` when unknown); the P3 /
+/// start-stop fields are present iff the collector set them (`Some`), with
+/// `adapter`, `profile` and `lastStop` themselves nullable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObdStatus {
+    /// The helper's states plus the supervisor's (`disabled`,
+    /// `not_configured`, `starting`, `retrying`, `parked`).
+    pub state: String,
+    /// 0 no adapter, 1 adapter only, 2 ECU answering.
+    pub link: u8,
+    #[serde(with = "js_num_opt")]
+    pub req_per_sec: Option<f64>,
+    pub errors: u64,
+    pub forbidden: u64,
+    #[serde(with = "js_num_opt")]
+    pub voltage: Option<f64>,
+    pub detail: Option<String>,
+    /// Epoch ms the current state began (a JS number).
+    #[serde(with = "js_num")]
+    pub since: f64,
+    pub helper_version: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_nullable"
+    )]
+    pub adapter: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_nullable"
+    )]
+    pub profile: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voltage_low_events: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_seq: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_nullable"
+    )]
+    pub last_stop: Option<Option<String>>,
+}
+
+/// A key that may be absent (`None`), present as `null` (`Some(None)`) or
+/// present with a value (`Some(Some(v))`). Used with `#[serde(default)]`.
+fn present_nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[cfg(test)]
