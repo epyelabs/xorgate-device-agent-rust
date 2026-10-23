@@ -124,6 +124,9 @@ pub const MAX_HOLD_MS: i64 = 10_000;
 /// still writes both agents' LTE files in one step (`play.rs` apply_state).
 pub const FENCE_WINDOW_MS: i64 = 2_000 + 500;
 pub const FENCE_CAP_MS: i64 = 5_000;
+/// How long before a trigger's debounced report build the OBD relays already
+/// hold (`report_pair_open`): one report build + the debounce timer's lateness.
+pub const OBD_REPORT_LEAD_MS: i64 = 250;
 /// Power-read fence: one agent's `vcgencmd` read waits this long for the
 /// other's (one pair's reads are ≤ the flip gap apart).
 pub const EXEC_PAIR_MS: i64 = 800;
@@ -506,6 +509,14 @@ impl WatchGate {
             .iter()
             .flatten()
             .any(|q| now >= *q && now - q <= REPORT_PAIR_MS)
+            // …and from just before a released trigger's debounced report
+            // builds (trigger + 2000 − OBD_REPORT_LEAD_MS) until both agents
+            // reported (capped like the fence): stepC p5b-obd-config.rp.jsrs,
+            // the helper's `probing` (its ~2.0 s ATZ wait after the config's
+            // restart) landed between the two `cloud` report builds 4 ms apart.
+            || self.triggers.iter().any(|(t, d)| {
+                !(d[0] && d[1]) && now >= t + 2_000 - OBD_REPORT_LEAD_MS && now <= t + FENCE_CAP_MS
+            })
     }
 
     /// Must a release of `input` at `now`, visible to the agents within
@@ -1068,6 +1079,18 @@ mod tests {
         g.on_report(1, 20_000, false);
         assert!(g.report_pair_open(22_900));
         assert!(!g.report_pair_open(23_100), "an unmatched report expires");
+        // A released trigger: closed from 250 ms before its debounced builds
+        // until both agents reported.
+        g.on_trigger(30_000);
+        assert!(!g.report_pair_open(31_700));
+        assert!(g.report_pair_open(31_800));
+        g.on_report(0, 32_010, false);
+        g.on_report(1, 32_014, false);
+        assert!(!g.report_pair_open(32_020));
+        // Never reported: capped.
+        g.on_trigger(40_000);
+        assert!(g.report_pair_open(44_900));
+        assert!(!g.report_pair_open(45_100));
     }
 
     #[test]
