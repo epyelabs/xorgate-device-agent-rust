@@ -1,6 +1,6 @@
 {
  "jsSourceFile": "src/hardware/network.ts",
- "jsCommit": "89b5c64",
+ "jsCommit": "09da38d",
  "generatedBy": "phase-4/evidence/wp5-tools/dump-iface-for-ip.mts → tools/replay/js/ via WP6 (Phase 4 WP5, CF22)",
  "note": "a numeric family 4 (node<18) is normalised to \"IPv4\" in `interfaces` — the Rust snapshot type carries libuv's string family",
  "cases": [
