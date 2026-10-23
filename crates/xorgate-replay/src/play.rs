@@ -1968,7 +1968,15 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
             let open_now = tel_open(now);
             if has_obd {
-                obd_gate.write(open_now, now);
+                // Closed inside a tick pair AND while a config-report pair is
+                // open (a report build reads `effective.obd` at each agent's
+                // own instant: stepC p5b-obd-config.bar.* `probing` vs `live`).
+                let report_pair = caps
+                    .watch
+                    .lock()
+                    .map(|w| w.report_pair_open(now))
+                    .unwrap_or(false);
+                obd_gate.write(open_now && !report_pair, now);
             }
             if let Some(&(ci, since)) = exec_q.front() {
                 let r = &tape.records[ci];

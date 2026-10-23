@@ -496,6 +496,18 @@ impl WatchGate {
         out
     }
 
+    /// Is a config-report PAIR open at `now` (one agent published its report,
+    /// the other's counterpart has not come yet, ≤ [`REPORT_PAIR_MS`])? The
+    /// OBD relays hold the helpers' lines then (play.rs `ObdGate`): a report
+    /// build reads the collector's `effective.obd` at each agent's own
+    /// instant, like the LTE file and settings.json above.
+    pub fn report_pair_open(&self, now: i64) -> bool {
+        self.unmatched
+            .iter()
+            .flatten()
+            .any(|q| now >= *q && now - q <= REPORT_PAIR_MS)
+    }
+
     /// Must a release of `input` at `now`, visible to the agents within
     /// `lookahead` ms, wait?
     pub fn holds(&mut self, input: Input, now: i64, lookahead: i64) -> bool {
@@ -1042,6 +1054,20 @@ mod tests {
         // A later report of B is not paired with the expired one.
         g.on_report(1, 30_000, true);
         assert!(g.holds(Input::Lte, 30_100, LTE_WRITE_MS));
+    }
+
+    /// The OBD relays' view of the same pairing (`report_pair_open`).
+    #[test]
+    fn report_pair_open_spans_one_report_to_its_counterpart() {
+        let mut g = WatchGate::new();
+        assert!(!g.report_pair_open(9_000));
+        g.on_report(0, 10_000, false);
+        assert!(g.report_pair_open(10_150));
+        g.on_report(1, 10_180, false);
+        assert!(!g.report_pair_open(10_200));
+        g.on_report(1, 20_000, false);
+        assert!(g.report_pair_open(22_900));
+        assert!(!g.report_pair_open(23_100), "an unmatched report expires");
     }
 
     #[test]
