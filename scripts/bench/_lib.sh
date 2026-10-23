@@ -113,6 +113,13 @@ hardware_copies() {
 import collections, json, sys
 d = json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict)
 d["imu"] = None
+# Phase 5b (CF76): the shared DEV copy never declares the OBD peripheral (only
+# scripts/bench/p5b-overlay.sh adds it, for the H13 rows, and reverts it).
+per = d.get("peripherals")
+if isinstance(per, dict):
+    per.pop("obd", None)
+    if not per:
+        del d["peripherals"]
 print(json.dumps(d, indent=2))
 PY
   if [ -f "$HW_SHARED" ] && cmp -s "$tmp" "$HW_SHARED"; then echo "  = $HW_SHARED unchanged (imu: null)"
@@ -157,11 +164,12 @@ inputs_safe() {
   grep -qx 'Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: GPS_NMEA_PORT=/run/xorgate-rs-no-gps in $INPUTS_DROPIN"; ok=1; }
   grep -qx 'Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python in $INPUTS_DROPIN"; ok=1; }
   grep -qx "HARDWARE_MANIFEST=$HW_SHARED" "$RS_ENV" 2>/dev/null || { echo "  missing: HARDWARE_MANIFEST=$HW_SHARED in $RS_ENV (dev-manifests.sh)"; ok=1; }
-  if grep -qE "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE)=" "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN/XORGATE_LED_*/XORGATE_SMS_PORT"; ok=1; fi
+  if grep -qE "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE)=" "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN/XORGATE_LED_*/XORGATE_SMS_PORT/XORGATE_OBD_*"; ok=1; fi
   if [ -f "/etc/xorgate/hardware.json" ]; then
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("imu"))' "$HW_SHARED" 2>/dev/null)" = None ] || { echo "  missing: imu: null in $HW_SHARED (dev-manifests.sh / profile.sh shared)"; ok=1; }
   fi
   p4_inputs_safe || ok=1
+  p5b_inputs_safe || ok=1
   return $ok
 }
 profile_shared() {
@@ -713,7 +721,10 @@ PY
 # Phase 4 (WP6) additions — LED / SMS / clock / camera-mount knobs of the
 # shared profile, the updater bootstrap (plan phase-4-operations.md §9, Q6).
 # The knobs live ONLY in the shared drop-in + shims, never in $RS_ENV.
-P4_KNOBS_RE='XORGATE_LED_GPIOCHIP|XORGATE_LED_WRITER|XORGATE_SMS_PORT'
+# Phase 5b (CF76): the OBD knobs (XORGATE_OBD_ADAPTER/SERIAL/PIN/POLL_HZ/FIELDS/
+# POWER_SOURCE, ts:src/hardware/obd.ts) likewise: only p5b-overlay.sh's runtime
+# drop-in may set XORGATE_OBD_SERIAL, never the env file.
+P4_KNOBS_RE='XORGATE_LED_GPIOCHIP|XORGATE_LED_WRITER|XORGATE_SMS_PORT|XORGATE_OBD_[A-Z_]*'
 NO_GPIO=/run/xorgate-rs-no-gpio
 NO_SMS=/run/xorgate-rs-no-sms
 SUDO_SHIM=$SHIMS_DIR/sudo
@@ -754,6 +765,27 @@ p4_inputs_safe() {
   want=$(sudo_shim_body)
   if [ ! -x "$SUDO_SHIM" ]; then echo "  missing: shim $SUDO_SHIM (profile.sh shared, Phase 4)"; ok=1
   elif [ "$(cat "$SUDO_SHIM")" != "$want" ]; then echo "  UNSAFE: $SUDO_SHIM differs from the shared-profile body (re-run profile.sh shared)"; ok=1; fi
+  return $ok
+}
+# Phase 5b (WP4, CF76; plan phase-5b-js-catchup.md §12): the H13-H15 overlay
+# (scripts/bench/p5b-overlay.sh) is the ONLY thing that may give the Rust DEV
+# manifest copy `peripherals.obd` or point the agent at an OBD emulator / fake
+# SMS modem, and only while its marker exists. Everything it creates lives under
+# /run (gone at a reboot) and /tmp.
+P5B_RUN=/run/xorgate-rs-p5b
+P5B_MARK=$P5B_RUN/applied
+P5B_OBD_PY=/run/xorgate-rs-obd-python
+P5B_DROPIN=$RUN_DROPIN_DIR/97-p5b.conf
+P5B_TMP=/tmp/xorgate-p5b
+# 0 unless the DEV manifest declares the OBD peripheral (or a p5b drop-in is
+# in force) while the overlay is NOT applied.
+p5b_inputs_safe() {
+  local ok=0 obd
+  obd=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("yes" if isinstance(d.get("peripherals"), dict) and "obd" in d["peripherals"] else "no")' "$HW_SHARED" 2>/dev/null || echo no)
+  if [ ! -e "$P5B_MARK" ]; then
+    [ "$obd" = no ] || { echo "  UNSAFE: $HW_SHARED declares peripherals.obd outside the p5b overlay (CF76: p5b-overlay.sh revert, or profile.sh shared)"; ok=1; }
+    [ ! -e "$P5B_DROPIN" ] || { echo "  UNSAFE: $P5B_DROPIN present without $P5B_MARK (p5b-overlay.sh revert)"; ok=1; }
+  fi
   return $ok
 }
 # Bootstrap of the Rust remote-update rail (CF47 bench half, §5 "Bootstrap"):
