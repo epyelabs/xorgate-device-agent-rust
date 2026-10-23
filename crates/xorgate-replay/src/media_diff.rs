@@ -1311,8 +1311,26 @@ fn d30_rec_value_gap(
     only: &[Step],
     pmic: &[(i64, String)],
 ) -> bool {
+    if lack_kind != "js" || hold_kind != "rust" {
+        return false;
+    }
+    d30_gap_signature(p, lack, hold, only, pmic, true)
+}
+
+/// The D30 rail-value-gap signature shared by `d30_rec_value_gap` (Rust
+/// holding: `need_n` — the lacking JS's system-less sample is required) and
+/// the PROPOSED JS-vs-JS arm (`need_n` false: the other JS's fresher cache may
+/// jump `u` → `w` directly).
+fn d30_gap_signature(
+    p: &str,
+    lack: &[LeafSample],
+    hold: &[LeafSample],
+    only: &[Step],
+    pmic: &[(i64, String)],
+    need_n: bool,
+) -> bool {
     const RAIL: &str = "metrics.system.rail_5v.value";
-    if p != RAIL || lack_kind != "js" || hold_kind != "rust" {
+    if p != RAIL {
         return false;
     }
     let [(v, n, ts0)] = only else {
@@ -1373,7 +1391,76 @@ fn d30_rec_value_gap(
     };
     let rest = class.trim_start_matches('S');
     let after_n = rest.trim_start_matches('N');
-    rest.len() < class.len() && after_n.len() < rest.len() && after_n.chars().all(|c| c == 'W')
+    rest.len() < class.len()
+        // The reviewed Rust-holding row: unchanged (S+ N+ W*). The proposed
+        // JS-vs-JS arm: S+ N* W+ (it must reach `w`).
+        && (if need_n { after_n.len() < rest.len() } else { !after_n.is_empty() })
+        && after_n.chars().all(|c| c == 'W')
+}
+
+/// PROPOSED (Phase 5b WP4, rec-disk `.cal09r2`; inert without its row):
+/// `d30_rec_value_gap`'s mechanism INSIDE the reference. Both recorders are
+/// JS and both read the shared 1 s `system.sample()` cache
+/// (ts:src/agent/collectors/system.ts:104-113), whose compute instant is
+/// whichever consumer asks first (D30). So one JS can record a released pmic
+/// value `v` (its cache computed between release(v) and release(w)) that the
+/// other never records: its samples in [release(v), release(w) + 1000) are,
+/// IN ORDER, one or more stale `u` (< 1000 ms after release(v)), then zero or
+/// more WITHOUT `system` (telemetry-recorder.ts:102), then only `w` (at/after
+/// release(w)). Same guards as the Rust-holding row otherwise: rail_5v only,
+/// ONE step on the holder, a released `v` with released neighbours, every
+/// holder sample in the window, values exact as 2-dp numbers. The caller
+/// requires both sides `js`.
+fn d30_js_rec_value_gap(
+    p: &str,
+    lack: &[LeafSample],
+    hold: &[LeafSample],
+    only: &[Step],
+    pmic: &[(i64, String)],
+) -> bool {
+    d30_gap_signature(p, lack, hold, only, pmic, false)
+}
+
+/// PROPOSED (Phase 5b WP4, rec-disk `.cal09`; inert without its row): a
+/// `metrics.system.*` value one JS recorded for ONE sample that the other JS
+/// could not record because ITS sample at that instant carried no `system`
+/// at all — the D30 system-less sample (ts:src/recording/telemetry-recorder.ts:102,
+/// the shared cache's compute in flight, system.ts:104-113; JS-vs-JS T13
+/// already accepts the missing group, this is the value it hid). Judged on
+/// the whole value sequence (an LCS hunk can pair the transient's neighbours
+/// instead): the step is ONE sample, not the first or last step; the lacking
+/// side's sample nearest it (≤ 500 ms,
+/// half a recorder period) carries no `metrics.system.*` leaf; and the lacking
+/// side's samples just before and after that one carry `system`; and with
+/// every such transient removed, both sides' value sequences are EQUAL. A
+/// value held two samples, a lacking sample that HAS `system`, two adjacent
+/// system-less samples, or any other difference stay UNTOLERATED. Both sides
+/// `js` only.
+/// The indices of `steps` (one side) that are such one-sample transients
+/// against the other side's samples `other`.
+fn system_less_transients(p: &str, steps: &[Step], other: &[LeafSample]) -> Vec<usize> {
+    (1..steps.len().saturating_sub(1))
+        .filter(|&i| d30_js_system_less_value(p, other, &steps[i]))
+        .collect()
+}
+
+fn d30_js_system_less_value(p: &str, lack: &[LeafSample], step: &Step) -> bool {
+    if !p.starts_with("metrics.system.") {
+        return false;
+    }
+    let (_, 1, ts) = step else {
+        return false;
+    };
+    let has_sys = |o: &BTreeMap<String, String>| o.keys().any(|k| k.starts_with("metrics.system."));
+    let Some(i) = (0..lack.len()).min_by_key(|&i| (lack[i].0 - ts).abs()) else {
+        return false;
+    };
+    (lack[i].0 - ts).abs() <= 500
+        && !has_sys(&lack[i].1)
+        && i > 0
+        && i + 1 < lack.len()
+        && has_sys(&lack[i - 1].1)
+        && has_sys(&lack[i + 1].1)
 }
 
 /// Recorded telemetry VALUES (review-wp6 G1, phase file "telemetry segments …
@@ -1437,6 +1524,17 @@ fn rec_values_m(
     let id = "T4/rec-sample";
     let d30_gap_row = table
         .matcher_rows("d30_rec_value_gap", "rec-telemetry")
+        .first()
+        .cloned();
+    // PROPOSED (Phase 5b WP4, for the reviewer; inert until its row exists in
+    // tolerances.toml — see phase-5b/evidence/wp4.md "rec-disk proposals"):
+    // the two D30 recorded-value gaps INSIDE the reference (JS-vs-JS only).
+    let d30_js_gap_row = table
+        .matcher_rows("d30_js_rec_value_gap", "rec-telemetry")
+        .first()
+        .cloned();
+    let d30_js_nosys_row = table
+        .matcher_rows("d30_js_system_less_value", "rec-telemetry")
         .first()
         .cloned();
     let collision = row_tol(table, id, "collisionMs", 0.0) as i64;
@@ -1564,6 +1662,40 @@ fn rec_values_m(
             if sa.iter().map(|s| &s.0).eq(sb.iter().map(|s| &s.0)) {
                 continue;
             }
+            // PROPOSED (inert without its row): one-sample values a JS
+            // recorded where the other JS's sample carried no `system`.
+            if let Some(rid) = d30_js_nosys_row
+                .as_ref()
+                .filter(|_| kinds.0 == "js" && kinds.1 == "js")
+            {
+                let (ka, kb) = (
+                    system_less_transients(p, &sa, &lb),
+                    system_less_transients(p, &sb, &la),
+                );
+                let keep = |st: &[Step], drop: &[usize]| -> Vec<String> {
+                    let mut v: Vec<String> = Vec::new();
+                    for (i, s) in st.iter().enumerate() {
+                        if !drop.contains(&i) && v.last() != Some(&s.0) {
+                            v.push(s.0.clone());
+                        }
+                    }
+                    v
+                };
+                if !(ka.is_empty() && kb.is_empty()) && keep(&sa, &ka) == keep(&sb, &kb) {
+                    for (st, drop, side_a) in [(&sa, &ka, true), (&sb, &kb, false)] {
+                        for &i in drop {
+                            let f = format!("{}×{}@{}", st[i].0, st[i].1, st[i].2);
+                            let (x, y) = if side_a {
+                                (f, String::new())
+                            } else {
+                                (String::new(), f)
+                            };
+                            rep.push(mm("rec-telemetry", &at, &format!("{p}(values)"), x, y, rid));
+                        }
+                    }
+                    continue;
+                }
+            }
             // NARROWED (review-wp6 re-check): the colliding release is THE
             // one that brought the step on the side holding it (the last
             // release of the group at or before that sample, ≤ 1.1 s before
@@ -1634,6 +1766,19 @@ fn rec_values_m(
                     } else {
                         d30_rec_value_gap(p, (kinds.0, &la), (kinds.1, &lb), &only_b, pmic)
                     };
+                // PROPOSED calibration-only arms (both sides js).
+                let both_js = kinds.0 == "js" && kinds.1 == "js";
+                let (hold, lack, only) = if only_b.is_empty() {
+                    (&la, &lb, &only_a)
+                } else {
+                    (&lb, &la, &only_b)
+                };
+                let d30_js_gap = !ok
+                    && !d30_gap
+                    && one_sided
+                    && both_js
+                    && d30_js_gap_row.is_some()
+                    && d30_js_rec_value_gap(p, lack, hold, only, pmic);
                 let fmt = |v: &[Step]| {
                     v.iter()
                         .map(|s| format!("{}×{}@{}", s.0, s.1, s.2))
@@ -1644,6 +1789,10 @@ fn rec_values_m(
                     id.to_string()
                 } else if d30_gap {
                     d30_gap_row
+                        .clone()
+                        .unwrap_or_else(|| UNTOLERATED.to_string())
+                } else if d30_js_gap {
+                    d30_js_gap_row
                         .clone()
                         .unwrap_or_else(|| UNTOLERATED.to_string())
                 } else {
@@ -3869,6 +4018,170 @@ mod tests {
     /// The samples below are that run's (ts − 1792568600000); the series is
     /// the tape's released pmic values. Tolerated as T7/D30 ONLY for that
     /// shape; a real extra or wrong rail value stays UNTOLERATED.
+    /// The PROPOSED rule block for the two rec-disk calibration rows
+    /// (phase-5b/evidence/wp4.md "rec-disk proposals"; NOT in tolerances.toml
+    /// until the reviewer signs it off).
+    const PROPOSED_D30_JS: &str = r#"
+[[rule]]
+id = "TP5B"
+title = "PROPOSED (Phase 5b WP4) - reviewer"
+basis = "wp4.md rec-disk proposals"
+kind = "decisions"
+
+  [[rule.row]]
+  id = "d30-js-rec-value-gap"
+  what = "proposal"
+  streams = ["rec-telemetry"]
+  matcher = "d30_js_rec_value_gap"
+
+  [[rule.row]]
+  id = "d30-js-system-less-value"
+  what = "proposal"
+  streams = ["rec-telemetry"]
+  matcher = "d30_js_system_less_value"
+"#;
+
+    /// PROPOSED d30_js_rec_value_gap / d30_js_system_less_value: inert with
+    /// the committed table; with the proposed rows, only the two JS-vs-JS D30
+    /// shapes of rec-disk .cal09r2 / .cal09 — never JS-vs-Rust, never a value
+    /// the replay did not release, never a lacking sample that has `system`.
+    #[test]
+    fn proposed_d30_js_value_gaps_only_inside_the_reference() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/replay/tolerances.toml");
+        let committed = Table::load(&path).unwrap();
+        let proposed =
+            Table::parse(&(std::fs::read_to_string(&path).unwrap() + PROPOSED_D30_JS)).unwrap();
+        const T0: i64 = 1_792_568_600_000;
+        // rows: (ts, Some((rail, hf))) or None = a sample without `system`.
+        let seg = |rows: &[(i64, Option<(f64, i64)>)]| -> BTreeMap<u64, String> {
+            let mut t = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (i, (ts, sys)) in rows.iter().enumerate() {
+                let sys = sys
+                    .map(|(r, h)| {
+                        format!(",\"system\":{{\"rail_5v\":{{\"value\":{r},\"unit\":\"V\"}},\"health_flags\":{{\"value\":{h}}}}}")
+                    })
+                    .unwrap_or_default();
+                t.push_str(&format!(
+                    "{{\"ts\":{},\"mono\":{},\"seq\":{i},\"metrics\":{{\"gps\":{{\"fix\":{{\"value\":3}}}}{sys}}}}}\n",
+                    T0 + ts,
+                    (T0 + ts) * 1_000_000
+                ));
+            }
+            BTreeMap::from([(0u64, t)])
+        };
+        let pmic: Vec<(i64, String)> = [
+            (17_000, "5.10"),
+            (19_452, "5.11"),
+            (20_978, "5.12"),
+            (22_979, "5.13"),
+        ]
+        .iter()
+        .map(|(w, v)| (T0 + w, v.to_string()))
+        .collect();
+        let run = |table: &Table,
+                   a: &[(i64, Option<(f64, i64)>)],
+                   b: &[(i64, Option<(f64, i64)>)],
+                   kinds: (&str, &str)| {
+            let mut rep = Report::default();
+            let ep = (Timeline::new(), Timeline::new());
+            rec_values(
+                "<sid:telemetry#0>",
+                (&seg(a), &seg(b)),
+                &ep,
+                &PlayInfo::default(),
+                &crate::diff::InputFacts::default(),
+                kinds,
+                &pmic,
+                table,
+                &mut rep,
+            );
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.path.ends_with("(values)"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let rail = "metrics.system.rail_5v.value(values)".to_string();
+        let hf = "metrics.system.health_flags.value(values)".to_string();
+        // .cal09r2: A records 5.11 once; B goes 5.10 (stale) → 5.12.
+        let a = [
+            (18_100, Some((5.1, 0))),
+            (19_100, Some((5.1, 0))),
+            (20_100, Some((5.1, 0))),
+            (21_100, Some((5.11, 0))),
+            (22_100, Some((5.12, 0))),
+            (23_100, Some((5.13, 0))),
+            (24_100, Some((5.13, 0))),
+        ];
+        let b = [
+            (18_110, Some((5.1, 0))),
+            (19_110, Some((5.1, 0))),
+            (20_110, Some((5.1, 0))),
+            (21_110, Some((5.12, 0))),
+            (22_110, Some((5.12, 0))),
+            (23_110, Some((5.13, 0))),
+            (24_110, Some((5.13, 0))),
+        ];
+        assert_eq!(
+            run(&proposed, &a, &b, ("js", "js")),
+            vec![(rail.clone(), "TP5B/d30-js-rec-value-gap".to_string())]
+        );
+        assert_eq!(
+            run(&committed, &a, &b, ("js", "js")),
+            vec![(rail.clone(), UNTOLERATED.to_string())]
+        );
+        // JS-vs-Rust (the reviewed row wants the system-less JS sample): never.
+        assert_eq!(
+            run(&proposed, &b, &a, ("js", "rust")),
+            vec![(rail.clone(), UNTOLERATED.to_string())]
+        );
+        // A value the replay never released then (5.14): never.
+        let mut a2 = a;
+        a2[3] = (21_100, Some((5.14, 0)));
+        assert_eq!(
+            run(&proposed, &a2, &b, ("js", "js")),
+            vec![(rail.clone(), UNTOLERATED.to_string())]
+        );
+        // .cal09: A's boot transient hf 16 for one sample; B's sample then had no system.
+        let a = [
+            (18_100, Some((5.1, 0))),
+            (19_100, Some((5.1, 16))),
+            (20_100, Some((5.1, 0))),
+            (21_100, Some((5.1, 0))),
+            (22_100, Some((5.1, 16))),
+        ];
+        let b = [
+            (18_110, Some((5.1, 0))),
+            (19_105, None),
+            (20_110, Some((5.1, 0))),
+            (21_110, Some((5.1, 0))),
+            (22_110, Some((5.1, 16))),
+        ];
+        assert_eq!(
+            run(&proposed, &a, &b, ("js", "js")),
+            vec![(hf.clone(), "TP5B/d30-js-system-less-value".to_string())]
+        );
+        assert!(run(&committed, &a, &b, ("js", "js"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+        assert!(run(&proposed, &a, &b, ("js", "rust"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+        // B's sample HAS system (it just did not see 16): never.
+        let mut b2 = b;
+        b2[1] = (19_105, Some((5.1, 0)));
+        assert!(run(&proposed, &a, &b2, ("js", "js"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+        // A holds 16 for TWO samples: never.
+        let mut a3 = a;
+        a3[2] = (20_100, Some((5.1, 16)));
+        assert!(run(&proposed, &a3, &b, ("js", "js"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+    }
+
     #[test]
     fn d30_rec_value_gap_only_for_a_js_d30_skip() {
         let table = Table::load(
