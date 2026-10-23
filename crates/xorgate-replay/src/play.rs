@@ -1006,8 +1006,18 @@ impl Agent {
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_default();
-            let (emu, obd_env) =
-                p5b::prepare_agent(obd, &work, &dir, &state, &args.fake_python, &src, &tools)?;
+            let (emu, obd_env) = p5b::prepare_agent(
+                obd,
+                &work,
+                &dir,
+                &state,
+                &args.fake_python,
+                &src,
+                &tools,
+                (!args.no_gate)
+                    .then(|| obd_gate_path(&args.work))
+                    .as_deref(),
+            )?;
             obd_emu = emu;
             for (k, v) in obd_env {
                 env.retain(|(ek, _)| *ek != k);
@@ -1846,6 +1856,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // time) — the only record of the hold gate's effect on line inputs.
     let mut releases = std::io::BufWriter::new(File::create(args.out.join("releases.ndjson"))?);
     let cutoff = args.max_s.map(|s| s * 1000).unwrap_or(u64::MAX);
+    // Phase 5b: the OBD helpers' stdout follows the hold gate (obd-gate.py).
+    let has_obd = !args.no_gate && p5b::ObdPlan::of(&tape).is_some();
+    let mut obd_gate = ObdGate::new(obd_gate_path(&args.work));
 
     // Release order = tape order, except that a record the WATCH gate holds
     // (lte_file / cli / config, `watch.rs`) waits in `pending` together with
@@ -1953,7 +1966,10 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // it forms a pair hold only when asked near a lead tick, so on a
             // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
-            let _ = tel_open(now);
+            let open_now = tel_open(now);
+            if has_obd {
+                obd_gate.write(open_now, now);
+            }
             if let Some(&(ci, since)) = exec_q.front() {
                 let r = &tape.records[ci];
                 let crossing = crossing_ts.contains(&r.t);
@@ -2307,6 +2323,8 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             *g = Some(CancellationToken::new());
         }
     }
+    // The settle has no gate: the relays fall back to open (a missing file).
+    obd_gate.clear();
     plog(format!(
         "tape done ({released} released); settling {} s",
         args.settle_s
@@ -2507,6 +2525,48 @@ fn note_resume(gate: &Mutex<Gate>, now: i64, cap: i64, plog: &dyn Fn(String), wh
                 ));
             }
         }
+    }
+}
+
+/// Phase 5b (orchestrator ruling 2026-10-23): where the player publishes the
+/// hold gate's state for the OBD relays (`tools/replay/obd-gate.py`).
+fn obd_gate_path(work: &Path) -> PathBuf {
+    work.join("obd-gate")
+}
+
+/// The OBD relays' gate file: `1` open / `0` closed, rewritten on every change
+/// and at least every [`OBD_GATE_BEAT_MS`] (a relay treats a file older than
+/// 1.5 s, or none, as OPEN, so a stopped player never wedges a helper).
+struct ObdGate {
+    path: PathBuf,
+    last: Option<(bool, i64)>,
+}
+
+const OBD_GATE_BEAT_MS: i64 = 500;
+
+impl ObdGate {
+    fn new(path: PathBuf) -> Self {
+        Self { path, last: None }
+    }
+
+    fn write(&mut self, open: bool, now: i64) {
+        if self
+            .last
+            .is_some_and(|(o, at)| o == open && now - at < OBD_GATE_BEAT_MS)
+        {
+            return;
+        }
+        let tmp = self.path.with_extension("tmp");
+        if fs::write(&tmp, if open { "1" } else { "0" }).is_ok()
+            && fs::rename(&tmp, &self.path).is_ok()
+        {
+            self.last = Some((open, now));
+        }
+    }
+
+    fn clear(&mut self) {
+        let _ = fs::remove_file(&self.path);
+        self.last = None;
     }
 }
 
@@ -2948,6 +3008,29 @@ mod tests {
 
     /// R-P3G-4: the rig meminfo parses like a real one (both agents read
     /// MemTotal/MemAvailable from it) and pins ram_usage at 21.2 %.
+    #[test]
+    fn obd_gate_file_follows_the_hold_gate_with_a_heartbeat() {
+        let d = std::env::temp_dir().join(format!("obd-gate-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let mut g = ObdGate::new(obd_gate_path(&d));
+        let read = || fs::read_to_string(d.join("obd-gate")).unwrap();
+        g.write(false, 1_000);
+        assert_eq!(read(), "0");
+        // A change is written at once…
+        g.write(true, 1_010);
+        assert_eq!(read(), "1");
+        // …an unchanged state only on the heartbeat.
+        fs::write(d.join("obd-gate"), "x").unwrap();
+        g.write(true, 1_400);
+        assert_eq!(read(), "x");
+        g.write(true, 1_510);
+        assert_eq!(read(), "1");
+        // Tape done: no file = the relays' OPEN fallback.
+        g.clear();
+        assert!(!d.join("obd-gate").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn rig_meminfo_is_a_fixed_parseable_input() {
         let m = xorgate_core::system::parse_mem_available(RIG_MEMINFO).expect("parses");

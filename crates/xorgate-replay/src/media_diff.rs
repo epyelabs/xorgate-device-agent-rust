@@ -3480,8 +3480,33 @@ fn d30_js_late_shed(
                         .find(|(s, t, _)| *s == side && (e - t).abs() <= 1_500)
                         .copied()
                 });
+                // The fragment the late shed CUT (Phase 5b, orchestrator
+                // 2026-10-23, rec-shed-uv cam1#0/00003 860 vs 1): the LAST seq
+                // of its session on BOTH sides, and its END instant (startTs +
+                // durationMs) later on the JS side by the transition's Δ ±150.
+                // Its duration need not differ by Δ: the fragment's start is
+                // the capture's own keyframe cadence, which may differ between
+                // the sides by up to T12, and a shed landing just after a
+                // keyframe leaves a 0–2 ms last fragment on the TS too (every
+                // rec-shed-uv JS-vs-JS run, cam1 session 1).
+                let other = sides[1 - side];
+                let last_of = |m: &MediaCapture| {
+                    sidecars(m)
+                        .keys()
+                        .filter(|(s, _)| s == sid)
+                        .map(|(_, q)| *q)
+                        .max()
+                };
+                let end_other = sidecars(other).get(&(sid.to_string(), seq)).and_then(|v| {
+                    Some(v["startTs"].as_f64()? as i64 + v["durationMs"].as_f64()? as i64)
+                });
+                let cut_last = last_of(lm) == Some(seq) && last_of(other) == Some(seq);
+                let end_shift = end.zip(end_other).map(|(l, e)| l - e);
                 started.is_some_and(|(_, _, d)| (vl - ve + d).abs() <= SAME)
-                    || ended.is_some_and(|(_, _, d)| (vl - ve - d).abs() <= SAME)
+                    || ended.is_some_and(|(_, _, d)| {
+                        (vl - ve - d).abs() <= SAME
+                            || (cut_last && end_shift.is_some_and(|s| (s - d).abs() <= SAME))
+                    })
             } else {
                 false
             };
@@ -5125,6 +5150,159 @@ mod tests {
         assert_eq!(
             run(side("rust", 0, &stale), side("rust", 1_013, &fresh), 1_013),
             unt
+        );
+    }
+
+    /// T8/d30-js-late-shed, the fragment a late JS shed CUT (rec-shed-uv
+    /// stepC .jsrs / .jsrs.r2: cam1#0/00003 JS 933 / 860 vs Rust 0 / 1, the
+    /// fragment start 208 ms apart, the END instants exactly Δ apart):
+    /// matched by its end instant only when it is the last seq of its session
+    /// on both sides and the end shift is the transition's Δ ±150.
+    #[test]
+    fn d30_js_late_shed_cut_fragment_by_its_end_instant_only() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam1#0>";
+        // frags: (seq, startTs, durationMs) — the session's sidecars.
+        let side = |kind: &str, shift: i64, rails: &[(i64, f64)], frags: &[(u64, i64, i64)]| {
+            let mut seg = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (ts, v) in rails {
+                seg.push_str(&format!(
+                    "{{\"ts\":{ts},\"metrics\":{{\"system\":{{\"rail_5v\":{{\"value\":{v}}},\"throttled\":{{\"value\":0}}}}}}}}\n"
+                ));
+            }
+            let mut finals = BTreeMap::from([(
+                "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
+                seg.into_bytes(),
+            )]);
+            for (seq, st, dur) in frags {
+                finals.insert(
+                    format!("recordings/video/cam1/{sid}/{seq:05}.json"),
+                    format!("{{\"seq\":{seq},\"startTs\":{st},\"durationMs\":{dur}}}").into_bytes(),
+                );
+            }
+            MediaCapture {
+                kind: kind.into(),
+                shed_events: vec![
+                    (
+                        130_607 - shift,
+                        "info: power shed restore → no-live (clean for 20s)".into(),
+                    ),
+                    (
+                        150_679 - shift,
+                        "info: power shed restore → full (clean for 20s)".into(),
+                    ),
+                ],
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        let stale = [
+            (108_710, 5.1),
+            (109_715, 5.1),
+            (110_732, 5.3),
+            (111_729, 5.3),
+        ];
+        let fresh = [
+            (108_710, 5.1),
+            (109_715, 5.3),
+            (110_732, 5.3),
+            (111_729, 5.3),
+        ];
+        let changes = [110_073];
+        // JS: #3 starts 129 740, 860 ms → ends 130 600 (7 ms before its
+        // transition). Rust (Δ = 1013 earlier): #3 starts 207 ms earlier and
+        // ends at 130 600 − Δ, so its duration is 54 ms — 806 apart, not Δ.
+        let js_frags = [(2u64, 125_740, 4_000), (3, 129_740, 860)];
+        // `start` = the Rust #3's start (its duration follows from the end).
+        let rs_at = |start: i64, end_shift: i64| {
+            [
+                (2u64, 125_533, start - 125_533),
+                (3, start, 130_600 - end_shift - start),
+            ]
+        };
+        let rs = |end_shift: i64| rs_at(129_533, end_shift);
+        let run = |a: MediaCapture, b: MediaCapture, x: i64, y: i64| {
+            let mut rep = Report::default();
+            rep.push(mm(
+                "sidecar",
+                &format!("{sid}/00003"),
+                "durationMs",
+                x.to_string(),
+                y.to_string(),
+                UNTOLERATED,
+            ));
+            d30_js_late_shed(&a, &b, 0, &changes, &table, &mut rep);
+            rep.mismatches[0].tol.clone()
+        };
+        let ok = "T8/d30-js-late-shed".to_string();
+        // The rec-shed-uv shape: tolerated, either column order.
+        let r = rs(1_013);
+        assert_eq!(
+            run(
+                side("js", 0, &stale, &js_frags),
+                side("rust", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            ok
+        );
+        assert_eq!(
+            run(
+                side("rust", 1_013, &fresh, &r),
+                side("js", 0, &stale, &js_frags),
+                r[1].2,
+                860
+            ),
+            ok
+        );
+        // End shift 300 ms past Δ (the duration difference, 373, not Δ
+        // either): UNTOLERATED.
+        let r = rs_at(128_800, 1_313);
+        assert_eq!(
+            run(
+                side("js", 0, &stale, &js_frags),
+                side("rust", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
+        );
+        // Not the last fragment on the Rust side (a #4 follows): UNTOLERATED.
+        let r = rs(1_013);
+        let mut r4 = r.to_vec();
+        r4.push((4, 129_600, 2_000));
+        assert_eq!(
+            run(
+                side("js", 0, &stale, &js_frags),
+                side("rust", 1_013, &fresh, &r4),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
+        );
+        // Rust the later side, or no stale-reuse evidence on the JS: UNTOLERATED.
+        assert_eq!(
+            run(
+                side("rust", 0, &stale, &js_frags),
+                side("js", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
+        );
+        assert_eq!(
+            run(
+                side("js", 0, &fresh, &js_frags),
+                side("rust", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
         );
     }
 

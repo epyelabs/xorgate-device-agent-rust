@@ -8,6 +8,7 @@
 //! | `XORGATE_PYTHON_DIR` | `<work>/python/`: the rig's `bno085_read.py` relay + the side's REAL helper (`obd_read.py`, `obd_scan.py`, `obd/`): the JS build's `python/` for a JS side, the Rust repo's vendored `python/` (`/rig/python`) for the Rust side once it carries the helper (byte-identical, I9), else the JS build's |
 //! | `bluetoothctl` (PATH, OBD tapes only) | `tools/replay/shims/bluetoothctl`: prints `meta.rig.obd.bluetoothctl.{scan,devices,remove}` from `<state>/bt/`, logs to `<run>/<label>/bluetoothctl.log`, refuses pair/trust/connect (logged REFUSED) — never BlueZ |
 //! | `meta.rig.obd.env` | extra agent env (the `XORGATE_OBD_*` seam a tape exercises) |
+//! | the helper's stdout (gated runs) | `obd_read.py` = `tools/replay/obd-gate.py`, which runs the REAL helper (`obd_read_real.py`) and relays its lines only while the player's hold gate is open (`$RIG_OBD_GATE`, written by `play.rs` [`write_obd_gate`]) — helper edges reach both agents outside a tick pair, like every other line input |
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -95,6 +96,7 @@ pub fn helper_source(side_src: &Path, fallback: &Path) -> PathBuf {
 
 /// Prepare one agent's OBD inputs: its python dir, the shim's answers, the
 /// emulator. Returns the emulator (kept alive by the agent) + env.
+#[allow(clippy::too_many_arguments)] // the per-agent inputs, as play.rs has them
 pub fn prepare_agent(
     plan: &ObdPlan,
     work: &Path,
@@ -103,6 +105,7 @@ pub fn prepare_agent(
     fake_python: &Path,
     helper_src: &Path,
     rig_tools: &Path,
+    gate: Option<&Path>,
 ) -> Result<(Option<Emu>, Env)> {
     let py = work.join("python");
     let _ = fs::remove_dir_all(&py);
@@ -116,7 +119,19 @@ pub fn prepare_agent(
         if !src.exists() {
             bail!("OBD tape: {} has no {name}", helper_src.display());
         }
-        symlink(&src, py.join(name))?;
+        // The helper runs behind the hold-gate relay (`obd-gate.py`, the
+        // orchestrator ruling 2026-10-23): `obd_read.py` = the relay,
+        // `obd_read_real.py` = the side's REAL helper it runs.
+        let dst = if name == "obd_read.py" && gate.is_some() {
+            "obd_read_real.py"
+        } else {
+            name
+        };
+        symlink(&src, py.join(dst))?;
+    }
+    if gate.is_some() {
+        fs::copy(rig_tools.join("obd-gate.py"), py.join("obd_read.py"))
+            .context("install the OBD hold-gate relay")?;
     }
     let bt = state.join("bt");
     fs::create_dir_all(&bt)?;
@@ -142,6 +157,9 @@ pub fn prepare_agent(
         ),
         ("PYTHONDONTWRITEBYTECODE".into(), "1".into()),
     ];
+    if let Some(g) = gate {
+        env.push(("RIG_OBD_GATE".into(), g.display().to_string()));
+    }
     env.extend(plan.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     let mut emu = None;
     if let Some(sc) = &plan.scenario {

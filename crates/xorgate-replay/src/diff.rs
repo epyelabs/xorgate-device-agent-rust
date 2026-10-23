@@ -3017,6 +3017,46 @@ fn seq_increments(
     }
 }
 
+/// T8/report-echo: how many of one side's reports (in publish order) are
+/// ECHOES of the report before them: identical payload once the publish
+/// stamps (`ts`, every `status.<ns>.at`) are removed, and published
+/// `DEBOUNCE_MS` ± [`ECHO_SLACK_MS`] after it. Mechanism (TS @09da38d): the
+/// worker's publish tick requests a report on an OBD link move
+/// (ts:src/worker.ts:1399-1404 `obdReportDue`), ConfigSync debounces 2 s
+/// (ts:src/agent/config-sync.ts:1604-1617 `request`, one timer, coalescing
+/// only while it is armed); the timer armed on tick k fires on tick k+2's
+/// instant, so a link move seen on that tick (the emulator's ~2 s probe:
+/// link 0→1→2) re-arms it after the flush — a second report with nothing
+/// new — or coalesces, depending on which of the two callbacks runs first.
+/// Seen on BOTH JS sides of every p5b-obd-config JS-vs-JS run (stepB .cal09:
+/// 3 echoes each at 1983–2021 ms) and missing once on a JS side (stepC .jsrs2).
+fn report_echoes(side: &[&Msg]) -> usize {
+    let strip = |p: &Value| {
+        let mut p = p.clone();
+        if let Some(o) = p.as_object_mut() {
+            o.remove("ts");
+            if let Some(st) = o.get_mut("status").and_then(Value::as_object_mut) {
+                for v in st.values_mut() {
+                    if let Some(v) = v.as_object_mut() {
+                        v.remove("at");
+                    }
+                }
+            }
+        }
+        p
+    };
+    side.windows(2)
+        .filter(|w| {
+            (w[1].w - w[0].w - DEBOUNCE_MS).abs() <= ECHO_SLACK_MS
+                && strip(&w[0].payload) == strip(&w[1].payload)
+        })
+        .count()
+}
+
+/// T8/report-echo: the report build + timer lateness around the 2 s debounce
+/// (observed |Δ − 2000| ≤ 51 ms over 8 runs).
+const ECHO_SLACK_MS: i64 = 100;
+
 fn quiet_periods(a: &[&Msg], b: &[&Msg], quiet_ms: i64) -> Vec<(i64, i64)> {
     let mut ws: Vec<i64> = a.iter().chain(b.iter()).map(|m| m.w).collect();
     ws.sort();
@@ -3138,6 +3178,15 @@ fn diff_reports(
                         });
                     ok.then(|| format!("{rid}/reconnect-cadence"))
                 });
+            // T8/report-echo (Phase 5b, orchestrator 2026-10-23): the count
+            // differs ONLY by echoes — a report byte-identical to the same
+            // side's previous one (save its publish stamps `ts` and
+            // `status.<ns>.at`), published one debounce after it.
+            let echo = table.decision_row("report-echo").and_then(|(rid, _)| {
+                let (ea, eb) = (report_echoes(&pa), report_echoes(&pb));
+                (ea + eb > 0 && pa.len() - ea == pb.len() - eb)
+                    .then(|| format!("{rid}/report-echo"))
+            });
             let tol = if straddle
                 && pa.len().abs_diff(pb.len()) <= max_delta
                 && !pa.is_empty()
@@ -3145,6 +3194,8 @@ fn diff_reports(
             {
                 t5.clone()
             } else if let Some(id) = after_cut {
+                id
+            } else if let Some(id) = echo {
                 id
             } else {
                 UNTOLERATED.into()
@@ -6343,6 +6394,84 @@ mod tests {
         }
         assert!(tols.contains(&("sudo", "(argv)", "T8/O3")), "{tols:?}");
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
+    }
+
+    /// T8/report-echo: a count difference made ONLY of echoes (a report
+    /// byte-identical to its side's previous one save `ts` / `status.*.at`,
+    /// published DEBOUNCE ± 100 ms after it) is tolerated; a changed payload,
+    /// an echo 3 s later, or an extra non-echo report stays UNTOLERATED.
+    #[test]
+    fn report_echo_only_an_identical_report_one_debounce_later() {
+        let t = table();
+        let play = PlayInfo::default();
+        let r = |w: i64, link: i64| {
+            msg(
+                w,
+                "config/reported",
+                serde_json::json!({"v":1,"ts":w,"rev":3,"origin":"boot",
+                    "effective":{"obd":{"status":"live","link":link}},
+                    "status":{"obd":{"state":"applied","at":w}}}),
+            )
+        };
+        let count_tol = |a: Vec<Msg>, b: Vec<Msg>| {
+            let rep = diff_with(
+                &cap("js", a),
+                &cap("rust", b),
+                &play,
+                &InputFacts::default(),
+                &[],
+                &t,
+            );
+            rep.mismatches
+                .iter()
+                .find(|m| m.path == "(count)")
+                .map(|m| m.tol.clone())
+        };
+        // The p5b-obd-config shape: Rust echoes the live report 2002 ms later.
+        assert_eq!(
+            count_tol(
+                vec![r(72_851, 0), r(75_601, 2)],
+                vec![r(72_852, 0), r(75_501, 2), r(77_503, 2)]
+            )
+            .as_deref(),
+            Some("T8/report-echo")
+        );
+        // Echo on the JS side instead (either side may echo).
+        assert_eq!(
+            count_tol(
+                vec![r(72_851, 0), r(75_601, 2), r(77_610, 2)],
+                vec![r(72_852, 0), r(75_501, 2)]
+            )
+            .as_deref(),
+            Some("T8/report-echo")
+        );
+        // The extra report carries a change (link 1): not an echo.
+        assert_eq!(
+            count_tol(
+                vec![r(72_851, 0), r(75_601, 2)],
+                vec![r(72_852, 0), r(75_501, 1), r(77_503, 2)]
+            )
+            .as_deref(),
+            Some(UNTOLERATED)
+        );
+        // Identical but 3 s later: not one debounce after.
+        assert_eq!(
+            count_tol(
+                vec![r(72_851, 0), r(75_601, 2)],
+                vec![r(72_852, 0), r(75_501, 2), r(78_501, 2)]
+            )
+            .as_deref(),
+            Some(UNTOLERATED)
+        );
+        // Two extra reports, only one an echo: the counts do not reconcile.
+        assert_eq!(
+            count_tol(
+                vec![r(72_851, 0), r(75_601, 2)],
+                vec![r(70_000, 1), r(72_852, 0), r(75_501, 2), r(77_503, 2)]
+            )
+            .as_deref(),
+            Some(UNTOLERATED)
+        );
     }
 
     /// CF54 (Phase 4 WP6): with T6 deleted, the Phase 4 report fields are
