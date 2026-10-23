@@ -349,7 +349,225 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
             cmd(b, 20_200, "synth-p4-reboot-1", "reboot", None)?;
             cmd(b, 30_200, "synth-p4-poweroff-1", "power_off", None)?;
         }
+        name if name.starts_with("p5b-") => return add_p5b(name, b, dur_ms, fixtures, m),
         _ => {}
     }
     Ok(m)
+}
+
+/// The Phase 5b scenarios (H8; `phase-5b-js-catchup.md` §8 step B).
+fn add_p5b(
+    scenario: &str,
+    b: &mut Builder,
+    dur_ms: u64,
+    fixtures: &Path,
+    mut m: P4Meta,
+) -> Result<P4Meta> {
+    match scenario {
+        // SMS clear (H8, §6): the p4-sms inbox (SM 7/40 + ME 23/23 full + a
+        // concat + a SUBMIT) on a FakeModem with `allowClear`; the modem is
+        // refilled between the cases (`changes`). Per case the TS reader's
+        // queue semantics (ts:src/hardware/sms-modem.ts:598-733 @09da38d).
+        "p5b-sms-clear" => {
+            let path = fixtures.join("replay/p4-sms-modem.json");
+            let doc: Value = serde_json::from_slice(
+                &std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+            )?;
+            let mut modem = doc["modem"].clone();
+            let full = modem["stores"].clone();
+            let empty = json!({
+                "SM": {"total": full["SM"]["total"], "slots": {}},
+                "ME": {"total": full["ME"]["total"], "slots": {}},
+            });
+            modem["allowClear"] = json!(true);
+            modem["changes"] = json!([
+                // case 3: a slow clear (each delete 4 s) with a read arriving mid-clear
+                {"t": 20_000, "stores": full, "delayMs": {"AT+CMGD": 4_000}},
+                // case 4: a slow read (each CMGRO 250 ms) with a clear arriving mid-read
+                {"t": 45_000, "stores": full, "delayMs": {"AT+CMGRO": 250}},
+                // case 5: the ME delete never answers → the 25 s per-store timeout
+                {"t": 75_000, "stores": full, "delayMs": {}, "cmgdHang": ["ME"]},
+                // case 6: no SIM
+                {"t": 115_000, "cpmsError": "+CME ERROR: 10", "cmgdHang": []},
+                // case 7: SIM back, both stores empty
+                {"t": 125_000, "cpmsError": "", "stores": empty},
+            ]);
+            m.rig.insert("modem".into(), modem);
+            let lim = |n: u32| Some(json!({"limit": n}));
+            // case 1: clear the full stores; case 2: the same requestId again
+            cmd(b, 8_200, "synth-p5b-clear-1", "clear_sms", lim(10))?;
+            cmd(b, 14_200, "synth-p5b-clear-1", "clear_sms", lim(10))?;
+            // case 3
+            cmd(b, 25_200, "synth-p5b-clear-2", "clear_sms", lim(10))?;
+            cmd(b, 26_200, "synth-p5b-read-1", "read_sms", lim(5))?;
+            // case 4
+            cmd(b, 50_200, "synth-p5b-read-2", "read_sms", lim(50))?;
+            cmd(b, 51_200, "synth-p5b-clear-3", "clear_sms", lim(10))?;
+            // case 5
+            cmd(b, 80_200, "synth-p5b-clear-4", "clear_sms", lim(10))?;
+            // case 6
+            cmd(b, 118_200, "synth-p5b-clear-5", "clear_sms", lim(10))?;
+            // case 7
+            cmd(b, 128_200, "synth-p5b-clear-6", "clear_sms", lim(10))?;
+        }
+        // LED telemetry (H8, X1): every rung's `system.led_state` code and
+        // `health_flags` bits (ts:src/lib/led-state.ts:136-262 @09da38d) on a
+        // host whose model declares NO status LED (the inert driver: the
+        // ladder still resolves, ts:src/agent/led-manager.ts:100-118).
+        "p5b-led" => {
+            let mut hw = media_hardware_block();
+            if let Some(o) = hw.as_object_mut() {
+                o.remove("statusLed");
+            }
+            m.hardware = Some(hw);
+            camera_inputs(b);
+            // No fix for 15 s: gps-wait (+ the gps gate's liveBlock).
+            nmea(b, dur_ms, 15_000, 0);
+            let mut rec = rec_namespace("rec-shed-uv");
+            rec["telemetry"]["enabled"] = json!(false);
+            rec["video"]["cameras"] = json!({"cam1": false});
+            rec["video"]["gpsGate"] = json!("always");
+            rec["video"]["gpsGateNoProgressSecs"] = json!(120);
+            cfg(b, 400, &json!({"v": 1, "rev": 1, "recording": rec}));
+            b.push(
+                40_300,
+                TapeEvent::Conn {
+                    state: ConnState::Closed,
+                },
+            );
+            b.push(
+                60_300,
+                TapeEvent::Conn {
+                    state: ConnState::Connected,
+                },
+            );
+            let crossings = rail_thermal(b, dur_ms, 90_000..130_000, 210_000..250_000);
+            m.rig.insert("powerCrossings".into(), json!(crossings));
+            // LTE daemon status: connected, `connecting` 150-170 s (lte_down),
+            // `dead_zone` 180-200 s (a settled verdict: no network rung).
+            let mut t = 80;
+            let mut k = 0i64;
+            while t < dur_ms {
+                let mut doc = lte_doc(
+                    t,
+                    18 + k % 7,
+                    !(150_000..170_000).contains(&t),
+                    &cellular_block(None),
+                );
+                if (180_000..200_000).contains(&t) {
+                    doc = doc.replace("\"status\": \"connected\"", "\"status\": \"dead_zone\"");
+                }
+                b.push(t, TapeEvent::lte_file(Some(doc.as_bytes())));
+                t += 10_000;
+                k += 1;
+            }
+        }
+        // Clock trust held, then NTP (H8): the rig's NTP shim says no until
+        // 60 s; GPS and NITZ agree with the host clock (no step), so only NTP
+        // can establish trust. Telemetry recording on (the recorder is held:
+        // `recording.clockHold`, ts:src/recording/manager.ts:439-450).
+        "p5b-clock-hold" => {
+            b.push(20, TapeEvent::NtpProbe { synced: false });
+            b.push(60_000, TapeEvent::NtpProbe { synced: true });
+            cfg(b, 400, &clock_rec_doc());
+        }
+        // Clock trust fallback (H8): no sync source for 360 s → the 300 s
+        // grace ends (ts:src/agent/clock-trust.ts:126-137), publishing and
+        // recording resume on an untrusted clock.
+        "p5b-clock-fallback" => {
+            b.push(20, TapeEvent::NtpProbe { synced: false });
+            nmea(b, dur_ms, u64::MAX, 0);
+            lte_with_clock(b, dur_ms, &|t| Some((cclk_at(t, 0), 0)));
+            cfg(b, 400, &clock_rec_doc());
+        }
+        // The rev-guard upgrade exception (H8, ts:src/agent/config-sync.ts:
+        // 323-347, ts:src/worker.ts:941-966): the device already applied
+        // rev 3 (seeded config-sync.json with a namespace baseline) of a
+        // document that also carries `obd`, which this device never held
+        // (absent from settings.json AND the baseline) → exactly `obd` is
+        // adopted. The redelivery at 30 s adopts nothing.
+        "p5b-unheld" => {
+            let ts = json!({"stepThresholdSecs": 15});
+            let mut home = Map::new();
+            home.insert(
+                "settings.json".into(),
+                json!(json!({"timeSync": ts}).to_string()),
+            );
+            home.insert(
+                "config-sync.json".into(),
+                json!(json!({"lastAppliedRev": 3, "namespaces": {"timeSync": ts}}).to_string()),
+            );
+            m.home = Some(home);
+            let obd = json!({"enabled": true, "adapterMac": "00:1D:A5:68:98:8B", "pollHz": 1});
+            let doc = json!({"v": 1, "rev": 3, "timeSync": ts, "obd": obd});
+            cfg(b, 400, &doc);
+            cfg(b, 30_400, &doc);
+        }
+        _ => {}
+    }
+    Ok(m)
+}
+
+/// `p5b-clock-*`: the telemetry recorder on (video off), so the hold shows on
+/// `recording.clockHold` and the recorder start.
+fn clock_rec_doc() -> Value {
+    json!({"v": 1, "rev": 1, "recording": {
+        "telemetry": {"enabled": true, "rateHz": 1},
+        "video": {"enabled": false},
+        "upload": {"mode": "off"},
+        "retention": {"minFreeBytes": 0},
+    }})
+}
+
+/// [`rail`] plus a thermal window: `get_throttled` 0x80008 (soft temp limit
+/// active + occurred) inside `hot`, 0x80000 after (the `exec-thermal` shapes).
+fn rail_thermal(
+    b: &mut Builder,
+    dur_ms: u64,
+    low: std::ops::Range<u64>,
+    hot: std::ops::Range<u64>,
+) -> Vec<u64> {
+    let thr = vec!["vcgencmd".to_string(), "get_throttled".to_string()];
+    let pmic = vec!["vcgencmd".to_string(), "pmic_read_adc".to_string()];
+    let mut crossings = Vec::new();
+    let (mut last_low, mut last_th): (Option<bool>, Option<&str>) = (None, None);
+    let mut t = 60;
+    while t < dur_ms {
+        let is_low = low.contains(&t);
+        let th = if hot.contains(&t) {
+            "throttled=0x80008\n"
+        } else if t >= hot.end {
+            "throttled=0x80000\n"
+        } else {
+            "throttled=0x0\n"
+        };
+        if last_th.is_some_and(|l| l != th) {
+            crossings.push(t);
+        }
+        if last_low.is_some_and(|l| l != is_low) {
+            crossings.push(t + 10);
+        }
+        (last_low, last_th) = (Some(is_low), Some(th));
+        b.push(
+            t,
+            TapeEvent::Exec {
+                argv: thr.clone(),
+                stdout: th.into(),
+                code: Some(0),
+                stderr: None,
+            },
+        );
+        let volts = if is_low { 5.10 } else { 5.30 };
+        b.push(
+            t + 10,
+            TapeEvent::Exec {
+                argv: pmic.clone(),
+                stdout: PMIC_TEMPLATE.replace("@EXT5V@", &format!("{volts:.8}")),
+                code: Some(0),
+                stderr: None,
+            },
+        );
+        t += 2_000;
+    }
+    crossings
 }

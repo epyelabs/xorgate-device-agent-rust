@@ -294,6 +294,38 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &["p4", "nmea-fixonly", "lte", "clock"],
         "remote rail: cloud update / reboot / power_off → sudo argv (the shim never runs them)",
     ),
+    // ---- Phase 5b (WP4, phase-5b-js-catchup.md H8): also on the `p4` track
+    // (records by scenario name, synth_p4.rs `add_p5b`).
+    (
+        "p5b-sms-clear",
+        150,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "clear_sms on a FakeModem with allowClear: SM+ME full → cleared; same requestId again = ledger duplicate (no 2nd CMGD); read during a slow clear waits; clear during a slow read queues; ME delete hang → 25 s timeout, mem1 restored, error; no SIM; empty stores",
+    ),
+    (
+        "p5b-led",
+        280,
+        &["media-hw", "p4", "clock"],
+        "LED telemetry on an LED-less host: starting → gps-wait + gps-gate (0-15 s) → healthy → network (cut 40→60 s) → undervoltage shed (rail 90→130 s) → LTE connecting (150→170 s) → dead_zone (180→200 s) → thermal shed (210→250 s) → healthy",
+    ),
+    (
+        "p5b-clock-hold",
+        120,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "clock trust: NTP unsynced until 60 s (no GPS/NITZ step: the sources agree with the host) → live publish withheld, seq gap, telemetry recorder held (clockHold) → trusted at 60 s, recorder starts",
+    ),
+    (
+        "p5b-clock-fallback",
+        360,
+        &["p4", "clock"],
+        "clock trust: no NTP, no GPS fix, NITZ unregistered for 360 s → held, the 300 s fallback warning, publishing + recording resume flagged (hints.clockTrust fallback)",
+    ),
+    (
+        "p5b-unheld",
+        60,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "config-sync upgrade exception: retained rev 3 already applied (seeded sync baseline) carrying a never-held `obd` namespace → exactly `obd` adopted; a 2nd delivery adopts nothing",
+    ),
 ];
 
 /// The Phase 3 scenarios (all carry `media-hw`).
