@@ -514,10 +514,12 @@ fn add_p5b(
             cfg(b, 30_400, &doc);
         }
         // OBD (H8, H12's rig half): the real helper on an emulator per side.
-        // 55 s: the helper's first audit line (60 s after ITS start, python/
-        // obd/session.py:75,191) would otherwise race a report on its own
-        // phase (calibration: 62.6 s vs a 62.48 s report). The audit counters
-        // are compared on p5b-obd-config / -cmds (T8/obd-audit-cycle).
+        // 35 s (+ the player's 20 s settle = 55 s < 60 s): the helper's first
+        // audit line (60 s after ITS start, python/obd/session.py:75,191)
+        // would otherwise race a report on its own phase (JS-vs-JS: 62.6 s vs
+        // a 62.48 s report; JS-vs-Rust with a 55 s tape: 62.3 vs 62.16 s).
+        // The audit counters are compared on p5b-obd-config (restarts,
+        // T8/obd-audit-cycle).
         "p5b-obd-emulator" | "p5b-obd-crank" | "p5b-obd-badproto" => {
             let sc = match scenario {
                 "p5b-obd-crank" => "taos-2022-crank",
