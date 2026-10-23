@@ -80,7 +80,11 @@ fn cli_pipeline_fixture() {
     )
     .unwrap();
     let fx: Fixture = serde_json::from_str(&text).unwrap();
-    assert_eq!(fx.js_commit, "89b5c64");
+    assert!(
+        ["09da38d", "89b5c64"].contains(&fx.js_commit.as_str()),
+        "jsCommit {} (CF78)",
+        fx.js_commit
+    );
     assert!(fx.cases.len() >= 19);
     let mut failures = Vec::new();
     for (i, c) in fx.cases.iter().enumerate() {

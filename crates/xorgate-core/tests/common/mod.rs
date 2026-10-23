@@ -8,7 +8,10 @@ use serde::Deserialize;
 /// The JS repo commit every Phase 1 fixture was extracted from.
 pub const JS_COMMIT: &str = "89b5c6407ef88e20f7168bd767d22a7be04ebcb6";
 /// The Phase 5b reference (`09da38d`): fixtures dumped or re-dumped there
-/// carry it (CF78 re-stamps the rest at the end of the phase).
+/// carry it. CF78 re-stamped every fixture `tools/replay/js/redump-all.sh`
+/// re-dumps; the Phase 1 test-table fixtures it cannot re-run keep
+/// `89b5c64` (their TS tests re-checked green at 09da38d,
+/// phase-5b/evidence/delta-inventory.md "CF78").
 pub const JS_COMMIT_P5B: &str = "09da38dcc8b75c248625a3a0bee43b70e7def55d";
 
 #[derive(Deserialize)]

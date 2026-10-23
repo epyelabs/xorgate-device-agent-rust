@@ -39,7 +39,11 @@ use xorgate_hal::config_sync_file::{ensure_config_sync_baseline, save_config_syn
 use xorgate_hal::hardware_file::{read_hardware_file, save_hardware_block, HardwareFile};
 use xorgate_hal::io::NullTape;
 
-const JS_COMMIT: &str = "89b5c6407ef88e20f7168bd767d22a7be04ebcb6";
+/// CF78 (Phase 5b): re-dumped and re-stamped at 09da38d; 89b5c64 kept for archaeology.
+const JS_COMMITS: [&str; 2] = [
+    "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+    "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+];
 
 #[derive(Deserialize)]
 struct Case {
@@ -59,7 +63,11 @@ struct Fixture {
 fn fixture(rel: &str) -> Fixture {
     let p = format!("{}/../../fixtures/{rel}", env!("CARGO_MANIFEST_DIR"));
     let f: Fixture = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-    assert_eq!(f.js_commit, JS_COMMIT);
+    assert!(
+        JS_COMMITS.contains(&f.js_commit.as_str()),
+        "jsCommit {}",
+        f.js_commit
+    );
     f
 }
 

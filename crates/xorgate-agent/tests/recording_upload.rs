@@ -762,7 +762,15 @@ async fn uploader_drain_fixture_replays_the_ts_runtime() {
     ))
     .unwrap();
     let f: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(f["jsCommit"], "89b5c6407ef88e20f7168bd767d22a7be04ebcb6");
+    assert!(
+        [
+            "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+            "89b5c6407ef88e20f7168bd767d22a7be04ebcb6"
+        ]
+        .contains(&f["jsCommit"].as_str().unwrap()),
+        "jsCommit {} (CF78)",
+        f["jsCommit"]
+    );
     let session = f["sessionId"].as_str().unwrap();
     let cases = f["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 13);
