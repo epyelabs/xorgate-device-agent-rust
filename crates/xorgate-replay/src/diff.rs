@@ -3246,8 +3246,39 @@ fn audit_cycle_delta(
 /// transport-library error text (`mqtt-error-text`), and the suffix of an
 /// upload retry (`s3-error-text`, pending Phase 3). Returns the key and the
 /// row that changed it.
+/// R-P3G-1 (Phase 3 gate, fixed in Phase 5b WP4): an event's `(session
+/// <8 hex>…)` is the first 32 bits of the agent's own UUIDv7 session id —
+/// its ms clock in 65.5 s buckets (ts:src/recording/video-capture.ts spawn
+/// event `session ${id.slice(0, 8)}…` @09da38d) — so two agents whose spawns
+/// straddle a bucket edge print different prefixes for the same event. The
+/// phase-3 comparison table already says "msg multiset (session prefixes
+/// normalised)": the prefix becomes `<sid>`, like the deviceId becomes `{id}`.
+/// Only that exact token shape is rewritten; the session ids themselves are
+/// compared in the session stream.
+fn norm_session_prefix(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut rest = msg;
+    while let Some(i) = rest.find("(session ") {
+        let (head, tail) = rest.split_at(i + "(session ".len());
+        out.push_str(head);
+        let hex = tail.get(..8).filter(|h| {
+            h.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        });
+        match hex {
+            Some(_) if tail[8..].starts_with('…') => {
+                out.push_str("<sid>");
+                rest = &tail[8..];
+            }
+            _ => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Option<String>) {
-    let mut msg = msg.to_string();
+    let mut msg = norm_session_prefix(msg);
     let mut hit = None;
     if kind == "rust" {
         if let Some((rid, _)) = table.decision_row("task-prefix") {
@@ -6621,5 +6652,49 @@ mod tests {
             &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
         );
         assert!(got.iter().any(|t| t == UNTOLERATED), "{got:?}");
+    }
+
+    /// R-P3G-1: only the `(session <8 lowercase hex>…)` token is normalised.
+    #[test]
+    fn norm_session_prefix_only_the_uuid7_bucket_token() {
+        assert_eq!(
+            norm_session_prefix("video capture started: cam1 720p15-1mbps (session 01a16472…)"),
+            "video capture started: cam1 720p15-1mbps (session <sid>…)"
+        );
+        assert_eq!(
+            norm_session_prefix("a (session 01a16472…) b (session 01a16473…)"),
+            "a (session <sid>…) b (session <sid>…)"
+        );
+        // NEGATIVE: other shapes are untouched (so they still compare literally).
+        for s in [
+            "x (session 01a1647…)",
+            "x (session 01A16472…)",
+            "x (session 01a16472)",
+            "x (session 01a16472-3144…)",
+            "x (sessions 01a16472…)",
+        ] {
+            assert_eq!(norm_session_prefix(s), s);
+        }
+        let t = table();
+        let (a, _) = event_key(
+            "info",
+            "video capture started: cam1 720p15-1mbps (session 01a16472…)",
+            "js",
+            &t,
+        );
+        let (b, _) = event_key(
+            "info",
+            "video capture started: cam1 720p15-1mbps (session 01a16473…)",
+            "rust",
+            &t,
+        );
+        assert_eq!(a, b);
+        let (c, _) = event_key(
+            "info",
+            "video capture started: cam1 1080p15-2mbps (session 01a16473…)",
+            "rust",
+            &t,
+        );
+        assert_ne!(a, c, "the rest of the line still compares exactly");
     }
 }

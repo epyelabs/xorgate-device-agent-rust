@@ -172,6 +172,10 @@ pub struct PlayArgs {
     /// (`meta.rig.pi`, `p4.rs`).
     #[arg(long, default_value = "/rig/tools/pi-ns.sh")]
     pub ns_script: PathBuf,
+    /// Phase 5b (R-P3G-4): read the rig VM's own /proc/meminfo (the pre-5b
+    /// behaviour) instead of binding the tape's fixed meminfo over it.
+    #[arg(long)]
+    pub host_meminfo: bool,
     /// Phase 4 (E12): the REAL camera-rotation helper the `sudo` shim executes
     /// for `xorgate-camrotate` (default: the Rust repo's vendored
     /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
@@ -971,7 +975,20 @@ impl Agent {
                 format!("{:.3}", ms as f64 / 1000.0),
             )?;
         }
-        let (p4_state, p4_env) = p4::prepare_agent(p4plan, &work, &dir, camrotate.as_deref())?;
+        let (mut p4_state, p4_env) = p4::prepare_agent(p4plan, &work, &dir, camrotate.as_deref())?;
+        // Phase 5b (R-P3G-4): the agent's memory input is the tape's, bound
+        // over /proc/meminfo in its own mount namespace (pi-ns.sh); the rig
+        // VM's RAM (other agents' encoders, cargo builds) never reaches
+        // `ram_usage`. Skipped when the rig cannot unshare (CI smoke).
+        if meminfo_isolation(args) {
+            let mi = work.join("meminfo");
+            fs::write(&mi, RIG_MEMINFO)?;
+            env.retain(|(k, _)| k != "RIG_MEMINFO");
+            env.push(("RIG_MEMINFO".into(), mi.display().to_string()));
+            if p4_state.pi_dir.is_none() {
+                p4_state.pi_dir = Some(work.join("no-pi"));
+            }
+        }
         for (k, v) in p4_env {
             env.retain(|(ek, _)| *ek != k);
             env.push((k, v));
@@ -2399,6 +2416,27 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     Ok(())
 }
 
+/// The fixed `/proc/meminfo` every agent reads (R-P3G-4): a CM5 8 GB board,
+/// `MemAvailable` constant → `ram_usage` 21.2 % on both sides, exactly. The
+/// TS and the Rust collector both compute (MemTotal − MemAvailable) / MemTotal
+/// (ts:src/hardware/system.ts:86-98, rs xorgate-hal system.rs `read_memory`).
+pub const RIG_MEMINFO: &str = "MemTotal:        8245360 kB\nMemFree:         5990000 kB\nMemAvailable:    6500000 kB\nBuffers:           80000 kB\nCached:           600000 kB\nSwapCached:            0 kB\nSwapTotal:        204796 kB\nSwapFree:         204796 kB\n";
+
+/// Is the per-agent meminfo bind usable here (not `--host-meminfo`, and the
+/// rig may `unshare -m`)? Probed once per process.
+fn meminfo_isolation(args: &PlayArgs) -> bool {
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !args.host_meminfo
+        && *OK.get_or_init(|| {
+            std::process::Command::new("unshare")
+                .args(["-m", "--propagation", "private", "--", "true"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+}
+
 /// May NMEA / IMU lines flow (both agents booted and ticking)? An agent
 /// counts once it has published telemetry, or — while its telemetry is held
 /// by the clock trust gate — once it has been publishing anything for two
@@ -2906,5 +2944,14 @@ mod tests {
             "the 9.99 s publish predates the step"
         );
         assert!(h.pairs.is_empty());
+    }
+
+    /// R-P3G-4: the rig meminfo parses like a real one (both agents read
+    /// MemTotal/MemAvailable from it) and pins ram_usage at 21.2 %.
+    #[test]
+    fn rig_meminfo_is_a_fixed_parseable_input() {
+        let m = xorgate_core::system::parse_mem_available(RIG_MEMINFO).expect("parses");
+        let used = (m.total_bytes - m.available_bytes) / m.total_bytes * 100.0;
+        assert_eq!((used * 10.0).round() / 10.0, 21.2);
     }
 }
