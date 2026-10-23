@@ -328,13 +328,13 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
     ),
     (
         "p5b-obd-emulator",
-        90,
+        55,
         &["p4", "nmea-fixonly", "lte", "clock"],
         "OBD: peripherals.obd + an ELM327-emulator per agent (taos-2022) on XORGATE_OBD_SERIAL, the real helper → obd group at link 2 with the Taos values, effective.obd, state.json obd",
     ),
     (
         "p5b-obd-crank",
-        120,
+        55,
         &["p4", "nmea-fixonly", "lte", "clock"],
         "OBD: taos-2022-crank (start-stop auto-stop + one crank voltage dip) → the helper must not stop",
     ),

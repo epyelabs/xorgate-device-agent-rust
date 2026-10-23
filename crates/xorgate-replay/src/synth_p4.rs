@@ -504,6 +504,10 @@ fn add_p5b(
             cfg(b, 30_400, &doc);
         }
         // OBD (H8, H12's rig half): the real helper on an emulator per side.
+        // 55 s: the helper's first audit line (60 s after ITS start, python/
+        // obd/session.py:75,191) would otherwise race a report on its own
+        // phase (calibration: 62.6 s vs a 62.48 s report). The audit counters
+        // are compared on p5b-obd-config / -cmds (T8/obd-audit-cycle).
         "p5b-obd-emulator" | "p5b-obd-crank" | "p5b-obd-badproto" => {
             let sc = match scenario {
                 "p5b-obd-crank" => "taos-2022-crank",
@@ -577,11 +581,10 @@ fn add_p5b(
                 seed_obd_settings(&mut m, &json!({"enabled": true, "adapterMac": OBD_MAC_A}));
             }
             m.rig.insert("obd".into(), obd);
-            cfg(
-                b,
-                400,
-                &json!({"v": 1, "rev": 1, "recording": obd_base_rec()}),
-            );
+            // No config message: a cloud document landing while the helper
+            // starts rewrites settings.json and restarts the helper on one
+            // side only (calibration 2026-10-23: the restarted helper then met
+            // the emulator mid-session, CF81). The seeded settings carry it all.
             cmd(b, 10_200, "synth-p5b-obd-scan-1", "obd_scan", None)?;
             let forget_at = if periph { 60_200 } else { 20_200 };
             cmd(b, forget_at, "synth-p5b-obd-forget-1", "obd_forget", None)?;

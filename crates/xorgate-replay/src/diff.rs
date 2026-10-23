@@ -3066,7 +3066,8 @@ fn diff_reports(
                     ..cx
                 };
                 flags_pair(&cx, x, y, rep);
-                cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
+                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, rep);
+                cmp(&cx, "", Some(&px), Some(&py), rep);
             }
         } else {
             for (i, (x, y)) in pa.iter().zip(&pb).enumerate() {
@@ -3090,11 +3091,129 @@ fn diff_reports(
                     ack_rate_limit: false,
                 };
                 flags_pair(&cx, x, y, rep);
-                cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
+                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, rep);
+                cmp(&cx, "", Some(&px), Some(&py), rep);
             }
         }
     }
     rep.stats.entry("report".into()).or_default().compared = compared;
+}
+
+/// T8/obd-audit-cycle (Phase 5b; NEW ROW, reviewer sign-off): the OBD
+/// helper's audit counters (`effective.obd.audit`) are cumulative counts of
+/// the requests its 1 Hz poll loop made since the session started, snapshot
+/// at an audit line (every 60 s from the helper's start, and at every stop /
+/// restart: python/obd/session.py:173-228 @09da38d). A restart lands on the
+/// cloud config message (`obdReapply`, ts:src/worker.ts:981-985) while each
+/// side's helper is somewhere inside its own poll cycle, so one side may have
+/// completed a few more requests of that one cycle. Matched ONLY when the two
+/// audit blocks differ by part of ONE cycle, in one direction: every
+/// `inventory` count equal or one higher on the same side, `requests` and
+/// `ok` higher by exactly the number of those inventory steps, `bytes_tx`
+/// higher by 1..=8 bytes per extra request, every other counter (no_data,
+/// timeouts, err_*, forbidden, reconnects, voltage_low, …) and every other
+/// audit key EQUAL. Then those leaves are removed (cited) and the rest of the
+/// payload is compared as usual.
+fn obd_audit_cycle(cx: &Cx, x: &Value, y: &Value, rep: &mut Report) -> (Value, Value) {
+    let (x, y) = (x.clone(), y.clone());
+    let Some((rid, row)) = cx.table.decision_row("obd-audit-cycle") else {
+        return (x, y);
+    };
+    if !crate::tolerances::stream_matches(&row.streams, &cx.stream) {
+        return (x, y);
+    }
+    let (Some(ax), Some(ay)) = (
+        x.pointer("/effective/obd/audit").and_then(Value::as_object),
+        y.pointer("/effective/obd/audit").and_then(Value::as_object),
+    ) else {
+        return (x, y);
+    };
+    let Some(cycle) = audit_cycle_delta(ax, ay) else {
+        return (x, y);
+    };
+    let tol = format!("{rid}/obd-audit-cycle");
+    for (leaf, a, b) in &cycle {
+        rep.push(cx.mismatch(
+            &format!("effective.obd.audit.{leaf}"),
+            Some(a),
+            Some(b),
+            tol.clone(),
+        ));
+    }
+    let strip = |mut v: Value| {
+        if let Some(a) = v
+            .pointer_mut("/effective/obd/audit")
+            .and_then(Value::as_object_mut)
+        {
+            for (leaf, ..) in &cycle {
+                let (grp, key) = leaf.split_once('.').unwrap_or((leaf.as_str(), ""));
+                if let Some(o) = a.get_mut(grp).and_then(Value::as_object_mut) {
+                    o.remove(key);
+                }
+            }
+        }
+        v
+    };
+    (strip(x), strip(y))
+}
+
+/// The leaves `(path under audit, A, B)` of a one-cycle split, or `None`
+/// when the two audit blocks are not exactly that.
+fn audit_cycle_delta(
+    ax: &serde_json::Map<String, Value>,
+    ay: &serde_json::Map<String, Value>,
+) -> Option<Vec<(String, Value, Value)>> {
+    // Every key but the two count tables must be equal.
+    let keys: BTreeSet<&String> = ax.keys().chain(ay.keys()).collect();
+    for k in keys {
+        if k != "counters" && k != "inventory" && ax.get(k) != ay.get(k) {
+            return None;
+        }
+    }
+    let (cx_, cy) = (
+        ax.get("counters")?.as_object()?,
+        ay.get("counters")?.as_object()?,
+    );
+    let (ix, iy) = (
+        ax.get("inventory")?.as_object()?,
+        ay.get("inventory")?.as_object()?,
+    );
+    let num = |m: &serde_json::Map<String, Value>, k: &str| m.get(k).and_then(Value::as_i64);
+    let mut out = Vec::new();
+    let mut sign = 0i64;
+    let mut steps = 0i64;
+    let inv_keys: BTreeSet<&String> = ix.keys().chain(iy.keys()).collect();
+    for k in inv_keys {
+        let (a, b) = (num(ix, k)?, num(iy, k)?);
+        let d = b - a;
+        if d == 0 {
+            continue;
+        }
+        if d.abs() != 1 || (sign != 0 && d.signum() != sign) {
+            return None;
+        }
+        sign = d.signum();
+        steps += 1;
+        out.push((format!("inventory.{k}"), ix[k].clone(), iy[k].clone()));
+    }
+    if steps == 0 {
+        return None;
+    }
+    let c_keys: BTreeSet<&String> = cx_.keys().chain(cy.keys()).collect();
+    for k in c_keys {
+        let (a, b) = (num(cx_, k)?, num(cy, k)?);
+        let d = (b - a) * sign;
+        match k.as_str() {
+            "requests" | "ok" if d == steps => {}
+            "bytes_tx" if (steps..=8 * steps).contains(&d) => {}
+            _ if d == 0 => continue,
+            _ => return None,
+        }
+        out.push((format!("counters.{k}"), cx_[k].clone(), cy[k].clone()));
+    }
+    // requests, ok and bytes_tx must all have moved.
+    let moved = |k: &str| out.iter().any(|(l, ..)| l == &format!("counters.{k}"));
+    (moved("requests") && moved("ok") && moved("bytes_tx")).then_some(out)
 }
 
 /// The `level: msg` key of a state.json event after the T8 normalisations:
@@ -6346,5 +6465,82 @@ mod tests {
             "/dev/pts/1"
         );
         assert_eq!(norm_side("/dev/pts/3", id, None), "/dev/pts/3");
+    }
+
+    /// T8/obd-audit-cycle: part of ONE poll cycle more on one side is the row;
+    /// anything else (a 2-step PID, inconsistent totals, an error counter, the
+    /// other direction mixed in) is not.
+    #[test]
+    fn audit_cycle_delta_only_a_one_cycle_split() {
+        let audit = |req: i64, bytes: i64, inv: &[(&str, i64)], nd: i64| {
+            let inv: serde_json::Map<String, Value> = inv
+                .iter()
+                .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+                .collect();
+            serde_json::json!({"counters": {"requests": req, "ok": req, "no_data": nd, "bytes_tx": bytes},
+                   "inventory": inv, "seq": 3})
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        let a = audit(
+            501,
+            2986,
+            &[("01041", 24), ("01051", 24), ("01111", 24), ("010C1", 25)],
+            0,
+        );
+        let b = audit(
+            504,
+            3004,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        let got = audit_cycle_delta(&a, &b).expect("one-cycle split");
+        assert_eq!(got.len(), 6, "{got:?}");
+        assert!(audit_cycle_delta(&b, &a).is_some(), "either side ahead");
+        // NEGATIVE: requests ≠ the inventory steps.
+        let c = audit(
+            505,
+            3004,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &c).is_none());
+        // NEGATIVE: one PID two ahead.
+        let d = audit(
+            504,
+            3004,
+            &[("01041", 26), ("01051", 25), ("01111", 24), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &d).is_none());
+        // NEGATIVE: an error counter moved.
+        let e = audit(
+            504,
+            3004,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            1,
+        );
+        assert!(audit_cycle_delta(&a, &e).is_none());
+        // NEGATIVE: mixed directions.
+        let f = audit(
+            502,
+            2998,
+            &[("01041", 25), ("01051", 23), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &f).is_none());
+        // NEGATIVE: another audit key differs.
+        let mut g = b.clone();
+        g.insert("seq".into(), serde_json::json!(4));
+        assert!(audit_cycle_delta(&a, &g).is_none());
+        // NEGATIVE: bytes off the per-request bound.
+        let h = audit(
+            504,
+            3100,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &h).is_none());
     }
 }
