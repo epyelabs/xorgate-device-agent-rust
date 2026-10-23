@@ -228,6 +228,12 @@ pub trait TelemetrySource: Send + Sync + 'static {
     fn obd(&self) -> Option<Arc<dyn ObdControl>> {
         None
     }
+    /// The agent-exit wait for supervised children that must finish their own
+    /// close (the OBD helper: SIGTERM + a bounded wait, review-wp2 M2); runs
+    /// after the shutdown sequence, before the runtime drops.
+    fn shutdown_children(&self) -> BoxFut<'_, ()> {
+        Box::pin(async {})
+    }
 }
 
 /// The KVS media supervisor as the collectors and the recording spine use it

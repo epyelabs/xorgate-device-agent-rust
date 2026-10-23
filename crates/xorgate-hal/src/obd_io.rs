@@ -86,6 +86,25 @@ impl ObdHelperHandle {
         }
     }
 
+    /// The execa `cleanup` at agent exit (`subprocess.kill()` = SIGTERM to
+    /// every child still running, D36 evidence): the helper turns this second
+    /// signal into "finish closing without the reset" and still writes its
+    /// `close` audit record (`python/obd/session.py:229-238`).
+    pub fn sigterm(&mut self) {
+        match &mut self.inner {
+            HandleInner::Real(h) => h.signal(libc::SIGTERM),
+            HandleInner::Mock(tx) => {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(());
+                }
+            }
+            HandleInner::Fake(log) => log
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push("SIGTERM"),
+        }
+    }
+
     /// The helper's pid while it is a real process.
     pub fn pid(&self) -> Option<u32> {
         match &self.inner {
@@ -104,7 +123,9 @@ pub trait ObdIo: Send + Sync + 'static {
     ) -> (ObdHelperHandle, mpsc::UnboundedReceiver<ObdHelperEvent>);
     /// `scanObdAdapters(seconds)`: normalized candidates, or the error text.
     fn scan(&self, seconds: f64) -> ObdFut<Result<Vec<ObdScanCandidate>, String>>;
-    /// `removeObdBond(mac)`.
+    /// `removeObdBond(mac)`. Like the TS (`await run("bluetoothctl", …)`
+    /// inside `forget()`'s synchronous prefix), the subprocess is SPAWNED at
+    /// call time; the future only collects its result.
     fn unbond(&self, mac: String) -> ObdFut<Result<(), String>>;
 }
 
@@ -115,6 +136,9 @@ pub trait ObdIo: Send + Sync + 'static {
 pub struct RealObdIo {
     pub python_dir: PathBuf,
     pub mock: bool,
+    /// The unbond program (`bluetoothctl`, resolved through `PATH`; tests
+    /// point it at a fake).
+    pub bluetoothctl: String,
 }
 
 impl RealObdIo {
@@ -122,6 +146,7 @@ impl RealObdIo {
     pub fn from_env(python_dir: PathBuf) -> Self {
         Self {
             python_dir,
+            bluetoothctl: "bluetoothctl".into(),
             mock: crate::led_driver::is_mock_from(
                 std::env::var("XORGATE_MOCK").ok().as_deref(),
                 cfg!(target_os = "linux"),
@@ -265,19 +290,51 @@ impl ObdIo for RealObdIo {
     }
 
     fn unbond(&self, mac: String) -> ObdFut<Result<(), String>> {
-        let mock = self.mock;
+        // Validated AGAIN here, before it can reach a subprocess argv.
+        if !is_obd_mac(&mac) {
+            let e = format!(
+                "refusing to unbond malformed MAC {}",
+                serde_json::to_string(&mac).unwrap_or_default()
+            );
+            return Box::pin(async move { Err(e) });
+        }
+        if self.mock {
+            return Box::pin(async { Ok(()) });
+        }
+        // Spawned NOW (review-wp2 S2): `bluetoothctl` runs before the
+        // command's accepted ack, as in the TS.
+        let child = tokio::process::Command::new(&self.bluetoothctl)
+            .args(["remove", &mac])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
         Box::pin(async move {
-            // Validated AGAIN here, before it can reach a subprocess argv.
-            if !is_obd_mac(&mac) {
-                return Err(format!(
-                    "refusing to unbond malformed MAC {}",
-                    serde_json::to_string(&mac).unwrap_or_default()
-                ));
-            }
-            if mock {
-                return Ok(());
-            }
-            let res = run("bluetoothctl", &["remove", &mac], None).await;
+            let res = match child {
+                Err(e) => RunResult {
+                    stderr: e.to_string(),
+                    failed: true,
+                    not_found: e.kind() == std::io::ErrorKind::NotFound,
+                    spawn_failed: true,
+                    ..Default::default()
+                },
+                Ok(c) => match c.wait_with_output().await {
+                    Ok(out) => RunResult {
+                        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                        exit_code: out.status.code(),
+                        failed: !out.status.success(),
+                        not_found: false,
+                        spawn_failed: false,
+                    },
+                    Err(e) => RunResult {
+                        stderr: e.to_string(),
+                        failed: true,
+                        ..Default::default()
+                    },
+                },
+            };
             unbond_result(&res)
         })
     }
@@ -582,6 +639,7 @@ mod tests {
         let io = RealObdIo {
             python_dir: PathBuf::from("/nonexistent"),
             mock: false,
+            bluetoothctl: "bluetoothctl".into(),
         };
         for bad in [
             "aa:bb:cc:dd:ee:ff",
@@ -594,11 +652,62 @@ mod tests {
         }
     }
 
+    /// review-wp2 S2: the subprocess starts at CALL time — the marker the
+    /// fake `bluetoothctl` writes appears while the future is still unpolled.
+    #[tokio::test]
+    async fn unbond_spawns_at_call_time() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("xg-obd-unbond-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("ran");
+        let fake = dir.join("bluetoothctl");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {}\necho 'Device has been removed'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let io = RealObdIo {
+            python_dir: PathBuf::from("/nonexistent"),
+            mock: false,
+            bluetoothctl: fake.display().to_string(),
+        };
+        let fut = io.unbond("AA:BB:CC:DD:EE:FF".into());
+        let t0 = std::time::Instant::now();
+        while !marker.exists() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().trim(),
+            "remove AA:BB:CC:DD:EE:FF",
+            "spawned before the first poll"
+        );
+        assert!(fut.await.is_ok());
+        // A missing binary is the execa quirk's `exit null`.
+        let missing = RealObdIo {
+            bluetoothctl: dir.join("absent").display().to_string(),
+            ..io
+        };
+        assert_eq!(
+            missing
+                .unbond("AA:BB:CC:DD:EE:FF".into())
+                .await
+                .unwrap_err(),
+            "exit null"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn helper_spec_is_python3_on_the_vendored_helper() {
         let io = RealObdIo {
             python_dir: PathBuf::from("/opt/xorgate-rs/python"),
             mock: false,
+            bluetoothctl: "bluetoothctl".into(),
         };
         let cfg = ObdHelperConfig {
             adapter: Some("10:21:3E:4F:33:65".into()),

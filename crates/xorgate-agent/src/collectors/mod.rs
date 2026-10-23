@@ -256,6 +256,16 @@ impl TelemetrySource for Collectors {
             .map(|o| o as Arc<dyn crate::ctx::ObdControl>)
     }
 
+    /// The OBD helper's agent-exit close (review-wp2 M2): SIGTERM, then a
+    /// bounded wait of [`obd::HELPER_EXIT_BUDGET`].
+    fn shutdown_children(&self) -> BoxFut<'_, ()> {
+        Box::pin(async move {
+            if let Some(obd) = &self.obd {
+                obd.shutdown(obd::HELPER_EXIT_BUDGET).await;
+            }
+        })
+    }
+
     /// `stop()` (`index.ts:164-166`) stops only the media supervisor (Phase
     /// 3). The TS process exit then takes the IMU helper down (execa's
     /// `cleanup`) and closes the tty; here the same happens explicitly: the

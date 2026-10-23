@@ -72,6 +72,9 @@ STATUS_LINE=$(env -i PATH=/usr/bin:/bin XORGATE_HOME=$W/home $BIN status 2>&1 | 
 OBD_STATUS=$(env -i PATH=/usr/bin:/bin XORGATE_HOME=$W/home $BIN obd status 2>&1)
 HELPER_PID=$(pgrep -f "$W/python/obd_read.py" | head -1)
 kill -TERM $AG; wait $AG; AGENT_RC=$?
+# review-wp2 M2: the helper must be gone the moment the agent has exited (it
+# was waited for, not orphaned or SIGKILLed mid-close).
+if [ -n "$HELPER_PID" ] && kill -0 "$HELPER_PID" 2>/dev/null; then HELPER_GONE=no; else HELPER_GONE=yes; fi
 sleep 1
 kill $SUB 2>/dev/null; kill -TERM $EMU 2>/dev/null; wait $EMU 2>/dev/null
 
@@ -122,8 +125,10 @@ grep -aqE '\[obd\] audit #1: req [0-9]+ ' $W/agent.out && pass "[obd] audit jour
 ls $W/home/obd/audit/ 2>/dev/null | grep -q . && pass "audit JSONL under \$XORGATE_HOME/obd/audit/: $(ls $W/home/obd/audit | head -3 | tr '\n' ' ')" || failc "no audit dir"
 AUD=$(ls $W/home/obd/audit/* 2>/dev/null | head -1)
 [ -n "$AUD" ] && python3 -c 'import json,sys; [json.loads(l) for l in open(sys.argv[1]) if l.strip()]' "$AUD" && pass "audit file is JSON lines" || failc "audit file not JSONL"
-STOPPED=$(grep -a '"stop"\|stop' "$AUD" 2>/dev/null | tail -1)
 echo "== last audit record: $(tail -1 "$AUD" 2>/dev/null)"
+tail -1 "$AUD" | python3 -c 'import json,sys; r=json.loads(sys.stdin.read()); assert r.get("kind")=="close" and r.get("reason")=="shutdown", r' \
+  && pass "last audit record is close/shutdown (the helper finished its close)" || failc "last audit record is not close/shutdown"
+[ "$HELPER_GONE" = yes ] && pass "helper pid $HELPER_PID gone when the agent exited" || failc "helper pid $HELPER_PID still alive after the agent exited"
 python3 - "$W/home/state.json" <<'P' && pass "state.json obd right after recording (TS insertion order)" || failc "state.json obd"
 import json,sys
 s=json.load(open(sys.argv[1])); k=list(s)

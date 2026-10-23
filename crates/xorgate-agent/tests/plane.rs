@@ -796,6 +796,7 @@ async fn a_held_tick_advances_seq_but_does_not_write_state_json() {
         scope: r.scope.clone(),
         source: r.source.clone(),
         seq: Default::default(),
+        obd_last: Default::default(),
     };
     for _ in 0..3 {
         tokio::time::advance(Duration::from_millis(1_000)).await;

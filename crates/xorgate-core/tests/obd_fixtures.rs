@@ -580,3 +580,49 @@ fn cf80_worst_case_effective_obd_is_bounded() {
     eprintln!("CF80 worst-case effective.obd = {bytes} bytes");
     assert!(bytes <= 16_384, "{bytes}");
 }
+
+/// D39 (review-wp2 S1): malformed helper input the vendored helper never
+/// emits. A3: a number literal beyond f64 drops the whole line (TS keeps it,
+/// minus the non-finite field). A4: non-array profile lists count as empty
+/// (the TS throws inside the stdout listener). A5: a fractional counter
+/// truncates into the `u64` status fields.
+#[test]
+fn d39_malformed_helper_input() {
+    // A3
+    assert!(parse_obd_line(r#"{"type":"sample","fields":{"rpm":1e400,"speed":3}}"#).is_none());
+    assert!(parse_obd_line(r#"{"type":"sample","fields":{"rpm":900,"speed":3}}"#).is_some());
+    // A4
+    let p = json!({"protocol": {"dp": "AUTO"}, "responders": "7E8", "supported_fields": "rpm",
+        "unsupported_fields": 5, "powertrain": "ice"});
+    assert_eq!(
+        profile_summary(p.as_object()).unwrap(),
+        "AUTO · ECUs none · 0/0 fields · ice"
+    );
+    let now = ObdNow {
+        wall_ms: 1.0,
+        mono_ms: 0,
+    };
+    let mut sup = ObdSupervisor::new(
+        ObdEnv {
+            serial: Some("/dev/pts/1".into()),
+            ..Default::default()
+        },
+        now,
+    );
+    sup.tick(now, &mut || Ok(None));
+    let a = sup.on_message(
+        now,
+        parse_obd_line(r#"{"type":"profile","responders":"7E8","supported_fields":{"a":1}}"#)
+            .unwrap(),
+    );
+    assert!(a.iter().any(|x| matches!(x, ObdAction::Log { line, .. }
+        if line == "[obd] profile: ? responders=none supported=0 powertrain=?")));
+    // A5
+    sup.on_message(
+        now,
+        parse_obd_line(r#"{"type":"audit","ts":1,"counters":{"err_adapter":1.5,"err_voltage":1,"voltage_low_events":2.9}}"#)
+            .unwrap(),
+    );
+    let st = sup.status();
+    assert_eq!((st.errors, st.voltage_low_events), (2, Some(2)));
+}

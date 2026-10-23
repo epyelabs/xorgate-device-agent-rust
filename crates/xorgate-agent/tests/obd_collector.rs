@@ -138,6 +138,7 @@ async fn with_peripherals_obd_the_mock_stream_goes_live() {
     let io = Arc::new(RealObdIo {
         python_dir: "/nonexistent".into(),
         mock: true,
+        bluetoothctl: "bluetoothctl".into(),
     });
     let obd = Arc::new(ObdCollector::with(&c, io, no_settings(), env_adapter()));
     let first = obd.read().await;
@@ -261,6 +262,12 @@ async fn forget_goes_off_at_call_time_then_unbonds() {
     obd.read().await;
     assert_eq!(io.spawned.lock().unwrap().len(), 1);
     let fut = obd.forget();
+    // review-wp2 S2: `bluetoothctl remove` is started at CALL time (the TS
+    // reaches `await unbond(mac)` synchronously), before the accepted ack.
+    assert_eq!(
+        io.unbonded.lock().unwrap().as_slice(),
+        ["10:21:3E:4F:33:65"]
+    );
     // Synchronous half: goOff (SIGINT + not_configured + the event).
     assert_eq!(io.signals.lock().unwrap().as_slice(), ["SIGINT"]);
     assert_eq!(obd.status().state, "not_configured");
@@ -462,4 +469,52 @@ async fn the_publish_tick_writes_state_obd_and_requests_a_report_on_the_edge() {
         v.get("obd").is_none(),
         "no top-level `obd` without the peripheral"
     );
+}
+
+/// review-wp2 M2 (unit): `stop()` SIGINTs, `shutdown()` SIGTERMs the helper
+/// still closing and returns once it exits; with no exit it returns at the
+/// budget.
+#[tokio::test(start_paused = true)]
+async fn shutdown_sigterms_then_waits_for_the_exit_bounded() {
+    let c = ctx("obd-shutdown");
+    let io = Arc::new(FakeIo::default());
+    let obd = Arc::new(ObdCollector::with(
+        &c,
+        io.clone(),
+        no_settings(),
+        env_adapter(),
+    ));
+    obd.read().await;
+    obd.stop();
+    let tx = io.exits.lock().unwrap()[0].clone();
+    let o2 = obd.clone();
+    let wait = tokio::spawn(async move { o2.shutdown(Duration::from_secs(3)).await });
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    assert_eq!(io.signals.lock().unwrap().as_slice(), ["SIGINT", "SIGTERM"]);
+    assert!(!wait.is_finished(), "still waiting for the helper's close");
+    tx.send(ObdHelperEvent::Exit(Some(0))).unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(wait.is_finished(), "returns on the exit, before the budget");
+    assert_eq!(obd.status().state, "stopped");
+
+    // No exit at all: bounded by the budget.
+    let c = ctx("obd-shutdown-bounded");
+    let io = Arc::new(FakeIo::default());
+    let obd = ObdCollector::with(&c, io.clone(), no_settings(), env_adapter());
+    obd.read().await;
+    obd.stop();
+    let t0 = tokio::time::Instant::now();
+    obd.shutdown(Duration::from_secs(3)).await;
+    assert_eq!(t0.elapsed(), Duration::from_secs(3));
+    // Nothing alive: returns at once.
+    let c = ctx("obd-shutdown-none");
+    let obd = ObdCollector::with(
+        &c,
+        Arc::new(FakeIo::default()),
+        no_settings(),
+        ObdEnv::default(),
+    );
+    let t0 = tokio::time::Instant::now();
+    obd.shutdown(Duration::from_secs(3)).await;
+    assert_eq!(t0.elapsed(), Duration::ZERO);
 }

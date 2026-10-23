@@ -43,6 +43,12 @@ use xorgate_hal::settings_io::load_settings;
 use super::Collector;
 use crate::ctx::{AgentCtx, BoxFut, GroupSample, ObdControl};
 
+/// How long the agent waits for the OBD helper to exit at agent exit, after
+/// the SIGTERM (review-wp2 M2): above the helper's own close budget (ATZ with
+/// a 2 s timeout, then the `close` audit record), bounded so a wedged helper
+/// cannot hold the agent's exit past systemd's stop timeout.
+pub const HELPER_EXIT_BUDGET: Duration = Duration::from_millis(3_000);
+
 /// Where the `obd` namespace comes from (settings.json in production; tests
 /// inject one).
 pub type ObdSettingsSource = Arc<dyn Fn() -> Option<ObdSettings> + Send + Sync>;
@@ -57,6 +63,8 @@ struct Shared {
     io: Arc<dyn ObdIo>,
     settings: ObdSettingsSource,
     st: Mutex<Inner>,
+    /// Woken on every helper exit ([`ObdCollector::shutdown`] waits on it).
+    exited: tokio::sync::Notify,
 }
 
 struct Inner {
@@ -110,6 +118,7 @@ impl ObdCollector {
                     stamp: (0, Instant::now()),
                     scan_waiters: Vec::new(),
                 }),
+                exited: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -120,6 +129,35 @@ impl ObdCollector {
         let mut st = sh.lock();
         let a = st.sup.stop(now_of(&sh.ctx));
         sh.apply(&mut st, a);
+    }
+
+    /// The agent-exit half of the helper's shutdown (review-wp2 M2). The TS
+    /// never SIGKILLs it: `stop()` SIGINTs, then node's exit runs execa's
+    /// `cleanup` = SIGTERM to every child still running, and the helper
+    /// finishes its close (ATZ with a 2 s timeout, the `close` audit record)
+    /// on its own. Here: SIGTERM every helper still alive, then wait for its
+    /// exit for at most `budget` (≥ the helper's 2 s ATZ budget) BEFORE the
+    /// runtime drop could SIGKILL it (`kill_on_drop`). Logs nothing, as the TS.
+    pub async fn shutdown(&self, budget: Duration) {
+        let sh = &self.sh;
+        let deadline = Instant::now() + budget;
+        {
+            let mut st = sh.lock();
+            for h in st.handles.values_mut() {
+                h.sigterm();
+            }
+        }
+        loop {
+            let notified = sh.exited.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if sh.lock().handles.is_empty() {
+                return;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return;
+            }
+        }
     }
 
     /// The running helper's pid (tests / diagnostics).
@@ -235,6 +273,8 @@ impl Shared {
             }
         };
         self.apply(&mut st, a);
+        drop(st);
+        self.exited.notify_waiters();
     }
 }
 
@@ -325,9 +365,13 @@ impl ObdControl for ObdCollector {
             sh.apply(&mut st, a);
             mac
         };
+        // `await unbond(mac)` is reached synchronously in the TS
+        // (`collectors/obd.ts:770-772`): `bluetoothctl remove` is spawned
+        // HERE, before the command's accepted ack (review-wp2 S2).
+        let unbond = mac.clone().map(|m| sh.io.unbond(m));
         Box::pin(async move {
-            if let Some(m) = &mac {
-                if let Err(e) = sh.io.unbond(m.clone()).await {
+            if let (Some(m), Some(unbond)) = (&mac, unbond) {
+                if let Err(e) = unbond.await {
                     let mut st = sh.lock();
                     let a = st.sup.forget_unbond_failed(m, &e);
                     sh.apply(&mut st, a);
