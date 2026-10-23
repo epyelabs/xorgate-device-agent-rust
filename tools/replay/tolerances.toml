@@ -344,7 +344,7 @@ kind = "decisions"
 
   [[rule.row]]
   id = "sms-duration"
-  what = "read_sms `durationMs` is a measured wall span of the sweep (TS sms-modem.ts:504-519 `end - start`; Rust command_flow.rs, monotonic, series-5 item 2): two agents' sweeps take 0-2 ms each (JS-vs-JS spread over every series-1..4 run: max 2 ms of 18 pairs). Matched ONLY on `…/sms` `durationMs` and the `durationMs=<n>` of the `read_sms <id>:` event line (paired per request id), ONLY when BOTH values are non-negative integers differing by at most max_delta_ms; nothing else in the payload"
+  what = "read_sms `durationMs` is a measured wall span of the sweep (TS sms-modem.ts:504-519 `end - start`; Rust command_flow.rs, monotonic, series-5 item 2): two agents' sweeps take 0-2 ms each (JS-vs-JS spread over every series-1..4 run: max 2 ms of 18 pairs). Matched ONLY on `…/sms` `durationMs` and the `durationMs=<n>` of the `read_sms <id>:` / (Phase 5b, WP4 — reviewer to confirm) `clear_sms <id>:` event line (paired per request id; the clear line is the same template `${cmd.command} ${requestId}: … durationMs=${payload.durationMs}` and the same `end - start` span, ts:src/worker.ts:1055-1059 + ts:src/hardware/sms-modem.ts:690-702 @09da38d; p5b-sms-clear JS-vs-JS: |Δ| ≤ 10 ms over 6 clears, incl. an 8.1 s slow clear and a 25.2 s delete timeout), ONLY when BOTH values are non-negative integers differing by at most max_delta_ms; nothing else in the payload"
   streams = ["sms", "events"]
   matcher = "sms_duration_ms"
   max_delta_ms = 50
@@ -687,3 +687,27 @@ basis = "clock-step.ts:186 `String(Math.round(targetMs / 1000))` with targetMs =
 kind = "p4"
 streams = ["sudo", "events"]
 tolerance = { "epoch_s" = 1.0, "anchor_ms" = 50.0 }
+
+# ---------------------------------------------------------------------------
+# Phase 5b (WP4) — RIG INPUT GATING, NOT A TOLERANCE (documented here because
+# it decides which inputs the first post-hold pair saw; no `[[rule]]`, so no
+# mismatch can ever cite it):
+#
+# POST-HOLD SETTLE (play.rs `Gate::expect_resume` / `post_hold_hold`). While the
+# clock trust gate holds an agent's live publish (ts:src/worker.ts:1405-1411
+# @09da38d: the payload is built, `seq` advanced and `setLatest` done, then the
+# return; no telemetry, no state.json flush), the hold gate cannot observe that
+# agent's 1 s tick phase. Trust is established at instants the player can see:
+# the tape's NTP flip (seen on the next 5 s probe, ts:src/agent/clock-trust.ts
+# :66-70 pollMs), the agent's own GPS/NITZ step (`noteStep`, ts:src/worker.ts:614;
+# its `xorgate-setclock` sudo line), or the 300 s grace fallback (graceMs, first
+# poll past it, ts:src/agent/clock-trust.ts:126-137). From that instant until the
+# held agent's FIRST telemetry publish (capped: NTP 7.5 s, fallback 8 s, step
+# 2.5 s) the barrier inputs (LTE file, cli, mqtt_in, conn) wait, exactly as they
+# wait for a reconnecting agent after a cut (post_cut_hold). It only delays
+# inputs; every pair is still compared strictly, nothing is skipped or
+# re-paired, and a resumed agent that is late beyond the cap or early is judged
+# as before (tests play.rs post_hold_settle_waits_for_the_first_post_trust_tick_only,
+# post_hold_settle_never_waits_past_its_cap_nor_counts_an_early_tick). Found by
+# sweep-A p4-clock-cap (an LTE rewrite at 300.08 s split the first post-fallback
+# pair: phase-5b/evidence/delta-inventory.md).

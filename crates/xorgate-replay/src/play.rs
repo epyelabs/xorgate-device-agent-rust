@@ -202,6 +202,18 @@ const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
 /// [`Gate::held_alive`]: an agent's first publish this long ago (two ticks).
 const HELD_ALIVE_MS: i64 = 2000;
+/// Post-hold settle caps ([`Gate::expect_resume`]), from the TS trust timing
+/// (ts:src/agent/clock-trust.ts @09da38d, CLOCK_TRUST_DEFAULTS :66-70): an
+/// NTP verdict is seen on the next 5 s probe poll (+ the exec), the grace
+/// fallback on the first poll past 300 s, a GPS/NITZ step at once
+/// (`noteStep`); the first post-trust publish is the next 1 s tick after.
+pub const RESUME_NTP_CAP_MS: i64 = 5_000 + 1_000 + 1_500;
+pub const RESUME_FALLBACK_CAP_MS: i64 = 5_000 + 1_000 + 2_000;
+pub const RESUME_STEP_CAP_MS: i64 = 1_000 + 1_500;
+/// The clock trust grace window (`graceMs`, 5 min) and how early before it
+/// the fallback settle opens (the agent's clockTrust starts after its spawn).
+pub const CLOCK_GRACE_MS: i64 = 300_000;
+const FALLBACK_EARLY_MS: i64 = 500;
 /// `NMEA_STALE_MS` (`gps.ts:15`): a gps group older than this is dropped.
 const NMEA_STALE_MS: i64 = 10_000;
 /// `REOPEN_SILENT_MS` (`gps.ts`): silence after which an agent reopens its port.
@@ -338,6 +350,9 @@ pub struct Gate {
     back_at: Option<i64>,
     /// Phase 5b: arrival of each agent's first outbound publish of any kind.
     first_publish: [Option<i64>; 2],
+    /// Phase 5b: a held agent's expected resume, `(from, cap)` per agent
+    /// ([`Gate::expect_resume`]).
+    resume: [Option<(i64, i64)>; 2],
     pub pairs: Vec<Value>,
 }
 
@@ -356,6 +371,7 @@ impl Gate {
             restored_at: None,
             back_at: None,
             first_publish: [None, None],
+            resume: [None, None],
             pairs: Vec::new(),
         }
     }
@@ -443,6 +459,54 @@ impl Gate {
     /// tapes deadlocked, sweep-A 2026-10-22).
     pub fn held_alive(&self, idx: usize, now: i64) -> bool {
         self.first_publish[idx].is_some_and(|t| now - t >= HELD_ALIVE_MS)
+    }
+
+    /// Is agent `idx` held by the clock trust gate (alive, publishing, but
+    /// no telemetry yet)? Trust latches for the process
+    /// (ts:src/agent/clock-trust.ts:1-30), so only the hold from boot exists.
+    pub fn held(&self, idx: usize, now: i64) -> bool {
+        !self.ticking(idx) && self.held_alive(idx, now)
+    }
+
+    /// Phase 5b POST-HOLD SETTLE (an input-pairing rule, not a tolerance):
+    /// the held agent `idx` is about to resume at a trust instant the player
+    /// can see — the tape's NTP flip, the agent's own GPS/NITZ step (its
+    /// `xorgate-setclock` sudo call), or its 300 s grace fallback — but its
+    /// tick phase is unobserved until its first telemetry publish. Barrier
+    /// inputs (LTE file, cli, mqtt_in, conn) released in that gap can land
+    /// between the two agents' reads of the first post-hold pair (clock-cap
+    /// sweep-A: an LTE rewrite at 300.08 s, the fallback at 300 s). So from
+    /// `from` until the agent's first telemetry publish after it, at most
+    /// `cap` ms, barrier inputs wait — exactly like the post-cut hold while
+    /// an agent reconnects. It only DELAYS inputs (≤ cap): no tick is paired,
+    /// skipped or re-paired by it, and the diff compares every pair as
+    /// before, so a resumed agent whose first tick is late or early still
+    /// shows as an unpaired / mis-timed payload (tests
+    /// `post_hold_settle_*`).
+    pub fn expect_resume(&mut self, idx: usize, from: i64, cap: i64) {
+        if self.resume[idx].is_none() {
+            self.resume[idx] = Some((from, cap));
+        }
+    }
+
+    /// Must a barrier input wait for a held agent's first post-trust tick?
+    pub fn post_hold_hold(&mut self, now: i64) -> bool {
+        let mut hold = false;
+        for i in 0..2 {
+            let Some((from, cap)) = self.resume[i] else {
+                continue;
+            };
+            if now < from {
+                continue;
+            }
+            let resumed = self.seen_at[i].is_some_and(|t| t >= from);
+            if resumed || now - from >= cap {
+                self.resume[i] = None;
+            } else {
+                hold = true;
+            }
+        }
+        hold
     }
 
     /// A telemetry publish of agent `idx` with payload `ts` arrived at `now`.
@@ -1664,6 +1728,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // Start both agents together.
     let t0 = tokio::time::Instant::now();
     let play_start_wall = wall_now_ms();
+    let mut spawn_wall = [0i64; 2];
     for (i, a) in agents.iter_mut().enumerate() {
         if i == 1 && args.stagger_ms > 0 {
             tokio::time::sleep(Duration::from_millis(args.stagger_ms)).await;
@@ -1671,8 +1736,14 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         if let Ok(mut w) = caps.watch.lock() {
             w.on_spawn(i, wall_now_ms());
         }
+        spawn_wall[i] = wall_now_ms();
         a.start(&args)?;
     }
+    // Phase 5b post-hold settle triggers ([`Gate::expect_resume`]): the grace
+    // fallback (spawn + 300 s) and each agent's own clock step (the sudo
+    // shim's `xorgate-setclock` line in `<work>/sudo.log`).
+    let sudo_logs: Vec<PathBuf> = agents.iter().map(|a| a.work.join("sudo.log")).collect();
+    let mut resume_watch = ResumeWatch::new(spawn_wall, sudo_logs);
     plog(format!(
         "agents started (B staggered {} ms); prefilled {idx} records",
         args.stagger_ms
@@ -1757,7 +1828,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             && caps
                 .gate
                 .lock()
-                .map(|mut g| g.post_cut_hold(now))
+                .map(|mut g| g.post_cut_hold(now) | g.post_hold_hold(now))
                 .unwrap_or(false)
     };
     // POWER CROSSINGS (`meta.rig.powerCrossings`, synth exec-rail /
@@ -1796,6 +1867,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     loop {
         // (record index, wall ms it fell due, released by a hold timeout)
         let picked: Option<(usize, i64, bool)> = loop {
+            if !args.no_gate {
+                resume_watch.poll(&caps.gate, wall_now_ms(), &plog);
+            }
             while next < n_rec && prefilled[next] {
                 next += 1;
             }
@@ -2151,9 +2225,12 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // shims (fake-modem pty, pinctrl, sudo, timedatectl) consume them
             // from WP6 step 2 on. Tolerated so a Phase 4 tape still plays.
             // Phase 4: the NTP verdict is an input (timedatectl shim).
-            TapeEvent::NtpProbe { .. } => {
+            TapeEvent::NtpProbe { synced } => {
                 transitions.push(now);
                 apply_state(&agents, &r.ev, shift_s)?;
+                if *synced {
+                    note_resume(&caps.gate, now, RESUME_NTP_CAP_MS, &plog, "ntp");
+                }
             }
             // Phase 4 outputs / answers: the fake modem answers from the
             // transcript, the shims log `gpio`, `sudo` answers were applied
@@ -2283,6 +2360,75 @@ pub async fn run(args: PlayArgs) -> Result<()> {
 /// counts once it has published telemetry, or — while its telemetry is held
 /// by the clock trust gate — once it has been publishing anything for two
 /// ticks ([`Gate::held_alive`]). Both publishing telemetry = the pre-5b rule.
+/// The fallback / clock-step triggers of the post-hold settle, polled from
+/// the release loop (every 200 ms at most).
+struct ResumeWatch {
+    spawn_wall: [i64; 2],
+    sudo_logs: Vec<PathBuf>,
+    setclocks: [usize; 2],
+    fallback_done: [bool; 2],
+    last: i64,
+}
+
+impl ResumeWatch {
+    fn new(spawn_wall: [i64; 2], sudo_logs: Vec<PathBuf>) -> Self {
+        Self {
+            spawn_wall,
+            sudo_logs,
+            setclocks: [0, 0],
+            fallback_done: [false, false],
+            last: 0,
+        }
+    }
+
+    fn poll(&mut self, gate: &Mutex<Gate>, now: i64, plog: &dyn Fn(String)) {
+        if now - self.last < 200 {
+            return;
+        }
+        self.last = now;
+        let Ok(mut g) = gate.lock() else { return };
+        for i in 0..2 {
+            if !g.held(i, now) {
+                continue;
+            }
+            // A GPS/NITZ step = trust at once (`noteStep`).
+            let n = fs::read_to_string(&self.sudo_logs[i])
+                .map(|t| t.lines().filter(|l| l.contains("xorgate-setclock")).count())
+                .unwrap_or(0);
+            if n > self.setclocks[i] {
+                self.setclocks[i] = n;
+                if g.resume[i].is_none() {
+                    g.expect_resume(i, now, RESUME_STEP_CAP_MS);
+                    plog(format!("post-hold settle: agent {i} (clock step) from {now}, cap {RESUME_STEP_CAP_MS} ms"));
+                }
+            }
+            // The grace fallback: the first 5 s poll past 300 s after start.
+            let from = self.spawn_wall[i] + CLOCK_GRACE_MS - FALLBACK_EARLY_MS;
+            if !self.fallback_done[i] && now >= from {
+                self.fallback_done[i] = true;
+                if g.resume[i].is_none() {
+                    g.expect_resume(i, from, RESUME_FALLBACK_CAP_MS);
+                    plog(format!("post-hold settle: agent {i} (grace fallback) from {from}, cap {RESUME_FALLBACK_CAP_MS} ms"));
+                }
+            }
+        }
+    }
+}
+
+/// Arm the post-hold settle for every agent the clock trust gate holds.
+fn note_resume(gate: &Mutex<Gate>, now: i64, cap: i64, plog: &dyn Fn(String), why: &str) {
+    if let Ok(mut g) = gate.lock() {
+        for i in 0..2 {
+            if g.held(i, now) && g.resume[i].is_none() {
+                g.expect_resume(i, now, cap);
+                plog(format!(
+                    "post-hold settle: agent {i} ({why}) from {now}, cap {cap} ms"
+                ));
+            }
+        }
+    }
+}
+
 fn inputs_ticking(gate: &Mutex<Gate>, now: i64) -> bool {
     let Ok(g) = gate.lock() else { return true };
     (0..2).all(|i| g.ticking(i) || g.held_alive(i, now))
@@ -2671,5 +2817,51 @@ mod tests {
         g.lock().unwrap().on_tick(0, 1_000, 1_005);
         g.lock().unwrap().on_tick(1, 1_100, 1_105);
         assert!(inputs_ticking(&g, 1_106));
+    }
+
+    /// Post-hold settle: barrier inputs wait from the trust instant until the
+    /// held agent's first telemetry publish — and NOTHING else changes.
+    #[test]
+    fn post_hold_settle_waits_for_the_first_post_trust_tick_only() {
+        let mut g = Gate::new(150);
+        g.on_tick(0, 1_000, 1_005); // A publishing
+        g.on_publish(1, 1_100); // B alive, telemetry held
+        assert!(g.held(1, 5_000));
+        g.expect_resume(1, 300_000, RESUME_FALLBACK_CAP_MS);
+        assert!(!g.post_hold_hold(299_999), "not before the trust instant");
+        assert!(g.post_hold_hold(300_000));
+        assert!(g.post_hold_hold(300_900));
+        g.on_tick(1, 300_950, 300_960); // B's first post-trust tick
+        assert!(!g.post_hold_hold(300_961), "released at B's first publish");
+        assert!(
+            g.pairs.iter().all(|p| p.get("skip").is_none()),
+            "never skips a tick"
+        );
+    }
+
+    /// NEGATIVE: a resumed agent that is late beyond the TS bound is not
+    /// waited for (the settle expires at its cap, inputs flow again, and the
+    /// missing / late payloads are judged by the diff as before); an early
+    /// tick (before the trust instant) does not count as the resume.
+    #[test]
+    fn post_hold_settle_never_waits_past_its_cap_nor_counts_an_early_tick() {
+        let mut g = Gate::new(150);
+        g.on_tick(0, 1_000, 1_005);
+        g.on_publish(1, 1_100);
+        g.expect_resume(1, 60_000, RESUME_NTP_CAP_MS);
+        assert!(g.post_hold_hold(60_000 + RESUME_NTP_CAP_MS - 1));
+        assert!(!g.post_hold_hold(60_000 + RESUME_NTP_CAP_MS), "capped");
+        assert!(!g.post_hold_hold(90_000));
+        // early: a publish before `from` is not the post-trust tick
+        let mut h = Gate::new(150);
+        h.on_tick(0, 1_000, 1_005);
+        h.on_publish(1, 1_100);
+        h.expect_resume(1, 10_000, RESUME_STEP_CAP_MS);
+        h.on_tick(1, 9_000, 9_990);
+        assert!(
+            h.post_hold_hold(10_000),
+            "the 9.99 s publish predates the step"
+        );
+        assert!(h.pairs.is_empty());
     }
 }

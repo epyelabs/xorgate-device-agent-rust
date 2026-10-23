@@ -3250,7 +3250,14 @@ fn sms_decisions(cx: &Cx, x: &Value, y: &Value, rep: &mut Report) -> (Value, Val
 /// are rewritten to the TS no-modem words (the second value says so).
 /// Anything else → `None`.
 fn sms_event_norm(msg: &str, o4: bool) -> Option<(String, bool, String, u64)> {
-    let rest = msg.strip_prefix("read_sms ")?;
+    // Phase 5b: `clear_sms <id>: status=… cleared=… durationMs=<n>` is the SAME
+    // template and the same measured span (ts:src/worker.ts:1055-1059,
+    // ts:src/hardware/sms-modem.ts:690-702 @09da38d: `${cmd.command} …
+    // durationMs=${payload.durationMs}`, `end - start` of the op).
+    let (cmd, rest) = match msg.strip_prefix("read_sms ") {
+        Some(r) => ("read_sms", r),
+        None => ("clear_sms", msg.strip_prefix("clear_sms ")?),
+    };
     let (id, body) = rest.split_once(": ")?;
     if id.is_empty() || id.contains(' ') || !body.starts_with("status=") {
         return None;
@@ -3273,7 +3280,7 @@ fn sms_event_norm(msg: &str, o4: bool) -> Option<(String, bool, String, u64)> {
         hit = true;
     }
     Some((
-        format!("read_sms {id}: {head} durationMs=<ms>{after}"),
+        format!("{cmd} {id}: {head} durationMs=<ms>{after}"),
         hit,
         id.to_string(),
         n,
@@ -6164,5 +6171,27 @@ mod tests {
         assert!(fffd_equiv("a\u{FFFD}", "a\\ud83d"));
         assert!(!fffd_equiv("ab", "ab"));
         assert!(!fffd_equiv("a\u{FFFD}", "b"));
+    }
+
+    /// Phase 5b: the clear's event line normalises like the read's (same
+    /// TS template); anything else (another command, no duration) does not.
+    #[test]
+    fn sms_event_norm_covers_clear_sms_lines_only_in_the_shared_template() {
+        let (k, hit, id, n) = sms_event_norm(
+            "clear_sms c1: status=ok cleared=SM:10,ME:23 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=71",
+            false,
+        )
+        .unwrap();
+        assert_eq!(k, "clear_sms c1: status=ok cleared=SM:10,ME:23 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=<ms>");
+        assert!(!hit);
+        assert_eq!((id.as_str(), n), ("c1", 71));
+        let (k, ..) = sms_event_norm(
+            "clear_sms c4: status=error cleared=SM:10,ME:23 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=25168 error=delete ME failed (timeout)",
+            false,
+        )
+        .unwrap();
+        assert!(k.ends_with("durationMs=<ms> error=delete ME failed (timeout)"));
+        assert!(sms_event_norm("obd_scan c1: status=ok durationMs=3", false).is_none());
+        assert!(sms_event_norm("clear_sms c1: status=ok total=0", false).is_none());
     }
 }
