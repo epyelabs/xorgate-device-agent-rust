@@ -251,7 +251,7 @@ impl SmsReader {
     /// when it starts. `why` is the entry point's token (phase-5b §6 point
     /// 2): consumed here, it carries no data and changes nothing.
     pub fn clear(self: &Arc<Self>, why: ClearRequest) -> BoxFut<'static, Arc<SmsSweep>> {
-        drop(why);
+        let ClearRequest { _entry: _ } = why;
         let mut st = self.lock();
         if let Some(cur) = &st.inflight {
             if cur.op == Op::Clear {
