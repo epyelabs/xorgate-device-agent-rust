@@ -320,6 +320,13 @@ source = "phase-1/evidence/accepted-divergences.md"
   matcher = "d30_rec_value_gap"
   pinned_by = "D30 (accepted-divergences.md); media_diff::tests::d30_rec_value_gap_only_for_a_js_d30_skip"
 
+  [[rule.row]]
+  id = "D40"
+  what = "D40 (accepted-divergences.md): the clock stepper's hold-off expiry tick. The TS sets holdUntilMono after the implausible tick's two awaits and compares at each check tick after its probe await, so whether the 10th tick is past the 5 min hold-off is a latency race; Rust steps at the first check tick with mono ≥ its holdUntilMono, the JS (slow cold first exec) one check interval later, so the trust events differ: JS fallback warn + `<src> synchronized <T> s after boot — clock trusted (published <T−G> s on an untrusted clock)` vs Rust `<src> synchronized — clock trusted (telemetry held <G> s, <N> sample(s))`. Matcher `d40_holdoff_expiry_tick` (diff.rs `d40_keys`): ONLY JS-vs-Rust, both sides rejected an implausible source in their first check tick, Rust steps 300–330 s after its own implausible event and JS 29–31 s later than Rust (each relative to its own), identical `stepped system clock` text, and exactly that trust-event pair with the same src, G and N — then ONLY those three event keys; anything else is UNTOLERATED"
+  streams = ["events"]
+  matcher = "d40_holdoff_expiry_tick"
+  pinned_by = "D40 (accepted-divergences.md); diff::tests::d40_holdoff_expiry_tick_only_the_documented_race; crates/xorgate-agent/tests/clock_stepper.rs::d40_steps_at_the_first_tick_past_the_hold_off"
+
 [[rule]]
 id = "T8"
 title = "Phase 2 orchestrator decisions"
