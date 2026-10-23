@@ -449,6 +449,7 @@ impl MqttPlane {
             scope: self.scope.clone(),
             source: self.source.clone(),
             seq: self.seq.clone(),
+            obd_last: Default::default(),
         };
         let period = Duration::from_millis(self.ctx.env.config.interval_ms.max(1.0) as u64);
         let cancel = self.ctx.cancel.clone();
@@ -472,6 +473,9 @@ pub struct PublishTick {
     pub scope: ScopeHandle,
     pub source: Arc<dyn TelemetrySource>,
     pub seq: Arc<AtomicU64>,
+    /// `lastObdStatus` (`worker.ts:254` @ 09da38d): the previous tick's OBD
+    /// status, for the report edge.
+    pub obd_last: Arc<std::sync::Mutex<Option<xorgate_core::telemetry::ObdStatus>>>,
 }
 
 impl PublishTick {
@@ -513,6 +517,20 @@ impl PublishTick {
         };
         let bytes = serde_json::to_vec(&payload).unwrap_or_default();
         self.ctx.state.set_latest(payload);
+        // OBD collector health for `xorgate status` / the monitor
+        // (`worker.ts:1398-1405` @ 09da38d): a snapshot read, never a spawn. A
+        // link move or a park/exit re-publishes the config report so the
+        // cloud's `effective.obd` follows the helper. BEFORE the clock gate.
+        let obd_now = self.source.obd().map(|o| o.status());
+        {
+            let mut last = self.obd_last.lock().unwrap_or_else(|p| p.into_inner());
+            if xorgate_core::obd::obd_report_due(last.as_ref(), obd_now.as_ref()) {
+                self.scope
+                    .request_report(xorgate_core::config_report::ReportOrigin::Boot);
+            }
+            *last = obd_now.clone();
+        }
+        self.ctx.state.set_obd(obd_now);
         // Clock trust gate (`worker.ts:1406-1412` @ 09da38d): the local
         // snapshot above is kept (and `seq` already advanced — the cloud sees
         // the gap, CF72); only the cloud publish is withheld while the wall

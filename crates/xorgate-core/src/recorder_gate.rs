@@ -29,12 +29,19 @@ pub const CADENCE_SLACK: f64 = 0.9;
 
 /// `NATIVE_CADENCE_HZ` (`telemetry-recorder.ts:25-30`): how fast each
 /// group's underlying data actually refreshes (Hz). Unknown groups fall back
-/// to being capped at `rateHz`.
+/// to being capped at `rateHz`. Phase 5b WP2: `obd: 1` — the OBD helper's
+/// default poll cycle (`telemetry-recorder.ts:30-31` @ 09da38d, constraint C10).
 pub fn native_cadence_hz() -> IndexMap<String, f64> {
-    [("imu", 20.0), ("gps", 1.0), ("lte", 1.0), ("system", 1.0)]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect()
+    [
+        ("imu", 20.0),
+        ("gps", 1.0),
+        ("lte", 1.0),
+        ("system", 1.0),
+        ("obd", 1.0),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
 }
 
 /// `Math.round(1000 / this.opts.rateHz)` (`telemetry-recorder.ts:71`): the

@@ -116,7 +116,10 @@ LISTING=$(tar -tzf "$OUT_DIR/$TARBALL")
 echo "Contents ($(wc -l <<<"$LISTING" | tr -d ' ') entries; first 30):" >&2
 sed -n '1,30p' <<<"$LISTING" >&2
 # Keys install-rs.sh / scripts/bench/install.sh extract and expect.
-for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service python/bno085_read.py install-rs.sh; do
+# Phase 5b WP2 (I9): the OBD helper members the JS deploy asserts
+# (device-deploy-dev.yml @ 09da38d) ride along with the IMU helper.
+for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service python/bno085_read.py \
+    python/obd_read.py python/obd/session.py python/obd_scan.py install-rs.sh; do
   grep -qx "$required" <<<"$LISTING" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
 done
 
@@ -147,6 +150,10 @@ verify_vendored() { # <dir> <required:1|0>
 verify_vendored media 1
 verify_vendored modem 1
 verify_vendored system 1
+# Phase 5b WP2 (I9): python/ = `git archive 09da38d python` byte for byte (the
+# IMU helper, the OBD helper + scanner, obd/**, tests/**), SHA256SUMS = the JS
+# blobs.
+verify_vendored python 1
 # Phase 4 (WP4): the remote update rail's unit (the bench bootstrap and every
 # `xorgate-rs update` install it from the tarball).
 grep -qx "systemd/xorgate-updater-rs.service" <<<"$LISTING" || { echo "pack: missing systemd/xorgate-updater-rs.service in $TARBALL" >&2; exit 1; }

@@ -778,7 +778,8 @@ async fn run(args: &[String]) -> Result<i32> {
             scope: scope.clone(),
             reports: reports.clone(),
             report_rx,
-            obd: None,
+            // `source.obdReport?.()` / `source.obdReapply?.()` (Phase 5b I4).
+            obd: source.obd(),
         },
     );
     // `requestConfigReport = (origin) => configSync.request(origin);` (`:746`):
@@ -806,7 +807,8 @@ async fn run(args: &[String]) -> Result<i32> {
         CommandPlaneDeps {
             mqtt: mqtt.clone(),
             reports: reports.clone(),
-            obd: None,
+            // `source.obdScan?.()` / `source.obdForget?.()` (Phase 5b I4).
+            obd: source.obd(),
         },
         runner.clone(),
         sms,
@@ -892,6 +894,10 @@ async fn run(args: &[String]) -> Result<i32> {
         }
     })
     .await;
+    // The OBD helper's close (review-wp2 M2): the TS process exit leaves it
+    // to finish (execa `cleanup` SIGTERMs it, it writes its `close` audit
+    // record); here SIGTERM + a bounded wait before the runtime drop.
+    source.shutdown_children().await;
     // `clockTrust?.stop()` (`worker.ts:1497` @ 09da38d), after `recording.stop()`.
     if let Some(t) = &clock_trust {
         t.stop();
@@ -906,6 +912,48 @@ async fn run(args: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D38 (Phase 5b): `sim` mode emits no synthetic `obd` group, whatever the
+    /// boot hardware block declares (the TS `createSimulator({obd: true})`,
+    /// `worker.ts:323-326` @ 09da38d, is not ported — README Q6). The sim
+    /// source has no OBD collector, so the worker hands BOTH planes `None`:
+    /// no `effective.obd`, no state.json `obd`, and `obd_scan` / `obd_forget`
+    /// are acked `rejected` / `no OBD peripheral`.
+    #[tokio::test]
+    async fn d38_sim_mode_has_no_obd_group_and_rejects_obd_commands() {
+        use xorgate_core::command_flow::{decide_command, Effect, RefreshWindow};
+        use xorgate_core::commands::{parse_command, AckStatus, Ledger};
+        let src: Arc<dyn TelemetrySource> = Arc::new(SimSource);
+        assert!(src.obd().is_none(), "sim: no OBD collector");
+        let r = src.read().await.unwrap();
+        assert!(!r.metrics.contains_key("obd"), "sim: no obd group");
+        for wire in ["obd_scan", "obd_forget"] {
+            let c = parse_command(
+                format!(
+                    r#"{{"v":1,"requestId":"r-1","command":"{wire}","ts":1000,"expiresAt":61000}}"#
+                )
+                .as_bytes(),
+            );
+            let d = decide_command(
+                c.as_ref(),
+                1001,
+                &Ledger::empty(),
+                RefreshWindow { now: 0, last: None },
+                RunMode::Sim,
+                src.obd().is_some(),
+            );
+            assert!(
+                d.effects.iter().any(|e| *e
+                    == Effect::Ack {
+                        status: AckStatus::Rejected,
+                        reason: Some("no OBD peripheral".into()),
+                    }),
+                "{wire}: {:?}",
+                d.effects
+            );
+            assert!(!d.effects.iter().any(|e| matches!(e, Effect::ObdJob(_))));
+        }
+    }
 
     /// review-wp1 #6 / amb. #2: [5, 65535] s, one warning outside it.
     #[test]

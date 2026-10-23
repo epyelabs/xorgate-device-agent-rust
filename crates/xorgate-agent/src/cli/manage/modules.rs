@@ -30,17 +30,21 @@ pub enum ModuleId {
     Lte,
     Gps,
     Imu,
+    /// Phase 5b: on EVERY host (`modules.tsx:731` @ 09da38d), like the TS.
+    Obd,
     Media,
     Settings,
 }
 
-/// `MODULES` (`modules.tsx:610`).
-pub const MODULES: [ModuleId; 7] = [
+/// `MODULES` (`modules.tsx:731` @ 09da38d): activity, system, lte, gps, imu,
+/// obd, media, settings.
+pub const MODULES: [ModuleId; 8] = [
     ModuleId::Activity,
     ModuleId::System,
     ModuleId::Lte,
     ModuleId::Gps,
     ModuleId::Imu,
+    ModuleId::Obd,
     ModuleId::Media,
     ModuleId::Settings,
 ];
@@ -54,6 +58,7 @@ impl ModuleId {
             ModuleId::Lte => "LTE",
             ModuleId::Gps => "GPS",
             ModuleId::Imu => "IMU",
+            ModuleId::Obd => "OBD",
             ModuleId::Media => "Media",
             ModuleId::Settings => "Settings",
         }
@@ -124,6 +129,36 @@ pub fn module_status(id: ModuleId, s: Option<&Value>) -> (String, Status) {
                 )
             }
         },
+        ModuleId::Obd => {
+            // `obd.status` (`modules.tsx:494-502` @ 09da38d).
+            let o = path(s, &["obd"]);
+            let m = metrics(s, "obd");
+            if !truthy(o) {
+                return match val(path(m, &["link"])) {
+                    None => unknown(),
+                    Some(link) => (
+                        format!("link {}", number_to_string(link)),
+                        if link == 2.0 {
+                            Status::Ok
+                        } else {
+                            Status::Warn
+                        },
+                    ),
+                };
+            }
+            let state = path(o, &["state"]).and_then(Value::as_str);
+            let label = match (state, val(path(m, &["rpm"]))) {
+                (Some("live"), Some(rpm)) => {
+                    format!("{} rpm", number_to_string(js_math_round(rpm)))
+                }
+                _ => format!(
+                    "{} · link {}",
+                    js_string(path(o, &["state"])),
+                    js_string(path(o, &["link"]))
+                ),
+            };
+            (label, obd_badge(o))
+        }
         ModuleId::Media => {
             let md = path(s, &["latest", "media"]);
             if !truthy(md) {
@@ -281,6 +316,7 @@ pub fn detail_lines(id: ModuleId, c: &DetailCtx) -> Vec<Line<'static>> {
         ModuleId::Gps => gps_detail(c),
         ModuleId::Lte => lte_detail(c),
         ModuleId::System => system_detail(c),
+        ModuleId::Obd => obd_detail(c),
         ModuleId::Media => media_detail(c),
         ModuleId::Settings => settings_detail(c),
         ModuleId::Activity => activity_detail(c),
@@ -593,6 +629,160 @@ fn system_detail(c: &DetailCtx) -> Vec<Line<'static>> {
             format!("temp {}", leaf(path(m, &["cpu_temp"]), 1)),
             gray(),
         )));
+    } else {
+        out.push(no_data());
+    }
+    out
+}
+
+/// `obdBadge(obd)` (`modules.tsx:387-408` @ 09da38d): collector state → badge.
+fn obd_badge(o: Option<&Value>) -> Status {
+    if path(o, &["forbidden"])
+        .and_then(Value::as_f64)
+        .is_some_and(|f| f > 0.0)
+    {
+        return Status::Error;
+    }
+    match path(o, &["state"]).and_then(Value::as_str) {
+        Some("live") => Status::Ok,
+        Some("connecting" | "pairing" | "probing" | "starting") => Status::Busy,
+        Some("ecu_silent" | "backoff" | "retrying" | "unconfigured") => Status::Warn,
+        Some("parked" | "stopped" | "adapter_not_found") => Status::Error,
+        _ => Status::Unknown,
+    }
+}
+
+/// `OBD_BADGE_COLOR` (`modules.tsx:409-415` @ 09da38d).
+fn obd_badge_color(st: Status) -> Color {
+    match st {
+        Status::Ok => Color::Green,
+        Status::Busy | Status::Warn => Color::Yellow,
+        Status::Error => Color::Red,
+        Status::Unknown => GRAY,
+    }
+}
+
+/// `LINK_LABEL` (`modules.tsx:416` @ 09da38d).
+fn obd_link_label(link: Option<f64>) -> &'static str {
+    match link.and_then(xorgate_core::obd::obd_link) {
+        Some(0) => "no adapter",
+        Some(1) => "adapter only",
+        Some(2) => "ECU answering",
+        _ => "?",
+    }
+}
+
+/// `ObdDetail` (`modules.tsx:418-490` @ 09da38d).
+fn obd_detail(c: &DetailCtx) -> Vec<Line<'static>> {
+    let obd = path(c.snapshot, &["obd"]).filter(|o| truthy(Some(o)));
+    let m = metrics(c.snapshot, "obd").filter(|m| truthy(Some(m)));
+    let mut out = title("OBD2 · vehicle (ELM327 over Bluetooth)");
+    if let Some(o) = obd {
+        let g = |k: &str| o.get(k);
+        let mut head = vec![
+            s("● ", fg(obd_badge_color(obd_badge(Some(o))))),
+            plain(jsx(g("state"))),
+        ];
+        if truthy(g("detail")) {
+            head.push(s(format!(" — {}", jsx(g("detail"))), gray()));
+        }
+        out.push(truncate_marker(Line::from(head)));
+        let link = g("link").and_then(Value::as_f64);
+        let rate = match g("reqPerSec").and_then(Value::as_f64) {
+            None => "—".to_string(),
+            Some(r) => format!("{} req/s", to_fixed(r, 1)),
+        };
+        let forbidden = g("forbidden").and_then(Value::as_f64).unwrap_or(0.0);
+        let helper = match g("helperVersion") {
+            None | Some(Value::Null) => "—".to_string(),
+            v => jsx(v),
+        };
+        out.push(truncate_marker(Line::from(vec![
+            s("link ", gray()),
+            plain(format!("{} ({})", jsx(g("link")), obd_link_label(link))),
+            s("   rate ", gray()),
+            plain(rate),
+            s("   err ", gray()),
+            plain(jsx(g("errors"))),
+            s("   forbidden ", gray()),
+            s(
+                jsx(g("forbidden")),
+                if forbidden > 0.0 {
+                    fg(Color::Red)
+                } else {
+                    Style::default()
+                },
+            ),
+            s("   helper ", gray()),
+            plain(helper),
+        ])));
+        out.push(Line::default()); // marginBottom={1}
+    }
+    if let Some(m) = m {
+        let l = |k: &str, dp: u32| leaf(path(Some(m), &[k]), dp);
+        let row = |label: &str, text: String| {
+            truncate_marker(Line::from(vec![s(label.to_string(), gray()), plain(text)]))
+        };
+        out.push(row(
+            "engine ",
+            format!(
+                "{} · load {} · throttle {} · run {}",
+                l("rpm", 0),
+                l("engine_load", 1),
+                l("throttle", 1),
+                l("run_time", 0)
+            ),
+        ));
+        out.push(row(
+            "motion ",
+            format!(
+                "{} · gear {} · odometer {}",
+                l("speed", 0),
+                l("gear", 0),
+                l("odometer", 1)
+            ),
+        ));
+        out.push(row(
+            "temps  ",
+            format!(
+                "coolant {} · intake {} · ambient {}",
+                l("coolant_temp", 0),
+                l("intake_temp", 0),
+                l("ambient_temp", 0)
+            ),
+        ));
+        out.push(row(
+            "torque ",
+            format!(
+                "{} · {} of {}",
+                l("engine_torque", 1),
+                l("engine_torque_pct", 0),
+                l("reference_torque", 0)
+            ),
+        ));
+        out.push(row(
+            "fuel   ",
+            format!("{} · rate {}", l("fuel_level", 1), l("fuel_rate", 2)),
+        ));
+        out.push(row(
+            "power  ",
+            format!(
+                "module {} · adapter {}",
+                l("module_voltage", 2),
+                l("adapter_voltage", 2)
+            ),
+        ));
+        out.push(row(
+            "dtc    ",
+            format!(
+                "mil {} · count {} · since clear {}",
+                l("mil", 0),
+                l("dtc_count", 0),
+                l("distance_since_clear", 0)
+            ),
+        ));
+    } else if obd.is_some() {
+        out.push(Line::from(s("no vehicle samples yet", gray())));
     } else {
         out.push(no_data());
     }

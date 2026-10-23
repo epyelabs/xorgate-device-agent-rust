@@ -377,7 +377,10 @@ mod tests {
     #[test]
     fn wifi_toggle_two_press_confirm_over_ssh() {
         let mut a = running_app();
-        a.selected = 6;
+        a.selected = MODULES
+            .iter()
+            .position(|m| *m == ModuleId::Settings)
+            .unwrap();
         a.wifi = Some(WifiPresence {
             present: true,
             enabled: true,
@@ -427,7 +430,10 @@ mod tests {
     #[test]
     fn mode_apply_saves_and_leaves_operating() {
         let mut a = running_app();
-        a.selected = 6;
+        a.selected = MODULES
+            .iter()
+            .position(|m| *m == ModuleId::Settings)
+            .unwrap();
         a.key(Key::Right, &F);
         assert_eq!(a.mode_choice.as_deref(), Some("sim"));
         a.key(Key::Char(' '), &F);

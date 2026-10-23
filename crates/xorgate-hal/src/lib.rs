@@ -33,6 +33,7 @@ pub mod ledger_file;
 pub mod modem_file;
 pub mod network_io;
 pub mod nmea_tty;
+pub mod obd_io;
 pub mod privileged;
 pub mod read_lossy;
 pub mod segment_io;

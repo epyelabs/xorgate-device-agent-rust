@@ -54,6 +54,7 @@ pub mod modem;
 pub mod network;
 pub mod nmea;
 pub mod obd;
+pub mod obd_supervisor;
 pub mod orientation;
 pub mod pipeline_builder;
 pub mod power;
