@@ -3216,7 +3216,11 @@ pub fn diff_media(
     let (qa, qb) = (order(a), order(b));
     for (label, q) in [("A", &qa), ("B", &qb)] {
         for (src, v) in q {
-            if let Some(w) = v.windows(2).find(|w| w[1] < w[0]) {
+            // Session labels compare by their start ordinal (`…#10>` is after
+            // `…#7>`), never as strings (Phase 5b WP4: the window tape's
+            // cam1 #10-after-#7 "violation" on all four sides was this).
+            let key = |x: &(String, u64)| (session_ordinal(&x.0), x.1);
+            if let Some(w) = v.windows(2).find(|w| key(&w[1]) < key(&w[0])) {
                 rep.push(mm(
                     "s3",
                     &format!("{label} {src}"),
@@ -3674,6 +3678,15 @@ fn d30_js_late_shed(
         st.untolerated = st.untolerated.saturating_sub(1);
         st.tolerated += 1;
     }
+}
+
+/// A normalised session label's ordering key: `<sid:video:cam1#10>` →
+/// (`<sid:video:cam1`, 10); a label without `#N>` keeps its text, ordinal 0.
+fn session_ordinal(sid: &str) -> (String, u64) {
+    sid.strip_suffix('>')
+        .and_then(|s| s.rsplit_once('#'))
+        .and_then(|(head, n)| n.parse::<u64>().ok().map(|n| (head.to_string(), n)))
+        .unwrap_or_else(|| (sid.to_string(), 0))
 }
 
 /// The rail value of a TS shed event and its text with it masked: `…(rail
@@ -5617,6 +5630,43 @@ kind = "decisions"
             ),
             UNTOLERATED
         );
+    }
+
+    /// The S3 order check compares sessions by their ordinal: `#10` after
+    /// `#7` is oldest-first; `#7` after `#10` is a violation.
+    #[test]
+    fn s3_put_order_compares_session_ordinals_not_strings() {
+        assert!(session_ordinal("<sid:video:cam1#7>") < session_ordinal("<sid:video:cam1#10>"));
+        assert!(session_ordinal("<sid:video:cam1#10>") > session_ordinal("<sid:video:cam1#9>"));
+        assert_eq!(session_ordinal("sess-1"), ("sess-1".to_string(), 0));
+        let put = |key: &str| S3Obs {
+            key: key.into(),
+            ctype: "application/json".into(),
+            status: 200,
+            sig: "ok".into(),
+        };
+        let side = |keys: &[&str]| MediaCapture {
+            kind: "js".into(),
+            present: true,
+            s3: keys.iter().map(|k| put(k)).collect(),
+            ..Default::default()
+        };
+        let order_rows = |keys: &[&str]| {
+            let mut rep = Report::default();
+            let t = Table::load(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tools/replay/tolerances.toml"),
+            )
+            .unwrap();
+            diff_media(&side(keys), &side(keys), &PlayInfo::default(), &t, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.path == "(PUT order)")
+                .count()
+        };
+        let k = |n: u32| format!("media-sessions/v1/{{id}}/cam1/<sid:video:cam1#{n}>/00000.json");
+        assert_eq!(order_rows(&[&k(7), &k(10)]), 0);
+        assert_eq!(order_rows(&[&k(10), &k(7)]), 2);
     }
 
     /// T14: a telemetry object PUT on one side only is tolerated only when it
