@@ -92,8 +92,28 @@ def is_open():
         return True
 
 
-def wait_open():
-    while not is_open():
+# Report hold: a `status` line (a link move) makes each agent request a config
+# report on its next publish tick (ts:src/worker.ts:1399-1404 `obdReportDue`),
+# built 2 s later (ts:src/agent/config-sync.ts:1604-1617) — i.e. within
+# [r + 2000, r + 3000] of the line's release r, at each agent's own instant.
+# Any helper line released in that span could land between the two builds
+# (stepC-H9 p5b-obd-crank.rp.cal09: the `profile` between them). So after a
+# status line, hold from r + 2000 - REPORT_MARGIN_S to r + 3000 + REPORT_MARGIN_S.
+# Both sides release their status lines together (the barrier), so the hold is
+# symmetric.
+REPORT_MARGIN_S = 0.25
+report_hold = None  # (start, end) epoch seconds
+
+
+def in_report_hold():
+    if report_hold is None or not GATE:
+        return False
+    now = time.time()
+    return report_hold[0] <= now < report_hold[1]
+
+
+def wait_open(report=True):
+    while not is_open() or (report and in_report_hold()):
         time.sleep(0.005)
 
 
@@ -122,9 +142,14 @@ for line in iter(child.stdout.readline, b""):
         out.flush()
     except BrokenPipeError:
         break
+    if k == "status":
+        r = time.time()
+        report_hold = (r + 2.0 - REPORT_MARGIN_S, r + 3.0 + REPORT_MARGIN_S)
 rc = child.wait()
 barrier("exit")
-wait_open()
+# The exit is not held for a report: the agent's stop waits only a bounded
+# time for the helper (SIGKILL after), which a hold could change.
+wait_open(report=False)
 if rc < 0:
     signal.signal(-rc, signal.SIG_DFL)
     os.kill(os.getpid(), -rc)

@@ -36,4 +36,20 @@ sleep 0.5; [ ! -s "$W/a/out" ] && ok "barrier: a's status waits for b's" || bad 
 wait
 [ "$(wc -l < "$W/a/out")" = 2 ] && [ "$(wc -l < "$W/b/out")" = 2 ] && ok "both sides release every line" || bad "lines a=$(wc -l < "$W/a/out") b=$(wc -l < "$W/b/out")"
 grep -q 'barrier timeout: a only_a #1' "$W/a/err" && ok "a kind the partner never reaches: timeout, logged" || bad "no timeout log: $(cat "$W/a/err")"
+# Report hold: after a `status` line, a line due 2.1 s later waits until
+# 3.25 s after it (the two agents' debounced report builds); none without a gate.
+mkdir -p "$W/h"; cp /t/obd-gate.py "$W/h/obd_read.py"
+printf 'import time, json\nprint(json.dumps({"type":"status"}), flush=True)\ntime.sleep(2.1)\nprint(json.dumps({"type":"profile"}), flush=True)\n' > "$W/h/obd_read_real.py"
+echo 1 > "$G"
+python3 - "$W/h/obd_read.py" <<'P'
+import subprocess, sys, time, os
+t0 = time.time()
+p = subprocess.Popen([sys.executable, sys.argv[1]], stdout=subprocess.PIPE, env={**os.environ, "RIG_OBD_GATE": os.environ["RIG_OBD_GATE"]})
+stamps = [time.time() - t0 for _ in iter(p.stdout.readline, b"")]
+p.wait()
+gap = stamps[1] - stamps[0]
+print("ok   report hold: profile released %.2f s after the status line" % gap if 3.1 <= gap <= 3.6 else "FAIL report hold gap %.2f" % gap)
+sys.exit(0 if 3.1 <= gap <= 3.6 else 1)
+P
+[ $? = 0 ] || fail=1
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"; exit $fail
