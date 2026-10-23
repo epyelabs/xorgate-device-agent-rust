@@ -215,8 +215,8 @@ const HELD_ALIVE_MS: i64 = 2000;
 /// NTP verdict is seen on the next 5 s probe poll (+ the exec), the grace
 /// fallback on the first poll past 300 s, a GPS/NITZ step at once
 /// (`noteStep`); the first post-trust publish is the next 1 s tick after.
-/// (+ 1.5 s: the rig's NTP probe latency on p5b-clock-hold, `ntpProbeDelayMs`.)
-pub const RESUME_NTP_CAP_MS: i64 = 5_000 + 1_500 + 1_000 + 1_500;
+/// (+ 3.5 s: the rig's NTP probe latency on p5b-clock-hold, `ntpProbeDelayMs`.)
+pub const RESUME_NTP_CAP_MS: i64 = 5_000 + 3_500 + 1_000 + 1_500;
 pub const RESUME_FALLBACK_CAP_MS: i64 = 5_000 + 1_000 + 2_000;
 pub const RESUME_STEP_CAP_MS: i64 = 1_000 + 1_500;
 /// The clock trust grace window (`graceMs`, 5 min) and how early before it

@@ -467,13 +467,16 @@ fn add_p5b(
         // can establish trust. Telemetry recording on (the recorder is held:
         // `recording.clockHold`, ts:src/recording/manager.ts:439-450).
         "p5b-clock-hold" => {
-            // The probe answers 1.5 s after it is asked (timedatectl shim):
-            // the trust instant never coincides with the recording manager's
-            // 5 s settings poll (the same cadence, armed right after it),
-            // which releases the held recorder (ts:src/recording/manager.ts:
-            // 327, 353-360) — JS-vs-JS without it: 1 run in 3 started one
-            // recorder a poll (5 s) late (stepB/p5b-clock-hold.cal09).
-            m.rig.insert("ntpProbeDelayMs".into(), json!(1500));
+            // The probe answers 3.5 s after it is asked (timedatectl shim).
+            // The held recorder starts on the RecordingManager's first 5 s
+            // settings poll after the trust instant (ts:src/recording/
+            // manager.ts:327, 353-360); that poll grid sits δ ≈ 1.5-2 s after
+            // the clock-trust probe grid (it starts when the retained config
+            // is applied, ~1.8 s after boot here). With a fast probe or a
+            // 1.5 s one the trust instant fell next to a poll and the recorder
+            // started a poll (5 s) apart run to run (JS-vs-JS 1/3; JS-vs-Rust
+            // at 1.5 s: 61.77 vs 66.68 s). 3.5 s puts it mid-slot.
+            m.rig.insert("ntpProbeDelayMs".into(), json!(3500));
             b.push(20, TapeEvent::NtpProbe { synced: false });
             b.push(60_000, TapeEvent::NtpProbe { synced: true });
             cfg(b, 400, &clock_rec_doc());
