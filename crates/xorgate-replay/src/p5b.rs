@@ -159,6 +159,25 @@ pub fn prepare_agent(
     ];
     if let Some(g) = gate {
         env.push(("RIG_OBD_GATE".into(), g.display().to_string()));
+        // The cross-side barrier (obd-gate.py `barrier`): one dir for both
+        // agents, this side's counters reset (a fresh run).
+        let side = work
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let bar = g.with_file_name("obd-barrier");
+        fs::create_dir_all(&bar)?;
+        for e in fs::read_dir(&bar)?.flatten() {
+            if e.file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{side}."))
+            {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+        env.push(("RIG_OBD_BARRIER".into(), bar.display().to_string()));
+        env.push(("RIG_OBD_SIDE".into(), side));
+        env.push(("RIG_OBD_PEERS".into(), "a,b".into()));
     }
     env.extend(plan.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     let mut emu = None;

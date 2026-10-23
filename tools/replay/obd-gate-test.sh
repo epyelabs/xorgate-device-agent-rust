@@ -24,4 +24,16 @@ echo 0 > "$G"; touch -d '-5 seconds' "$G"; timeout 2 python3 obd_read.py > out2;
 rm -f "$G"; timeout 2 python3 obd_read.py > out3; [ -s out3 ] && ok "missing gate = open" || bad "missing gate held"
 printf 'import os, signal\nprint("x", flush=True); os.kill(os.getpid(), signal.SIGTERM)\n' > obd_read_real.py
 python3 obd_read.py > /dev/null; rc=$?; [ $rc = 143 ] && ok "signal death re-raised" || bad "rc=$rc"
+# Cross-side barrier: side a's k-th `status` waits for side b's k-th; a kind
+# the partner never reaches releases after the 3 s timeout (logged).
+mkdir -p "$W/bar" "$W/a" "$W/b"; cp /t/obd-gate.py "$W/a/obd_read.py"; cp /t/obd-gate.py "$W/b/obd_read.py"
+printf 'import time, json, sys\nd=float(sys.argv[1])\ntime.sleep(d)\nprint(json.dumps({"type":"status","t":time.time()}), flush=True)\nprint(json.dumps({"type":"only_"+sys.argv[2]}), flush=True)\n' > "$W/a/obd_read_real.py"
+cp "$W/a/obd_read_real.py" "$W/b/obd_read_real.py"
+rm -f "$G"
+( RIG_OBD_BARRIER=$W/bar RIG_OBD_SIDE=a RIG_OBD_PEERS=a,b python3 "$W/a/obd_read.py" 0 a > "$W/a/out" 2> "$W/a/err"; date +%s.%N > "$W/a/done" ) &
+( RIG_OBD_BARRIER=$W/bar RIG_OBD_SIDE=b RIG_OBD_PEERS=a,b python3 "$W/b/obd_read.py" 1 b > "$W/b/out" 2> "$W/b/err" ) &
+sleep 0.5; [ ! -s "$W/a/out" ] && ok "barrier: a's status waits for b's" || bad "barrier leaked: $(cat "$W/a/out")"
+wait
+[ "$(wc -l < "$W/a/out")" = 2 ] && [ "$(wc -l < "$W/b/out")" = 2 ] && ok "both sides release every line" || bad "lines a=$(wc -l < "$W/a/out") b=$(wc -l < "$W/b/out")"
+grep -q 'barrier timeout: a only_a #1' "$W/a/err" && ok "a kind the partner never reaches: timeout, logged" || bad "no timeout log: $(cat "$W/a/err")"
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"; exit $fail
