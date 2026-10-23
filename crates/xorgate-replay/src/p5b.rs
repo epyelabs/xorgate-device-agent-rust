@@ -6,7 +6,7 @@
 //! |---|---|
 //! | `meta.rig.obd.scenario` | ONE ELM327-emulator 4.0.0 per agent (an ELM327 link is single-client): `python3 /rig/tools/obd-emulator.py <python> <scenario> <work>/obd-pty`, started before the agent, SIGTERMed with the run; `XORGATE_OBD_SERIAL` = its pty (the TS SERIAL seam, ts:src/hardware/obd.ts `buildObdHelperArgs`) |
 //! | `XORGATE_PYTHON_DIR` | `<work>/python/`: the rig's `bno085_read.py` relay + the side's REAL helper (`obd_read.py`, `obd_scan.py`, `obd/`): the JS build's `python/` for a JS side, the Rust repo's vendored `python/` (`/rig/python`) for the Rust side once it carries the helper (byte-identical, I9), else the JS build's |
-//! | `bluetoothctl` (PATH, OBD tapes only) | `tools/replay/shims/bluetoothctl`: prints `meta.rig.obd.bluetoothctl.{scan,devices,remove}` from `<state>/bt/`, logs to `<run>/<label>/bluetoothctl.log`, refuses pair/trust/connect (logged FORBIDDEN) — never BlueZ |
+//! | `bluetoothctl` (PATH, OBD tapes only) | `tools/replay/shims/bluetoothctl`: prints `meta.rig.obd.bluetoothctl.{scan,devices,remove}` from `<state>/bt/`, logs to `<run>/<label>/bluetoothctl.log`, refuses pair/trust/connect (logged REFUSED) — never BlueZ |
 //! | `meta.rig.obd.env` | extra agent env (the `XORGATE_OBD_*` seam a tape exercises) |
 
 use std::collections::BTreeMap;

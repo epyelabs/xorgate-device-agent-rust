@@ -4,15 +4,17 @@
 # no bluez, and this shim only prints what the tape's meta put in
 # $RIG_STATE/bt/ (scan.txt after `scan on`, devices.txt for `devices`,
 # remove.out + remove.code for `remove <MAC>`). Every invocation and stdin
-# line is logged to $RIG_BT_LOG; `pair` / `trust` / `connect` are logged
-# FORBIDDEN (the agent must never pair; phase file §6) and refused.
+# line is logged to $RIG_BT_LOG; `pair <MAC>` / `trust` / `connect` are
+# REFUSED and logged (the rig never pairs anything: the helper's MAC pairing
+# fails here like an absent adapter). `pairable off` / `discoverable off` are
+# the scan's own safety commands and only logged.
 BT="${RIG_STATE:-/nonexistent}/bt"
 log() { printf '%s %s\n' "$(date +%s%3N)" "$*" >> "${RIG_BT_LOG:-/dev/null}"; }
 if [ $# -gt 0 ]; then
   log "argv $*"
   case "$1" in
     remove) cat "$BT/remove.out" 2>/dev/null; exit "$(cat "$BT/remove.code" 2>/dev/null || echo 0)" ;;
-    pair|trust|connect) log "FORBIDDEN argv $*"; echo "rig: $1 refused" >&2; exit 1 ;;
+    pair|trust|connect) log "REFUSED argv $*"; echo "rig: $1 refused" >&2; exit 1 ;;
     *) exit 0 ;;
   esac
 fi
@@ -22,7 +24,7 @@ while IFS= read -r line; do
     "scan on") cat "$BT/scan.txt" 2>/dev/null ;;
     devices) cat "$BT/devices.txt" 2>/dev/null ;;
     quit|exit) exit 0 ;;
-    pair*|trust*|connect*) log "FORBIDDEN stdin $line" ;;
+    "pair "*|pair|"trust "*|"connect "*) log "REFUSED stdin $line"; echo "Failed to pair: org.bluez.Error.Failed" ;;
   esac
 done
 exit 0

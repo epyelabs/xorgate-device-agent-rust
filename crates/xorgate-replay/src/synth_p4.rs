@@ -577,7 +577,11 @@ fn add_p5b(
                 ],
             }});
             if periph {
-                obd["scenario"] = json!("taos-2022");
+                // NO emulator: the adapter is a Bluetooth MAC the rig can never
+                // reach (no BlueZ; the shim refuses `pair`), so `obd_forget`
+                // lands on the TS's own not_configured latch
+                // (ts:src/agent/collectors/obd.ts:758-777) — with a SERIAL
+                // seam the re-resolution would restart the helper instead.
                 seed_obd_settings(&mut m, &json!({"enabled": true, "adapterMac": OBD_MAC_A}));
             }
             m.rig.insert("obd".into(), obd);
