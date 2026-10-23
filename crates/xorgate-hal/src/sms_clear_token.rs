@@ -1,5 +1,21 @@
 //! The SMS-clear authorisation token (phase-5b §6 point 2; review-wp3 F1).
 //!
+//! **Threat model (orchestrator decision 2026-10-23).** The guard must stop
+//! ACCIDENTAL or ordinary code paths from ever clearing a SIM: a new caller,
+//! a refactor, a fn path passed to `map`, a macro, a test helper leaking into
+//! production, a second `Effect::ClearSms` emitter. It does NOT try to stop
+//! deliberately hostile code inside our own repository — code review covers
+//! that. Concretely enforced: (1) the compiler — no token or proof without
+//! this module's constructors (private fields), no `Effect::ClearSms` without
+//! core's `ClearClaim` (only `decide_command` makes one), no `transmute` /
+//! `mem::zeroed` minting (`#![deny(unsafe_code)]` on hal + agent, exceptions
+//! pinned to today's FFI sites); (2) `xorgate-agent/tests/sms_clear_safety.rs`
+//! — every bare-identifier mention of the mint functions and types, every
+//! clear call with an argument, the AT-port API and the delete literal,
+//! pinned by file and item. Out of scope (hostile): a raw, escape-spelled
+//! byte write of the delete through `AtTransport` inside the SMS modules
+//! (the only files allowed to touch the AT port).
+//!
 //! The delete is reachable only through `crate::at_clear::clear_transport`,
 //! which takes a [`ClearRequest`] BY VALUE. A `ClearRequest` can be made only
 //! here — every field is private to this module, and there is no `Clone`,

@@ -185,6 +185,7 @@ fn node_error(err: &io::Error, syscall: &str, path: Option<&Path>) -> TtyError {
     TtyError { code, message }
 }
 
+#[allow(unsafe_code)]
 fn reader_thread(port: &Path, stop: &AtomicBool, tx: &mpsc::UnboundedSender<TtyEvent>) {
     let opened = OpenOptions::new()
         .read(true)
@@ -299,6 +300,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(unsafe_code)]
     async fn fifo_streams_chunks_and_stop_closes() {
         let d = scratch("fifo");
         let fifo = d.join("nmea.fifo");
@@ -324,6 +326,7 @@ mod tests {
     /// review-wp2 #4: an open that never returns strands one thread, not one
     /// per watchdog cycle.
     #[tokio::test]
+    #[allow(unsafe_code)]
     async fn a_stuck_open_strands_at_most_one_thread() {
         let d = scratch("stuck");
         let fifo = d.join("nmea.fifo");

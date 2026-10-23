@@ -322,6 +322,7 @@ impl Effects {
                         source,
                         request_id,
                         limit,
+                        ..
                     } = e
                     else {
                         unreachable!("matched above")

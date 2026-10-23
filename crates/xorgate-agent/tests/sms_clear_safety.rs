@@ -126,6 +126,8 @@ fn only_the_delete_all_form_exists() {
 }
 
 /// Code only: `//` comment lines dropped (docs may point at the module).
+/// In-file `#[cfg(test)]` modules are NOT cut: code appended after one would
+/// otherwise hide from every pin.
 fn code_of(text: &str) -> String {
     text.lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -133,58 +135,69 @@ fn code_of(text: &str) -> String {
         .join("\n")
 }
 
-/// The function a byte offset sits in: the last `fn <name>` before it, or
-/// `<use>` for an import line.
+fn is_ident(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Offsets of `name` as a whole identifier (bare: a fn path in `.map(…)`,
+/// a macro argument, a call — all count).
+fn idents(code: &str, name: &str) -> Vec<usize> {
+    let b = code.as_bytes();
+    code.match_indices(name)
+        .map(|(at, _)| at)
+        .filter(|&at| {
+            (at == 0 || !is_ident(b[at - 1]))
+                && b.get(at + name.len()).is_none_or(|&c| !is_ident(c))
+        })
+        .collect()
+}
+
+/// The item an offset sits in: the last `fn` / `struct` / `enum` / `trait`
+/// header before it, or `<use>` on an import line.
 fn site(code: &str, at: usize) -> String {
     let line_start = code[..at].rfind('\n').map_or(0, |i| i + 1);
-    if code[line_start..].trim_start().starts_with("use ") {
+    if code[line_start..].trim_start().starts_with("use ")
+        || code[line_start..].trim_start().starts_with("pub use ")
+    {
         return "<use>".into();
     }
     let before = &code[..at];
-    let mut name = "<top>".to_string();
-    let mut i = 0;
-    while let Some(j) = before[i..].find("fn ") {
-        let k = i + j;
-        let boundary = k == 0
-            || !before.as_bytes()[k - 1].is_ascii_alphanumeric()
-                && before.as_bytes()[k - 1] != b'_';
-        if boundary {
-            let rest = &before[k + 3..];
+    let mut best: Option<(usize, String)> = None;
+    for kw in ["fn", "struct", "enum", "trait"] {
+        for k in idents(before, kw) {
+            let rest = before[k + kw.len()..].trim_start();
             let id: String = rest
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            if !id.is_empty() {
-                name = id;
+            if !id.is_empty() && best.as_ref().is_none_or(|(bk, _)| k > *bk) {
+                best = Some((k, id));
             }
         }
-        i = k + 3;
     }
-    name
+    best.map_or("<top>".into(), |(_, id)| id)
 }
 
-/// Every production call of the token module's four mint functions and of
-/// the help-text accessor, as `file function call`.
-fn mint_sites() -> Vec<String> {
+/// Every bare-identifier mention of `names` in production code (outside
+/// `skip`), as `file item name`, sorted.
+fn mentions(names: &[&str], skip: &[&str], agent_only: bool) -> Vec<String> {
     let mut out = Vec::new();
     for (rel, text) in sources() {
-        if exempt(&rel) || rel == TOKEN {
+        if exempt(&rel) || skip.contains(&rel.as_str()) {
+            continue;
+        }
+        if agent_only && !rel.starts_with("crates/xorgate-agent/") {
             continue;
         }
         let code = code_of(&text);
-        let short = rel.trim_start_matches("crates/xorgate-agent/src/");
-        for call in [
-            "from_effect(",
-            "from_gate(",
-            "accepted_command(",
-            "confirmed_cli(",
-            "delete_all_text(",
-        ] {
-            for (at, _) in code.match_indices(call) {
-                if code[..at].ends_with("fn ") {
-                    continue; // a definition (at_clear.rs delete_all_text)
+        let short = rel.trim_start_matches("crates/");
+        for name in names {
+            for at in idents(&code, name) {
+                let pre = &code[..at];
+                if pre.ends_with("fn ") || pre.ends_with("struct ") || pre.ends_with("enum ") {
+                    continue; // a definition
                 }
-                out.push(format!("{short} {} {call}", site(&code, at)));
+                out.push(format!("{short} {} {name}", site(&code, at)));
             }
         }
     }
@@ -192,34 +205,203 @@ fn mint_sites() -> Vec<String> {
     out
 }
 
-/// The mint calls, by file and function: a new one — anywhere, however the
-/// type is imported or aliased — fails here.
+/// THE pin (review-wp3 F2, threat model in `sms_clear_token.rs`): every
+/// mention of the mint functions, the proof/token types and the core claim
+/// — as bare identifiers, so fn paths and macro arguments count — and every
+/// clear call with an argument in the agent crate, by file and item.
 #[test]
 fn the_token_is_minted_only_at_the_two_entry_points() {
-    assert_eq!(
-        mint_sites(),
-        [
-            // `xorgate-rs sms clear`: help text, then --yes / interactive yes.
-            "cli/sms.rs clear_main confirmed_cli(",
-            "cli/sms.rs clear_main delete_all_text(",
-            "cli/sms.rs clear_main from_gate(",
-            // The accepted, ledger-claimed `clear_sms` (Effect::ClearSms).
-            "command_plane.rs run from_effect(",
-            "command_plane.rs run_sms accepted_command(",
-        ]
+    let token = mentions(
+        &[
+            "from_effect",
+            "from_gate",
+            "accepted_command",
+            "confirmed_cli",
+            "delete_all_text",
+            "AcceptedClearSms",
+            "CliConfirmation",
+            "ClearRequest",
+        ],
+        &[TOKEN],
+        false,
     );
-    // The sender: only the reader's clear body calls it.
-    let mut callers = Vec::new();
+    assert_eq!(token, EXPECTED_TOKEN_MENTIONS, "{token:#?}");
+    // `Effect::ClearSms` can only be built with a `ClearClaim`, which only
+    // core `decide_command` makes.
+    let claim = mentions(&["ClearClaim", "after_claim"], &[], false);
+    assert_eq!(claim, EXPECTED_CLAIM_MENTIONS, "{claim:#?}");
+    // Every clear call with an argument (method or path form) in the agent
+    // crate — the only crate that sees `SmsReader`.
+    let mut calls = Vec::new();
     for (rel, text) in sources() {
-        if exempt(&rel) || rel == AT_CLEAR {
+        if exempt(&rel) || !rel.starts_with("crates/xorgate-agent/") {
             continue;
         }
         let code = code_of(&text);
-        for (at, _) in code.match_indices("clear_transport(") {
-            callers.push(format!("{rel} {}", site(&code, at)));
+        let short = rel.trim_start_matches("crates/");
+        for (at, _) in code.match_indices(".clear(") {
+            if !code[at + 7..].trim_start().starts_with(')') {
+                calls.push(format!("{short} {} .clear(arg)", site(&code, at)));
+            }
+        }
+        for at in idents(&code, "clear") {
+            if code[..at].ends_with("::") {
+                calls.push(format!("{short} {} ::clear", site(&code, at)));
+            }
         }
     }
-    assert_eq!(callers, ["crates/xorgate-agent/src/ops/sms.rs clear_body"]);
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            "xorgate-agent/src/cli/sms.rs clear_main .clear(arg)",
+            "xorgate-agent/src/command_plane.rs run_sms .clear(arg)",
+        ]
+    );
+    // The sender: only the reader's clear body calls it.
+    let sender = mentions(&["clear_transport"], &[AT_CLEAR], false);
+    assert_eq!(
+        sender,
+        [
+            "xorgate-agent/src/ops/sms.rs <use> clear_transport",
+            "xorgate-agent/src/ops/sms.rs clear_body clear_transport",
+        ]
+    );
+}
+
+const EXPECTED_TOKEN_MENTIONS: &[&str] = &[
+    "xorgate-agent/src/cli/sms.rs <use> ClearRequest",
+    "xorgate-agent/src/cli/sms.rs <use> CliConfirmation",
+    "xorgate-agent/src/cli/sms.rs <use> delete_all_text",
+    "xorgate-agent/src/cli/sms.rs clear_main ClearRequest",
+    "xorgate-agent/src/cli/sms.rs clear_main CliConfirmation",
+    "xorgate-agent/src/cli/sms.rs clear_main confirmed_cli",
+    "xorgate-agent/src/cli/sms.rs clear_main delete_all_text",
+    "xorgate-agent/src/cli/sms.rs clear_main from_gate",
+    "xorgate-agent/src/command_plane.rs <use> AcceptedClearSms",
+    "xorgate-agent/src/command_plane.rs <use> ClearRequest",
+    "xorgate-agent/src/command_plane.rs run AcceptedClearSms",
+    "xorgate-agent/src/command_plane.rs run from_effect",
+    "xorgate-agent/src/command_plane.rs run_sms AcceptedClearSms",
+    "xorgate-agent/src/command_plane.rs run_sms ClearRequest",
+    "xorgate-agent/src/command_plane.rs run_sms accepted_command",
+    "xorgate-agent/src/ops/sms.rs <use> ClearRequest",
+    "xorgate-agent/src/ops/sms.rs Work ClearRequest",
+    "xorgate-agent/src/ops/sms.rs clear ClearRequest",
+    "xorgate-agent/src/ops/sms.rs clear_body ClearRequest",
+    "xorgate-hal/src/at_clear.rs <use> ClearRequest",
+    "xorgate-hal/src/at_clear.rs clear_transport ClearRequest",
+];
+
+const EXPECTED_CLAIM_MENTIONS: &[&str] = &[
+    // `impl ClearClaim` (its private `after_claim` is a definition).
+    "xorgate-core/src/command_flow.rs ClearClaim ClearClaim",
+    "xorgate-core/src/command_flow.rs Effect ClearClaim",
+    // core's own unit test (in-file) compares the effect it expects.
+    "xorgate-core/src/command_flow.rs clear_sms_acks_then_clears_and_a_duplicate_never_clears ClearClaim",
+    "xorgate-core/src/command_flow.rs clear_sms_acks_then_clears_and_a_duplicate_never_clears after_claim",
+    "xorgate-core/src/command_flow.rs decide_command ClearClaim",
+    "xorgate-core/src/command_flow.rs decide_command after_claim",
+];
+
+/// No ordinary code can talk to the modem except the SMS modules
+/// (containment for raw writes; a deliberately escaped byte string written
+/// through them is out of scope — hostile code, see the threat model).
+#[test]
+fn the_at_port_api_is_used_only_by_the_sms_modules() {
+    let mut files: Vec<String> = mentions(
+        &[
+            "AtTransport",
+            "AtSession",
+            "open_serial_transport",
+            "open_serial_transport_taped",
+        ],
+        &[],
+        false,
+    )
+    .into_iter()
+    .map(|m| m.split(' ').next().unwrap().to_string())
+    .collect();
+    files.dedup();
+    assert_eq!(
+        files,
+        [
+            "xorgate-agent/src/ops/sms.rs",
+            "xorgate-hal/src/at_clear.rs",
+            "xorgate-hal/src/at_port.rs",
+        ]
+    );
+}
+
+/// `#![deny(unsafe_code)]` on hal + agent: `transmute` / `zeroed` minting no
+/// longer compiles. The exceptions are exactly today's FFI sites.
+#[test]
+fn unsafe_code_is_denied_except_at_todays_ffi_sites() {
+    for root in [
+        "crates/xorgate-hal/src/lib.rs",
+        "crates/xorgate-agent/src/lib.rs",
+        "crates/xorgate-agent/src/main.rs",
+    ] {
+        let t = std::fs::read_to_string(workspace().join(root)).unwrap();
+        assert!(t.contains("\n#![deny(unsafe_code)]\n"), "{root}");
+    }
+    let mut allows = Vec::new();
+    for (rel, text) in sources() {
+        if rel.contains("/tests/") {
+            continue;
+        }
+        if !(rel.starts_with("crates/xorgate-hal/") || rel.starts_with("crates/xorgate-agent/")) {
+            continue;
+        }
+        assert!(
+            !text.contains("#![allow(unsafe_code)]"),
+            "{rel}: crate/module-wide allow"
+        );
+        assert!(
+            !text.contains("allow(unsafe_code)]\nmod"),
+            "{rel}: module allow"
+        );
+        let code: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (at, _) in code.match_indices("#[allow(unsafe_code)]") {
+            // The item the attribute sits on: the next `fn` header.
+            let rest = &code[at..];
+            let k = idents(rest, "fn")[0];
+            let id: String = rest[k + 2..]
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            allows.push(format!("{} {id}", rel.trim_start_matches("crates/")));
+        }
+    }
+    allows.sort();
+    assert_eq!(
+        allows,
+        [
+            "xorgate-agent/src/cli/manage/format.rs clock",
+            "xorgate-agent/src/cli/sms.rs stdout_columns",
+            "xorgate-agent/src/recording/capture/backend.rs renice",
+            "xorgate-hal/src/atomic_write.rs is_root",
+            "xorgate-hal/src/atomic_write.rs preserve_ownership",
+            "xorgate-hal/src/boot_id.rs monotonic_ns",
+            "xorgate-hal/src/child.rs drop_kills_a_running_child",
+            "xorgate-hal/src/child.rs spawn",
+            "xorgate-hal/src/fragment_stat.rs hrtime_ns",
+            "xorgate-hal/src/fs_watch.rs pump",
+            "xorgate-hal/src/fs_watch.rs watch_dir",
+            "xorgate-hal/src/ledger_file.rs is_root",
+            "xorgate-hal/src/ledger_file.rs preserve_ownership",
+            "xorgate-hal/src/nmea_tty.rs a_stuck_open_strands_at_most_one_thread",
+            "xorgate-hal/src/nmea_tty.rs fifo_streams_chunks_and_stop_closes",
+            "xorgate-hal/src/nmea_tty.rs reader_thread",
+            "xorgate-hal/src/system.rs os_mem_fallback",
+            "xorgate-hal/src/tape.rs host_mono_ms",
+        ]
+    );
 }
 
 /// The token module itself: private fields, no Clone/Copy/Default, every
@@ -269,11 +451,25 @@ fn proofs_exist_only_for_an_accepted_clear_or_a_confirmed_cli() {
     use xorgate_core::command_flow::{Effect, SmsSource};
     use xorgate_core::sms_cli::ClearGate;
     use xorgate_hal::sms_clear_token::{AcceptedClearSms, CliConfirmation};
-    let clear = Effect::ClearSms {
-        source: SmsSource::Reader,
-        request_id: "r".into(),
-        limit: 10,
-    };
+    // The only way to get an `Effect::ClearSms`: core's accepted path.
+    let cmd = xorgate_core::commands::parse_command(
+        br#"{"v":1,"requestId":"r","command":"clear_sms","ts":1750000000000,"expiresAt":1750000060000}"#,
+    )
+    .unwrap();
+    let d = xorgate_core::command_flow::decide_command(
+        Some(&cmd),
+        1_750_000_001_000,
+        &xorgate_core::commands::Ledger::empty(),
+        xorgate_core::command_flow::RefreshWindow { now: 0, last: None },
+        xorgate_core::telemetry::RunMode::Real,
+        false,
+    );
+    let clear = d
+        .effects
+        .iter()
+        .find(|e| matches!(e, Effect::ClearSms { .. }))
+        .expect("accepted clear_sms yields the effect")
+        .clone();
     let read = Effect::ReadSms {
         source: SmsSource::Reader,
         request_id: "r".into(),

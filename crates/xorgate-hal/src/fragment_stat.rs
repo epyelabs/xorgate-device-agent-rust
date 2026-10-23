@@ -66,6 +66,7 @@ pub fn size_or_zero(path: &Path) -> u64 {
 /// session's `anchorMono` and every sidecar's `startMono` live in
 /// (`session.json.bootId` scopes it, so it must be the kernel's boot-relative
 /// clock, not an agent-relative one).
+#[allow(unsafe_code)]
 pub fn hrtime_ns() -> u128 {
     let mut ts = libc::timespec {
         tv_sec: 0,

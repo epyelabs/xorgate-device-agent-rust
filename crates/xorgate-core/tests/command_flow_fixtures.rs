@@ -161,6 +161,7 @@ impl Sim<'_> {
                     source,
                     request_id,
                     limit,
+                    ..
                 } => self.run_sms(SmsAction::Clear, source, &request_id, limit, step.at),
                 Effect::Execute(call) => {
                     self.trace.push(format!("exec {}", call.argv().join(" ")));

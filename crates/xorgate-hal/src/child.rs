@@ -167,6 +167,7 @@ impl Drop for ChildHandle {
 
 /// `runStream(cmd, args, {onStdout, onStderr})`: spawn and stream. Never
 /// fails synchronously — a spawn failure is a lone `Done` event.
+#[allow(unsafe_code)]
 pub fn spawn(spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEvent>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut cmd = Command::new(&spec.program);
@@ -442,6 +443,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(unsafe_code)]
     async fn drop_kills_a_running_child() {
         let (h, _rx) = spawn(&sh("exec sleep 30"));
         let pid = h.pid().unwrap() as libc::pid_t;

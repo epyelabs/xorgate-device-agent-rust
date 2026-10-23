@@ -141,6 +141,7 @@ pub async fn sample_cpu() -> CpuSample {
 
 /// `os.totalmem()` / `os.freemem()` via sysinfo(2) — the fallback when
 /// `/proc/meminfo` is unavailable.
+#[allow(unsafe_code)]
 pub fn os_mem_fallback() -> Option<(f64, f64)> {
     // SAFETY: sysinfo writes into the zeroed struct we hand it.
     let mut info: libc::sysinfo = unsafe { std::mem::zeroed() };

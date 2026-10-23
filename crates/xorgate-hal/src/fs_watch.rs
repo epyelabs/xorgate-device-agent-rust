@@ -44,6 +44,7 @@ impl Drop for DirWatcher {
 
 /// `fs.watch(dir)`: one `()` per inotify event on `dir`. Errors (missing dir,
 /// inotify limits) are returned so the caller can fall back to polling.
+#[allow(unsafe_code)]
 pub fn watch_dir(dir: &Path) -> io::Result<(DirWatcher, mpsc::UnboundedReceiver<()>)> {
     // SAFETY: plain syscalls on an fd we own; every error path closes it.
     let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
@@ -80,6 +81,7 @@ pub fn watch_dir(dir: &Path) -> io::Result<(DirWatcher, mpsc::UnboundedReceiver<
 
 /// Read events until stopped (or the receiver is gone); one send per event
 /// on our watch descriptor.
+#[allow(unsafe_code)]
 fn pump(fd: i32, wd: i32, stop: &AtomicBool, tx: &mpsc::UnboundedSender<()>) {
     let mut buf = vec![0u8; 64 * 1024];
     let header = std::mem::size_of::<libc::inotify_event>();

@@ -144,6 +144,7 @@ fn ask(question: &str) -> String {
 
 /// `process.stdout.columns`: the TTY's width, `None` when stdout is not a
 /// terminal (the TS `?? 120`).
+#[allow(unsafe_code)]
 fn stdout_columns() -> Option<u16> {
     if !std::io::stdout().is_terminal() {
         return None;

@@ -73,6 +73,7 @@ pub fn random_uuid_v4() -> String {
 /// `process.hrtime.bigint()` on Linux: CLOCK_MONOTONIC in nanoseconds — the
 /// `mono` of every telemetry sample line (`telemetry-recorder.ts:115`) and
 /// the clock a `bootId` scopes (D6). 0 if the call fails (it cannot on Linux).
+#[allow(unsafe_code)]
 pub fn monotonic_ns() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,

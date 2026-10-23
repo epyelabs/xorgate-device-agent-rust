@@ -80,6 +80,7 @@ fn write_and_sync(
     f.sync_all().map_err(|e| node_fd_message(&e, "fsync"))
 }
 
+#[allow(unsafe_code)]
 fn is_root() -> bool {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() == 0 }
@@ -87,6 +88,7 @@ fn is_root() -> bool {
 
 /// `preserveOwnership` (`atomicWrite.ts:84-95`): chown first, then chmod;
 /// both best-effort.
+#[allow(unsafe_code)]
 fn preserve_ownership(f: &File, prior: &std::fs::Metadata) {
     use std::os::fd::AsRawFd;
     let fd = f.as_raw_fd();

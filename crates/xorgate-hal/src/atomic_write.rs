@@ -148,12 +148,14 @@ pub fn atomic_write_bytes_traced(path: &Path, bytes: &[u8]) -> Result<(), Atomic
     Ok(())
 }
 
+#[allow(unsafe_code)]
 fn is_root() -> bool {
     // SAFETY: geteuid has no preconditions.
     unsafe { libc::geteuid() == 0 }
 }
 
 /// chown first (clears setuid/setgid bits), then chmod; both best-effort.
+#[allow(unsafe_code)]
 fn preserve_ownership(f: &File, prior: &std::fs::Metadata) {
     use std::os::fd::AsRawFd;
     let fd = f.as_raw_fd();

@@ -250,6 +250,21 @@ pub enum SmsSource {
     Fixture,
 }
 
+/// The accepted-path marker of [`Effect::ClearSms`]: its field is private
+/// and its one constructor is private to this module, called only by
+/// [`decide_command`]'s `clear_sms` arm (pinned by
+/// `xorgate-agent/tests/sms_clear_safety.rs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearClaim {
+    _private: (),
+}
+
+impl ClearClaim {
+    fn after_claim() -> Self {
+        Self { _private: () }
+    }
+}
+
 /// One side effect of the command handler, in TS order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
@@ -290,6 +305,12 @@ pub enum Effect {
         source: SmsSource,
         request_id: String,
         limit: u32,
+        /// Proof that [`decide_command`] produced this effect on its accepted
+        /// path (after the expiry check and the ledger claim). Only this
+        /// module can build one, so no other code can construct an
+        /// `Effect::ClearSms` (review-wp3 F2; enum variants have no
+        /// struct-update syntax). Carries no data.
+        claim: ClearClaim,
     },
     /// `obd_scan` / `obd_forget` with the collector present (`worker.ts:1219-1247`
     /// @ 09da38d). The TS STARTS the job (`source.obdScan?.()`) before the
@@ -482,6 +503,7 @@ pub fn decide_command(
                 },
                 request_id: cmd.request_id.clone(),
                 limit: cmd.args.map(|a| a.limit).unwrap_or(SMS_LIMIT_DEFAULT),
+                claim: ClearClaim::after_claim(),
             });
         }
         // 8c. obd_scan / obd_forget (`worker.ts:1217-1249` @ 09da38d).
@@ -741,7 +763,8 @@ mod tests {
                 Effect::ClearSms {
                     source: SmsSource::Reader,
                     request_id: "r-2".into(),
-                    limit: 50
+                    limit: 50,
+                    claim: ClearClaim::after_claim(),
                 },
             ]
         );
