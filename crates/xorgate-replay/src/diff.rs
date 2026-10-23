@@ -3053,9 +3053,11 @@ fn report_echoes(side: &[&Msg]) -> usize {
         .count()
 }
 
-/// T8/report-echo: the report build + timer lateness around the 2 s debounce
-/// (observed |Δ − 2000| ≤ 51 ms over 8 runs).
-const ECHO_SLACK_MS: i64 = 100;
+/// T8/report-echo: Δ − 2000 = (where in tick k+2 the second `obdReportDue`
+/// runs) − (where in tick k the first one armed the timer), i.e. the spread of
+/// one publish tick's own latency — budgeted at the rig's same-instant window
+/// (T12's 150 ms). Observed −51…+94 ms over 12 JS and 4 Rust sides.
+const ECHO_SLACK_MS: i64 = 150;
 
 fn quiet_periods(a: &[&Msg], b: &[&Msg], quiet_ms: i64) -> Vec<(i64, i64)> {
     let mut ws: Vec<i64> = a.iter().chain(b.iter()).map(|m| m.w).collect();
@@ -6398,7 +6400,7 @@ mod tests {
 
     /// T8/report-echo: a count difference made ONLY of echoes (a report
     /// byte-identical to its side's previous one save `ts` / `status.*.at`,
-    /// published DEBOUNCE ± 100 ms after it) is tolerated; a changed payload,
+    /// published DEBOUNCE ± 150 ms after it) is tolerated; a changed payload,
     /// an echo 3 s later, or an extra non-echo report stays UNTOLERATED.
     #[test]
     fn report_echo_only_an_identical_report_one_debounce_later() {
