@@ -109,7 +109,7 @@ node|-|set obd.fields nonsense
 node|-|set obd.power-source constant
 node|-|set obd.power-source solar
 node|-|set obd.bogus 1
-node|map:T8/cli-q9-names|--help
+node|expect:T8/cli-banner|--help
 seed|-|p5b-state-obd.json
 node|map:T8/cli-q9-names|obd status
 node|map:T8/cli-q9-names|status
