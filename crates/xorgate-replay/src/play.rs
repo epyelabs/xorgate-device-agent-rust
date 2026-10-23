@@ -211,7 +211,8 @@ const HELD_ALIVE_MS: i64 = 2000;
 /// NTP verdict is seen on the next 5 s probe poll (+ the exec), the grace
 /// fallback on the first poll past 300 s, a GPS/NITZ step at once
 /// (`noteStep`); the first post-trust publish is the next 1 s tick after.
-pub const RESUME_NTP_CAP_MS: i64 = 5_000 + 1_000 + 1_500;
+/// (+ 1.5 s: the rig's NTP probe latency on p5b-clock-hold, `ntpProbeDelayMs`.)
+pub const RESUME_NTP_CAP_MS: i64 = 5_000 + 1_500 + 1_000 + 1_500;
 pub const RESUME_FALLBACK_CAP_MS: i64 = 5_000 + 1_000 + 2_000;
 pub const RESUME_STEP_CAP_MS: i64 = 1_000 + 1_500;
 /// The clock trust grace window (`graceMs`, 5 min) and how early before it
@@ -956,6 +957,20 @@ impl Agent {
             .into_iter()
             .find(|p| p.is_file())
         });
+        // Phase 5b: the NTP probe's answer latency (timedatectl shim), from
+        // `meta.rig.ntpProbeDelayMs` (p5b-clock-hold; see the shim).
+        if let Some(ms) = tape
+            .meta
+            .rig
+            .as_ref()
+            .and_then(|r| r.get("ntpProbeDelayMs"))
+            .and_then(Value::as_u64)
+        {
+            fs::write(
+                state.join("ntp_delay"),
+                format!("{:.3}", ms as f64 / 1000.0),
+            )?;
+        }
         let (p4_state, p4_env) = p4::prepare_agent(p4plan, &work, &dir, camrotate.as_deref())?;
         for (k, v) in p4_env {
             env.retain(|(ek, _)| *ek != k);

@@ -732,7 +732,7 @@ tolerance = { "epoch_s" = 1.0, "anchor_ms" = 50.0 }
 # :66-70 pollMs), the agent's own GPS/NITZ step (`noteStep`, ts:src/worker.ts:614;
 # its `xorgate-setclock` sudo line), or the 300 s grace fallback (graceMs, first
 # poll past it, ts:src/agent/clock-trust.ts:126-137). From that instant until the
-# held agent's FIRST telemetry publish (capped: NTP 7.5 s, fallback 8 s, step
+# held agent's FIRST telemetry publish (capped: NTP 9 s, fallback 8 s, step
 # 2.5 s) the barrier inputs (LTE file, cli, mqtt_in, conn) wait, exactly as they
 # wait for a reconnecting agent after a cut (post_cut_hold). It only delays
 # inputs; every pair is still compared strictly, nothing is skipped or
@@ -741,3 +741,15 @@ tolerance = { "epoch_s" = 1.0, "anchor_ms" = 50.0 }
 # post_hold_settle_never_waits_past_its_cap_nor_counts_an_early_tick). Found by
 # sweep-A p4-clock-cap (an LTE rewrite at 300.08 s split the first post-fallback
 # pair: phase-5b/evidence/delta-inventory.md).
+#
+# NTP PROBE LATENCY (p5b-clock-hold only; `meta.rig.ntpProbeDelayMs`, the
+# timedatectl shim): the clock-trust probe and the RecordingManager's settings
+# poll are both 5 s setIntervals armed at start (ts:src/agent/clock-trust.ts
+# :66-70,158-163; ts:src/recording/manager.ts:60,327), and the held recorder
+# starts on the first settings poll AFTER the probe's answer (:353-360). With
+# a fast probe, whether that is the same 5 s slot or the next one is a race
+# inside each agent (JS-vs-JS 1 run in 3: one recorder 5 s late). The rig
+# answers the probe 1.5 s late on that tape so the trust instant lands mid-slot;
+# an agent that releases the recorder at the trust instant itself, or on a poll
+# 5 s away from the other side's, still FAILS (recording.enabled per tick and
+# the recorded samples are compared exactly).
