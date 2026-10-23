@@ -419,6 +419,12 @@ kind = "decisions"
   min_span_ms = 1000000
 
   [[rule.row]]
+  id = "led-tick-lag"
+  what = "Phase 5b (WP4; NEW ROW — reviewer sign-off required, rule 7): `metrics.system.led_state` / `health_flags` (X1) are resolved on each agent's OWN 1 s LED heartbeat, not on the publish tick that carries them, from inputs the LED manager caches on that heartbeat; so around a change of a ladder input (a shed rung, the LTE status, the cloud link, a GPS fix) the two payloads may carry the old and the new state one sample apart. Matched ONLY on those two leaves, ONLY as a strict one-sample old/new split on BOTH halves (A_k = B_k−1 and B_k = A_k+1, or the mirror). A value the other side never carried at k±1, or a lag of two samples or more, is UNTOLERATED; every other leaf of the payload (recording.powerShed / liveBlock included) is compared as before"
+  basis = "ts:src/worker.ts:703-705 (`heartbeat` setInterval → `led.tick()`) vs the publish setInterval ts:src/worker.ts:1357 carrying `ledTelemetryNow()` (ts:src/worker.ts:375-381, :1380) — two timers per agent, each on its own phase; inputs cached on the heartbeat: recordingStatusForLed ≤ 2 s (ts:src/worker.ts:653-659), the LTE status re-read ≤ 1 s and async (ts:src/agent/led-manager.ts:27,195) @09da38d. Seen JS-vs-JS @09da38d on p5b-led (phase-5b/evidence/stepB/p5b-led.cal09): 3 single-sample splits (shed start 96.8 s, shed restore 171.2 s, dead_zone end 202.3 s) while recording.* agreed in the same pairs; pinned by diff::tests::led_tick_lag_*"
+  streams = ["telemetry"]
+
+  [[rule.row]]
   id = "input-edge"
   what = "NARROWED per review-wp7 (JS-lag only): within ±1.5 s of an NMEA transition (gps group: stream start/stop/stale/resume, GGA quality change) or a GSV satellites-in-view change, a metrics.gps.* value where the JS agent reads Rust's PREVIOUS sample and the JS NEXT sample equals Rust's value — the line reached Node's read a tick later; a Rust value one tick late is NOT covered; at most 2 ticks per 10 min. Cause: the TS handles NMEA per CHUNK on the event loop (hardware/gps.ts:61-74, fs.ReadStream through the libuv threadpool) and lagged a released line by 0.15–0.4 s in the loaded VM, where Rust's reader thread forwards it at once. Seen 1–2× per 10 min JS-vs-Rust (fix_quality on a 13 ms pair after an NMEA restart; sky_state, whose change is a hold timer measured from GSV ARRIVAL, sky_state.rs / gps.ts), never JS-vs-JS. A value that matches neither neighbour stays UNTOLERATED"
   streams = ["telemetry"]

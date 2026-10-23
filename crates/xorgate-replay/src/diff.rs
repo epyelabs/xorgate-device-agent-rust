@@ -1097,6 +1097,35 @@ impl Cx<'_> {
         (b_moves || a_moves).then(|| r.id.clone())
     }
 
+    /// T8/led-tick-lag (Phase 5b): `metrics.system.led_state` /
+    /// `health_flags` are resolved on each agent's OWN 1 s LED heartbeat
+    /// (ts:src/worker.ts:703-705 `heartbeat` → `led.tick()`), not on the
+    /// publish tick that carries them (ts:src/worker.ts:375-381
+    /// `ledTelemetryNow`, :1380), from inputs the manager caches on that
+    /// heartbeat (recording status ≤ 2 s, ts:src/worker.ts:653-659; LTE
+    /// status re-read ≤ 1 s, async, ts:src/agent/led-manager.ts:27,195). So
+    /// around a change of a ladder input the two agents' payloads may carry
+    /// the old and the new state ONE sample apart. Matched ONLY as a strict
+    /// one-sample old/new split on BOTH halves (A_k = B_k−1 and B_k = A_k+1,
+    /// or the mirror): a value the other side never carried, or a lag of two
+    /// samples or more, stays UNTOLERATED (tests `led_tick_lag_*`).
+    fn led_tick_lag(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
+        let (rid, row) = self.table.decision_row("led-tick-lag")?;
+        if !crate::tolerances::stream_matches(&row.streams, &self.stream)
+            || !matches!(
+                path,
+                "metrics.system.led_state.value" | "metrics.system.health_flags.value"
+            )
+        {
+            return None;
+        }
+        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
+        let [pa, na, pb, nb] = self.neighbors;
+        let is = |n: Option<&Value>, v: &Value| at(n).as_ref() == Some(v);
+        let split = (is(pb, x) && is(na, y)) || (is(nb, x) && is(pa, y));
+        split.then(|| format!("{rid}/led-tick-lag"))
+    }
+
     fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let (rid, row) = self.table.decision_row("input-edge")?;
         if !crate::tolerances::stream_matches(&row.streams, &self.stream)
@@ -1423,6 +1452,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 .or_else(|| cx.transition(path, a, b))
                 .or_else(|| cx.cut_input(path, x, y))
                 .or_else(|| cx.input_edge(path, x, y))
+                .or_else(|| cx.led_tick_lag(path, x, y))
                 .or_else(|| cx.report_input_between(path))
                 .or_else(|| cx.near_wall_step(path))
                 .unwrap_or_else(|| UNTOLERATED.into());
@@ -6193,5 +6223,76 @@ mod tests {
         assert!(k.ends_with("durationMs=<ms> error=delete ME failed (timeout)"));
         assert!(sms_event_norm("obd_scan c1: status=ok durationMs=3", false).is_none());
         assert!(sms_event_norm("clear_sms c1: status=ok total=0", false).is_none());
+    }
+
+    /// T8/led-tick-lag: a one-sample old/new split of the LED leaves, either
+    /// side late, is the row; a two-sample lag, a value the other side never
+    /// carried, or another leaf is UNTOLERATED.
+    #[test]
+    fn led_tick_lag_only_a_one_sample_split_of_the_led_leaves() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, led: i64, cpu: i64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"system":{"led_state":{"value":led},"health_flags":{"value":led * 77},
+                "cpu_temp":{"value":cpu}}}})
+        };
+        let side = |kind: &str, vals: &[i64], cpus: &[i64], off: i64| {
+            cap(
+                kind,
+                vals.iter()
+                    .zip(cpus)
+                    .enumerate()
+                    .map(|(k, (v, c))| {
+                        let ts = 20_000 + off + k as i64 * 1000;
+                        msg(ts, "telemetry", tel(ts, k as i64 + 1, *v, *c))
+                    })
+                    .collect(),
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            ..Default::default()
+        };
+        let run = |a: &Capture, b: &Capture| {
+            diff_with(a, b, &play, &InputFacts::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("metrics.system."))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let lag = "T8/led-tick-lag".to_string();
+        let z = [40, 40, 40, 40, 40];
+        // A one sample late (either agent kind, either order): both leaves.
+        let got = run(
+            &side("js", &[0, 0, 5, 5, 5], &z, 0),
+            &side("rust", &[0, 5, 5, 5, 5], &z, 10),
+        );
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|(_, tol)| *tol == lag), "{got:?}");
+        let got = run(
+            &side("js", &[0, 5, 5, 5, 5], &z, 0),
+            &side("rust", &[0, 0, 5, 5, 5], &z, 10),
+        );
+        assert!(got.iter().all(|(_, tol)| *tol == lag), "{got:?}");
+        // NEGATIVE: two samples late → the first split is not one-sample.
+        let got = run(
+            &side("js", &[0, 0, 0, 5, 5], &z, 0),
+            &side("rust", &[0, 5, 5, 5, 5], &z, 10),
+        );
+        assert!(got.iter().any(|(_, tol)| tol == UNTOLERATED), "{got:?}");
+        // NEGATIVE: a state the other side never carried.
+        let got = run(
+            &side("js", &[0, 3, 5, 5, 5], &z, 0),
+            &side("rust", &[0, 5, 5, 5, 5], &z, 10),
+        );
+        assert!(got.iter().any(|(_, tol)| tol == UNTOLERATED), "{got:?}");
+        // NEGATIVE: the same shape on another system leaf is not this row.
+        let got = run(
+            &side("js", &[0, 0, 0, 0, 0], &[40, 40, 50, 50, 50], 0),
+            &side("rust", &[0, 0, 0, 0, 0], &[40, 50, 50, 50, 50], 10),
+        );
+        assert!(got.iter().all(|(_, tol)| *tol != lag), "{got:?}");
     }
 }
