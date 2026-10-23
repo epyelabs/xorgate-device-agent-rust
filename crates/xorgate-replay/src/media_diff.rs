@@ -1724,11 +1724,11 @@ fn imu_oracle(
     let reads = read_instants(l);
     let mut out = BTreeSet::new();
     for (i, (_, o)) in l.iter().enumerate() {
-        let imu: BTreeMap<&str, f64> = o
+        let imu: BTreeMap<&str, &String> = o
             .iter()
             .filter_map(|(k, v)| {
                 let leaf = k.strip_prefix("metrics.imu.")?.strip_suffix(".value")?;
-                Some((leaf, v.parse::<f64>().ok()?))
+                Some((leaf, v))
             })
             .collect();
         if imu.is_empty() {
@@ -1740,8 +1740,11 @@ fn imu_oracle(
             [mount, None].iter().any(|m| {
                 let g = serde_json::to_value(xorgate_core::imu_group::map_latest(smp, *m))
                     .unwrap_or(Value::Null);
-                imu.iter()
-                    .all(|(leaf, v)| g[*leaf]["value"].as_f64() == Some(*v))
+                // The TEXT (value + JS number format, T9) must match.
+                imu.iter().all(|(leaf, v)| {
+                    // serde_json keeps 1 (u64) ≠ 1.0 (f64): the format too.
+                    serde_json::from_str::<Value>(v).ok().as_ref() == Some(&g[*leaf]["value"])
+                })
             })
         });
         if hit {
@@ -1749,6 +1752,42 @@ fn imu_oracle(
         }
     }
     out
+}
+
+/// R-P3G-2 shape half: does every sample of `seg` carrying the leaf `p`
+/// (an IMU leaf, or a gps fix leaf) pass the tape oracle?
+fn segment_oracle_ok(
+    seg: &[Value],
+    p: &str,
+    facts: &crate::diff::InputFacts,
+    mount: Option<&xorgate_core::orientation::ImuMount>,
+) -> bool {
+    let l: RecSamples = seg
+        .iter()
+        .filter(|x| x["metrics"].is_object())
+        .map(|x| {
+            let mut o = BTreeMap::new();
+            leaf_texts(&x["metrics"], "metrics", &mut o);
+            (x["ts"].as_i64().unwrap_or(0), o)
+        })
+        .collect();
+    let carrying: Vec<usize> = (0..l.len()).filter(|i| l[*i].1.contains_key(p)).collect();
+    if carrying.is_empty() {
+        return false;
+    }
+    let ok = if p.starts_with("metrics.imu.") && !facts.imu_samples.is_empty() {
+        imu_oracle(&l, &facts.imu_samples, mount)
+    } else if p
+        .strip_prefix("metrics.gps.")
+        .and_then(|r| r.strip_suffix(".value"))
+        .is_some_and(|x| GPS_FIX_LEAVES.contains(&x))
+        && !facts.gps_snaps.is_empty()
+    {
+        snap_oracle(&l, "gps", &facts.gps_snaps)
+    } else {
+        return false;
+    };
+    carrying.iter().all(|i| ok.contains(i))
 }
 
 /// The fix-derived gps leaves the NMEA oracle verifies (`gps_fix_leaves`).
@@ -1773,19 +1812,17 @@ const GPS_ORACLE_SNAPS: usize = 40;
 fn snap_oracle(
     l: &RecSamples,
     group: &str,
-    snaps: &[(i64, BTreeMap<String, f64>)],
+    snaps: &[(i64, BTreeMap<String, String>)],
 ) -> BTreeSet<usize> {
     let reads = read_instants(l);
     let pre = format!("metrics.{group}.");
     let mut out = BTreeSet::new();
     for (i, (_, o)) in l.iter().enumerate() {
-        let leaves: BTreeMap<&str, Option<f64>> = o
+        let leaves: BTreeMap<&str, &String> = o
             .iter()
             .filter_map(|(k, v)| {
                 let leaf = k.strip_prefix(pre.as_str())?.strip_suffix(".value")?;
-                GPS_FIX_LEAVES
-                    .contains(&leaf)
-                    .then(|| (leaf, v.parse::<f64>().ok()))
+                GPS_FIX_LEAVES.contains(&leaf).then_some((leaf, v))
             })
             .collect();
         if leaves.is_empty() {
@@ -1798,7 +1835,7 @@ fn snap_oracle(
                 .iter()
                 .all(|leaf| match (leaves.get(leaf), s.get(*leaf)) {
                     (None, None) => true,
-                    (Some(Some(v)), Some(x)) => v == x,
+                    (Some(v), Some(x)) => *v == x,
                     _ => false,
                 })
         });
@@ -1836,7 +1873,13 @@ fn oracle_filter(
             Some(k) => {
                 j = k + 1;
                 paired_b.insert(k);
-                if la[i].1.get(p) != lb[k].1.get(p) && va.contains(&i) && vb.contains(&k) {
+                // A side without the leaf in that sample skipped the group
+                // (not updated since its last write, telemetry-recorder.ts:
+                // 105-106); its count is the presence check's.
+                let (pa, pb) = (la[i].1.get(p), lb[k].1.get(p));
+                let ok_a = va.contains(&i) || pa.is_none();
+                let ok_b = vb.contains(&k) || pb.is_none();
+                if pa != pb && ok_a && ok_b && (pa.is_some() || pb.is_some()) {
                     drop_a.insert(i);
                     drop_b.insert(k);
                     n += 1;
@@ -2175,6 +2218,8 @@ pub fn diff_media(
     table: &Table,
     rep: &mut Report,
 ) {
+    // The tape's input facts (also the R-P3G-2 oracle's, before the values).
+    let facts_early = crate::diff::InputFacts::for_play(play);
     for k in [
         "children",
         "session",
@@ -2712,8 +2757,18 @@ pub fn diff_media(
                     let num_only = |o: Option<&BTreeSet<&'static str>>| {
                         o.is_some_and(|s| s.iter().all(|k| *k == "int" || *k == "float"))
                     };
+                    // R-P3G-2: likewise a high-rate input's leaf where every
+                    // sample of the segment carrying it, on both sides, is a
+                    // proven read of the tape (the oracle checks the TEXT, so
+                    // the number format itself is still pinned).
+                    let oracle_ok = num_only(sha.get(p))
+                        && num_only(shb.get(p))
+                        && has_row(table, REC_INPUT_BETWEEN)
+                        && segment_oracle_ok(&pa, p, &facts_early, a.imu_mount.as_ref())
+                        && segment_oracle_ok(&pb, p, &facts_early, b.imu_mount.as_ref());
                     let tol = match table.numeric("telemetry", p) {
                         Some((id, _)) if num_only(sha.get(p)) && num_only(shb.get(p)) => id,
+                        _ if oracle_ok => REC_INPUT_BETWEEN.to_string(),
                         _ => UNTOLERATED.to_string(),
                     };
                     rep.push(mm(
@@ -2805,7 +2860,7 @@ pub fn diff_media(
     }
 
     // ---- recorded telemetry VALUES + per-group presence (G1)
-    let facts = crate::diff::InputFacts::for_play(play);
+    let facts = facts_early;
     let (va, vb) = (segments_by_seq(a), segments_by_seq(b));
     stat(rep, "rec-values");
     stat(rep, "rec-presence");
@@ -5291,5 +5346,57 @@ mod tests {
         let lb = vec![s(1_250, "1"), s(2_250, "2"), s(3_250, "2")];
         let (_, _, n) = straddle_filter(&la, &lb, p, &epoch, 50);
         assert_eq!(n, 1);
+    }
+
+    /// R-P3G-2 IMU oracle: a recorded sample is verified only when its TEXT
+    /// equals `map_latest` of a line released before its read; a value no
+    /// line gave, a line from long before, or `1.0` for `1` are not.
+    #[test]
+    fn imu_oracle_verifies_only_genuine_recent_reads() {
+        use xorgate_core::imu::{ImuSample, LinAccel};
+        use xorgate_core::orientation::Quat;
+        let line = |z: f64| ImuSample {
+            quat: Quat {
+                r: 1.0,
+                i: 0.0,
+                j: 0.0,
+                k: 0.0,
+            },
+            linaccel: LinAccel { x: 0.0, y: 0.0, z },
+        };
+        let leaves = |smp: &ImuSample, z_text: Option<&str>| {
+            let g = serde_json::to_value(xorgate_core::imu_group::map_latest(smp, None)).unwrap();
+            let mut o = BTreeMap::new();
+            leaf_texts(&g, "metrics.imu", &mut o);
+            o.retain(|k, _| k.ends_with(".value"));
+            if let Some(t) = z_text {
+                o.insert("metrics.imu.accel_z.value".into(), t.into());
+            }
+            o
+        };
+        // 16 Hz lines from 0; recorder reads at 1 000, 2 000, 3 000, 4 000.
+        let lines: Vec<(i64, ImuSample)> =
+            (0..80).map(|k| (k * 62, line(k as f64 / 1000.0))).collect();
+        let near = |t: i64| lines.iter().rev().find(|(w, _)| *w <= t).unwrap().1;
+        let l: RecSamples = vec![
+            (1_000, leaves(&near(1_000), None)),        // genuine
+            (2_000, leaves(&near(2_000), Some("0.5"))), // a value no line gave
+            (3_000, leaves(&lines[2].1, None)),         // a line from ~3 s before
+            (4_000, leaves(&line(1.0), None)),          // z = 1 → "1" … ok only if released
+        ];
+        let ok = imu_oracle(&l, &lines, None);
+        assert!(ok.contains(&0));
+        assert!(!ok.contains(&1), "a value the tape never released");
+        assert!(!ok.contains(&2), "older than the recent-line window");
+        assert!(!ok.contains(&3));
+        // Format: the same value written `1.0` (not JS) fails, `1` passes.
+        let lines1: Vec<(i64, ImuSample)> = vec![(1_000, line(1.0))];
+        let l1: RecSamples = vec![(1_010, leaves(&line(1.0), None))];
+        assert!(imu_oracle(&l1, &lines1, None).contains(&0));
+        let l2: RecSamples = vec![(1_010, leaves(&line(1.0), Some("1.0")))];
+        assert!(
+            !imu_oracle(&l2, &lines1, None).contains(&0),
+            "1.0 is not the JS text of 1"
+        );
     }
 }

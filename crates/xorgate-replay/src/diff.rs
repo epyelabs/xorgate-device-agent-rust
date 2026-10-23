@@ -200,7 +200,7 @@ pub struct InputFacts {
     /// aggregator (xorgate_core::nmea::FixAggregator, `nmea.ts:263-298`) fed
     /// the tape's lines in release order, mapped like `mapLatest`
     /// (gps_group.rs, `gps.ts:261-300`): the recorded-gps input oracle.
-    pub gps_snaps: Vec<(i64, BTreeMap<String, f64>)>,
+    pub gps_snaps: Vec<(i64, BTreeMap<String, String>)>,
     /// Wall ms (sorted) of every released record that feeds a telemetry value
     /// read at a tick — NMEA, LTE file, exec, dt, i2cdetect, IMU helper
     /// spawn/exit (not the continuous IMU sample lines): the re-pair's timing
@@ -266,9 +266,9 @@ pub fn release_walls(records: &[TapeRecord], releases: &[Release]) -> Vec<Option
 /// The fix-derived leaves of `mapLatest` (rs xorgate_core::gps_group::
 /// map_latest, its fix half): what a recorded gps sample must show when the
 /// agent read this fix.
-pub fn gps_fix_leaves(fix: &xorgate_core::nmea::GpsFix) -> BTreeMap<String, f64> {
+pub fn gps_fix_leaves(fix: &xorgate_core::nmea::GpsFix) -> BTreeMap<String, String> {
     use xorgate_core::round::round;
-    let mut m = BTreeMap::new();
+    let mut m: BTreeMap<String, f64> = BTreeMap::new();
     let positioned = xorgate_core::nmea::has_position(fix);
     m.insert("fix_quality".into(), fix.fix_quality.unwrap_or(0.0));
     if let Some(v) = fix.satellites {
@@ -293,7 +293,16 @@ pub fn gps_fix_leaves(fix: &xorgate_core::nmea::GpsFix) -> BTreeMap<String, f64>
             }
         }
     }
-    m
+    // The JS-number TEXT the agent writes (MetricLeaf / JsNumber), so the
+    // oracle also pins the number FORMAT (T9), not only the value.
+    m.into_iter()
+        .map(|(k, v)| {
+            let t = serde_json::to_value(xorgate_core::telemetry::MetricLeaf::new(v))
+                .map(|x| x["value"].to_string())
+                .unwrap_or_default();
+            (k, t)
+        })
+        .collect()
 }
 
 impl InputFacts {
