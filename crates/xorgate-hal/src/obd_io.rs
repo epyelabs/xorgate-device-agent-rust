@@ -664,9 +664,12 @@ mod tests {
         let fake = dir.join("bluetoothctl");
         std::fs::write(
             &fake,
+            // The marker appears ATOMICALLY (written aside, then renamed):
+            // `> marker` alone creates it empty before `echo` writes, so a
+            // poll could see it existing with no content (the WP4-run flake).
             format!(
-                "#!/bin/sh\necho \"$@\" > {}\necho 'Device has been removed'\n",
-                marker.display()
+                "#!/bin/sh\necho \"$@\" > {m}.tmp\nmv {m}.tmp {m}\necho 'Device has been removed'\n",
+                m = marker.display()
             ),
         )
         .unwrap();
@@ -677,8 +680,11 @@ mod tests {
             bluetoothctl: fake.display().to_string(),
         };
         let fut = io.unbond("AA:BB:CC:DD:EE:FF".into());
+        // The future is NOT polled while we wait: only a call-time spawn can
+        // make the marker appear. Bounded but generous (a loaded CI box can
+        // take seconds to fork + exec a shell).
         let t0 = std::time::Instant::now();
-        while !marker.exists() && t0.elapsed() < Duration::from_secs(5) {
+        while !marker.exists() && t0.elapsed() < Duration::from_secs(60) {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(
