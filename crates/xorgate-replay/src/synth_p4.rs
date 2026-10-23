@@ -602,7 +602,14 @@ fn add_p5b(
             // side only (calibration 2026-10-23: the restarted helper then met
             // the emulator mid-session, CF81). The seeded settings carry it all.
             cmd(b, 10_200, "synth-p5b-obd-scan-1", "obd_scan", None)?;
-            let forget_at = if periph { 60_200 } else { 20_200 };
+            // Off the 30 s APN-watch grid (ts:src/agent/config-sync.ts:1655-
+            // 1675, `if (this.timer) return`): a forget at 60.2 s requested its
+            // report within ~50 ms of the agents' 2nd APN tick, so whether that
+            // tick logged `modem APN state changed — re-reporting` depended on
+            // which landed first on each side (stepC/p5b-obd-cmds.jsrs2). 52.2 s
+            // is ≥ 7 s from any APN tick and its debounced report (54.2 s)
+            // lands before the next one.
+            let forget_at = if periph { 52_200 } else { 20_200 };
             cmd(b, forget_at, "synth-p5b-obd-forget-1", "obd_forget", None)?;
         }
         _ => {}
