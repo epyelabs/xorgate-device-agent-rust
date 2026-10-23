@@ -618,7 +618,40 @@ fn parse_payload(raw: &str) -> Value {
 /// The end-of-run files: `final.json` (every key the player snapshots, raw
 /// bytes as base64, `{"present":false}` when absent) when the capture has
 /// one, else the legacy `final/<name>` copies of [`FILES`].
+/// Phase 5b: the rig-assigned per-side OBD serial (each side's own ELM327
+/// emulator pty, `XORGATE_OBD_SERIAL` in `meta.json`'s env, p5b.rs) — a rig
+/// input name like the deviceId, normalised to `{obd-serial}` the same way.
+fn side_obd_serial(dir: &Path) -> Option<String> {
+    std::fs::read(dir.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|m| m["env"]["XORGATE_OBD_SERIAL"].as_str().map(str::to_string))
+        .filter(|p| p.starts_with("/dev/"))
+}
+
+/// [`norm_id`] + the side's OBD serial (`{obd-serial}`).
+fn norm_side(s: &str, id: &str, serial: Option<&str>) -> String {
+    let t = norm_id(s, id);
+    let Some(p) = serial else { return t };
+    // Only a whole device name: `/dev/pts/3` must not rewrite `/dev/pts/30`.
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t.as_str();
+    while let Some(i) = rest.find(p) {
+        let after = &rest[i + p.len()..];
+        out.push_str(&rest[..i]);
+        if after.starts_with(|c: char| c.is_ascii_digit()) {
+            out.push_str(p);
+        } else {
+            out.push_str("{obd-serial}");
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
+    let serial = side_obd_serial(dir);
     // Phase 3: renders (`etc/pipelines/<key>.gst`) name the agent's own shm
     // socket under its work dir (`/tmp/rig-work/<label>/home/shm/…`): the
     // work dir is normalised to `<work>` like the deviceId (phase file
@@ -633,7 +666,7 @@ fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
         })
         .filter(|w| !w.is_empty());
     let text = |b: &[u8]| {
-        let t = norm_id(&String::from_utf8_lossy(b), id);
+        let t = norm_side(&String::from_utf8_lossy(b), id, serial.as_deref());
         match &work {
             Some(w) => t.replace(w.as_str(), "<work>"),
             None => t,
@@ -719,6 +752,8 @@ impl Capture {
                 .with_context(|| format!("{}/meta.json", dir.display()))?,
         )?;
         let id = meta.device_id.clone();
+        let serial = side_obd_serial(dir);
+        let norm_id = |s: &str, id: &str| norm_side(s, id, serial.as_deref());
         let mut msgs = Vec::new();
         if let Ok(text) = std::fs::read_to_string(dir.join("mqtt.ndjson")) {
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -6294,5 +6329,22 @@ mod tests {
             &side("rust", &[0, 0, 0, 0, 0], &[40, 50, 50, 50, 50], 10),
         );
         assert!(got.iter().all(|(_, tol)| *tol != lag), "{got:?}");
+    }
+
+    /// Phase 5b: each side's emulator pty is a rig input name (like the
+    /// deviceId): normalised to `{obd-serial}`; nothing else is touched.
+    #[test]
+    fn norm_side_replaces_the_sides_own_obd_serial_only() {
+        let id = "00000000-0000-4000-8000-00000000000a";
+        let t = format!(r#"{{"deviceId":"{id}","serial":"/dev/pts/3","other":"/dev/pts/30x"}}"#);
+        assert_eq!(
+            norm_side(&t, id, Some("/dev/pts/3")),
+            r#"{"deviceId":"{id}","serial":"{obd-serial}","other":"/dev/pts/30x"}"#
+        );
+        assert_eq!(
+            norm_side("/dev/pts/1", id, Some("/dev/pts/3")),
+            "/dev/pts/1"
+        );
+        assert_eq!(norm_side("/dev/pts/3", id, None), "/dev/pts/3");
     }
 }

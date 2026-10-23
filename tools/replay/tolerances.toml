@@ -26,7 +26,19 @@ paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "star
   # Phase 3 (phase-3-recording-media.md table "payload media/recording blocks"):
   # backlogBytes counts mp4 sizes (encoder-dependent), `since` is the shed
   # start instant (lastUploadAt is covered by `*At`).
-  "recording.backlogBytes", "**.recording.backlogBytes", "recording.liveBlock.since", "**.liveBlock.since"]
+  "recording.backlogBytes", "**.recording.backlogBytes", "recording.liveBlock.since", "**.liveBlock.since",
+  # Phase 5b (WP4; reviewer to confirm — same class as liveBlock.since): the OBD
+  # status's `since` is the wall instant the collector entered its state
+  # (ts:src/agent/collectors/obd.ts:292,337 `since = now()` @09da38d).
+  "obd.since", "**.obd.since", "**.obd.status.since"]
+
+[[rule]]
+id = "T17"
+title = "Phase 5b (WP4; NEW RULE — reviewer sign-off required, rule 7): the OBD helper's MEASURED request rate, ±2.0 req/s"
+basis = "python/obd/session.py:471-472,504 @09da38d: `rate = (requests − n0) / elapsed` over the probe window on time.monotonic(), rounded to 0.1 — a wall-rate of the emulator's answers, measured by the SAME vendored helper on both sides (each side has its own emulator pty); the agent seeds `reqPerSec` from it, then from two audit lines (ts:src/agent/collectors/obd.ts:666-677 `reqPerSec`, `requestRate`). JS-vs-JS @09da38d p5b-obd-emulator: 19 vs 18.8 (stepB/p5b-obd-emulator.cal09). Every other OBD value (link, profile, fields, counters) is exact"
+kind = "numeric"
+streams = ["report", "state", "telemetry"]
+tolerance = { "effective.obd.profile.rate_req_s" = 2.0, "obd.reqPerSec" = 2.0, "effective.obd.status.reqPerSec" = 2.0, "obd.profile.rate_req_s" = 2.0 }
 
 [[rule]]
 id = "T2"
