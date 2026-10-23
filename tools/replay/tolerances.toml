@@ -437,6 +437,12 @@ kind = "decisions"
   streams = ["report"]
 
   [[rule.row]]
+  id = "obd-sample-split"
+  what = "Phase 5b (WP4; NEW ROW — reviewer sign-off required, rule 7; CF81): a `metrics.obd.*` value is the side's own helper's latest sample (its 1 Hz poll cycle runs from ITS start, one emulator per side), read by the agent's own 1 s tick: a value that changes for one helper cycle (the taos-2022-crank voltage dip) can reach the two agents one sample apart. Matched ONLY on `metrics.obd.*.value`, ONLY as a strict one-sample old/new split on BOTH halves (A_k = B_k−1 and B_k = A_k+1, or the mirror); a value one side never carried at k±1, or a lag of two samples, is UNTOLERATED"
+  basis = "python/obd/session.py poll loop (1 Hz per helper, own start) + ts:src/agent/collectors/obd.ts `sample()`/`read()` → `mapLatest()` (the latest helper `sample` line) @09da38d. Seen JS-vs-JS @09da38d on p5b-obd-crank (stepB/p5b-obd-crank.cal09r2): module_voltage 12.1 vs 9.82 one sample apart. Pinned by diff::tests::obd_sample_split_only_a_one_sample_split"
+  streams = ["telemetry"]
+
+  [[rule.row]]
   id = "led-tick-lag"
   what = "Phase 5b (WP4; NEW ROW — reviewer sign-off required, rule 7): `metrics.system.led_state` / `health_flags` (X1) are resolved on each agent's OWN 1 s LED heartbeat, not on the publish tick that carries them, from inputs the LED manager caches on that heartbeat; so around a change of a ladder input (a shed rung, the LTE status, the cloud link, a GPS fix) the two payloads may carry the old and the new state one sample apart. Matched ONLY on those two leaves, ONLY as a strict one-sample old/new split on BOTH halves (A_k = B_k−1 and B_k = A_k+1, or the mirror). A value the other side never carried at k±1, or a lag of two samples or more, is UNTOLERATED; every other leaf of the payload (recording.powerShed / liveBlock included) is compared as before"
   basis = "ts:src/worker.ts:703-705 (`heartbeat` setInterval → `led.tick()`) vs the publish setInterval ts:src/worker.ts:1357 carrying `ledTelemetryNow()` (ts:src/worker.ts:375-381, :1380) — two timers per agent, each on its own phase; inputs cached on the heartbeat: recordingStatusForLed ≤ 2 s (ts:src/worker.ts:653-659), the LTE status re-read ≤ 1 s and async (ts:src/agent/led-manager.ts:27,195) @09da38d. Seen JS-vs-JS @09da38d on p5b-led (phase-5b/evidence/stepB/p5b-led.cal09): 3 single-sample splits (shed start 96.8 s, shed restore 171.2 s, dead_zone end 202.3 s) while recording.* agreed in the same pairs; pinned by diff::tests::led_tick_lag_*"

@@ -1161,6 +1161,30 @@ impl Cx<'_> {
         split.then(|| format!("{rid}/led-tick-lag"))
     }
 
+    /// T8/obd-sample-split (Phase 5b; CF81): a `metrics.obd.*` value is the
+    /// helper's latest sample, produced on THAT side's helper cycle (1 Hz
+    /// from its own start, python/obd/session.py poll loop @09da38d) and read
+    /// by the agent tick (ts:src/agent/collectors/obd.ts `sample()` /
+    /// `mapLatest()`), two phases per side; so a value that changes for one
+    /// helper cycle (the crank dip) can reach the two agents one sample
+    /// apart. Matched ONLY as the strict one-sample old/new split on both
+    /// halves (as T8/led-tick-lag); a value the other side never carried at
+    /// k±1, or a two-sample lag, is UNTOLERATED.
+    fn obd_sample_split(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
+        let (rid, row) = self.table.decision_row("obd-sample-split")?;
+        if !crate::tolerances::stream_matches(&row.streams, &self.stream)
+            || !path.starts_with("metrics.obd.")
+            || !path.ends_with(".value")
+        {
+            return None;
+        }
+        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
+        let [pa, na, pb, nb] = self.neighbors;
+        let is = |n: Option<&Value>, v: &Value| at(n).as_ref() == Some(v);
+        let split = (is(pb, x) && is(na, y)) || (is(nb, x) && is(pa, y));
+        split.then(|| format!("{rid}/obd-sample-split"))
+    }
+
     fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let (rid, row) = self.table.decision_row("input-edge")?;
         if !crate::tolerances::stream_matches(&row.streams, &self.stream)
@@ -1488,6 +1512,7 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 .or_else(|| cx.cut_input(path, x, y))
                 .or_else(|| cx.input_edge(path, x, y))
                 .or_else(|| cx.led_tick_lag(path, x, y))
+                .or_else(|| cx.obd_sample_split(path, x, y))
                 .or_else(|| cx.report_input_between(path))
                 .or_else(|| cx.near_wall_step(path))
                 .unwrap_or_else(|| UNTOLERATED.into());
@@ -6542,5 +6567,59 @@ mod tests {
             0,
         );
         assert!(audit_cycle_delta(&a, &h).is_none());
+    }
+
+    /// T8/obd-sample-split: a one-sample split of a `metrics.obd.*` value is
+    /// the row; a dip one side never carried is not.
+    #[test]
+    fn obd_sample_split_only_a_one_sample_split() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, v: f64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"obd":{"link":{"value":2},"module_voltage":{"value":v,"unit":"V"}}}})
+        };
+        let side = |kind: &str, vals: &[f64], off: i64| {
+            cap(
+                kind,
+                vals.iter()
+                    .enumerate()
+                    .map(|(k, v)| {
+                        let ts = 20_000 + off + k as i64 * 1000;
+                        msg(ts, "telemetry", tel(ts, k as i64 + 1, *v))
+                    })
+                    .collect(),
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            ..Default::default()
+        };
+        let run = |a: &Capture, b: &Capture| {
+            diff_with(a, b, &play, &InputFacts::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == "metrics.obd.module_voltage.value")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        let row = "T8/obd-sample-split".to_string();
+        let got = run(
+            &side("js", &[12.1, 12.1, 9.82, 12.1, 12.1], 0),
+            &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
+        );
+        assert!(!got.is_empty() && got.iter().all(|t| *t == row), "{got:?}");
+        // NEGATIVE: the dip only on one side.
+        let got = run(
+            &side("js", &[12.1, 12.1, 12.1, 12.1, 12.1], 0),
+            &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
+        );
+        assert!(got.iter().any(|t| t == UNTOLERATED), "{got:?}");
+        // NEGATIVE: two samples apart.
+        let got = run(
+            &side("js", &[12.1, 12.1, 12.1, 9.82, 12.1], 0),
+            &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
+        );
+        assert!(got.iter().any(|t| t == UNTOLERATED), "{got:?}");
     }
 }
