@@ -104,6 +104,9 @@ pub struct MediaCapture {
     /// own tape (`<run>/<label>/agent-tape.ndjson.gz`, Rust only; empty for
     /// a JS side): the T4/rec-sample epoch anchor (review-wp6 F4).
     pub nmea_reads: Vec<(i64, String)>,
+    /// Phase 5b (R-P3G-2): the side's `imuMount` at the end (final
+    /// settings.json), for the recorded-IMU input oracle's euler leaves.
+    pub imu_mount: Option<xorgate_core::orientation::ImuMount>,
     /// Anything media-related captured at all.
     pub present: bool,
 }
@@ -647,6 +650,15 @@ impl MediaCapture {
             end_backlog,
             shed_events,
             nmea_reads: nmea_lines(&tape, None),
+            imu_mount: std::fs::read(dir.join("final.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .and_then(|f| {
+                    f["files"]["settings.json"]["text"]
+                        .as_str()
+                        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                })
+                .and_then(|st| xorgate_core::orientation::parse_imu_mount(&st["imuMount"])),
             present,
         }
     }
@@ -1379,8 +1391,35 @@ fn d30_rec_value_gap(
 /// - per group (`system`: the `(samples without system)` check above), the
 ///   count of samples carrying it: |Δ| ≤ that group's input transitions in
 ///   the stretch ±1.5 s (T4, `InputFacts::groups`).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn rec_values(
+    sid: &str,
+    (a, b): (&BTreeMap<u64, String>, &BTreeMap<u64, String>),
+    ep: &(Timeline, Timeline),
+    play: &PlayInfo,
+    facts: &crate::diff::InputFacts,
+    kinds: (&str, &str),
+    pmic: &[(i64, String)],
+    table: &Table,
+    rep: &mut Report,
+) {
+    rec_values_m(
+        sid,
+        (a, b),
+        ep,
+        play,
+        facts,
+        kinds,
+        pmic,
+        table,
+        rep,
+        (None, None),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rec_values_m(
     sid: &str,
     (a, b): (&BTreeMap<u64, String>, &BTreeMap<u64, String>),
     (ea, eb): &(Timeline, Timeline),
@@ -1390,6 +1429,10 @@ fn rec_values(
     pmic: &[(i64, String)],
     table: &Table,
     rep: &mut Report,
+    mounts: (
+        Option<&xorgate_core::orientation::ImuMount>,
+        Option<&xorgate_core::orientation::ImuMount>,
+    ),
 ) {
     let id = "T4/rec-sample";
     let d30_gap_row = table
@@ -1434,6 +1477,31 @@ fn rec_values(
                 .collect()
         };
         let (la, lb) = (leaves(&xa), leaves(&xb));
+        // R-P3G-2, high-rate IMU: each side's recorded IMU sample is checked
+        // against the TAPE: its quat/accel (and euler, with that side's
+        // imuMount or none) must be exactly `map_latest` of one of the IMU
+        // lines released shortly before its read instant. Those samples are
+        // proven genuine reads of the input; pairs of two such samples are
+        // then not cross-compared (they read different 16 Hz lines).
+        let (va_imu, vb_imu) = if has_row(table, REC_INPUT_BETWEEN) && !facts.imu_samples.is_empty()
+        {
+            (
+                imu_oracle(&la, &facts.imu_samples, mounts.0),
+                imu_oracle(&lb, &facts.imu_samples, mounts.1),
+            )
+        } else {
+            (BTreeSet::new(), BTreeSet::new())
+        };
+        // … and gps the same way, for its FIX leaves (the tape's NMEA through
+        // the fix aggregator); the sky leaves keep the timing rule.
+        let (va_gps, vb_gps) = if has_row(table, REC_INPUT_BETWEEN) && !facts.gps_snaps.is_empty() {
+            (
+                snap_oracle(&la, "gps", &facts.gps_snaps),
+                snap_oracle(&lb, "gps", &facts.gps_snaps),
+            )
+        } else {
+            (BTreeSet::new(), BTreeSet::new())
+        };
         let paths: BTreeSet<&String> = la
             .iter()
             .chain(lb.iter())
@@ -1459,12 +1527,43 @@ fn rec_values(
                 continue; // host-read (T3): the live stream compares them
             }
             stat(rep, "rec-values").compared += 1;
+            let group = p.split('.').nth(1).unwrap_or("");
+            let rel = walls(group);
+            // R-P3G-2 (phase-3 gate, Phase 5b WP4): pair the two sides'
+            // recorder ticks by time and drop, for THIS leaf only, each pair
+            // whose two reads straddle a release of the leaf's group input
+            // (they read different inputs: a real 16 Hz IMU or a 1 Hz NMEA
+            // epoch between two ticks ~250 ms apart) and whose values differ.
+            // Every other pair keeps its exact comparison below.
+            let gps_fix_leaf = group == "gps"
+                && p.strip_prefix("metrics.gps.")
+                    .and_then(|r| r.strip_suffix(".value"))
+                    .is_some_and(|l| GPS_FIX_LEAVES.contains(&l));
+            let (la_p, lb_p, dropped) = if group == "imu" {
+                // IMU: only the tape oracle removes pairs (never timing alone).
+                oracle_filter(&la, &lb, p, &va_imu, &vb_imu)
+            } else if gps_fix_leaf && !(va_gps.is_empty() && vb_gps.is_empty()) {
+                oracle_filter(&la, &lb, p, &va_gps, &vb_gps)
+            } else if has_row(table, REC_INPUT_BETWEEN) && !rel.is_empty() {
+                straddle_filter(&la, &lb, p, &rel, collision)
+            } else {
+                (la.clone(), lb.clone(), 0)
+            };
+            if dropped > 0 {
+                rep.push(mm(
+                    "rec-telemetry",
+                    &at,
+                    &format!("{p}(paired reads straddling an input)"),
+                    format!("{dropped} pair(s)"),
+                    format!("{dropped} pair(s)"),
+                    REC_INPUT_BETWEEN,
+                ));
+            }
+            let (la, lb) = (la_p, lb_p);
             let (sa, sb) = (steps(&la, p), steps(&lb, p));
             if sa.iter().map(|s| &s.0).eq(sb.iter().map(|s| &s.0)) {
                 continue;
             }
-            let group = p.split('.').nth(1).unwrap_or("");
-            let rel = walls(group);
             // NARROWED (review-wp6 re-check): the colliding release is THE
             // one that brought the step on the side holding it (the last
             // release of the group at or before that sample, ≤ 1.1 s before
@@ -1605,6 +1704,298 @@ fn rec_values(
             ));
         }
     }
+}
+
+/// IMU lines considered "recent" for a recorded sample: the last ones the
+/// tape released before its read instant (+ the 50 ms delivery margin).
+const IMU_ORACLE_LINES: usize = 24;
+
+/// R-P3G-2: the indices of `l` whose every `metrics.imu.*` leaf equals
+/// `map_latest` (the agent's own mapping, xorgate_core::imu_group, parity
+/// with the TS `mapLatest`, ts:src/agent/collectors/imu.ts:81-106) of one IMU
+/// line the tape released before that sample's read instant — one of the
+/// last IMU_ORACLE_LINES (~1.5 s at 16 Hz). euler is tried with the side's
+/// final `imuMount` and with none.
+fn imu_oracle(
+    l: &RecSamples,
+    lines: &[(i64, xorgate_core::imu::ImuSample)],
+    mount: Option<&xorgate_core::orientation::ImuMount>,
+) -> BTreeSet<usize> {
+    let reads = read_instants(l);
+    let mut out = BTreeSet::new();
+    for (i, (_, o)) in l.iter().enumerate() {
+        let imu: BTreeMap<&str, f64> = o
+            .iter()
+            .filter_map(|(k, v)| {
+                let leaf = k.strip_prefix("metrics.imu.")?.strip_suffix(".value")?;
+                Some((leaf, v.parse::<f64>().ok()?))
+            })
+            .collect();
+        if imu.is_empty() {
+            continue;
+        }
+        let end = lines.partition_point(|(w, _)| *w <= reads[i] + 50);
+        let start = end.saturating_sub(IMU_ORACLE_LINES);
+        let hit = lines[start..end].iter().rev().any(|(_, smp)| {
+            [mount, None].iter().any(|m| {
+                let g = serde_json::to_value(xorgate_core::imu_group::map_latest(smp, *m))
+                    .unwrap_or(Value::Null);
+                imu.iter()
+                    .all(|(leaf, v)| g[*leaf]["value"].as_f64() == Some(*v))
+            })
+        });
+        if hit {
+            out.insert(i);
+        }
+    }
+    out
+}
+
+/// The fix-derived gps leaves the NMEA oracle verifies (`gps_fix_leaves`).
+const GPS_FIX_LEAVES: &[&str] = &[
+    "fix_quality",
+    "satellites",
+    "satellites_in_view",
+    "hdop",
+    "lat",
+    "lon",
+    "alt",
+    "speed",
+    "course",
+];
+/// Fix snapshots considered "recent" for a recorded gps sample (~3 epochs).
+const GPS_ORACLE_SNAPS: usize = 40;
+
+/// R-P3G-2: the indices of `l` whose fix-derived `metrics.<group>.*` leaves
+/// equal ONE of the last GPS_ORACLE_SNAPS tape snapshots before the sample's
+/// read instant (+50 ms), leaf for leaf (a leaf present on one only fails);
+/// a sample showing a fix the tape never gave there is not verified.
+fn snap_oracle(
+    l: &RecSamples,
+    group: &str,
+    snaps: &[(i64, BTreeMap<String, f64>)],
+) -> BTreeSet<usize> {
+    let reads = read_instants(l);
+    let pre = format!("metrics.{group}.");
+    let mut out = BTreeSet::new();
+    for (i, (_, o)) in l.iter().enumerate() {
+        let leaves: BTreeMap<&str, Option<f64>> = o
+            .iter()
+            .filter_map(|(k, v)| {
+                let leaf = k.strip_prefix(pre.as_str())?.strip_suffix(".value")?;
+                GPS_FIX_LEAVES
+                    .contains(&leaf)
+                    .then(|| (leaf, v.parse::<f64>().ok()))
+            })
+            .collect();
+        if leaves.is_empty() {
+            continue;
+        }
+        let end = snaps.partition_point(|(w, _)| *w <= reads[i] + 50);
+        let start = end.saturating_sub(GPS_ORACLE_SNAPS);
+        let hit = snaps[start..end].iter().any(|(_, s)| {
+            GPS_FIX_LEAVES
+                .iter()
+                .all(|leaf| match (leaves.get(leaf), s.get(*leaf)) {
+                    (None, None) => true,
+                    (Some(Some(v)), Some(x)) => v == x,
+                    _ => false,
+                })
+        });
+        if hit {
+            out.insert(i);
+        }
+    }
+    out
+}
+
+/// R-P3G-2: remove, for the IMU leaf `p`, every time-paired couple of two
+/// oracle-verified samples whose values differ, and every UNPAIRED verified
+/// sample (the per-group presence check judges counts). A sample the oracle
+/// could not verify stays and is judged exactly.
+fn oracle_filter(
+    la: &RecSamples,
+    lb: &RecSamples,
+    p: &str,
+    va: &BTreeSet<usize>,
+    vb: &BTreeSet<usize>,
+) -> (RecSamples, RecSamples, usize) {
+    let (ra, rb) = (read_instants(la), read_instants(lb));
+    let (mut drop_a, mut drop_b) = (BTreeSet::new(), BTreeSet::new());
+    let mut paired_b = BTreeSet::new();
+    let mut j = 0usize;
+    let mut n = 0usize;
+    for i in 0..la.len() {
+        while j < lb.len() && rb[j] < ra[i] - REC_PAIR_MS {
+            j += 1;
+        }
+        let k = (j..lb.len())
+            .take_while(|k| rb[*k] <= ra[i] + REC_PAIR_MS)
+            .min_by_key(|k| (rb[*k] - ra[i]).abs());
+        match k {
+            Some(k) => {
+                j = k + 1;
+                paired_b.insert(k);
+                if la[i].1.get(p) != lb[k].1.get(p) && va.contains(&i) && vb.contains(&k) {
+                    drop_a.insert(i);
+                    drop_b.insert(k);
+                    n += 1;
+                }
+            }
+            None => {
+                if va.contains(&i) {
+                    drop_a.insert(i);
+                }
+            }
+        }
+    }
+    for k in 0..lb.len() {
+        if !paired_b.contains(&k) && vb.contains(&k) {
+            drop_b.insert(k);
+        }
+    }
+    let keep = |l: &RecSamples, d: &BTreeSet<usize>| -> RecSamples {
+        l.iter()
+            .enumerate()
+            .filter(|(i, _)| !d.contains(i))
+            .map(|(_, x)| x.clone())
+            .collect()
+    };
+    (keep(la, &drop_a), keep(lb, &drop_b), n)
+}
+
+/// Samples each side of the envelope that estimates a recorder fire.
+const REC_ENVELOPE: usize = 5;
+
+/// The estimated read (fire) instant of every sample (see `straddle_filter`).
+fn read_instants(l: &RecSamples) -> Vec<i64> {
+    let mut d: Vec<i64> = l
+        .windows(2)
+        .map(|w| w[1].0 - w[0].0)
+        .filter(|d| *d > 0)
+        .collect();
+    d.sort();
+    let period = d.get(d.len() / 2).copied().unwrap_or(1000).max(1);
+    (0..l.len())
+        .map(|k| {
+            let lo = k.saturating_sub(REC_ENVELOPE);
+            let hi = (k + REC_ENVELOPE).min(l.len().saturating_sub(1));
+            (lo..=hi)
+                .map(|j| l[j].0 - (j as i64 - k as i64) * period)
+                .min()
+                .unwrap_or(l[k].0)
+                .min(l[k].0)
+        })
+        .collect()
+}
+
+/// R-P3G-2 row id (T4's media rule `T4/rec-input-between`).
+const REC_INPUT_BETWEEN: &str = "T4/rec-input-between";
+/// Two recorder samples are one PAIR when their `ts` are this close (half a
+/// 1 Hz tick: each agent's recorder runs on its own timer phase).
+const REC_PAIR_MS: i64 = 500;
+
+type RecSamples = Vec<(i64, BTreeMap<String, String>)>;
+
+/// R-P3G-2: pair A/B recorder samples by nearest `ts` (≤ REC_PAIR_MS, each
+/// sample in at most one pair, in order) and remove from both sides a pair
+/// whose `p` values differ only when the input it reads changed BETWEEN the
+/// two reads (`(lo − collision, hi + collision]`, input changes = releases
+/// grouped ≤ 30 ms apart, so an NMEA epoch is ONE change and a 16 Hz IMU
+/// line is one each):
+/// - two or more changes between the reads: the two samples read inputs the
+///   other side never read (a high-rate IMU) — not comparable cross-agent;
+/// - exactly one change: only a strict old/new split (the earlier reader's
+///   value = the later reader's PREVIOUS sample, the later's = the earlier's
+///   NEXT sample); anything else is kept and judged (T4/rec-sample).
+///
+/// A differing pair with no change between its reads is always kept.
+/// Returns the filtered sequences and the number of pairs removed.
+fn straddle_filter(
+    la: &RecSamples,
+    lb: &RecSamples,
+    p: &str,
+    releases: &[i64],
+    collision: i64,
+) -> (RecSamples, RecSamples, usize) {
+    let mut rel = releases.to_vec();
+    rel.sort();
+    let mut changes: Vec<i64> = Vec::new();
+    for w in rel {
+        if changes.last().is_none_or(|l| w - l > 30) {
+            changes.push(w);
+        } else if let Some(l) = changes.last_mut() {
+            *l = w;
+        }
+    }
+    let n_between = |lo: i64, hi: i64| {
+        let i = changes.partition_point(|w| *w <= lo - collision);
+        let j = changes.partition_point(|w| *w <= hi + collision);
+        j - i
+    };
+    let val = |l: &RecSamples, i: Option<usize>| {
+        i.and_then(|i| l.get(i)).and_then(|x| x.1.get(p)).cloned()
+    };
+    // The READ instant of each sample: the recorder reads the groups at its
+    // tick start and stamps `ts` only after `await sampleGroups()`
+    // (ts:src/recording/telemetry-recorder.ts:96-103 @09da38d), so ts = fire
+    // + that tick's sampling latency. The fire is on the side's own
+    // setInterval grid: the lower envelope of ts_j − (j−k)·period over
+    // ±REC_ENVELOPE samples (period = the side's median spacing).
+    let (ra, rb) = (read_instants(la), read_instants(lb));
+    let (mut drop_a, mut drop_b) = (BTreeSet::new(), BTreeSet::new());
+    let mut j = 0usize;
+    for (i, (ta, oa)) in la.iter().enumerate() {
+        while j < lb.len() && lb[j].0 < ta - REC_PAIR_MS {
+            j += 1;
+        }
+        let mut best: Option<usize> = None;
+        let mut k = j;
+        while k < lb.len() && lb[k].0 <= ta + REC_PAIR_MS {
+            if best.is_none_or(|b| (lb[k].0 - ta).abs() < (lb[b].0 - ta).abs()) {
+                best = Some(k);
+            }
+            k += 1;
+        }
+        let Some(k) = best else { continue };
+        j = k + 1;
+        let (Some(va), Some(vb)) = (oa.get(p), lb[k].1.get(p)) else {
+            continue;
+        };
+        if va == vb {
+            continue;
+        }
+        let (xa, xb) = (ra[i], rb[k]);
+        let drop = match n_between(xa.min(xb), xa.max(xb)) {
+            0 => false,
+            1 => {
+                // earlier = the side that read first
+                let (le, ie, ve, ll, il, vl) = if xa <= xb {
+                    (la, i, va, lb, k, vb)
+                } else {
+                    (lb, k, vb, la, i, va)
+                };
+                val(ll, il.checked_sub(1)).as_ref() == Some(ve)
+                    && val(le, Some(ie + 1)).as_ref() == Some(vl)
+            }
+            // Two or more changes between the reads cannot be attributed by
+            // timing alone (the IMU uses the tape oracle instead): judged.
+            _ => false,
+        };
+        if drop {
+            drop_a.insert(i);
+            drop_b.insert(k);
+        }
+    }
+    let keep = |l: &RecSamples, d: &BTreeSet<usize>| -> RecSamples {
+        l.iter()
+            .enumerate()
+            .filter(|(i, _)| !d.contains(i))
+            .map(|(_, x)| x.clone())
+            .collect()
+    };
+    let n = drop_a.len();
+    (keep(la, &drop_a), keep(lb, &drop_b), n)
 }
 
 /// T7/D30 `d30_shed_tick_session_end` (review-wp6 §3) for the sidecar `key`
@@ -2459,7 +2850,7 @@ pub fn diff_media(
     let ep = (timeline("A", a), timeline("B", b));
     let pmic = pmic_series_with_boot(play);
     for sid in va.keys().filter(|k| vb.contains_key(*k)) {
-        rec_values(
+        rec_values_m(
             sid,
             (&va[sid], &vb[sid]),
             &ep,
@@ -2469,6 +2860,7 @@ pub fn diff_media(
             &pmic,
             table,
             rep,
+            (a.imu_mount.as_ref(), b.imu_mount.as_ref()),
         );
     }
 
@@ -4831,5 +5223,73 @@ mod tests {
             n.s(r#"{"type":"header","deviceId":"00000000-0000-4000-8000-00000000000a","sessionId":"0198a6a1-2b3c-7d4e-8f00-112233445566"}"#),
             r#"{"type":"header","deviceId":"{id}","sessionId":"<sid:telemetry#0>"}"#
         );
+    }
+
+    /// R-P3G-2: a sample's read instant is its fire on the 1 s grid (the
+    /// lower envelope), not its post-await `ts`.
+    #[test]
+    fn read_instants_are_the_lower_envelope_of_the_grid() {
+        // A 1 s grid from 1 000 with per-tick sampling latencies 0,150,5,300,10,3,2.
+        let l: RecSamples = [1_000, 2_150, 3_005, 4_300, 5_010, 6_003, 7_002]
+            .iter()
+            .map(|t| (*t, BTreeMap::new()))
+            .collect();
+        let r = read_instants(&l);
+        for (k, x) in r.iter().enumerate() {
+            let grid = 1_000 + k as i64 * 1_000;
+            assert!((x - grid).abs() <= 10, "sample {k}: {x} vs {grid}");
+        }
+    }
+
+    /// R-P3G-2: a differing pair is removed only when its reads straddle
+    /// ≥ 2 input changes, or exactly one as a strict old/new split.
+    #[test]
+    fn straddle_filter_drops_only_pairs_that_read_different_inputs() {
+        let s = |ts: i64, v: &str| {
+            (
+                ts,
+                BTreeMap::from([("metrics.imu.quat_i.value".to_string(), v.to_string())]),
+            )
+        };
+        let p = "metrics.imu.quat_i.value";
+        // High-rate input: 16 Hz lines (62 ms apart) between every pair.
+        let imu: Vec<i64> = (0..80).map(|k| 900 + k * 62).collect();
+        let la = vec![s(1_000, "0.1"), s(2_000, "0.2"), s(3_000, "0.3")];
+        let lb = vec![s(1_250, "0.11"), s(2_250, "0.21"), s(3_250, "0.31")];
+        // NEGATIVE: timing alone never removes a pair with ≥ 2 changes between
+        // (the IMU goes through the tape oracle, `imu_oracle`).
+        let (fa, fb, n) = straddle_filter(&la, &lb, p, &imu, 50);
+        assert_eq!((n, fa.len(), fb.len()), (0, 3, 3));
+        // One change between: a strict old/new split is removed …
+        let la = vec![s(1_000, "1"), s(2_000, "1"), s(3_000, "2"), s(4_000, "2")];
+        let lb = vec![s(1_250, "1"), s(2_250, "2"), s(3_250, "2"), s(4_250, "2")];
+        let (_, _, n) = straddle_filter(&la, &lb, p, &[2_100], 50);
+        assert_eq!(n, 1);
+        // NEGATIVE: … a stale value (B skips "3": its previous is not A's) is kept.
+        let la = vec![s(1_000, "1"), s(2_000, "2"), s(3_000, "3"), s(4_000, "4")];
+        let lb = vec![s(1_250, "1"), s(2_250, "2"), s(3_250, "2"), s(4_250, "4")];
+        let (_, fb, n) = straddle_filter(&la, &lb, p, &[1_100, 2_100, 3_100], 50);
+        assert_eq!(n, 0);
+        assert_eq!(fb.len(), 4);
+        // NEGATIVE: no change between the reads → kept.
+        let la = vec![s(1_000, "1"), s(2_000, "5")];
+        let lb = vec![s(1_250, "1"), s(2_250, "6")];
+        let (_, _, n) = straddle_filter(&la, &lb, p, &[2_600], 50);
+        assert_eq!(n, 0);
+        // NEGATIVE: samples too far apart are not a pair.
+        let (_, _, n) = straddle_filter(
+            &[s(1_000, "1")].to_vec(),
+            &[s(1_700, "2")].to_vec(),
+            p,
+            &imu,
+            50,
+        );
+        assert_eq!(n, 0);
+        // An NMEA epoch (8 lines 8 ms apart) is ONE change.
+        let epoch: Vec<i64> = (0..8).map(|k| 2_100 + k * 8).collect();
+        let la = vec![s(1_000, "1"), s(2_000, "1"), s(3_000, "2")];
+        let lb = vec![s(1_250, "1"), s(2_250, "2"), s(3_250, "2")];
+        let (_, _, n) = straddle_filter(&la, &lb, p, &epoch, 50);
+        assert_eq!(n, 1);
     }
 }

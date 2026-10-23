@@ -192,6 +192,15 @@ pub struct InputFacts {
     /// Wall ms (`start_wall + t`) of every IMU line the tape released
     /// (T8 `rig-cut-ungated` IMU residual).
     pub imu_lines: Vec<i64>,
+    /// Phase 5b (R-P3G-2): `(release wall ms, parsed sample)` of every IMU
+    /// line the tape released (the recorded-IMU input oracle, media_diff.rs).
+    pub imu_samples: Vec<(i64, xorgate_core::imu::ImuSample)>,
+    /// Phase 5b (R-P3G-2): `(release wall ms, fix-derived gps leaves)` after
+    /// every released NMEA line that changed the rolling fix — the TS fix
+    /// aggregator (xorgate_core::nmea::FixAggregator, `nmea.ts:263-298`) fed
+    /// the tape's lines in release order, mapped like `mapLatest`
+    /// (gps_group.rs, `gps.ts:261-300`): the recorded-gps input oracle.
+    pub gps_snaps: Vec<(i64, BTreeMap<String, f64>)>,
     /// Wall ms (sorted) of every released record that feeds a telemetry value
     /// read at a tick — NMEA, LTE file, exec, dt, i2cdetect, IMU helper
     /// spawn/exit (not the continuous IMU sample lines): the re-pair's timing
@@ -252,6 +261,39 @@ pub fn release_walls(records: &[TapeRecord], releases: &[Release]) -> Vec<Option
             q.get_mut(&(r.t, r.ev.kind())).and_then(|d| d.pop_front())
         })
         .collect()
+}
+
+/// The fix-derived leaves of `mapLatest` (rs xorgate_core::gps_group::
+/// map_latest, its fix half): what a recorded gps sample must show when the
+/// agent read this fix.
+pub fn gps_fix_leaves(fix: &xorgate_core::nmea::GpsFix) -> BTreeMap<String, f64> {
+    use xorgate_core::round::round;
+    let mut m = BTreeMap::new();
+    let positioned = xorgate_core::nmea::has_position(fix);
+    m.insert("fix_quality".into(), fix.fix_quality.unwrap_or(0.0));
+    if let Some(v) = fix.satellites {
+        m.insert("satellites".into(), v);
+    }
+    if let Some(v) = fix.satellites_in_view {
+        m.insert("satellites_in_view".into(), v);
+    }
+    if let Some(v) = fix.hdop {
+        m.insert("hdop".into(), round(v, 1));
+    }
+    if positioned {
+        for (k, v, d) in [
+            ("lat", fix.latitude, 6),
+            ("lon", fix.longitude, 6),
+            ("alt", fix.altitude, 1),
+            ("speed", fix.speed_kmh, 1),
+            ("course", fix.course, 1),
+        ] {
+            if let Some(v) = v {
+                m.insert(k.into(), round(v, d));
+            }
+        }
+    }
+    m
 }
 
 impl InputFacts {
@@ -391,6 +433,29 @@ impl InputFacts {
             .map(|(_, w)| *w)
             .collect();
         out.imu_lines.sort();
+        out.imu_samples = rel
+            .iter()
+            .filter_map(|(r, w)| match &r.ev {
+                TapeEvent::Imu { line } => match xorgate_core::imu::parse_imu_line(line) {
+                    Some(xorgate_core::imu::ImuMessage::Sample { quat, linaccel }) => {
+                        Some((*w, xorgate_core::imu::ImuSample { quat, linaccel }))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        out.imu_samples.sort_by_key(|(w, _)| *w);
+        {
+            let mut lines: Vec<(i64, &str)> = nmea.iter().map(|(_, w, l)| (*w, *l)).collect();
+            lines.sort_by_key(|(w, _)| *w);
+            let mut agg = xorgate_core::nmea::FixAggregator::new();
+            for (w, line) in lines {
+                if agg.update(line) {
+                    out.gps_snaps.push((w, gps_fix_leaves(&agg.fix)));
+                }
+            }
+        }
         out.read_inputs = rel
             .iter()
             .filter(|(r, _)| {
