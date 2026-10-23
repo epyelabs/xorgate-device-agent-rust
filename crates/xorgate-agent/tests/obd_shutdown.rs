@@ -188,8 +188,15 @@ fn d38_sim_mode_with_peripherals_obd_has_no_obd_group() {
     let (lines, state, code, _) = run(&dir, "sim", &[], 2);
     assert_eq!(code, 0);
     assert_eq!(lines.len(), 2);
+    // Sim mode still carries WP3's LED sim value (system.led_state/health_flags 0/0);
+    // D38 is only about the absent `obd` group.
     for p in &lines {
-        assert_eq!(p["metrics"], serde_json::json!({}), "{p}");
+        assert!(p["metrics"].get("obd").is_none(), "{p}");
+        assert_eq!(
+            p["metrics"],
+            serde_json::json!({"system": {"led_state": {"value": 0}, "health_flags": {"value": 0}}}),
+            "{p}"
+        );
     }
     assert!(state.get("obd").is_none(), "{state}");
     let _ = std::fs::remove_dir_all(&dir);
