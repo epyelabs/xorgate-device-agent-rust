@@ -81,14 +81,51 @@ OBD_PTY_FILE=$P5B_RUN/obd-pty
 SMS_LINK=$P5B_RUN/sms-pty
 MANIFEST_ORIG=$P5B_RUN/hardware.json.orig
 as_pi() { runuser -u pi -- "$@"; }
-stop_pid() { # <pidfile>
-  local p; p=$(cat "$1" 2>/dev/null || true)
+EMU_MATCH=${XORGATE_TEST_P5B_EMU_MATCH:-obd-emulator.py}
+MODEM_MATCH=${XORGATE_TEST_P5B_MODEM_MATCH:-sms_fake_modem.py}
+stop_pid() { # <pidfile> <cmdline pattern>
+  # review-wp4 R4-12: only the overlay's OWN process -- its cmdline names the
+  # expected script and it belongs to pi -- signalled AS pi, never a root kill
+  # of whatever a stale (recycled) pid now is.
+  local p cmd owner; p=$(cat "$1" 2>/dev/null || true)
   [ -n "$p" ] || return 0
-  if kill -0 "$p" 2>/dev/null; then
-    act kill -TERM "$p" || true
-    for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
-    kill -0 "$p" 2>/dev/null && act kill -KILL "$p" || true
+  kill -0 "$p" 2>/dev/null || return 0
+  cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true)
+  owner=$(stat -c %U "/proc/$p" 2>/dev/null || true)
+  case "$cmd" in *"$2"*) ;; *) echo "  REFUSING to stop pid $p from $1: not the overlay's process ($cmd)"; return 0 ;; esac
+  [ "$owner" = pi ] || { echo "  REFUSING to stop pid $p from $1: owned by ${owner:-?}, not pi"; return 0; }
+  act as_pi kill -TERM "$p" || true
+  for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$p" 2>/dev/null; then act as_pi kill -KILL "$p" || true; fi
+}
+do_revert() {
+  echo "== revert: emulator + FakeModem, drop-in, manifest, /run + /tmp"
+  stop_pid "$EMU_PID" "$EMU_MATCH"; stop_pid "$MODEM_PID" "$MODEM_MATCH"
+  remove_if_present "$P5B_DROPIN" || true
+  if [ -f "$MANIFEST_ORIG" ]; then
+    act install -o pi -g pi -m 0600 "$MANIFEST_ORIG" "$HW_SHARED"; note "$HW_SHARED restored"
+  elif [ -f "$HW_SHARED" ] && [ "$DRY" != 1 ]; then
+    tmp=$(mktemp)
+    python3 - "$HW_SHARED" > "$tmp" <<'PY'
+import collections, json, sys
+d = json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict)
+per = d.get("peripherals")
+if isinstance(per, dict):
+    per.pop("obd", None)
+    if not per:
+        del d["peripherals"]
+print(json.dumps(d, indent=2))
+PY
+    if ! cmp -s "$tmp" "$HW_SHARED"; then install -o pi -g pi -m 0600 "$tmp" "$HW_SHARED"; note "$HW_SHARED: peripherals.obd stripped"; fi
+    rm -f "$tmp"
   fi
+  act rm -rf "$P5B_OBD_PY" "$P5B_RUN" "$P5B_TMP"
+  act systemctl daemon-reload
+  echo "== restart $UNIT only"
+  act systemctl restart $UNIT
+  for i in 1 2 3; do echo "  $JS_UNIT is-active ($i/3): $(js_state)"; [ "$DRY" = 1 ] || sleep 1; done
+  echo "  next: scripts/bench/profile.sh shared   (verify must PASS)"
+  status
 }
 js_state() { systemctl is-active $JS_UNIT 2>/dev/null || true; }
 preconditions() {
@@ -121,6 +158,11 @@ apply)
   preconditions || exit 1
   if [ -e "$P5B_MARK" ]; then echo "  = already applied (revert first)"; status; exit 0; fi
   echo "  ok: $JS_UNIT active, no exclusive window, bench-flavour $UNIT, helper installed"
+  # review-wp4 R4-11: ANY failure from here on rolls everything back (the DEV
+  # manifest first of all), then exits non-zero.
+  # (-E: the trap also fires for a failure inside a function such as `act`.)
+  set -E
+  trap 'rc=$?; trap - ERR; set +E; echo "FAILED (rc $rc, line $LINENO) -- reverting"; do_revert; exit 1' ERR
   echo "== 1. DEV manifest: + peripherals.obd ($HW_SHARED; original kept in $P5B_RUN)"
   act install -d -o pi -g pi -m 0755 "$P5B_RUN"
   [ -f "$MANIFEST_ORIG" ] || act cp -p "$HW_SHARED" "$MANIFEST_ORIG"
@@ -175,39 +217,16 @@ EOF
     echo "== 6. restart $UNIT only"
     act systemctl restart $UNIT
     [ "$DRY" = 1 ] || date -u +%Y-%m-%dT%H:%M:%SZ > "$P5B_MARK"
+    trap - ERR
     status
     exit 0
   fi
-  ;&
+  trap - ERR
+  do_revert
+  exit 1
+  ;;
 revert)
-  echo "== revert: emulator + FakeModem, drop-in, manifest, /run + /tmp"
-  stop_pid "$EMU_PID"; stop_pid "$MODEM_PID"
-  remove_if_present "$P5B_DROPIN" || true
-  if [ -f "$MANIFEST_ORIG" ]; then
-    act install -o pi -g pi -m 0600 "$MANIFEST_ORIG" "$HW_SHARED"; note "$HW_SHARED restored"
-  elif [ -f "$HW_SHARED" ] && [ "$DRY" != 1 ]; then
-    tmp=$(mktemp)
-    python3 - "$HW_SHARED" > "$tmp" <<'PY'
-import collections, json, sys
-d = json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict)
-per = d.get("peripherals")
-if isinstance(per, dict):
-    per.pop("obd", None)
-    if not per:
-        del d["peripherals"]
-print(json.dumps(d, indent=2))
-PY
-    if ! cmp -s "$tmp" "$HW_SHARED"; then install -o pi -g pi -m 0600 "$tmp" "$HW_SHARED"; note "$HW_SHARED: peripherals.obd stripped"; fi
-    rm -f "$tmp"
-  fi
-  act rm -rf "$P5B_OBD_PY" "$P5B_RUN" "$P5B_TMP"
-  act systemctl daemon-reload
-  echo "== restart $UNIT only"
-  act systemctl restart $UNIT
-  for i in 1 2 3; do echo "  $JS_UNIT is-active ($i/3): $(js_state)"; [ "$DRY" = 1 ] || sleep 1; done
-  echo "  next: scripts/bench/profile.sh shared   (verify must PASS)"
-  status
-  [ "${APPLY_FAILED:-0}" = 0 ] || exit 1
+  do_revert
   ;;
 esac
 REMOTE

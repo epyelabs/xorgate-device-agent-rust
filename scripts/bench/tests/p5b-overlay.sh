@@ -19,13 +19,14 @@ export P5B_NO_COPY=1 XORGATE_TEST_P5B_SKIP_VENV=1
 # makes its link and sleeps (both as pi, like the real ones).
 cat > /usr/local/bin/p5b-fake-emu <<'S'
 #!/bin/sh
-echo /dev/pts/77 > "$1.tmp" && mv "$1.tmp" "$1"; exec sleep 300
+echo /dev/pts/77 > "$1.tmp" && mv "$1.tmp" "$1"; while :; do sleep 1; done
 S
 cat > /usr/local/bin/p5b-fake-modem <<'S'
 #!/bin/sh
-ln -sfn /dev/null "$1"; exec sleep 300
+ln -sfn /dev/null "$1"; while :; do sleep 1; done
 S
 chmod 0755 /usr/local/bin/p5b-fake-emu /usr/local/bin/p5b-fake-modem
+export XORGATE_TEST_P5B_EMU_MATCH=p5b-fake-emu XORGATE_TEST_P5B_MODEM_MATCH=p5b-fake-modem
 export XORGATE_TEST_P5B_EMULATOR_CMD="/usr/local/bin/p5b-fake-emu /run/xorgate-rs-p5b/obd-pty"
 export XORGATE_TEST_P5B_MODEM_CMD="/usr/local/bin/p5b-fake-modem /run/xorgate-rs-p5b/sms-pty"
 fake_install() {
@@ -85,10 +86,27 @@ bash "$B/p5b-overlay.sh" revert >"$LOGS/v1.log" 2>&1; expect $? "revert rc=0"
 cmp -s "$HW" "$LOGS/hw.orig"; expect $? "$HW restored byte-for-byte"
 [ ! -e "$DROP" ] && [ ! -e /run/xorgate-rs-p5b ] && [ ! -e /run/xorgate-rs-obd-python ] && [ ! -e /tmp/xorgate-p5b ]
 expect $? "drop-in, /run dirs and /tmp files gone"
-! kill -0 "$p" 2>/dev/null; expect $? "the emulator is stopped"
+! kill -0 "$p" 2>/dev/null; expect $? "the emulator is stopped"; kill -0 "$p" 2>/dev/null && { grep -i 'refus\|stop' "$LOGS/v1.log"; tr '\0' ' ' < /proc/$p/cmdline; stat -c %U /proc/$p; }
 ! grep -E 'systemctl (restart|start|stop)' "$STATE/systemctl.log" | grep -qv 'restart xorgate-agent-rs$'; expect $? "revert restarts only xorgate-agent-rs"
 bash "$B/exclusive.sh" status >"$LOGS/v2.log" 2>&1
 grep -q "inputs: SAFE" "$LOGS/v2.log"; expect $? "inputs_safe SAFE after revert"
+
+echo "== review-wp4 R4-11: a failure partway through apply rolls back"
+fake_install; cp -p "$HW" "$LOGS/hw.orig2"
+XORGATE_TEST_P5B_SKIP_VENV=0 bash "$B/p5b-overlay.sh" apply >"$LOGS/f1.log" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -q "FAILED (rc" "$LOGS/f1.log" && grep -q "reverting" "$LOGS/f1.log"; expect $? "apply failing at the venv step exits 1 and says it reverts"; [ "$fail" = 0 ] || sed 's/^/    f1: /' "$LOGS/f1.log" | tail -15
+cmp -s "$HW" "$LOGS/hw.orig2"; expect $? "the DEV manifest is restored byte-for-byte (no stray peripherals.obd)"
+[ ! -e /run/xorgate-rs-p5b ] && [ ! -e /run/xorgate-rs-obd-python ] && [ ! -e "$DROP" ]; expect $? "no /run leftovers, no drop-in"
+
+echo "== review-wp4 R4-12: stop_pid kills only the overlay's own pi process"
+fake_install
+bash "$B/p5b-overlay.sh" apply >"$LOGS/i1.log" 2>&1; expect $? "apply rc=0"
+emu=$(cat /run/xorgate-rs-p5b/emulator.pid)
+sleep 300 & victim=$!
+echo "$victim" > /run/xorgate-rs-p5b/emulator.pid
+bash "$B/p5b-overlay.sh" revert >"$LOGS/i2.log" 2>&1
+kill -0 "$victim" 2>/dev/null && grep -q "REFUSING to stop pid $victim" "$LOGS/i2.log"; expect $? "a recycled pid (a root sleep) is NOT killed"
+kill "$victim" "$emu" 2>/dev/null; true
 
 echo "== CF76: outside the overlay"
 python3 - "$HW" <<'PY'
