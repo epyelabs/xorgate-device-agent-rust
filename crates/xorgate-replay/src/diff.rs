@@ -4080,7 +4080,17 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
         first(rs, "[clock] ignoring implausible ")?,
     );
     let start = |c: &Capture| c.events.iter().map(|e| e.0).min().unwrap_or(0);
-    if ji.0 - start(js) > 30_000 || ri.0 - start(rs) > 30_000 {
+    // Tick 0 (the original shape) or tick 1 (p4-clock-cap after review-wp4
+    // R4-5: the implausible NITZ from 15 s, so both steps land after the
+    // 300 s grace and only the trust text differs — below).
+    // The tick-1 shape is recognised by its own evidence: the RUST side fell
+    // back at the grace too (in the tick-0 shape it trusted before it).
+    let tick1 = rs
+        .events
+        .iter()
+        .any(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "));
+    let first_tick = if tick1 { 60_000 } else { 30_000 };
+    if ji.0 - start(js) > first_tick || ri.0 - start(rs) > first_tick {
         return None;
     }
     let (js_step, rs_step) = (
@@ -4120,6 +4130,41 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
         .iter()
         .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
         .collect();
+    let num = |s: &str| s.parse::<i64>().ok();
+    if tick1 {
+        // Both sides held to the 300 s grace and fell back with the SAME
+        // warning (same G, same N held); both then trust at their step with
+        // `<src> synchronized <T> s after boot — clock trusted (published
+        // <P> s on an untrusted clock)`, T and P one check interval apart.
+        let rs_fb: Vec<&(i64, String, String)> = rs
+            .events
+            .iter()
+            .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
+            .collect();
+        if rs_trust.len() != 1
+            || js_trust.len() != 1
+            || js_fb.len() != 1
+            || rs_fb.len() != 1
+            || js_fb[0].2 != rs_fb[0].2
+        {
+            return None;
+        }
+        let f = js_fb[0].2.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
+        let (g, _) = f.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
+        let g = num(g)?;
+        let parse = |m: &str| -> Option<(i64, i64)> {
+            let t = m.strip_prefix(&format!("[clock] {src} synchronized "))?;
+            let (t, p) = t.split_once(" s after boot — clock trusted (published ")?;
+            let p = p.strip_suffix(" s on an untrusted clock)")?;
+            Some((num(t)?, num(p)?))
+        };
+        let ((tj, pj), (tr, pr)) = (parse(&js_trust[0].2)?, parse(&rs_trust[0].2)?);
+        if !(29..=31).contains(&(tj - tr)) || tj - g != pj || tr - g != pr {
+            return None;
+        }
+        let key = |e: &(i64, String, String)| format!("{}: {}", e.1, e.2);
+        return Some([key(rs_trust[0]), key(js_trust[0])].into_iter().collect());
+    }
     if rs_trust.len() != 1
         || js_trust.len() != 1
         || js_fb.len() != 1
@@ -4130,7 +4175,6 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
     {
         return None;
     }
-    let num = |s: &str| s.parse::<i64>().ok();
     // Rust: `[clock] <src> synchronized — clock trusted (telemetry held <G> s, <N> sample(s))`
     let r = rs_trust[0].2.strip_prefix(&format!(
         "[clock] {src} synchronized — clock trusted (telemetry held "
@@ -7497,5 +7541,56 @@ mod tests {
         r.events[2].2 =
             "[clock] gps synchronized — clock trusted (telemetry held 300 s, 298 sample(s))".into();
         assert!(d40_keys(&js(330_400, step("597.1", "gps")), &r).is_none());
+
+        // The tick-1 shape (p4-clock-cap after review-wp4 R4-5): implausible
+        // at ~30 s, both fall back at the grace with the SAME warning, then
+        // trust at their steps one check interval apart.
+        let fb = |n: i64| {
+            format!("[clock] no NTP/GPS/NITZ sync 300 s after start — publishing on an UNTRUSTED clock ({n} sample(s) held); timestamps may be early until a sync lands")
+        };
+        let trust = |t: i64| {
+            format!("[clock] gps synchronized {t} s after boot — clock trusted (published {} s on an untrusted clock)", t - 300)
+        };
+        let side = |kind: &str, imp_at: i64, n: i64, step_at: i64, st: String| {
+            ev(
+                kind,
+                vec![
+                    (100, "info", "[agent] started".into()),
+                    (imp_at, "warn", imp.clone()),
+                    (300_600, "warn", fb(n)),
+                    (step_at, "info", st),
+                    (step_at + 100, "info", trust((step_at + 100) / 1000)),
+                ],
+            )
+        };
+        let ok = d40_keys(
+            &side("js", 30_400, 299, 360_400, step("597.1", "gps")),
+            &side("rust", 30_200, 299, 330_300, step("597.1", "gps")),
+        );
+        assert_eq!(ok.map(|k| k.len()), Some(2));
+        // NEGATIVE: the fallback warnings differ (a held count off by one).
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 360_400, step("597.1", "gps")),
+            &side("rust", 30_200, 298, 330_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: Rust one more tick late (both at 360, JS at 390 s).
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 390_400, step("597.1", "gps")),
+            &side("rust", 30_200, 299, 360_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: JS early, Rust late.
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 330_400, step("597.1", "gps")),
+            &side("rust", 30_200, 299, 360_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: the implausible source later than tick 1.
+        assert!(d40_keys(
+            &side("js", 61_400, 299, 391_400, step("597.1", "gps")),
+            &side("rust", 61_200, 299, 361_300, step("597.1", "gps"))
+        )
+        .is_none());
     }
 }

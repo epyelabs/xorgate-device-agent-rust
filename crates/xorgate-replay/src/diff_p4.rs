@@ -713,9 +713,113 @@ fn iso_ms(s: &str) -> Option<i64> {
     Some(((days * 24 + h) * 60 + mi) * 60_000 + se * 1000 + ms)
 }
 
+/// Review-wp4 R4-4: the OBD relay's barrier (obd-gate.py) aligns the two
+/// helpers' edges, so the EARLIER side waits for the later one — a latency on
+/// either side's helper lifecycle (a late spawn, a late SIGINT) would vanish
+/// from every compared stream. The rig owns the evidence instead: each wait
+/// is logged in `<run>/<label>/obd-gate.ndjson`, and a barrier TIMEOUT, or a
+/// wait above [`OBD_BARRIER_WAIT_MAX_MS`], is UNTOLERATED (stream `obd-gate`).
+pub const OBD_BARRIER_WAIT_MAX_MS: i64 = 400;
+
+pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
+    let load = |label: &str| -> Option<Vec<serde_json::Value>> {
+        let text = std::fs::read_to_string(run.join(label).join(crate::p5b::OBD_GATE_LOG)).ok()?;
+        Some(
+            text.lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect(),
+        )
+    };
+    let (a, b) = (load("a"), load("b"));
+    if a.is_none() && b.is_none() {
+        return;
+    }
+    let mut summary = Vec::new();
+    for (label, waits) in [("A", a.unwrap_or_default()), ("B", b.unwrap_or_default())] {
+        let max = waits
+            .iter()
+            .filter_map(|w| w["wait_ms"].as_i64())
+            .max()
+            .unwrap_or(0);
+        summary.push(format!(
+            "{label} {} edge(s), max wait {max} ms",
+            waits.len()
+        ));
+        let st = rep.stats.entry("obd-gate".into()).or_default();
+        st.compared += waits.len();
+        for w in &waits {
+            let (ms, timeout) = (w["wait_ms"].as_i64().unwrap_or(0), w["timeout"] == true);
+            if timeout || ms > OBD_BARRIER_WAIT_MAX_MS {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!(
+                        "{label} edge #{} {}",
+                        w["edge"],
+                        w["kind"].as_str().unwrap_or("?")
+                    ),
+                    path: if timeout {
+                        "(barrier timeout)".into()
+                    } else {
+                        "(barrier wait over bound)".into()
+                    },
+                    a: format!("{ms} ms"),
+                    b: format!("≤ {OBD_BARRIER_WAIT_MAX_MS} ms"),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+    }
+    rep.inputs.insert(
+        "obd-gate barrier (rig-owned waits)".into(),
+        format!("{}; bound {OBD_BARRIER_WAIT_MAX_MS} ms", summary.join(", ")),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review-wp4 R4-4: a barrier timeout or a wait above the bound in the
+    /// relay's rig-owned log is UNTOLERATED (the reviewer's 2 s-late Rust
+    /// helper launch makes the JS side wait ~2 s); small waits pass.
+    #[test]
+    fn obd_gate_waits_over_the_bound_or_timeouts_fail() {
+        let d = std::env::temp_dir().join(format!("obd-gate-diff-{}", std::process::id()));
+        for l in ["a", "b"] {
+            std::fs::create_dir_all(d.join(l)).unwrap();
+        }
+        let write = |l: &str, lines: &[&str]| {
+            std::fs::write(d.join(l).join(crate::p5b::OBD_GATE_LOG), lines.join("\n")).unwrap()
+        };
+        let run = || {
+            let mut rep = Report::default();
+            diff_obd_gate(&d, &mut rep);
+            rep.mismatches
+                .iter()
+                .map(|m| m.path.clone())
+                .collect::<Vec<_>>()
+        };
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":1,"kind":"ready","wait_ms":12,"timeout":false}"#],
+        );
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","edge":1,"kind":"ready","wait_ms":0,"timeout":false}"#],
+        );
+        assert!(run().is_empty());
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":1,"kind":"ready","wait_ms":2104,"timeout":false}"#],
+        );
+        assert_eq!(run(), vec!["(barrier wait over bound)".to_string()]);
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":3,"kind":"exit","wait_ms":3001,"timeout":true}"#],
+        );
+        assert_eq!(run(), vec!["(barrier timeout)".to_string()]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn w(w: i64, pins: &[u32], high: bool) -> PinWrite {
         PinWrite {

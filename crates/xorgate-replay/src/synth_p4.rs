@@ -298,8 +298,12 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
         "p4-clock-cap" => {
             b.push(20, TapeEvent::NtpProbe { synced: false });
             nmea(b, dur_ms, 200_000, CLOCK_AHEAD_S);
-            lte_with_clock(b, dur_ms, &|_| {
-                Some(("80/01/06,00:00:00+00".to_string(), 1))
+            // From 15 s (review-wp4 R4-5): the implausible NITZ lands on
+            // check tick 1, so the D40 step race (Rust ~330 s, JS ~360 s)
+            // falls AFTER the 300 s trust grace on both sides instead of
+            // coinciding with it (a ±1-tick knife edge on the held count).
+            lte_with_clock(b, dur_ms, &|t| {
+                (t >= 15_000).then(|| ("80/01/06,00:00:00+00".to_string(), 1))
             });
             let mut home = Map::new();
             home.insert(

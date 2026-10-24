@@ -30,12 +30,13 @@ mkdir -p "$W/bar" "$W/a" "$W/b"; cp /t/obd-gate.py "$W/a/obd_read.py"; cp /t/obd
 printf 'import time, json, sys\nd=float(sys.argv[1])\ntime.sleep(d)\nprint(json.dumps({"type":"status","t":time.time()}), flush=True)\nprint(json.dumps({"type":"profile"}), flush=True) if sys.argv[2] == "a" else None\n' > "$W/a/obd_read_real.py"
 cp "$W/a/obd_read_real.py" "$W/b/obd_read_real.py"
 rm -f "$G"
-( RIG_OBD_BARRIER=$W/bar RIG_OBD_SIDE=a RIG_OBD_PEERS=a,b python3 "$W/a/obd_read.py" 0 a > "$W/a/out" 2> "$W/a/err"; date +%s.%N > "$W/a/done" ) &
-( RIG_OBD_BARRIER=$W/bar RIG_OBD_SIDE=b RIG_OBD_PEERS=a,b python3 "$W/b/obd_read.py" 1 b > "$W/b/out" 2> "$W/b/err" ) &
+( RIG_OBD_WAITLOG=$W/a/wait.ndjson RIG_OBD_BARRIER=$W/bar RIG_OBD_SIDE=a RIG_OBD_PEERS=a,b python3 "$W/a/obd_read.py" 0 a > "$W/a/out" 2> "$W/a/err"; date +%s.%N > "$W/a/done" ) &
+( RIG_OBD_WAITLOG=$W/b/wait.ndjson RIG_OBD_BARRIER=$W/bar RIG_OBD_SIDE=b RIG_OBD_PEERS=a,b python3 "$W/b/obd_read.py" 1 b > "$W/b/out" 2> "$W/b/err" ) &
 sleep 0.5; [ ! -s "$W/a/out" ] && ok "barrier: a's status waits for b's" || bad "barrier leaked: $(cat "$W/a/out")"
 wait
 [ "$(wc -l < "$W/a/out")" = 2 ] && [ "$(wc -l < "$W/b/out")" = 1 ] && ok "both sides release every line" || bad "lines a=$(wc -l < "$W/a/out") b=$(wc -l < "$W/b/out")"
-grep -q 'barrier timeout: a edge #' "$W/a/err" && ok "an edge the partner never reaches: timeout, logged" || bad "no timeout log: $(cat "$W/a/err")"
+grep -q '"timeout": true' "$W/a/wait.ndjson" && [ ! -s "$W/a/err" ] && ok "an edge the partner never reaches: timeout in the rig wait log, nothing on the helper's stderr" || bad "wait log: $(cat "$W/a/wait.ndjson" 2>&1) err: $(cat "$W/a/err")"
+python3 -c 'import json,sys; w=[json.loads(l) for l in open(sys.argv[1])]; first=w[0]; sys.exit(0 if first["kind"]=="status" and first["wait_ms"]>=800 and not first["timeout"] else 1)' "$W/a/wait.ndjson" && ok "the wait for the 1 s-late partner is logged (>= 800 ms)" || bad "first wait: $(head -1 "$W/a/wait.ndjson")"
 # Report hold: after a `status` line, a line due 2.1 s later waits until
 # 3.25 s after it (the two agents' debounced report builds); none without a gate.
 mkdir -p "$W/h"; cp /t/obd-gate.py "$W/h/obd_read.py"

@@ -42,7 +42,8 @@ STALE_S = 1.5
 # p5b-obd-config.fin.jsrs2); samples and audits are not edges (each helper
 # polls on its own phase; T8/obd-sample-split, T8/obd-audit-cycle). The count
 # persists across helper restarts in $RIG_OBD_BARRIER/<side>.edge. A partner
-# that never gets there releases after BARRIER_S, logged on stderr.
+# that never gets there releases after BARRIER_S; every wait (and any
+# timeout) goes to the rig-owned $RIG_OBD_WAITLOG, which the diff judges.
 EDGE_KINDS = {"ready", "status", "profile", "error", "exit"}
 BARRIER = os.environ.get("RIG_OBD_BARRIER")
 SIDE = os.environ.get("RIG_OBD_SIDE", "")
@@ -58,7 +59,23 @@ def _count(side, kind):
         return 0
 
 
-def barrier(kind):
+# The rig-owned wait log (review-wp4 R4-4): every barrier wait, as one JSON
+# line in the run dir ($RIG_OBD_WAITLOG) — never the helper's stderr, which
+# the agent consumes. The diff FAILS a timeout and a wait above its bound.
+WAITLOG = os.environ.get("RIG_OBD_WAITLOG")
+
+
+def log_wait(rec):
+    if not WAITLOG:
+        return
+    try:
+        with open(WAITLOG, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+
+
+def barrier(kind, what):
     if not (BARRIER and SIDE and PEERS):
         return
     n = _count(SIDE, kind) + 1
@@ -66,13 +83,16 @@ def barrier(kind):
     with open(tmp, "w") as f:
         f.write(str(n))
     os.replace(tmp, os.path.join(BARRIER, f"{SIDE}.{kind}"))
-    deadline = time.time() + BARRIER_S
+    t0 = time.time()
+    deadline = t0 + BARRIER_S
+    timeout = False
     while any(_count(p, kind) < n for p in PEERS):
         if time.time() > deadline:
-            sys.stderr.write(f"[rig obd-gate] barrier timeout: {SIDE} {kind} #{n}\n")
-            sys.stderr.flush()
-            return
+            timeout = True
+            break
         time.sleep(0.005)
+    log_wait({"w": int(t0 * 1000), "side": SIDE, "edge": n, "kind": what,
+              "wait_ms": int((time.time() - t0) * 1000), "timeout": timeout})
 
 
 def kind_of(line):
@@ -138,7 +158,7 @@ out = sys.stdout.buffer
 for line in iter(child.stdout.readline, b""):
     k = kind_of(line)
     if k in EDGE_KINDS:
-        barrier("edge")
+        barrier("edge", k)
     wait_open()
     try:
         out.write(line)
@@ -149,7 +169,7 @@ for line in iter(child.stdout.readline, b""):
         r = time.time()
         report_hold = (r + 2.0 - REPORT_MARGIN_S, r + 3.0 + REPORT_MARGIN_S)
 rc = child.wait()
-barrier("edge")
+barrier("edge", "exit")
 # The exit is not held for a report: the agent's stop waits only a bounded
 # time for the helper (SIGKILL after), which a hold could change.
 wait_open(report=False)

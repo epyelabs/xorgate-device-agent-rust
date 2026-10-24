@@ -1867,15 +1867,30 @@ fn rec_values_m(
     }
 }
 
-/// IMU lines considered "recent" for a recorded sample: the last ones the
-/// tape released before its read instant (+ the 50 ms delivery margin).
-const IMU_ORACLE_LINES: usize = 24;
+/// A tape input (IMU line / gps snapshot) is "recent" for a recorded sample
+/// when it is no older than ORACLE_LAG_MS before the NEWEST one the tape
+/// released by the sample's read instant (+ the 50 ms delivery margin).
+/// Review-wp4 R4-10: was the last 24 IMU lines (1.5 s at 16 Hz) / 40 gps
+/// snapshots (≈ 3 epochs), which accepted a 1 s-stale read; the TS's own
+/// input-to-read lag is 0.15–0.4 s (the input-edge row), so 400 ms.
+const ORACLE_LAG_MS: i64 = 400;
+
+/// The `[start, end)` of `ws` (sorted release instants) the oracle may match
+/// for a read at `read`: released by read + 50 and within ORACLE_LAG_MS of
+/// the newest such release.
+fn oracle_span(ws: &[i64], read: i64) -> (usize, usize) {
+    let end = ws.partition_point(|w| *w <= read + 50);
+    let Some(newest) = end.checked_sub(1).map(|i| ws[i]) else {
+        return (0, 0);
+    };
+    (ws.partition_point(|w| *w < newest - ORACLE_LAG_MS), end)
+}
 
 /// R-P3G-2: the indices of `l` whose every `metrics.imu.*` leaf equals
 /// `map_latest` (the agent's own mapping, xorgate_core::imu_group, parity
 /// with the TS `mapLatest`, ts:src/agent/collectors/imu.ts:81-106) of one IMU
-/// line the tape released before that sample's read instant — one of the
-/// last IMU_ORACLE_LINES (~1.5 s at 16 Hz). euler is tried with the side's
+/// line the tape released before that sample's read instant — within
+/// ORACLE_LAG_MS of the newest one (`oracle_span`). euler is tried with the side's
 /// final `imuMount` and with none.
 fn imu_oracle(
     l: &RecSamples,
@@ -1895,8 +1910,8 @@ fn imu_oracle(
         if imu.is_empty() {
             continue;
         }
-        let end = lines.partition_point(|(w, _)| *w <= reads[i] + 50);
-        let start = end.saturating_sub(IMU_ORACLE_LINES);
+        let ws: Vec<i64> = lines.iter().map(|(w, _)| *w).collect();
+        let (start, end) = oracle_span(&ws, reads[i]);
         let hit = lines[start..end].iter().rev().any(|(_, smp)| {
             [mount, None].iter().any(|m| {
                 let g = serde_json::to_value(xorgate_core::imu_group::map_latest(smp, *m))
@@ -1968,11 +1983,9 @@ const GPS_FIX_LEAVES: &[&str] = &[
     "speed",
     "course",
 ];
-/// Fix snapshots considered "recent" for a recorded gps sample (~3 epochs).
-const GPS_ORACLE_SNAPS: usize = 40;
 
 /// R-P3G-2: the indices of `l` whose fix-derived `metrics.<group>.*` leaves
-/// equal ONE of the last GPS_ORACLE_SNAPS tape snapshots before the sample's
+/// equal ONE tape snapshot within ORACLE_LAG_MS of the newest before the sample's
 /// read instant (+50 ms), leaf for leaf (a leaf present on one only fails);
 /// a sample showing a fix the tape never gave there is not verified.
 fn snap_oracle(
@@ -1994,8 +2007,8 @@ fn snap_oracle(
         if leaves.is_empty() {
             continue;
         }
-        let end = snaps.partition_point(|(w, _)| *w <= reads[i] + 50);
-        let start = end.saturating_sub(GPS_ORACLE_SNAPS);
+        let ws: Vec<i64> = snaps.iter().map(|(w, _)| *w).collect();
+        let (start, end) = oracle_span(&ws, reads[i]);
         let hit = snaps[start..end].iter().any(|(_, s)| {
             GPS_FIX_LEAVES
                 .iter()
@@ -5917,6 +5930,22 @@ kind = "decisions"
             s(4_000, true),
         ];
         assert!(carry_consistent(&a, &edge, "gps"));
+    }
+
+    /// Review-wp4 R4-10: the oracle window is ORACLE_LAG_MS back from the
+    /// newest release by the read: a 1 s-stale input never verifies.
+    #[test]
+    fn oracle_span_rejects_a_one_second_stale_input() {
+        // 16 Hz lines from 0 to 3 000 ms.
+        let ws: Vec<i64> = (0..=48).map(|k| k * 62).collect();
+        let (s, e) = oracle_span(&ws, 2_000);
+        assert!(ws[s] >= ws[e - 1] - ORACLE_LAG_MS);
+        assert!(ws[e - 1] <= 2_050);
+        // the line 1 s before the read is outside the span
+        let stale = ws.iter().position(|w| *w >= 1_000).unwrap();
+        assert!(stale < s, "a 1 s-stale line is not a candidate");
+        // nothing released yet: empty span
+        assert_eq!(oracle_span(&ws, -100), (0, 0));
     }
 
     #[test]

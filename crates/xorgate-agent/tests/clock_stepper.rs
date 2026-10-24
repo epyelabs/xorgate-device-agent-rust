@@ -115,6 +115,8 @@ struct Inputs {
     gps: Option<GpsClockReading>,
     modem: Option<ModemClockReading>,
     modem_telemetry: Option<ModemTelemetry>,
+    /// Mono ms the modem read takes (advances the fake clock while it runs).
+    modem_read_ms: u64,
 }
 impl Default for Inputs {
     fn default() -> Self {
@@ -124,6 +126,7 @@ impl Default for Inputs {
             gps: None,
             modem: None,
             modem_telemetry: None,
+            modem_read_ms: 0,
         }
     }
 }
@@ -170,6 +173,7 @@ fn harness_with(gps_panics: bool) -> Harness {
         counters.clone(),
     );
     let (ev, st) = (events.clone(), stepped.clone());
+    let ck = clock.clone();
     let tape = Arc::new(ProbeTape::default());
     let stepper = ClockStepper::new(ClockStepperOptions {
         config: Box::new(move || {
@@ -186,6 +190,7 @@ fn harness_with(gps_panics: bool) -> Harness {
         modem_clock: Box::new(move |now| {
             c3.modem.fetch_add(1, Ordering::SeqCst);
             let i = i3.lock().unwrap();
+            *ck.mono.lock().unwrap() += i.modem_read_ms;
             let r = match &i.modem_telemetry {
                 Some(snap) => read_modem_clock(now, Some(snap)),
                 None => i.modem,
@@ -617,4 +622,47 @@ async fn d40_steps_at_the_first_tick_past_the_hold_off() {
         "steps at the first tick past the hold-off"
     );
     assert_eq!(h.stepper.status().steps, 1);
+}
+
+/// Review-wp4 R4-13: D40 relies on the Rust taking `hold_until_mono` AFTER
+/// the tick's modem read (ts:src/agent/clock-step.ts:262 `holdUntilMono =
+/// monoMs() + holdOffMs` after `await modemClock`). With a modem read that
+/// takes 2 000 ms of mono, the hold-off ends 300 000 ms after the POST-read
+/// mono: no step at tick-0 start + 300 000, a step at post-read + 300 000.
+#[tokio::test]
+async fn d40_hold_off_is_taken_after_the_modem_read() {
+    let h = harness();
+    let wall0 = 1_785_326_400_000;
+    h.clock.set(wall0, 100_000);
+    {
+        let mut i = h.inputs.lock().unwrap();
+        i.modem = Some(ModemClockReading {
+            offset_ms: -1_400_000_000_000.0,
+        });
+        i.modem_read_ms = 2_000;
+    }
+    h.stepper.tick().await;
+    assert!(h.events.lock().unwrap()[0]
+        .1
+        .starts_with("[clock] ignoring implausible nitz time"));
+    {
+        let mut i = h.inputs.lock().unwrap();
+        i.modem_read_ms = 0;
+        i.gps = Some(GpsClockReading {
+            utc_ms: wall0 + 600_000,
+            age_ms: 0,
+            valid: true,
+        });
+    }
+    // tick-0 START + 300 000 (what a pre-await hold-off would allow): held.
+    h.clock.set(wall0 + 300_000, 400_000);
+    h.stepper.tick().await;
+    assert!(
+        h.runner.calls.lock().unwrap().is_empty(),
+        "hold-off taken after the modem read: not past it yet"
+    );
+    // post-read mono (102 000) + 300 000: steps.
+    h.clock.set(wall0 + 302_000, 402_000);
+    h.stepper.tick().await;
+    assert_eq!(h.runner.calls.lock().unwrap().len(), 1);
 }

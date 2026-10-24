@@ -21,6 +21,9 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use xorgate_hal::tape::Tape;
 
+/// The relay's barrier-wait log in `<run>/<label>/` (obd-gate.py `log_wait`).
+pub const OBD_GATE_LOG: &str = "obd-gate.ndjson";
+
 /// `meta.rig.obd`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +181,10 @@ pub fn prepare_agent(
         env.push(("RIG_OBD_BARRIER".into(), bar.display().to_string()));
         env.push(("RIG_OBD_SIDE".into(), side));
         env.push(("RIG_OBD_PEERS".into(), "a,b".into()));
+        // The relay's rig-owned barrier-wait log (review-wp4 R4-4).
+        let log = dir.join(OBD_GATE_LOG);
+        let _ = fs::remove_file(&log);
+        env.push(("RIG_OBD_WAITLOG".into(), log.display().to_string()));
     }
     env.extend(plan.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     let mut emu = None;
