@@ -1285,9 +1285,13 @@ impl Cx<'_> {
     /// k±1, or a two-sample lag, is UNTOLERATED.
     fn obd_sample_split(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let (rid, row) = self.table.decision_row("obd-sample-split")?;
+        // NOT `link` (review-wp4 R4-2): `mapLatest` writes `link` from the
+        // helper's STATUS lines via `currentLink()` (ts:src/agent/collectors/
+        // obd.ts:640-659), not from a sample — it must match exactly.
         if !crate::tolerances::stream_matches(&row.streams, &self.stream)
             || !path.starts_with("metrics.obd.")
             || !path.ends_with(".value")
+            || path == "metrics.obd.link.value"
         {
             return None;
         }
@@ -1566,8 +1570,25 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             if let (Some((id, tol)), Some(p), Some(q)) =
                 (cx.table.numeric(&cx.stream, path), x.as_f64(), y.as_f64())
             {
-                let t = if (p - q).abs() <= tol + 1e-9 {
+                // T17 (review-wp4 R4-3c): the rate is the vendored helper's
+                // `round(rate, 1)` (python/obd/session.py:504), only CARRIED by
+                // the agent, so its TEXT must be a 1-decimal number on BOTH
+                // sides, as a JS number prints it (`^\d+(\.\d)?$`: `19.2`, or
+                // `19` for a 19.0) — a float-rendered value
+                // (`19.200000762939453`) or a 2-decimal one fails.
+                let one_decimal = |v: &Value| {
+                    let t = v.to_string();
+                    let (int, frac) = t.split_once('.').unwrap_or((&t, "0"));
+                    !int.is_empty()
+                        && int.bytes().all(|c| c.is_ascii_digit())
+                        && frac.len() == 1
+                        && frac.bytes().all(|c| c.is_ascii_digit())
+                };
+                let shape_ok = id != "T17" || (one_decimal(x) && one_decimal(y));
+                let t = if shape_ok && (p - q).abs() <= tol + 1e-9 {
                     id
+                } else if !shape_ok {
+                    UNTOLERATED.into()
                 } else if let Some(h) = cx.host_attributed(path, p, q, tol) {
                     h
                 } else {
@@ -1861,6 +1882,83 @@ fn fffd_equiv(a: &str, b: &str) -> bool {
 
 fn ts_of(v: &Value) -> Option<i64> {
     v.get("ts").and_then(Value::as_i64)
+}
+
+/// Review-wp4 R4-9: T8/led-tick-lag and T8/obd-sample-split excuse ISOLATED
+/// one-sample splits, never a systematic lag. A split happens only when the
+/// leaf's change lands between the two agents' own read instants of it (the
+/// LED heartbeat, ts:src/worker.ts:703-705; the helper's latest sample read
+/// on the tick, ts:src/agent/collectors/obd.ts `mapLatest`), a window of
+/// |phase A − phase B| of a 1 s period, which the tick pairing keeps ≤ 500 ms:
+/// so at most half of a leaf's changes in expectation (JS-vs-JS calibration
+/// p5b-led .cal09: 3 of 13). Per (row, leaf) per run: more than
+/// max(2, ⌈changes / 2⌉) splits turns EVERY split of that leaf UNTOLERATED
+/// (2 = one shifted one-cycle pulse, which splits both of its edges). Each
+/// leaf's split count, change count and direction is listed in diff.md.
+fn cap_one_sample_splits(rep: &mut Report, paired: &[(&Msg, &Msg)]) {
+    const ROWS: [&str; 2] = ["T8/led-tick-lag", "T8/obd-sample-split"];
+    let tick_of: BTreeMap<String, usize> = paired
+        .iter()
+        .enumerate()
+        .map(|(k, (x, y))| {
+            (
+                format!(
+                    "ts A {} / B {}",
+                    ts_of(&x.payload).unwrap_or(0),
+                    ts_of(&y.payload).unwrap_or(0)
+                ),
+                k,
+            )
+        })
+        .collect();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (i, m) in rep.mismatches.iter().enumerate() {
+        if m.stream == "telemetry" && ROWS.contains(&m.tol.as_str()) {
+            groups
+                .entry((m.tol.clone(), m.path.clone()))
+                .or_default()
+                .push(i);
+        }
+    }
+    for ((row, path), idx) in groups {
+        let vals = |side: usize| -> Vec<Option<Value>> {
+            paired
+                .iter()
+                .map(|p| lookup(&(if side == 0 { p.0 } else { p.1 }).payload, &path).cloned())
+                .collect()
+        };
+        let (va, vb) = (vals(0), vals(1));
+        let changes = va.windows(2).filter(|w| w[0] != w[1]).count();
+        let (mut a_late, mut b_late) = (0, 0);
+        for &i in &idx {
+            if let Some(&k) = tick_of.get(&rep.mismatches[i].at) {
+                if k > 0 && va[k] == vb[k - 1] {
+                    a_late += 1;
+                } else {
+                    b_late += 1;
+                }
+            }
+        }
+        let cap = 2usize.max(changes.div_ceil(2));
+        let over = idx.len() > cap;
+        rep.inputs.insert(
+            format!("{row} {path}"),
+            format!(
+                "{} split(s) of {changes} change(s) (A late {a_late}, B late {b_late}; cap {cap}){}",
+                idx.len(),
+                if over { " — OVER THE CAP: every split UNTOLERATED" } else { "" }
+            ),
+        );
+        if over {
+            for &i in &idx {
+                let st = rep.mismatches[i].stream.clone();
+                rep.mismatches[i].tol = UNTOLERATED.to_string();
+                let s = rep.stats.entry(st).or_default();
+                s.tolerated = s.tolerated.saturating_sub(1);
+                s.untolerated += 1;
+            }
+        }
+    }
 }
 
 /// Pair telemetry by the player's hold-window pairs, else nearest `ts` within
@@ -2767,6 +2865,7 @@ pub fn diff_with(
     diff_sudo(a, b, table, &mut rep);
 
     cap_row_hits(&mut rep, table, play, "input-edge");
+    cap_one_sample_splits(&mut rep, &paired);
     host_bias_guard(&mut rep, table);
 
     // Per-kind comparison counts (review-wp7): every kind is listed.
@@ -3056,20 +3155,21 @@ fn seq_increments(
     }
 }
 
-/// T8/report-echo: how many of one side's reports (in publish order) are
-/// ECHOES of the report before them: identical payload once the publish
-/// stamps (`ts`, every `status.<ns>.at`) are removed, and published
-/// `DEBOUNCE_MS` ± [`ECHO_SLACK_MS`] after it. Mechanism (TS @09da38d): the
-/// worker's publish tick requests a report on an OBD link move
-/// (ts:src/worker.ts:1399-1404 `obdReportDue`), ConfigSync debounces 2 s
-/// (ts:src/agent/config-sync.ts:1604-1617 `request`, one timer, coalescing
-/// only while it is armed); the timer armed on tick k fires on tick k+2's
-/// instant, so a link move seen on that tick (the emulator's ~2 s probe:
-/// link 0→1→2) re-arms it after the flush — a second report with nothing
-/// new — or coalesces, depending on which of the two callbacks runs first.
-/// Seen on BOTH JS sides of every p5b-obd-config JS-vs-JS run (stepB .cal09:
-/// 3 echoes each at 1983–2021 ms) and missing once on a JS side (stepC .jsrs2).
-fn report_echoes(side: &[&Msg]) -> usize {
+/// T8/report-echo: the indices of one side's reports (publish order) that
+/// are ECHOES: identical to the report before them once the publish stamps
+/// (`ts`, every `status.<ns>.at`) are removed, carrying `effective.obd`,
+/// published `DEBOUNCE_MS` ± [`ECHO_SLACK_MS`] after it, AND one debounce
+/// after a `metrics.obd.link` move on THAT side's telemetry (± the slack) —
+/// at most one echo per move. Mechanism (TS @09da38d): the publish tick
+/// requests a report on an OBD link move (ts:src/worker.ts:1399-1404
+/// `obdReportDue`), ConfigSync debounces 2 s (ts:src/agent/config-sync.ts:
+/// 1604-1617, one timer, coalescing only while armed); the timer armed on
+/// tick k fires on tick k+2's instant, so a link move seen on that tick
+/// re-arms it after the flush — a second report with nothing new — or
+/// coalesces, depending on which callback runs first. Both JS sides of every
+/// p5b-obd-config JS-vs-JS run do it. A report repeated WITHOUT such a move
+/// (a debounce that re-arms on its own flush) is never an echo.
+fn report_echoes(side: &[&Msg], link_moves: &[i64]) -> Vec<usize> {
     let strip = |p: &Value| {
         let mut p = p.clone();
         if let Some(o) = p.as_object_mut() {
@@ -3084,12 +3184,48 @@ fn report_echoes(side: &[&Msg]) -> usize {
         }
         p
     };
-    side.windows(2)
-        .filter(|w| {
-            (w[1].w - w[0].w - DEBOUNCE_MS).abs() <= ECHO_SLACK_MS
-                && strip(&w[0].payload) == strip(&w[1].payload)
-        })
-        .count()
+    let mut used = vec![false; link_moves.len()];
+    let mut out = Vec::new();
+    for i in 1..side.len() {
+        let (x, y) = (side[i - 1], side[i]);
+        if (y.w - x.w - DEBOUNCE_MS).abs() > ECHO_SLACK_MS
+            || y.payload.pointer("/effective/obd").is_none()
+            || strip(&x.payload) != strip(&y.payload)
+        {
+            continue;
+        }
+        let trig = y.w - DEBOUNCE_MS;
+        if let Some(j) = (0..link_moves.len())
+            .find(|&j| !used[j] && (link_moves[j] - trig).abs() <= ECHO_SLACK_MS)
+        {
+            used[j] = true;
+            out.push(i);
+        }
+    }
+    out
+}
+
+fn drop_indices<'m>(v: &[&'m Msg], drop: &[usize]) -> Vec<&'m Msg> {
+    v.iter()
+        .enumerate()
+        .filter(|(i, _)| !drop.contains(i))
+        .map(|(_, m)| *m)
+        .collect()
+}
+
+/// The capture instants of the telemetry ticks whose `metrics.obd.link`
+/// value differs from the previous tick's (the `obdReportDue` link edges).
+fn obd_link_moves(c: &Capture) -> Vec<i64> {
+    let link = |m: &Msg| m.payload.pointer("/metrics/obd/link/value").cloned();
+    let tel: Vec<&Msg> = c
+        .msgs
+        .iter()
+        .filter(|m| m.topic.ends_with("/telemetry"))
+        .collect();
+    tel.windows(2)
+        .filter(|w| link(w[0]) != link(w[1]))
+        .map(|w| w[1].w)
+        .collect()
 }
 
 /// T8/report-echo: Δ − 2000 = (where in tick k+2 the second `obdReportDue`
@@ -3223,10 +3359,19 @@ fn diff_reports(
             // differs ONLY by echoes — a report byte-identical to the same
             // side's previous one (save its publish stamps `ts` and
             // `status.<ns>.at`), published one debounce after it.
+            // Rebuilt after review-wp4 R4-1: an echo counts only when THAT
+            // side's telemetry moved `metrics.obd.link` on the publish tick
+            // one debounce before it (the `obdReportDue` trigger), at most one
+            // echo per such move; the remaining reports are then compared
+            // PAIRWISE (below), never just the last.
             let echo = table.decision_row("report-echo").and_then(|(rid, _)| {
-                let (ea, eb) = (report_echoes(&pa), report_echoes(&pb));
-                (ea + eb > 0 && pa.len() - ea == pb.len() - eb)
-                    .then(|| format!("{rid}/report-echo"))
+                let (ea, eb) = (
+                    report_echoes(&pa, &obd_link_moves(a)),
+                    report_echoes(&pb, &obd_link_moves(b)),
+                );
+                let (ka, kb) = (drop_indices(&pa, &ea), drop_indices(&pb, &eb));
+                (ea.len() + eb.len() > 0 && ka.len() == kb.len())
+                    .then(|| (format!("{rid}/report-echo"), ka, kb))
             });
             let tol = if straddle
                 && pa.len().abs_diff(pb.len()) <= max_delta
@@ -3236,19 +3381,35 @@ fn diff_reports(
                 t5.clone()
             } else if let Some(id) = after_cut {
                 id
-            } else if let Some(id) = echo {
-                id
+            } else if let Some((id, _, _)) = &echo {
+                id.clone()
             } else {
                 UNTOLERATED.into()
             };
+            let echoed = echo.filter(|(id, _, _)| *id == tol);
             rep.push(cx.mismatch(
                 "(count)",
                 Some(&Value::from(pa.len())),
                 Some(&Value::from(pb.len())),
                 tol,
             ));
-            // Only the last of each side is binding.
-            if let (Some(x), Some(y)) = (pa.last(), pb.last()) {
+            if let Some((_, ka, kb)) = echoed {
+                // The echoes removed, the rest compared one by one.
+                for (i, (x, y)) in ka.iter().zip(&kb).enumerate() {
+                    compared += 1;
+                    let cx = Cx {
+                        stream: "report".into(),
+                        at: format!("{at} #{i} (echoes removed)"),
+                        when: Some(x.w),
+                        when_b: Some(y.w),
+                        ..cx
+                    };
+                    flags_pair(&cx, x, y, rep);
+                    let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, rep);
+                    cmp(&cx, "", Some(&px), Some(&py), rep);
+                }
+            } else if let (Some(x), Some(y)) = (pa.last(), pb.last()) {
+                // Only the last of each side is binding.
                 compared += 1;
                 let cx = Cx {
                     at: format!("{at} last"),
@@ -6437,6 +6598,69 @@ mod tests {
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
 
+    /// T17 (review-wp4 R4-3a): the profile rate within ±1.0 and as a 1-decimal
+    /// JS number on both sides; ±2.0, a float-rendered or 2-decimal value
+    /// fail; another path is not T17.
+    #[test]
+    fn t17_only_a_one_decimal_rate_within_one_req_s() {
+        let t = table();
+        let rep = |rate: Value, other: f64| {
+            msg(
+                10_000,
+                "config/reported",
+                serde_json::json!({"v":1,"ts":10_000,"rev":1,"origin":"boot",
+                    "effective":{"obd":{"profile":{"rate_req_s": rate, "other": other}}}}),
+            )
+        };
+        let tol = |a: Value, b: Value, oa: f64, ob: f64| {
+            let r = diff(
+                &cap("js", vec![rep(a, oa)]),
+                &cap("rust", vec![rep(b, ob)]),
+                &PlayInfo::default(),
+                &[],
+                &t,
+            );
+            r.mismatches
+                .iter()
+                .filter(|m| m.stream == "report")
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect::<Vec<_>>()
+        };
+        let p = "effective.obd.profile.rate_req_s".to_string();
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(18.7), 1.0, 1.0),
+            vec![(p.clone(), "T17".to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(19), 1.0, 1.0),
+            vec![(p.clone(), "T17".to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(17.2), 1.0, 1.0),
+            vec![(p.clone(), UNTOLERATED.to_string())]
+        );
+        assert_eq!(
+            tol(
+                serde_json::json!(19.2),
+                serde_json::json!(19.200000762939453),
+                1.0,
+                1.0
+            ),
+            vec![(p.clone(), UNTOLERATED.to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(19.25), 1.0, 1.0),
+            vec![(p.clone(), UNTOLERATED.to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(19.2), 1.0, 1.5),
+            vec![(
+                "effective.obd.profile.other".to_string(),
+                UNTOLERATED.to_string()
+            )]
+        );
+    }
+
     /// T8/report-echo: a count difference made ONLY of echoes (a report
     /// byte-identical to its side's previous one save `ts` / `status.*.at`,
     /// published DEBOUNCE ± 150 ms after it) is tolerated; a changed payload,
@@ -6445,16 +6669,34 @@ mod tests {
     fn report_echo_only_an_identical_report_one_debounce_later() {
         let t = table();
         let play = PlayInfo::default();
-        let r = |w: i64, link: i64| {
+        let r = |w: i64, link: i64, status: &str| {
             msg(
                 w,
                 "config/reported",
                 serde_json::json!({"v":1,"ts":w,"rev":3,"origin":"boot",
-                    "effective":{"obd":{"status":"live","link":link}},
+                    "effective":{"obd":{"status":status,"link":link}},
                     "status":{"obd":{"state":"applied","at":w}}}),
             )
         };
-        let count_tol = |a: Vec<Msg>, b: Vec<Msg>| {
+        // Telemetry 1 Hz; `moves` = the ticks where metrics.obd.link changes.
+        let tel = |off: i64, moves: &[i64]| -> Vec<Msg> {
+            let mut link = 0;
+            (0..20)
+                .map(|k| {
+                    let w = 70_000 + off + k * 1000;
+                    if moves.iter().any(|m| (m - w).abs() < 500) {
+                        link += 1;
+                    }
+                    msg(
+                        w,
+                        "telemetry",
+                        serde_json::json!({"v":1,"ts":w,"seq":k,
+                        "metrics":{"obd":{"link":{"value":link}}}}),
+                    )
+                })
+                .collect()
+        };
+        let run = |a: Vec<Msg>, b: Vec<Msg>| {
             let rep = diff_with(
                 &cap("js", a),
                 &cap("rust", b),
@@ -6465,54 +6707,71 @@ mod tests {
             );
             rep.mismatches
                 .iter()
-                .find(|m| m.path == "(count)")
-                .map(|m| m.tol.clone())
+                .filter(|m| m.stream == "report")
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect::<Vec<_>>()
         };
-        // The p5b-obd-config shape: Rust echoes the live report 2002 ms later.
-        assert_eq!(
-            count_tol(
-                vec![r(72_851, 0), r(75_601, 2)],
-                vec![r(72_852, 0), r(75_501, 2), r(77_503, 2)]
-            )
-            .as_deref(),
-            Some("T8/report-echo")
+        let count = |v: &[(String, String)]| {
+            v.iter()
+                .find(|(p, _)| p == "(count)")
+                .map(|(_, t)| t.clone())
+        };
+        // The p5b-obd-config shape: Rust's link moves on its 75 010 tick, its
+        // echo 2001 ms after the live report = 2002 after that move.
+        let mut a = tel(0, &[73_000, 75_000]);
+        a.extend([r(72_851, 0, "connecting"), r(75_601, 2, "live")]);
+        let mut b = tel(10, &[73_010, 75_010]);
+        b.extend([
+            r(72_852, 0, "connecting"),
+            r(75_011, 2, "live"),
+            r(77_012, 2, "live"),
+        ]);
+        let got = run(a.clone(), b.clone());
+        assert_eq!(count(&got).as_deref(), Some("T8/report-echo"), "{got:?}");
+        assert!(got.iter().all(|(_, t)| t != UNTOLERATED), "{got:?}");
+        // M-E1: EVERY Rust report published twice, +2 s, no link move behind
+        // the copies → not echoes.
+        let mut b1 = tel(10, &[]);
+        b1.extend([
+            r(72_852, 0, "connecting"),
+            r(74_852, 0, "connecting"),
+            r(75_011, 2, "live"),
+            r(77_501, 2, "live"),
+        ]);
+        let mut a1 = tel(0, &[]);
+        a1.extend([r(72_851, 0, "connecting"), r(75_601, 2, "live")]);
+        assert_eq!(count(&run(a1, b1)).as_deref(), Some(UNTOLERATED));
+        // M-E2: a corrupted non-last report inside an echo period → compared
+        // pairwise once the echo is removed → UNTOLERATED.
+        let mut b2 = tel(10, &[73_010, 75_010]);
+        b2.extend([
+            r(72_852, 7, "BOGUS"),
+            r(75_011, 2, "live"),
+            r(77_012, 2, "live"),
+        ]);
+        let got = run(a.clone(), b2);
+        assert_eq!(count(&got).as_deref(), Some("T8/report-echo"));
+        assert!(
+            got.iter()
+                .any(|(p, t)| p.contains("effective.obd") && t == UNTOLERATED),
+            "{got:?}"
         );
-        // Echo on the JS side instead (either side may echo).
-        assert_eq!(
-            count_tol(
-                vec![r(72_851, 0), r(75_601, 2), r(77_610, 2)],
-                vec![r(72_852, 0), r(75_501, 2)]
-            )
-            .as_deref(),
-            Some("T8/report-echo")
-        );
-        // The extra report carries a change (link 1): not an echo.
-        assert_eq!(
-            count_tol(
-                vec![r(72_851, 0), r(75_601, 2)],
-                vec![r(72_852, 0), r(75_501, 1), r(77_503, 2)]
-            )
-            .as_deref(),
-            Some(UNTOLERATED)
-        );
+        // The extra report carries a change: not an echo.
+        let mut b3 = tel(10, &[73_010, 75_010]);
+        b3.extend([
+            r(72_852, 0, "connecting"),
+            r(75_011, 1, "probing"),
+            r(77_012, 2, "live"),
+        ]);
+        assert_eq!(count(&run(a.clone(), b3)).as_deref(), Some(UNTOLERATED));
         // Identical but 3 s later: not one debounce after.
-        assert_eq!(
-            count_tol(
-                vec![r(72_851, 0), r(75_601, 2)],
-                vec![r(72_852, 0), r(75_501, 2), r(78_501, 2)]
-            )
-            .as_deref(),
-            Some(UNTOLERATED)
-        );
-        // Two extra reports, only one an echo: the counts do not reconcile.
-        assert_eq!(
-            count_tol(
-                vec![r(72_851, 0), r(75_601, 2)],
-                vec![r(70_000, 1), r(72_852, 0), r(75_501, 2), r(77_503, 2)]
-            )
-            .as_deref(),
-            Some(UNTOLERATED)
-        );
+        let mut b4 = tel(10, &[73_010, 76_010]);
+        b4.extend([
+            r(72_852, 0, "connecting"),
+            r(75_011, 2, "live"),
+            r(78_012, 2, "live"),
+        ]);
+        assert_eq!(count(&run(a, b4)).as_deref(), Some(UNTOLERATED));
     }
 
     /// CF54 (Phase 4 WP6): with T6 deleted, the Phase 4 report fields are
@@ -6805,6 +7064,97 @@ mod tests {
     /// T8/led-tick-lag: a one-sample old/new split of the LED leaves, either
     /// side late, is the row; a two-sample lag, a value the other side never
     /// carried, or another leaf is UNTOLERATED.
+    /// Review-wp4 R4-9 / R4-2: a SYSTEMATIC one-sample lag (every change of a
+    /// leaf split, one direction) is over the cap and UNTOLERATED; isolated
+    /// splits stay tolerated; `metrics.obd.link` is never a sample split.
+    #[test]
+    fn one_sample_splits_are_capped_per_leaf_and_link_is_exact() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, led: i64, rpm: i64, link: i64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"system":{"led_state":{"value":led}},
+                "obd":{"link":{"value":link},"rpm":{"value":rpm}}}})
+        };
+        let side = |kind: &str, led: &[i64], rpm: &[i64], link: &[i64], off: i64| {
+            cap(
+                kind,
+                (0..led.len())
+                    .map(|k| {
+                        let ts = 20_000 + off + k as i64 * 1000;
+                        msg(
+                            ts,
+                            "telemetry",
+                            tel(ts, k as i64 + 1, led[k], rpm[k], link[k]),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            ..Default::default()
+        };
+        let run = |a: &Capture, b: &Capture, leaf: &str| {
+            diff_with(a, b, &play, &InputFacts::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == leaf)
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        let n = 16;
+        let flat = vec![2i64; n];
+        // LED alternating every 2 samples (8 changes); B one sample late on ALL.
+        let led_a: Vec<i64> = (0..n as i64).map(|k| (k / 2) % 2).collect();
+        let mut led_b = led_a.clone();
+        led_b.rotate_right(1);
+        led_b[0] = led_a[0];
+        let got = run(
+            &side("js", &led_a, &flat, &flat, 0),
+            &side("rust", &led_b, &flat, &flat, 10),
+            "metrics.system.led_state.value",
+        );
+        assert!(
+            got.len() > 2 && got.iter().all(|x| x == UNTOLERATED),
+            "{got:?}"
+        );
+        // One isolated split among the same changes: tolerated.
+        let mut led_c = led_a.clone();
+        led_c[2] = led_a[1];
+        let got = run(
+            &side("js", &led_a, &flat, &flat, 0),
+            &side("rust", &led_c, &flat, &flat, 10),
+            "metrics.system.led_state.value",
+        );
+        assert_eq!(got, vec!["T8/led-tick-lag".to_string()]);
+        // OBD rpm: every change one sample late → over the cap.
+        let rpm_a: Vec<i64> = (0..n as i64).map(|k| 800 + 10 * k).collect();
+        let mut rpm_b = rpm_a.clone();
+        rpm_b.rotate_right(1);
+        rpm_b[0] = rpm_a[0];
+        let got = run(
+            &side("js", &flat, &rpm_a, &flat, 0),
+            &side("rust", &flat, &rpm_b, &flat, 10),
+            "metrics.obd.rpm.value",
+        );
+        assert!(
+            got.len() > 2 && got.iter().all(|x| x == UNTOLERATED),
+            "{got:?}"
+        );
+        // M-L1: the Rust link one tick late at its edge → UNTOLERATED (never a sample split).
+        let mut link_a = vec![0i64; n];
+        link_a[5..].fill(2);
+        let mut link_b = link_a.clone();
+        link_b[5] = 0;
+        let got = run(
+            &side("js", &flat, &flat, &link_a, 0),
+            &side("rust", &flat, &flat, &link_b, 10),
+            "metrics.obd.link.value",
+        );
+        assert_eq!(got, vec![UNTOLERATED.to_string()]);
+    }
+
     #[test]
     fn led_tick_lag_only_a_one_sample_split_of_the_led_leaves() {
         let t = table();

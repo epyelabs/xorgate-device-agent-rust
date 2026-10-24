@@ -520,7 +520,7 @@ fn add_p5b(
         // a 62.48 s report; JS-vs-Rust with a 55 s tape: 62.3 vs 62.16 s).
         // The audit counters are compared on p5b-obd-config (restarts,
         // T8/obd-audit-cycle).
-        "p5b-obd-emulator" | "p5b-obd-crank" | "p5b-obd-badproto" => {
+        "p5b-obd-emulator" | "p5b-obd-audit" | "p5b-obd-crank" | "p5b-obd-badproto" => {
             let sc = match scenario {
                 "p5b-obd-crank" => "taos-2022-crank",
                 "p5b-obd-badproto" => "taos-2022-badproto",

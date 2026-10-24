@@ -333,6 +333,12 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         "OBD: peripherals.obd + an ELM327-emulator per agent (taos-2022) on XORGATE_OBD_SERIAL, the real helper → obd group at link 2 with the Taos values, effective.obd, state.json obd",
     ),
     (
+        "p5b-obd-audit",
+        150,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD (review-wp4 R4-3e): taos-2022 for 150 s in ONE helper run → the helper's 60 s audits #1 and #2 → the agent's audit-MEASURED request rate (ts:src/agent/collectors/obd.ts:270-278, 666-677) in state.json obd.reqPerSec, JS vs Rust",
+    ),
+    (
         "p5b-obd-crank",
         35,
         &["p4", "nmea-fixonly", "lte", "clock"],
