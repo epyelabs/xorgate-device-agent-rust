@@ -94,9 +94,9 @@ stop_pid() { # <pidfile> <cmdline pattern>
   owner=$(stat -c %U "/proc/$p" 2>/dev/null || true)
   case "$cmd" in *"$2"*) ;; *) echo "  REFUSING to stop pid $p from $1: not the overlay's process ($cmd)"; return 0 ;; esac
   [ "$owner" = pi ] || { echo "  REFUSING to stop pid $p from $1: owned by ${owner:-?}, not pi"; return 0; }
-  act as_pi kill -TERM "$p" || true
+  act as_pi sh -c 'kill -TERM "$1"' sh "$p" || true
   for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
-  if kill -0 "$p" 2>/dev/null; then act as_pi kill -KILL "$p" || true; fi
+  if kill -0 "$p" 2>/dev/null; then act as_pi sh -c 'kill -KILL "$1"' sh "$p" || true; fi
 }
 do_revert() {
   echo "== revert: emulator + FakeModem, drop-in, manifest, /run + /tmp"
@@ -192,9 +192,11 @@ PY
     rm -f "$OBD_PTY_FILE"
     EMU_CMD="${XORGATE_TEST_P5B_EMULATOR_CMD:-env OBD_ELM_BIN=$P5B_TMP/venv/bin/elm TMPDIR=$P5B_TMP PYTHONDONTWRITEBYTECODE=1 python3 $P5B_TMP/obd-emulator.py $P5B_TMP/pyemu taos-2022 $OBD_PTY_FILE}"
     # The pid is written by the pi-owned shell itself (not runuser's $!).
-    as_pi setsid sh -c "echo \$\$ > $EMU_PID; exec $EMU_CMD" > "$P5B_TMP/emulator.log" 2>&1 < /dev/null &
+    # (the background subshells drop the ERR trap: they end when the process
+    # is stopped, and must never run the rollback themselves)
+    ( trap - ERR; set +eE; as_pi setsid sh -c "echo \$\$ > $EMU_PID; exec $EMU_CMD" ) > "$P5B_TMP/emulator.log" 2>&1 < /dev/null &
     MODEM_CMD="${XORGATE_TEST_P5B_MODEM_CMD:-python3 $P5B_TMP/sms_fake_modem.py --inbox $P5B_TMP/p4-sms-modem.json --link $SMS_LINK --log $P5B_TMP/sms-fake.log --allow-clear}"
-    as_pi setsid sh -c "echo \$\$ > $MODEM_PID; exec $MODEM_CMD" > "$P5B_TMP/fake-modem.log" 2>&1 < /dev/null &
+    ( trap - ERR; set +eE; as_pi setsid sh -c "echo \$\$ > $MODEM_PID; exec $MODEM_CMD" ) > "$P5B_TMP/fake-modem.log" 2>&1 < /dev/null &
     for _ in $(seq 1 150); do [ -s "$OBD_PTY_FILE" ] && [ -L "$SMS_LINK" ] && break; sleep 0.2; done
     OBD_PTY=$(cat "$OBD_PTY_FILE" 2>/dev/null || true)
     case "$OBD_PTY" in /dev/*) echo "  emulator on $OBD_PTY" ;; *) echo "FAILED: the emulator printed no pty (see $P5B_TMP/emulator.log) — reverting"; APPLY_FAILED=1 ;; esac

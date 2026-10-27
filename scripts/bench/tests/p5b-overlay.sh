@@ -82,11 +82,11 @@ grep -q "marker:   applied" "$LOGS/st.log" && grep -q "emulator: running" "$LOGS
 
 echo "== revert: byte-for-byte"
 : > "$STATE/systemctl.log"
-bash "$B/p5b-overlay.sh" revert >"$LOGS/v1.log" 2>&1; expect $? "revert rc=0"
+bash "$B/p5b-overlay.sh" revert >"$LOGS/v1.log" 2>&1; rc=$?; expect $rc "revert rc=0"; [ "$rc" = 0 ] || sed 's/^/    v1: /' "$LOGS/v1.log" | tail -15
 cmp -s "$HW" "$LOGS/hw.orig"; expect $? "$HW restored byte-for-byte"
 [ ! -e "$DROP" ] && [ ! -e /run/xorgate-rs-p5b ] && [ ! -e /run/xorgate-rs-obd-python ] && [ ! -e /tmp/xorgate-p5b ]
 expect $? "drop-in, /run dirs and /tmp files gone"
-! kill -0 "$p" 2>/dev/null; expect $? "the emulator is stopped"; kill -0 "$p" 2>/dev/null && { grep -i 'refus\|stop' "$LOGS/v1.log"; tr '\0' ' ' < /proc/$p/cmdline; stat -c %U /proc/$p; }
+! kill -0 "$p" 2>/dev/null; expect $? "the emulator is stopped"
 ! grep -E 'systemctl (restart|start|stop)' "$STATE/systemctl.log" | grep -qv 'restart xorgate-agent-rs$'; expect $? "revert restarts only xorgate-agent-rs"
 bash "$B/exclusive.sh" status >"$LOGS/v2.log" 2>&1
 grep -q "inputs: SAFE" "$LOGS/v2.log"; expect $? "inputs_safe SAFE after revert"
