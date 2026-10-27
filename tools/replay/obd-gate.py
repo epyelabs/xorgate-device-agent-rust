@@ -157,6 +157,14 @@ for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
 out = sys.stdout.buffer
 for line in iter(child.stdout.readline, b""):
     k = kind_of(line)
+    if k == "profile":
+        # The helper's own measured rate (review-wp4 R4-3): the diff checks
+        # each agent CARRIES exactly this value (no rounding, no float noise).
+        try:
+            log_wait({"w": int(time.time() * 1000), "side": SIDE, "kind": "profile-rate",
+                      "rate_req_s": json.loads(line).get("rate_req_s")})
+        except ValueError:
+            pass
     if k in EDGE_KINDS:
         barrier("edge", k)
     wait_open()

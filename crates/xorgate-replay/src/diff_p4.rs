@@ -735,7 +735,54 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
         return;
     }
     let mut summary = Vec::new();
+    // T17's carry check: every `effective.obd.profile.rate_req_s` a side
+    // reports must be (numerically exactly) a rate its OWN helper printed.
+    for (label, dir, log) in [("A", "a", &a), ("B", "b", &b)] {
+        let rates: Vec<f64> = log
+            .iter()
+            .flatten()
+            .filter(|w| w["kind"] == "profile-rate")
+            .filter_map(|w| w["rate_req_s"].as_f64())
+            .collect();
+        if rates.is_empty() {
+            continue; // a pre-R4-3 relay log (no profile lines recorded)
+        }
+        let reported: Vec<(i64, Value)> =
+            std::fs::read_to_string(run.join(dir).join("mqtt.ndjson"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter(|m| {
+                    m["topic"]
+                        .as_str()
+                        .is_some_and(|t| t.ends_with("/config/reported"))
+                })
+                .filter_map(|m| {
+                    let p: Value = serde_json::from_str(m["payload"].as_str()?).ok()?;
+                    Some((
+                        m["w"].as_i64()?,
+                        p.pointer("/effective/obd/profile/rate_req_s")?.clone(),
+                    ))
+                })
+                .collect();
+        for (w, v) in reported {
+            if !v.as_f64().is_some_and(|x| rates.contains(&x)) {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!("{label} report at {w}"),
+                    path: "(profile rate carried from its helper)".into(),
+                    a: v.to_string(),
+                    b: format!("one of {rates:?}"),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+    }
     for (label, waits) in [("A", a.unwrap_or_default()), ("B", b.unwrap_or_default())] {
+        let waits: Vec<serde_json::Value> = waits
+            .into_iter()
+            .filter(|w| w["kind"] != "profile-rate")
+            .collect();
         let max = waits
             .iter()
             .filter_map(|w| w["wait_ms"].as_i64())
@@ -818,6 +865,28 @@ mod tests {
             &[r#"{"w":1,"side":"a","edge":3,"kind":"exit","wait_ms":3001,"timeout":true}"#],
         );
         assert_eq!(run(), vec!["(barrier timeout)".to_string()]);
+        // T17 carry check: B's report must carry ITS helper's 19.2 exactly.
+        write("a", &[]);
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","kind":"profile-rate","rate_req_s":19.2}"#],
+        );
+        let rep = |v: &str| {
+            let payload =
+                format!(r#"{{"effective":{{"obd":{{"profile":{{"rate_req_s":{v}}}}}}}}}"#);
+            let line = serde_json::json!({"w": 5, "topic": "xorgate/devices/x/config/reported", "payload": payload});
+            std::fs::write(d.join("b").join("mqtt.ndjson"), line.to_string()).unwrap();
+        };
+        rep("19.2");
+        assert!(run().is_empty());
+        for bad in ["19", "19.200000762939453", "19.3"] {
+            rep(bad);
+            assert_eq!(
+                run(),
+                vec!["(profile rate carried from its helper)".to_string()],
+                "{bad}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
