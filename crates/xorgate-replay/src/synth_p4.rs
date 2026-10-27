@@ -296,6 +296,13 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
         // 200 s → step 1/1 after the hold-off; the next attempt after the
         // second hold-off → the cap warning.
         "p4-clock-cap" => {
+            // The 300 s trust grace is checked AFTER each 5 s poll's NTP probe
+            // (ts:src/agent/clock-trust.ts:147-152), and 300 s is also the
+            // 300th 1 s telemetry tick: with an instant probe the two fall on
+            // the same instant and the held count is 298 or 299 in the TS
+            // itself (stepC p5b-clock-fallback.cal09 298/298, .jsrs 299). A
+            // 500 ms probe latency puts the check mid-second on both sides.
+            m.rig.insert("ntpProbeDelayMs".into(), json!(500));
             b.push(20, TapeEvent::NtpProbe { synced: false });
             nmea(b, dur_ms, 200_000, CLOCK_AHEAD_S);
             // From 15 s (review-wp4 R4-5): the implausible NITZ lands on
@@ -489,6 +496,9 @@ fn add_p5b(
         // grace ends (ts:src/agent/clock-trust.ts:126-137), publishing and
         // recording resume on an untrusted clock.
         "p5b-clock-fallback" => {
+            // 500 ms NTP probe latency (see p4-clock-cap): the grace check
+            // runs after the probe, so it lands mid-second, not on tick 300.
+            m.rig.insert("ntpProbeDelayMs".into(), json!(500));
             b.push(20, TapeEvent::NtpProbe { synced: false });
             nmea(b, dur_ms, u64::MAX, 0);
             lte_with_clock(b, dur_ms, &|t| Some((cclk_at(t, 0), 0)));
