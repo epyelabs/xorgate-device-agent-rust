@@ -1861,9 +1861,24 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // time) — the only record of the hold gate's effect on line inputs.
     let mut releases = std::io::BufWriter::new(File::create(args.out.join("releases.ndjson"))?);
     let cutoff = args.max_s.map(|s| s * 1000).unwrap_or(u64::MAX);
-    let mut exit_runners: Vec<media::ExitRunner> = (0..agents.len())
-        .map(|_| media::ExitRunner::default())
-        .collect();
+    // The per-attempt exits run on their own 2 ms task (not the release loop,
+    // whose passes can block for ~100 ms on a release): each side's kill lands
+    // within a few ms of its own spawn + the tape offset, also in the settle.
+    let exit_task = (!exit_plan.is_empty()).then(|| {
+        let obs: Vec<media::ObsAgent> = agents.iter().map(Agent::obs).collect();
+        let (plan, xp, stop) = (plan.clone(), exit_plan.clone(), obs_stop.clone());
+        tokio::spawn(async move {
+            let mut runners: Vec<media::ExitRunner> =
+                obs.iter().map(|_| media::ExitRunner::default()).collect();
+            while !stop.is_cancelled() {
+                let now = wall_now_ms();
+                for (a, r) in obs.iter().zip(runners.iter_mut()) {
+                    r.poll(a, &plan, &xp, now);
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+    });
     // Phase 5b: the OBD helpers' stdout follows the hold gate (obd-gate.py).
     let has_obd = !args.no_gate && p5b::ObdPlan::of(&tape).is_some();
     let mut obd_gate = ObdGate::new(obd_gate_path(&args.work));
@@ -1974,13 +1989,6 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // it forms a pair hold only when asked near a lead tick, so on a
             // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
-            if !exit_plan.is_empty() {
-                for (a, runner) in agents.iter().zip(exit_runners.iter_mut()) {
-                    for rec in runner.poll(&a.obs(), &plan, &exit_plan, now) {
-                        plog(format!("external child exit (per attempt): {rec}"));
-                    }
-                }
-            }
             let open_now = tel_open(now);
             if has_obd {
                 // Closed inside a tick pair AND while a config-report pair is
@@ -2378,6 +2386,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     tokio::time::sleep(Duration::from_millis(500)).await;
     obs_stop.cancel();
     let _ = obs_task.await;
+    if let Some(t) = exit_task {
+        let _ = t.await;
+    }
     for a in &agents {
         if let Err(e) = media::finish(&a.obs()) {
             plog(format!("agent {}: media finish failed: {e:#}", a.label));
