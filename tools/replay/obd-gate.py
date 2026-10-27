@@ -155,8 +155,21 @@ for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
     signal.signal(s, forward)
 
 out = sys.stdout.buffer
+# The FIRST sample after the link goes live is an edge too: it is when the
+# obd group appears in telemetry, and each helper's first poll cycle after
+# `live` ends at its own instant (stepC p5b-obd-crank.fin.jsrs: the group
+# present on one side one tick earlier). Later samples are not edges.
+first_sample_due = False
 for line in iter(child.stdout.readline, b""):
     k = kind_of(line)
+    if k == "status":
+        try:
+            first_sample_due = json.loads(line).get("link") == 2
+        except ValueError:
+            pass
+    elif k == "sample" and first_sample_due:
+        first_sample_due = False
+        barrier("edge", "first-sample")
     if k == "profile":
         # The helper's own measured rate (review-wp4 R4-3): the diff checks
         # each agent CARRIES exactly this value (no rounding, no float noise).
