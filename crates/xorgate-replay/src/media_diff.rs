@@ -96,6 +96,9 @@ pub struct MediaCapture {
     /// of its final state.json (written at shutdown) — the end-snapshot
     /// per-side bound (review-wp6 FLAG 3).
     pub last_tick_backlog: Option<i64>,
+    /// Phase 5b WP4: every live telemetry tick's `metrics.system.health_flags`
+    /// value TEXT `(ts, value)` (the agent's own LED state over time).
+    pub live_flags: Vec<(i64, String)>,
     /// `(ts, "<level>: <msg>")` of every `power shed →` event seen in the
     /// state.json snapshots (`files.ndjson`; T8/d30-js-reference).
     pub shed_events: Vec<(i64, String)>,
@@ -610,6 +613,7 @@ impl MediaCapture {
             }
         }
         let mut last_tick_backlog = None;
+        let mut live_flags = Vec::new();
         let end_backlog = std::fs::read(dir.join("final/state.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -633,6 +637,12 @@ impl MediaCapture {
                 p["recording"]["liveBlock"].clone(),
             );
             last_tick_backlog = p["recording"]["backlogSegments"].as_i64();
+            if let (Some(ts), Some(f)) = (
+                p["ts"].as_i64(),
+                p.pointer("/metrics/system/health_flags/value"),
+            ) {
+                live_flags.push((ts, f.to_string()));
+            }
             if prev.as_ref().is_some_and(|q| *q != cur) {
                 shed_changes.push(v["w"].as_i64().unwrap_or(0));
             }
@@ -649,6 +659,7 @@ impl MediaCapture {
             shm_orphans,
             shed_changes,
             last_tick_backlog,
+            live_flags,
             end_backlog,
             shed_events,
             nmea_reads: nmea_lines(&tape, None),
@@ -1504,6 +1515,7 @@ fn rec_values(
         table,
         rep,
         (None, None),
+        (&[], &[]),
     )
 }
 
@@ -1522,6 +1534,7 @@ fn rec_values_m(
         Option<&xorgate_core::orientation::ImuMount>,
         Option<&xorgate_core::orientation::ImuMount>,
     ),
+    live: (LiveSeries, LiveSeries),
 ) {
     let id = "T4/rec-sample";
     let d30_gap_row = table
@@ -1590,7 +1603,7 @@ fn rec_values_m(
                 imu_oracle(&lb, &facts.imu_samples, mounts.1),
             )
         } else {
-            (BTreeSet::new(), BTreeSet::new())
+            (BTreeMap::new(), BTreeMap::new())
         };
         // … and gps the same way, for its FIX leaves (the tape's NMEA through
         // the fix aggregator); the sky leaves keep the timing rule.
@@ -1600,8 +1613,24 @@ fn rec_values_m(
                 snap_oracle(&lb, "gps", &facts.gps_snaps),
             )
         } else {
-            (BTreeSet::new(), BTreeSet::new())
+            (BTreeMap::new(), BTreeMap::new())
         };
+        for (g, va, vb) in [("imu", &va_imu, &vb_imu), ("gps", &va_gps, &vb_gps)] {
+            if let Some((summary, failed)) = oracle_age_check(&la, &lb, va, vb) {
+                rep.inputs
+                    .insert(format!("T4 oracle {g} {at}"), summary.clone());
+                if failed {
+                    rep.push(mm(
+                        "rec-telemetry",
+                        &at,
+                        &format!("metrics.{g}(oracle input age)"),
+                        summary,
+                        "within the skew".into(),
+                        UNTOLERATED,
+                    ));
+                }
+            }
+        }
         let paths: BTreeSet<&String> = la
             .iter()
             .chain(lb.iter())
@@ -1781,13 +1810,34 @@ fn rec_values_m(
                     && both_js
                     && d30_js_gap_row.is_some()
                     && d30_js_rec_value_gap(p, lack, hold, only, pmic);
+                // A one-sample LED-state value one RECORDER caught that BOTH
+                // agents held: each side's live telemetry carried it within a
+                // second of that sample (the LED heartbeat resolves the state,
+                // ts:src/worker.ts:703-705; each recorder samples it on its own
+                // 1 s phase, ts:src/recording/telemetry-recorder.ts:96-106, so
+                // a state held < 1 s can fall between one recorder's reads --
+                // the window tape's boot: JS 304 recorded, Rust 288, both
+                // published 304 at their first tick).
+                let (live_h, live_o) = if only_b.is_empty() {
+                    (live.0, live.1)
+                } else {
+                    (live.1, live.0)
+                };
+                let fix_edge = !ok
+                    && !d30_gap
+                    && !d30_js_gap
+                    && one_sided
+                    && has_row(table, REC_INPUT_BETWEEN)
+                    && led_state_both_held(p, only, live_h, live_o);
                 let fmt = |v: &[Step]| {
                     v.iter()
                         .map(|s| format!("{}×{}@{}", s.0, s.1, s.2))
                         .collect::<Vec<_>>()
                         .join(" ")
                 };
-                let tol = if ok {
+                let tol = if fix_edge {
+                    REC_INPUT_BETWEEN.to_string()
+                } else if ok {
                     id.to_string()
                 } else if d30_gap {
                     d30_gap_row
@@ -1844,11 +1894,17 @@ fn rec_values_m(
             // Phase 5b WP4: gps presence explained sample by sample on EACH
             // side by the tape (`carry_consistent`) — the two recorders read
             // at their own phases on either side of an NMEA epoch.
-            let carry_ok = g == "gps"
-                && has_row(table, REC_INPUT_BETWEEN)
-                && !facts.gps_advances.is_empty()
-                && carry_consistent(&la, &facts.gps_advances, "gps")
-                && carry_consistent(&lb, &facts.gps_advances, "gps");
+            // (imu: every released IMU line advances the TS imu cache,
+            // ts:src/agent/collectors/imu.ts:81-106.)
+            let advances: &[i64] = match g.as_str() {
+                "gps" => &facts.gps_advances,
+                "imu" => &facts.imu_lines,
+                _ => &[],
+            };
+            let carry_ok = has_row(table, REC_INPUT_BETWEEN)
+                && !advances.is_empty()
+                && carry_consistent(&la, advances, &g)
+                && carry_consistent(&lb, advances, &g);
             rep.push(mm(
                 "rec-telemetry",
                 &at,
@@ -1870,10 +1926,41 @@ fn rec_values_m(
 /// A tape input (IMU line / gps snapshot) is "recent" for a recorded sample
 /// when it is no older than ORACLE_LAG_MS before the NEWEST one the tape
 /// released by the sample's read instant (+ the 50 ms delivery margin).
-/// Review-wp4 R4-10: was the last 24 IMU lines (1.5 s at 16 Hz) / 40 gps
-/// snapshots (≈ 3 epochs), which accepted a 1 s-stale read; the TS's own
-/// input-to-read lag is 0.15–0.4 s (the input-edge row), so 400 ms.
-const ORACLE_LAG_MS: i64 = 400;
+/// Review-wp4 R4-10: was the last 24 IMU lines / 40 gps snapshots. As a
+/// TIME span, calibrated on the window tape (JS@09 vs Rust .fin.jsrs09): a
+/// genuine read can match a line up to ~1.5 s before the newest release by
+/// its read (the hold gate releases IMU lines in bursts after pair windows;
+/// the recorder reads its cache on its own phase): 400 ms → 361 untolerated,
+/// 800 → 58, 1 000 → 6, 1 500 → 0. A STALE side is caught instead by the
+/// median-age check (ORACLE_AGE_SKEW_MS).
+const ORACLE_LAG_MS: i64 = 1_500;
+
+/// Review-wp4 R4-10: a STALE side. Each verified sample's matched input has
+/// an age (its read instant − the input's release); both agents read the same
+/// tape through the same rig, so their MEDIAN ages must agree within
+/// ORACLE_AGE_SKEW_MS. A recorder reading 1 s-stale inputs shifts its median
+/// by ~1 s and FAILS; isolated late reads do not move a median.
+const ORACLE_AGE_SKEW_MS: i64 = 250;
+
+/// The per-group median-age check (ORACLE_AGE_SKEW_MS): `(summary, failed)`.
+fn oracle_age_check(
+    la: &RecSamples,
+    lb: &RecSamples,
+    va: &BTreeMap<usize, i64>,
+    vb: &BTreeMap<usize, i64>,
+) -> Option<(String, bool)> {
+    let med = |l: &RecSamples, v: &BTreeMap<usize, i64>| -> Option<i64> {
+        let reads = read_instants(l);
+        let mut ages: Vec<i64> = v.iter().map(|(i, w)| reads[*i] - w).collect();
+        ages.sort();
+        ages.get(ages.len() / 2).copied()
+    };
+    let (ma, mb) = (med(la, va)?, med(lb, vb)?);
+    Some((
+        format!("median matched-input age A {ma} ms / B {mb} ms (±{ORACLE_AGE_SKEW_MS})"),
+        (ma - mb).abs() > ORACLE_AGE_SKEW_MS,
+    ))
+}
 
 /// The `[start, end)` of `ws` (sorted release instants) the oracle may match
 /// for a read at `read`: released by read + 50 and within ORACLE_LAG_MS of
@@ -1896,9 +1983,9 @@ fn imu_oracle(
     l: &RecSamples,
     lines: &[(i64, xorgate_core::imu::ImuSample)],
     mount: Option<&xorgate_core::orientation::ImuMount>,
-) -> BTreeSet<usize> {
+) -> BTreeMap<usize, i64> {
     let reads = read_instants(l);
-    let mut out = BTreeSet::new();
+    let mut out = BTreeMap::new();
     for (i, (_, o)) in l.iter().enumerate() {
         let imu: BTreeMap<&str, &String> = o
             .iter()
@@ -1912,7 +1999,7 @@ fn imu_oracle(
         }
         let ws: Vec<i64> = lines.iter().map(|(w, _)| *w).collect();
         let (start, end) = oracle_span(&ws, reads[i]);
-        let hit = lines[start..end].iter().rev().any(|(_, smp)| {
+        let hit = lines[start..end].iter().rev().find(|(_, smp)| {
             [mount, None].iter().any(|m| {
                 let g = serde_json::to_value(xorgate_core::imu_group::map_latest(smp, *m))
                     .unwrap_or(Value::Null);
@@ -1923,8 +2010,8 @@ fn imu_oracle(
                 })
             })
         });
-        if hit {
-            out.insert(i);
+        if let Some((w, _)) = hit {
+            out.insert(i, *w);
         }
     }
     out
@@ -1963,7 +2050,7 @@ fn segment_oracle_ok(
     } else {
         return false;
     };
-    carrying.iter().all(|i| ok.contains(i))
+    carrying.iter().all(|i| ok.contains_key(i))
 }
 
 /// The gps leaves the NMEA oracle verifies: the fix-derived ones
@@ -1992,10 +2079,10 @@ fn snap_oracle(
     l: &RecSamples,
     group: &str,
     snaps: &[(i64, BTreeMap<String, String>)],
-) -> BTreeSet<usize> {
+) -> BTreeMap<usize, i64> {
     let reads = read_instants(l);
     let pre = format!("metrics.{group}.");
-    let mut out = BTreeSet::new();
+    let mut out = BTreeMap::new();
     for (i, (_, o)) in l.iter().enumerate() {
         let leaves: BTreeMap<&str, &String> = o
             .iter()
@@ -2009,7 +2096,7 @@ fn snap_oracle(
         }
         let ws: Vec<i64> = snaps.iter().map(|(w, _)| *w).collect();
         let (start, end) = oracle_span(&ws, reads[i]);
-        let hit = snaps[start..end].iter().any(|(_, s)| {
+        let hit = snaps[start..end].iter().rev().find(|(_, s)| {
             GPS_FIX_LEAVES
                 .iter()
                 .all(|leaf| match (leaves.get(leaf), s.get(*leaf)) {
@@ -2018,8 +2105,8 @@ fn snap_oracle(
                     _ => false,
                 })
         });
-        if hit {
-            out.insert(i);
+        if let Some((w, _)) = hit {
+            out.insert(i, *w);
         }
     }
     out
@@ -2033,8 +2120,8 @@ fn oracle_filter(
     la: &RecSamples,
     lb: &RecSamples,
     p: &str,
-    va: &BTreeSet<usize>,
-    vb: &BTreeSet<usize>,
+    va: &BTreeMap<usize, i64>,
+    vb: &BTreeMap<usize, i64>,
 ) -> (RecSamples, RecSamples, usize) {
     let (ra, rb) = (read_instants(la), read_instants(lb));
     let (mut drop_a, mut drop_b) = (BTreeSet::new(), BTreeSet::new());
@@ -2056,8 +2143,8 @@ fn oracle_filter(
                 // (not updated since its last write, telemetry-recorder.ts:
                 // 105-106); its count is the presence check's.
                 let (pa, pb) = (la[i].1.get(p), lb[k].1.get(p));
-                let ok_a = va.contains(&i) || pa.is_none();
-                let ok_b = vb.contains(&k) || pb.is_none();
+                let ok_a = va.contains_key(&i) || pa.is_none();
+                let ok_b = vb.contains_key(&k) || pb.is_none();
                 if pa != pb && ok_a && ok_b && (pa.is_some() || pb.is_some()) {
                     drop_a.insert(i);
                     drop_b.insert(k);
@@ -2065,14 +2152,14 @@ fn oracle_filter(
                 }
             }
             None => {
-                if va.contains(&i) {
+                if va.contains_key(&i) {
                     drop_a.insert(i);
                 }
             }
         }
     }
     for k in 0..lb.len() {
-        if !paired_b.contains(&k) && vb.contains(&k) {
+        if !paired_b.contains(&k) && vb.contains_key(&k) {
             drop_b.insert(k);
         }
     }
@@ -2111,6 +2198,25 @@ fn read_instants(l: &RecSamples) -> Vec<i64> {
         .collect()
 }
 
+/// See `fix_edge` in `rec_values_m`: `only` is ONE step of ONE sample of
+/// `health_flags` on the holder, and BOTH sides' live telemetry carried that
+/// exact value text within ±1 000 ms (one LED heartbeat) of the sample.
+fn led_state_both_held(
+    p: &str,
+    only: &[Step],
+    live_hold: &[(i64, String)],
+    live_other: &[(i64, String)],
+) -> bool {
+    if p != "metrics.system.health_flags.value" {
+        return false;
+    }
+    let [(v, 1, ts)] = only else {
+        return false;
+    };
+    let near = |l: &[(i64, String)]| l.iter().any(|(t, x)| (t - ts).abs() <= 1_000 && x == v);
+    near(live_hold) && near(live_other)
+}
+
 /// Phase 5b WP4: does every recorded sample's presence of `metrics.<group>`
 /// follow from the tape at THIS side's read instants? The TS recorder writes
 /// a group only when its cache advanced since the last sample
@@ -2125,9 +2231,16 @@ fn carry_consistent(l: &RecSamples, advances: &[i64], group: &str) -> bool {
         let i = advances.partition_point(|w| *w <= lo);
         advances.get(i).is_some_and(|w| *w <= hi)
     };
+    let last = advances.last().copied().unwrap_or(i64::MIN);
     (1..l.len()).all(|i| {
         let carries = l[i].1.keys().any(|k| k.starts_with(&pre));
         let (lo, hi) = (reads[i - 1], reads[i]);
+        // The first read past the input's LAST release (the end of the
+        // tape's stream: the helper's exit there is its own event) is not
+        // judged.
+        if hi > last && lo <= last + CARRY_EPS_MS {
+            return true;
+        }
         if carries {
             any_in(lo - CARRY_EPS_MS, hi + CARRY_EPS_MS)
         } else {
@@ -2146,6 +2259,8 @@ const REC_INPUT_BETWEEN: &str = "T4/rec-input-between";
 const REC_PAIR_MS: i64 = 500;
 
 type RecSamples = Vec<(i64, BTreeMap<String, String>)>;
+/// One side's live telemetry `(ts, health_flags text)` series.
+type LiveSeries<'a> = &'a [(i64, String)];
 
 /// R-P3G-2: pair A/B recorder samples by nearest `ts` (≤ REC_PAIR_MS, each
 /// sample in at most one pair, in order) and remove from both sides a pair
@@ -3123,6 +3238,7 @@ pub fn diff_media(
             table,
             rep,
             (a.imu_mount.as_ref(), b.imu_mount.as_ref()),
+            (&a.live_flags, &b.live_flags),
         );
     }
 
@@ -5883,6 +5999,35 @@ kind = "decisions"
     /// lower envelope), not its post-await `ts`.
     /// gps presence oracle: a sample carries `metrics.gps` exactly when the
     /// tape advanced the gps cache since the previous read (±50 ms).
+    /// A one-sample LED-state value is tolerated only when BOTH agents'
+    /// live telemetry carried it within a second of the recorded sample.
+    #[test]
+    fn led_state_both_held_only_with_both_live_ticks() {
+        let p = "metrics.system.health_flags.value";
+        let only: Vec<Step> = vec![("304".into(), 1, 2_000)];
+        let a = vec![(1_150, "304".to_string()), (2_150, "288".to_string())];
+        let b = vec![(1_210, "304".to_string()), (2_210, "288".to_string())];
+        assert!(led_state_both_held(p, &only, &a, &b));
+        let b_never = vec![(1_210, "288".to_string()), (2_210, "288".to_string())];
+        assert!(
+            !led_state_both_held(p, &only, &a, &b_never),
+            "the other agent never held it"
+        );
+        let b_old = vec![(500, "304".to_string()), (2_210, "288".to_string())];
+        assert!(
+            !led_state_both_held(p, &only, &a, &b_old),
+            "held > 1 s before"
+        );
+        let two: Vec<Step> = vec![("304".into(), 2, 2_000)];
+        assert!(!led_state_both_held(p, &two, &a, &b), "two samples");
+        assert!(!led_state_both_held(
+            "metrics.system.led_state.value",
+            &only,
+            &a,
+            &b
+        ));
+    }
+
     #[test]
     fn carry_consistent_follows_the_tape_advances_only() {
         let s = |ts: i64, gps: bool| {
@@ -5936,15 +6081,14 @@ kind = "decisions"
     /// newest release by the read: a 1 s-stale input never verifies.
     #[test]
     fn oracle_span_rejects_a_one_second_stale_input() {
-        // 16 Hz lines from 0 to 3 000 ms.
-        let ws: Vec<i64> = (0..=48).map(|k| k * 62).collect();
-        let (s, e) = oracle_span(&ws, 2_000);
+        // The single-read span is ORACLE_LAG_MS (the window tape's measured
+        // delivery lag); a 1 s-stale read is caught by the PAIR check in
+        // `oracle_filter` (test imu_oracle_verifies_only_genuine_recent_reads).
+        let ws: Vec<i64> = (0..=80).map(|k| k * 62).collect();
+        let (s, e) = oracle_span(&ws, 4_000);
         assert!(ws[s] >= ws[e - 1] - ORACLE_LAG_MS);
-        assert!(ws[e - 1] <= 2_050);
-        // the line 1 s before the read is outside the span
-        let stale = ws.iter().position(|w| *w >= 1_000).unwrap();
-        assert!(stale < s, "a 1 s-stale line is not a candidate");
-        // nothing released yet: empty span
+        assert!(s == 0 || ws[s - 1] < ws[e - 1] - ORACLE_LAG_MS);
+        assert!(ws[e - 1] <= 4_050);
         assert_eq!(oracle_span(&ws, -100), (0, 0));
     }
 
@@ -6051,18 +6195,34 @@ kind = "decisions"
             (4_000, leaves(&line(1.0), None)),          // z = 1 → "1" … ok only if released
         ];
         let ok = imu_oracle(&l, &lines, None);
-        assert!(ok.contains(&0));
-        assert!(!ok.contains(&1), "a value the tape never released");
-        assert!(!ok.contains(&2), "older than the recent-line window");
-        assert!(!ok.contains(&3));
+        assert!(ok.contains_key(&0));
+        assert!(!ok.contains_key(&1), "a value the tape never released");
+        assert!(!ok.contains_key(&2), "older than the recent-line window");
+        assert!(!ok.contains_key(&3));
         // Format: the same value written `1.0` (not JS) fails, `1` passes.
         let lines1: Vec<(i64, ImuSample)> = vec![(1_000, line(1.0))];
         let l1: RecSamples = vec![(1_010, leaves(&line(1.0), None))];
-        assert!(imu_oracle(&l1, &lines1, None).contains(&0));
+        assert!(imu_oracle(&l1, &lines1, None).contains_key(&0));
         let l2: RecSamples = vec![(1_010, leaves(&line(1.0), Some("1.0")))];
         assert!(
-            !imu_oracle(&l2, &lines1, None).contains(&0),
+            !imu_oracle(&l2, &lines1, None).contains_key(&0),
             "1.0 is not the JS text of 1"
         );
+        // R4-10: a recorder reading 1 s-stale lines shifts its median age.
+        let fresh: RecSamples = (0..4)
+            .map(|k| (1_000 + k * 1000, leaves(&near(1_000 + k * 1000), None)))
+            .collect();
+        let stale: RecSamples = (0..4)
+            .map(|k| (1_010 + k * 1000, leaves(&near(10 + k * 1000), None)))
+            .collect();
+        let (vf, vs) = (
+            imu_oracle(&fresh, &lines, None),
+            imu_oracle(&stale, &lines, None),
+        );
+        assert_eq!(vs.len(), 4, "each stale read is still a genuine (old) line");
+        let (_, bad) = oracle_age_check(&fresh, &stale, &vf, &vs).unwrap();
+        assert!(bad, "a 1 s-stale side FAILS the median-age check");
+        let (_, same) = oracle_age_check(&fresh, &fresh, &vf, &vf).unwrap();
+        assert!(!same);
     }
 }
