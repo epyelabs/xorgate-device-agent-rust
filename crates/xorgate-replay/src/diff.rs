@@ -1892,8 +1892,10 @@ fn ts_of(v: &Value) -> Option<i64> {
 /// |phase A − phase B| of a 1 s period, which the tick pairing keeps ≤ 500 ms:
 /// so at most half of a leaf's changes in expectation (JS-vs-JS calibration
 /// p5b-led .cal09: 3 of 13). Per (row, leaf) per run: more than
-/// max(2, ⌈changes / 2⌉) splits turns EVERY split of that leaf UNTOLERATED
-/// (2 = one shifted one-cycle pulse, which splits both of its edges). Each
+/// max(2, ⌈changes / 2⌉) splits (led-tick-lag; 2 = one shifted one-cycle
+/// pulse, which splits both of its edges) or more than 1 (obd-sample-split,
+/// whose helpers the obd-gate relay keeps in phase) turns EVERY split of that
+/// leaf UNTOLERATED. Each
 /// leaf's split count, change count and direction is listed in diff.md.
 fn cap_one_sample_splits(rep: &mut Report, paired: &[(&Msg, &Msg)]) {
     const ROWS: [&str; 2] = ["T8/led-tick-lag", "T8/obd-sample-split"];
@@ -1939,7 +1941,16 @@ fn cap_one_sample_splits(rep: &mut Report, paired: &[(&Msg, &Msg)]) {
                 }
             }
         }
-        let cap = 2usize.max(changes.div_ceil(2));
+        // obd-sample-split: at most ONE split per leaf per run. Since the
+        // obd-gate relay aligns the two helpers' edges (and so their 1 Hz
+        // poll phases) the row fired 0 times in all 18 relay-era runs
+        // (stepC/*.v2.*, stepC-H9/*.v2.cal09): one isolated split is still
+        // excused, a shifted pulse (two) is not.
+        let cap = if row == "T8/obd-sample-split" {
+            1
+        } else {
+            2usize.max(changes.div_ceil(2))
+        };
         let over = idx.len() > cap;
         rep.inputs.insert(
             format!("{row} {path}"),
@@ -7186,6 +7197,31 @@ mod tests {
             got.len() > 2 && got.iter().all(|x| x == UNTOLERATED),
             "{got:?}"
         );
+        // The reviewer's crank_lag: a one-cycle dip shifted by one sample
+        // (two splits) → over the obd cap of 1; one isolated split passes.
+        let mut dip_a = vec![1210i64; n];
+        dip_a[6] = 982;
+        let mut dip_b = vec![1210i64; n];
+        dip_b[7] = 982;
+        let got = run(
+            &side("js", &flat, &dip_a, &flat, 0),
+            &side("rust", &flat, &dip_b, &flat, 10),
+            "metrics.obd.rpm.value",
+        );
+        assert!(
+            got.len() == 2 && got.iter().all(|x| x == UNTOLERATED),
+            "{got:?}"
+        );
+        let mut step_a = vec![1210i64; n];
+        step_a[6..].fill(982);
+        let mut step_b = step_a.clone();
+        step_b[6] = 1210;
+        let got = run(
+            &side("js", &flat, &step_a, &flat, 0),
+            &side("rust", &flat, &step_b, &flat, 10),
+            "metrics.obd.rpm.value",
+        );
+        assert_eq!(got, vec!["T8/obd-sample-split".to_string()]);
         // M-L1: the Rust link one tick late at its edge → UNTOLERATED (never a sample split).
         let mut link_a = vec![0i64; n];
         link_a[5..].fill(2);
@@ -7396,11 +7432,22 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let row = "T8/obd-sample-split".to_string();
+        // One isolated split (a step edge one sample apart): excused.
+        let got = run(
+            &side("js", &[12.1, 12.1, 9.82, 9.82, 9.82], 0),
+            &side("rust", &[12.1, 9.82, 9.82, 9.82, 9.82], 10),
+        );
+        assert_eq!(got, vec![row.clone()]);
+        // A one-cycle dip shifted by a sample (two splits): over the cap of
+        // one (review-wp4 R4-9; the relay keeps the helpers in phase).
         let got = run(
             &side("js", &[12.1, 12.1, 9.82, 12.1, 12.1], 0),
             &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
         );
-        assert!(!got.is_empty() && got.iter().all(|t| *t == row), "{got:?}");
+        assert!(
+            got.len() == 2 && got.iter().all(|t| t == UNTOLERATED),
+            "{got:?}"
+        );
         // NEGATIVE: the dip only on one side.
         let got = run(
             &side("js", &[12.1, 12.1, 12.1, 12.1, 12.1], 0),
