@@ -3545,6 +3545,7 @@ fn audit_cycle_delta(
     let mut out = Vec::new();
     let mut sign = 0i64;
     let mut steps = 0i64;
+    let mut bytes = 0i64;
     let inv_keys: BTreeSet<&String> = ix.keys().chain(iy.keys()).collect();
     for k in inv_keys {
         let (a, b) = (num(ix, k)?, num(iy, k)?);
@@ -3557,6 +3558,9 @@ fn audit_cycle_delta(
         }
         sign = d.signum();
         steps += 1;
+        // review-wp4 R4-N1: each extra request wrote its command + CR
+        // (python/obd/gate.py:125-132 `payload = (c + "\r")`).
+        bytes += k.len() as i64 + 1;
         out.push((format!("inventory.{k}"), ix[k].clone(), iy[k].clone()));
     }
     if steps == 0 {
@@ -3568,7 +3572,7 @@ fn audit_cycle_delta(
         let d = (b - a) * sign;
         match k.as_str() {
             "requests" | "ok" if d == steps => {}
-            "bytes_tx" if (steps..=8 * steps).contains(&d) => {}
+            "bytes_tx" if d == bytes => {}
             _ if d == 0 => continue,
             _ => return None,
         }
@@ -7359,6 +7363,14 @@ mod tests {
             0,
         );
         assert!(audit_cycle_delta(&a, &c).is_none());
+        // NEGATIVE (R4-N1): bytes_tx ≠ Σ(len(command) + 1) of the steps (18).
+        let c2 = audit(
+            504,
+            3003,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &c2).is_none());
         // NEGATIVE: one PID two ahead.
         let d = audit(
             504,
