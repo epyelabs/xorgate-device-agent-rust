@@ -2598,6 +2598,12 @@ pub fn diff_with(
     // ONE lead tick per logged gate skip (tick-drift).
     let mut cadence_used: BTreeSet<(&str, usize)> = BTreeSet::new();
     let mut skips_used: BTreeSet<usize> = BTreeSet::new();
+    // T8/grace-fallback-phase: the earlier side's first published sample.
+    let grace_tick = table
+        .matcher_rows("grace_fallback_phase", "telemetry")
+        .into_iter()
+        .next()
+        .and_then(|id| Some((id, grace_fallback(a, b)?.edge_tick?)));
     for (side, list) in [("A", &ua), ("B", &ub)] {
         for m in list.iter() {
             let w = ts_of(&m.payload);
@@ -2627,6 +2633,10 @@ pub fn diff_with(
                 })
                 .flatten();
             let tol = seam
+                .or_else(|| {
+                    let (id, (s, t)) = grace_tick.as_ref()?;
+                    (*s == side && *t == wv).then(|| id.clone())
+                })
                 .or_else(|| {
                     let id = cx.near_closed_as("reconnect-cadence")?;
                     let (_, row) = table.decision_row("reconnect-cadence")?;
@@ -3990,6 +4000,11 @@ fn diff_events(
         .into_iter()
         .next()
         .and_then(|id| d40_keys(a, b).map(|ks| (id, ks)));
+    let grace = table
+        .matcher_rows("grace_fallback_phase", "events")
+        .into_iter()
+        .next()
+        .and_then(|id| grace_fallback(a, b).map(|g| (id, g)));
     for k in keys {
         let (x, hx) = ca.get(k).cloned().unwrap_or((0, None));
         let (y, hy) = cb.get(k).cloned().unwrap_or((0, None));
@@ -4023,6 +4038,8 @@ fn diff_events(
                     .any(|p| msg.starts_with(p.as_str()))
         });
         let tol = if let Some((id, _)) = d40.as_ref().filter(|(_, ks)| ks.contains(k.as_str())) {
+            id.clone()
+        } else if let Some((id, _)) = grace.as_ref().filter(|(_, g)| g.keys.contains(k.as_str())) {
             id.clone()
         } else if let Some((rid, _)) = rust_only {
             format!("{rid}/rust-only-events")
@@ -4112,12 +4129,20 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
         first(js, "[clock] stepped system clock ")?,
         first(rs, "[clock] stepped system clock ")?,
     );
-    if js_step.2 != rs_step.2
+    if !d40_same_step(&js_step.2, &rs_step.2)
         || all(js, "[clock] stepped system clock ") != 1
         || all(rs, "[clock] stepped system clock ") != 1
     {
         return None;
     }
+    // The two step texts' keys when they differ (only in the displayed
+    // offset, ±0.1 — d40_same_step).
+    let key = |e: &(i64, String, String)| format!("{}: {}", e.1, e.2);
+    let step_keys: Vec<String> = if js_step.2 == rs_step.2 {
+        Vec::new()
+    } else {
+        vec![key(&js_step), key(&rs_step)]
+    };
     let (jrel, rrel) = (js_step.0 - ji.0, rs_step.0 - ri.0);
     if !(300_000..330_000).contains(&rrel) || !(29_000..=31_000).contains(&(jrel - rrel)) {
         return None;
@@ -4156,17 +4181,23 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
             .iter()
             .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
             .collect();
+        // Both fell back with the SAME warning, or with the two texts the
+        // grace-fallback matcher explains (G ±1 / N ±1, each N its own
+        // first published seq); each side's P is then derived from its OWN G.
         if rs_trust.len() != 1
             || js_trust.len() != 1
             || js_fb.len() != 1
             || rs_fb.len() != 1
-            || js_fb[0].2 != rs_fb[0].2
+            || (js_fb[0].2 != rs_fb[0].2 && grace_fallback(js, rs).is_none())
         {
             return None;
         }
-        let f = js_fb[0].2.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
-        let (g, _) = f.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
-        let g = num(g)?;
+        let g_of = |m: &str| -> Option<i64> {
+            let f = m.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
+            let (g, _) = f.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
+            num(g)
+        };
+        let (gj, gr) = (g_of(&js_fb[0].2)?, g_of(&rs_fb[0].2)?);
         let parse = |m: &str| -> Option<(i64, i64)> {
             let t = m.strip_prefix(&format!("[clock] {src} synchronized "))?;
             let (t, p) = t.split_once(" s after boot — clock trusted (published ")?;
@@ -4174,11 +4205,15 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
             Some((num(t)?, num(p)?))
         };
         let ((tj, pj), (tr, pr)) = (parse(&js_trust[0].2)?, parse(&rs_trust[0].2)?);
-        if !(29..=31).contains(&(tj - tr)) || tj - g != pj || tr - g != pr {
+        if !(29..=31).contains(&(tj - tr)) || tj - gj != pj || tr - gr != pr {
             return None;
         }
-        let key = |e: &(i64, String, String)| format!("{}: {}", e.1, e.2);
-        return Some([key(rs_trust[0]), key(js_trust[0])].into_iter().collect());
+        return Some(
+            [key(rs_trust[0]), key(js_trust[0])]
+                .into_iter()
+                .chain(step_keys)
+                .collect(),
+        );
     }
     if rs_trust.len() != 1
         || js_trust.len() != 1
@@ -4210,12 +4245,136 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
     if g != g2 || n != n2 || t - g2 != p {
         return None;
     }
-    let key = |e: &(i64, String, String)| format!("{}: {}", e.1, e.2);
     Some(
         [key(rs_trust[0]), key(js_trust[0]), key(js_fb[0])]
             .into_iter()
+            .chain(step_keys)
             .collect(),
     )
+}
+
+/// T8/grace-fallback-phase (orchestrator ruling 2026-10-27): what the 300 s
+/// clock-trust grace fallback warning of the two sides may differ in, and the
+/// one telemetry tick that difference leaves unpaired.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct GraceEdge {
+    /// The two `warn: [clock] no NTP/GPS/NITZ sync …` event keys.
+    keys: BTreeSet<String>,
+    /// `(side, ts)`: the first published sample of the side that fell back
+    /// one tick EARLIER (its seq N; the other side's seq-N sample was still
+    /// held) — the only telemetry message this row may leave unpaired.
+    edge_tick: Option<(&'static str, i64)>,
+}
+
+/// `[clock] no NTP/GPS/NITZ sync <G> s after start — publishing on an
+/// UNTRUSTED clock (<N> sample(s) held); timestamps may be early until a sync
+/// lands` (ts:src/agent/clock-trust.ts:127-137 @09da38d ↔ crates/xorgate-core
+/// /src/clock_trust.rs:148) → `(G, N)`; any other text → None.
+fn grace_text(m: &str) -> Option<(i64, i64)> {
+    let r = m.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
+    let (g, r) = r.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
+    let n = r.strip_suffix(" sample(s) held); timestamps may be early until a sync lands")?;
+    let (g, n): (i64, i64) = (g.parse().ok()?, n.parse().ok()?);
+    // canonical digits only (no sign, no leading zeros, no padding)
+    (format!("[clock] no NTP/GPS/NITZ sync {g} s after start — publishing on an UNTRUSTED clock ({n} sample(s) held); timestamps may be early until a sync lands") == m)
+        .then_some((g, n))
+}
+
+/// T8/grace-fallback-phase. The fallback fires at the first trust check at
+/// or past 300 s of the gate's OWN monotonic start — a telemetry tick
+/// (`trusted()` → `checkGrace`, ts:src/agent/clock-trust.ts:173-175 via
+/// ts:src/worker.ts:1409) or the 5 s probe poll (:147-152) — and prints
+/// G = toFixed(0) of that elapsed (:104-106, :129-136) and N = the samples
+/// held so far (`noteHeld`, ts:src/worker.ts:1409-1411, each held tick still
+/// advancing `seq`). The gate's start instant is not taped, so G is bounded,
+/// not derived: |G_A − G_B| ≤ 1 (JS@09 alone prints 300 and 301 run to run:
+/// stepC p5b-clock-fallback.clk.jsrs2 301, .c2.jsrs 300). N IS derived from
+/// each side's own tape: it must equal the `seq` of that side's FIRST
+/// published sample, which must be the side's first tick at/after its
+/// fallback instant (< 1.1 s later). Cross-side, the two fallback instants
+/// must lie < 1 s apart (one tick: the ticks are on each agent's own phase),
+/// so |N_A − N_B| ≤ 1 (JS alone: 297–299 across runs), and the side that fell
+/// back a tick earlier publishes ONE first sample whose counterpart the
+/// other side still held. Anything else (2 s, 2 samples, an N that is not
+/// the side's own first seq, a warning > 1 s apart, any other text
+/// difference): None.
+fn grace_fallback(a: &Capture, b: &Capture) -> Option<GraceEdge> {
+    struct Side {
+        fb: i64,
+        g: i64,
+        n: i64,
+        first_ts: i64,
+        key: String,
+    }
+    let side = |c: &Capture| -> Option<Side> {
+        let fbs: Vec<&(i64, String, String)> = c
+            .events
+            .iter()
+            .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
+            .collect();
+        let [e] = fbs.as_slice() else { return None };
+        let (g, n) = grace_text(&e.2)?;
+        let tel: Vec<(i64, Option<i64>)> = c
+            .msgs
+            .iter()
+            .filter(|m| m.topic.ends_with("/telemetry"))
+            .filter_map(|m| Some((ts_of(&m.payload)?, m.payload.get("seq")?.as_i64())))
+            .collect();
+        let &(first_ts, seq) = tel.iter().min_by_key(|(t, _)| *t)?;
+        let ok = seq == Some(n) && first_ts >= e.0 - 5 && first_ts - e.0 < 1_100;
+        ok.then(|| Side {
+            fb: e.0,
+            g,
+            n,
+            first_ts,
+            key: format!("{}: {}", e.1, e.2),
+        })
+    };
+    let (x, y) = (side(a)?, side(b)?);
+    if x.key == y.key
+        || (x.g - y.g).abs() > 1
+        || (x.n - y.n).abs() > 1
+        || (x.fb - y.fb).abs() >= 1_000
+    {
+        return None;
+    }
+    let edge_tick = match x.n.cmp(&y.n) {
+        std::cmp::Ordering::Less => Some(("A", x.first_ts)),
+        std::cmp::Ordering::Greater => Some(("B", y.first_ts)),
+        std::cmp::Ordering::Equal => None,
+    };
+    Some(GraceEdge {
+        keys: [x.key, y.key].into_iter().collect(),
+        edge_tick,
+    })
+}
+
+/// D40 (orchestrator ruling 2026-10-27): the two `stepped system clock
+/// <±X.Y>s from <src> (…)` texts of the race are the same step when they are
+/// identical except the displayed offset, within 0.1. Both sides compute it
+/// with the same formula — target = gps.utcMs + gps.ageMs, offset = target −
+/// now(), shown as (offset / 1000).toFixed(1) (ts:src/agent/clock-step.ts
+/// :241-243,266,279-282 ↔ crates/xorgate-core/src/clock_step.rs:349,368,435
+/// `js::to_fixed`) — and the race puts the two steps one check interval
+/// apart, on different fixes, so the float delta can round either side of a
+/// tenth (stepC p4-clock-cap.clk.jsrs: +597.9 vs +598.0).
+fn d40_same_step(x: &str, y: &str) -> bool {
+    if x == y {
+        return true;
+    }
+    let parse = |m: &str| -> Option<(f64, String)> {
+        let r = m.strip_prefix("[clock] stepped system clock ")?;
+        let (off, rest) = r.split_once("s from ")?;
+        let v: f64 = off.parse().ok()?;
+        // the 1-decimal shape on both sides (toFixed(1), sign included)
+        let (_, frac) = off.split_once('.')?;
+        (frac.len() == 1 && (off.starts_with('+') || off.starts_with('-')))
+            .then(|| (v, rest.to_string()))
+    };
+    match (parse(x), parse(y)) {
+        (Some((a, ra)), Some((b, rb))) => ra == rb && (a - b).abs() <= 0.1 + 1e-9,
+        _ => false,
+    }
 }
 
 fn diff_sudo(a: &Capture, b: &Capture, table: &Table, rep: &mut Report) {
@@ -6657,9 +6816,10 @@ mod tests {
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
 
-    /// T17 (review-wp4 R4-3a): the profile rate within ±1.0 and as a 1-decimal
-    /// JS number on both sides; ±2.0, a float-rendered or 2-decimal value
-    /// fail; another path is not T17.
+    /// T17 (review-wp4 R4-3a; ±1.25 by the orchestrator 2026-10-27): the
+    /// profile rate within ±1.25 and as a 1-decimal JS number on both sides;
+    /// 1.3 or 2.0 apart, a float-rendered or 2-decimal value fail; another
+    /// path is not T17.
     #[test]
     fn t17_only_a_one_decimal_rate_within_one_req_s() {
         let t = table();
@@ -6693,6 +6853,16 @@ mod tests {
         assert_eq!(
             tol(serde_json::json!(19.2), serde_json::json!(19), 1.0, 1.0),
             vec![(p.clone(), "T17".to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.0), serde_json::json!(17.8), 1.0, 1.0),
+            vec![(p.clone(), "T17".to_string())],
+            "the measured JS-vs-JS max (1.2)"
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.1), serde_json::json!(17.8), 1.0, 1.0),
+            vec![(p.clone(), UNTOLERATED.to_string())],
+            "1.3 apart"
         );
         assert_eq!(
             tol(serde_json::json!(19.2), serde_json::json!(17.2), 1.0, 1.0),
@@ -7651,5 +7821,166 @@ mod tests {
             &side("rust", 61_200, 299, 361_300, step("597.1", "gps"))
         )
         .is_none());
+
+        // Orchestrator ruling 2026-10-27: the displayed step offset may
+        // differ by 0.1 (toFixed(1) of the same float formula at two fixes
+        // one check interval apart); both step keys are then the row's.
+        let ok = d40_keys(
+            &side("js", 30_400, 299, 360_400, step("598.0", "gps")),
+            &side("rust", 30_200, 299, 330_300, step("597.9", "gps")),
+        );
+        assert_eq!(ok.map(|k| k.len()), Some(4));
+        let ok = d40_keys(
+            &js(330_400, step("597.1", "gps")),
+            &rs(300_300, step("597.0", "gps")),
+        );
+        assert_eq!(ok.map(|k| k.len()), Some(5));
+        // NEGATIVE: 0.2 apart, in either shape
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 360_400, step("598.0", "gps")),
+            &side("rust", 30_200, 299, 330_300, step("597.8", "gps"))
+        )
+        .is_none());
+        assert!(!d40_same_step(&step("598.0", "gps"), &step("597.8", "gps")));
+        // NEGATIVE: not the 1-decimal display, a different source or count
+        assert!(!d40_same_step(
+            &step("598.0", "gps"),
+            &step("597.95", "gps")
+        ));
+        assert!(!d40_same_step(
+            &step("598.0", "gps"),
+            &step("597.9", "nitz")
+        ));
+        assert!(!d40_same_step(
+            &step("598.0", "gps"),
+            "[clock] stepped system clock +597.9s from gps (NTP unsynced; step 2/2 this boot)"
+        ));
+    }
+
+    /// T8/grace-fallback-phase (orchestrator ruling 2026-10-27): the 300 s
+    /// grace warnings may differ by G ±1 and N ±1 only with each N its own
+    /// first published seq, the warnings < 1 s apart, and the one unpaired
+    /// first sample of the side that fell back a tick earlier.
+    #[test]
+    fn grace_fallback_phase_only_one_tick_and_one_second() {
+        let fb = |g: i64, n: i64| {
+            format!("[clock] no NTP/GPS/NITZ sync {g} s after start — publishing on an UNTRUSTED clock ({n} sample(s) held); timestamps may be early until a sync lands")
+        };
+        // A side: its warning at `at`, then telemetry ticks from `first`
+        // (seq from `seq0`), every 1 s.
+        let side = |kind: &str, at: i64, g: i64, n: i64, first: i64, seq0: i64| {
+            // up to the same last tick (≈ 304.2-304.3 s) on both sides
+            let ticks = (304_400 - first) / 1000 + 1;
+            let mut c = cap(
+                kind,
+                (0..ticks)
+                    .map(|k| {
+                        let ts = first + k * 1000;
+                        msg(
+                            ts + 5,
+                            "telemetry",
+                            serde_json::json!({"v":1,"ts":ts,"seq":seq0 + k,"metrics":{}}),
+                        )
+                    })
+                    .collect(),
+            );
+            c.events = vec![
+                (50, "info".into(), "connected to mqtts://broker:8883".into()),
+                (at, "warn".into(), fb(g, n)),
+            ];
+            c
+        };
+        // stepC p5b-clock-fallback.c2.jsrs2: JS at a tick (N 297), Rust on
+        // its poll 483 ms later (N 298), JS's seq-297 sample unpaired.
+        let a = side("js", 300_319, 300, 297, 300_319, 297);
+        let b = side("rust", 300_802, 301, 298, 301_167, 298);
+        let g = grace_fallback(&a, &b).expect("the documented shape");
+        assert_eq!(g.keys.len(), 2);
+        assert_eq!(g.edge_tick, Some(("A", 300_319)));
+        // either column order
+        assert_eq!(
+            grace_fallback(&b, &a).unwrap().edge_tick,
+            Some(("B", 300_319))
+        );
+        // G only (p4-clock-cap.c2.jsrs3): no edge tick
+        let g = grace_fallback(
+            &side("js", 300_208, 300, 298, 300_290, 298),
+            &side("rust", 300_191, 301, 298, 300_287, 298),
+        )
+        .unwrap();
+        assert_eq!(g.edge_tick, None);
+        // NEGATIVE: G 2 s apart
+        assert!(grace_fallback(
+            &side("js", 300_208, 300, 298, 300_290, 298),
+            &side("rust", 300_191, 302, 298, 300_287, 298)
+        )
+        .is_none());
+        // NEGATIVE: N 2 apart
+        assert!(grace_fallback(
+            &side("js", 300_208, 300, 297, 300_290, 297),
+            &side("rust", 300_191, 300, 299, 300_287, 299)
+        )
+        .is_none());
+        // NEGATIVE: an N that is not the side's own first published seq
+        assert!(grace_fallback(
+            &side("js", 300_319, 300, 297, 300_319, 297),
+            &side("rust", 300_802, 301, 298, 301_167, 297)
+        )
+        .is_none());
+        // NEGATIVE: the first sample is not the first tick after the warning
+        assert!(grace_fallback(
+            &side("js", 300_319, 300, 297, 300_319, 297),
+            &side("rust", 300_802, 301, 298, 302_167, 298)
+        )
+        .is_none());
+        // NEGATIVE: warnings ≥ 1 s apart
+        assert!(grace_fallback(
+            &side("js", 300_100, 300, 297, 300_100, 297),
+            &side("rust", 301_150, 301, 298, 301_167, 298)
+        )
+        .is_none());
+        // NEGATIVE: any other text difference
+        let mut odd = side("rust", 300_802, 301, 298, 301_167, 298);
+        odd.events[1].2 = odd.events[1].2.replace("UNTRUSTED", "untrusted");
+        assert!(grace_fallback(&a, &odd).is_none());
+        // Through the diff: the two warnings and A's one first sample are the
+        // row; nothing else.
+        let t = table();
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 400_000,
+            ..Default::default()
+        };
+        let pairs: Vec<(i64, i64)> = (1..5)
+            .map(|k| (300_319 + k * 1000, 300_167 + k * 1000))
+            .collect();
+        let r = diff(&a, &b, &play, &pairs, &t);
+        let rows: Vec<(String, String, String)> = r
+            .mismatches
+            .iter()
+            .filter(|m| m.stream == "events" || m.path == "(message)")
+            .map(|m| (m.stream.clone(), m.path.clone(), m.tol.clone()))
+            .collect();
+        assert!(
+            rows.iter()
+                .all(|(_, _, tol)| tol == "T8/grace-fallback-phase"),
+            "{rows:?}"
+        );
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        // NEGATIVE through the diff: a SECOND unpaired A sample stays
+        // UNTOLERATED (only the edge tick is the row).
+        let mut a2 = a.clone();
+        let mut extra = a2.msgs[0].clone();
+        extra.payload["ts"] = serde_json::json!(299_319);
+        extra.payload["seq"] = serde_json::json!(296);
+        a2.msgs.insert(0, extra);
+        let r = diff(&a2, &b, &play, &pairs, &t);
+        assert!(
+            r.mismatches
+                .iter()
+                .any(|m| m.path == "(message)" && m.tol == UNTOLERATED),
+            "{:?}",
+            r.mismatches
+        );
     }
 }
