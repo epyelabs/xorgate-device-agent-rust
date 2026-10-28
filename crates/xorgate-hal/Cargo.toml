@@ -21,7 +21,13 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 gpiocdev = { workspace = true }
 
+[features]
+# `test_support` (fake-executable writer) for this crate's and the agent's
+# tests only; never part of a release build.
+test-support = []
+
 [dev-dependencies]
+xorgate-hal = { path = ".", features = ["test-support"] }
 # `test-util`: tokio::time::pause() for the LED pattern timelines (Phase 4 WP1)
 # and `start_paused` for the AT-session timeouts (Phase 4 WP2).
 tokio = { workspace = true, features = ["test-util"] }

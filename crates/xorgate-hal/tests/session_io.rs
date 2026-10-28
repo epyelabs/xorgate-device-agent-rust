@@ -4,7 +4,6 @@
 //! branches with a PATH-shimmed `timedatectl` (the rig's route). One test
 //! function: it mutates PATH / XORGATE_BOOT_ID for the whole process.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use xorgate_core::session::ProbedTimeSource;
@@ -13,8 +12,7 @@ use xorgate_hal::boot_id::{probe_time_source, read_boot_id, RTC0_PATH};
 fn shim(dir: &Path, body: &str) {
     std::fs::create_dir_all(dir).unwrap();
     let p = dir.join("timedatectl");
-    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    xorgate_hal::test_support::write_executable(&p, &format!("#!/bin/sh\n{body}\n")).unwrap();
 }
 
 #[tokio::test]
