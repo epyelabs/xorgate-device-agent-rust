@@ -27,11 +27,8 @@ fn run_offline_ntp(
     let shims = dir.join("shims");
     std::fs::create_dir_all(&shims).unwrap();
     let shim = shims.join("timedatectl");
-    std::fs::write(&shim, format!("#!/bin/sh\necho {ntp}\n")).unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    xorgate_hal::test_support::write_executable(&shim, &format!("#!/bin/sh\necho {ntp}\n"))
+        .unwrap();
     let mut path = std::ffi::OsString::from(&shims);
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());

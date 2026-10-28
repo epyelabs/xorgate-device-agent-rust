@@ -69,9 +69,7 @@ impl<S: Subscriber> Layer<S> for Capture {
 }
 
 fn shim(path: &Path, body: &str) {
-    std::fs::write(path, body).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    xorgate_hal::test_support::write_executable(path, body).unwrap();
 }
 
 async fn sleep(ms: u64) {

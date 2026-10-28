@@ -10,7 +10,6 @@
 //! a drained stderr line, exit code) — not just the spec.
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -56,8 +55,7 @@ fn fake_master(dir: &std::path::Path) -> String {
     s.push_str(&lines.join("\n"));
     s.push_str("\nprintf 'stderr line\\n' >&2\nexit 0\n");
     let p = dir.join("fake-master");
-    std::fs::write(&p, s).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    xorgate_hal::test_support::write_executable(&p, &s).unwrap();
     p.to_string_lossy().into_owned()
 }
 

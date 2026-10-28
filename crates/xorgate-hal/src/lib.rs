@@ -42,3 +42,5 @@ pub mod shm_reaper;
 pub mod sms_clear_token;
 pub mod system;
 pub mod tape;
+#[doc(hidden)]
+pub mod test_support;

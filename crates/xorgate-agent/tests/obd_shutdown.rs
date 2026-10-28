@@ -10,7 +10,6 @@
 //!   no `obd` group and writes no state.json `obd`.
 
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -49,8 +48,7 @@ fn shim(dir: &Path) -> std::ffi::OsString {
     let shims = dir.join("shims");
     std::fs::create_dir_all(&shims).unwrap();
     let s = shims.join("timedatectl");
-    std::fs::write(&s, "#!/bin/sh\necho yes\n").unwrap();
-    std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o755)).unwrap();
+    xorgate_hal::test_support::write_executable(&s, "#!/bin/sh\necho yes\n").unwrap();
     let mut path = std::ffi::OsString::from(&shims);
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());

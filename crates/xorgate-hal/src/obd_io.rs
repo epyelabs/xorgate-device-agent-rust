@@ -656,24 +656,25 @@ mod tests {
     /// fake `bluetoothctl` writes appears while the future is still unpolled.
     #[tokio::test]
     async fn unbond_spawns_at_call_time() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("xg-obd-unbond-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("ran");
         let fake = dir.join("bluetoothctl");
-        std::fs::write(
+        // Never `fs::write` + chmod here: a concurrent test's fork could
+        // inherit the write fd and the exec below would fail with ETXTBSY
+        // (the remaining flake; `test_support::write_executable`).
+        crate::test_support::write_executable(
             &fake,
             // The marker appears ATOMICALLY (written aside, then renamed):
             // `> marker` alone creates it empty before `echo` writes, so a
             // poll could see it existing with no content (the WP4-run flake).
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$@\" > {m}.tmp\nmv {m}.tmp {m}\necho 'Device has been removed'\n",
                 m = marker.display()
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let io = RealObdIo {
             python_dir: PathBuf::from("/nonexistent"),
             mock: false,
@@ -686,6 +687,12 @@ mod tests {
         let t0 = std::time::Instant::now();
         while !marker.exists() && t0.elapsed() < Duration::from_secs(60) {
             std::thread::sleep(Duration::from_millis(20));
+        }
+        if !marker.exists() {
+            panic!(
+                "the fake bluetoothctl never ran in 60 s; unbond -> {:?}",
+                fut.await
+            );
         }
         assert_eq!(
             std::fs::read_to_string(&marker).unwrap().trim(),
