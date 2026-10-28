@@ -336,8 +336,13 @@ fn alive(pid: u32) -> bool {
 }
 
 fn append(path: &Path, v: &Value) {
+    // ONE write(2) per record: the exit runners and the observer append to
+    // the same `procs.ndjson` from different tasks, and `writeln!` on a File
+    // issues one write per formatted piece -- two tasks interleaved mid-line
+    // (window tape `.fin.cal89`: three `external` records lost on side A).
+    let line = format!("{v}\n");
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "{v}");
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
