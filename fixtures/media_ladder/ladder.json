@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "src/agent/collectors/media.ts (createMediaCollector, :83-380)",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "plans/device-agent-js-to-rust/phase-3/evidence/wp5-tools/dump-media-ladder.mts via tools/replay/js/run-tsx.sh (real media.ts, fake kvs-webrtc runtime, virtual timers)",
   "cases": [
     {

@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "src/daemon/settings.ts (parseCameraMountSettings :266-279, parseRecordingSettings cameras :476-484, loadSettings/saveSettings :610-642)",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "npx tsx dump-settings-proto.mts in a git-archive scratch copy of 89b5c64, non-root (phase-2 WP6 fix, review-wp6 row 5; script in phase-2/evidence/wp6-tools)",
   "cases": [
     {

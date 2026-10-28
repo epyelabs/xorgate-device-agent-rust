@@ -412,7 +412,7 @@ await scenario("apn watch: silent without APN machinery", "config-sync-cellular.
 
 writeFileSync(join(OUT, "class-scenarios.json"), JSON.stringify({
   jsSourceFile: "src/agent/config-sync.ts (class ConfigSync :1211-1651) via test/config-sync.test.ts + test/config-sync-cellular.test.ts scenarios",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "plans/device-agent-js-to-rust/phase-2/evidence/wp3-tools/dump-config-sync.mts (npx tsx, real timers; now() pinned to 1786017600000)",
   cases: scenarios,
 }, null, 2) + "\n");
@@ -635,7 +635,7 @@ for (const m of SUMMARIES) {
 
 writeFileSync(join(OUT, "rules.json"), JSON.stringify({
   jsSourceFile: "src/agent/config-sync.ts (class ConfigSync :1211-1651, observed) + src/agent/cloud-config.ts parseCloudMessage",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "plans/device-agent-js-to-rust/phase-2/evidence/wp3-tools/dump-config-sync.mts (npx tsx)",
   cases: rules,
 }, null, 2) + "\n");

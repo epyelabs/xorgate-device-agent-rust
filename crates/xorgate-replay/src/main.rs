@@ -16,6 +16,7 @@ mod inspect;
 mod media;
 mod media_diff;
 mod p4;
+mod p5b;
 mod play;
 mod record;
 mod rewrite;
@@ -161,6 +162,7 @@ fn main() -> Result<()> {
             let pb = diff_p4::P4Capture::load(&run.join("b"));
             diff_p4::diff_p4(&pa, &pb, &table, &mut rep);
             diff_p4::retag_clock_iso(&table, &a, &b, &mut rep);
+            diff_p4::diff_obd_gate(&run, &mut rep);
             rep.hits = diff::row_hits(&rep, &table);
             let md = diff::render(&rep, &a, &b, &info, &table, &run);
             let out = out.unwrap_or_else(|| run.join("diff.md"));

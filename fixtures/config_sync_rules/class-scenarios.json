@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "src/agent/config-sync.ts (class ConfigSync :1211-1651) via test/config-sync.test.ts + test/config-sync-cellular.test.ts scenarios",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "plans/device-agent-js-to-rust/phase-2/evidence/wp3-tools/dump-config-sync.mts (npx tsx, real timers; now() pinned to 1786017600000)",
   "cases": [
     {

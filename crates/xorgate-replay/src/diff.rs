@@ -70,6 +70,10 @@ pub struct PlayInfo {
     /// agents have reopened their port by then; T7/D23).
     #[serde(default)]
     pub nmea_resumes: Vec<i64>,
+    /// The player ran with `--no-gate` (debugging only): no OBD relay gate,
+    /// so an OBD run without relay logs is then not judged by them.
+    #[serde(default, rename = "noGate")]
+    pub no_gate: bool,
     /// Host reference samples `(wall ms, series → value)` from the player's
     /// `host.ndjson` (T3 host attribution); loaded by `load_run`.
     #[serde(skip)]
@@ -192,6 +196,19 @@ pub struct InputFacts {
     /// Wall ms (`start_wall + t`) of every IMU line the tape released
     /// (T8 `rig-cut-ungated` IMU residual).
     pub imu_lines: Vec<i64>,
+    /// Phase 5b (R-P3G-2): `(release wall ms, parsed sample)` of every IMU
+    /// line the tape released (the recorded-IMU input oracle, media_diff.rs).
+    pub imu_samples: Vec<(i64, xorgate_core::imu::ImuSample)>,
+    /// Phase 5b (R-P3G-2): `(release wall ms, fix-derived gps leaves)` after
+    /// every released NMEA line that changed the rolling fix — the TS fix
+    /// aggregator (xorgate_core::nmea::FixAggregator, `nmea.ts:263-298`) fed
+    /// the tape's lines in release order, mapped like `mapLatest`
+    /// (gps_group.rs, `gps.ts:261-300`): the recorded-gps input oracle.
+    pub gps_snaps: Vec<(i64, BTreeMap<String, String>)>,
+    /// Phase 5b WP4: release instants that ADVANCE the TS gps cache
+    /// (ts:src/agent/collectors/gps.ts:160-190 — every `onFix`, and a GSV
+    /// while the fix has no position), sorted.
+    pub gps_advances: Vec<i64>,
     /// Wall ms (sorted) of every released record that feeds a telemetry value
     /// read at a tick — NMEA, LTE file, exec, dt, i2cdetect, IMU helper
     /// spawn/exit (not the continuous IMU sample lines): the re-pair's timing
@@ -252,6 +269,64 @@ pub fn release_walls(records: &[TapeRecord], releases: &[Release]) -> Vec<Option
             q.get_mut(&(r.t, r.ev.kind())).and_then(|d| d.pop_front())
         })
         .collect()
+}
+
+/// The fix-derived leaves of `mapLatest` (rs xorgate_core::gps_group::
+/// map_latest, its fix half): what a recorded gps sample must show when the
+/// agent read this fix.
+pub fn gps_fix_leaves(fix: &xorgate_core::nmea::GpsFix) -> BTreeMap<String, String> {
+    use xorgate_core::round::round;
+    let mut m: BTreeMap<String, f64> = BTreeMap::new();
+    let positioned = xorgate_core::nmea::has_position(fix);
+    m.insert("fix_quality".into(), fix.fix_quality.unwrap_or(0.0));
+    if let Some(v) = fix.satellites {
+        m.insert("satellites".into(), v);
+    }
+    if let Some(v) = fix.satellites_in_view {
+        m.insert("satellites_in_view".into(), v);
+    }
+    if let Some(v) = fix.hdop {
+        m.insert("hdop".into(), round(v, 1));
+    }
+    if positioned {
+        for (k, v, d) in [
+            ("lat", fix.latitude, 6),
+            ("lon", fix.longitude, 6),
+            ("alt", fix.altitude, 1),
+            ("speed", fix.speed_kmh, 1),
+            ("course", fix.course, 1),
+        ] {
+            if let Some(v) = v {
+                m.insert(k.into(), round(v, d));
+            }
+        }
+    }
+    // The JS-number TEXT the agent writes (MetricLeaf / JsNumber), so the
+    // oracle also pins the number FORMAT (T9), not only the value.
+    m.into_iter()
+        .map(|(k, v)| {
+            let t = serde_json::to_value(xorgate_core::telemetry::MetricLeaf::new(v))
+                .map(|x| x["value"].to_string())
+                .unwrap_or_default();
+            (k, t)
+        })
+        .collect()
+}
+
+/// The sky leaves of `mapLatest` (`gps_group::map_latest`: `sats_heard` =
+/// heard, `snr_max` = the best C/N0) as the JS-number TEXT the agent writes.
+pub fn gps_sky_leaves(sky: &xorgate_core::sky_state::SkySnapshot) -> BTreeMap<String, String> {
+    let text = |v: f64| {
+        serde_json::to_value(xorgate_core::telemetry::MetricLeaf::new(v))
+            .map(|x| x["value"].to_string())
+            .unwrap_or_default()
+    };
+    let mut m = BTreeMap::new();
+    m.insert("sats_heard".to_string(), text(f64::from(sky.heard)));
+    if let Some(v) = sky.max_snr {
+        m.insert("snr_max".to_string(), text(v));
+    }
+    m
 }
 
 impl InputFacts {
@@ -391,6 +466,48 @@ impl InputFacts {
             .map(|(_, w)| *w)
             .collect();
         out.imu_lines.sort();
+        out.imu_samples = rel
+            .iter()
+            .filter_map(|(r, w)| match &r.ev {
+                TapeEvent::Imu { line } => match xorgate_core::imu::parse_imu_line(line) {
+                    Some(xorgate_core::imu::ImuMessage::Sample { quat, linaccel }) => {
+                        Some((*w, xorgate_core::imu::ImuSample { quat, linaccel }))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        out.imu_samples.sort_by_key(|(w, _)| *w);
+        {
+            let mut lines: Vec<(i64, &str)> = nmea.iter().map(|(_, w, l)| (*w, *l)).collect();
+            lines.sort_by_key(|(w, _)| *w);
+            let mut agg = xorgate_core::nmea::FixAggregator::new();
+            // Phase 5b WP4: the SKY leaves too (`snr_max`, `sats_heard`), from
+            // the same SkyTracker the agents run (sky-state.ts, port
+            // xorgate-core::sky_state) over the tape's GSV cycles at their
+            // release instants — the window tape's `snr_max` rows were reads
+            // on either side of a cycle commit.
+            let mut sky = xorgate_core::sky_state::SkyTracker::with_defaults(0);
+            for (w, line) in lines {
+                let mut changed = agg.update(line);
+                if changed {
+                    out.gps_advances.push(w);
+                }
+                if let Some(g) = xorgate_core::nmea::parse_gsv(line) {
+                    sky.note(&g, w.max(0) as u64);
+                    if !xorgate_core::nmea::has_position(&agg.fix) {
+                        out.gps_advances.push(w);
+                    }
+                    changed = true;
+                }
+                if changed {
+                    let mut m = gps_fix_leaves(&agg.fix);
+                    m.extend(gps_sky_leaves(&sky.snapshot(w.max(0) as u64)));
+                    out.gps_snaps.push((w, m));
+                }
+            }
+        }
         out.read_inputs = rel
             .iter()
             .filter(|(r, _)| {
@@ -600,6 +717,43 @@ pub struct Capture {
     /// The LAST present `agent.pid` snapshot of `files.ndjson` (both agents
     /// remove the pidfile at exit, so the end has none; re-review R3).
     pub pid_snapshot: Option<String>,
+    /// Review-wp4 R6-1: the `requests` counts of the audits that were the
+    /// LAST audit of an OBD helper the agent signalled to stop (the rig
+    /// relay's log, obd-gate.py: `audit-line` + `helper-exit` per relay pid).
+    /// Only such a stop audit may carry one request cut in flight.
+    pub obd_stop_audits: BTreeSet<i64>,
+}
+
+/// Review-wp4 R6-1: see `Capture::obd_stop_audits`. Per relay process (one
+/// helper session): its last `audit-line`, when its `helper-exit` says the
+/// relay forwarded a stop signal to the helper.
+fn obd_stop_audits(dir: &Path) -> BTreeSet<i64> {
+    let text = std::fs::read_to_string(dir.join(crate::p5b::OBD_GATE_LOG)).unwrap_or_default();
+    let mut last: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut stopped: BTreeSet<i64> = BTreeSet::new();
+    for l in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        let Some(pid) = v["pid"].as_i64() else {
+            continue;
+        };
+        match v["kind"].as_str() {
+            Some("audit-line") => {
+                if let Some(r) = v["requests"].as_i64() {
+                    last.insert(pid, r);
+                }
+            }
+            Some("helper-exit") if v["signalled"] == true => {
+                stopped.insert(pid);
+            }
+            _ => {}
+        }
+    }
+    last.into_iter()
+        .filter(|(pid, _)| stopped.contains(pid))
+        .map(|(_, r)| r)
+        .collect()
 }
 
 /// Replace the agent's deviceId by `{id}` (T2).
@@ -618,7 +772,40 @@ fn parse_payload(raw: &str) -> Value {
 /// The end-of-run files: `final.json` (every key the player snapshots, raw
 /// bytes as base64, `{"present":false}` when absent) when the capture has
 /// one, else the legacy `final/<name>` copies of [`FILES`].
+/// Phase 5b: the rig-assigned per-side OBD serial (each side's own ELM327
+/// emulator pty, `XORGATE_OBD_SERIAL` in `meta.json`'s env, p5b.rs) — a rig
+/// input name like the deviceId, normalised to `{obd-serial}` the same way.
+fn side_obd_serial(dir: &Path) -> Option<String> {
+    std::fs::read(dir.join("meta.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|m| m["env"]["XORGATE_OBD_SERIAL"].as_str().map(str::to_string))
+        .filter(|p| p.starts_with("/dev/"))
+}
+
+/// [`norm_id`] + the side's OBD serial (`{obd-serial}`).
+fn norm_side(s: &str, id: &str, serial: Option<&str>) -> String {
+    let t = norm_id(s, id);
+    let Some(p) = serial else { return t };
+    // Only a whole device name: `/dev/pts/3` must not rewrite `/dev/pts/30`.
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t.as_str();
+    while let Some(i) = rest.find(p) {
+        let after = &rest[i + p.len()..];
+        out.push_str(&rest[..i]);
+        if after.starts_with(|c: char| c.is_ascii_digit()) {
+            out.push_str(p);
+        } else {
+            out.push_str("{obd-serial}");
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
+    let serial = side_obd_serial(dir);
     // Phase 3: renders (`etc/pipelines/<key>.gst`) name the agent's own shm
     // socket under its work dir (`/tmp/rig-work/<label>/home/shm/…`): the
     // work dir is normalised to `<work>` like the deviceId (phase file
@@ -633,7 +820,7 @@ fn load_finals(dir: &Path, id: &str) -> BTreeMap<String, Option<String>> {
         })
         .filter(|w| !w.is_empty());
     let text = |b: &[u8]| {
-        let t = norm_id(&String::from_utf8_lossy(b), id);
+        let t = norm_side(&String::from_utf8_lossy(b), id, serial.as_deref());
         match &work {
             Some(w) => t.replace(w.as_str(), "<work>"),
             None => t,
@@ -719,6 +906,8 @@ impl Capture {
                 .with_context(|| format!("{}/meta.json", dir.display()))?,
         )?;
         let id = meta.device_id.clone();
+        let serial = side_obd_serial(dir);
+        let norm_id = |s: &str, id: &str| norm_side(s, id, serial.as_deref());
         let mut msgs = Vec::new();
         if let Ok(text) = std::fs::read_to_string(dir.join("mqtt.ndjson")) {
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -789,6 +978,7 @@ impl Capture {
             events,
             sudo,
             pid_snapshot,
+            obd_stop_audits: obd_stop_audits(dir),
         })
     }
 
@@ -1097,6 +1287,63 @@ impl Cx<'_> {
         (b_moves || a_moves).then(|| r.id.clone())
     }
 
+    /// T8/led-tick-lag (Phase 5b): `metrics.system.led_state` /
+    /// `health_flags` are resolved on each agent's OWN 1 s LED heartbeat
+    /// (ts:src/worker.ts:703-705 `heartbeat` → `led.tick()`), not on the
+    /// publish tick that carries them (ts:src/worker.ts:375-381
+    /// `ledTelemetryNow`, :1380), from inputs the manager caches on that
+    /// heartbeat (recording status ≤ 2 s, ts:src/worker.ts:653-659; LTE
+    /// status re-read ≤ 1 s, async, ts:src/agent/led-manager.ts:27,195). So
+    /// around a change of a ladder input the two agents' payloads may carry
+    /// the old and the new state ONE sample apart. Matched ONLY as a strict
+    /// one-sample old/new split on BOTH halves (A_k = B_k−1 and B_k = A_k+1,
+    /// or the mirror): a value the other side never carried, or a lag of two
+    /// samples or more, stays UNTOLERATED (tests `led_tick_lag_*`).
+    fn led_tick_lag(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
+        let (rid, row) = self.table.decision_row("led-tick-lag")?;
+        if !crate::tolerances::stream_matches(&row.streams, &self.stream)
+            || !matches!(
+                path,
+                "metrics.system.led_state.value" | "metrics.system.health_flags.value"
+            )
+        {
+            return None;
+        }
+        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
+        let [pa, na, pb, nb] = self.neighbors;
+        let is = |n: Option<&Value>, v: &Value| at(n).as_ref() == Some(v);
+        let split = (is(pb, x) && is(na, y)) || (is(nb, x) && is(pa, y));
+        split.then(|| format!("{rid}/led-tick-lag"))
+    }
+
+    /// T8/obd-sample-split (Phase 5b; CF81): a `metrics.obd.*` value is the
+    /// helper's latest sample, produced on THAT side's helper cycle (1 Hz
+    /// from its own start, python/obd/session.py poll loop @09da38d) and read
+    /// by the agent tick (ts:src/agent/collectors/obd.ts `sample()` /
+    /// `mapLatest()`), two phases per side; so a value that changes for one
+    /// helper cycle (the crank dip) can reach the two agents one sample
+    /// apart. Matched ONLY as the strict one-sample old/new split on both
+    /// halves (as T8/led-tick-lag); a value the other side never carried at
+    /// k±1, or a two-sample lag, is UNTOLERATED.
+    fn obd_sample_split(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
+        let (rid, row) = self.table.decision_row("obd-sample-split")?;
+        // NOT `link` (review-wp4 R4-2): `mapLatest` writes `link` from the
+        // helper's STATUS lines via `currentLink()` (ts:src/agent/collectors/
+        // obd.ts:640-659), not from a sample — it must match exactly.
+        if !crate::tolerances::stream_matches(&row.streams, &self.stream)
+            || !path.starts_with("metrics.obd.")
+            || !path.ends_with(".value")
+            || path == "metrics.obd.link.value"
+        {
+            return None;
+        }
+        let at = |v: Option<&Value>| v.and_then(|v| lookup(v, path)).cloned();
+        let [pa, na, pb, nb] = self.neighbors;
+        let is = |n: Option<&Value>, v: &Value| at(n).as_ref() == Some(v);
+        let split = (is(pb, x) && is(na, y)) || (is(nb, x) && is(pa, y));
+        split.then(|| format!("{rid}/obd-sample-split"))
+    }
+
     fn input_edge(&self, path: &str, x: &Value, y: &Value) -> Option<String> {
         let (rid, row) = self.table.decision_row("input-edge")?;
         if !crate::tolerances::stream_matches(&row.streams, &self.stream)
@@ -1365,8 +1612,37 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
             if let (Some((id, tol)), Some(p), Some(q)) =
                 (cx.table.numeric(&cx.stream, path), x.as_f64(), y.as_f64())
             {
-                let t = if (p - q).abs() <= tol + 1e-9 {
+                // T17 (review-wp4 R4-3c): the rate is the vendored helper's
+                // `round(rate, 1)` (python/obd/session.py:504), only CARRIED by
+                // the agent, so its TEXT must be a 1-decimal number on BOTH
+                // sides, as a JS number prints it (`^\d+(\.\d)?$`: `19.2`, or
+                // `19` for a 19.0) — a float-rendered value
+                // (`19.200000762939453`) or a 2-decimal one fails.
+                let one_decimal = |v: &Value| {
+                    let t = v.to_string();
+                    let (int, frac) = t.split_once('.').unwrap_or((&t, "0"));
+                    !int.is_empty()
+                        && int.bytes().all(|c| c.is_ascii_digit())
+                        && frac.len() == 1
+                        && frac.bytes().all(|c| c.is_ascii_digit())
+                };
+                let shape_ok = id != "T17" || (one_decimal(x) && one_decimal(y));
+                // T17 (orchestrator ruling 2026-10-28): the helper-measured rate
+                // is a HOST measurement (each side's helper against its own
+                // emulator); it is not compared across sides. Each side must
+                // carry its OWN helper's value exactly (diff_p4::diff_obd_gate,
+                // report and state paths) and stay inside the per-side
+                // plausibility bounds below; `tol` is the upper bound.
+                let in_band = if id == "T17" {
+                    let lo = obd_rate_floor(path);
+                    [p, q].iter().all(|v| *v >= lo && *v <= tol + 1e-9)
+                } else {
+                    (p - q).abs() <= tol + 1e-9
+                };
+                let t = if shape_ok && in_band {
                     id
+                } else if !shape_ok {
+                    UNTOLERATED.into()
                 } else if let Some(h) = cx.host_attributed(path, p, q, tol) {
                     h
                 } else {
@@ -1423,6 +1699,8 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 .or_else(|| cx.transition(path, a, b))
                 .or_else(|| cx.cut_input(path, x, y))
                 .or_else(|| cx.input_edge(path, x, y))
+                .or_else(|| cx.led_tick_lag(path, x, y))
+                .or_else(|| cx.obd_sample_split(path, x, y))
                 .or_else(|| cx.report_input_between(path))
                 .or_else(|| cx.near_wall_step(path))
                 .unwrap_or_else(|| UNTOLERATED.into());
@@ -1656,8 +1934,112 @@ fn fffd_equiv(a: &str, b: &str) -> bool {
     a != b && (a.contains('\u{FFFD}') || b.contains('\u{FFFD}')) && strip(a) == strip(b)
 }
 
+/// T17's per-side plausibility FLOOR (the ceiling is the rule's tolerance,
+/// 40 req/s): the helper's probe rate `effective.obd.profile.rate_req_s` is
+/// raw adapter throughput — all 398 probes logged on the rig (stepC,
+/// stepC-H9 relay logs) lie in 16.8–19.7 req/s (an emulator round trip
+/// ≈ 52 ms) — so below
+/// 5 req/s (200 ms a request) the helper or its link is broken. The state
+/// `obd.reqPerSec` may legitimately be low (requestRate over two audits
+/// across a silent ECU or a restart: 0.2 req/s seen), so its floor is 0.
+fn obd_rate_floor(path: &str) -> f64 {
+    if path.ends_with("profile.rate_req_s") {
+        5.0
+    } else {
+        0.0
+    }
+}
+
 fn ts_of(v: &Value) -> Option<i64> {
     v.get("ts").and_then(Value::as_i64)
+}
+
+/// Review-wp4 R4-9: T8/led-tick-lag and T8/obd-sample-split excuse ISOLATED
+/// one-sample splits, never a systematic lag. A split happens only when the
+/// leaf's change lands between the two agents' own read instants of it (the
+/// LED heartbeat, ts:src/worker.ts:703-705; the helper's latest sample read
+/// on the tick, ts:src/agent/collectors/obd.ts `mapLatest`), a window of
+/// |phase A − phase B| of a 1 s period, which the tick pairing keeps ≤ 500 ms:
+/// so at most half of a leaf's changes in expectation (JS-vs-JS calibration
+/// p5b-led .cal09: 3 of 13). Per (row, leaf) per run: more than
+/// max(2, ⌈changes / 2⌉) splits (led-tick-lag; 2 = one shifted one-cycle
+/// pulse, which splits both of its edges) or more than 1 (obd-sample-split,
+/// whose helpers the obd-gate relay keeps in phase) turns EVERY split of that
+/// leaf UNTOLERATED. Each
+/// leaf's split count, change count and direction is listed in diff.md.
+fn cap_one_sample_splits(rep: &mut Report, paired: &[(&Msg, &Msg)]) {
+    const ROWS: [&str; 2] = ["T8/led-tick-lag", "T8/obd-sample-split"];
+    let tick_of: BTreeMap<String, usize> = paired
+        .iter()
+        .enumerate()
+        .map(|(k, (x, y))| {
+            (
+                format!(
+                    "ts A {} / B {}",
+                    ts_of(&x.payload).unwrap_or(0),
+                    ts_of(&y.payload).unwrap_or(0)
+                ),
+                k,
+            )
+        })
+        .collect();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (i, m) in rep.mismatches.iter().enumerate() {
+        if m.stream == "telemetry" && ROWS.contains(&m.tol.as_str()) {
+            groups
+                .entry((m.tol.clone(), m.path.clone()))
+                .or_default()
+                .push(i);
+        }
+    }
+    for ((row, path), idx) in groups {
+        let vals = |side: usize| -> Vec<Option<Value>> {
+            paired
+                .iter()
+                .map(|p| lookup(&(if side == 0 { p.0 } else { p.1 }).payload, &path).cloned())
+                .collect()
+        };
+        let (va, vb) = (vals(0), vals(1));
+        let changes = va.windows(2).filter(|w| w[0] != w[1]).count();
+        let (mut a_late, mut b_late) = (0, 0);
+        for &i in &idx {
+            if let Some(&k) = tick_of.get(&rep.mismatches[i].at) {
+                if k > 0 && va[k] == vb[k - 1] {
+                    a_late += 1;
+                } else {
+                    b_late += 1;
+                }
+            }
+        }
+        // obd-sample-split: at most ONE split per leaf per run. Since the
+        // obd-gate relay aligns the two helpers' edges (and so their 1 Hz
+        // poll phases) the row fired 0 times in all 18 relay-era runs
+        // (stepC/*.v2.*, stepC-H9/*.v2.cal09): one isolated split is still
+        // excused, a shifted pulse (two) is not.
+        let cap = if row == "T8/obd-sample-split" {
+            1
+        } else {
+            2usize.max(changes.div_ceil(2))
+        };
+        let over = idx.len() > cap;
+        rep.inputs.insert(
+            format!("{row} {path}"),
+            format!(
+                "{} split(s) of {changes} change(s) (A late {a_late}, B late {b_late}; cap {cap}){}",
+                idx.len(),
+                if over { " — OVER THE CAP: every split UNTOLERATED" } else { "" }
+            ),
+        );
+        if over {
+            for &i in &idx {
+                let st = rep.mismatches[i].stream.clone();
+                rep.mismatches[i].tol = UNTOLERATED.to_string();
+                let s = rep.stats.entry(st).or_default();
+                s.tolerated = s.tolerated.saturating_sub(1);
+                s.untolerated += 1;
+            }
+        }
+    }
 }
 
 /// Pair telemetry by the player's hold-window pairs, else nearest `ts` within
@@ -2286,6 +2668,12 @@ pub fn diff_with(
     // ONE lead tick per logged gate skip (tick-drift).
     let mut cadence_used: BTreeSet<(&str, usize)> = BTreeSet::new();
     let mut skips_used: BTreeSet<usize> = BTreeSet::new();
+    // T8/grace-fallback-phase: the earlier side's first published sample.
+    let grace_tick = table
+        .matcher_rows("grace_fallback_phase", "telemetry")
+        .into_iter()
+        .next()
+        .and_then(|id| Some((id, grace_fallback(a, b)?.edge_tick?)));
     for (side, list) in [("A", &ua), ("B", &ub)] {
         for m in list.iter() {
             let w = ts_of(&m.payload);
@@ -2315,6 +2703,10 @@ pub fn diff_with(
                 })
                 .flatten();
             let tol = seam
+                .or_else(|| {
+                    let (id, (s, t)) = grace_tick.as_ref()?;
+                    (*s == side && *t == wv).then(|| id.clone())
+                })
                 .or_else(|| {
                     let id = cx.near_closed_as("reconnect-cadence")?;
                     let (_, row) = table.decision_row("reconnect-cadence")?;
@@ -2564,6 +2956,7 @@ pub fn diff_with(
     diff_sudo(a, b, table, &mut rep);
 
     cap_row_hits(&mut rep, table, play, "input-edge");
+    cap_one_sample_splits(&mut rep, &paired);
     host_bias_guard(&mut rep, table);
 
     // Per-kind comparison counts (review-wp7): every kind is listed.
@@ -2853,6 +3246,85 @@ fn seq_increments(
     }
 }
 
+/// T8/report-echo: the indices of one side's reports (publish order) that
+/// are ECHOES: identical to the report before them once the publish stamps
+/// (`ts`, every `status.<ns>.at`) are removed, carrying `effective.obd`,
+/// published `DEBOUNCE_MS` ± [`ECHO_SLACK_MS`] after it, AND one debounce
+/// after a `metrics.obd.link` move on THAT side's telemetry (± the slack) —
+/// at most one echo per move. Mechanism (TS @09da38d): the publish tick
+/// requests a report on an OBD link move (ts:src/worker.ts:1399-1404
+/// `obdReportDue`), ConfigSync debounces 2 s (ts:src/agent/config-sync.ts:
+/// 1604-1617, one timer, coalescing only while armed); the timer armed on
+/// tick k fires on tick k+2's instant, so a link move seen on that tick
+/// re-arms it after the flush — a second report with nothing new — or
+/// coalesces, depending on which callback runs first. Both JS sides of every
+/// p5b-obd-config JS-vs-JS run do it. A report repeated WITHOUT such a move
+/// (a debounce that re-arms on its own flush) is never an echo.
+fn report_echoes(side: &[&Msg], link_moves: &[i64]) -> Vec<usize> {
+    let strip = |p: &Value| {
+        let mut p = p.clone();
+        if let Some(o) = p.as_object_mut() {
+            o.remove("ts");
+            if let Some(st) = o.get_mut("status").and_then(Value::as_object_mut) {
+                for v in st.values_mut() {
+                    if let Some(v) = v.as_object_mut() {
+                        v.remove("at");
+                    }
+                }
+            }
+        }
+        p
+    };
+    let mut used = vec![false; link_moves.len()];
+    let mut out = Vec::new();
+    for i in 1..side.len() {
+        let (x, y) = (side[i - 1], side[i]);
+        if (y.w - x.w - DEBOUNCE_MS).abs() > ECHO_SLACK_MS
+            || y.payload.pointer("/effective/obd").is_none()
+            || strip(&x.payload) != strip(&y.payload)
+        {
+            continue;
+        }
+        let trig = y.w - DEBOUNCE_MS;
+        if let Some(j) = (0..link_moves.len())
+            .find(|&j| !used[j] && (link_moves[j] - trig).abs() <= ECHO_SLACK_MS)
+        {
+            used[j] = true;
+            out.push(i);
+        }
+    }
+    out
+}
+
+fn drop_indices<'m>(v: &[&'m Msg], drop: &[usize]) -> Vec<&'m Msg> {
+    v.iter()
+        .enumerate()
+        .filter(|(i, _)| !drop.contains(i))
+        .map(|(_, m)| *m)
+        .collect()
+}
+
+/// The capture instants of the telemetry ticks whose `metrics.obd.link`
+/// value differs from the previous tick's (the `obdReportDue` link edges).
+fn obd_link_moves(c: &Capture) -> Vec<i64> {
+    let link = |m: &Msg| m.payload.pointer("/metrics/obd/link/value").cloned();
+    let tel: Vec<&Msg> = c
+        .msgs
+        .iter()
+        .filter(|m| m.topic.ends_with("/telemetry"))
+        .collect();
+    tel.windows(2)
+        .filter(|w| link(w[0]) != link(w[1]))
+        .map(|w| w[1].w)
+        .collect()
+}
+
+/// T8/report-echo: Δ − 2000 = (where in tick k+2 the second `obdReportDue`
+/// runs) − (where in tick k the first one armed the timer), i.e. the spread of
+/// one publish tick's own latency — budgeted at the rig's same-instant window
+/// (T12's 150 ms). Observed −51…+94 ms over 12 JS and 4 Rust sides.
+const ECHO_SLACK_MS: i64 = 150;
+
 fn quiet_periods(a: &[&Msg], b: &[&Msg], quiet_ms: i64) -> Vec<(i64, i64)> {
     let mut ws: Vec<i64> = a.iter().chain(b.iter()).map(|m| m.w).collect();
     ws.sort();
@@ -2974,6 +3446,24 @@ fn diff_reports(
                         });
                     ok.then(|| format!("{rid}/reconnect-cadence"))
                 });
+            // T8/report-echo (Phase 5b, orchestrator 2026-10-23): the count
+            // differs ONLY by echoes — a report byte-identical to the same
+            // side's previous one (save its publish stamps `ts` and
+            // `status.<ns>.at`), published one debounce after it.
+            // Rebuilt after review-wp4 R4-1: an echo counts only when THAT
+            // side's telemetry moved `metrics.obd.link` on the publish tick
+            // one debounce before it (the `obdReportDue` trigger), at most one
+            // echo per such move; the remaining reports are then compared
+            // PAIRWISE (below), never just the last.
+            let echo = table.decision_row("report-echo").and_then(|(rid, _)| {
+                let (ea, eb) = (
+                    report_echoes(&pa, &obd_link_moves(a)),
+                    report_echoes(&pb, &obd_link_moves(b)),
+                );
+                let (ka, kb) = (drop_indices(&pa, &ea), drop_indices(&pb, &eb));
+                (ea.len() + eb.len() > 0 && ka.len() == kb.len())
+                    .then(|| (format!("{rid}/report-echo"), ka, kb))
+            });
             let tol = if straddle
                 && pa.len().abs_diff(pb.len()) <= max_delta
                 && !pa.is_empty()
@@ -2982,17 +3472,35 @@ fn diff_reports(
                 t5.clone()
             } else if let Some(id) = after_cut {
                 id
+            } else if let Some((id, _, _)) = &echo {
+                id.clone()
             } else {
                 UNTOLERATED.into()
             };
+            let echoed = echo.filter(|(id, _, _)| *id == tol);
             rep.push(cx.mismatch(
                 "(count)",
                 Some(&Value::from(pa.len())),
                 Some(&Value::from(pb.len())),
                 tol,
             ));
-            // Only the last of each side is binding.
-            if let (Some(x), Some(y)) = (pa.last(), pb.last()) {
+            if let Some((_, ka, kb)) = echoed {
+                // The echoes removed, the rest compared one by one.
+                for (i, (x, y)) in ka.iter().zip(&kb).enumerate() {
+                    compared += 1;
+                    let cx = Cx {
+                        stream: "report".into(),
+                        at: format!("{at} #{i} (echoes removed)"),
+                        when: Some(x.w),
+                        when_b: Some(y.w),
+                        ..cx
+                    };
+                    flags_pair(&cx, x, y, rep);
+                    let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, (a, b), rep);
+                    cmp(&cx, "", Some(&px), Some(&py), rep);
+                }
+            } else if let (Some(x), Some(y)) = (pa.last(), pb.last()) {
+                // Only the last of each side is binding.
                 compared += 1;
                 let cx = Cx {
                     at: format!("{at} last"),
@@ -3001,7 +3509,8 @@ fn diff_reports(
                     ..cx
                 };
                 flags_pair(&cx, x, y, rep);
-                cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
+                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, (a, b), rep);
+                cmp(&cx, "", Some(&px), Some(&py), rep);
             }
         } else {
             for (i, (x, y)) in pa.iter().zip(&pb).enumerate() {
@@ -3025,11 +3534,187 @@ fn diff_reports(
                     ack_rate_limit: false,
                 };
                 flags_pair(&cx, x, y, rep);
-                cmp(&cx, "", Some(&x.payload), Some(&y.payload), rep);
+                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, (a, b), rep);
+                cmp(&cx, "", Some(&px), Some(&py), rep);
             }
         }
     }
     rep.stats.entry("report".into()).or_default().compared = compared;
+}
+
+/// T8/obd-audit-cycle (Phase 5b; NEW ROW, reviewer sign-off): the OBD
+/// helper's audit counters (`effective.obd.audit`) are cumulative counts of
+/// the requests its 1 Hz poll loop made since the session started, snapshot
+/// at an audit line (every 60 s from the helper's start, and at every stop /
+/// restart: python/obd/session.py:173-228 @09da38d). A restart lands on the
+/// cloud config message (`obdReapply`, ts:src/worker.ts:981-985) while each
+/// side's helper is somewhere inside its own poll cycle, so one side may have
+/// completed a few more requests of that one cycle. Matched ONLY when the two
+/// audit blocks differ by part of ONE cycle, in one direction: every
+/// `inventory` count equal or one higher on the same side, `requests` and
+/// `ok` higher by exactly the number of those inventory steps, `bytes_tx`
+/// higher by 1..=8 bytes per extra request, every other counter (no_data,
+/// timeouts, err_*, forbidden, reconnects, voltage_low, …) and every other
+/// audit key EQUAL. Then those leaves are removed (cited) and the rest of the
+/// payload is compared as usual.
+fn obd_audit_cycle(
+    cx: &Cx,
+    x: &Value,
+    y: &Value,
+    caps: (&Capture, &Capture),
+    rep: &mut Report,
+) -> (Value, Value) {
+    let (x, y) = (x.clone(), y.clone());
+    let Some((rid, row)) = cx.table.decision_row("obd-audit-cycle") else {
+        return (x, y);
+    };
+    if !crate::tolerances::stream_matches(&row.streams, &cx.stream) {
+        return (x, y);
+    }
+    let (Some(ax), Some(ay)) = (
+        x.pointer("/effective/obd/audit").and_then(Value::as_object),
+        y.pointer("/effective/obd/audit").and_then(Value::as_object),
+    ) else {
+        return (x, y);
+    };
+    let req = |m: &serde_json::Map<String, Value>| {
+        m.get("counters")
+            .and_then(|c| c.get("requests"))
+            .and_then(Value::as_i64)
+    };
+    let stop = (
+        req(ax).is_some_and(|r| caps.0.obd_stop_audits.contains(&r)),
+        req(ay).is_some_and(|r| caps.1.obd_stop_audits.contains(&r)),
+    );
+    let Some(cycle) = audit_cycle_delta(ax, ay, stop) else {
+        return (x, y);
+    };
+    let tol = format!("{rid}/obd-audit-cycle");
+    for (leaf, a, b) in &cycle {
+        rep.push(cx.mismatch(
+            &format!("effective.obd.audit.{leaf}"),
+            Some(a),
+            Some(b),
+            tol.clone(),
+        ));
+    }
+    let strip = |mut v: Value| {
+        if let Some(a) = v
+            .pointer_mut("/effective/obd/audit")
+            .and_then(Value::as_object_mut)
+        {
+            for (leaf, ..) in &cycle {
+                let (grp, key) = leaf.split_once('.').unwrap_or((leaf.as_str(), ""));
+                if let Some(o) = a.get_mut(grp).and_then(Value::as_object_mut) {
+                    o.remove(key);
+                }
+            }
+        }
+        v
+    };
+    (strip(x), strip(y))
+}
+
+/// The leaves `(path under audit, A, B)` of a one-cycle split, or `None`
+/// when the two audit blocks are not exactly that.
+///
+/// Review-wp4 R6-1 (orchestrator ruling 2026-10-28): `stop.0` / `stop.1` =
+/// that side's audit is the LAST audit of a helper the agent signalled to
+/// stop. Only such an audit may hold ONE request cut in flight: the helper
+/// counts `requests`, `bytes_tx` and `inventory` BEFORE it writes and reads
+/// (python/obd/gate.py:131-136 @09da38d), `ok` only after a reply
+/// (:187), and the stop signal raises `Shutdown` out of the read
+/// (session.py:90), so that request is counted as sent and never as
+/// answered, timed out or failed. Then that side's `requests − ok` is exactly
+/// 1, every other counter unmoved, and the cycle arithmetic holds with `ok`
+/// short by that one request (seen on both agents: stepC
+/// p5b-obd-config.r27.rsjs3 JS side, r28.jsrs4 Rust side). Every other audit
+/// keeps `requests − ok` differences exact.
+fn audit_cycle_delta(
+    ax: &serde_json::Map<String, Value>,
+    ay: &serde_json::Map<String, Value>,
+    stop: (bool, bool),
+) -> Option<Vec<(String, Value, Value)>> {
+    // Every key but the two count tables must be equal.
+    let keys: BTreeSet<&String> = ax.keys().chain(ay.keys()).collect();
+    for k in keys {
+        if k != "counters" && k != "inventory" && ax.get(k) != ay.get(k) {
+            return None;
+        }
+    }
+    let (cx_, cy) = (
+        ax.get("counters")?.as_object()?,
+        ay.get("counters")?.as_object()?,
+    );
+    let (ix, iy) = (
+        ax.get("inventory")?.as_object()?,
+        ay.get("inventory")?.as_object()?,
+    );
+    let num = |m: &serde_json::Map<String, Value>, k: &str| m.get(k).and_then(Value::as_i64);
+    let mut out = Vec::new();
+    let mut sign = 0i64;
+    let mut steps = 0i64;
+    let mut bytes = 0i64;
+    let inv_keys: BTreeSet<&String> = ix.keys().chain(iy.keys()).collect();
+    for k in inv_keys {
+        let (a, b) = (num(ix, k)?, num(iy, k)?);
+        let d = b - a;
+        if d == 0 {
+            continue;
+        }
+        if d.abs() != 1 || (sign != 0 && d.signum() != sign) {
+            return None;
+        }
+        sign = d.signum();
+        steps += 1;
+        // review-wp4 R4-N1: each extra request wrote its command + CR
+        // (python/obd/gate.py:125-132 `payload = (c + "\r")`).
+        bytes += k.len() as i64 + 1;
+        out.push((format!("inventory.{k}"), ix[k].clone(), iy[k].clone()));
+    }
+    // R6-1: the in-flight request of a stop audit (0 or 1 per side).
+    let cut = |c: &serde_json::Map<String, Value>, is_stop: bool| -> Option<i64> {
+        let u = num(c, "requests")? - num(c, "ok")?;
+        Some(if is_stop && u == 1 { 1 } else { 0 })
+    };
+    let (fa, fb) = (cut(cx_, stop.0)?, cut(cy, stop.1)?);
+    if steps == 0 {
+        // Only an in-flight request on one side, which the other answered.
+        if fa == fb {
+            return None;
+        }
+        sign = 1;
+    }
+    // In `sign` orientation (the side ahead minus the other): `ok` falls short
+    // of the steps by the ahead side's cut request, and gains the behind
+    // side's (it answered a request the behind side only sent).
+    let (f_hi, f_lo) = if sign > 0 { (fb, fa) } else { (fa, fb) };
+    let want_ok = steps - f_hi + f_lo;
+    let c_keys: BTreeSet<&String> = cx_.keys().chain(cy.keys()).collect();
+    for k in c_keys {
+        let (a, b) = (num(cx_, k)?, num(cy, k)?);
+        let d = (b - a) * sign;
+        match k.as_str() {
+            "requests" if d == steps => {}
+            "ok" if d == want_ok => {}
+            "bytes_tx" if d == bytes => {}
+            _ if d == 0 => continue,
+            _ => return None,
+        }
+        if d == 0 {
+            continue;
+        }
+        out.push((format!("counters.{k}"), cx_[k].clone(), cy[k].clone()));
+    }
+    // What moved must be exactly what the cycle (and the cut request) says.
+    let moved = |k: &str| out.iter().any(|(l, ..)| l == &format!("counters.{k}"));
+    let ok_moved = want_ok != 0;
+    let ok = if steps > 0 {
+        moved("requests") && moved("bytes_tx") && moved("ok") == ok_moved
+    } else {
+        moved("ok") && !moved("requests") && !moved("bytes_tx")
+    };
+    ok.then_some(out)
 }
 
 /// The `level: msg` key of a state.json event after the T8 normalisations:
@@ -3037,8 +3722,39 @@ fn diff_reports(
 /// transport-library error text (`mqtt-error-text`), and the suffix of an
 /// upload retry (`s3-error-text`, pending Phase 3). Returns the key and the
 /// row that changed it.
+/// R-P3G-1 (Phase 3 gate, fixed in Phase 5b WP4): an event's `(session
+/// <8 hex>…)` is the first 32 bits of the agent's own UUIDv7 session id —
+/// its ms clock in 65.5 s buckets (ts:src/recording/video-capture.ts spawn
+/// event `session ${id.slice(0, 8)}…` @09da38d) — so two agents whose spawns
+/// straddle a bucket edge print different prefixes for the same event. The
+/// phase-3 comparison table already says "msg multiset (session prefixes
+/// normalised)": the prefix becomes `<sid>`, like the deviceId becomes `{id}`.
+/// Only that exact token shape is rewritten; the session ids themselves are
+/// compared in the session stream.
+fn norm_session_prefix(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut rest = msg;
+    while let Some(i) = rest.find("(session ") {
+        let (head, tail) = rest.split_at(i + "(session ".len());
+        out.push_str(head);
+        let hex = tail.get(..8).filter(|h| {
+            h.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        });
+        match hex {
+            Some(_) if tail[8..].starts_with('…') => {
+                out.push_str("<sid>");
+                rest = &tail[8..];
+            }
+            _ => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn event_key(level: &str, msg: &str, kind: &str, table: &Table) -> (String, Option<String>) {
-    let mut msg = msg.to_string();
+    let mut msg = norm_session_prefix(msg);
     let mut hit = None;
     if kind == "rust" {
         if let Some((rid, _)) = table.decision_row("task-prefix") {
@@ -3250,7 +3966,14 @@ fn sms_decisions(cx: &Cx, x: &Value, y: &Value, rep: &mut Report) -> (Value, Val
 /// are rewritten to the TS no-modem words (the second value says so).
 /// Anything else → `None`.
 fn sms_event_norm(msg: &str, o4: bool) -> Option<(String, bool, String, u64)> {
-    let rest = msg.strip_prefix("read_sms ")?;
+    // Phase 5b: `clear_sms <id>: status=… cleared=… durationMs=<n>` is the SAME
+    // template and the same measured span (ts:src/worker.ts:1055-1059,
+    // ts:src/hardware/sms-modem.ts:690-702 @09da38d: `${cmd.command} …
+    // durationMs=${payload.durationMs}`, `end - start` of the op).
+    let (cmd, rest) = match msg.strip_prefix("read_sms ") {
+        Some(r) => ("read_sms", r),
+        None => ("clear_sms", msg.strip_prefix("clear_sms ")?),
+    };
     let (id, body) = rest.split_once(": ")?;
     if id.is_empty() || id.contains(' ') || !body.starts_with("status=") {
         return None;
@@ -3273,7 +3996,7 @@ fn sms_event_norm(msg: &str, o4: bool) -> Option<(String, bool, String, u64)> {
         hit = true;
     }
     Some((
-        format!("read_sms {id}: {head} durationMs=<ms>{after}"),
+        format!("{cmd} {id}: {head} durationMs=<ms>{after}"),
         hit,
         id.to_string(),
         n,
@@ -3395,6 +4118,17 @@ fn diff_events(
         _ => false,
     };
     rep.stats.entry("events".into()).or_default().compared += keys.len();
+    // T7/D40 (Phase 5b): the clock stepper's hold-off expiry tick.
+    let d40 = table
+        .matcher_rows("d40_holdoff_expiry_tick", "events")
+        .into_iter()
+        .next()
+        .and_then(|id| d40_keys(a, b).map(|ks| (id, ks)));
+    let grace = table
+        .matcher_rows("grace_fallback_phase", "events")
+        .into_iter()
+        .next()
+        .and_then(|id| grace_fallback(a, b).map(|g| (id, g)));
     for k in keys {
         let (x, hx) = ca.get(k).cloned().unwrap_or((0, None));
         let (y, hy) = cb.get(k).cloned().unwrap_or((0, None));
@@ -3427,7 +4161,11 @@ fn diff_events(
                     .iter()
                     .any(|p| msg.starts_with(p.as_str()))
         });
-        let tol = if let Some((rid, _)) = rust_only {
+        let tol = if let Some((id, _)) = d40.as_ref().filter(|(_, ks)| ks.contains(k.as_str())) {
+            id.clone()
+        } else if let Some((id, _)) = grace.as_ref().filter(|(_, g)| g.keys.contains(k.as_str())) {
+            id.clone()
+        } else if let Some((rid, _)) = rust_only {
             format!("{rid}/rust-only-events")
         } else if let Some(r) = t6.filter(|r| {
             // Phase 3/4 texts: JS has it, Rust has none of it (one-directional).
@@ -3459,6 +4197,307 @@ fn diff_events(
             b: y.to_string(),
             tol,
         });
+    }
+}
+
+/// T7/D40 `d40_holdoff_expiry_tick` (accepted-divergences.md D40): the
+/// `level: msg` event keys this run's stepper hold-off race explains, or
+/// None. ALL of: (i) both sides rejected an implausible source in their
+/// first 30 s check tick; (ii) the RUST side stepped at its first check tick
+/// with mono ≥ its own hold-off end (300–330 s after its implausible event)
+/// and the JS side exactly one check interval later (29–31 s after Rust,
+/// relative to each side's own implausible event); (iii) the two `stepped
+/// system clock …` texts (offset, source, step count) are identical; (iv)
+/// the trust events differ ONLY as: JS `no NTP/GPS/NITZ sync <G> s …
+/// (<N> sample(s) held) …` + `<src> synchronized <T> s after boot — clock
+/// trusted (published <T−G> s on an untrusted clock)`, Rust `<src>
+/// synchronized — clock trusted (telemetry held <G> s, <N> sample(s))`,
+/// same src and N. Anything else: None (judged as usual).
+fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
+    let (js, rs) = match (a.meta.kind.as_str(), b.meta.kind.as_str()) {
+        ("js", "rust") => (a, b),
+        ("rust", "js") => (b, a),
+        _ => return None,
+    };
+    let first = |c: &Capture, pre: &str| -> Option<(i64, String, String)> {
+        c.events
+            .iter()
+            .find(|(_, _, m)| m.starts_with(pre))
+            .cloned()
+    };
+    let all = |c: &Capture, pre: &str| {
+        c.events
+            .iter()
+            .filter(|(_, _, m)| m.starts_with(pre))
+            .count()
+    };
+    let (ji, ri) = (
+        first(js, "[clock] ignoring implausible ")?,
+        first(rs, "[clock] ignoring implausible ")?,
+    );
+    let start = |c: &Capture| c.events.iter().map(|e| e.0).min().unwrap_or(0);
+    // Tick 0 (the original shape) or tick 1 (p4-clock-cap after review-wp4
+    // R4-5: the implausible NITZ from 15 s, so both steps land after the
+    // 300 s grace and only the trust text differs — below).
+    // The tick-1 shape is recognised by its own evidence: the RUST side fell
+    // back at the grace too (in the tick-0 shape it trusted before it).
+    let tick1 = rs
+        .events
+        .iter()
+        .any(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "));
+    let first_tick = if tick1 { 60_000 } else { 30_000 };
+    if ji.0 - start(js) > first_tick || ri.0 - start(rs) > first_tick {
+        return None;
+    }
+    let (js_step, rs_step) = (
+        first(js, "[clock] stepped system clock ")?,
+        first(rs, "[clock] stepped system clock ")?,
+    );
+    if !d40_same_step(&js_step.2, &rs_step.2)
+        || all(js, "[clock] stepped system clock ") != 1
+        || all(rs, "[clock] stepped system clock ") != 1
+    {
+        return None;
+    }
+    // The two step texts' keys when they differ (only in the displayed
+    // offset, ±0.1 — d40_same_step).
+    let key = |e: &(i64, String, String)| format!("{}: {}", e.1, e.2);
+    let step_keys: Vec<String> = if js_step.2 == rs_step.2 {
+        Vec::new()
+    } else {
+        vec![key(&js_step), key(&rs_step)]
+    };
+    let (jrel, rrel) = (js_step.0 - ji.0, rs_step.0 - ri.0);
+    if !(300_000..330_000).contains(&rrel) || !(29_000..=31_000).contains(&(jrel - rrel)) {
+        return None;
+    }
+    let src = rs_step
+        .2
+        .split(" from ")
+        .nth(1)?
+        .split(' ')
+        .next()?
+        .to_string();
+    // the trust events: Rust's one form, JS's two
+    let rs_trust: Vec<&(i64, String, String)> = rs
+        .events
+        .iter()
+        .filter(|(_, _, m)| m.starts_with("[clock] ") && m.contains("clock trusted"))
+        .collect();
+    let js_trust: Vec<&(i64, String, String)> = js
+        .events
+        .iter()
+        .filter(|(_, _, m)| m.starts_with("[clock] ") && m.contains("clock trusted"))
+        .collect();
+    let js_fb: Vec<&(i64, String, String)> = js
+        .events
+        .iter()
+        .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
+        .collect();
+    let num = |s: &str| s.parse::<i64>().ok();
+    if tick1 {
+        // Both sides held to the 300 s grace and fell back with the SAME
+        // warning (same G, same N held); both then trust at their step with
+        // `<src> synchronized <T> s after boot — clock trusted (published
+        // <P> s on an untrusted clock)`, T and P one check interval apart.
+        let rs_fb: Vec<&(i64, String, String)> = rs
+            .events
+            .iter()
+            .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
+            .collect();
+        // Both fell back with the SAME warning, or with the two texts the
+        // grace-fallback matcher explains (G ±1 / N ±1, each N its own
+        // first published seq); each side's P is then derived from its OWN G.
+        if rs_trust.len() != 1
+            || js_trust.len() != 1
+            || js_fb.len() != 1
+            || rs_fb.len() != 1
+            || (js_fb[0].2 != rs_fb[0].2 && grace_fallback(js, rs).is_none())
+        {
+            return None;
+        }
+        let g_of = |m: &str| -> Option<i64> {
+            let f = m.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
+            let (g, _) = f.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
+            num(g)
+        };
+        let (gj, gr) = (g_of(&js_fb[0].2)?, g_of(&rs_fb[0].2)?);
+        let parse = |m: &str| -> Option<(i64, i64)> {
+            let t = m.strip_prefix(&format!("[clock] {src} synchronized "))?;
+            let (t, p) = t.split_once(" s after boot — clock trusted (published ")?;
+            let p = p.strip_suffix(" s on an untrusted clock)")?;
+            Some((num(t)?, num(p)?))
+        };
+        let ((tj, pj), (tr, pr)) = (parse(&js_trust[0].2)?, parse(&rs_trust[0].2)?);
+        if !(29..=31).contains(&(tj - tr)) || tj - gj != pj || tr - gr != pr {
+            return None;
+        }
+        return Some(
+            [key(rs_trust[0]), key(js_trust[0])]
+                .into_iter()
+                .chain(step_keys)
+                .collect(),
+        );
+    }
+    if rs_trust.len() != 1
+        || js_trust.len() != 1
+        || js_fb.len() != 1
+        || rs
+            .events
+            .iter()
+            .any(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
+    {
+        return None;
+    }
+    // Rust: `[clock] <src> synchronized — clock trusted (telemetry held <G> s, <N> sample(s))`
+    let r = rs_trust[0].2.strip_prefix(&format!(
+        "[clock] {src} synchronized — clock trusted (telemetry held "
+    ))?;
+    let (g, r) = r.split_once(" s, ")?;
+    let n = r.strip_suffix(" sample(s))")?;
+    // JS fallback: `[clock] no NTP/GPS/NITZ sync <G> s after start — publishing on an UNTRUSTED clock (<N> sample(s) held); timestamps may be early until a sync lands`
+    let f = js_fb[0].2.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
+    let (g2, f) = f.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
+    let n2 = f.strip_suffix(" sample(s) held); timestamps may be early until a sync lands")?;
+    // JS trust: `[clock] <src> synchronized <T> s after boot — clock trusted (published <P> s on an untrusted clock)`
+    let t = js_trust[0]
+        .2
+        .strip_prefix(&format!("[clock] {src} synchronized "))?;
+    let (t, p) = t.split_once(" s after boot — clock trusted (published ")?;
+    let p = p.strip_suffix(" s on an untrusted clock)")?;
+    let (g, n, g2, n2, t, p) = (num(g)?, num(n)?, num(g2)?, num(n2)?, num(t)?, num(p)?);
+    if g != g2 || n != n2 || t - g2 != p {
+        return None;
+    }
+    Some(
+        [key(rs_trust[0]), key(js_trust[0]), key(js_fb[0])]
+            .into_iter()
+            .chain(step_keys)
+            .collect(),
+    )
+}
+
+/// T8/grace-fallback-phase (orchestrator ruling 2026-10-27): what the 300 s
+/// clock-trust grace fallback warning of the two sides may differ in, and the
+/// one telemetry tick that difference leaves unpaired.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct GraceEdge {
+    /// The two `warn: [clock] no NTP/GPS/NITZ sync …` event keys.
+    keys: BTreeSet<String>,
+    /// `(side, ts)`: the first published sample of the side that fell back
+    /// one tick EARLIER (its seq N; the other side's seq-N sample was still
+    /// held) — the only telemetry message this row may leave unpaired.
+    edge_tick: Option<(&'static str, i64)>,
+}
+
+/// `[clock] no NTP/GPS/NITZ sync <G> s after start — publishing on an
+/// UNTRUSTED clock (<N> sample(s) held); timestamps may be early until a sync
+/// lands` (ts:src/agent/clock-trust.ts:127-137 @09da38d ↔ crates/xorgate-core
+/// /src/clock_trust.rs:148) → `(G, N)`; any other text → None.
+fn grace_text(m: &str) -> Option<(i64, i64)> {
+    let r = m.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
+    let (g, r) = r.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
+    let n = r.strip_suffix(" sample(s) held); timestamps may be early until a sync lands")?;
+    let (g, n): (i64, i64) = (g.parse().ok()?, n.parse().ok()?);
+    // canonical digits only (no sign, no leading zeros, no padding)
+    (format!("[clock] no NTP/GPS/NITZ sync {g} s after start — publishing on an UNTRUSTED clock ({n} sample(s) held); timestamps may be early until a sync lands") == m)
+        .then_some((g, n))
+}
+
+/// T8/grace-fallback-phase. The fallback fires at the first trust check at
+/// or past 300 s of the gate's OWN monotonic start — a telemetry tick
+/// (`trusted()` → `checkGrace`, ts:src/agent/clock-trust.ts:173-175 via
+/// ts:src/worker.ts:1409) or the 5 s probe poll (:147-152) — and prints
+/// G = toFixed(0) of that elapsed (:104-106, :129-136) and N = the samples
+/// held so far (`noteHeld`, ts:src/worker.ts:1409-1411, each held tick still
+/// advancing `seq`). The gate's start instant is not taped, so G is bounded,
+/// not derived: |G_A − G_B| ≤ 1 (JS@09 alone prints 300 and 301 run to run:
+/// stepC p5b-clock-fallback.clk.jsrs2 301, .c2.jsrs 300). N IS derived from
+/// each side's own tape: it must equal the `seq` of that side's FIRST
+/// published sample, which must be the side's first tick at/after its
+/// fallback instant (< 1.1 s later). Cross-side, the two fallback instants
+/// must lie < 1 s apart (one tick: the ticks are on each agent's own phase),
+/// so |N_A − N_B| ≤ 1 (JS alone: 297–299 across runs), and the side that fell
+/// back a tick earlier publishes ONE first sample whose counterpart the
+/// other side still held. Anything else (2 s, 2 samples, an N that is not
+/// the side's own first seq, a warning > 1 s apart, any other text
+/// difference): None.
+fn grace_fallback(a: &Capture, b: &Capture) -> Option<GraceEdge> {
+    struct Side {
+        fb: i64,
+        g: i64,
+        n: i64,
+        first_ts: i64,
+        key: String,
+    }
+    let side = |c: &Capture| -> Option<Side> {
+        let fbs: Vec<&(i64, String, String)> = c
+            .events
+            .iter()
+            .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
+            .collect();
+        let [e] = fbs.as_slice() else { return None };
+        let (g, n) = grace_text(&e.2)?;
+        let tel: Vec<(i64, Option<i64>)> = c
+            .msgs
+            .iter()
+            .filter(|m| m.topic.ends_with("/telemetry"))
+            .filter_map(|m| Some((ts_of(&m.payload)?, m.payload.get("seq")?.as_i64())))
+            .collect();
+        let &(first_ts, seq) = tel.iter().min_by_key(|(t, _)| *t)?;
+        let ok = seq == Some(n) && first_ts >= e.0 - 5 && first_ts - e.0 < 1_100;
+        ok.then(|| Side {
+            fb: e.0,
+            g,
+            n,
+            first_ts,
+            key: format!("{}: {}", e.1, e.2),
+        })
+    };
+    let (x, y) = (side(a)?, side(b)?);
+    if x.key == y.key
+        || (x.g - y.g).abs() > 1
+        || (x.n - y.n).abs() > 1
+        || (x.fb - y.fb).abs() >= 1_000
+    {
+        return None;
+    }
+    let edge_tick = match x.n.cmp(&y.n) {
+        std::cmp::Ordering::Less => Some(("A", x.first_ts)),
+        std::cmp::Ordering::Greater => Some(("B", y.first_ts)),
+        std::cmp::Ordering::Equal => None,
+    };
+    Some(GraceEdge {
+        keys: [x.key, y.key].into_iter().collect(),
+        edge_tick,
+    })
+}
+
+/// D40 (orchestrator ruling 2026-10-27): the two `stepped system clock
+/// <±X.Y>s from <src> (…)` texts of the race are the same step when they are
+/// identical except the displayed offset, within 0.1. Both sides compute it
+/// with the same formula — target = gps.utcMs + gps.ageMs, offset = target −
+/// now(), shown as (offset / 1000).toFixed(1) (ts:src/agent/clock-step.ts
+/// :241-243,266,279-282 ↔ crates/xorgate-core/src/clock_step.rs:349,368,435
+/// `js::to_fixed`) — and the race puts the two steps one check interval
+/// apart, on different fixes, so the float delta can round either side of a
+/// tenth (stepC p4-clock-cap.clk.jsrs: +597.9 vs +598.0).
+fn d40_same_step(x: &str, y: &str) -> bool {
+    if x == y {
+        return true;
+    }
+    let parse = |m: &str| -> Option<(f64, String)> {
+        let r = m.strip_prefix("[clock] stepped system clock ")?;
+        let (off, rest) = r.split_once("s from ")?;
+        let v: f64 = off.parse().ok()?;
+        // the 1-decimal shape on both sides (toFixed(1), sign included)
+        let (_, frac) = off.split_once('.')?;
+        (frac.len() == 1 && (off.starts_with('+') || off.starts_with('-')))
+            .then(|| (v, rest.to_string()))
+    };
+    match (parse(x), parse(y)) {
+        (Some((a, ra)), Some((b, rb))) => ra == rb && (a - b).abs() <= 0.1 + 1e-9,
+        _ => false,
     }
 }
 
@@ -4050,6 +5089,7 @@ mod tests {
             events: vec![],
             sudo: vec![],
             pid_snapshot: None,
+            obd_stop_audits: BTreeSet::new(),
         }
     }
 
@@ -5901,6 +6941,196 @@ mod tests {
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
 
+    /// T17 (orchestrator ruling 2026-10-28): the helper-measured rate is NOT
+    /// compared across sides; each value must be a 1-decimal JS number inside
+    /// the per-side plausibility band (profile rate 5–40 req/s); 19.0 vs 16.8
+    /// passes here (the carry checks in diff_p4 pin each side to its own
+    /// helper), 4.9 / 40.1, a float-rendered or 2-decimal value fail; another
+    /// path is not T17.
+    #[test]
+    fn t17_only_a_one_decimal_rate_within_one_req_s() {
+        let t = table();
+        let rep = |rate: Value, other: f64| {
+            msg(
+                10_000,
+                "config/reported",
+                serde_json::json!({"v":1,"ts":10_000,"rev":1,"origin":"boot",
+                    "effective":{"obd":{"profile":{"rate_req_s": rate, "other": other}}}}),
+            )
+        };
+        let tol = |a: Value, b: Value, oa: f64, ob: f64| {
+            let r = diff(
+                &cap("js", vec![rep(a, oa)]),
+                &cap("rust", vec![rep(b, ob)]),
+                &PlayInfo::default(),
+                &[],
+                &t,
+            );
+            r.mismatches
+                .iter()
+                .filter(|m| m.stream == "report")
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect::<Vec<_>>()
+        };
+        let p = "effective.obd.profile.rate_req_s".to_string();
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(18.7), 1.0, 1.0),
+            vec![(p.clone(), "T17".to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(19), 1.0, 1.0),
+            vec![(p.clone(), "T17".to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(18.7), serde_json::json!(16.9), 1.0, 1.0),
+            vec![(p.clone(), "T17".to_string())],
+            "a host-noise gap (stepC p5b-obd-config.r29.rsjs2): no cross-side band"
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(4.9), 1.0, 1.0),
+            vec![(p.clone(), UNTOLERATED.to_string())],
+            "below the 5 req/s floor"
+        );
+        assert_eq!(
+            tol(serde_json::json!(40.1), serde_json::json!(19.2), 1.0, 1.0),
+            vec![(p.clone(), UNTOLERATED.to_string())],
+            "above the 40 req/s ceiling"
+        );
+        assert_eq!(
+            tol(
+                serde_json::json!(19.2),
+                serde_json::json!(19.200000762939453),
+                1.0,
+                1.0
+            ),
+            vec![(p.clone(), UNTOLERATED.to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(19.25), 1.0, 1.0),
+            vec![(p.clone(), UNTOLERATED.to_string())]
+        );
+        assert_eq!(
+            tol(serde_json::json!(19.2), serde_json::json!(19.2), 1.0, 1.5),
+            vec![(
+                "effective.obd.profile.other".to_string(),
+                UNTOLERATED.to_string()
+            )]
+        );
+    }
+
+    /// T8/report-echo: a count difference made ONLY of echoes (a report
+    /// byte-identical to its side's previous one save `ts` / `status.*.at`,
+    /// published DEBOUNCE ± 150 ms after it) is tolerated; a changed payload,
+    /// an echo 3 s later, or an extra non-echo report stays UNTOLERATED.
+    #[test]
+    fn report_echo_only_an_identical_report_one_debounce_later() {
+        let t = table();
+        let play = PlayInfo::default();
+        let r = |w: i64, link: i64, status: &str| {
+            msg(
+                w,
+                "config/reported",
+                serde_json::json!({"v":1,"ts":w,"rev":3,"origin":"boot",
+                    "effective":{"obd":{"status":status,"link":link}},
+                    "status":{"obd":{"state":"applied","at":w}}}),
+            )
+        };
+        // Telemetry 1 Hz; `moves` = the ticks where metrics.obd.link changes.
+        let tel = |off: i64, moves: &[i64]| -> Vec<Msg> {
+            let mut link = 0;
+            (0..20)
+                .map(|k| {
+                    let w = 70_000 + off + k * 1000;
+                    if moves.iter().any(|m| (m - w).abs() < 500) {
+                        link += 1;
+                    }
+                    msg(
+                        w,
+                        "telemetry",
+                        serde_json::json!({"v":1,"ts":w,"seq":k,
+                        "metrics":{"obd":{"link":{"value":link}}}}),
+                    )
+                })
+                .collect()
+        };
+        let run = |a: Vec<Msg>, b: Vec<Msg>| {
+            let rep = diff_with(
+                &cap("js", a),
+                &cap("rust", b),
+                &play,
+                &InputFacts::default(),
+                &[],
+                &t,
+            );
+            rep.mismatches
+                .iter()
+                .filter(|m| m.stream == "report")
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect::<Vec<_>>()
+        };
+        let count = |v: &[(String, String)]| {
+            v.iter()
+                .find(|(p, _)| p == "(count)")
+                .map(|(_, t)| t.clone())
+        };
+        // The p5b-obd-config shape: Rust's link moves on its 75 010 tick, its
+        // echo 2001 ms after the live report = 2002 after that move.
+        let mut a = tel(0, &[73_000, 75_000]);
+        a.extend([r(72_851, 0, "connecting"), r(75_601, 2, "live")]);
+        let mut b = tel(10, &[73_010, 75_010]);
+        b.extend([
+            r(72_852, 0, "connecting"),
+            r(75_011, 2, "live"),
+            r(77_012, 2, "live"),
+        ]);
+        let got = run(a.clone(), b.clone());
+        assert_eq!(count(&got).as_deref(), Some("T8/report-echo"), "{got:?}");
+        assert!(got.iter().all(|(_, t)| t != UNTOLERATED), "{got:?}");
+        // M-E1: EVERY Rust report published twice, +2 s, no link move behind
+        // the copies → not echoes.
+        let mut b1 = tel(10, &[]);
+        b1.extend([
+            r(72_852, 0, "connecting"),
+            r(74_852, 0, "connecting"),
+            r(75_011, 2, "live"),
+            r(77_501, 2, "live"),
+        ]);
+        let mut a1 = tel(0, &[]);
+        a1.extend([r(72_851, 0, "connecting"), r(75_601, 2, "live")]);
+        assert_eq!(count(&run(a1, b1)).as_deref(), Some(UNTOLERATED));
+        // M-E2: a corrupted non-last report inside an echo period → compared
+        // pairwise once the echo is removed → UNTOLERATED.
+        let mut b2 = tel(10, &[73_010, 75_010]);
+        b2.extend([
+            r(72_852, 7, "BOGUS"),
+            r(75_011, 2, "live"),
+            r(77_012, 2, "live"),
+        ]);
+        let got = run(a.clone(), b2);
+        assert_eq!(count(&got).as_deref(), Some("T8/report-echo"));
+        assert!(
+            got.iter()
+                .any(|(p, t)| p.contains("effective.obd") && t == UNTOLERATED),
+            "{got:?}"
+        );
+        // The extra report carries a change: not an echo.
+        let mut b3 = tel(10, &[73_010, 75_010]);
+        b3.extend([
+            r(72_852, 0, "connecting"),
+            r(75_011, 1, "probing"),
+            r(77_012, 2, "live"),
+        ]);
+        assert_eq!(count(&run(a.clone(), b3)).as_deref(), Some(UNTOLERATED));
+        // Identical but 3 s later: not one debounce after.
+        let mut b4 = tel(10, &[73_010, 76_010]);
+        b4.extend([
+            r(72_852, 0, "connecting"),
+            r(75_011, 2, "live"),
+            r(78_012, 2, "live"),
+        ]);
+        assert_eq!(count(&run(a, b4)).as_deref(), Some(UNTOLERATED));
+    }
+
     /// CF54 (Phase 4 WP6): with T6 deleted, the Phase 4 report fields are
     /// compared like any other — `effective.cameraMount` and the
     /// `clockStepperArmed` hint present on one side only FAIL.
@@ -6164,5 +7394,782 @@ mod tests {
         assert!(fffd_equiv("a\u{FFFD}", "a\\ud83d"));
         assert!(!fffd_equiv("ab", "ab"));
         assert!(!fffd_equiv("a\u{FFFD}", "b"));
+    }
+
+    /// Phase 5b: the clear's event line normalises like the read's (same
+    /// TS template); anything else (another command, no duration) does not.
+    #[test]
+    fn sms_event_norm_covers_clear_sms_lines_only_in_the_shared_template() {
+        let (k, hit, id, n) = sms_event_norm(
+            "clear_sms c1: status=ok cleared=SM:10,ME:23 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=71",
+            false,
+        )
+        .unwrap();
+        assert_eq!(k, "clear_sms c1: status=ok cleared=SM:10,ME:23 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=<ms>");
+        assert!(!hit);
+        assert_eq!((id.as_str(), n), ("c1", 71));
+        let (k, ..) = sms_event_norm(
+            "clear_sms c4: status=error cleared=SM:10,ME:23 total=0 sent=0 unread=0 skipped=0 partial=false durationMs=25168 error=delete ME failed (timeout)",
+            false,
+        )
+        .unwrap();
+        assert!(k.ends_with("durationMs=<ms> error=delete ME failed (timeout)"));
+        assert!(sms_event_norm("obd_scan c1: status=ok durationMs=3", false).is_none());
+        assert!(sms_event_norm("clear_sms c1: status=ok total=0", false).is_none());
+    }
+
+    /// T8/led-tick-lag: a one-sample old/new split of the LED leaves, either
+    /// side late, is the row; a two-sample lag, a value the other side never
+    /// carried, or another leaf is UNTOLERATED.
+    /// Review-wp4 R4-9 / R4-2: a SYSTEMATIC one-sample lag (every change of a
+    /// leaf split, one direction) is over the cap and UNTOLERATED; isolated
+    /// splits stay tolerated; `metrics.obd.link` is never a sample split.
+    #[test]
+    fn one_sample_splits_are_capped_per_leaf_and_link_is_exact() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, led: i64, rpm: i64, link: i64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"system":{"led_state":{"value":led}},
+                "obd":{"link":{"value":link},"rpm":{"value":rpm}}}})
+        };
+        let side = |kind: &str, led: &[i64], rpm: &[i64], link: &[i64], off: i64| {
+            cap(
+                kind,
+                (0..led.len())
+                    .map(|k| {
+                        let ts = 20_000 + off + k as i64 * 1000;
+                        msg(
+                            ts,
+                            "telemetry",
+                            tel(ts, k as i64 + 1, led[k], rpm[k], link[k]),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            ..Default::default()
+        };
+        let run = |a: &Capture, b: &Capture, leaf: &str| {
+            diff_with(a, b, &play, &InputFacts::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == leaf)
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        let n = 16;
+        let flat = vec![2i64; n];
+        // LED alternating every 2 samples (8 changes); B one sample late on ALL.
+        let led_a: Vec<i64> = (0..n as i64).map(|k| (k / 2) % 2).collect();
+        let mut led_b = led_a.clone();
+        led_b.rotate_right(1);
+        led_b[0] = led_a[0];
+        let got = run(
+            &side("js", &led_a, &flat, &flat, 0),
+            &side("rust", &led_b, &flat, &flat, 10),
+            "metrics.system.led_state.value",
+        );
+        assert!(
+            got.len() > 2 && got.iter().all(|x| x == UNTOLERATED),
+            "{got:?}"
+        );
+        // One isolated split among the same changes: tolerated.
+        let mut led_c = led_a.clone();
+        led_c[2] = led_a[1];
+        let got = run(
+            &side("js", &led_a, &flat, &flat, 0),
+            &side("rust", &led_c, &flat, &flat, 10),
+            "metrics.system.led_state.value",
+        );
+        assert_eq!(got, vec!["T8/led-tick-lag".to_string()]);
+        // OBD rpm: every change one sample late → over the cap.
+        let rpm_a: Vec<i64> = (0..n as i64).map(|k| 800 + 10 * k).collect();
+        let mut rpm_b = rpm_a.clone();
+        rpm_b.rotate_right(1);
+        rpm_b[0] = rpm_a[0];
+        let got = run(
+            &side("js", &flat, &rpm_a, &flat, 0),
+            &side("rust", &flat, &rpm_b, &flat, 10),
+            "metrics.obd.rpm.value",
+        );
+        assert!(
+            got.len() > 2 && got.iter().all(|x| x == UNTOLERATED),
+            "{got:?}"
+        );
+        // The reviewer's crank_lag: a one-cycle dip shifted by one sample
+        // (two splits) → over the obd cap of 1; one isolated split passes.
+        let mut dip_a = vec![1210i64; n];
+        dip_a[6] = 982;
+        let mut dip_b = vec![1210i64; n];
+        dip_b[7] = 982;
+        let got = run(
+            &side("js", &flat, &dip_a, &flat, 0),
+            &side("rust", &flat, &dip_b, &flat, 10),
+            "metrics.obd.rpm.value",
+        );
+        assert!(
+            got.len() == 2 && got.iter().all(|x| x == UNTOLERATED),
+            "{got:?}"
+        );
+        let mut step_a = vec![1210i64; n];
+        step_a[6..].fill(982);
+        let mut step_b = step_a.clone();
+        step_b[6] = 1210;
+        let got = run(
+            &side("js", &flat, &step_a, &flat, 0),
+            &side("rust", &flat, &step_b, &flat, 10),
+            "metrics.obd.rpm.value",
+        );
+        assert_eq!(got, vec!["T8/obd-sample-split".to_string()]);
+        // M-L1: the Rust link one tick late at its edge → UNTOLERATED (never a sample split).
+        let mut link_a = vec![0i64; n];
+        link_a[5..].fill(2);
+        let mut link_b = link_a.clone();
+        link_b[5] = 0;
+        let got = run(
+            &side("js", &flat, &flat, &link_a, 0),
+            &side("rust", &flat, &flat, &link_b, 10),
+            "metrics.obd.link.value",
+        );
+        assert_eq!(got, vec![UNTOLERATED.to_string()]);
+    }
+
+    #[test]
+    fn led_tick_lag_only_a_one_sample_split_of_the_led_leaves() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, led: i64, cpu: i64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"system":{"led_state":{"value":led},"health_flags":{"value":led * 77},
+                "cpu_temp":{"value":cpu}}}})
+        };
+        let side = |kind: &str, vals: &[i64], cpus: &[i64], off: i64| {
+            cap(
+                kind,
+                vals.iter()
+                    .zip(cpus)
+                    .enumerate()
+                    .map(|(k, (v, c))| {
+                        let ts = 20_000 + off + k as i64 * 1000;
+                        msg(ts, "telemetry", tel(ts, k as i64 + 1, *v, *c))
+                    })
+                    .collect(),
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            ..Default::default()
+        };
+        let run = |a: &Capture, b: &Capture| {
+            diff_with(a, b, &play, &InputFacts::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("metrics.system."))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let lag = "T8/led-tick-lag".to_string();
+        let z = [40, 40, 40, 40, 40];
+        // A one sample late (either agent kind, either order): both leaves.
+        let got = run(
+            &side("js", &[0, 0, 5, 5, 5], &z, 0),
+            &side("rust", &[0, 5, 5, 5, 5], &z, 10),
+        );
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|(_, tol)| *tol == lag), "{got:?}");
+        let got = run(
+            &side("js", &[0, 5, 5, 5, 5], &z, 0),
+            &side("rust", &[0, 0, 5, 5, 5], &z, 10),
+        );
+        assert!(got.iter().all(|(_, tol)| *tol == lag), "{got:?}");
+        // NEGATIVE: two samples late → the first split is not one-sample.
+        let got = run(
+            &side("js", &[0, 0, 0, 5, 5], &z, 0),
+            &side("rust", &[0, 5, 5, 5, 5], &z, 10),
+        );
+        assert!(got.iter().any(|(_, tol)| tol == UNTOLERATED), "{got:?}");
+        // NEGATIVE: a state the other side never carried.
+        let got = run(
+            &side("js", &[0, 3, 5, 5, 5], &z, 0),
+            &side("rust", &[0, 5, 5, 5, 5], &z, 10),
+        );
+        assert!(got.iter().any(|(_, tol)| tol == UNTOLERATED), "{got:?}");
+        // NEGATIVE: the same shape on another system leaf is not this row.
+        let got = run(
+            &side("js", &[0, 0, 0, 0, 0], &[40, 40, 50, 50, 50], 0),
+            &side("rust", &[0, 0, 0, 0, 0], &[40, 50, 50, 50, 50], 10),
+        );
+        assert!(got.iter().all(|(_, tol)| *tol != lag), "{got:?}");
+    }
+
+    /// Phase 5b: each side's emulator pty is a rig input name (like the
+    /// deviceId): normalised to `{obd-serial}`; nothing else is touched.
+    #[test]
+    fn norm_side_replaces_the_sides_own_obd_serial_only() {
+        let id = "00000000-0000-4000-8000-00000000000a";
+        let t = format!(r#"{{"deviceId":"{id}","serial":"/dev/pts/3","other":"/dev/pts/30x"}}"#);
+        assert_eq!(
+            norm_side(&t, id, Some("/dev/pts/3")),
+            r#"{"deviceId":"{id}","serial":"{obd-serial}","other":"/dev/pts/30x"}"#
+        );
+        assert_eq!(
+            norm_side("/dev/pts/1", id, Some("/dev/pts/3")),
+            "/dev/pts/1"
+        );
+        assert_eq!(norm_side("/dev/pts/3", id, None), "/dev/pts/3");
+    }
+
+    /// T8/obd-audit-cycle: part of ONE poll cycle more on one side is the row;
+    /// anything else (a 2-step PID, inconsistent totals, an error counter, the
+    /// other direction mixed in) is not.
+    #[test]
+    fn audit_cycle_delta_only_a_one_cycle_split() {
+        let audit = |req: i64, bytes: i64, inv: &[(&str, i64)], nd: i64| {
+            let inv: serde_json::Map<String, Value> = inv
+                .iter()
+                .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+                .collect();
+            serde_json::json!({"counters": {"requests": req, "ok": req, "no_data": nd, "bytes_tx": bytes},
+                   "inventory": inv, "seq": 3})
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        let a = audit(
+            501,
+            2986,
+            &[("01041", 24), ("01051", 24), ("01111", 24), ("010C1", 25)],
+            0,
+        );
+        let b = audit(
+            504,
+            3004,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        let got = audit_cycle_delta(&a, &b, (false, false)).expect("one-cycle split");
+        assert_eq!(got.len(), 6, "{got:?}");
+        assert!(
+            audit_cycle_delta(&b, &a, (false, false)).is_some(),
+            "either side ahead"
+        );
+        // NEGATIVE: requests ≠ the inventory steps.
+        let c = audit(
+            505,
+            3004,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &c, (false, false)).is_none());
+        // NEGATIVE (R4-N1): bytes_tx ≠ Σ(len(command) + 1) of the steps (18).
+        let c2 = audit(
+            504,
+            3003,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &c2, (false, false)).is_none());
+        // NEGATIVE: one PID two ahead.
+        let d = audit(
+            504,
+            3004,
+            &[("01041", 26), ("01051", 25), ("01111", 24), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &d, (false, false)).is_none());
+        // NEGATIVE: an error counter moved.
+        let e = audit(
+            504,
+            3004,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            1,
+        );
+        assert!(audit_cycle_delta(&a, &e, (false, false)).is_none());
+        // NEGATIVE: mixed directions.
+        let f = audit(
+            502,
+            2998,
+            &[("01041", 25), ("01051", 23), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &f, (false, false)).is_none());
+        // NEGATIVE: another audit key differs.
+        let mut g = b.clone();
+        g.insert("seq".into(), serde_json::json!(4));
+        assert!(audit_cycle_delta(&a, &g, (false, false)).is_none());
+        // NEGATIVE: bytes off the per-request bound.
+        let h = audit(
+            504,
+            3100,
+            &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
+            0,
+        );
+        assert!(audit_cycle_delta(&a, &h, (false, false)).is_none());
+    }
+
+    /// Review-wp4 R6-1: ONE request cut in flight is allowed only in the stop
+    /// audit of a helper the agent signalled (that side's `requests − ok` = 1,
+    /// every other counter unmoved); 2 unanswered, a moved timeout, or the
+    /// same shape in a non-stop audit FAIL.
+    #[test]
+    fn audit_cycle_one_in_flight_request_only_in_a_stop_audit() {
+        let audit = |req: i64, ok: i64, bytes: i64, n01461: i64, timeouts: i64| {
+            serde_json::json!({"counters": {"requests": req, "ok": ok, "timeouts": timeouts, "bytes_tx": bytes},
+                   "inventory": {"01461": n01461, "010C1": 20}, "last_stop": null})
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        // review-wp4 cfg.jsrs2: JS req 386 ok 386, Rust req 387 ok 386 with
+        // 01461 +1 and bytes_tx + len("01461") + 1.
+        let js = audit(386, 386, 2302, 19, 0);
+        let rs = audit(387, 386, 2308, 20, 0);
+        assert!(
+            audit_cycle_delta(&js, &rs, (false, true)).is_some(),
+            "Rust stop audit"
+        );
+        assert!(
+            audit_cycle_delta(&rs, &js, (true, false)).is_some(),
+            "either column"
+        );
+        // NEGATIVE: the same shape in a non-stop audit
+        assert!(audit_cycle_delta(&js, &rs, (false, false)).is_none());
+        assert!(
+            audit_cycle_delta(&js, &rs, (true, false)).is_none(),
+            "the flag on the wrong side"
+        );
+        // NEGATIVE: two unanswered requests in a stop audit
+        let rs2 = audit(388, 386, 2314, 21, 0);
+        assert!(audit_cycle_delta(&js, &rs2, (false, true)).is_none());
+        // NEGATIVE: the cut request counted as a timeout too
+        let rs_t = audit(387, 386, 2308, 20, 1);
+        assert!(audit_cycle_delta(&js, &rs_t, (false, true)).is_none());
+        // The behind side's request cut in flight, the other answered it
+        // (no inventory step): only `ok` differs by one.
+        let a = audit(387, 386, 2308, 20, 0);
+        let b = audit(387, 387, 2308, 20, 0);
+        assert!(audit_cycle_delta(&a, &b, (true, false)).is_some());
+        assert!(audit_cycle_delta(&a, &b, (false, false)).is_none());
+        // stepC r28.jsrs4 shape: A ahead by steps, B's stop audit one short.
+        let ahead = serde_json::json!({"counters": {"requests": 492, "ok": 492, "bytes_tx": 2932},
+            "inventory": {"0104": 25, "0105": 25}})
+        .as_object()
+        .unwrap()
+        .clone();
+        let behind = serde_json::json!({"counters": {"requests": 490, "ok": 489, "bytes_tx": 2922},
+            "inventory": {"0104": 24, "0105": 24}})
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(audit_cycle_delta(&behind, &ahead, (true, false)).is_some());
+        assert!(audit_cycle_delta(&behind, &ahead, (false, false)).is_none());
+    }
+
+    /// T8/obd-sample-split: a one-sample split of a `metrics.obd.*` value is
+    /// the row; a dip one side never carried is not.
+    #[test]
+    fn obd_sample_split_only_a_one_sample_split() {
+        let t = table();
+        let tel = |ts: i64, seq: i64, v: f64| {
+            serde_json::json!({"v":1,"deviceId":"{id}","ts":ts,"seq":seq,
+                "metrics":{"obd":{"link":{"value":2},"module_voltage":{"value":v,"unit":"V"}}}})
+        };
+        let side = |kind: &str, vals: &[f64], off: i64| {
+            cap(
+                kind,
+                vals.iter()
+                    .enumerate()
+                    .map(|(k, v)| {
+                        let ts = 20_000 + off + k as i64 * 1000;
+                        msg(ts, "telemetry", tel(ts, k as i64 + 1, *v))
+                    })
+                    .collect(),
+            )
+        };
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 100_000,
+            ..Default::default()
+        };
+        let run = |a: &Capture, b: &Capture| {
+            diff_with(a, b, &play, &InputFacts::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path == "metrics.obd.module_voltage.value")
+                .map(|m| m.tol)
+                .collect::<Vec<_>>()
+        };
+        let row = "T8/obd-sample-split".to_string();
+        // One isolated split (a step edge one sample apart): excused.
+        let got = run(
+            &side("js", &[12.1, 12.1, 9.82, 9.82, 9.82], 0),
+            &side("rust", &[12.1, 9.82, 9.82, 9.82, 9.82], 10),
+        );
+        assert_eq!(got, vec![row.clone()]);
+        // A one-cycle dip shifted by a sample (two splits): over the cap of
+        // one (review-wp4 R4-9; the relay keeps the helpers in phase).
+        let got = run(
+            &side("js", &[12.1, 12.1, 9.82, 12.1, 12.1], 0),
+            &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
+        );
+        assert!(
+            got.len() == 2 && got.iter().all(|t| t == UNTOLERATED),
+            "{got:?}"
+        );
+        // NEGATIVE: the dip only on one side.
+        let got = run(
+            &side("js", &[12.1, 12.1, 12.1, 12.1, 12.1], 0),
+            &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
+        );
+        assert!(got.iter().any(|t| t == UNTOLERATED), "{got:?}");
+        // NEGATIVE: two samples apart.
+        let got = run(
+            &side("js", &[12.1, 12.1, 12.1, 9.82, 12.1], 0),
+            &side("rust", &[12.1, 9.82, 12.1, 12.1, 12.1], 10),
+        );
+        assert!(got.iter().any(|t| t == UNTOLERATED), "{got:?}");
+    }
+
+    /// R-P3G-1: only the `(session <8 lowercase hex>…)` token is normalised.
+    #[test]
+    fn norm_session_prefix_only_the_uuid7_bucket_token() {
+        assert_eq!(
+            norm_session_prefix("video capture started: cam1 720p15-1mbps (session 01a16472…)"),
+            "video capture started: cam1 720p15-1mbps (session <sid>…)"
+        );
+        assert_eq!(
+            norm_session_prefix("a (session 01a16472…) b (session 01a16473…)"),
+            "a (session <sid>…) b (session <sid>…)"
+        );
+        // NEGATIVE: other shapes are untouched (so they still compare literally).
+        for s in [
+            "x (session 01a1647…)",
+            "x (session 01A16472…)",
+            "x (session 01a16472)",
+            "x (session 01a16472-3144…)",
+            "x (sessions 01a16472…)",
+        ] {
+            assert_eq!(norm_session_prefix(s), s);
+        }
+        let t = table();
+        let (a, _) = event_key(
+            "info",
+            "video capture started: cam1 720p15-1mbps (session 01a16472…)",
+            "js",
+            &t,
+        );
+        let (b, _) = event_key(
+            "info",
+            "video capture started: cam1 720p15-1mbps (session 01a16473…)",
+            "rust",
+            &t,
+        );
+        assert_eq!(a, b);
+        let (c, _) = event_key(
+            "info",
+            "video capture started: cam1 1080p15-2mbps (session 01a16473…)",
+            "rust",
+            &t,
+        );
+        assert_ne!(a, c, "the rest of the line still compares exactly");
+    }
+
+    /// T7/D40: only the Rust-first-by-exactly-one-check-tick stepper race,
+    /// with the exact trust-event pair, is the row.
+    #[test]
+    fn d40_holdoff_expiry_tick_only_the_documented_race() {
+        let ev = |kind: &str, evs: Vec<(i64, &str, String)>| Capture {
+            meta: AgentMeta {
+                label: "x".into(),
+                kind: kind.into(),
+                device_id: String::new(),
+            },
+            events: evs
+                .into_iter()
+                .map(|(t, l, m)| (t, l.to_string(), m))
+                .collect(),
+            ..Default::default()
+        };
+        let imp = "[clock] ignoring implausible nitz time 1980-03-31T21:10:10.441Z".to_string();
+        let step = |o: &str, src: &str| {
+            format!(
+                "[clock] stepped system clock +{o}s from {src} (NTP unsynced; step 1/1 this boot)"
+            )
+        };
+        let js = |step_at: i64, st: String| {
+            ev("js", vec![
+                (400, "warn", imp.clone()),
+                (300_600, "warn", "[clock] no NTP/GPS/NITZ sync 300 s after start — publishing on an UNTRUSTED clock (299 sample(s) held); timestamps may be early until a sync lands".into()),
+                (step_at, "info", st),
+                (step_at + 100, "info", format!("[clock] gps synchronized {} s after boot — clock trusted (published {} s on an untrusted clock)", (step_at + 100) / 1000, (step_at + 100) / 1000 - 300)),
+            ])
+        };
+        let rs = |step_at: i64, st: String| {
+            ev("rust", vec![
+                (200, "warn", imp.clone()),
+                (step_at, "info", st),
+                (step_at + 4, "info", "[clock] gps synchronized — clock trusted (telemetry held 300 s, 299 sample(s))".into()),
+            ])
+        };
+        let ok = d40_keys(
+            &js(330_400, step("597.1", "gps")),
+            &rs(300_300, step("597.1", "gps")),
+        );
+        assert_eq!(ok.map(|k| k.len()), Some(3));
+        // either column order
+        assert!(d40_keys(
+            &rs(300_300, step("597.1", "gps")),
+            &js(330_400, step("597.1", "gps"))
+        )
+        .is_some());
+        // NEGATIVE: Rust two ticks early
+        assert!(d40_keys(
+            &js(330_400, step("597.1", "gps")),
+            &rs(270_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: Rust one tick late (both at 330 s, then JS at 360 s)
+        assert!(d40_keys(
+            &js(360_400, step("597.1", "gps")),
+            &rs(330_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: a different offset or source
+        assert!(d40_keys(
+            &js(330_400, step("597.1", "gps")),
+            &rs(300_300, step("596.9", "gps"))
+        )
+        .is_none());
+        assert!(d40_keys(
+            &js(330_400, step("597.1", "gps")),
+            &rs(300_300, step("597.1", "nitz"))
+        )
+        .is_none());
+        // NEGATIVE: JS early, Rust late
+        assert!(d40_keys(
+            &js(300_400, step("597.1", "gps")),
+            &rs(330_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: a different held count on the Rust side
+        let mut r = rs(300_300, step("597.1", "gps"));
+        r.events[2].2 =
+            "[clock] gps synchronized — clock trusted (telemetry held 300 s, 298 sample(s))".into();
+        assert!(d40_keys(&js(330_400, step("597.1", "gps")), &r).is_none());
+
+        // The tick-1 shape (p4-clock-cap after review-wp4 R4-5): implausible
+        // at ~30 s, both fall back at the grace with the SAME warning, then
+        // trust at their steps one check interval apart.
+        let fb = |n: i64| {
+            format!("[clock] no NTP/GPS/NITZ sync 300 s after start — publishing on an UNTRUSTED clock ({n} sample(s) held); timestamps may be early until a sync lands")
+        };
+        let trust = |t: i64| {
+            format!("[clock] gps synchronized {t} s after boot — clock trusted (published {} s on an untrusted clock)", t - 300)
+        };
+        let side = |kind: &str, imp_at: i64, n: i64, step_at: i64, st: String| {
+            ev(
+                kind,
+                vec![
+                    (100, "info", "[agent] started".into()),
+                    (imp_at, "warn", imp.clone()),
+                    (300_600, "warn", fb(n)),
+                    (step_at, "info", st),
+                    (step_at + 100, "info", trust((step_at + 100) / 1000)),
+                ],
+            )
+        };
+        let ok = d40_keys(
+            &side("js", 30_400, 299, 360_400, step("597.1", "gps")),
+            &side("rust", 30_200, 299, 330_300, step("597.1", "gps")),
+        );
+        assert_eq!(ok.map(|k| k.len()), Some(2));
+        // NEGATIVE: the fallback warnings differ (a held count off by one).
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 360_400, step("597.1", "gps")),
+            &side("rust", 30_200, 298, 330_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: Rust one more tick late (both at 360, JS at 390 s).
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 390_400, step("597.1", "gps")),
+            &side("rust", 30_200, 299, 360_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: JS early, Rust late.
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 330_400, step("597.1", "gps")),
+            &side("rust", 30_200, 299, 360_300, step("597.1", "gps"))
+        )
+        .is_none());
+        // NEGATIVE: the implausible source later than tick 1.
+        assert!(d40_keys(
+            &side("js", 61_400, 299, 391_400, step("597.1", "gps")),
+            &side("rust", 61_200, 299, 361_300, step("597.1", "gps"))
+        )
+        .is_none());
+
+        // Orchestrator ruling 2026-10-27: the displayed step offset may
+        // differ by 0.1 (toFixed(1) of the same float formula at two fixes
+        // one check interval apart); both step keys are then the row's.
+        let ok = d40_keys(
+            &side("js", 30_400, 299, 360_400, step("598.0", "gps")),
+            &side("rust", 30_200, 299, 330_300, step("597.9", "gps")),
+        );
+        assert_eq!(ok.map(|k| k.len()), Some(4));
+        let ok = d40_keys(
+            &js(330_400, step("597.1", "gps")),
+            &rs(300_300, step("597.0", "gps")),
+        );
+        assert_eq!(ok.map(|k| k.len()), Some(5));
+        // NEGATIVE: 0.2 apart, in either shape
+        assert!(d40_keys(
+            &side("js", 30_400, 299, 360_400, step("598.0", "gps")),
+            &side("rust", 30_200, 299, 330_300, step("597.8", "gps"))
+        )
+        .is_none());
+        assert!(!d40_same_step(&step("598.0", "gps"), &step("597.8", "gps")));
+        // NEGATIVE: not the 1-decimal display, a different source or count
+        assert!(!d40_same_step(
+            &step("598.0", "gps"),
+            &step("597.95", "gps")
+        ));
+        assert!(!d40_same_step(
+            &step("598.0", "gps"),
+            &step("597.9", "nitz")
+        ));
+        assert!(!d40_same_step(
+            &step("598.0", "gps"),
+            "[clock] stepped system clock +597.9s from gps (NTP unsynced; step 2/2 this boot)"
+        ));
+    }
+
+    /// T8/grace-fallback-phase (orchestrator ruling 2026-10-27): the 300 s
+    /// grace warnings may differ by G ±1 and N ±1 only with each N its own
+    /// first published seq, the warnings < 1 s apart, and the one unpaired
+    /// first sample of the side that fell back a tick earlier.
+    #[test]
+    fn grace_fallback_phase_only_one_tick_and_one_second() {
+        let fb = |g: i64, n: i64| {
+            format!("[clock] no NTP/GPS/NITZ sync {g} s after start — publishing on an UNTRUSTED clock ({n} sample(s) held); timestamps may be early until a sync lands")
+        };
+        // A side: its warning at `at`, then telemetry ticks from `first`
+        // (seq from `seq0`), every 1 s.
+        let side = |kind: &str, at: i64, g: i64, n: i64, first: i64, seq0: i64| {
+            // up to the same last tick (≈ 304.2-304.3 s) on both sides
+            let ticks = (304_400 - first) / 1000 + 1;
+            let mut c = cap(
+                kind,
+                (0..ticks)
+                    .map(|k| {
+                        let ts = first + k * 1000;
+                        msg(
+                            ts + 5,
+                            "telemetry",
+                            serde_json::json!({"v":1,"ts":ts,"seq":seq0 + k,"metrics":{}}),
+                        )
+                    })
+                    .collect(),
+            );
+            c.events = vec![
+                (50, "info".into(), "connected to mqtts://broker:8883".into()),
+                (at, "warn".into(), fb(g, n)),
+            ];
+            c
+        };
+        // stepC p5b-clock-fallback.c2.jsrs2: JS at a tick (N 297), Rust on
+        // its poll 483 ms later (N 298), JS's seq-297 sample unpaired.
+        let a = side("js", 300_319, 300, 297, 300_319, 297);
+        let b = side("rust", 300_802, 301, 298, 301_167, 298);
+        let g = grace_fallback(&a, &b).expect("the documented shape");
+        assert_eq!(g.keys.len(), 2);
+        assert_eq!(g.edge_tick, Some(("A", 300_319)));
+        // either column order
+        assert_eq!(
+            grace_fallback(&b, &a).unwrap().edge_tick,
+            Some(("B", 300_319))
+        );
+        // G only (p4-clock-cap.c2.jsrs3): no edge tick
+        let g = grace_fallback(
+            &side("js", 300_208, 300, 298, 300_290, 298),
+            &side("rust", 300_191, 301, 298, 300_287, 298),
+        )
+        .unwrap();
+        assert_eq!(g.edge_tick, None);
+        // NEGATIVE: G 2 s apart
+        assert!(grace_fallback(
+            &side("js", 300_208, 300, 298, 300_290, 298),
+            &side("rust", 300_191, 302, 298, 300_287, 298)
+        )
+        .is_none());
+        // NEGATIVE: N 2 apart
+        assert!(grace_fallback(
+            &side("js", 300_208, 300, 297, 300_290, 297),
+            &side("rust", 300_191, 300, 299, 300_287, 299)
+        )
+        .is_none());
+        // NEGATIVE: an N that is not the side's own first published seq
+        assert!(grace_fallback(
+            &side("js", 300_319, 300, 297, 300_319, 297),
+            &side("rust", 300_802, 301, 298, 301_167, 297)
+        )
+        .is_none());
+        // NEGATIVE: the first sample is not the first tick after the warning
+        assert!(grace_fallback(
+            &side("js", 300_319, 300, 297, 300_319, 297),
+            &side("rust", 300_802, 301, 298, 302_167, 298)
+        )
+        .is_none());
+        // NEGATIVE: warnings ≥ 1 s apart
+        assert!(grace_fallback(
+            &side("js", 300_100, 300, 297, 300_100, 297),
+            &side("rust", 301_150, 301, 298, 301_167, 298)
+        )
+        .is_none());
+        // NEGATIVE: any other text difference
+        let mut odd = side("rust", 300_802, 301, 298, 301_167, 298);
+        odd.events[1].2 = odd.events[1].2.replace("UNTRUSTED", "untrusted");
+        assert!(grace_fallback(&a, &odd).is_none());
+        // Through the diff: the two warnings and A's one first sample are the
+        // row; nothing else.
+        let t = table();
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 400_000,
+            ..Default::default()
+        };
+        let pairs: Vec<(i64, i64)> = (1..5)
+            .map(|k| (300_319 + k * 1000, 300_167 + k * 1000))
+            .collect();
+        let r = diff(&a, &b, &play, &pairs, &t);
+        let rows: Vec<(String, String, String)> = r
+            .mismatches
+            .iter()
+            .filter(|m| m.stream == "events" || m.path == "(message)")
+            .map(|m| (m.stream.clone(), m.path.clone(), m.tol.clone()))
+            .collect();
+        assert!(
+            rows.iter()
+                .all(|(_, _, tol)| tol == "T8/grace-fallback-phase"),
+            "{rows:?}"
+        );
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        // NEGATIVE through the diff: a SECOND unpaired A sample stays
+        // UNTOLERATED (only the edge tick is the row).
+        let mut a2 = a.clone();
+        let mut extra = a2.msgs[0].clone();
+        extra.payload["ts"] = serde_json::json!(299_319);
+        extra.payload["seq"] = serde_json::json!(296);
+        a2.msgs.insert(0, extra);
+        let r = diff(&a2, &b, &play, &pairs, &t);
+        assert!(
+            r.mismatches
+                .iter()
+                .any(|m| m.path == "(message)" && m.tol == UNTOLERATED),
+            "{:?}",
+            r.mismatches
+        );
     }
 }

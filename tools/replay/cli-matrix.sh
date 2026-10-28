@@ -10,7 +10,9 @@
 # (`run` starts the mosquitto dependency; the `down -v` afterwards removes it
 # AND its two anonymous volumes — without `-v` they leak, F-RIG-1.)
 #
-# Default A=js (`node dist/cli.js` @ 89b5c64), B=rust (`xorgate-rs`). Each side
+# Default A=js (`node dist/cli.js` @ $JS_REF, default 09da38d (H7 flip), from the shared
+# build mounted at /rig/jscache = $RIG_JS_CACHE; `js@<ref>` pins a side, Phase
+# 5b), B=rust (`xorgate-rs`). Pass JS_REF with `run -e JS_REF=<sha>`. Each side
 # runs the list top to bottom in ONE home (settings accumulate like on a
 # device). Steps run as the unprivileged `node` user unless marked `root`
 # (root against a node-owned home = the "you don't need sudo" note). Rows
@@ -35,9 +37,10 @@ known_row() { # T8/<row>
   local row=${1#*/}
   [ "${1%%/*}" = T8 ] && grep -q "^  id = \"$row\"" "$TOL"
 }
-JS_CLI="node /rig/cache/js-89b5c64/dist/cli.js"
+JS_REF="${JS_REF:-09da38d}"
+JS_CLI="node /rig/jscache/js-$JS_REF/dist/cli.js"
 RS_CLI="${RS_CLI:-/rig/cache/bin/xorgate-rs}"   # override: a branch build (e.g. WP6 before merge)
-cli_for() { case "$1" in js) echo "$JS_CLI" ;; rust) echo "$RS_CLI" ;; esac; }
+cli_for() { case "$1" in js) echo "$JS_CLI" ;; js@?*) echo "node /rig/jscache/js-${1#js@}/dist/cli.js" ;; rust) echo "$RS_CLI" ;; esac; }
 
 # who | expect | argv…   (expect: "-" = must match)
 CASES=$(cat <<'LIST'
@@ -88,6 +91,28 @@ node|map:T8/cli-q9-names|led
 node|map:T8/cli-sms-duration|sms
 node|expect:T8/cli-tui-no-tty|manage
 node|expect:T8/cli-tui-no-tty|monitor
+node|map:T8/cli-q9-names|sms --help
+node|map:T8/cli-q9-names|sms clear --help
+node|map:T8/cli-q9-names|sms clear
+node|map:T8/cli-q9-names|obd
+node|map:T8/cli-q9-names|obd --help
+node|map:T8/cli-q9-names|obd status
+node|map:T8/cli-q9-names|obd scan --seconds 0
+node|-|set obd.enabled on
+node|-|set obd.adapter 00:1d:a5:68:98:8b
+node|-|set obd.adapter zz:bad
+node|-|set obd.pin 0000
+node|-|set obd.poll-hz 2
+node|-|set obd.poll-hz 99
+node|-|set obd.fields rpm,speed
+node|-|set obd.fields nonsense
+node|-|set obd.power-source constant
+node|-|set obd.power-source solar
+node|-|set obd.bogus 1
+node|expect:T8/cli-banner|--help
+seed|-|p5b-state-obd.json
+node|map:T8/cli-q9-names|obd status
+node|map:T8/cli-q9-names|status
 LIST
 )
 
@@ -101,7 +126,12 @@ run_side() { # label kind
     i=$((i + 1))
     local pre=(env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp TZ=UTC NO_COLOR=1 XORGATE_HOME="$home" LTE_TELEMETRY_FILE=/nonexistent/telemetry.json)
     local cmd="timeout 20 $cli $argv"
-    if [ "$who" = node ]; then
+    if [ "$who" = seed ]; then
+      # Phase 5b: not a CLI call — seed the home's state.json (both sides the
+      # same file) for the cases after it (`obd status` with a state obd).
+      install -o node -g node -m 0644 "$HERE/cli/$argv" "$home/state.json"
+      : > "$OUT/$label/$i.out"; : > "$OUT/$label/$i.err"; echo 0 > "$OUT/$label/$i.code"
+    elif [ "$who" = node ]; then
       setpriv --reuid=1000 --regid=1000 --init-groups "${pre[@]}" bash -c "$cmd" >"$OUT/$label/$i.out" 2>"$OUT/$label/$i.err" </dev/null
     else
       "${pre[@]}" bash -c "$cmd" >"$OUT/$label/$i.out" 2>"$OUT/$label/$i.err" </dev/null

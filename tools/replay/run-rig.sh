@@ -4,8 +4,10 @@
 #   tools/replay/run-rig.sh <tape> [options] [-- extra `xorgate-replay play` flags]
 #
 #   --calibrate        A = B = js (C3a: two JS instances must diff clean)
-#   --a js|rust        agent A (default js)
-#   --b js|rust        agent B (default rust)
+#   --a js|js@REF|rust agent A (default js)
+#   --b js|js@REF|rust agent B (default rust)
+#                      `js` = the JS build @ $JS_REF; `js@<ref>` pins that side
+#                      (Phase 5b dual ref: `--a js@89b5c64 --b js@09da38d`)
 #   --out DIR          copy the run + diff.md there (default
 #                      plans/…/phase-3/evidence/replay-<UTC ts>/; EVIDENCE_ROOT overrides)
 #   --no-build         skip build-bins.sh (use the binaries in .cache/bin)
@@ -13,6 +15,15 @@
 # Compose project: per run, `xorgate-replay-<ts>-<a>-<b>` (override with
 # COMPOSE_PROJECT_NAME); the cleanup tears down ONLY that project, never another
 # run's (or another agent's) broker.
+#
+# Phase 5b env:
+#   JS_REF=<sha>          the JS reference for a bare `js` side (default
+#                         09da38d since the H7 flip; 89b5c64 stays buildable for archaeology)
+#   RIG_JS_CACHE=<abs>    the dir holding the ONE shared built copy per ref
+#                         (`js-<sha>/`, js-build.sh); default tools/replay/.cache.
+#                         Mounted read-only at /rig/jscache.
+#   XORGATE_AGENT_LABEL   the `xorgate.agent` container label (default `rig`):
+#                         every container of the run carries it (hygiene filter)
 #
 # Steps: gen-certs.sh → js-build.sh → build-bins.sh → mosquitto up → `play`
 # (real time; the tape's length + settle) → `diff` → copy → compose down -v
@@ -23,7 +34,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 EVIDENCE_ROOT="${EVIDENCE_ROOT:-$(cd "$REPO/../../plans/device-agent-js-to-rust/phase-3/evidence" 2>/dev/null && pwd || echo "$HERE/.cache/evidence")}"
 
-usage() { sed -n '2,17p' "$0"; exit 2; }
+usage() { sed -n '2,28p' "$0"; exit 2; }
 [ $# -ge 1 ] || usage
 TAPE=""; A=js; B=rust; OUT=""; BUILD=1; EXTRA=()
 while [ $# -gt 0 ]; do
@@ -41,14 +52,39 @@ while [ $# -gt 0 ]; do
 done
 [ -f "$TAPE" ] || { echo "no tape: $TAPE" >&2; exit 2; }
 
+JS_REF="${JS_REF:-09da38d}"
+RIG_JS_CACHE="${RIG_JS_CACHE:-$HERE/.cache}"
+case "$RIG_JS_CACHE" in /*) ;; *) echo "RIG_JS_CACHE must be absolute: $RIG_JS_CACHE" >&2; exit 2 ;; esac
+export RIG_JS_CACHE
+export XORGATE_AGENT_LABEL="${XORGATE_AGENT_LABEL:-rig}"
+# side <spec> → "<kind> <ref>" (ref empty for rust)
+side() {
+  case "$1" in
+    rust) echo "rust -" ;;
+    js) echo "js $JS_REF" ;;
+    js@?*) echo "js ${1#js@}" ;;
+    *) echo "bad agent spec: $1 (js | js@<ref> | rust)" >&2; exit 2 ;;
+  esac
+}
+read -r A_KIND A_REF <<<"$(side "$A")"
+read -r B_KIND B_REF <<<"$(side "$B")"
+tag() { if [ "$1" = js ]; then printf 'js%s' "$2"; else printf rust; fi; }
+A_TAG=$(tag "$A_KIND" "$A_REF"); B_TAG=$(tag "$B_KIND" "$B_REF")
+
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-RUN="run-$TS-$A-$B"
+RUN="run-$TS-$A_TAG-$B_TAG"
 [ -n "$OUT" ] || OUT="$EVIDENCE_ROOT/replay-$TS"
-PROJECT="${COMPOSE_PROJECT_NAME:-xorgate-replay-$(printf '%s' "$TS-$A-$B" | tr '[:upper:]' '[:lower:]')}"
+PROJECT="${COMPOSE_PROJECT_NAME:-xorgate-replay-$(printf '%s' "$TS-$A_TAG-$B_TAG" | tr '[:upper:]' '[:lower:]')}"
 dc() { docker compose -p "$PROJECT" "$@"; }
 
 "$HERE/gen-certs.sh"
-"$HERE/js-build.sh"
+JS_DIR_ARGS=()
+for s in "a $A_KIND $A_REF" "b $B_KIND $B_REF"; do
+  read -r l k r <<<"$s"
+  [ "$k" = js ] || continue
+  JS_SHA="$r" "$HERE/js-build.sh"
+  JS_DIR_ARGS+=(--js-dir-"$l" "/rig/jscache/js-$r")
+done
 [ "$BUILD" -eq 0 ] || "$HERE/build-bins.sh"
 
 mkdir -p "$HERE/.cache/tapes" "$HERE/.cache/runs"
@@ -93,9 +129,10 @@ run_dc() {
 echo ">> compose project $PROJECT"
 dc build --quiet rig
 dc up -d mosquitto
-echo ">> play $(basename "$TAPE") A=$A B=$B → .cache/runs/$RUN (real time)"
+echo ">> play $(basename "$TAPE") A=$A_TAG B=$B_TAG → .cache/runs/$RUN (real time)"
 run_dc run --rm -T rig play --tape "/rig/tapes/$(basename "$TAPE")" --out "/rig/out/$RUN" \
-  --a "$A" --b "$B" --js-dir "/rig/cache/js-89b5c64" --rs-bin /rig/cache/bin/xorgate-rs ${EXTRA[@]+"${EXTRA[@]}"}
+  --a "$A_KIND" --b "$B_KIND" --js-dir "/rig/jscache/js-$JS_REF" ${JS_DIR_ARGS[@]+"${JS_DIR_ARGS[@]}"} \
+  --rs-bin /rig/cache/bin/xorgate-rs ${EXTRA[@]+"${EXTRA[@]}"}
 RC=0
 run_dc run --rm -T rig diff "/rig/out/$RUN" --tolerances /rig/tools/tolerances.toml || RC=$?
 mkdir -p "$OUT"

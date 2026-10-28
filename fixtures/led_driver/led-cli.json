@@ -1,6 +1,6 @@
 {
  "jsSourceFile": "src/commands/led.ts",
- "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
  "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp1-tools/zz-wp1-dump-led-cli.test.ts (vitest, fake timers) in a git-archive scratch copy of 89b5c64: the REAL ledCommand + LedDriver + probeHost; only isRaspberryPi and exec.run/commandExists faked (pinctrl records argv + virtual ms; gpioinfo answers host.gpioinfo); console.log → fd 1, console.error → fd 2; process.exit mocked (recorded, not taken)",
  "cases": [
   {

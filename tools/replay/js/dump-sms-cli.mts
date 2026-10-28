@@ -206,7 +206,7 @@ process.stdout.write(
   JSON.stringify(
     {
       jsSourceFile: "src/commands/sms.ts:1-93 (smsCommand, flagValue, oneLine) over src/hardware/sms-modem.ts buildSmsPayload/clampSmsLimit",
-      jsCommit: process.env.JS_COMMIT ?? "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+      jsCommit: process.env.JS_COMMIT_FULL ?? process.env.JS_COMMIT ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
       generatedBy: "tools/replay/js/run-tsx.sh tools/replay/js/dump-sms-cli.mts (phase-4 WP2; SmsReader.prototype.read replaced by the case's sweep)",
       sweeps,
       cases,

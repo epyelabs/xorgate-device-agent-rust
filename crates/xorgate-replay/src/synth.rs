@@ -294,6 +294,80 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &["p4", "nmea-fixonly", "lte", "clock"],
         "remote rail: cloud update / reboot / power_off → sudo argv (the shim never runs them)",
     ),
+    // ---- Phase 5b (WP4, phase-5b-js-catchup.md H8): also on the `p4` track
+    // (records by scenario name, synth_p4.rs `add_p5b`).
+    (
+        "p5b-sms-clear",
+        150,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "clear_sms on a FakeModem with allowClear: SM+ME full → cleared; same requestId again = ledger duplicate (no 2nd CMGD); read during a slow clear waits; clear during a slow read queues; ME delete hang → 25 s timeout, mem1 restored, error; no SIM; empty stores",
+    ),
+    (
+        "p5b-led",
+        280,
+        &["media-hw", "p4", "clock"],
+        "LED telemetry on an LED-less host: starting → gps-wait + gps-gate (0-15 s) → healthy → network (cut 40→60 s) → undervoltage shed (rail 90→130 s) → LTE connecting (150→170 s) → dead_zone (180→200 s) → thermal shed (210→250 s) → healthy",
+    ),
+    (
+        "p5b-clock-hold",
+        120,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "clock trust: NTP unsynced until 60 s (no GPS/NITZ step: the sources agree with the host) → live publish withheld, seq gap, telemetry recorder held (clockHold) → trusted at 60 s, recorder starts",
+    ),
+    (
+        "p5b-clock-fallback",
+        360,
+        &["p4", "clock"],
+        "clock trust: no NTP, no GPS fix, NITZ unregistered for 360 s → held, the 300 s fallback warning, publishing + recording resume flagged (hints.clockTrust fallback)",
+    ),
+    (
+        "p5b-unheld",
+        60,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "config-sync upgrade exception: retained rev 3 already applied (seeded sync baseline) carrying a never-held `obd` namespace → exactly `obd` adopted; a 2nd delivery adopts nothing",
+    ),
+    (
+        "p5b-obd-emulator",
+        35,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD: peripherals.obd + an ELM327-emulator per agent (taos-2022) on XORGATE_OBD_SERIAL, the real helper → obd group at link 2 with the Taos values, effective.obd, state.json obd",
+    ),
+    (
+        "p5b-obd-audit",
+        150,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD (review-wp4 R4-3e): taos-2022 for 150 s in ONE helper run → the helper's 60 s audits #1 and #2 → the agent's audit-MEASURED request rate (ts:src/agent/collectors/obd.ts:270-278, 666-677) in state.json obd.reqPerSec, JS vs Rust",
+    ),
+    (
+        "p5b-obd-crank",
+        35,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD: taos-2022-crank (start-stop auto-stop + one crank voltage dip) → the helper must not stop",
+    ),
+    (
+        "p5b-obd-badproto",
+        90,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD: taos-2022-badproto (ATDPN A3) → helper exit 4 → parked 600 s",
+    ),
+    (
+        "p5b-obd-config",
+        150,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD namespace: env seam (no settings.obd) → set → adapter change (helper restart) → enabled:false (link 0, disabled) → null (back to the env seam) → bad MAC dropped (adjusted)",
+    ),
+    (
+        "p5b-obd-cmds",
+        100,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD commands with the peripheral: obd_scan via the bluetoothctl shim (candidates in effective.obd.scan), obd_forget → bond removed, not_configured",
+    ),
+    (
+        "p5b-obd-cmds-noperiph",
+        40,
+        &["p4", "nmea-fixonly", "lte", "clock"],
+        "OBD commands without peripherals.obd: obd_scan and obd_forget → rejected (no OBD peripheral)",
+    ),
 ];
 
 /// The Phase 3 scenarios (all carry `media-hw`).

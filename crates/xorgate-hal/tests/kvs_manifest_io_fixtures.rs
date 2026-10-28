@@ -63,7 +63,15 @@ fn manifest_io_matches_ts_byte_for_byte() {
         env!("CARGO_MANIFEST_DIR")
     );
     let f: Fixture = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(f.js_commit, "89b5c6407ef88e20f7168bd767d22a7be04ebcb6");
+    assert!(
+        [
+            "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+            "89b5c6407ef88e20f7168bd767d22a7be04ebcb6"
+        ]
+        .contains(&f.js_commit.as_str()),
+        "jsCommit {} (CF78)",
+        f.js_commit
+    );
     let dir: PathBuf = std::env::temp_dir().join(format!("xg-kvs-io-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

@@ -84,6 +84,46 @@ pub struct ModemSpec {
     /// Unsolicited lines injected before every response.
     #[serde(default)]
     pub urcs: Vec<String>,
+    /// Phase 5b (`p5b-sms-clear` only): answer `AT+CMGD=0,4` (the TS
+    /// FakeModem of `test/sms-modem.test.ts:106-114` @09da38d: record the
+    /// store, empty it, `OK`). Without it a CMGD is answered `ERROR` and
+    /// flagged `forbidden` (the diff FAILS the run): every other tape keeps
+    /// the read-only contract.
+    #[serde(default)]
+    pub allow_clear: bool,
+    /// `cmgdError`: answer `AT+CMGD=0,4` on this store with this final.
+    #[serde(default)]
+    pub cmgd_error: BTreeMap<String, String>,
+    /// Rig: `AT+CMGD=0,4` on these stores gets no answer at all (the TS
+    /// FakeModem's `hang`, as a per-store delete timeout).
+    #[serde(default)]
+    pub cmgd_hang: Vec<String>,
+    /// Rig: answer a command starting with the key only after this many ms
+    /// (a slow delete / a slow sweep, so a second request lands mid-op).
+    #[serde(default)]
+    pub delay_ms: BTreeMap<String, u64>,
+    /// Rig: modem state changes at tape time (a refill, a SIM pulled).
+    #[serde(default)]
+    pub changes: Vec<ModemChange>,
+}
+
+/// One `meta.rig.modem.changes` entry: from tape time `t` (ms after the
+/// agents' start), the listed fields replace the spec's.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModemChange {
+    pub t: u64,
+    #[serde(default)]
+    pub stores: Option<BTreeMap<String, ModemStore>>,
+    /// `Some("")` clears a previous `cpmsError`.
+    #[serde(default)]
+    pub cpms_error: Option<String>,
+    #[serde(default)]
+    pub cmgd_hang: Option<Vec<String>>,
+    #[serde(default)]
+    pub cmgd_error: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub delay_ms: Option<BTreeMap<String, u64>>,
 }
 
 fn default_mem1() -> String {
@@ -105,6 +145,8 @@ pub enum ModemMode {
 pub struct P4Plan {
     pub pi: Option<PiPlan>,
     pub modem: Option<ModemMode>,
+    /// Phase 5b: `meta.rig.obd` (`p5b.rs`).
+    pub obd: Option<crate::p5b::ObdPlan>,
 }
 
 impl P4Plan {
@@ -118,12 +160,19 @@ impl P4Plan {
             .and_then(|v| serde_json::from_value::<ModemSpec>(v.clone()).ok())
             .map(ModemMode::Fake)
             .or_else(|| transcript_of(tape).map(ModemMode::Transcript));
-        Self { pi, modem }
+        Self {
+            pi,
+            modem,
+            obd: crate::p5b::ObdPlan::of(tape),
+        }
     }
 
-    /// The shims only a Pi-namespaced run puts on PATH.
+    /// The shims only a Pi-namespaced run puts on PATH (and, Phase 5b, the
+    /// `bluetoothctl` shim only an OBD tape does: without it the tool is
+    /// ABSENT, as in the rig image).
     pub fn skip_shim(&self, name: &str) -> bool {
-        self.pi.is_none() && matches!(name, "pinctrl" | "gpioinfo" | "dtoverlay")
+        (self.pi.is_none() && matches!(name, "pinctrl" | "gpioinfo" | "dtoverlay"))
+            || (self.obd.is_none() && name == "bluetoothctl")
     }
 }
 
@@ -315,6 +364,10 @@ pub struct FakeModem {
     spec: ModemSpec,
     pub cmgf: u32,
     pub mem1: String,
+    /// The store selected at each `AT+CMGD` (the TS FakeModem's `deletes`).
+    pub deletes: Vec<String>,
+    /// How many `changes` are applied.
+    applied: usize,
 }
 
 impl FakeModem {
@@ -323,7 +376,60 @@ impl FakeModem {
             cmgf: spec.cmgf,
             mem1: spec.mem1.clone(),
             spec,
+            deletes: Vec::new(),
+            applied: 0,
         }
+    }
+
+    /// Apply every `changes` entry due at `elapsed_ms` (in order, once).
+    pub fn apply_due(&mut self, elapsed_ms: u64) {
+        while let Some(c) = self.spec.changes.get(self.applied).cloned() {
+            if c.t > elapsed_ms {
+                break;
+            }
+            self.applied += 1;
+            if let Some(st) = c.stores {
+                self.spec.stores = st;
+            }
+            if let Some(e) = c.cpms_error {
+                self.spec.cpms_error = (!e.is_empty()).then_some(e);
+            }
+            if let Some(h) = c.cmgd_hang {
+                self.spec.cmgd_hang = h;
+            }
+            if let Some(e) = c.cmgd_error {
+                self.spec.cmgd_error = e;
+            }
+            if let Some(d) = c.delay_ms {
+                self.spec.delay_ms = d;
+            }
+        }
+    }
+
+    /// The answer delay for `cmd` (the longest matching prefix wins).
+    pub fn delay_for(&self, cmd: &str) -> u64 {
+        self.spec
+            .delay_ms
+            .iter()
+            .filter(|(k, _)| cmd.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len())
+            .map(|(_, v)| *v)
+            .unwrap_or(0)
+    }
+
+    /// `{SM: used, ME: used}` for the at.ndjson state (a clear's effect).
+    pub fn used_map(&self) -> Value {
+        Value::Object(
+            self.spec
+                .stores
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(v.slots.len())))
+                .collect(),
+        )
+    }
+
+    pub fn allow_clear(&self) -> bool {
+        self.spec.allow_clear
     }
 
     fn used(&self, mem: &str) -> usize {
@@ -349,9 +455,28 @@ impl FakeModem {
     /// The lines answering `cmd` (no trailing `\r`). `Err` = the TS test would
     /// have thrown (CMGRO in text mode): answered `ERROR`, flagged by the diff.
     pub fn answer(&mut self, cmd: &str) -> (Vec<String>, Option<String>) {
+        if cmd == CMGD_DELETE_ALL
+            && self.spec.allow_clear
+            && self.spec.cmgd_hang.contains(&self.mem1)
+        {
+            // `hang`: no answer at all (the agent's per-call delete timeout).
+            self.deletes.push(self.mem1.clone());
+            return (Vec::new(), None);
+        }
         let mut out: Vec<String> = self.spec.urcs.clone();
         let mut fault = None;
-        if cmd == "ATE0" {
+        if cmd == CMGD_DELETE_ALL && self.spec.allow_clear {
+            self.deletes.push(self.mem1.clone());
+            match self.spec.cmgd_error.get(&self.mem1) {
+                Some(e) => out.push(e.clone()),
+                None => {
+                    if let Some(st) = self.spec.stores.get_mut(&self.mem1) {
+                        st.slots.clear();
+                    }
+                    out.push("OK".to_string());
+                }
+            }
+        } else if cmd == "ATE0" {
             out.extend(["ATE0".to_string(), "OK".to_string()]);
         } else if cmd == "AT+CMGF?" {
             out.extend([format!("+CMGF: {}", self.cmgf), "OK".to_string()]);
@@ -430,9 +555,18 @@ fn frame(lines: &[String]) -> Vec<u8> {
     b
 }
 
+/// The one delete the clear may send (`xorgate_hal::at_clear`, I7;
+/// ts:src/hardware/sms-modem.ts:532 @09da38d).
+pub const CMGD_DELETE_ALL: &str = "AT+CMGD=0,4";
+
 /// The commands the read-only contract forbids (`phase-4-operations.md` §1.3,
-/// E5): any write/list/delete/send, and a 2-arg `CPMS`.
-pub fn forbidden_at(cmd: &str) -> bool {
+/// E5): any write/list/delete/send, and a 2-arg `CPMS`. Phase 5b: on a tape
+/// with `allowClear`, exactly `AT+CMGD=0,4` is permitted (§6 of the phase
+/// file); any other CMGD form stays forbidden there too.
+pub fn forbidden_at(cmd: &str, allow_clear: bool) -> bool {
+    if allow_clear && cmd == CMGD_DELETE_ALL {
+        return false;
+    }
     let c = cmd.to_ascii_uppercase();
     c.starts_with("AT+CMGR=")
         || c.starts_with("AT+CMGL")
@@ -444,6 +578,7 @@ pub fn forbidden_at(cmd: &str) -> bool {
 }
 
 fn spawn_fake_modem(mut master: File, mode: ModemMode, mut log: File) {
+    let t0 = std::time::Instant::now();
     std::thread::spawn(move || {
         let mut fake = match &mode {
             ModemMode::Fake(s) => Some(FakeModem::new(s.clone())),
@@ -479,14 +614,21 @@ fn spawn_fake_modem(mut master: File, mode: ModemMode, mut log: File) {
                 if cmd.is_empty() {
                     continue;
                 }
+                let mut delay = 0;
+                let mut allow_clear = false;
                 let (reply, fault, state) = match fake.as_mut() {
                     Some(f) => {
+                        f.apply_due(t0.elapsed().as_millis() as u64);
+                        delay = f.delay_for(&cmd);
+                        allow_clear = f.allow_clear();
                         let (lines, fault) = f.answer(&cmd);
-                        (
-                            frame(&lines),
-                            fault,
-                            json!({"cmgf": f.cmgf, "mem1": f.mem1}),
-                        )
+                        let mut st = json!({"cmgf": f.cmgf, "mem1": f.mem1});
+                        if allow_clear {
+                            // Phase 5b: the clear's effect + the delete order.
+                            st["used"] = f.used_map();
+                            st["deletes"] = json!(f.deletes);
+                        }
+                        (frame(&lines), fault, st)
                     }
                     None => {
                         let hit = transcript.iter().position(|(c, _)| *c == cmd);
@@ -498,13 +640,19 @@ fn spawn_fake_modem(mut master: File, mode: ModemMode, mut log: File) {
                     }
                 };
                 let mut rec = json!({"w": wall_now_ms(), "cmd": cmd, "state": state});
-                if forbidden_at(&cmd) {
+                if forbidden_at(&cmd, allow_clear) {
                     rec["forbidden"] = json!(true);
                 }
                 if let Some(f) = fault {
                     rec["fault"] = json!(f);
                 }
+                if reply.is_empty() {
+                    rec["hang"] = json!(true);
+                }
                 let _ = writeln!(log, "{rec}");
+                if delay > 0 {
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
                 let _ = master.write_all(&reply);
             }
         }
@@ -540,7 +688,64 @@ mod tests {
                 .collect(),
             cpms_error: None,
             urcs: vec![],
+            allow_clear: false,
+            cmgd_error: BTreeMap::new(),
+            cmgd_hang: vec![],
+            delay_ms: BTreeMap::new(),
+            changes: vec![],
         }
+    }
+
+    /// Phase 5b: `AT+CMGD=0,4` only with `allowClear` (else ERROR +
+    /// forbidden), the TS FakeModem's delete (ts test/sms-modem.test.ts:106-114
+    /// @09da38d), `cmgdError`, the rig's per-store hang, and `changes`.
+    #[test]
+    fn fake_modem_clear_is_gated_by_allow_clear() {
+        let mut m = FakeModem::new(spec());
+        m.answer(r#"AT+CPMS="SM""#);
+        assert_eq!(m.answer("AT+CMGD=0,4").0, ["ERROR"]);
+        assert!(forbidden_at("AT+CMGD=0,4", false));
+        assert_eq!(m.used_map()["SM"], 1, "nothing deleted without allowClear");
+
+        let mut sp = spec();
+        sp.allow_clear = true;
+        sp.cmgd_error.insert("ME".into(), "+CMS ERROR: 321".into());
+        let mut m = FakeModem::new(sp);
+        assert!(!forbidden_at("AT+CMGD=0,4", true));
+        assert!(
+            forbidden_at("AT+CMGD=1,4", true),
+            "only the delete-all form"
+        );
+        assert!(forbidden_at("AT+CMGD=0,1", true));
+        m.answer(r#"AT+CPMS="SM""#);
+        assert_eq!(m.answer("AT+CMGD=0,4").0, ["OK"]);
+        assert_eq!(m.used_map()["SM"], 0);
+        m.answer(r#"AT+CPMS="ME""#);
+        assert_eq!(m.answer("AT+CMGD=0,4").0, ["+CMS ERROR: 321"]);
+        assert_eq!(m.deletes, ["SM", "ME"]);
+
+        let mut sp = spec();
+        sp.allow_clear = true;
+        sp.cmgd_hang = vec!["SM".into()];
+        sp.delay_ms.insert("AT+CMGD".into(), 3000);
+        sp.changes = vec![ModemChange {
+            t: 10_000,
+            stores: Some(BTreeMap::new()),
+            cpms_error: Some("+CME ERROR: 10".into()),
+            cmgd_hang: Some(vec![]),
+            cmgd_error: None,
+            delay_ms: None,
+        }];
+        let mut m = FakeModem::new(sp);
+        assert_eq!(m.delay_for("AT+CMGD=0,4"), 3000);
+        assert_eq!(m.delay_for("AT+CMGRO=1"), 0);
+        m.answer(r#"AT+CPMS="SM""#);
+        assert!(m.answer("AT+CMGD=0,4").0.is_empty(), "hang: no answer");
+        m.apply_due(9_999);
+        assert_eq!(m.answer("AT+CPMS?").0.len(), 2);
+        m.apply_due(10_000);
+        assert_eq!(m.answer("AT+CPMS?").0, ["+CME ERROR: 10"]);
+        assert_eq!(m.answer("AT+CMGD=0,4").0, ["OK"], "hang lifted");
     }
 
     /// The FakeModem answers of `test/sms-modem.test.ts:76-110`.
@@ -589,7 +794,7 @@ mod tests {
             "AT+CMGS=20",
             r#"AT+CPMS="SM","SM""#,
         ] {
-            assert!(forbidden_at(c), "{c}");
+            assert!(forbidden_at(c, false), "{c}");
         }
         for c in [
             "AT+CMGRO=1",
@@ -598,7 +803,7 @@ mod tests {
             "AT+CMGF=0",
             "ATE0",
         ] {
-            assert!(!forbidden_at(c), "{c}");
+            assert!(!forbidden_at(c, false), "{c}");
         }
     }
 

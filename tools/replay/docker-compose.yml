@@ -21,6 +21,10 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     platform: linux/arm64
+    # Container hygiene (Phase 5b): every container of a run carries the
+    # caller's label, so an agent stops only its own (run-rig.sh exports it).
+    labels:
+      xorgate.agent: ${XORGATE_AGENT_LABEL:-rig}
     networks: [rig]
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
@@ -29,8 +33,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.rig
-    image: xorgate-replay-rig:node20-bookworm-gst
+    # Phase 5b: RIG_IMAGE lets a worktree whose Dockerfile.rig differs (the
+    # ELM327-emulator venv) keep its own tag instead of re-tagging the shared one.
+    image: ${RIG_IMAGE:-xorgate-replay-rig:node20-bookworm-gst}
     platform: linux/arm64
+    labels:
+      xorgate.agent: ${XORGATE_AGENT_LABEL:-rig}
     depends_on: [mosquitto]
     networks: [rig]
     # tini as PID 1: reaps the gst shim's detached tee processes.
@@ -60,6 +68,11 @@ services:
       # shim executes for E12.
       - ../../system:/rig/system:ro
       - ./.cache:/rig/cache
+      # Phase 5b: the Rust repo's vendored python/ (the OBD helper the Rust
+      # side runs; the JS side runs its own build's python/).
+      - ../../python:/rig/python:ro
+      # Phase 5b: the shared JS builds (`js-<sha>/`, one per ref; js-build.sh).
+      - ${RIG_JS_CACHE:-./.cache}:/rig/jscache:ro
       - ./.cache/certs:/rig/certs:ro
       - ${RIG_TAPES:-./.cache/tapes}:/rig/tapes:ro
       - ${RIG_RUNS:-./.cache/runs}:/rig/out

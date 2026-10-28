@@ -219,7 +219,7 @@ realLog(
   JSON.stringify(
     {
       jsSourceFile: "src/commands/update.ts",
-      jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+      jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
       generatedBy:
         "npx tsx tools/replay/js/dump-update-plan.mts (Phase 4 WP4) in a git-archive 89b5c64 scratch copy; REAL update.ts with only its absolute path constants re-rooted into a temp dir + an export line; fake visudo/curl on PATH",
       cases,

@@ -2,7 +2,7 @@
 // onExit / checkProgress / isRecording / reapShmSegments / spawn event text
 // over an input grid and prints the fixture JSON (fixtures/capture_ladder/).
 // Run from the scratch root:  npx tsx <this> > ladder.json
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VideoCaptureSupervisor } from "./src/recording/video-capture.ts";
@@ -166,11 +166,40 @@ for (const k of ["cam0", "cam1"]) {
   disabled.push({ input: { streamKey: k }, expected: { events } });
 }
 
+// The ladder constants are module-private in video-capture.ts, so they are
+// read from the source text of THIS checkout (exactly one `const NAME = <int>;`
+// each, `_` separators allowed) instead of being typed in here (review-wp4 N2).
+const vcSrc = readFileSync("./src/recording/video-capture.ts", "utf8");
+const CONSTANT_NAMES = ["STABLE_MS", "BASE_BACKOFF_MS", "MAX_BACKOFF_MS", "MAX_QUICK_FAILURES", "PARKED_RETRY_MS", "SWEEP_POLL_MS", "STALL_MS", "MAX_STALL_FAILURES"];
+const constants: Record<string, number> = {};
+for (const n of CONSTANT_NAMES) {
+  const m = [...vcSrc.matchAll(new RegExp(`^const ${n} = ([0-9][0-9_]*);$`, "gm"))];
+  if (m.length !== 1) throw new Error(`${n}: expected one numeric declaration, found ${m.length}`);
+  constants[n] = Number(m[0][1].replaceAll("_", ""));
+}
+// SWEEP_POLL_MS is the one constant no case exercises: also observe it on the
+// real class — the setInterval period watchSession arms when sweepPollMs is
+// unset (`video-capture.ts:909`; a missing dir makes fs.watch throw → caught).
+{
+  const sup = new VideoCaptureSupervisor({
+    deviceId: "dev-1", cameras: [], record: true, preset: resolveVideoPreset("1080p15-2mbps"),
+    segmentSeconds: 60, videoRoot: join(home, "video"), shmDir: join(home, "shm"),
+    timeSource: () => "ntp", spawn: () => ({ done: never(), stop: () => {} }),
+  } as any);
+  const run = bareRun("cam0");
+  run.sessionDir = join(home, "no-such-session-dir");
+  const periods: number[] = [];
+  (globalThis as any).setInterval = (_f: any, ms: number) => { periods.push(ms); return { unref() {} }; };
+  try { (sup as any).watchSession(run); } finally { (globalThis as any).setInterval = realSetInterval; }
+  if (periods.length !== 1 || periods[0] !== constants.SWEEP_POLL_MS)
+    throw new Error(`watchSession period ${JSON.stringify(periods)} != SWEEP_POLL_MS ${constants.SWEEP_POLL_MS}`);
+}
+
 console.log(JSON.stringify({
   jsSourceFile: "src/recording/video-capture.ts (VideoCaptureSupervisor onExit :722-856, checkProgress :963-1007, isRecording/status/anyRecording :568-594, reapShmSegments :873-891, spawn events :710-715, setCameras event :439)",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  generatedBy: "plans/device-agent-js-to-rust/phase-3/evidence/wp4-tools/dump-capture-ladder.mts via npx tsx in a git-archive 89b5c64 scratch copy (Date.now/setTimeout stubbed; private methods driven on the real class)",
-  constants: { STABLE_MS: 15000, BASE_BACKOFF_MS: 2000, MAX_BACKOFF_MS: 30000, MAX_QUICK_FAILURES: 3, PARKED_RETRY_MS: 60000, SWEEP_POLL_MS: 10000, STALL_MS: 45000, MAX_STALL_FAILURES: 3 },
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  generatedBy: "plans/device-agent-js-to-rust/phase-3/evidence/wp4-tools/dump-capture-ladder.mts via npx tsx in a git-archive 89b5c64 scratch copy (Date.now/setTimeout stubbed; private methods driven on the real class; constants read from the archive's src/recording/video-capture.ts, SWEEP_POLL_MS also observed as watchSession's setInterval period)",
+  constants,
   cases: [
     ...exitCases.map((c, i) => ({ name: `onExit #${i}`, op: "onExit", ...c })),
     ...progressCases.map((c, i) => ({ name: `checkProgress #${i}`, op: "checkProgress", ...c })),

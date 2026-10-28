@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "test/boot-config.test.ts",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "plans/device-agent-js-to-rust/phase-4/evidence/wp3-tools/dump-camera-mount.mts via npx tsx in a scratch copy of the JS repo @89b5c64 (docker node:20-bookworm linux/arm64, TZ=UTC, mawk; node v20.20.2; the REAL system/xorgate-camrotate run directly with XORGATE_BOOT_CONFIG as the TS test does); paths under the scratch dir are rewritten to <dir>",
   "constants": {
     "CAMROTATE_HELPER": "/usr/local/bin/xorgate-camrotate",

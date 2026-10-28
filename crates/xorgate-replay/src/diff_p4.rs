@@ -15,7 +15,7 @@
 //! (`led.ts` `stop()` → `lastLevels = null`), as do white toggles and blanks —
 //! identically on both sides.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde_json::Value;
@@ -713,9 +713,821 @@ fn iso_ms(s: &str) -> Option<i64> {
     Some(((days * 24 + h) * 60 + mi) * 60_000 + se * 1000 + ms)
 }
 
+/// Review-wp4 R4-4: the OBD relay's barrier (obd-gate.py) aligns the two
+/// helpers' edges, so the EARLIER side waits for the later one — a latency on
+/// either side's helper lifecycle (a late spawn, a late SIGINT) would vanish
+/// from every compared stream. The rig owns the evidence instead: each wait
+/// is logged in `<run>/<label>/obd-gate.ndjson`, and a barrier TIMEOUT, or a
+/// wait above [`OBD_BARRIER_WAIT_MAX_MS`], is UNTOLERATED (stream `obd-gate`).
+pub const OBD_BARRIER_WAIT_MAX_MS: i64 = 400;
+
+/// Review-wp4 R5-2: every edge is delivered by both relays at ONE shared GO
+/// (obd-gate.py `shared_go`); a relay that reached the GO later than this
+/// (descheduled) delivered the edge apart from the other side: UNTOLERATED.
+pub const OBD_GO_LATE_MAX_MS: i64 = 50;
+
+/// Review-wp4 R6-1: the ELM327 emulator's ATZ reset sleep (`reset(0.5)`,
+/// obd_message.py:547) + 100 ms margin — the extra barrier wait allowed ONLY
+/// at the `stopped` status of a helper whose close cut a request in flight.
+pub const OBD_ATZ_RESET_MS: i64 = 500;
+
+/// Review-wp4 R7 SHOULD-FIX: at such an edge the cut side must be the WAITER,
+/// by at least the smallest early stop measured (454 ms) less the 150 ms a
+/// same-instant edge may take: below it, the cut side lagged.
+pub const OBD_CUT_WAIT_MIN_MS: i64 = 300;
+
+/// The ELM327 emulator's ATZ reply `ELM327 v1.5\r\r>` (14 B): the ONE stale
+/// reply a cut close leaves on the line (review-wp4 R7 NIT).
+pub const OBD_ATZ_REPLY_BYTES: i64 = 14;
+
+/// R6-1: the edge numbers of the final `stopped` status (the status edge
+/// right before the exit edge) of every helper session (relay pid) the agent
+/// signalled while a request was in flight (its last audit requests − ok = 1)
+/// — MID-RUN stops only. At the run's final stop (the agents' own shutdown)
+/// no side waits out the ATZ reset: every cut final stop seen waited 0–7 ms
+/// (stepC p5b-obd-config.r32.jsrs1 edge 35, r33.jsrs1 edge 35,
+/// p5b-obd-audit.r33.jsrs1 / p5b-obd-emulator.r33.jsrs1 edge 8), so there the
+/// normal 400 ms bound applies and nothing is extended or required.
+fn cut_stop_edges(log: &[Value]) -> BTreeSet<i64> {
+    let mut last_audit: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
+    let mut signalled: BTreeSet<i64> = BTreeSet::new();
+    let mut prev_status: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut stop_edges: BTreeMap<i64, i64> = BTreeMap::new();
+    for w in log {
+        let pid = w["pid"].as_i64().unwrap_or(-1);
+        match w["kind"].as_str() {
+            Some("audit-line") => {
+                if let (Some(r), Some(o)) = (w["requests"].as_i64(), w["ok"].as_i64()) {
+                    last_audit.insert(pid, (r, o));
+                }
+            }
+            Some("helper-exit") if w["signalled"] == true => {
+                signalled.insert(pid);
+            }
+            Some("status") if w["edge"].is_number() => {
+                prev_status.insert(pid, w["edge"].as_i64().unwrap_or(-1));
+            }
+            Some("exit") if w["edge"].is_number() => {
+                if let Some(e) = prev_status.get(&pid) {
+                    stop_edges.insert(pid, *e);
+                }
+            }
+            _ => {}
+        }
+    }
+    let last_edge = log.iter().filter_map(|w| w["edge"].as_i64()).max();
+    let exit_of: BTreeMap<i64, i64> = log
+        .iter()
+        .filter(|w| w["kind"] == "exit")
+        .filter_map(|w| Some((w["pid"].as_i64()?, w["edge"].as_i64()?)))
+        .collect();
+    stop_edges
+        .into_iter()
+        .filter(|(pid, _)| {
+            signalled.contains(pid)
+                && last_audit.get(pid).is_some_and(|(r, o)| r - o == 1)
+                && exit_of.get(pid).copied() != last_edge
+        })
+        .map(|(_, e)| e)
+        .collect()
+}
+
+/// `requestRate(prev, cur)` (ts:src/agent/collectors/obd.ts:270-278):
+/// `Math.round((Δrequests / Δts) * 10) / 10`, None when Δts ≤ 0 or Δreq < 0.
+fn request_rate(prev: (f64, f64), cur: (f64, f64)) -> Option<f64> {
+    let dt = cur.0 - prev.0;
+    let dr = cur.1 - prev.1;
+    if dt.is_nan() || dt <= 0.0 || dr < 0.0 {
+        return None;
+    }
+    // JS Math.round: half up (the value is ≥ 0 here)
+    Some(((dr / dt) * 10.0 + 0.5).floor() / 10.0)
+}
+
+pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
+    let load = |label: &str| -> Option<Vec<serde_json::Value>> {
+        let text = std::fs::read_to_string(run.join(label).join(crate::p5b::OBD_GATE_LOG)).ok()?;
+        Some(
+            text.lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect(),
+        )
+    };
+    let (a, b) = (load("a"), load("b"));
+    if a.is_none() && b.is_none() {
+        // Review-wp4 R6 NIT: an OBD run (either side has the rig's OBD
+        // emulator serial) with NO relay log on either side would compare the
+        // T17 fields without their carry checks: UNTOLERATED, unless the
+        // player ran with `--no-gate` (play.json `noGate`).
+        let obd = ["a", "b"].iter().any(|l| {
+            std::fs::read(run.join(l).join("meta.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .is_some_and(|m| m["env"]["XORGATE_OBD_SERIAL"].as_str().is_some())
+        });
+        let no_gate = std::fs::read(run.join("play.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .is_some_and(|p| p["noGate"] == true);
+        if obd && !no_gate {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: "relay logs".into(),
+                path: "(relay log present on both sides)".into(),
+                a: "missing".into(),
+                b: "missing".into(),
+                tol: UNTOLERATED.into(),
+            });
+        }
+        return;
+    }
+    // Review-wp4 R5 NIT: an OBD run (one side has a relay log) whose other
+    // side has none is not judged by half: UNTOLERATED.
+    for (label, log) in [("A", &a), ("B", &b)] {
+        if log.is_none() {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: format!("{label} relay log"),
+                path: "(relay log present on both sides)".into(),
+                a: "missing".into(),
+                b: "present".into(),
+                tol: UNTOLERATED.into(),
+            });
+        }
+    }
+    let mut summary = Vec::new();
+    let mqtt = |dir: &str| -> Vec<Value> {
+        std::fs::read_to_string(run.join(dir).join("mqtt.ndjson"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect()
+    };
+    for (label, dir, log) in [("A", "a", &a), ("B", "b", &b)] {
+        let Some(log) = log else { continue };
+        // The side's own helper rates, as logged by its relay at receipt.
+        let profiles: Vec<(i64, f64)> = log
+            .iter()
+            .filter(|w| w["kind"] == "profile-rate")
+            .filter_map(|w| Some((w["w"].as_i64()?, w["rate_req_s"].as_f64()?)))
+            .collect();
+        let rates: Vec<f64> = profiles.iter().map(|(_, r)| *r).collect();
+        // T17 (orchestrator ruling 2026-10-28): with no cross-side band, a
+        // broken helper must still FAIL on its own — every probe rate it
+        // printed inside the plausibility band (5–40 req/s; all 398 logged
+        // probes lie in 16.8–19.7).
+        for (w, r) in profiles.iter().filter(|(_, r)| !(5.0..=40.0).contains(r)) {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: format!("{label} probe at {w}"),
+                path: "(helper probe rate plausible)".into(),
+                a: r.to_string(),
+                b: "5–40 req/s".into(),
+                tol: UNTOLERATED.into(),
+            });
+        }
+        // T17's carry check (report path): every
+        // `effective.obd.profile.rate_req_s` a side reports must be
+        // (numerically exactly) a rate its OWN helper printed. A side that
+        // reports one with no profile logged FAILS (R5 NIT: no skip).
+        let reported: Vec<(i64, Value)> = mqtt(dir)
+            .into_iter()
+            .filter(|m| {
+                m["topic"]
+                    .as_str()
+                    .is_some_and(|t| t.ends_with("/config/reported"))
+            })
+            .filter_map(|m| {
+                let p: Value = serde_json::from_str(m["payload"].as_str()?).ok()?;
+                Some((
+                    m["w"].as_i64()?,
+                    p.pointer("/effective/obd/profile/rate_req_s")?.clone(),
+                ))
+            })
+            .collect();
+        for (w, v) in reported {
+            if !v.as_f64().is_some_and(|x| rates.contains(&x)) {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!("{label} report at {w}"),
+                    path: "(profile rate carried from its helper)".into(),
+                    a: v.to_string(),
+                    b: format!("one of {rates:?}"),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+        // Review-wp4 R5-1: the state path `obd.reqPerSec` is COMPUTED by the
+        // agent (ts:src/agent/collectors/obd.ts:666-677 `reqPerSec`): null
+        // without a helper; else requestRate() over its two latest audits;
+        // else the seed `Math.round(profile.rate_req_s * 10) / 10`. Each value
+        // a state snapshot shows must be null, one of the two latest profile
+        // rates its own helper printed by then (the newest may not be
+        // delivered yet: the relay logs a line on receipt), or the rate of a
+        // pair of consecutive audits its own helper printed by then.
+        let audits: Vec<(i64, f64, f64)> = log
+            .iter()
+            .filter(|w| w["kind"] == "audit-line")
+            .filter_map(|w| Some((w["w"].as_i64()?, w["ts"].as_f64()?, w["requests"].as_f64()?)))
+            .collect();
+        let pair_rates: Vec<(i64, f64)> = audits
+            .windows(2)
+            .filter_map(|p| Some((p[1].0, request_rate((p[0].1, p[0].2), (p[1].1, p[1].2))?)))
+            .collect();
+        let mut last: Option<Value> = None;
+        let text = std::fs::read_to_string(run.join(dir).join("files.ndjson")).unwrap_or_default();
+        for l in text.lines() {
+            let Ok(f) = serde_json::from_str::<Value>(l) else {
+                continue;
+            };
+            if f["name"] != "state.json" {
+                continue;
+            }
+            let (Some(w), Some(t)) = (f["w"].as_i64(), f["text"].as_str()) else {
+                continue;
+            };
+            let Ok(st) = serde_json::from_str::<Value>(t) else {
+                continue;
+            };
+            let Some(v) = st.pointer("/obd/reqPerSec").cloned() else {
+                continue;
+            };
+            if last.as_ref() == Some(&v) || v.is_null() {
+                last = Some(v);
+                continue;
+            }
+            last = Some(v.clone());
+            let seen: Vec<f64> = profiles
+                .iter()
+                .filter(|(pw, _)| *pw <= w)
+                .map(|(_, r)| *r)
+                .collect();
+            let mut ok: Vec<f64> = seen.iter().rev().take(2).copied().collect();
+            ok.extend(
+                pair_rates
+                    .iter()
+                    .filter(|(pw, _)| *pw <= w)
+                    .map(|(_, r)| *r),
+            );
+            if !v
+                .as_f64()
+                .is_some_and(|x| ok.iter().any(|r| (r - x).abs() < 1e-9))
+            {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!("{label} state at {w}"),
+                    path: "(state obd.reqPerSec carried from its helper)".into(),
+                    a: v.to_string(),
+                    b: format!("null or one of {ok:?}"),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+    }
+    // Review-wp4 R5 NIT: the stale replies each side's drain found, compared
+    // across sides (an agent whose stop leaves MORE in-flight replies — e.g.
+    // a helper killed before its close — stays visible).
+    // A stale reply is EXPLAINED when the side's previous helper was stopped
+    // (signalled) with a request in flight (review-wp4 R6-1): the stop
+    // signal raises Shutdown out of that request's read, the helper's close
+    // ATZ then reads the in-flight request's reply as its own, and the real
+    // ATZ reply is left on the line for the next start (python/obd/gate.py
+    // :131-136, :187; session.py:90; its last audit has requests − ok = 1).
+    // Only UNEXPLAINED stale replies are compared across sides.
+    let stale = |log: &Option<Vec<Value>>| -> usize {
+        let log: Vec<&Value> = log.iter().flatten().collect();
+        let mut n = 0;
+        for (i, w) in log.iter().enumerate() {
+            if w["kind"] != "drain" || w["bytes"].as_i64().unwrap_or(0) == 0 {
+                continue;
+            }
+            // ONE ATZ reply only (review-wp4 R7 NIT): any other size counts.
+            if w["bytes"].as_i64() != Some(OBD_ATZ_REPLY_BYTES) {
+                n += 1;
+                continue;
+            }
+            let prev = log[..i]
+                .iter()
+                .rev()
+                .find(|x| x["kind"] == "helper-exit")
+                .filter(|x| x["signalled"] == true);
+            let cut = prev.and_then(|x| {
+                let pid = x["pid"].as_i64()?;
+                let a = log[..i]
+                    .iter()
+                    .rev()
+                    .find(|y| y["kind"] == "audit-line" && y["pid"].as_i64() == Some(pid))?;
+                Some(a["requests"].as_i64()? - a["ok"].as_i64()? == 1)
+            });
+            if cut != Some(true) {
+                n += 1;
+            }
+        }
+        n
+    };
+    let (sa, sb) = (stale(&a), stale(&b));
+    rep.stats.entry("obd-gate".into()).or_default().compared += 1;
+    if sa != sb {
+        rep.push(Mismatch {
+            stream: "obd-gate".into(),
+            at: "drains".into(),
+            path: "(helper starts with a stale adapter reply)".into(),
+            a: sa.to_string(),
+            b: sb.to_string(),
+            tol: UNTOLERATED.into(),
+        });
+    }
+    let cut_edges = (
+        cut_stop_edges(a.as_deref().unwrap_or(&[])),
+        cut_stop_edges(b.as_deref().unwrap_or(&[])),
+    );
+    for (label, waits) in [("A", a.unwrap_or_default()), ("B", b.unwrap_or_default())] {
+        // The relay's pre-spawn drain of the adapter line (fresh state per
+        // helper start): summarised; one that never went quiet FAILS.
+        let drains: Vec<&serde_json::Value> =
+            waits.iter().filter(|w| w["kind"] == "drain").collect();
+        if !drains.is_empty() {
+            let bytes: i64 = drains.iter().filter_map(|w| w["bytes"].as_i64()).sum();
+            let stale = drains
+                .iter()
+                .filter(|w| w["bytes"].as_i64().unwrap_or(0) > 0)
+                .count();
+            summary.push(format!(
+                "{label} {} helper start(s) drained, {stale} with stale bytes ({bytes} B)",
+                drains.len()
+            ));
+            for w in drains.iter().filter(|w| w["quiet"] == false) {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!("{label} drain at {}", w["w"]),
+                    path: "(adapter line quiet before the helper start)".into(),
+                    a: format!("{} B in {} ms, never quiet", w["bytes"], w["ms"]),
+                    b: "quiet".into(),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+        // R5-2: each edge's shared GO, reached late by a descheduled relay.
+        let gos: Vec<serde_json::Value> = waits
+            .iter()
+            .filter(|w| w["kind"] == "go")
+            .cloned()
+            .collect();
+        let late_max = gos
+            .iter()
+            .filter_map(|w| w["late_ms"].as_i64())
+            .max()
+            .unwrap_or(0);
+        if !gos.is_empty() {
+            summary.push(format!(
+                "{label} {} GO(s), max late {late_max} ms",
+                gos.len()
+            ));
+        }
+        for w in gos
+            .iter()
+            .filter(|w| w["late_ms"].as_i64().unwrap_or(0) > OBD_GO_LATE_MAX_MS)
+        {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: format!("{label} edge #{} GO", w["edge"]),
+                path: "(edge delivered late after its shared GO)".into(),
+                a: format!("{} ms", w["late_ms"]),
+                b: format!("≤ {OBD_GO_LATE_MAX_MS} ms"),
+                tol: UNTOLERATED.into(),
+            });
+        }
+        let waits: Vec<serde_json::Value> = waits
+            .into_iter()
+            .filter(|w| w["edge"].is_number() && w["kind"] != "go")
+            .collect();
+        let max = waits
+            .iter()
+            .filter_map(|w| w["wait_ms"].as_i64())
+            .max()
+            .unwrap_or(0);
+        summary.push(format!(
+            "{label} {} edge(s), max wait {max} ms",
+            waits.len()
+        ));
+        let st = rep.stats.entry("obd-gate".into()).or_default();
+        st.compared += waits.len() + gos.len();
+        for w in &waits {
+            let (ms, timeout) = (w["wait_ms"].as_i64().unwrap_or(0), w["timeout"] == true);
+            // R6-1 (b): at the final `stopped` status of a helper whose close
+            // cut a request in flight — on THIS side only — the cut side is
+            // early by the emulator's ATZ reset, so it must be the waiter:
+            // 300..=900 ms (review-wp4 R7 SHOULD-FIX), else UNTOLERATED.
+            let edge = w["edge"].as_i64().unwrap_or(-1);
+            let (own, other) = if label == "A" {
+                (&cut_edges.0, &cut_edges.1)
+            } else {
+                (&cut_edges.1, &cut_edges.0)
+            };
+            if own.contains(&edge) && !other.contains(&edge) {
+                let ok = !timeout
+                    && (OBD_CUT_WAIT_MIN_MS..=OBD_BARRIER_WAIT_MAX_MS + OBD_ATZ_RESET_MS)
+                        .contains(&ms);
+                if ms > OBD_BARRIER_WAIT_MAX_MS || !ok {
+                    rep.push(Mismatch {
+                        stream: "obd-gate".into(),
+                        at: format!("{label} edge #{edge} stopped status"),
+                        path: "(barrier wait: own close cut a request in flight)".into(),
+                        a: format!("{ms} ms"),
+                        b: format!(
+                            "{OBD_CUT_WAIT_MIN_MS}–{} ms",
+                            OBD_BARRIER_WAIT_MAX_MS + OBD_ATZ_RESET_MS
+                        ),
+                        tol: if ok {
+                            "T8/obd-audit-cycle".into()
+                        } else {
+                            UNTOLERATED.into()
+                        },
+                    });
+                }
+                continue;
+            }
+            if timeout || ms > OBD_BARRIER_WAIT_MAX_MS {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!(
+                        "{label} edge #{} {}",
+                        w["edge"],
+                        w["kind"].as_str().unwrap_or("?")
+                    ),
+                    path: if timeout {
+                        "(barrier timeout)".into()
+                    } else {
+                        "(barrier wait over bound)".into()
+                    },
+                    a: format!("{ms} ms"),
+                    b: format!("≤ {OBD_BARRIER_WAIT_MAX_MS} ms"),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+    }
+    rep.inputs.insert(
+        "obd-gate barrier (rig-owned waits)".into(),
+        format!(
+            "{}; bounds: wait {OBD_BARRIER_WAIT_MAX_MS} ms, GO late {OBD_GO_LATE_MAX_MS} ms",
+            summary.join(", ")
+        ),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review-wp4 R4-4: a barrier timeout or a wait above the bound in the
+    /// relay's rig-owned log is UNTOLERATED (the reviewer's 2 s-late Rust
+    /// helper launch makes the JS side wait ~2 s); small waits pass.
+    #[test]
+    fn obd_gate_waits_over_the_bound_or_timeouts_fail() {
+        let d = std::env::temp_dir().join(format!("obd-gate-diff-{}", std::process::id()));
+        for l in ["a", "b"] {
+            std::fs::create_dir_all(d.join(l)).unwrap();
+        }
+        let write = |l: &str, lines: &[&str]| {
+            std::fs::write(d.join(l).join(crate::p5b::OBD_GATE_LOG), lines.join("\n")).unwrap()
+        };
+        let run = || {
+            let mut rep = Report::default();
+            diff_obd_gate(&d, &mut rep);
+            rep.mismatches
+                .iter()
+                .map(|m| m.path.clone())
+                .collect::<Vec<_>>()
+        };
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":1,"kind":"ready","wait_ms":12,"timeout":false}"#],
+        );
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","edge":1,"kind":"ready","wait_ms":0,"timeout":false}"#],
+        );
+        assert!(run().is_empty());
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":1,"kind":"ready","wait_ms":2104,"timeout":false}"#],
+        );
+        assert_eq!(run(), vec!["(barrier wait over bound)".to_string()]);
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":3,"kind":"exit","wait_ms":3001,"timeout":true}"#],
+        );
+        assert_eq!(run(), vec!["(barrier timeout)".to_string()]);
+        // The pre-spawn drain: quiet (with or without stale bytes) is only
+        // summarised and is not an edge; one that never went quiet FAILS.
+        write(
+            "a",
+            &[
+                r#"{"w":1,"side":"a","kind":"drain","bytes":3,"ms":320,"quiet":true}"#,
+                r#"{"w":2,"side":"a","edge":1,"kind":"ready","wait_ms":0,"timeout":false}"#,
+            ],
+        );
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","kind":"drain","bytes":5,"ms":310,"quiet":true}"#],
+        );
+        assert!(run().is_empty());
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","edge":1,"kind":"ready","wait_ms":0,"timeout":false}"#],
+        );
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","kind":"drain","bytes":0,"ms":2000,"quiet":false}"#],
+        );
+        assert_eq!(
+            run(),
+            vec!["(adapter line quiet before the helper start)".to_string()]
+        );
+        // T17 carry check: B's report must carry ITS helper's 19.2 exactly.
+        write("a", &[]);
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","kind":"profile-rate","rate_req_s":19.2}"#],
+        );
+        let rep = |v: &str| {
+            let payload =
+                format!(r#"{{"effective":{{"obd":{{"profile":{{"rate_req_s":{v}}}}}}}}}"#);
+            let line = serde_json::json!({"w": 5, "topic": "xorgate/devices/x/config/reported", "payload": payload});
+            std::fs::write(d.join("b").join("mqtt.ndjson"), line.to_string()).unwrap();
+        };
+        rep("19.2");
+        assert!(run().is_empty());
+        for bad in ["19", "19.200000762939453", "19.3"] {
+            rep(bad);
+            assert_eq!(
+                run(),
+                vec!["(profile rate carried from its helper)".to_string()],
+                "{bad}"
+            );
+        }
+        // T17 ruling 2026-10-28: a helper probe rate outside 5–40 FAILS even
+        // when both sides carry it.
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","kind":"profile-rate","rate_req_s":0.0}"#],
+        );
+        rep("0.0");
+        assert_eq!(run(), vec!["(helper probe rate plausible)".to_string()]);
+        // R5 NIT: a report carrying a rate with NO profile in the relay log
+        // FAILS (no pre-R4-3 skip).
+        write("b", &[]);
+        rep("19.2");
+        assert_eq!(
+            run(),
+            vec!["(profile rate carried from its helper)".to_string()]
+        );
+        std::fs::remove_file(d.join("b").join("mqtt.ndjson")).unwrap();
+        // R5 NIT: a side with no relay log at all FAILS.
+        std::fs::remove_file(d.join("b").join(crate::p5b::OBD_GATE_LOG)).unwrap();
+        assert_eq!(run(), vec!["(relay log present on both sides)".to_string()]);
+        write("b", &[]);
+        // R6 NIT: BOTH logs missing on an OBD run FAILS, unless --no-gate.
+        std::fs::remove_file(d.join("a").join(crate::p5b::OBD_GATE_LOG)).unwrap();
+        std::fs::remove_file(d.join("b").join(crate::p5b::OBD_GATE_LOG)).unwrap();
+        assert!(run().is_empty(), "not an OBD run");
+        std::fs::write(
+            d.join("a").join("meta.json"),
+            r#"{"env":{"XORGATE_OBD_SERIAL":"/dev/pts/1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(run(), vec!["(relay log present on both sides)".to_string()]);
+        std::fs::write(d.join("play.json"), r#"{"noGate":true}"#).unwrap();
+        assert!(run().is_empty(), "--no-gate");
+        std::fs::remove_file(d.join("play.json")).unwrap();
+        std::fs::remove_file(d.join("a").join("meta.json")).unwrap();
+        write("a", &[]);
+        write("b", &[]);
+        // R5 NIT: stale-reply drains compared across sides.
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","kind":"drain","bytes":14,"ms":310,"quiet":true}"#],
+        );
+        assert_eq!(
+            run(),
+            vec!["(helper starts with a stale adapter reply)".to_string()]
+        );
+        // R6-1: explained when the previous helper was stopped with one
+        // request in flight (its last audit requests − ok = 1) …
+        let stop = |ok: i64, signalled: bool| {
+            vec![
+                format!(
+                    r#"{{"w":1,"side":"a","kind":"audit-line","ts":1.0,"requests":387,"ok":{ok},"pid":7}}"#
+                ),
+                format!(
+                    r#"{{"w":1,"side":"a","kind":"helper-exit","rc":0,"signalled":{signalled},"pid":7}}"#
+                ),
+                r#"{"w":2,"side":"a","kind":"drain","bytes":14,"ms":310,"quiet":true,"pid":8}"#
+                    .to_string(),
+            ]
+        };
+        let lines = stop(386, true);
+        write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(run().is_empty());
+        // R7 NIT: only ONE ATZ reply (14 B) is explained; 42 B still counts
+        let lines: Vec<String> = stop(386, true)
+            .into_iter()
+            .map(|l| l.replace(r#""bytes":14"#, r#""bytes":42"#))
+            .collect();
+        write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(
+            run(),
+            vec!["(helper starts with a stale adapter reply)".to_string()]
+        );
+        // … not after a clean stop (requests = ok), nor an unsignalled exit
+        for (ok, sig) in [(387, true), (386, false)] {
+            let lines = stop(ok, sig);
+            write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(
+                run(),
+                vec!["(helper starts with a stale adapter reply)".to_string()],
+                "ok {ok} signalled {sig}"
+            );
+        }
+        write("a", &[]);
+        // R6-1: a wait over the bound at the `stopped` status of a helper
+        // stopped with a request in flight is explained up to + the ATZ
+        // reset; the same wait on another edge, a clean stop, or beyond
+        // 1000 ms FAILS.
+        let cut_stop = |wait: i64, ok: i64, edge_kind: &str| {
+            vec![
+                format!(
+                    r#"{{"w":1,"side":"a","edge":5,"kind":"{edge_kind}","wait_ms":{wait},"timeout":false,"pid":9}}"#
+                ),
+                format!(
+                    r#"{{"w":2,"side":"a","kind":"audit-line","ts":2.0,"requests":383,"ok":{ok},"pid":9}}"#
+                ),
+                r#"{"w":2,"side":"a","kind":"helper-exit","rc":0,"signalled":true,"pid":9}"#
+                    .to_string(),
+                r#"{"w":3,"side":"a","edge":6,"kind":"exit","wait_ms":3,"timeout":false,"pid":9}"#
+                    .to_string(),
+                // the next helper's start: the stop above is MID-RUN
+                r#"{"w":4,"side":"a","edge":7,"kind":"ready","wait_ms":2,"timeout":false,"pid":10}"#
+                    .to_string(),
+            ]
+        };
+        let lines = cut_stop(454, 382, "status");
+        write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(
+            run(),
+            vec!["(barrier wait: own close cut a request in flight)".to_string()],
+            "cited (tolerated), not UNTOLERATED"
+        );
+        // NEGATIVE: a clean stop, another edge → the normal 400 ms bound
+        for (wait, ok, kind) in [(454, 383, "status"), (454, 382, "profile")] {
+            let lines = cut_stop(wait, ok, kind);
+            write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(
+                run(),
+                vec!["(barrier wait over bound)".to_string()],
+                "{wait} {ok} {kind}"
+            );
+        }
+        // R7 SHOULD-FIX: at the cut stop the cut side must WAIT 300–900 ms:
+        // 950 (beyond the 0.5 s reset) and 250 (the cut side lagged) FAIL.
+        let tol_of = || {
+            let mut rep = Report::default();
+            diff_obd_gate(&d, &mut rep);
+            rep.mismatches
+                .iter()
+                .map(|m| (m.path.clone(), m.tol.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (wait, want) in [
+            (900, "T8/obd-audit-cycle"),
+            (950, UNTOLERATED),
+            (250, UNTOLERATED),
+        ] {
+            let lines = cut_stop(wait, 382, "status");
+            write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(
+                tol_of(),
+                vec![(
+                    "(barrier wait: own close cut a request in flight)".to_string(),
+                    want.to_string()
+                )],
+                "{wait}"
+            );
+        }
+        // The run's FINAL stop (no later edge): a cut final stop waits ~0 on
+        // the rig (both agents' own shutdown); there the normal bound applies
+        // and nothing is required — 0 ms passes, 454 ms FAILS as usual.
+        for (wait, want) in [
+            (0, vec![]),
+            (454, vec!["(barrier wait over bound)".to_string()]),
+        ] {
+            let lines: Vec<String> = cut_stop(wait, 382, "status")
+                .into_iter()
+                .filter(|l| !l.contains(r#""kind":"ready""#))
+                .collect();
+            write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(run(), want, "final stop {wait}");
+        }
+        // …and when BOTH sides' helpers were cut at that edge, the normal
+        // bound applies to both (neither is early)
+        let lines = cut_stop(454, 382, "status");
+        write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        let lb: Vec<String> = cut_stop(10, 382, "status")
+            .into_iter()
+            .map(|l| l.replace(r#""side":"a""#, r#""side":"b""#))
+            .collect();
+        write("b", &lb.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(run(), vec!["(barrier wait over bound)".to_string()]);
+        write("a", &[]);
+        write("b", &[]);
+        // R5-2: an edge a relay delivered > 50 ms after its shared GO FAILS.
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":4,"kind":"go","decider":false,"late_ms":157}"#],
+        );
+        assert_eq!(
+            run(),
+            vec!["(edge delivered late after its shared GO)".to_string()]
+        );
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":4,"kind":"go","decider":false,"late_ms":6}"#],
+        );
+        assert!(run().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Review-wp4 R5-1: the state path `obd.reqPerSec` must be null, one of
+    /// the two latest profile rates the side's own helper printed by then, or
+    /// requestRate() of two consecutive audits of its own helper; the
+    /// reviewer's integer-rounded 18 and shifted 19.7 FAIL.
+    #[test]
+    fn state_req_per_sec_is_carried_from_its_own_helper() {
+        let d = std::env::temp_dir().join(format!("obd-state-rate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for l in ["a", "b"] {
+            std::fs::create_dir_all(d.join(l)).unwrap();
+            std::fs::write(d.join(l).join(crate::p5b::OBD_GATE_LOG), "").unwrap();
+        }
+        std::fs::write(
+            d.join("b").join(crate::p5b::OBD_GATE_LOG),
+            [
+                r#"{"w":1000,"side":"b","kind":"profile-rate","rate_req_s":18.3}"#,
+                r#"{"w":61000,"side":"b","kind":"audit-line","ts":61.0,"requests":1000}"#,
+                r#"{"w":121000,"side":"b","kind":"audit-line","ts":121.0,"requests":2110}"#,
+                r#"{"w":150000,"side":"b","kind":"profile-rate","rate_req_s":19.1}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let run = |vals: &[(i64, &str)]| {
+            let lines: Vec<String> = vals
+                .iter()
+                .map(|(w, v)| {
+                    let text = format!(r#"{{"obd":{{"reqPerSec":{v}}}}}"#);
+                    serde_json::json!({"w": w, "name": "state.json", "text": text}).to_string()
+                })
+                .collect();
+            std::fs::write(d.join("b").join("files.ndjson"), lines.join("\n")).unwrap();
+            let mut rep = Report::default();
+            diff_obd_gate(&d, &mut rep);
+            rep.mismatches
+                .iter()
+                .map(|m| (m.at.clone(), m.a.clone()))
+                .collect::<Vec<_>>()
+        };
+        // null, the seed, the audit-pair rate (1110 / 60 = 18.5), the next seed
+        assert!(run(&[
+            (500, "null"),
+            (2000, "18.3"),
+            (122_000, "18.5"),
+            (151_000, "19.1")
+        ])
+        .is_empty());
+        // the previous seed while the next profile is still in flight
+        assert!(run(&[(2000, "18.3"), (151_000, "18.3")]).is_empty());
+        // the reviewer's mutations: integer-rounded / shifted
+        assert_eq!(
+            run(&[(2000, "18")]),
+            vec![("B state at 2000".into(), "18".into())]
+        );
+        assert_eq!(
+            run(&[(2000, "19.7")]),
+            vec![("B state at 2000".into(), "19.7".into())]
+        );
+        // a profile rate shown BEFORE its helper printed it
+        assert_eq!(
+            run(&[(2000, "19.1")]),
+            vec![("B state at 2000".into(), "19.1".into())]
+        );
+        // an audit-pair rate before its second audit
+        assert_eq!(
+            run(&[(100_000, "18.5")]),
+            vec![("B state at 100000".into(), "18.5".into())]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn w(w: i64, pins: &[u32], high: bool) -> PinWrite {
         PinWrite {

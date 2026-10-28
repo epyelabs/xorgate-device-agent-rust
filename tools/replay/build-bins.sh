@@ -18,7 +18,7 @@ IMAGE="xorgate-rs-build:${TOOLCHAIN}-${DF_HASH}"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "build image $IMAGE missing: run scripts/docker-build.sh once" >&2; exit 1; }
 mkdir -p "$HERE/.cache/bin"
 OUTDIR=release; [ "$PROFILE" = dev ] && OUTDIR=debug
-docker run --rm --platform linux/arm64 \
+docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform linux/arm64 \
   -v "$REPO:/src" \
   -v xorgate-rs-cargo-registry:/usr/local/cargo/registry \
   -v xorgate-rs-cargo-git:/usr/local/cargo/git \

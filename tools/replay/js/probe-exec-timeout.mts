@@ -8,16 +8,20 @@ import { run } from "../src/lib/exec.ts";
 const detail = (res: { stderr: string; stdout: string; exitCode: number | null }) =>
   res.stderr.trim() || res.stdout.trim() || `exit ${res.exitCode}`;
 const cases: [string, string][] = [
-  ["partial both", "echo partial-out; echo partial-err >&2; sleep 30"],
-  ["stdout only", "echo only-out; sleep 30"],
-  ["silent", "sleep 30"],
-  ["ignores TERM", "trap '' TERM; echo stubborn; sleep 30"],
-  ["TERM trap prints", "trap 'echo got-term >&2; exit 7' TERM; echo waiting; sleep 30 & wait"],
+  ["partial both", "echo partial-out; echo partial-err >&2; exec sleep 30"],
+  ["stdout only", "echo only-out; exec sleep 30"],
+  ["silent", "exec sleep 30"],
+  ["TERM trap exits 7, a grandchild holds the pipes 3 s", "trap 'echo got-term >&2; exit 7' TERM; echo waiting; sleep 3 & wait"],
+  ["ignores TERM: SIGKILL after the 5 s grace", "trap '' TERM; echo stubborn; exec sleep 30"],
 ];
-const out = [];
-for (const [name, script] of cases) {
+const out = await Promise.all(cases.map(async ([name, script]) => {
   const t0 = Date.now();
   const res = await run("sh", ["-c", script], { timeoutMs: 300 });
-  out.push({ name, elapsedMs: Date.now() - t0, res, detail: detail(res) });
-}
-console.log(JSON.stringify(out, null, 2));
+  return { name, script, timeoutMs: 300, elapsedMs: Date.now() - t0, res, detail: detail(res) };
+}));
+console.log(JSON.stringify({
+  jsSourceFile: "src/lib/exec.ts + src/hardware/boot-config.ts:285-292",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+  generatedBy: "plans/device-agent-js-to-rust/phase-4/evidence/wp3-tools/probe-exec-timeout.mts (docker node:20-bookworm linux/arm64, execa 9.6.1 from package-lock; DEFAULT_FORCE_KILL_TIMEOUT = 5000)",
+  cases: out,
+}, null, 2));

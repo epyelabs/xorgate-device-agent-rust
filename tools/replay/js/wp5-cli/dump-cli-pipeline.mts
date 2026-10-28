@@ -125,7 +125,7 @@ for (const c of CASES) {
 }
 console.log(JSON.stringify({
   jsSourceFile: "src/commands/pipeline.ts, src/commands/recording.ts",
-  jsCommit: "89b5c64",
+  jsCommit: (process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d").slice(0, 7),
   generatedBy: "phase-4/evidence/wp5-tools/dump-cli-pipeline.mts → tools/replay/js/ via WP6 (Phase 4 WP5)",
   note: "seedHex = the exact seed bytes. Rust RESTART_HINT differs by Q9 (D-row): tests map the TS hint to the Rust one.",
   cases,

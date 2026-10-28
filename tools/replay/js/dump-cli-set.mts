@@ -42,6 +42,7 @@ const cases: Case[] = [
   // routing / usage
   { name: "no args → usage", args: [] },
   { name: "flags only → usage", args: ["--no-restart", "--force"] },
+  { name: "empty key → usage (set.ts:398 `!key`)", args: ["", "on"] },
   { name: "unknown key", args: ["nonsense", "1"] },
   { name: "retired media", args: ["media", "off"] },
   // mode
@@ -133,6 +134,18 @@ const cases: Case[] = [
   { name: "array settings.json is rewritten", args: ["gps-antenna", "active"], settings: "[1,2]" },
   { name: "full document keeps parser order", args: ["recording.retention.maxBytes", "2000000"], settings: '{"simulation":{"scenarioId":"city-loop","loop":true},"cameraMount":{"cameras":{"cam0":{"rotationDeg":180}}},"cellular":{"apn":"internet"},"timeSync":{"maxStepsPerBoot":3,"offlineSources":true},"lteRecovery":{"deadZoneProfile":"balanced"},"recording":{"retention":{"minFreeBytes":5},"telemetry":{"rateHz":5,"enabled":true}},"imuMount":{"roll":0,"pitch":0,"yaw":90},"gnssAntBias":false,"mode":"real"}' },
   { name: "imuMount + decimal knobs survive a rewrite", args: ["gps-antenna", "active"], settings: '{"imuMount":{"enabled":true,"rollDeg":0,"pitchDeg":1.5,"yawDeg":-90},"recording":{"powerShedding":{"railLowVolts":4.75,"cpuTempC":82.5}}}' },
+  // `__proto__` camera keys (review-wp6 row 5): JSON.parse keeps them as own
+  // properties, but the parsers' plain-object assignments (settings.ts:276,481)
+  // hit the Object.prototype.__proto__ setter, so loadSettings drops them; the
+  // set handlers' computed-key literals (set.ts:245,299) write them as own keys.
+  { name: "__proto__ camera enable dropped on load → re-save", args: ["gps-antenna", "active"], settings: '{"recording":{"video":{"cameras":{"__proto__":true,"cam0":false,"constructor":true}}}}' },
+  { name: "__proto__-only camera enables drop the whole video section", args: ["gps-antenna", "active"], settings: '{"recording":{"video":{"cameras":{"__proto__":false}},"telemetry":{"enabled":true}}}' },
+  { name: "__proto__ cameraMount entry dropped on load → re-save", args: ["gps-antenna", "active"], settings: '{"cameraMount":{"cameras":{"__proto__":{"rotationDeg":180},"cam1":{"rotationDeg":0},"constructor":{"rotationDeg":180}}}}' },
+  { name: "__proto__-only cameraMount keeps an empty cameras map", args: ["gps-antenna", "active"], settings: '{"cameraMount":{"cameras":{"__proto__":{"rotationDeg":180}}}}' },
+  { name: "set recording.video.cameras.__proto__ writes an own key", args: ["recording.video.cameras.__proto__", "on"], settings: '{"recording":{"video":{"cameras":{"cam0":false}}}}' },
+  { name: "set cameraMount.__proto__.rotationDeg writes an own key", args: ["cameraMount.__proto__.rotationDeg", "180"], settings: '{"cameraMount":{"cameras":{"cam0":{"rotationDeg":0}}}}' },
+  { name: "set over a stored __proto__ camera drops it", args: ["recording.video.cameras.cam1", "on"], settings: '{"recording":{"video":{"cameras":{"__proto__":true,"cam0":false}}}}' },
+  { name: "set over a stored __proto__ cameraMount drops it", args: ["cameraMount.cam1.rotationDeg", "180"], settings: '{"cameraMount":{"cameras":{"cam0":{"rotationDeg":0},"__proto__":{"rotationDeg":180}}}}' },
   { name: "flags around the key", args: ["--no-restart", "recording.telemetry.rateHz", "--force", "3"] },
   // apn
   { name: "apn missing value", args: ["apn"] },
@@ -195,7 +208,7 @@ for (const c of cases) {
 rmSync(scratch, { recursive: true, force: true });
 process.stdout.write(JSON.stringify({
   jsSourceFile: "src/commands/set.ts (setCommand :391-531, setRecordingCommand :109, setCameraEnable :227, setCameraMountCommand :266, setTimeSyncCommand :316, setApnCommand + watch :533-671) over src/daemon/settings.ts loadSettings/saveSettings",
-  jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   generatedBy: "npx tsx dump-cli-set.mts in a git-archive scratch copy of 89b5c64, non-root, fake timers (phase-2 WP6; script in evidence/wp6-tools, handed to WP7)",
   cases: out,
 }, null, 2) + "\n");

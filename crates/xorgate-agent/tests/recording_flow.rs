@@ -16,7 +16,11 @@ use serde_json::{json, Value};
 use xorgate_core::telemetry::ActivityLevel;
 use xorgate_core::types::{GnssView, PowerSampleReading};
 
-const JS_COMMIT: &str = "89b5c6407ef88e20f7168bd767d22a7be04ebcb6";
+/// CF78 (Phase 5b): re-dumped and re-stamped at 09da38d; 89b5c64 kept for archaeology.
+const JS_COMMITS: [&str; 2] = [
+    "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+    "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+];
 
 fn fixture() -> Value {
     let p = format!(
@@ -24,7 +28,11 @@ fn fixture() -> Value {
         env!("CARGO_MANIFEST_DIR")
     );
     let f: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-    assert_eq!(f["jsCommit"], JS_COMMIT);
+    assert!(
+        JS_COMMITS.contains(&f["jsCommit"].as_str().unwrap()),
+        "jsCommit {}",
+        f["jsCommit"]
+    );
     assert_eq!(f["jsSourceFile"], "src/recording/manager.ts");
     f
 }

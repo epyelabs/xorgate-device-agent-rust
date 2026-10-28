@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "src/agent/collectors/imu.ts (createImuCollector) + src/hardware/imu.ts (detectImu, streamImuData) + src/lib/exec.ts (run, runStream)",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "npx tsx dump-imu-scenarios.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP2; PATH = i2cdetect/python3 shims, XORGATE_MOCK=0, Date.now/hrtime mocked to wall = baseWallMs + mono)",
   "cases": [
     {

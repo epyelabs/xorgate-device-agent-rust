@@ -1,6 +1,6 @@
 {
  "jsSourceFile": "src/recording/disk.ts (test/recording-disk.test.ts ×8 + tree scenarios)",
- "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+ "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
  "generatedBy": "npx tsx plans/device-agent-js-to-rust/phase-3/evidence/wp2-tools/dump-disk.mts (scratch git-archive copy @ 89b5c64, linux/arm64 node:20; handed to tools/replay/js/ via WP6)",
  "cases": [
   {

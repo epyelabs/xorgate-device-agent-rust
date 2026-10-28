@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "test/sms-modem.test.ts + test/sms-pdu-builder.ts",
-  "jsCommit": "89b5c64",
+  "jsCommit": "09da38d",
   "generatedBy": "tools/replay/js/dump-sms-modem.mts",
   "modem": {
     "cmgf": 1,

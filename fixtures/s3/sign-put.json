@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "src/recording/s3-put.ts (signPut, encodeS3Key) + test/recording-s3.test.ts",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "npx tsx dump-wp5.ts in a git-archive scratch copy of the JS repo @ 89b5c64 (phase-2 WP5; script handed to WP7 via phase-2/evidence/wp5.md)",
   "cases": [
     {

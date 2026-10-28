@@ -227,7 +227,7 @@ if (process.argv[2] !== undefined) {
     JSON.stringify(
       {
         jsSourceFile: "src/agent/collectors/gps.ts (createGpsCollector) + src/hardware/gps.ts (streamGps)",
-        jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+        jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
         generatedBy:
           "npx tsx dump-gps-scenarios.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP2; FIFO port, Date.now/hrtime mocked to wall = baseWallMs + mono)",
         cases,

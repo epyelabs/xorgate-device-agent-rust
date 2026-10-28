@@ -67,4 +67,4 @@ while True:
         pass
     except ValueError:
         pass
-    time.sleep(0.2)
+    time.sleep(0.02)  # the control file is read within 20 ms (Phase 5b: per-attempt exits)

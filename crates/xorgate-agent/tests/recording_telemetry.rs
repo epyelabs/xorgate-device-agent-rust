@@ -308,7 +308,15 @@ async fn finalized_segments_match_the_ts_recorder_byte_for_byte() {
     ))
     .unwrap();
     let doc: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(doc["jsCommit"], "89b5c6407ef88e20f7168bd767d22a7be04ebcb6");
+    assert!(
+        [
+            "09da38dcc8b75c248625a3a0bee43b70e7def55d",
+            "89b5c6407ef88e20f7168bd767d22a7be04ebcb6"
+        ]
+        .contains(&doc["jsCommit"].as_str().unwrap()),
+        "jsCommit {} (CF78)",
+        doc["jsCommit"]
+    );
     let cases = doc["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 14);
     for (ci, c) in cases.iter().enumerate() {

@@ -173,7 +173,7 @@ process.stdout.write(
   JSON.stringify(
     {
       jsSourceFile: "src/media/hardware-reconcile.ts (reconcileHardware :77-182) + test/hardware-block.test.ts › reconcileHardware (4 async it()s, CF26)",
-      jsCommit: "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+      jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
       generatedBy: "plans/device-agent-js-to-rust/phase-3/evidence/wp5-tools/dump-hardware-reconcile.mts via tools/replay/js/run-tsx.sh",
       cases,
     },

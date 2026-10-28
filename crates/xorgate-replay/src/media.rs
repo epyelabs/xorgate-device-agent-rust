@@ -336,9 +336,237 @@ fn alive(pid: u32) -> bool {
 }
 
 fn append(path: &Path, v: &Value) {
+    // ONE write(2) per record: the exit runners and the observer append to
+    // the same `procs.ndjson` from different tasks, and `writeln!` on a File
+    // issues one write per formatted piece -- two tasks interleaved mid-line
+    // (window tape `.fin.cal89`: three `external` records lost on side A).
+    let line = format!("{v}\n");
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "{v}");
+        let _ = f.write_all(line.as_bytes());
     }
+}
+
+/// Phase 5b WP4 (orchestrator ruling 2026-10-23): the tape's external child
+/// exits re-enacted PER SIDE and PER ATTEMPT. The recording device's N-th
+/// spawn of a `(role, key)` child that exited externally (a camera dying
+/// 110 ms in, a `kill -9`) becomes "kill this side's own N-th spawn of that
+/// child, `offset_ms` after THAT side's spawn instant" — never "kill whatever
+/// is alive at the tape's wall instant", which forked the two agents' retry
+/// ladders whenever they were a few ms out of phase (one side in its 2 s retry
+/// gap at the instant, the other not: window tape cam1, `.jsrs09`). A side
+/// whose ladder genuinely differs keeps differing: the plan is keyed by
+/// attempt ordinal only and never re-aligns attempts by time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttemptExit {
+    /// Tape ms from the attempt's spawn to its exit.
+    pub offset_ms: i64,
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+}
+
+/// `(role, key)` → attempt index (0-based, the tape's spawn order) → exit.
+pub type ExitPlan = BTreeMap<(String, String), BTreeMap<usize, AttemptExit>>;
+
+/// The per-attempt plan of a tape's external exits, plus the exits it could
+/// not attribute to a recorded spawn (`(t, rec)`, re-enacted at tape time).
+pub fn exit_plan(tape: &Tape) -> (ExitPlan, Vec<u64>) {
+    let mut ord: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut by_pid: BTreeMap<u32, ((String, String), usize, u64)> = BTreeMap::new();
+    let mut plan = ExitPlan::new();
+    let mut unattributed = Vec::new();
+    for r in &tape.records {
+        match &r.ev {
+            TapeEvent::ChildSpawn(sp) => {
+                let k = (sp.role.clone(), sp.key.clone());
+                let n = ord.entry(k.clone()).or_default();
+                if sp.pid != 0 {
+                    by_pid.insert(sp.pid, (k, *n, r.t));
+                }
+                *n += 1;
+            }
+            TapeEvent::ChildExit(x) if x.external => match by_pid.get(&x.pid) {
+                Some((k, n, t0)) if *k == (x.role.clone(), x.key.clone()) => {
+                    plan.entry(k.clone()).or_default().insert(
+                        *n,
+                        AttemptExit {
+                            offset_ms: r.t.saturating_sub(*t0) as i64,
+                            code: x.code,
+                            signal: x.signal,
+                        },
+                    );
+                }
+                _ => unattributed.push(r.t),
+            },
+            _ => {}
+        }
+    }
+    (plan, unattributed)
+}
+
+/// One spawn the shims logged, with its wall instant and (KVS) channel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShimSpawn {
+    pub w: i64,
+    pub pid: u32,
+    pub tool: String,
+    pub argv: Vec<String>,
+    pub channel: Option<String>,
+}
+
+/// `(role, key)` of a shim spawn: a capture by its shmsink socket, a KVS
+/// master by its OWN channel (`<deviceId>-<key>`, never the tape's name).
+pub fn spawn_role_key(s: &ShimSpawn, plan: &MediaPlan) -> Option<(String, String)> {
+    if s.tool == "gst-launch-1.0" {
+        return capture_key(&s.argv).map(|k| (ROLE_CAPTURE.to_string(), k));
+    }
+    if s.tool == "xorgate-kvs-webrtc" {
+        let ch = s.channel.as_deref()?;
+        return plan
+            .channels
+            .iter()
+            .map(|(k, _)| k)
+            .find(|k| ch.ends_with(&format!("-{k}")))
+            .map(|k| (ROLE_KVS.to_string(), k.clone()));
+    }
+    None
+}
+
+/// A scheduled per-attempt exit on one side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DueExit {
+    pub due_w: i64,
+    pub role: String,
+    pub key: String,
+    /// 1-based attempt number on THIS side.
+    pub attempt: usize,
+    pub pid: u32,
+    pub channel: Option<String>,
+    pub exit: AttemptExit,
+}
+
+/// Pure scheduling: each new spawn gets its own attempt number per
+/// `(role, key)`; one with a planned exit is due at its OWN spawn instant +
+/// the tape's offset.
+pub fn schedule_exits(
+    counts: &mut BTreeMap<(String, String), usize>,
+    spawns: &[ShimSpawn],
+    xp: &ExitPlan,
+    plan: &MediaPlan,
+) -> Vec<DueExit> {
+    let mut out = Vec::new();
+    for s in spawns {
+        let Some(rk) = spawn_role_key(s, plan) else {
+            continue;
+        };
+        let n = counts.entry(rk.clone()).or_default();
+        let idx = *n;
+        *n += 1;
+        if let Some(x) = xp.get(&rk).and_then(|m| m.get(&idx)) {
+            out.push(DueExit {
+                due_w: s.w + x.offset_ms,
+                role: rk.0.clone(),
+                key: rk.1.clone(),
+                attempt: idx + 1,
+                pid: s.pid,
+                channel: s.channel.clone(),
+                exit: x.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// One side's runner: tails `<work>/shim.ndjson` for new spawns, keeps their
+/// due exits, delivers each to THAT pid when due (records in `procs.ndjson`).
+#[derive(Debug, Default)]
+pub struct ExitRunner {
+    offset: u64,
+    partial: String,
+    counts: BTreeMap<(String, String), usize>,
+    pending: Vec<DueExit>,
+}
+
+impl ExitRunner {
+    pub fn poll(&mut self, a: &ObsAgent, plan: &MediaPlan, xp: &ExitPlan, now: i64) -> Vec<Value> {
+        let spawns = self.read_new(&a.work);
+        let due = schedule_exits(&mut self.counts, &spawns, xp, plan);
+        self.pending.extend(due);
+        let (ready, keep): (Vec<DueExit>, Vec<DueExit>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|d| d.due_w <= now);
+        self.pending = keep;
+        ready.iter().map(|d| deliver_exit(a, d, now)).collect()
+    }
+
+    fn read_new(&mut self, work: &Path) -> Vec<ShimSpawn> {
+        let Ok(mut f) = fs::File::open(work.join("shim.ndjson")) else {
+            return Vec::new();
+        };
+        use std::io::{Seek, SeekFrom};
+        if f.seek(SeekFrom::Start(self.offset)).is_err() {
+            return Vec::new();
+        }
+        let mut buf = String::new();
+        if f.read_to_string(&mut buf).is_err() {
+            return Vec::new();
+        }
+        self.offset += buf.len() as u64;
+        let text = std::mem::take(&mut self.partial) + &buf;
+        let (whole, rest) = match text.rfind('\n') {
+            Some(i) => (text[..=i].to_string(), text[i + 1..].to_string()),
+            None => (String::new(), text),
+        };
+        self.partial = rest;
+        whole
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["k"] == "spawn")
+            .filter_map(|v| {
+                Some(ShimSpawn {
+                    w: v["w"].as_i64()?,
+                    pid: v["pid"].as_u64()? as u32,
+                    tool: v["tool"].as_str()?.to_string(),
+                    argv: v["argv"]
+                        .as_array()?
+                        .iter()
+                        .filter_map(|a| a.as_str().map(str::to_string))
+                        .collect(),
+                    channel: v["channel"].as_str().map(str::to_string),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Deliver one per-attempt exit to its own pid: a capture is signalled (the
+/// tape's signal, SIGKILL for a code exit — gst cannot exit with a chosen
+/// code); a KVS master exits with the tape's code through ITS channel's
+/// control file (or takes the tape's signal). A pid already gone = that
+/// attempt ended first on this side (`ok: false`, recorded).
+fn deliver_exit(a: &ObsAgent, d: &DueExit, now: i64) -> Value {
+    let live = alive(d.pid);
+    let sig = |n: i32| {
+        nix::sys::signal::Signal::try_from(n).is_ok_and(|s| {
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(d.pid as i32), s).is_ok()
+        })
+    };
+    let ok = live
+        && if d.role == ROLE_KVS && d.exit.signal.is_none() {
+            d.channel.as_ref().is_some_and(|ch| {
+                fs::write(
+                    a.work.join("state/kvs").join(format!("{ch}.exit")),
+                    d.exit.code.unwrap_or(1).to_string(),
+                )
+                .is_ok()
+            })
+        } else {
+            sig(d.exit.signal.unwrap_or(9))
+        };
+    let rec = json!({"w": now, "k": "external", "role": d.role, "key": d.key, "pid": d.pid,
+        "attempt": d.attempt, "due": d.due_w, "code": d.exit.code, "sig": d.exit.signal,
+        "channel": d.channel, "ok": ok});
+    append(&a.dir.join("procs.ndjson"), &rec);
+    rec
 }
 
 /// Re-enact a tape `child_exit` with `external: true` on one agent: a KVS
@@ -563,6 +791,180 @@ pub fn finish(a: &ObsAgent) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `procs.ndjson` is appended by the exit runners and the observer at
+    /// once: every record must land as one whole line.
+    #[test]
+    fn concurrent_appends_never_interleave_a_record() {
+        let d = std::env::temp_dir().join(format!("media-append-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let f = d.join("procs.ndjson");
+        let hs: Vec<_> = (0..8)
+            .map(|t| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    for i in 0..400 {
+                        append(
+                            &f,
+                            &json!({"w": i, "k": "external", "role": "capture", "key": "cam1",
+                                "pid": t * 1000 + i, "attempt": i, "due": i, "code": 1,
+                                "sig": null, "channel": null, "ok": true}),
+                        );
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        let text = fs::read_to_string(&f).unwrap();
+        let recs: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("a whole record per line"))
+            .collect();
+        assert_eq!(recs.len(), 8 * 400);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Per-attempt external exits (orchestrator ruling 2026-10-23): the
+    /// tape's N-th attempt's exit lands on each side's OWN N-th attempt at its
+    /// own spawn + the tape offset, whatever the two sides' phase; a side
+    /// whose ladder genuinely differs is NOT re-aligned (by ordinal only), so
+    /// the diff still sees the difference.
+    #[test]
+    fn exits_are_per_side_per_attempt_and_never_realign_a_different_ladder() {
+        use xorgate_hal::tape::{ChildSpawnRec, TapeMeta, TapeRecord};
+        let rec = |t: u64, ev| TapeRecord { t, w: t as i64, ev };
+        let spawn = |key: &str, role: &str, pid| {
+            TapeEvent::ChildSpawn(ChildSpawnRec {
+                role: role.into(),
+                key: key.into(),
+                argv: vec![],
+                env: BTreeMap::new(),
+                pid,
+                nice: None,
+            })
+        };
+        let exit = |key: &str, role: &str, pid, code, signal, external| {
+            TapeEvent::ChildExit(ChildExitRec {
+                role: role.into(),
+                key: key.into(),
+                pid,
+                code,
+                signal,
+                external,
+            })
+        };
+        let tape = Tape {
+            meta: TapeMeta::new("d", "b", 0),
+            records: vec![
+                rec(1_000, spawn("cam1", ROLE_CAPTURE, 11)),
+                rec(1_110, exit("cam1", ROLE_CAPTURE, 11, Some(1), None, true)),
+                rec(3_100, spawn("cam1", ROLE_CAPTURE, 12)), // attempt 2: agent-stopped
+                rec(9_000, exit("cam1", ROLE_CAPTURE, 12, None, Some(2), false)),
+                rec(9_500, spawn("cam1", ROLE_CAPTURE, 13)),
+                rec(9_740, exit("cam1", ROLE_CAPTURE, 13, None, Some(9), true)),
+                rec(2_000, spawn("cam1", ROLE_KVS, 21)),
+                rec(2_500, exit("cam1", ROLE_KVS, 21, Some(1), None, true)),
+                rec(9_900, exit("cam0", ROLE_CAPTURE, 99, None, Some(9), true)), // no spawn
+            ],
+            truncated: false,
+        };
+        let (xp, unattributed) = exit_plan(&tape);
+        assert_eq!(unattributed, vec![9_900]);
+        let cap = &xp[&(ROLE_CAPTURE.to_string(), "cam1".to_string())];
+        assert_eq!(cap.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(
+            cap[&0],
+            AttemptExit {
+                offset_ms: 110,
+                code: Some(1),
+                signal: None
+            }
+        );
+        assert_eq!(cap[&2].offset_ms, 240);
+        let plan = MediaPlan {
+            channels: vec![("cam1".into(), "tape-chan-cam1".into())],
+            ..Default::default()
+        };
+        let gst = |w, pid| ShimSpawn {
+            w,
+            pid,
+            tool: "gst-launch-1.0".into(),
+            argv: vec!["socket-path=/h/shm/cam1.sock".into()],
+            channel: None,
+        };
+        let kvs = |w, pid| ShimSpawn {
+            w,
+            pid,
+            tool: "xorgate-kvs-webrtc".into(),
+            argv: vec![],
+            channel: Some("00000000-0000-4000-8000-00000000000a-cam1".into()),
+        };
+        let due = |spawns: &[ShimSpawn]| {
+            let mut counts = BTreeMap::new();
+            schedule_exits(&mut counts, spawns, &xp, &plan)
+                .into_iter()
+                .map(|d| (d.role, d.attempt, d.pid, d.due_w, d.channel))
+                .collect::<Vec<_>>()
+        };
+        // Side A and side B 7 ms apart: each side's attempts die at ITS spawn + offset.
+        let a = due(&[
+            gst(50_000, 1),
+            kvs(50_900, 5),
+            gst(52_000, 2),
+            gst(58_500, 3),
+        ]);
+        let b = due(&[
+            gst(50_007, 101),
+            kvs(50_905, 105),
+            gst(52_009, 102),
+            gst(58_511, 103),
+        ]);
+        assert_eq!(
+            a,
+            vec![
+                ("capture".into(), 1, 1, 50_110, None),
+                (
+                    "kvs".into(),
+                    1,
+                    5,
+                    51_400,
+                    Some("00000000-0000-4000-8000-00000000000a-cam1".into())
+                ),
+                ("capture".into(), 3, 3, 58_740, None),
+            ]
+        );
+        assert_eq!(
+            b.iter().map(|x| x.3).collect::<Vec<_>>(),
+            vec![50_117, 51_405, 58_751]
+        );
+        // The KVS exit names the side's OWN channel, never the tape's.
+        assert!(a.iter().all(|x| x.4.as_deref() != Some("tape-chan-cam1")));
+        // NEGATIVE: a side with an EXTRA early attempt is not re-aligned: its
+        // attempt 3 is the extra one's successor, so the kills shift with it
+        // and the ladder difference survives (the diff's children/events rows).
+        let c = due(&[
+            gst(50_000, 1),
+            gst(50_500, 9),
+            gst(52_000, 2),
+            gst(58_500, 3),
+        ]);
+        assert_eq!(
+            c.iter().map(|x| (x.1, x.2)).collect::<Vec<_>>(),
+            vec![(1, 1), (3, 2)],
+            "attempt ordinals, never time matching"
+        );
+        // Incremental: attempts counted across polls.
+        let mut counts = BTreeMap::new();
+        assert_eq!(
+            schedule_exits(&mut counts, &[gst(1, 1), gst(2, 2)], &xp, &plan).len(),
+            1
+        );
+        let third = schedule_exits(&mut counts, &[gst(3, 3)], &xp, &plan);
+        assert_eq!(third[0].attempt, 3);
+    }
 
     #[test]
     fn uuidv7_shape_and_capture_key() {

@@ -96,6 +96,9 @@ pub struct MediaCapture {
     /// of its final state.json (written at shutdown) — the end-snapshot
     /// per-side bound (review-wp6 FLAG 3).
     pub last_tick_backlog: Option<i64>,
+    /// Phase 5b WP4: every live telemetry tick's `metrics.system.health_flags`
+    /// value TEXT `(ts, value)` (the agent's own LED state over time).
+    pub live_flags: Vec<(i64, String)>,
     /// `(ts, "<level>: <msg>")` of every `power shed →` event seen in the
     /// state.json snapshots (`files.ndjson`; T8/d30-js-reference).
     pub shed_events: Vec<(i64, String)>,
@@ -104,6 +107,9 @@ pub struct MediaCapture {
     /// own tape (`<run>/<label>/agent-tape.ndjson.gz`, Rust only; empty for
     /// a JS side): the T4/rec-sample epoch anchor (review-wp6 F4).
     pub nmea_reads: Vec<(i64, String)>,
+    /// Phase 5b (R-P3G-2): the side's `imuMount` at the end (final
+    /// settings.json), for the recorded-IMU input oracle's euler leaves.
+    pub imu_mount: Option<xorgate_core::orientation::ImuMount>,
     /// Anything media-related captured at all.
     pub present: bool,
 }
@@ -456,7 +462,9 @@ impl MediaCapture {
             .collect();
         let external_cap: BTreeSet<u32> = procs
             .iter()
-            .filter(|v| v["k"] == "external" && v["role"] == "capture")
+            // `ok: false` = a planned per-attempt exit found its pid already
+            // gone (media.rs `deliver_exit`): that child ended on its own.
+            .filter(|v| v["k"] == "external" && v["role"] == "capture" && v["ok"] != false)
             .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
             .collect();
         for s in spawns.iter_mut() {
@@ -605,6 +613,7 @@ impl MediaCapture {
             }
         }
         let mut last_tick_backlog = None;
+        let mut live_flags = Vec::new();
         let end_backlog = std::fs::read(dir.join("final/state.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -628,6 +637,12 @@ impl MediaCapture {
                 p["recording"]["liveBlock"].clone(),
             );
             last_tick_backlog = p["recording"]["backlogSegments"].as_i64();
+            if let (Some(ts), Some(f)) = (
+                p["ts"].as_i64(),
+                p.pointer("/metrics/system/health_flags/value"),
+            ) {
+                live_flags.push((ts, f.to_string()));
+            }
             if prev.as_ref().is_some_and(|q| *q != cur) {
                 shed_changes.push(v["w"].as_i64().unwrap_or(0));
             }
@@ -644,9 +659,19 @@ impl MediaCapture {
             shm_orphans,
             shed_changes,
             last_tick_backlog,
+            live_flags,
             end_backlog,
             shed_events,
             nmea_reads: nmea_lines(&tape, None),
+            imu_mount: std::fs::read(dir.join("final.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .and_then(|f| {
+                    f["files"]["settings.json"]["text"]
+                        .as_str()
+                        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                })
+                .and_then(|st| xorgate_core::orientation::parse_imu_mount(&st["imuMount"])),
             present,
         }
     }
@@ -1299,8 +1324,26 @@ fn d30_rec_value_gap(
     only: &[Step],
     pmic: &[(i64, String)],
 ) -> bool {
+    if lack_kind != "js" || hold_kind != "rust" {
+        return false;
+    }
+    d30_gap_signature(p, lack, hold, only, pmic, true)
+}
+
+/// The D30 rail-value-gap signature shared by `d30_rec_value_gap` (Rust
+/// holding: `need_n` — the lacking JS's system-less sample is required) and
+/// the PROPOSED JS-vs-JS arm (`need_n` false: the other JS's fresher cache may
+/// jump `u` → `w` directly).
+fn d30_gap_signature(
+    p: &str,
+    lack: &[LeafSample],
+    hold: &[LeafSample],
+    only: &[Step],
+    pmic: &[(i64, String)],
+    need_n: bool,
+) -> bool {
     const RAIL: &str = "metrics.system.rail_5v.value";
-    if p != RAIL || lack_kind != "js" || hold_kind != "rust" {
+    if p != RAIL {
         return false;
     }
     let [(v, n, ts0)] = only else {
@@ -1361,7 +1404,76 @@ fn d30_rec_value_gap(
     };
     let rest = class.trim_start_matches('S');
     let after_n = rest.trim_start_matches('N');
-    rest.len() < class.len() && after_n.len() < rest.len() && after_n.chars().all(|c| c == 'W')
+    rest.len() < class.len()
+        // The reviewed Rust-holding row: unchanged (S+ N+ W*). The proposed
+        // JS-vs-JS arm: S+ N* W+ (it must reach `w`).
+        && (if need_n { after_n.len() < rest.len() } else { !after_n.is_empty() })
+        && after_n.chars().all(|c| c == 'W')
+}
+
+/// PROPOSED (Phase 5b WP4, rec-disk `.cal09r2`; inert without its row):
+/// `d30_rec_value_gap`'s mechanism INSIDE the reference. Both recorders are
+/// JS and both read the shared 1 s `system.sample()` cache
+/// (ts:src/agent/collectors/system.ts:104-113), whose compute instant is
+/// whichever consumer asks first (D30). So one JS can record a released pmic
+/// value `v` (its cache computed between release(v) and release(w)) that the
+/// other never records: its samples in [release(v), release(w) + 1000) are,
+/// IN ORDER, one or more stale `u` (< 1000 ms after release(v)), then zero or
+/// more WITHOUT `system` (telemetry-recorder.ts:102), then only `w` (at/after
+/// release(w)). Same guards as the Rust-holding row otherwise: rail_5v only,
+/// ONE step on the holder, a released `v` with released neighbours, every
+/// holder sample in the window, values exact as 2-dp numbers. The caller
+/// requires both sides `js`.
+fn d30_js_rec_value_gap(
+    p: &str,
+    lack: &[LeafSample],
+    hold: &[LeafSample],
+    only: &[Step],
+    pmic: &[(i64, String)],
+) -> bool {
+    d30_gap_signature(p, lack, hold, only, pmic, false)
+}
+
+/// PROPOSED (Phase 5b WP4, rec-disk `.cal09`; inert without its row): a
+/// `metrics.system.*` value one JS recorded for ONE sample that the other JS
+/// could not record because ITS sample at that instant carried no `system`
+/// at all — the D30 system-less sample (ts:src/recording/telemetry-recorder.ts:102,
+/// the shared cache's compute in flight, system.ts:104-113; JS-vs-JS T13
+/// already accepts the missing group, this is the value it hid). Judged on
+/// the whole value sequence (an LCS hunk can pair the transient's neighbours
+/// instead): the step is ONE sample, not the first or last step; the lacking
+/// side's sample nearest it (≤ 500 ms,
+/// half a recorder period) carries no `metrics.system.*` leaf; and the lacking
+/// side's samples just before and after that one carry `system`; and with
+/// every such transient removed, both sides' value sequences are EQUAL. A
+/// value held two samples, a lacking sample that HAS `system`, two adjacent
+/// system-less samples, or any other difference stay UNTOLERATED. Both sides
+/// `js` only.
+/// The indices of `steps` (one side) that are such one-sample transients
+/// against the other side's samples `other`.
+fn system_less_transients(p: &str, steps: &[Step], other: &[LeafSample]) -> Vec<usize> {
+    (1..steps.len().saturating_sub(1))
+        .filter(|&i| d30_js_system_less_value(p, other, &steps[i]))
+        .collect()
+}
+
+fn d30_js_system_less_value(p: &str, lack: &[LeafSample], step: &Step) -> bool {
+    if !p.starts_with("metrics.system.") {
+        return false;
+    }
+    let (_, 1, ts) = step else {
+        return false;
+    };
+    let has_sys = |o: &BTreeMap<String, String>| o.keys().any(|k| k.starts_with("metrics.system."));
+    let Some(i) = (0..lack.len()).min_by_key(|&i| (lack[i].0 - ts).abs()) else {
+        return false;
+    };
+    (lack[i].0 - ts).abs() <= 500
+        && !has_sys(&lack[i].1)
+        && i > 0
+        && i + 1 < lack.len()
+        && has_sys(&lack[i - 1].1)
+        && has_sys(&lack[i + 1].1)
 }
 
 /// Recorded telemetry VALUES (review-wp6 G1, phase file "telemetry segments …
@@ -1379,8 +1491,36 @@ fn d30_rec_value_gap(
 /// - per group (`system`: the `(samples without system)` check above), the
 ///   count of samples carrying it: |Δ| ≤ that group's input transitions in
 ///   the stretch ±1.5 s (T4, `InputFacts::groups`).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn rec_values(
+    sid: &str,
+    (a, b): (&BTreeMap<u64, String>, &BTreeMap<u64, String>),
+    ep: &(Timeline, Timeline),
+    play: &PlayInfo,
+    facts: &crate::diff::InputFacts,
+    kinds: (&str, &str),
+    pmic: &[(i64, String)],
+    table: &Table,
+    rep: &mut Report,
+) {
+    rec_values_m(
+        sid,
+        (a, b),
+        ep,
+        play,
+        facts,
+        kinds,
+        pmic,
+        table,
+        rep,
+        (None, None),
+        (&[], &[]),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rec_values_m(
     sid: &str,
     (a, b): (&BTreeMap<u64, String>, &BTreeMap<u64, String>),
     (ea, eb): &(Timeline, Timeline),
@@ -1390,10 +1530,26 @@ fn rec_values(
     pmic: &[(i64, String)],
     table: &Table,
     rep: &mut Report,
+    mounts: (
+        Option<&xorgate_core::orientation::ImuMount>,
+        Option<&xorgate_core::orientation::ImuMount>,
+    ),
+    live: (LiveSeries, LiveSeries),
 ) {
     let id = "T4/rec-sample";
     let d30_gap_row = table
         .matcher_rows("d30_rec_value_gap", "rec-telemetry")
+        .first()
+        .cloned();
+    // PROPOSED (Phase 5b WP4, for the reviewer; inert until its row exists in
+    // tolerances.toml — see phase-5b/evidence/wp4.md "rec-disk proposals"):
+    // the two D30 recorded-value gaps INSIDE the reference (JS-vs-JS only).
+    let d30_js_gap_row = table
+        .matcher_rows("d30_js_rec_value_gap", "rec-telemetry")
+        .first()
+        .cloned();
+    let d30_js_nosys_row = table
+        .matcher_rows("d30_js_system_less_value", "rec-telemetry")
         .first()
         .cloned();
     let collision = row_tol(table, id, "collisionMs", 0.0) as i64;
@@ -1434,6 +1590,52 @@ fn rec_values(
                 .collect()
         };
         let (la, lb) = (leaves(&xa), leaves(&xb));
+        // R-P3G-2, high-rate IMU: each side's recorded IMU sample is checked
+        // against the TAPE: its quat/accel (and euler, with that side's
+        // imuMount or none) must be exactly `map_latest` of one of the IMU
+        // lines released shortly before its read instant. Those samples are
+        // proven genuine reads of the input; pairs of two such samples are
+        // then not cross-compared (they read different 16 Hz lines).
+        let (va_imu, vb_imu) = if has_row(table, REC_INPUT_BETWEEN) && !facts.imu_samples.is_empty()
+        {
+            (
+                imu_oracle(&la, &facts.imu_samples, mounts.0),
+                imu_oracle(&lb, &facts.imu_samples, mounts.1),
+            )
+        } else {
+            (BTreeMap::new(), BTreeMap::new())
+        };
+        // … and gps the same way, for its FIX leaves (the tape's NMEA through
+        // the fix aggregator); the sky leaves keep the timing rule.
+        let (va_gps, vb_gps) = if has_row(table, REC_INPUT_BETWEEN) && !facts.gps_snaps.is_empty() {
+            (
+                snap_oracle(&la, "gps", &facts.gps_snaps),
+                snap_oracle(&lb, "gps", &facts.gps_snaps),
+            )
+        } else {
+            (BTreeMap::new(), BTreeMap::new())
+        };
+        let imu_ws: Vec<i64> = facts.imu_samples.iter().map(|(w, _)| *w).collect();
+        let gps_ws: Vec<i64> = facts.gps_snaps.iter().map(|(w, _)| *w).collect();
+        for (g, va, vb, ws) in [
+            ("imu", &va_imu, &vb_imu, &imu_ws),
+            ("gps", &va_gps, &vb_gps, &gps_ws),
+        ] {
+            if let Some((summary, failed)) = oracle_lag_check(&la, &lb, va, vb, ws) {
+                rep.inputs
+                    .insert(format!("T4 oracle {g} {at}"), summary.clone());
+                if failed {
+                    rep.push(mm(
+                        "rec-telemetry",
+                        &at,
+                        &format!("metrics.{g}(oracle input lag)"),
+                        summary,
+                        format!("≤ {ORACLE_STALE_MS} ms on each side"),
+                        UNTOLERATED,
+                    ));
+                }
+            }
+        }
         let paths: BTreeSet<&String> = la
             .iter()
             .chain(lb.iter())
@@ -1459,12 +1661,77 @@ fn rec_values(
                 continue; // host-read (T3): the live stream compares them
             }
             stat(rep, "rec-values").compared += 1;
+            let group = p.split('.').nth(1).unwrap_or("");
+            let rel = walls(group);
+            // R-P3G-2 (phase-3 gate, Phase 5b WP4): pair the two sides'
+            // recorder ticks by time and drop, for THIS leaf only, each pair
+            // whose two reads straddle a release of the leaf's group input
+            // (they read different inputs: a real 16 Hz IMU or a 1 Hz NMEA
+            // epoch between two ticks ~250 ms apart) and whose values differ.
+            // Every other pair keeps its exact comparison below.
+            let gps_fix_leaf = group == "gps"
+                && p.strip_prefix("metrics.gps.")
+                    .and_then(|r| r.strip_suffix(".value"))
+                    .is_some_and(|l| GPS_FIX_LEAVES.contains(&l));
+            let (la_p, lb_p, dropped) = if group == "imu" {
+                // IMU: only the tape oracle removes pairs (never timing alone).
+                oracle_filter(&la, &lb, p, &va_imu, &vb_imu)
+            } else if gps_fix_leaf && !(va_gps.is_empty() && vb_gps.is_empty()) {
+                oracle_filter(&la, &lb, p, &va_gps, &vb_gps)
+            } else if has_row(table, REC_INPUT_BETWEEN) && !rel.is_empty() {
+                straddle_filter(&la, &lb, p, &rel, collision)
+            } else {
+                (la.clone(), lb.clone(), 0)
+            };
+            if dropped > 0 {
+                rep.push(mm(
+                    "rec-telemetry",
+                    &at,
+                    &format!("{p}(paired reads straddling an input)"),
+                    format!("{dropped} pair(s)"),
+                    format!("{dropped} pair(s)"),
+                    REC_INPUT_BETWEEN,
+                ));
+            }
+            let (la, lb) = (la_p, lb_p);
             let (sa, sb) = (steps(&la, p), steps(&lb, p));
             if sa.iter().map(|s| &s.0).eq(sb.iter().map(|s| &s.0)) {
                 continue;
             }
-            let group = p.split('.').nth(1).unwrap_or("");
-            let rel = walls(group);
+            // PROPOSED (inert without its row): one-sample values a JS
+            // recorded where the other JS's sample carried no `system`.
+            if let Some(rid) = d30_js_nosys_row
+                .as_ref()
+                .filter(|_| kinds.0 == "js" && kinds.1 == "js")
+            {
+                let (ka, kb) = (
+                    system_less_transients(p, &sa, &lb),
+                    system_less_transients(p, &sb, &la),
+                );
+                let keep = |st: &[Step], drop: &[usize]| -> Vec<String> {
+                    let mut v: Vec<String> = Vec::new();
+                    for (i, s) in st.iter().enumerate() {
+                        if !drop.contains(&i) && v.last() != Some(&s.0) {
+                            v.push(s.0.clone());
+                        }
+                    }
+                    v
+                };
+                if !(ka.is_empty() && kb.is_empty()) && keep(&sa, &ka) == keep(&sb, &kb) {
+                    for (st, drop, side_a) in [(&sa, &ka, true), (&sb, &kb, false)] {
+                        for &i in drop {
+                            let f = format!("{}×{}@{}", st[i].0, st[i].1, st[i].2);
+                            let (x, y) = if side_a {
+                                (f, String::new())
+                            } else {
+                                (String::new(), f)
+                            };
+                            rep.push(mm("rec-telemetry", &at, &format!("{p}(values)"), x, y, rid));
+                        }
+                    }
+                    continue;
+                }
+            }
             // NARROWED (review-wp6 re-check): the colliding release is THE
             // one that brought the step on the side holding it (the last
             // release of the group at or before that sample, ≤ 1.1 s before
@@ -1535,16 +1802,54 @@ fn rec_values(
                     } else {
                         d30_rec_value_gap(p, (kinds.0, &la), (kinds.1, &lb), &only_b, pmic)
                     };
+                // PROPOSED calibration-only arms (both sides js).
+                let both_js = kinds.0 == "js" && kinds.1 == "js";
+                let (hold, lack, only) = if only_b.is_empty() {
+                    (&la, &lb, &only_a)
+                } else {
+                    (&lb, &la, &only_b)
+                };
+                let d30_js_gap = !ok
+                    && !d30_gap
+                    && one_sided
+                    && both_js
+                    && d30_js_gap_row.is_some()
+                    && d30_js_rec_value_gap(p, lack, hold, only, pmic);
+                // A one-sample LED-state value one RECORDER caught that BOTH
+                // agents held: each side's live telemetry carried it within a
+                // second of that sample (the LED heartbeat resolves the state,
+                // ts:src/worker.ts:703-705; each recorder samples it on its own
+                // 1 s phase, ts:src/recording/telemetry-recorder.ts:96-106, so
+                // a state held < 1 s can fall between one recorder's reads --
+                // the window tape's boot: JS 304 recorded, Rust 288, both
+                // published 304 at their first tick).
+                let (live_h, live_o) = if only_b.is_empty() {
+                    (live.0, live.1)
+                } else {
+                    (live.1, live.0)
+                };
+                let fix_edge = !ok
+                    && !d30_gap
+                    && !d30_js_gap
+                    && one_sided
+                    && has_row(table, REC_INPUT_BETWEEN)
+                    && led_state_both_held(p, only, live_h, live_o);
                 let fmt = |v: &[Step]| {
                     v.iter()
                         .map(|s| format!("{}×{}@{}", s.0, s.1, s.2))
                         .collect::<Vec<_>>()
                         .join(" ")
                 };
-                let tol = if ok {
+                let tol = if fix_edge {
+                    REC_INPUT_BETWEEN.to_string()
+                } else if ok {
                     id.to_string()
                 } else if d30_gap {
                     d30_gap_row
+                        .clone()
+                        .unwrap_or_else(|| UNTOLERATED.to_string())
+                } else if d30_js_gap {
+                    d30_js_gap_row
                         .clone()
                         .unwrap_or_else(|| UNTOLERATED.to_string())
                 } else {
@@ -1591,6 +1896,20 @@ fn rec_values(
                 .groups
                 .get(&g)
                 .map_or(0, |v| v.iter().filter(|w| **w >= lo && **w <= hi).count());
+            // Phase 5b WP4: gps presence explained sample by sample on EACH
+            // side by the tape (`carry_consistent`) — the two recorders read
+            // at their own phases on either side of an NMEA epoch.
+            // (imu: every released IMU line advances the TS imu cache,
+            // ts:src/agent/collectors/imu.ts:81-106.)
+            let advances: &[i64] = match g.as_str() {
+                "gps" => &facts.gps_advances,
+                "imu" => &facts.imu_lines,
+                _ => &[],
+            };
+            let carry_ok = has_row(table, REC_INPUT_BETWEEN)
+                && !advances.is_empty()
+                && carry_consistent(&la, advances, &g)
+                && carry_consistent(&lb, advances, &g);
             rep.push(mm(
                 "rec-telemetry",
                 &at,
@@ -1599,12 +1918,474 @@ fn rec_values(
                 nb.to_string(),
                 if na.abs_diff(nb) <= trans {
                     "T4"
+                } else if carry_ok {
+                    REC_INPUT_BETWEEN
                 } else {
                     UNTOLERATED
                 },
             ));
         }
     }
+}
+
+/// A tape input (IMU line / gps snapshot) is "recent" for a recorded sample
+/// when it is no older than ORACLE_LAG_MS before the NEWEST one the tape
+/// released by the sample's read instant (+ the 50 ms delivery margin).
+/// Review-wp4 R4-10: was the last 24 IMU lines / 40 gps snapshots. As a
+/// TIME span, calibrated on the window tape (JS@09 vs Rust .fin.jsrs09): a
+/// genuine read can match a line up to ~1.5 s before the newest release by
+/// its read (the hold gate releases IMU lines in bursts after pair windows;
+/// the recorder reads its cache on its own phase): 400 ms → 361 untolerated,
+/// 800 → 58, 1 000 → 6, 1 500 → 0. A STALE side is caught instead by the
+/// median-lag check (ORACLE_STALE_MS).
+const ORACLE_LAG_MS: i64 = 1_500;
+
+/// Review-wp4 R4-10: a STALE side. For each verified sample, its LAG is the
+/// release of the NEWEST input the tape had delivered by the read (`oracle_
+/// span`'s end) minus the release of the input the sample matched (the
+/// oracle takes the newest match, so an unchanged value never lags). A
+/// recorder reading what was current lags 0 bar read/release races; one
+/// reading 1 s-stale inputs lags ~1 s on every changing value. Each side's
+/// MEDIAN lag must stay within ORACLE_STALE_MS. (Was a cross-side compare of
+/// median AGES, read − matched release: that measures each recorder's phase
+/// against the 1 s NMEA epoch grid, which differs per side — stepC
+/// p5b-clock-fallback.r27.jsrs1 A −8 ms / B 803 ms, both lagging 0.)
+const ORACLE_STALE_MS: i64 = 500;
+
+/// The per-group median-lag check (ORACLE_STALE_MS): `(summary, failed)`.
+fn oracle_lag_check(
+    la: &RecSamples,
+    lb: &RecSamples,
+    va: &BTreeMap<usize, i64>,
+    vb: &BTreeMap<usize, i64>,
+    ws: &[i64],
+) -> Option<(String, bool)> {
+    let med = |l: &RecSamples, v: &BTreeMap<usize, i64>| -> Option<i64> {
+        let reads = read_instants(l);
+        let mut lags: Vec<i64> = v
+            .iter()
+            .filter_map(|(i, w)| {
+                let (_, end) = oracle_span(ws, reads[*i]);
+                Some(ws[end.checked_sub(1)?] - w)
+            })
+            .collect();
+        lags.sort();
+        lags.get(lags.len() / 2).copied()
+    };
+    let (ma, mb) = (med(la, va), med(lb, vb));
+    if ma.is_none() && mb.is_none() {
+        return None;
+    }
+    let show = |m: Option<i64>| m.map_or("-".to_string(), |x| format!("{x} ms"));
+    Some((
+        format!(
+            "median lag behind the newest input A {} / B {} (≤ {ORACLE_STALE_MS} ms)",
+            show(ma),
+            show(mb)
+        ),
+        ma.is_some_and(|x| x > ORACLE_STALE_MS) || mb.is_some_and(|x| x > ORACLE_STALE_MS),
+    ))
+}
+
+/// The `[start, end)` of `ws` (sorted release instants) the oracle may match
+/// for a read at `read`: released by read + 50 and within ORACLE_LAG_MS of
+/// the newest such release.
+fn oracle_span(ws: &[i64], read: i64) -> (usize, usize) {
+    let end = ws.partition_point(|w| *w <= read + 50);
+    let Some(newest) = end.checked_sub(1).map(|i| ws[i]) else {
+        return (0, 0);
+    };
+    (ws.partition_point(|w| *w < newest - ORACLE_LAG_MS), end)
+}
+
+/// R-P3G-2: the indices of `l` whose every `metrics.imu.*` leaf equals
+/// `map_latest` (the agent's own mapping, xorgate_core::imu_group, parity
+/// with the TS `mapLatest`, ts:src/agent/collectors/imu.ts:81-106) of one IMU
+/// line the tape released before that sample's read instant — within
+/// ORACLE_LAG_MS of the newest one (`oracle_span`). euler is tried with the side's
+/// final `imuMount` and with none.
+fn imu_oracle(
+    l: &RecSamples,
+    lines: &[(i64, xorgate_core::imu::ImuSample)],
+    mount: Option<&xorgate_core::orientation::ImuMount>,
+) -> BTreeMap<usize, i64> {
+    let reads = read_instants(l);
+    let mut out = BTreeMap::new();
+    for (i, (_, o)) in l.iter().enumerate() {
+        let imu: BTreeMap<&str, &String> = o
+            .iter()
+            .filter_map(|(k, v)| {
+                let leaf = k.strip_prefix("metrics.imu.")?.strip_suffix(".value")?;
+                Some((leaf, v))
+            })
+            .collect();
+        if imu.is_empty() {
+            continue;
+        }
+        let ws: Vec<i64> = lines.iter().map(|(w, _)| *w).collect();
+        let (start, end) = oracle_span(&ws, reads[i]);
+        let hit = lines[start..end].iter().rev().find(|(_, smp)| {
+            [mount, None].iter().any(|m| {
+                let g = serde_json::to_value(xorgate_core::imu_group::map_latest(smp, *m))
+                    .unwrap_or(Value::Null);
+                // The TEXT (value + JS number format, T9) must match.
+                imu.iter().all(|(leaf, v)| {
+                    // serde_json keeps 1 (u64) ≠ 1.0 (f64): the format too.
+                    serde_json::from_str::<Value>(v).ok().as_ref() == Some(&g[*leaf]["value"])
+                })
+            })
+        });
+        if let Some((w, _)) = hit {
+            out.insert(i, *w);
+        }
+    }
+    out
+}
+
+/// R-P3G-2 shape half: does every sample of `seg` carrying the leaf `p`
+/// (an IMU leaf, or a gps fix leaf) pass the tape oracle?
+fn segment_oracle_ok(
+    seg: &[Value],
+    p: &str,
+    facts: &crate::diff::InputFacts,
+    mount: Option<&xorgate_core::orientation::ImuMount>,
+) -> bool {
+    let l: RecSamples = seg
+        .iter()
+        .filter(|x| x["metrics"].is_object())
+        .map(|x| {
+            let mut o = BTreeMap::new();
+            leaf_texts(&x["metrics"], "metrics", &mut o);
+            (x["ts"].as_i64().unwrap_or(0), o)
+        })
+        .collect();
+    let carrying: Vec<usize> = (0..l.len()).filter(|i| l[*i].1.contains_key(p)).collect();
+    if carrying.is_empty() {
+        return false;
+    }
+    let ok = if p.starts_with("metrics.imu.") && !facts.imu_samples.is_empty() {
+        imu_oracle(&l, &facts.imu_samples, mount)
+    } else if p
+        .strip_prefix("metrics.gps.")
+        .and_then(|r| r.strip_suffix(".value"))
+        .is_some_and(|x| GPS_FIX_LEAVES.contains(&x))
+        && !facts.gps_snaps.is_empty()
+    {
+        snap_oracle(&l, "gps", &facts.gps_snaps)
+    } else {
+        return false;
+    };
+    carrying.iter().all(|i| ok.contains_key(i))
+}
+
+/// The gps leaves the NMEA oracle verifies: the fix-derived ones
+/// (`gps_fix_leaves`) and (Phase 5b WP4) the sky reductions `sats_heard` /
+/// `snr_max` (`gps_sky_leaves`). `sky_state` stays out: its hysteresis
+/// advances at each read instant, not at a tape release.
+const GPS_FIX_LEAVES: &[&str] = &[
+    "fix_quality",
+    "satellites",
+    "satellites_in_view",
+    "sats_heard",
+    "snr_max",
+    "hdop",
+    "lat",
+    "lon",
+    "alt",
+    "speed",
+    "course",
+];
+
+/// R-P3G-2: the indices of `l` whose fix-derived `metrics.<group>.*` leaves
+/// equal ONE tape snapshot within ORACLE_LAG_MS of the newest before the sample's
+/// read instant (+50 ms), leaf for leaf (a leaf present on one only fails);
+/// a sample showing a fix the tape never gave there is not verified.
+fn snap_oracle(
+    l: &RecSamples,
+    group: &str,
+    snaps: &[(i64, BTreeMap<String, String>)],
+) -> BTreeMap<usize, i64> {
+    let reads = read_instants(l);
+    let pre = format!("metrics.{group}.");
+    let mut out = BTreeMap::new();
+    for (i, (_, o)) in l.iter().enumerate() {
+        let leaves: BTreeMap<&str, &String> = o
+            .iter()
+            .filter_map(|(k, v)| {
+                let leaf = k.strip_prefix(pre.as_str())?.strip_suffix(".value")?;
+                GPS_FIX_LEAVES.contains(&leaf).then_some((leaf, v))
+            })
+            .collect();
+        if leaves.is_empty() {
+            continue;
+        }
+        let ws: Vec<i64> = snaps.iter().map(|(w, _)| *w).collect();
+        let (start, end) = oracle_span(&ws, reads[i]);
+        let hit = snaps[start..end].iter().rev().find(|(_, s)| {
+            GPS_FIX_LEAVES
+                .iter()
+                .all(|leaf| match (leaves.get(leaf), s.get(*leaf)) {
+                    (None, None) => true,
+                    (Some(v), Some(x)) => *v == x,
+                    _ => false,
+                })
+        });
+        if let Some((w, _)) = hit {
+            out.insert(i, *w);
+        }
+    }
+    out
+}
+
+/// R-P3G-2: remove, for the IMU leaf `p`, every time-paired couple of two
+/// oracle-verified samples whose values differ, and every UNPAIRED verified
+/// sample (the per-group presence check judges counts). A sample the oracle
+/// could not verify stays and is judged exactly.
+fn oracle_filter(
+    la: &RecSamples,
+    lb: &RecSamples,
+    p: &str,
+    va: &BTreeMap<usize, i64>,
+    vb: &BTreeMap<usize, i64>,
+) -> (RecSamples, RecSamples, usize) {
+    let (ra, rb) = (read_instants(la), read_instants(lb));
+    let (mut drop_a, mut drop_b) = (BTreeSet::new(), BTreeSet::new());
+    let mut paired_b = BTreeSet::new();
+    let mut j = 0usize;
+    let mut n = 0usize;
+    for i in 0..la.len() {
+        while j < lb.len() && rb[j] < ra[i] - REC_PAIR_MS {
+            j += 1;
+        }
+        let k = (j..lb.len())
+            .take_while(|k| rb[*k] <= ra[i] + REC_PAIR_MS)
+            .min_by_key(|k| (rb[*k] - ra[i]).abs());
+        match k {
+            Some(k) => {
+                j = k + 1;
+                paired_b.insert(k);
+                // A side without the leaf in that sample skipped the group
+                // (not updated since its last write, telemetry-recorder.ts:
+                // 105-106); its count is the presence check's.
+                let (pa, pb) = (la[i].1.get(p), lb[k].1.get(p));
+                let ok_a = va.contains_key(&i) || pa.is_none();
+                let ok_b = vb.contains_key(&k) || pb.is_none();
+                if pa != pb && ok_a && ok_b && (pa.is_some() || pb.is_some()) {
+                    drop_a.insert(i);
+                    drop_b.insert(k);
+                    n += 1;
+                }
+            }
+            None => {
+                if va.contains_key(&i) {
+                    drop_a.insert(i);
+                }
+            }
+        }
+    }
+    for k in 0..lb.len() {
+        if !paired_b.contains(&k) && vb.contains_key(&k) {
+            drop_b.insert(k);
+        }
+    }
+    let keep = |l: &RecSamples, d: &BTreeSet<usize>| -> RecSamples {
+        l.iter()
+            .enumerate()
+            .filter(|(i, _)| !d.contains(i))
+            .map(|(_, x)| x.clone())
+            .collect()
+    };
+    (keep(la, &drop_a), keep(lb, &drop_b), n)
+}
+
+/// Samples each side of the envelope that estimates a recorder fire.
+const REC_ENVELOPE: usize = 5;
+
+/// The estimated read (fire) instant of every sample (see `straddle_filter`).
+fn read_instants(l: &RecSamples) -> Vec<i64> {
+    let mut d: Vec<i64> = l
+        .windows(2)
+        .map(|w| w[1].0 - w[0].0)
+        .filter(|d| *d > 0)
+        .collect();
+    d.sort();
+    let period = d.get(d.len() / 2).copied().unwrap_or(1000).max(1);
+    (0..l.len())
+        .map(|k| {
+            let lo = k.saturating_sub(REC_ENVELOPE);
+            let hi = (k + REC_ENVELOPE).min(l.len().saturating_sub(1));
+            (lo..=hi)
+                .map(|j| l[j].0 - (j as i64 - k as i64) * period)
+                .min()
+                .unwrap_or(l[k].0)
+                .min(l[k].0)
+        })
+        .collect()
+}
+
+/// See `fix_edge` in `rec_values_m`: `only` is ONE step of ONE sample of
+/// `health_flags` on the holder, and BOTH sides' live telemetry carried that
+/// exact value text within ±1 000 ms (one LED heartbeat) of the sample.
+fn led_state_both_held(
+    p: &str,
+    only: &[Step],
+    live_hold: &[(i64, String)],
+    live_other: &[(i64, String)],
+) -> bool {
+    if p != "metrics.system.health_flags.value" {
+        return false;
+    }
+    let [(v, 1, ts)] = only else {
+        return false;
+    };
+    let near = |l: &[(i64, String)]| l.iter().any(|(t, x)| (t - ts).abs() <= 1_000 && x == v);
+    near(live_hold) && near(live_other)
+}
+
+/// Phase 5b WP4: does every recorded sample's presence of `metrics.<group>`
+/// follow from the tape at THIS side's read instants? The TS recorder writes
+/// a group only when its cache advanced since the last sample
+/// (ts:src/recording/telemetry-recorder.ts:96-106); so sample i must carry
+/// the group when an advance fell in (read[i−1], read[i]] and must not when
+/// none did. Within CARRY_EPS_MS of either read either is accepted (a read is
+/// estimated, `read_instants`). The first sample is not judged.
+fn carry_consistent(l: &RecSamples, advances: &[i64], group: &str) -> bool {
+    let pre = format!("metrics.{group}.");
+    let reads = read_instants(l);
+    let any_in = |lo: i64, hi: i64| {
+        let i = advances.partition_point(|w| *w <= lo);
+        advances.get(i).is_some_and(|w| *w <= hi)
+    };
+    let last = advances.last().copied().unwrap_or(i64::MIN);
+    (1..l.len()).all(|i| {
+        let carries = l[i].1.keys().any(|k| k.starts_with(&pre));
+        let (lo, hi) = (reads[i - 1], reads[i]);
+        // The first read past the input's LAST release (the end of the
+        // tape's stream: the helper's exit there is its own event) is not
+        // judged.
+        if hi > last && lo <= last + CARRY_EPS_MS {
+            return true;
+        }
+        if carries {
+            any_in(lo - CARRY_EPS_MS, hi + CARRY_EPS_MS)
+        } else {
+            !any_in(lo + CARRY_EPS_MS, hi - CARRY_EPS_MS)
+        }
+    })
+}
+
+/// `carry_consistent`'s read-instant uncertainty (the oracle's +50 ms).
+const CARRY_EPS_MS: i64 = 50;
+
+/// R-P3G-2 row id (T4's media rule `T4/rec-input-between`).
+const REC_INPUT_BETWEEN: &str = "T4/rec-input-between";
+/// Two recorder samples are one PAIR when their `ts` are this close (half a
+/// 1 Hz tick: each agent's recorder runs on its own timer phase).
+const REC_PAIR_MS: i64 = 500;
+
+type RecSamples = Vec<(i64, BTreeMap<String, String>)>;
+/// One side's live telemetry `(ts, health_flags text)` series.
+type LiveSeries<'a> = &'a [(i64, String)];
+
+/// R-P3G-2: pair A/B recorder samples by nearest `ts` (≤ REC_PAIR_MS, each
+/// sample in at most one pair, in order) and remove from both sides a pair
+/// whose `p` values differ only when the input it reads changed BETWEEN the
+/// two reads (`(lo − collision, hi + collision]`, input changes = releases
+/// grouped ≤ 30 ms apart, so an NMEA epoch is ONE change and a 16 Hz IMU
+/// line is one each):
+/// - two or more changes between the reads: the two samples read inputs the
+///   other side never read (a high-rate IMU) — not comparable cross-agent;
+/// - exactly one change: only a strict old/new split (the earlier reader's
+///   value = the later reader's PREVIOUS sample, the later's = the earlier's
+///   NEXT sample); anything else is kept and judged (T4/rec-sample).
+///
+/// A differing pair with no change between its reads is always kept.
+/// Returns the filtered sequences and the number of pairs removed.
+fn straddle_filter(
+    la: &RecSamples,
+    lb: &RecSamples,
+    p: &str,
+    releases: &[i64],
+    collision: i64,
+) -> (RecSamples, RecSamples, usize) {
+    let mut rel = releases.to_vec();
+    rel.sort();
+    let mut changes: Vec<i64> = Vec::new();
+    for w in rel {
+        if changes.last().is_none_or(|l| w - l > 30) {
+            changes.push(w);
+        } else if let Some(l) = changes.last_mut() {
+            *l = w;
+        }
+    }
+    let n_between = |lo: i64, hi: i64| {
+        let i = changes.partition_point(|w| *w <= lo - collision);
+        let j = changes.partition_point(|w| *w <= hi + collision);
+        j - i
+    };
+    let val = |l: &RecSamples, i: Option<usize>| {
+        i.and_then(|i| l.get(i)).and_then(|x| x.1.get(p)).cloned()
+    };
+    // The READ instant of each sample: the recorder reads the groups at its
+    // tick start and stamps `ts` only after `await sampleGroups()`
+    // (ts:src/recording/telemetry-recorder.ts:96-103 @09da38d), so ts = fire
+    // + that tick's sampling latency. The fire is on the side's own
+    // setInterval grid: the lower envelope of ts_j − (j−k)·period over
+    // ±REC_ENVELOPE samples (period = the side's median spacing).
+    let (ra, rb) = (read_instants(la), read_instants(lb));
+    let (mut drop_a, mut drop_b) = (BTreeSet::new(), BTreeSet::new());
+    let mut j = 0usize;
+    for (i, (ta, oa)) in la.iter().enumerate() {
+        while j < lb.len() && lb[j].0 < ta - REC_PAIR_MS {
+            j += 1;
+        }
+        let mut best: Option<usize> = None;
+        let mut k = j;
+        while k < lb.len() && lb[k].0 <= ta + REC_PAIR_MS {
+            if best.is_none_or(|b| (lb[k].0 - ta).abs() < (lb[b].0 - ta).abs()) {
+                best = Some(k);
+            }
+            k += 1;
+        }
+        let Some(k) = best else { continue };
+        j = k + 1;
+        let (Some(va), Some(vb)) = (oa.get(p), lb[k].1.get(p)) else {
+            continue;
+        };
+        if va == vb {
+            continue;
+        }
+        let (xa, xb) = (ra[i], rb[k]);
+        let drop = match n_between(xa.min(xb), xa.max(xb)) {
+            0 => false,
+            1 => {
+                // earlier = the side that read first
+                let (le, ie, ve, ll, il, vl) = if xa <= xb {
+                    (la, i, va, lb, k, vb)
+                } else {
+                    (lb, k, vb, la, i, va)
+                };
+                val(ll, il.checked_sub(1)).as_ref() == Some(ve)
+                    && val(le, Some(ie + 1)).as_ref() == Some(vl)
+            }
+            // Two or more changes between the reads cannot be attributed by
+            // timing alone (the IMU uses the tape oracle instead): judged.
+            _ => false,
+        };
+        if drop {
+            drop_a.insert(i);
+            drop_b.insert(k);
+        }
+    }
+    let keep = |l: &RecSamples, d: &BTreeSet<usize>| -> RecSamples {
+        l.iter()
+            .enumerate()
+            .filter(|(i, _)| !d.contains(i))
+            .map(|(_, x)| x.clone())
+            .collect()
+    };
+    let n = drop_a.len();
+    (keep(la, &drop_a), keep(lb, &drop_b), n)
 }
 
 /// T7/D30 `d30_shed_tick_session_end` (review-wp6 §3) for the sidecar `key`
@@ -1784,6 +2565,8 @@ pub fn diff_media(
     table: &Table,
     rep: &mut Report,
 ) {
+    // The tape's input facts (also the R-P3G-2 oracle's, before the values).
+    let facts_early = crate::diff::InputFacts::for_play(play);
     for k in [
         "children",
         "session",
@@ -2321,8 +3104,18 @@ pub fn diff_media(
                     let num_only = |o: Option<&BTreeSet<&'static str>>| {
                         o.is_some_and(|s| s.iter().all(|k| *k == "int" || *k == "float"))
                     };
+                    // R-P3G-2: likewise a high-rate input's leaf where every
+                    // sample of the segment carrying it, on both sides, is a
+                    // proven read of the tape (the oracle checks the TEXT, so
+                    // the number format itself is still pinned).
+                    let oracle_ok = num_only(sha.get(p))
+                        && num_only(shb.get(p))
+                        && has_row(table, REC_INPUT_BETWEEN)
+                        && segment_oracle_ok(&pa, p, &facts_early, a.imu_mount.as_ref())
+                        && segment_oracle_ok(&pb, p, &facts_early, b.imu_mount.as_ref());
                     let tol = match table.numeric("telemetry", p) {
                         Some((id, _)) if num_only(sha.get(p)) && num_only(shb.get(p)) => id,
+                        _ if oracle_ok => REC_INPUT_BETWEEN.to_string(),
                         _ => UNTOLERATED.to_string(),
                     };
                     rep.push(mm(
@@ -2414,7 +3207,7 @@ pub fn diff_media(
     }
 
     // ---- recorded telemetry VALUES + per-group presence (G1)
-    let facts = crate::diff::InputFacts::for_play(play);
+    let facts = facts_early;
     let (va, vb) = (segments_by_seq(a), segments_by_seq(b));
     stat(rep, "rec-values");
     stat(rep, "rec-presence");
@@ -2459,7 +3252,7 @@ pub fn diff_media(
     let ep = (timeline("A", a), timeline("B", b));
     let pmic = pmic_series_with_boot(play);
     for sid in va.keys().filter(|k| vb.contains_key(*k)) {
-        rec_values(
+        rec_values_m(
             sid,
             (&va[sid], &vb[sid]),
             &ep,
@@ -2469,6 +3262,8 @@ pub fn diff_media(
             &pmic,
             table,
             rep,
+            (a.imu_mount.as_ref(), b.imu_mount.as_ref()),
+            (&a.live_flags, &b.live_flags),
         );
     }
 
@@ -2620,7 +3415,11 @@ pub fn diff_media(
     let (qa, qb) = (order(a), order(b));
     for (label, q) in [("A", &qa), ("B", &qb)] {
         for (src, v) in q {
-            if let Some(w) = v.windows(2).find(|w| w[1] < w[0]) {
+            // Session labels compare by their start ordinal (`…#10>` is after
+            // `…#7>`), never as strings (Phase 5b WP4: the window tape's
+            // cam1 #10-after-#7 "violation" on all four sides was this).
+            let key = |x: &(String, u64)| (session_ordinal(&x.0), x.1);
+            if let Some(w) = v.windows(2).find(|w| key(&w[1]) < key(&w[0])) {
                 rep.push(mm(
                     "s3",
                     &format!("{label} {src}"),
@@ -3033,8 +3832,33 @@ fn d30_js_late_shed(
                         .find(|(s, t, _)| *s == side && (e - t).abs() <= 1_500)
                         .copied()
                 });
+                // The fragment the late shed CUT (Phase 5b, orchestrator
+                // 2026-10-23, rec-shed-uv cam1#0/00003 860 vs 1): the LAST seq
+                // of its session on BOTH sides, and its END instant (startTs +
+                // durationMs) later on the JS side by the transition's Δ ±150.
+                // Its duration need not differ by Δ: the fragment's start is
+                // the capture's own keyframe cadence, which may differ between
+                // the sides by up to T12, and a shed landing just after a
+                // keyframe leaves a 0–2 ms last fragment on the TS too (every
+                // rec-shed-uv JS-vs-JS run, cam1 session 1).
+                let other = sides[1 - side];
+                let last_of = |m: &MediaCapture| {
+                    sidecars(m)
+                        .keys()
+                        .filter(|(s, _)| s == sid)
+                        .map(|(_, q)| *q)
+                        .max()
+                };
+                let end_other = sidecars(other).get(&(sid.to_string(), seq)).and_then(|v| {
+                    Some(v["startTs"].as_f64()? as i64 + v["durationMs"].as_f64()? as i64)
+                });
+                let cut_last = last_of(lm) == Some(seq) && last_of(other) == Some(seq);
+                let end_shift = end.zip(end_other).map(|(l, e)| l - e);
                 started.is_some_and(|(_, _, d)| (vl - ve + d).abs() <= SAME)
-                    || ended.is_some_and(|(_, _, d)| (vl - ve - d).abs() <= SAME)
+                    || ended.is_some_and(|(_, _, d)| {
+                        (vl - ve - d).abs() <= SAME
+                            || (cut_last && end_shift.is_some_and(|s| (s - d).abs() <= SAME))
+                    })
             } else {
                 false
             };
@@ -3053,6 +3877,15 @@ fn d30_js_late_shed(
         st.untolerated = st.untolerated.saturating_sub(1);
         st.tolerated += 1;
     }
+}
+
+/// A normalised session label's ordering key: `<sid:video:cam1#10>` →
+/// (`<sid:video:cam1`, 10); a label without `#N>` keeps its text, ordinal 0.
+fn session_ordinal(sid: &str) -> (String, u64) {
+    sid.strip_suffix('>')
+        .and_then(|s| s.rsplit_once('#'))
+        .and_then(|(head, n)| n.parse::<u64>().ok().map(|n| (head.to_string(), n)))
+        .unwrap_or_else(|| (sid.to_string(), 0))
 }
 
 /// The rail value of a TS shed event and its text with it masked: `…(rail
@@ -3397,6 +4230,170 @@ mod tests {
     /// The samples below are that run's (ts − 1792568600000); the series is
     /// the tape's released pmic values. Tolerated as T7/D30 ONLY for that
     /// shape; a real extra or wrong rail value stays UNTOLERATED.
+    /// The PROPOSED rule block for the two rec-disk calibration rows
+    /// (phase-5b/evidence/wp4.md "rec-disk proposals"; NOT in tolerances.toml
+    /// until the reviewer signs it off).
+    const PROPOSED_D30_JS: &str = r#"
+[[rule]]
+id = "TP5B"
+title = "PROPOSED (Phase 5b WP4) - reviewer"
+basis = "wp4.md rec-disk proposals"
+kind = "decisions"
+
+  [[rule.row]]
+  id = "d30-js-rec-value-gap"
+  what = "proposal"
+  streams = ["rec-telemetry"]
+  matcher = "d30_js_rec_value_gap"
+
+  [[rule.row]]
+  id = "d30-js-system-less-value"
+  what = "proposal"
+  streams = ["rec-telemetry"]
+  matcher = "d30_js_system_less_value"
+"#;
+
+    /// PROPOSED d30_js_rec_value_gap / d30_js_system_less_value: inert with
+    /// the committed table; with the proposed rows, only the two JS-vs-JS D30
+    /// shapes of rec-disk .cal09r2 / .cal09 — never JS-vs-Rust, never a value
+    /// the replay did not release, never a lacking sample that has `system`.
+    #[test]
+    fn proposed_d30_js_value_gaps_only_inside_the_reference() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/replay/tolerances.toml");
+        let committed = Table::load(&path).unwrap();
+        let proposed =
+            Table::parse(&(std::fs::read_to_string(&path).unwrap() + PROPOSED_D30_JS)).unwrap();
+        const T0: i64 = 1_792_568_600_000;
+        // rows: (ts, Some((rail, hf))) or None = a sample without `system`.
+        let seg = |rows: &[(i64, Option<(f64, i64)>)]| -> BTreeMap<u64, String> {
+            let mut t = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (i, (ts, sys)) in rows.iter().enumerate() {
+                let sys = sys
+                    .map(|(r, h)| {
+                        format!(",\"system\":{{\"rail_5v\":{{\"value\":{r},\"unit\":\"V\"}},\"health_flags\":{{\"value\":{h}}}}}")
+                    })
+                    .unwrap_or_default();
+                t.push_str(&format!(
+                    "{{\"ts\":{},\"mono\":{},\"seq\":{i},\"metrics\":{{\"gps\":{{\"fix\":{{\"value\":3}}}}{sys}}}}}\n",
+                    T0 + ts,
+                    (T0 + ts) * 1_000_000
+                ));
+            }
+            BTreeMap::from([(0u64, t)])
+        };
+        let pmic: Vec<(i64, String)> = [
+            (17_000, "5.10"),
+            (19_452, "5.11"),
+            (20_978, "5.12"),
+            (22_979, "5.13"),
+        ]
+        .iter()
+        .map(|(w, v)| (T0 + w, v.to_string()))
+        .collect();
+        let run = |table: &Table,
+                   a: &[(i64, Option<(f64, i64)>)],
+                   b: &[(i64, Option<(f64, i64)>)],
+                   kinds: (&str, &str)| {
+            let mut rep = Report::default();
+            let ep = (Timeline::new(), Timeline::new());
+            rec_values(
+                "<sid:telemetry#0>",
+                (&seg(a), &seg(b)),
+                &ep,
+                &PlayInfo::default(),
+                &crate::diff::InputFacts::default(),
+                kinds,
+                &pmic,
+                table,
+                &mut rep,
+            );
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.path.ends_with("(values)"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let rail = "metrics.system.rail_5v.value(values)".to_string();
+        let hf = "metrics.system.health_flags.value(values)".to_string();
+        // .cal09r2: A records 5.11 once; B goes 5.10 (stale) → 5.12.
+        let a = [
+            (18_100, Some((5.1, 0))),
+            (19_100, Some((5.1, 0))),
+            (20_100, Some((5.1, 0))),
+            (21_100, Some((5.11, 0))),
+            (22_100, Some((5.12, 0))),
+            (23_100, Some((5.13, 0))),
+            (24_100, Some((5.13, 0))),
+        ];
+        let b = [
+            (18_110, Some((5.1, 0))),
+            (19_110, Some((5.1, 0))),
+            (20_110, Some((5.1, 0))),
+            (21_110, Some((5.12, 0))),
+            (22_110, Some((5.12, 0))),
+            (23_110, Some((5.13, 0))),
+            (24_110, Some((5.13, 0))),
+        ];
+        assert_eq!(
+            run(&proposed, &a, &b, ("js", "js")),
+            vec![(rail.clone(), "TP5B/d30-js-rec-value-gap".to_string())]
+        );
+        assert_eq!(
+            run(&committed, &a, &b, ("js", "js")),
+            vec![(rail.clone(), UNTOLERATED.to_string())]
+        );
+        // JS-vs-Rust (the reviewed row wants the system-less JS sample): never.
+        assert_eq!(
+            run(&proposed, &b, &a, ("js", "rust")),
+            vec![(rail.clone(), UNTOLERATED.to_string())]
+        );
+        // A value the replay never released then (5.14): never.
+        let mut a2 = a;
+        a2[3] = (21_100, Some((5.14, 0)));
+        assert_eq!(
+            run(&proposed, &a2, &b, ("js", "js")),
+            vec![(rail.clone(), UNTOLERATED.to_string())]
+        );
+        // .cal09: A's boot transient hf 16 for one sample; B's sample then had no system.
+        let a = [
+            (18_100, Some((5.1, 0))),
+            (19_100, Some((5.1, 16))),
+            (20_100, Some((5.1, 0))),
+            (21_100, Some((5.1, 0))),
+            (22_100, Some((5.1, 16))),
+        ];
+        let b = [
+            (18_110, Some((5.1, 0))),
+            (19_105, None),
+            (20_110, Some((5.1, 0))),
+            (21_110, Some((5.1, 0))),
+            (22_110, Some((5.1, 16))),
+        ];
+        assert_eq!(
+            run(&proposed, &a, &b, ("js", "js")),
+            vec![(hf.clone(), "TP5B/d30-js-system-less-value".to_string())]
+        );
+        assert!(run(&committed, &a, &b, ("js", "js"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+        assert!(run(&proposed, &a, &b, ("js", "rust"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+        // B's sample HAS system (it just did not see 16): never.
+        let mut b2 = b;
+        b2[1] = (19_105, Some((5.1, 0)));
+        assert!(run(&proposed, &a, &b2, ("js", "js"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+        // A holds 16 for TWO samples: never.
+        let mut a3 = a;
+        a3[2] = (20_100, Some((5.1, 16)));
+        assert!(run(&proposed, &a3, &b, ("js", "js"))
+            .iter()
+            .any(|(p, t)| *p == hf && t == UNTOLERATED));
+    }
+
     #[test]
     fn d30_rec_value_gap_only_for_a_js_d30_skip() {
         let table = Table::load(
@@ -4681,6 +5678,196 @@ mod tests {
         );
     }
 
+    /// T8/d30-js-late-shed, the fragment a late JS shed CUT (rec-shed-uv
+    /// stepC .jsrs / .jsrs.r2: cam1#0/00003 JS 933 / 860 vs Rust 0 / 1, the
+    /// fragment start 208 ms apart, the END instants exactly Δ apart):
+    /// matched by its end instant only when it is the last seq of its session
+    /// on both sides and the end shift is the transition's Δ ±150.
+    #[test]
+    fn d30_js_late_shed_cut_fragment_by_its_end_instant_only() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam1#0>";
+        // frags: (seq, startTs, durationMs) — the session's sidecars.
+        let side = |kind: &str, shift: i64, rails: &[(i64, f64)], frags: &[(u64, i64, i64)]| {
+            let mut seg = String::from("{\"type\":\"header\",\"v\":1}\n");
+            for (ts, v) in rails {
+                seg.push_str(&format!(
+                    "{{\"ts\":{ts},\"metrics\":{{\"system\":{{\"rail_5v\":{{\"value\":{v}}},\"throttled\":{{\"value\":0}}}}}}}}\n"
+                ));
+            }
+            let mut finals = BTreeMap::from([(
+                "recordings/telemetry/<sid:telemetry#0>/seg-1-00000.jsonl.gz".to_string(),
+                seg.into_bytes(),
+            )]);
+            for (seq, st, dur) in frags {
+                finals.insert(
+                    format!("recordings/video/cam1/{sid}/{seq:05}.json"),
+                    format!("{{\"seq\":{seq},\"startTs\":{st},\"durationMs\":{dur}}}").into_bytes(),
+                );
+            }
+            MediaCapture {
+                kind: kind.into(),
+                shed_events: vec![
+                    (
+                        130_607 - shift,
+                        "info: power shed restore → no-live (clean for 20s)".into(),
+                    ),
+                    (
+                        150_679 - shift,
+                        "info: power shed restore → full (clean for 20s)".into(),
+                    ),
+                ],
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        let stale = [
+            (108_710, 5.1),
+            (109_715, 5.1),
+            (110_732, 5.3),
+            (111_729, 5.3),
+        ];
+        let fresh = [
+            (108_710, 5.1),
+            (109_715, 5.3),
+            (110_732, 5.3),
+            (111_729, 5.3),
+        ];
+        let changes = [110_073];
+        // JS: #3 starts 129 740, 860 ms → ends 130 600 (7 ms before its
+        // transition). Rust (Δ = 1013 earlier): #3 starts 207 ms earlier and
+        // ends at 130 600 − Δ, so its duration is 54 ms — 806 apart, not Δ.
+        let js_frags = [(2u64, 125_740, 4_000), (3, 129_740, 860)];
+        // `start` = the Rust #3's start (its duration follows from the end).
+        let rs_at = |start: i64, end_shift: i64| {
+            [
+                (2u64, 125_533, start - 125_533),
+                (3, start, 130_600 - end_shift - start),
+            ]
+        };
+        let rs = |end_shift: i64| rs_at(129_533, end_shift);
+        let run = |a: MediaCapture, b: MediaCapture, x: i64, y: i64| {
+            let mut rep = Report::default();
+            rep.push(mm(
+                "sidecar",
+                &format!("{sid}/00003"),
+                "durationMs",
+                x.to_string(),
+                y.to_string(),
+                UNTOLERATED,
+            ));
+            d30_js_late_shed(&a, &b, 0, &changes, &table, &mut rep);
+            rep.mismatches[0].tol.clone()
+        };
+        let ok = "T8/d30-js-late-shed".to_string();
+        // The rec-shed-uv shape: tolerated, either column order.
+        let r = rs(1_013);
+        assert_eq!(
+            run(
+                side("js", 0, &stale, &js_frags),
+                side("rust", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            ok
+        );
+        assert_eq!(
+            run(
+                side("rust", 1_013, &fresh, &r),
+                side("js", 0, &stale, &js_frags),
+                r[1].2,
+                860
+            ),
+            ok
+        );
+        // End shift 300 ms past Δ (the duration difference, 373, not Δ
+        // either): UNTOLERATED.
+        let r = rs_at(128_800, 1_313);
+        assert_eq!(
+            run(
+                side("js", 0, &stale, &js_frags),
+                side("rust", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
+        );
+        // Not the last fragment on the Rust side (a #4 follows): UNTOLERATED.
+        let r = rs(1_013);
+        let mut r4 = r.to_vec();
+        r4.push((4, 129_600, 2_000));
+        assert_eq!(
+            run(
+                side("js", 0, &stale, &js_frags),
+                side("rust", 1_013, &fresh, &r4),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
+        );
+        // Rust the later side, or no stale-reuse evidence on the JS: UNTOLERATED.
+        assert_eq!(
+            run(
+                side("rust", 0, &stale, &js_frags),
+                side("js", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
+        );
+        assert_eq!(
+            run(
+                side("js", 0, &fresh, &js_frags),
+                side("rust", 1_013, &fresh, &r),
+                860,
+                r[1].2
+            ),
+            UNTOLERATED
+        );
+    }
+
+    /// The S3 order check compares sessions by their ordinal: `#10` after
+    /// `#7` is oldest-first; `#7` after `#10` is a violation.
+    #[test]
+    fn s3_put_order_compares_session_ordinals_not_strings() {
+        assert!(session_ordinal("<sid:video:cam1#7>") < session_ordinal("<sid:video:cam1#10>"));
+        assert!(session_ordinal("<sid:video:cam1#10>") > session_ordinal("<sid:video:cam1#9>"));
+        assert_eq!(session_ordinal("sess-1"), ("sess-1".to_string(), 0));
+        let put = |key: &str| S3Obs {
+            key: key.into(),
+            ctype: "application/json".into(),
+            status: 200,
+            sig: "ok".into(),
+        };
+        let side = |keys: &[&str]| MediaCapture {
+            kind: "js".into(),
+            present: true,
+            s3: keys.iter().map(|k| put(k)).collect(),
+            ..Default::default()
+        };
+        let order_rows = |keys: &[&str]| {
+            let mut rep = Report::default();
+            let t = Table::load(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tools/replay/tolerances.toml"),
+            )
+            .unwrap();
+            diff_media(&side(keys), &side(keys), &PlayInfo::default(), &t, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.path == "(PUT order)")
+                .count()
+        };
+        let k = |n: u32| format!("media-sessions/v1/{{id}}/cam1/<sid:video:cam1#{n}>/00000.json");
+        assert_eq!(order_rows(&[&k(7), &k(10)]), 0);
+        assert_eq!(order_rows(&[&k(10), &k(7)]), 2);
+    }
+
     /// T14: a telemetry object PUT on one side only is tolerated only when it
     /// is the newest segment of its session (on either side), never a middle one.
     #[test]
@@ -4831,5 +6018,244 @@ mod tests {
             n.s(r#"{"type":"header","deviceId":"00000000-0000-4000-8000-00000000000a","sessionId":"0198a6a1-2b3c-7d4e-8f00-112233445566"}"#),
             r#"{"type":"header","deviceId":"{id}","sessionId":"<sid:telemetry#0>"}"#
         );
+    }
+
+    /// R-P3G-2: a sample's read instant is its fire on the 1 s grid (the
+    /// lower envelope), not its post-await `ts`.
+    /// gps presence oracle: a sample carries `metrics.gps` exactly when the
+    /// tape advanced the gps cache since the previous read (±50 ms).
+    /// A one-sample LED-state value is tolerated only when BOTH agents'
+    /// live telemetry carried it within a second of the recorded sample.
+    #[test]
+    fn led_state_both_held_only_with_both_live_ticks() {
+        let p = "metrics.system.health_flags.value";
+        let only: Vec<Step> = vec![("304".into(), 1, 2_000)];
+        let a = vec![(1_150, "304".to_string()), (2_150, "288".to_string())];
+        let b = vec![(1_210, "304".to_string()), (2_210, "288".to_string())];
+        assert!(led_state_both_held(p, &only, &a, &b));
+        let b_never = vec![(1_210, "288".to_string()), (2_210, "288".to_string())];
+        assert!(
+            !led_state_both_held(p, &only, &a, &b_never),
+            "the other agent never held it"
+        );
+        let b_old = vec![(500, "304".to_string()), (2_210, "288".to_string())];
+        assert!(
+            !led_state_both_held(p, &only, &a, &b_old),
+            "held > 1 s before"
+        );
+        let two: Vec<Step> = vec![("304".into(), 2, 2_000)];
+        assert!(!led_state_both_held(p, &two, &a, &b), "two samples");
+        assert!(!led_state_both_held(
+            "metrics.system.led_state.value",
+            &only,
+            &a,
+            &b
+        ));
+    }
+
+    #[test]
+    fn carry_consistent_follows_the_tape_advances_only() {
+        let s = |ts: i64, gps: bool| {
+            let mut m = BTreeMap::new();
+            m.insert(
+                "metrics.system.cpu_temp.value".to_string(),
+                "50".to_string(),
+            );
+            if gps {
+                m.insert("metrics.gps.fix_quality.value".to_string(), "1".to_string());
+            }
+            (ts, m)
+        };
+        // Reads at 1000, 2000, 3000, 4000; advances at 1500 and 3500.
+        let adv = [1_500, 3_500];
+        let ok: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, true),
+            s(3_000, false),
+            s(4_000, true),
+        ];
+        assert!(carry_consistent(&ok, &adv, "gps"));
+        // A sample carrying gps with no advance since the previous read: no.
+        let extra: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, true),
+            s(3_000, true),
+            s(4_000, true),
+        ];
+        assert!(!carry_consistent(&extra, &adv, "gps"));
+        // A sample MISSING gps after an advance: no.
+        let missing: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, false),
+            s(3_000, false),
+            s(4_000, true),
+        ];
+        assert!(!carry_consistent(&missing, &adv, "gps"));
+        // An advance 20 ms before a read: either is accepted.
+        let edge = [1_980, 3_500];
+        let a: RecSamples = vec![
+            s(1_000, true),
+            s(2_000, false),
+            s(3_000, true),
+            s(4_000, true),
+        ];
+        assert!(carry_consistent(&a, &edge, "gps"));
+    }
+
+    /// Review-wp4 R4-10: the oracle window is ORACLE_LAG_MS back from the
+    /// newest release by the read: a 1 s-stale input never verifies.
+    #[test]
+    fn oracle_span_rejects_a_one_second_stale_input() {
+        // The single-read span is ORACLE_LAG_MS (the window tape's measured
+        // delivery lag); a 1 s-stale read is caught by the PAIR check in
+        // `oracle_filter` (test imu_oracle_verifies_only_genuine_recent_reads).
+        let ws: Vec<i64> = (0..=80).map(|k| k * 62).collect();
+        let (s, e) = oracle_span(&ws, 4_000);
+        assert!(ws[s] >= ws[e - 1] - ORACLE_LAG_MS);
+        assert!(s == 0 || ws[s - 1] < ws[e - 1] - ORACLE_LAG_MS);
+        assert!(ws[e - 1] <= 4_050);
+        assert_eq!(oracle_span(&ws, -100), (0, 0));
+    }
+
+    #[test]
+    fn read_instants_are_the_lower_envelope_of_the_grid() {
+        // A 1 s grid from 1 000 with per-tick sampling latencies 0,150,5,300,10,3,2.
+        let l: RecSamples = [1_000, 2_150, 3_005, 4_300, 5_010, 6_003, 7_002]
+            .iter()
+            .map(|t| (*t, BTreeMap::new()))
+            .collect();
+        let r = read_instants(&l);
+        for (k, x) in r.iter().enumerate() {
+            let grid = 1_000 + k as i64 * 1_000;
+            assert!((x - grid).abs() <= 10, "sample {k}: {x} vs {grid}");
+        }
+    }
+
+    /// R-P3G-2: a differing pair is removed only when its reads straddle
+    /// ≥ 2 input changes, or exactly one as a strict old/new split.
+    #[test]
+    fn straddle_filter_drops_only_pairs_that_read_different_inputs() {
+        let s = |ts: i64, v: &str| {
+            (
+                ts,
+                BTreeMap::from([("metrics.imu.quat_i.value".to_string(), v.to_string())]),
+            )
+        };
+        let p = "metrics.imu.quat_i.value";
+        // High-rate input: 16 Hz lines (62 ms apart) between every pair.
+        let imu: Vec<i64> = (0..80).map(|k| 900 + k * 62).collect();
+        let la = vec![s(1_000, "0.1"), s(2_000, "0.2"), s(3_000, "0.3")];
+        let lb = vec![s(1_250, "0.11"), s(2_250, "0.21"), s(3_250, "0.31")];
+        // NEGATIVE: timing alone never removes a pair with ≥ 2 changes between
+        // (the IMU goes through the tape oracle, `imu_oracle`).
+        let (fa, fb, n) = straddle_filter(&la, &lb, p, &imu, 50);
+        assert_eq!((n, fa.len(), fb.len()), (0, 3, 3));
+        // One change between: a strict old/new split is removed …
+        let la = vec![s(1_000, "1"), s(2_000, "1"), s(3_000, "2"), s(4_000, "2")];
+        let lb = vec![s(1_250, "1"), s(2_250, "2"), s(3_250, "2"), s(4_250, "2")];
+        let (_, _, n) = straddle_filter(&la, &lb, p, &[2_100], 50);
+        assert_eq!(n, 1);
+        // NEGATIVE: … a stale value (B skips "3": its previous is not A's) is kept.
+        let la = vec![s(1_000, "1"), s(2_000, "2"), s(3_000, "3"), s(4_000, "4")];
+        let lb = vec![s(1_250, "1"), s(2_250, "2"), s(3_250, "2"), s(4_250, "4")];
+        let (_, fb, n) = straddle_filter(&la, &lb, p, &[1_100, 2_100, 3_100], 50);
+        assert_eq!(n, 0);
+        assert_eq!(fb.len(), 4);
+        // NEGATIVE: no change between the reads → kept.
+        let la = vec![s(1_000, "1"), s(2_000, "5")];
+        let lb = vec![s(1_250, "1"), s(2_250, "6")];
+        let (_, _, n) = straddle_filter(&la, &lb, p, &[2_600], 50);
+        assert_eq!(n, 0);
+        // NEGATIVE: samples too far apart are not a pair.
+        let (_, _, n) = straddle_filter(
+            &[s(1_000, "1")].to_vec(),
+            &[s(1_700, "2")].to_vec(),
+            p,
+            &imu,
+            50,
+        );
+        assert_eq!(n, 0);
+        // An NMEA epoch (8 lines 8 ms apart) is ONE change.
+        let epoch: Vec<i64> = (0..8).map(|k| 2_100 + k * 8).collect();
+        let la = vec![s(1_000, "1"), s(2_000, "1"), s(3_000, "2")];
+        let lb = vec![s(1_250, "1"), s(2_250, "2"), s(3_250, "2")];
+        let (_, _, n) = straddle_filter(&la, &lb, p, &epoch, 50);
+        assert_eq!(n, 1);
+    }
+
+    /// R-P3G-2 IMU oracle: a recorded sample is verified only when its TEXT
+    /// equals `map_latest` of a line released before its read; a value no
+    /// line gave, a line from long before, or `1.0` for `1` are not.
+    #[test]
+    fn imu_oracle_verifies_only_genuine_recent_reads() {
+        use xorgate_core::imu::{ImuSample, LinAccel};
+        use xorgate_core::orientation::Quat;
+        let line = |z: f64| ImuSample {
+            quat: Quat {
+                r: 1.0,
+                i: 0.0,
+                j: 0.0,
+                k: 0.0,
+            },
+            linaccel: LinAccel { x: 0.0, y: 0.0, z },
+        };
+        let leaves = |smp: &ImuSample, z_text: Option<&str>| {
+            let g = serde_json::to_value(xorgate_core::imu_group::map_latest(smp, None)).unwrap();
+            let mut o = BTreeMap::new();
+            leaf_texts(&g, "metrics.imu", &mut o);
+            o.retain(|k, _| k.ends_with(".value"));
+            if let Some(t) = z_text {
+                o.insert("metrics.imu.accel_z.value".into(), t.into());
+            }
+            o
+        };
+        // 16 Hz lines from 0; recorder reads at 1 000, 2 000, 3 000, 4 000.
+        let lines: Vec<(i64, ImuSample)> =
+            (0..80).map(|k| (k * 62, line(k as f64 / 1000.0))).collect();
+        let near = |t: i64| lines.iter().rev().find(|(w, _)| *w <= t).unwrap().1;
+        let l: RecSamples = vec![
+            (1_000, leaves(&near(1_000), None)),        // genuine
+            (2_000, leaves(&near(2_000), Some("0.5"))), // a value no line gave
+            (3_000, leaves(&lines[2].1, None)),         // a line from ~3 s before
+            (4_000, leaves(&line(1.0), None)),          // z = 1 → "1" … ok only if released
+        ];
+        let ok = imu_oracle(&l, &lines, None);
+        assert!(ok.contains_key(&0));
+        assert!(!ok.contains_key(&1), "a value the tape never released");
+        assert!(!ok.contains_key(&2), "older than the recent-line window");
+        assert!(!ok.contains_key(&3));
+        // Format: the same value written `1.0` (not JS) fails, `1` passes.
+        let lines1: Vec<(i64, ImuSample)> = vec![(1_000, line(1.0))];
+        let l1: RecSamples = vec![(1_010, leaves(&line(1.0), None))];
+        assert!(imu_oracle(&l1, &lines1, None).contains_key(&0));
+        let l2: RecSamples = vec![(1_010, leaves(&line(1.0), Some("1.0")))];
+        assert!(
+            !imu_oracle(&l2, &lines1, None).contains_key(&0),
+            "1.0 is not the JS text of 1"
+        );
+        // R4-10: a recorder reading 1 s-stale lines lags ~1 s behind the
+        // newest line; a fresh one at ANY phase of the grid lags 0.
+        let ws: Vec<i64> = lines.iter().map(|(w, _)| *w).collect();
+        let fresh: RecSamples = (0..4)
+            .map(|k| (1_000 + k * 1000, leaves(&near(1_000 + k * 1000), None)))
+            .collect();
+        let late_phase: RecSamples = (0..4)
+            .map(|k| (1_040 + k * 1000, leaves(&near(1_040 + k * 1000), None)))
+            .collect();
+        let stale: RecSamples = (0..4)
+            .map(|k| (1_010 + k * 1000, leaves(&near(10 + k * 1000), None)))
+            .collect();
+        let (vf, vp, vs) = (
+            imu_oracle(&fresh, &lines, None),
+            imu_oracle(&late_phase, &lines, None),
+            imu_oracle(&stale, &lines, None),
+        );
+        assert_eq!(vs.len(), 4, "each stale read is still a genuine (old) line");
+        let (_, bad) = oracle_lag_check(&fresh, &stale, &vf, &vs, &ws).unwrap();
+        assert!(bad, "a 1 s-stale side FAILS the median-lag check");
+        let (_, bad) = oracle_lag_check(&stale, &fresh, &vs, &vf, &ws).unwrap();
+        assert!(bad, "either side");
+        let (_, ok) = oracle_lag_check(&fresh, &late_phase, &vf, &vp, &ws).unwrap();
+        assert!(!ok, "two fresh recorders on different phases pass");
     }
 }

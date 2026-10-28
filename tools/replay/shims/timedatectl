@@ -3,9 +3,16 @@
 # tape's `ntp_probe` timeline (Phase 4 clock stepper, `clock-step.ts` probeNtp;
 # the player writes yes/no at tape time) — and "yes" when the tape has none
 # (the rig host clock is NTP-synced: phase file "synced", Phase 2/3 tapes).
+# Phase 5b: `<state>/ntp_delay` (seconds, from `meta.rig.ntpProbeDelayMs`)
+# delays the NTPSynchronized answer — the p5b-clock-hold tape puts the clock
+# trust instant (= the probe's answer, ts:src/agent/clock-trust.ts:145-149)
+# well clear of the recording manager's 5 s settings poll, which shares the
+# probe's 5 s cadence and would otherwise race it inside each agent.
 ntp=$(cat "${RIG_STATE:-/nonexistent}/ntp" 2>/dev/null || echo yes)
 case "$*" in
-  *NTPSynchronized*) echo "$ntp" ;;
+  *NTPSynchronized*) d=$(cat "${RIG_STATE:-/nonexistent}/ntp_delay" 2>/dev/null || true)
+                     [ -n "$d" ] && sleep "$d"
+                     echo "$ntp" ;;
   *) echo "System clock synchronized: $ntp"; echo "NTP service: active" ;;
 esac
 exit 0

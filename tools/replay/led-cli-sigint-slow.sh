@@ -2,7 +2,7 @@
 # D36 / review-gate-fixes F-R1 — SIGINT while a SLOW lit pattern step is in
 # flight (the reviewer's adversarial repro). A pinctrl shim whose writes land
 # (are logged) when the child FINISHES, `dh` taking $SLOW_DH_S (0.08 s); the
-# harness waits for a `dh` to start, sends SIGINT 10 ms later. TS @89b5c64 and
+# harness waits for a `dh` to start, sends SIGINT 10 ms later. TS @$JS_REF (default 09da38d since the Phase 5b H7 flip; `run -e JS_REF=<sha>`) and
 # xorgate-rs `blue blink-fast`, 5 cases each. Verdict per case and side: the
 # LED ends dark (the last landed write is the all-pin blank) and never
 # re-lights (no `dh` lands after a blank); Rust lands EXACTLY 1 blank (D36,
@@ -14,6 +14,7 @@
 #     run --rm -T --entrypoint bash rig /rig/tools/led-cli-sigint-slow.sh
 #   docker compose -p <proj> -f tools/replay/docker-compose.yml down -v --remove-orphans
 set -u
+JS_REF="${JS_REF:-09da38d}"; JS_DIR="/rig/jscache/js-$JS_REF"   # Phase 5b: shared build per ref
 O=/rig/out; P=$O/pi; SH=$O/sh-slow
 mkdir -p /boot/firmware $P/boot $P/dt $O/st-free/exec $SH
 printf 'Raspberry Pi Compute Module 5 Rev 1.0\0' > $P/dt/model
@@ -57,13 +58,13 @@ verdict() { # <side> <case> <want blanks or ->
 }
 fails=0
 for i in 1 2 3 4 5; do
-  sig js a$i 0 node /rig/cache/js-89b5c64/dist/cli.js
+  sig js a$i 0 node "$JS_DIR"/dist/cli.js
   sig rs a$i 0 /rig/cache/bin/xorgate-rs
   verdict js a$i - || fails=$((fails + 1))
   verdict rs a$i 1 || fails=$((fails + 1))
 done
 for i in 1 2; do
-  sig js h$i 1 node /rig/cache/js-89b5c64/dist/cli.js
+  sig js h$i 1 node "$JS_DIR"/dist/cli.js
   sig rs h$i 1 /rig/cache/bin/xorgate-rs
   ej=$(( $(cat $O/js/h$i.exit) - $(cat $O/js/h$i.sig) )); er=$(( $(cat $O/rs/h$i.exit) - $(cat $O/rs/h$i.sig) ))
   ok=PASS; [ "$er" -le "$ej" ] || { ok=FAIL; fails=$((fails + 1)); }

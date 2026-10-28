@@ -1,6 +1,6 @@
 {
   "jsSourceFile": "test/recording-session.test.ts (mintSessionId; timeSource tracker with offline clock steps)",
-  "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
+  "jsCommit": "09da38dcc8b75c248625a3a0bee43b70e7def55d",
   "generatedBy": "node script run in the JS repo working tree via npx tsx (plans/device-agent-js-to-rust/phase-1 WP6 dump-wp6.ts; not committed there)",
   "cases": [
     {

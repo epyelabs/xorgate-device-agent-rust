@@ -62,7 +62,7 @@ use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 use crate::diff::PlayInfo;
 use crate::media::{self, MediaPlan, ObsAgent};
 use crate::watch::{self, WatchGate};
-use crate::{aws, p4, rewrite};
+use crate::{aws, p4, p5b, rewrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AgentKind {
@@ -93,11 +93,23 @@ pub struct PlayArgs {
     pub a: AgentKind,
     #[arg(long, value_enum, default_value = "rust")]
     pub b: AgentKind,
-    /// The JS build (`dist/worker.js`, `dist/cli.js`, `node_modules/`).
-    #[arg(long, default_value = "/rig/cache/js-89b5c64")]
+    /// The JS build (`dist/worker.js`, `dist/cli.js`, `node_modules/`) of
+    /// both JS sides unless `--js-dir-a` / `--js-dir-b` names one per side.
+    #[arg(long, default_value = "/rig/cache/js-09da38d")]
     pub js_dir: PathBuf,
+    /// Phase 5b (dual ref): the JS build agent A runs (default `--js-dir`),
+    /// so a JS-vs-JS run can pair two refs (`run-rig.sh --a js@<ref>`).
+    #[arg(long)]
+    pub js_dir_a: Option<PathBuf>,
+    /// Phase 5b: the JS build agent B runs (default `--js-dir`).
+    #[arg(long)]
+    pub js_dir_b: Option<PathBuf>,
     #[arg(long, default_value = "/rig/cache/bin/xorgate-rs")]
     pub rs_bin: PathBuf,
+    /// Phase 5b: the Rust repo's vendored `python/` (the OBD helper a Rust
+    /// side runs; falls back to the JS build's while it lacks `obd_read.py`).
+    #[arg(long, default_value = "/rig/python")]
+    pub rs_python: PathBuf,
     #[arg(long, default_value = "node")]
     pub node: String,
     /// The real broker (capture client + proxy upstream).
@@ -160,11 +172,27 @@ pub struct PlayArgs {
     /// (`meta.rig.pi`, `p4.rs`).
     #[arg(long, default_value = "/rig/tools/pi-ns.sh")]
     pub ns_script: PathBuf,
+    /// Phase 5b (R-P3G-4): read the rig VM's own /proc/meminfo (the pre-5b
+    /// behaviour) instead of binding the tape's fixed meminfo over it.
+    #[arg(long)]
+    pub host_meminfo: bool,
     /// Phase 4 (E12): the REAL camera-rotation helper the `sudo` shim executes
     /// for `xorgate-camrotate` (default: the Rust repo's vendored
     /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
     #[arg(long)]
     pub camrotate: Option<PathBuf>,
+}
+
+impl PlayArgs {
+    /// The JS build the agent labelled `label` (`a` / `b`) runs.
+    pub fn js_dir_for(&self, label: &str) -> &Path {
+        let side = match label {
+            "a" => self.js_dir_a.as_deref(),
+            "b" => self.js_dir_b.as_deref(),
+            _ => None,
+        };
+        side.unwrap_or(&self.js_dir)
+    }
 }
 
 pub const DEVICE_A: &str = "00000000-0000-4000-8000-00000000000a";
@@ -180,6 +208,21 @@ const FLIP_HYST_MS: i64 = 50;
 /// A hold whose pair was not observed in full ends after this long.
 const HOLD_TIMEOUT_MS: i64 = 2000;
 const STALE_MS: i64 = 2500;
+/// [`Gate::held_alive`]: an agent's first publish this long ago (two ticks).
+const HELD_ALIVE_MS: i64 = 2000;
+/// Post-hold settle caps ([`Gate::expect_resume`]), from the TS trust timing
+/// (ts:src/agent/clock-trust.ts @09da38d, CLOCK_TRUST_DEFAULTS :66-70): an
+/// NTP verdict is seen on the next 5 s probe poll (+ the exec), the grace
+/// fallback on the first poll past 300 s, a GPS/NITZ step at once
+/// (`noteStep`); the first post-trust publish is the next 1 s tick after.
+/// (+ 3.5 s: the rig's NTP probe latency on p5b-clock-hold, `ntpProbeDelayMs`.)
+pub const RESUME_NTP_CAP_MS: i64 = 5_000 + 3_500 + 1_000 + 1_500;
+pub const RESUME_FALLBACK_CAP_MS: i64 = 5_000 + 1_000 + 2_000;
+pub const RESUME_STEP_CAP_MS: i64 = 1_000 + 1_500;
+/// The clock trust grace window (`graceMs`, 5 min) and how early before it
+/// the fallback settle opens (the agent's clockTrust starts after its spawn).
+pub const CLOCK_GRACE_MS: i64 = 300_000;
+const FALLBACK_EARLY_MS: i64 = 500;
 /// `NMEA_STALE_MS` (`gps.ts:15`): a gps group older than this is dropped.
 const NMEA_STALE_MS: i64 = 10_000;
 /// `REOPEN_SILENT_MS` (`gps.ts`): silence after which an agent reopens its port.
@@ -314,6 +357,11 @@ pub struct Gate {
     restored_at: Option<i64>,
     /// When both agents had published again after the last restore.
     back_at: Option<i64>,
+    /// Phase 5b: arrival of each agent's first outbound publish of any kind.
+    first_publish: [Option<i64>; 2],
+    /// Phase 5b: a held agent's expected resume, `(from, cap)` per agent
+    /// ([`Gate::expect_resume`]).
+    resume: [Option<(i64, i64)>; 2],
     pub pairs: Vec<Value>,
 }
 
@@ -331,6 +379,8 @@ impl Gate {
             seen_at: [None, None],
             restored_at: None,
             back_at: None,
+            first_publish: [None, None],
+            resume: [None, None],
             pairs: Vec::new(),
         }
     }
@@ -382,8 +432,6 @@ impl Gate {
         self
     }
 
-    /// Have both agents published telemetry at least once (booted,
-    /// connected, ticking)?
     /// Is `now` at least `ms` away (circular, mod the 1 s tick) from BOTH
     /// agents' predicted next tick? Unknown phase (< 2 ticks seen) = yes.
     pub fn mid_period(&self, now: i64, ms: i64) -> bool {
@@ -396,8 +444,78 @@ impl Gate {
         })
     }
 
-    pub fn both_ticking(&self) -> bool {
-        self.track.iter().all(|t| t.last_ts.is_some())
+    /// Has agent `idx` published telemetry at least once (booted, connected,
+    /// ticking)? Both = the pre-5b NMEA/IMU delivery rule ([`inputs_ticking`]).
+    pub fn ticking(&self, idx: usize) -> bool {
+        self.track[idx].last_ts.is_some()
+    }
+
+    /// Any outbound publish of agent `idx` (report, status, telemetry …).
+    pub fn on_publish(&mut self, idx: usize, now: i64) {
+        self.first_publish[idx].get_or_insert(now);
+    }
+
+    /// Phase 5b (clock trust, X5): is agent `idx` running and connected while
+    /// its TELEMETRY publish is held? The TS builds the payload (its gps
+    /// collector opening the NMEA port lazily on that first tick) and only
+    /// then returns at the trust gate (ts:src/worker.ts:1397-1411 @09da38d),
+    /// so no telemetry reaches the broker and state.json is not re-flushed
+    /// either; its config report / status do. An agent that published
+    /// anything at least [`HELD_ALIVE_MS`] ago counts as ticking for input
+    /// delivery (the caller still requires its NMEA port to be open). Without
+    /// this the symmetric NMEA/IMU delivery waited for a telemetry publish the
+    /// hold never lets happen: no GPS → no gps step → no trust (the p4-clock-*
+    /// tapes deadlocked, sweep-A 2026-10-22).
+    pub fn held_alive(&self, idx: usize, now: i64) -> bool {
+        self.first_publish[idx].is_some_and(|t| now - t >= HELD_ALIVE_MS)
+    }
+
+    /// Is agent `idx` held by the clock trust gate (alive, publishing, but
+    /// no telemetry yet)? Trust latches for the process
+    /// (ts:src/agent/clock-trust.ts:1-30), so only the hold from boot exists.
+    pub fn held(&self, idx: usize, now: i64) -> bool {
+        !self.ticking(idx) && self.held_alive(idx, now)
+    }
+
+    /// Phase 5b POST-HOLD SETTLE (an input-pairing rule, not a tolerance):
+    /// the held agent `idx` is about to resume at a trust instant the player
+    /// can see — the tape's NTP flip, the agent's own GPS/NITZ step (its
+    /// `xorgate-setclock` sudo call), or its 300 s grace fallback — but its
+    /// tick phase is unobserved until its first telemetry publish. Barrier
+    /// inputs (LTE file, cli, mqtt_in, conn) released in that gap can land
+    /// between the two agents' reads of the first post-hold pair (clock-cap
+    /// sweep-A: an LTE rewrite at 300.08 s, the fallback at 300 s). So from
+    /// `from` until the agent's first telemetry publish after it, at most
+    /// `cap` ms, barrier inputs wait — exactly like the post-cut hold while
+    /// an agent reconnects. It only DELAYS inputs (≤ cap): no tick is paired,
+    /// skipped or re-paired by it, and the diff compares every pair as
+    /// before, so a resumed agent whose first tick is late or early still
+    /// shows as an unpaired / mis-timed payload (tests
+    /// `post_hold_settle_*`).
+    pub fn expect_resume(&mut self, idx: usize, from: i64, cap: i64) {
+        if self.resume[idx].is_none() {
+            self.resume[idx] = Some((from, cap));
+        }
+    }
+
+    /// Must a barrier input wait for a held agent's first post-trust tick?
+    pub fn post_hold_hold(&mut self, now: i64) -> bool {
+        let mut hold = false;
+        for i in 0..2 {
+            let Some((from, cap)) = self.resume[i] else {
+                continue;
+            };
+            if now < from {
+                continue;
+            }
+            let resumed = self.seen_at[i].is_some_and(|t| t >= from);
+            if resumed || now - from >= cap {
+                self.resume[i] = None;
+            } else {
+                hold = true;
+            }
+        }
+        hold
     }
 
     /// A telemetry publish of agent `idx` with payload `ts` arrived at `now`.
@@ -576,6 +694,10 @@ struct Agent {
     pty_open_cache: Option<(std::time::Instant, bool)>,
     /// Phase 4: Pi namespace dir + the SMS pty kept open (`p4.rs`).
     p4: p4::AgentP4,
+    /// Phase 5b: this side's JS build (`PlayArgs::js_dir_for`).
+    js_dir: PathBuf,
+    /// Phase 5b: this side's ELM327 emulator (OBD tapes), stopped on drop.
+    _obd_emu: Option<p5b::Emu>,
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -834,20 +956,79 @@ impl Agent {
         let camrotate = args.camrotate.clone().or_else(|| {
             [
                 PathBuf::from("/rig/system/xorgate-camrotate"),
-                args.js_dir.join("system/xorgate-camrotate"),
+                args.js_dir_for(label).join("system/xorgate-camrotate"),
             ]
             .into_iter()
             .find(|p| p.is_file())
         });
-        let (p4_state, p4_env) = p4::prepare_agent(p4plan, &work, &dir, camrotate.as_deref())?;
+        // Phase 5b: the NTP probe's answer latency (timedatectl shim), from
+        // `meta.rig.ntpProbeDelayMs` (p5b-clock-hold; see the shim).
+        if let Some(ms) = tape
+            .meta
+            .rig
+            .as_ref()
+            .and_then(|r| r.get("ntpProbeDelayMs"))
+            .and_then(Value::as_u64)
+        {
+            fs::write(
+                state.join("ntp_delay"),
+                format!("{:.3}", ms as f64 / 1000.0),
+            )?;
+        }
+        let (mut p4_state, p4_env) = p4::prepare_agent(p4plan, &work, &dir, camrotate.as_deref())?;
+        // Phase 5b (R-P3G-4): the agent's memory input is the tape's, bound
+        // over /proc/meminfo in its own mount namespace (pi-ns.sh); the rig
+        // VM's RAM (other agents' encoders, cargo builds) never reaches
+        // `ram_usage`. Skipped when the rig cannot unshare (CI smoke).
+        if meminfo_isolation(args) {
+            let mi = work.join("meminfo");
+            fs::write(&mi, RIG_MEMINFO)?;
+            env.retain(|(k, _)| k != "RIG_MEMINFO");
+            env.push(("RIG_MEMINFO".into(), mi.display().to_string()));
+            if p4_state.pi_dir.is_none() {
+                p4_state.pi_dir = Some(work.join("no-pi"));
+            }
+        }
         for (k, v) in p4_env {
             env.retain(|(ek, _)| *ek != k);
             env.push((k, v));
+        }
+        // Phase 5b (p5b.rs): the OBD helper + emulator + bluetoothctl answers.
+        let mut obd_emu = None;
+        if let Some(obd) = &p4plan.obd {
+            let js_py = args.js_dir_for(label).join("python");
+            let src = match kind {
+                AgentKind::Js => js_py,
+                AgentKind::Rust => p5b::helper_source(&args.rs_python, &args.js_dir.join("python")),
+            };
+            let tools = args
+                .shims
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            let (emu, obd_env) = p5b::prepare_agent(
+                obd,
+                &work,
+                &dir,
+                &state,
+                &args.fake_python,
+                &src,
+                &tools,
+                (!args.no_gate)
+                    .then(|| obd_gate_path(&args.work))
+                    .as_deref(),
+            )?;
+            obd_emu = emu;
+            for (k, v) in obd_env {
+                env.retain(|(ek, _)| *ek != k);
+                env.push((k, v));
+            }
         }
         fs::write(
             dir.join("meta.json"),
             serde_json::to_vec_pretty(&json!({
                 "label": label, "kind": kind.as_str(), "deviceId": device_id,
+                "jsDir": (kind == AgentKind::Js).then(|| args.js_dir_for(label).display().to_string()),
                 "home": home, "ptyPath": pty_path, "env": env.iter().cloned().collect::<BTreeMap<_, _>>(),
             }))?,
         )?;
@@ -870,6 +1051,8 @@ impl Agent {
             pty_unopened: 0,
             pty_open_cache: None,
             p4: p4_state,
+            js_dir: args.js_dir_for(label).to_path_buf(),
+            _obd_emu: obd_emu,
         })
     }
 
@@ -891,7 +1074,7 @@ impl Agent {
                 };
                 (
                     args.node.clone(),
-                    vec![args.js_dir.join(entry).display().to_string()],
+                    vec![self.js_dir.join(entry).display().to_string()],
                 )
             }
             AgentKind::Rust => (
@@ -1236,6 +1419,9 @@ async fn capture_loop(
                     let _ = writeln!(f, "{line}");
                 }
                 if !inbound {
+                    if let Ok(mut g) = caps.gate.lock() {
+                        g.on_publish(idx, now);
+                    }
                     if let Ok(mut w) = caps.watch.lock() {
                         w.on_publish(idx, now);
                         if topic.ends_with("/config/reported") {
@@ -1400,6 +1586,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         _ => None,
     }) == Some(true);
     let plan = MediaPlan::of(&tape);
+    // Phase 5b WP4: the tape's external child exits, per side and per attempt
+    // (media.rs `exit_plan`); only an exit no recorded spawn explains is still
+    // re-enacted at tape time.
+    let (exit_plan, unattributed_exits) = media::exit_plan(&tape);
+    let unattributed_exits: BTreeSet<u64> = unattributed_exits.into_iter().collect();
     let p4plan = p4::P4Plan::of(&tape);
     if p4plan.pi.is_some() {
         // The bind-mount target of each agent's namespace (pi-ns.sh).
@@ -1612,6 +1803,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // Start both agents together.
     let t0 = tokio::time::Instant::now();
     let play_start_wall = wall_now_ms();
+    let mut spawn_wall = [0i64; 2];
     for (i, a) in agents.iter_mut().enumerate() {
         if i == 1 && args.stagger_ms > 0 {
             tokio::time::sleep(Duration::from_millis(args.stagger_ms)).await;
@@ -1619,8 +1811,14 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         if let Ok(mut w) = caps.watch.lock() {
             w.on_spawn(i, wall_now_ms());
         }
+        spawn_wall[i] = wall_now_ms();
         a.start(&args)?;
     }
+    // Phase 5b post-hold settle triggers ([`Gate::expect_resume`]): the grace
+    // fallback (spawn + 300 s) and each agent's own clock step (the sudo
+    // shim's `xorgate-setclock` line in `<work>/sudo.log`).
+    let sudo_logs: Vec<PathBuf> = agents.iter().map(|a| a.work.join("sudo.log")).collect();
+    let mut resume_watch = ResumeWatch::new(spawn_wall, sudo_logs);
     plog(format!(
         "agents started (B staggered {} ms); prefilled {idx} records",
         args.stagger_ms
@@ -1663,6 +1861,28 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // time) — the only record of the hold gate's effect on line inputs.
     let mut releases = std::io::BufWriter::new(File::create(args.out.join("releases.ndjson"))?);
     let cutoff = args.max_s.map(|s| s * 1000).unwrap_or(u64::MAX);
+    // The per-attempt exits run on their own 2 ms task (not the release loop,
+    // whose passes can block for ~100 ms on a release): each side's kill lands
+    // within a few ms of its own spawn + the tape offset, also in the settle.
+    let exit_task = (!exit_plan.is_empty()).then(|| {
+        let obs: Vec<media::ObsAgent> = agents.iter().map(Agent::obs).collect();
+        let (plan, xp, stop) = (plan.clone(), exit_plan.clone(), obs_stop.clone());
+        tokio::spawn(async move {
+            let mut runners: Vec<media::ExitRunner> =
+                obs.iter().map(|_| media::ExitRunner::default()).collect();
+            while !stop.is_cancelled() {
+                let now = wall_now_ms();
+                for (a, r) in obs.iter().zip(runners.iter_mut()) {
+                    r.poll(a, &plan, &xp, now);
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+    });
+    // Phase 5b: the OBD helpers' stdout follows the hold gate (obd-gate.py).
+    let has_obd = !args.no_gate && p5b::ObdPlan::of(&tape).is_some();
+    let mut obd_gate = ObdGate::new(obd_gate_path(&args.work));
+    let obd_bar = obd_gate_path(&args.work).with_file_name("obd-barrier");
 
     // Release order = tape order, except that a record the WATCH gate holds
     // (lte_file / cli / config, `watch.rs`) waits in `pending` together with
@@ -1705,7 +1925,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             && caps
                 .gate
                 .lock()
-                .map(|mut g| g.post_cut_hold(now))
+                .map(|mut g| g.post_cut_hold(now) | g.post_hold_hold(now))
                 .unwrap_or(false)
     };
     // POWER CROSSINGS (`meta.rig.powerCrossings`, synth exec-rail /
@@ -1744,6 +1964,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     loop {
         // (record index, wall ms it fell due, released by a hold timeout)
         let picked: Option<(usize, i64, bool)> = loop {
+            if !args.no_gate {
+                resume_watch.poll(&caps.gate, wall_now_ms(), &plog);
+            }
             while next < n_rec && prefilled[next] {
                 next += 1;
             }
@@ -1767,7 +1990,18 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // it forms a pair hold only when asked near a lead tick, so on a
             // sparse stretch (sms-sim: 9 records, 0 pairs; a tape IMU-helper
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
-            let _ = tel_open(now);
+            let open_now = tel_open(now);
+            if has_obd {
+                // Closed inside a tick pair AND while a config-report pair is
+                // open (a report build reads `effective.obd` at each agent's
+                // own instant: stepC p5b-obd-config.bar.* `probing` vs `live`).
+                let report_pair = caps
+                    .watch
+                    .lock()
+                    .map(|w| w.report_pair_open(now))
+                    .unwrap_or(false);
+                obd_gate.write(open_now && !report_pair, now);
+            }
             if let Some(&(ci, since)) = exec_q.front() {
                 let r = &tape.records[ci];
                 let crossing = crossing_ts.contains(&r.t);
@@ -1801,7 +2035,8 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 if fence {
                     fenced.insert(pi);
                 }
-                let held = watch_holds(ev, now) || fence;
+                let held =
+                    watch_holds(ev, now) || fence || (has_obd && obd_relays_holding(&obd_bar, now));
                 let timeout = held && now - due_w > watch::MAX_HOLD_MS;
                 if (!held || timeout) && !post_cut(now) && tel_open(now) {
                     pending.pop_front();
@@ -1817,6 +2052,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                     if !args.no_gate
                         && barrier(&r.ev)
                         && (!pending.is_empty()
+                            || (has_obd && obd_relays_holding(&obd_bar, now))
                             || watch_holds(&r.ev, now)
                             || post_cut(now)
                             || fenced_at(&r.ev, now, now) == Some(true))
@@ -1923,7 +2159,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 // phase). If one agent has not opened it for 5 s while the
                 // other has, feed the other alone so a never-opened port
                 // shows up in the diff instead of hiding both gps groups.
-                let ticking = caps.gate.lock().map(|g| g.both_ticking()).unwrap_or(true);
+                let ticking = inputs_ticking(&caps.gate, now);
                 let open: Vec<bool> = agents
                     .iter_mut()
                     .map(|a| ticking && a.pty_is_open())
@@ -1951,7 +2187,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 // Same symmetric rule as NMEA: a line goes to both helpers or
                 // to neither (each agent spawns its helper at its own pace);
                 // after 5 s of asymmetry the connected one is fed alone.
-                let ticking = caps.gate.lock().map(|g| g.both_ticking()).unwrap_or(true);
+                let ticking = inputs_ticking(&caps.gate, now);
                 let mut conn = Vec::new();
                 for a in &agents {
                     conn.push(ticking && a.imu_connected().await);
@@ -2082,9 +2318,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // (crash, EOF): re-enacted on both agents at tape time (media.rs).
             TapeEvent::ChildExit(x) if x.external => {
                 transitions.push(now);
-                for a in &agents {
-                    let rec = media::external_exit(&a.obs(), &plan, x);
-                    plog(format!("external child exit at t={}: {}", r.t, rec));
+                if unattributed_exits.contains(&r.t) {
+                    for a in &agents {
+                        let rec = media::external_exit(&a.obs(), &plan, x);
+                        plog(format!("external child exit at t={}: {}", r.t, rec));
+                    }
                 }
             }
             // Phase 3 output kinds: compared by the diff, not replayed.
@@ -2099,9 +2337,12 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // shims (fake-modem pty, pinctrl, sudo, timedatectl) consume them
             // from WP6 step 2 on. Tolerated so a Phase 4 tape still plays.
             // Phase 4: the NTP verdict is an input (timedatectl shim).
-            TapeEvent::NtpProbe { .. } => {
+            TapeEvent::NtpProbe { synced } => {
                 transitions.push(now);
                 apply_state(&agents, &r.ev, shift_s)?;
+                if *synced {
+                    note_resume(&caps.gate, now, RESUME_NTP_CAP_MS, &plog, "ntp");
+                }
             }
             // Phase 4 outputs / answers: the fake modem answers from the
             // transcript, the shims log `gpio`, `sudo` answers were applied
@@ -2118,6 +2359,8 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             *g = Some(CancellationToken::new());
         }
     }
+    // The settle has no gate: the relays fall back to open (a missing file).
+    obd_gate.clear();
     plog(format!(
         "tape done ({released} released); settling {} s",
         args.settle_s
@@ -2146,6 +2389,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     tokio::time::sleep(Duration::from_millis(500)).await;
     obs_stop.cancel();
     let _ = obs_task.await;
+    if let Some(t) = exit_task {
+        let _ = t.await;
+    }
     for a in &agents {
         if let Err(e) = media::finish(&a.obs()) {
             plog(format!("agent {}: media finish failed: {e:#}", a.label));
@@ -2212,6 +2458,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         skips: Vec::new(),
         releases: Vec::new(),
         nmea_resumes,
+        no_gate: args.no_gate,
     };
     fs::write(
         args.out.join("play.json"),
@@ -2225,6 +2472,177 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The fixed `/proc/meminfo` every agent reads (R-P3G-4): a CM5 8 GB board,
+/// `MemAvailable` constant → `ram_usage` 21.2 % on both sides, exactly. The
+/// TS and the Rust collector both compute (MemTotal − MemAvailable) / MemTotal
+/// (ts:src/hardware/system.ts:86-98, rs xorgate-hal system.rs `read_memory`).
+pub const RIG_MEMINFO: &str = "MemTotal:        8245360 kB\nMemFree:         5990000 kB\nMemAvailable:    6500000 kB\nBuffers:           80000 kB\nCached:           600000 kB\nSwapCached:            0 kB\nSwapTotal:        204796 kB\nSwapFree:         204796 kB\n";
+
+/// Is the per-agent meminfo bind usable here (not `--host-meminfo`, and the
+/// rig may `unshare -m`)? Probed once per process.
+fn meminfo_isolation(args: &PlayArgs) -> bool {
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !args.host_meminfo
+        && *OK.get_or_init(|| {
+            std::process::Command::new("unshare")
+                .args(["-m", "--propagation", "private", "--", "true"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+}
+
+/// May NMEA / IMU lines flow (both agents booted and ticking)? An agent
+/// counts once it has published telemetry, or — while its telemetry is held
+/// by the clock trust gate — once it has been publishing anything for two
+/// ticks ([`Gate::held_alive`]). Both publishing telemetry = the pre-5b rule.
+/// The fallback / clock-step triggers of the post-hold settle, polled from
+/// the release loop (every 200 ms at most).
+struct ResumeWatch {
+    spawn_wall: [i64; 2],
+    sudo_logs: Vec<PathBuf>,
+    setclocks: [usize; 2],
+    fallback_done: [bool; 2],
+    last: i64,
+}
+
+impl ResumeWatch {
+    fn new(spawn_wall: [i64; 2], sudo_logs: Vec<PathBuf>) -> Self {
+        Self {
+            spawn_wall,
+            sudo_logs,
+            setclocks: [0, 0],
+            fallback_done: [false, false],
+            last: 0,
+        }
+    }
+
+    fn poll(&mut self, gate: &Mutex<Gate>, now: i64, plog: &dyn Fn(String)) {
+        if now - self.last < 200 {
+            return;
+        }
+        self.last = now;
+        let Ok(mut g) = gate.lock() else { return };
+        for i in 0..2 {
+            if !g.held(i, now) {
+                continue;
+            }
+            // A GPS/NITZ step = trust at once (`noteStep`).
+            let n = fs::read_to_string(&self.sudo_logs[i])
+                .map(|t| t.lines().filter(|l| l.contains("xorgate-setclock")).count())
+                .unwrap_or(0);
+            if n > self.setclocks[i] {
+                self.setclocks[i] = n;
+                if g.resume[i].is_none() {
+                    g.expect_resume(i, now, RESUME_STEP_CAP_MS);
+                    plog(format!("post-hold settle: agent {i} (clock step) from {now}, cap {RESUME_STEP_CAP_MS} ms"));
+                }
+            }
+            // The grace fallback: the first 5 s poll past 300 s after start.
+            let from = self.spawn_wall[i] + CLOCK_GRACE_MS - FALLBACK_EARLY_MS;
+            if !self.fallback_done[i] && now >= from {
+                self.fallback_done[i] = true;
+                if g.resume[i].is_none() {
+                    g.expect_resume(i, from, RESUME_FALLBACK_CAP_MS);
+                    plog(format!("post-hold settle: agent {i} (grace fallback) from {from}, cap {RESUME_FALLBACK_CAP_MS} ms"));
+                }
+            }
+        }
+    }
+}
+
+/// Arm the post-hold settle for every agent the clock trust gate holds.
+fn note_resume(gate: &Mutex<Gate>, now: i64, cap: i64, plog: &dyn Fn(String), why: &str) {
+    if let Ok(mut g) = gate.lock() {
+        for i in 0..2 {
+            if g.held(i, now) && g.resume[i].is_none() {
+                g.expect_resume(i, now, cap);
+                plog(format!(
+                    "post-hold settle: agent {i} ({why}) from {now}, cap {cap} ms"
+                ));
+            }
+        }
+    }
+}
+
+/// Phase 5b (orchestrator ruling 2026-10-23): where the player publishes the
+/// hold gate's state for the OBD relays (`tools/replay/obd-gate.py`).
+fn obd_gate_path(work: &Path) -> PathBuf {
+    work.join("obd-gate")
+}
+
+/// Review-wp4 R7-1: the most a barrier input waits for the OBD relays' held
+/// helper lines (a relay that died with its flag set cannot wedge the tape).
+const OBD_FLUSH_CAP_MS: i64 = 2_000;
+
+/// Does an OBD relay still HOLD a helper line (obd-gate.py `_held`: the
+/// `<side>.held` flag in the shared barrier dir, its content the wall second
+/// the hold began)? Then no barrier input (config / command / cli / LTE file /
+/// conn) is released: at a gate opening the held helper lines reach both
+/// agents first, in the same order on both sides. A flag older than
+/// OBD_FLUSH_CAP_MS no longer holds.
+fn obd_relays_holding(bar: &Path, now: i64) -> bool {
+    ["a", "b"].iter().any(|side| {
+        fs::read_to_string(bar.join(format!("{side}.held")))
+            .ok()
+            .and_then(|t| t.trim().parse::<f64>().ok())
+            .is_some_and(|since| now - (since * 1000.0) as i64 <= OBD_FLUSH_CAP_MS)
+    })
+}
+
+/// The OBD relays' gate file: `1` open / `0` closed, rewritten on every change
+/// and at least every [`OBD_GATE_BEAT_MS`] (a relay treats a file older than
+/// 1.5 s, or none, as OPEN, so a stopped player never wedges a helper).
+struct ObdGate {
+    path: PathBuf,
+    last: Option<(bool, i64)>,
+    /// Review-wp4 R7-1: the number of closed → open transitions, written
+    /// after the state (`1 <epoch>`), so the relays release the lines one
+    /// opening freed at ONE shared GO (obd-gate.py `wait_open_line`).
+    epoch: u64,
+}
+
+const OBD_GATE_BEAT_MS: i64 = 500;
+
+impl ObdGate {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            last: None,
+            epoch: 0,
+        }
+    }
+
+    fn write(&mut self, open: bool, now: i64) {
+        if self
+            .last
+            .is_some_and(|(o, at)| o == open && now - at < OBD_GATE_BEAT_MS)
+        {
+            return;
+        }
+        if open && self.last.is_none_or(|(o, _)| !o) {
+            self.epoch += 1;
+        }
+        let tmp = self.path.with_extension("tmp");
+        if fs::write(&tmp, format!("{} {}", u8::from(open), self.epoch)).is_ok()
+            && fs::rename(&tmp, &self.path).is_ok()
+        {
+            self.last = Some((open, now));
+        }
+    }
+
+    fn clear(&mut self) {
+        let _ = fs::remove_file(&self.path);
+        self.last = None;
+    }
+}
+
+fn inputs_ticking(gate: &Mutex<Gate>, now: i64) -> bool {
+    let Ok(g) = gate.lock() else { return true };
+    (0..2).all(|i| g.ticking(i) || g.held_alive(i, now))
 }
 
 fn apply_state(agents: &[Agent], ev: &TapeEvent, shift_s: i64) -> Result<()> {
@@ -2565,5 +2983,156 @@ mod tests {
             Some("0")
         );
         assert_eq!(gga_quality("$GPRMC,1"), None);
+    }
+
+    /// Phase 5b: per-side JS builds (JS-vs-JS across two refs); a side
+    /// without its own flag keeps `--js-dir`.
+    #[test]
+    fn js_dir_per_side() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct W {
+            #[command(flatten)]
+            play: PlayArgs,
+        }
+        let base = ["x", "--tape", "t", "--out", "o"];
+        let w = W::parse_from(base);
+        assert_eq!(w.play.js_dir_for("a"), Path::new("/rig/cache/js-09da38d"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-09da38d"));
+        let w = W::parse_from(base.iter().copied().chain([
+            "--js-dir",
+            "/j/js-x",
+            "--js-dir-b",
+            "/j/js-09da38d",
+        ]));
+        assert_eq!(w.play.js_dir_for("a"), Path::new("/j/js-x"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/j/js-09da38d"));
+        let w = W::parse_from(base.iter().copied().chain(["--js-dir-a", "/j/js-89b5c64"]));
+        assert_eq!(w.play.js_dir_for("a"), Path::new("/j/js-89b5c64"));
+        assert_eq!(w.play.js_dir_for("b"), Path::new("/rig/cache/js-09da38d"));
+    }
+
+    /// Phase 5b: an agent whose telemetry is held (clock trust) still counts
+    /// for input delivery once it has published anything for two ticks.
+    #[test]
+    fn held_agent_counts_after_two_ticks_of_any_publish() {
+        let g = Mutex::new(Gate::new(150));
+        assert!(!inputs_ticking(&g, 10_000));
+        g.lock().unwrap().on_tick(0, 1_000, 1_005);
+        assert!(!inputs_ticking(&g, 10_000), "B never published");
+        g.lock().unwrap().on_publish(1, 1_200); // B's config report
+        assert!(!inputs_ticking(&g, 3_199));
+        assert!(inputs_ticking(&g, 3_200));
+        // Both publishing telemetry: the pre-5b rule, at once.
+        let g = Mutex::new(Gate::new(150));
+        g.lock().unwrap().on_tick(0, 1_000, 1_005);
+        g.lock().unwrap().on_tick(1, 1_100, 1_105);
+        assert!(inputs_ticking(&g, 1_106));
+    }
+
+    /// Post-hold settle: barrier inputs wait from the trust instant until the
+    /// held agent's first telemetry publish — and NOTHING else changes.
+    #[test]
+    fn post_hold_settle_waits_for_the_first_post_trust_tick_only() {
+        let mut g = Gate::new(150);
+        g.on_tick(0, 1_000, 1_005); // A publishing
+        g.on_publish(1, 1_100); // B alive, telemetry held
+        assert!(g.held(1, 5_000));
+        g.expect_resume(1, 300_000, RESUME_FALLBACK_CAP_MS);
+        assert!(!g.post_hold_hold(299_999), "not before the trust instant");
+        assert!(g.post_hold_hold(300_000));
+        assert!(g.post_hold_hold(300_900));
+        g.on_tick(1, 300_950, 300_960); // B's first post-trust tick
+        assert!(!g.post_hold_hold(300_961), "released at B's first publish");
+        assert!(
+            g.pairs.iter().all(|p| p.get("skip").is_none()),
+            "never skips a tick"
+        );
+    }
+
+    /// NEGATIVE: a resumed agent that is late beyond the TS bound is not
+    /// waited for (the settle expires at its cap, inputs flow again, and the
+    /// missing / late payloads are judged by the diff as before); an early
+    /// tick (before the trust instant) does not count as the resume.
+    #[test]
+    fn post_hold_settle_never_waits_past_its_cap_nor_counts_an_early_tick() {
+        let mut g = Gate::new(150);
+        g.on_tick(0, 1_000, 1_005);
+        g.on_publish(1, 1_100);
+        g.expect_resume(1, 60_000, RESUME_NTP_CAP_MS);
+        assert!(g.post_hold_hold(60_000 + RESUME_NTP_CAP_MS - 1));
+        assert!(!g.post_hold_hold(60_000 + RESUME_NTP_CAP_MS), "capped");
+        assert!(!g.post_hold_hold(90_000));
+        // early: a publish before `from` is not the post-trust tick
+        let mut h = Gate::new(150);
+        h.on_tick(0, 1_000, 1_005);
+        h.on_publish(1, 1_100);
+        h.expect_resume(1, 10_000, RESUME_STEP_CAP_MS);
+        h.on_tick(1, 9_000, 9_990);
+        assert!(
+            h.post_hold_hold(10_000),
+            "the 9.99 s publish predates the step"
+        );
+        assert!(h.pairs.is_empty());
+    }
+
+    /// R-P3G-4: the rig meminfo parses like a real one (both agents read
+    /// MemTotal/MemAvailable from it) and pins ram_usage at 21.2 %.
+    #[test]
+    fn obd_gate_file_follows_the_hold_gate_with_a_heartbeat() {
+        let d = std::env::temp_dir().join(format!("obd-gate-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let mut g = ObdGate::new(obd_gate_path(&d));
+        let read = || fs::read_to_string(d.join("obd-gate")).unwrap();
+        g.write(false, 1_000);
+        assert_eq!(read(), "0 0");
+        // A change is written at once…
+        g.write(true, 1_010);
+        assert_eq!(read(), "1 1");
+        // …an unchanged state only on the heartbeat.
+        fs::write(d.join("obd-gate"), "x").unwrap();
+        g.write(true, 1_400);
+        assert_eq!(read(), "x");
+        g.write(true, 1_510);
+        assert_eq!(read(), "1 1");
+        // R7-1: every closed → open transition is a new opening epoch.
+        g.write(false, 2_000);
+        assert_eq!(read(), "0 1");
+        g.write(true, 2_010);
+        assert_eq!(read(), "1 2");
+        // Tape done: no file = the relays' OPEN fallback.
+        g.clear();
+        assert!(!d.join("obd-gate").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Review-wp4 R7-1: a barrier input waits while a relay's `<side>.held`
+    /// flag is set (fresh), never past OBD_FLUSH_CAP_MS.
+    #[test]
+    fn barrier_inputs_wait_for_the_relays_held_lines() {
+        let d = std::env::temp_dir().join(format!("obd-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let now = 1_793_000_000_000i64;
+        assert!(!obd_relays_holding(&d, now), "no flags");
+        fs::write(d.join("b.held"), format!("{}", (now - 100) as f64 / 1000.0)).unwrap();
+        assert!(obd_relays_holding(&d, now), "b holds a line");
+        fs::write(
+            d.join("b.held"),
+            format!("{}", (now - 2_500) as f64 / 1000.0),
+        )
+        .unwrap();
+        assert!(!obd_relays_holding(&d, now), "past the cap");
+        fs::remove_file(d.join("b.held")).unwrap();
+        fs::write(d.join("a.held"), "garbage").unwrap();
+        assert!(!obd_relays_holding(&d, now), "unparseable = not holding");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn rig_meminfo_is_a_fixed_parseable_input() {
+        let m = xorgate_core::system::parse_mem_available(RIG_MEMINFO).expect("parses");
+        let used = (m.total_bytes - m.available_bytes) / m.total_bytes * 100.0;
+        assert_eq!((used * 10.0).round() / 10.0, 21.2);
     }
 }
