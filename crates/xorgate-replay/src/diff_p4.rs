@@ -726,6 +726,11 @@ pub const OBD_BARRIER_WAIT_MAX_MS: i64 = 400;
 /// (descheduled) delivered the edge apart from the other side: UNTOLERATED.
 pub const OBD_GO_LATE_MAX_MS: i64 = 50;
 
+/// Review-wp4 R6-1: the ELM327 emulator's ATZ reset sleep (`reset(0.5)`,
+/// obd_message.py:547) + 100 ms margin — the extra barrier wait allowed ONLY
+/// at the `stopped` status of a helper whose close cut a request in flight.
+pub const OBD_ATZ_RESET_MS: i64 = 600;
+
 /// `requestRate(prev, cur)` (ts:src/agent/collectors/obd.ts:270-278):
 /// `Math.round((Δrequests / Δts) * 10) / 10`, None when Δts ≤ 0 or Δreq < 0.
 fn request_rate(prev: (f64, f64), cur: (f64, f64)) -> Option<f64> {
@@ -921,11 +926,38 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
     // Review-wp4 R5 NIT: the stale replies each side's drain found, compared
     // across sides (an agent whose stop leaves MORE in-flight replies — e.g.
     // a helper killed before its close — stays visible).
+    // A stale reply is EXPLAINED when the side's previous helper was stopped
+    // (signalled) with a request in flight (review-wp4 R6-1): the stop
+    // signal raises Shutdown out of that request's read, the helper's close
+    // ATZ then reads the in-flight request's reply as its own, and the real
+    // ATZ reply is left on the line for the next start (python/obd/gate.py
+    // :131-136, :187; session.py:90; its last audit has requests − ok = 1).
+    // Only UNEXPLAINED stale replies are compared across sides.
     let stale = |log: &Option<Vec<Value>>| -> usize {
-        log.iter()
-            .flatten()
-            .filter(|w| w["kind"] == "drain" && w["bytes"].as_i64().unwrap_or(0) > 0)
-            .count()
+        let log: Vec<&Value> = log.iter().flatten().collect();
+        let mut n = 0;
+        for (i, w) in log.iter().enumerate() {
+            if w["kind"] != "drain" || w["bytes"].as_i64().unwrap_or(0) == 0 {
+                continue;
+            }
+            let prev = log[..i]
+                .iter()
+                .rev()
+                .find(|x| x["kind"] == "helper-exit")
+                .filter(|x| x["signalled"] == true);
+            let cut = prev.and_then(|x| {
+                let pid = x["pid"].as_i64()?;
+                let a = log[..i]
+                    .iter()
+                    .rev()
+                    .find(|y| y["kind"] == "audit-line" && y["pid"].as_i64() == Some(pid))?;
+                Some(a["requests"].as_i64()? - a["ok"].as_i64()? == 1)
+            });
+            if cut != Some(true) {
+                n += 1;
+            }
+        }
+        n
     };
     let (sa, sb) = (stale(&a), stale(&b));
     rep.stats.entry("obd-gate".into()).or_default().compared += 1;
@@ -995,6 +1027,45 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
                 tol: UNTOLERATED.into(),
             });
         }
+        // R6-1: the helper sessions (relay pids) stopped with a request in
+        // flight (signalled; last audit requests − ok = 1), and the edge
+        // numbers of their final `stopped` status (the status edge right
+        // before the session's exit edge). Such a helper's close ATZ reads
+        // the in-flight reply at once, while a clean close waits out the
+        // emulator's ATZ reset (`reset(0.5)`, ELM327-emulator obd_message.py
+        // :547) before its `stopped` — so the cut side waits for the other at
+        // that one edge by up to the reset: allowed + OBD_ATZ_RESET_MS there.
+        let mut last_audit: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
+        let mut signalled: std::collections::BTreeSet<i64> = Default::default();
+        let mut prev_status: BTreeMap<i64, i64> = BTreeMap::new();
+        let mut stop_edges: BTreeMap<i64, i64> = BTreeMap::new();
+        for w in &waits {
+            let pid = w["pid"].as_i64().unwrap_or(-1);
+            match w["kind"].as_str() {
+                Some("audit-line") => {
+                    if let (Some(r), Some(o)) = (w["requests"].as_i64(), w["ok"].as_i64()) {
+                        last_audit.insert(pid, (r, o));
+                    }
+                }
+                Some("helper-exit") if w["signalled"] == true => {
+                    signalled.insert(pid);
+                }
+                Some("status") if w["edge"].is_number() => {
+                    prev_status.insert(pid, w["edge"].as_i64().unwrap_or(-1));
+                }
+                Some("exit") if w["edge"].is_number() => {
+                    if let Some(e) = prev_status.get(&pid) {
+                        stop_edges.insert(pid, *e);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let cut_stop_edge = |pid: i64, edge: i64| {
+            signalled.contains(&pid)
+                && last_audit.get(&pid).is_some_and(|(r, o)| r - o == 1)
+                && stop_edges.get(&pid) == Some(&edge)
+        };
         let waits: Vec<serde_json::Value> = waits
             .into_iter()
             .filter(|w| w["edge"].is_number() && w["kind"] != "go")
@@ -1012,6 +1083,25 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
         st.compared += waits.len() + gos.len();
         for w in &waits {
             let (ms, timeout) = (w["wait_ms"].as_i64().unwrap_or(0), w["timeout"] == true);
+            let cut = cut_stop_edge(
+                w["pid"].as_i64().unwrap_or(-1),
+                w["edge"].as_i64().unwrap_or(-1),
+            );
+            if !timeout
+                && cut
+                && ms > OBD_BARRIER_WAIT_MAX_MS
+                && ms <= OBD_BARRIER_WAIT_MAX_MS + OBD_ATZ_RESET_MS
+            {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!("{label} edge #{} stopped status", w["edge"]),
+                    path: "(barrier wait: own close cut a request in flight)".into(),
+                    a: format!("{ms} ms"),
+                    b: format!("≤ {} ms", OBD_BARRIER_WAIT_MAX_MS + OBD_ATZ_RESET_MS),
+                    tol: "T8/obd-audit-cycle".into(),
+                });
+                continue;
+            }
             if timeout || ms > OBD_BARRIER_WAIT_MAX_MS {
                 rep.push(Mismatch {
                     stream: "obd-gate".into(),
@@ -1178,6 +1268,72 @@ mod tests {
             run(),
             vec!["(helper starts with a stale adapter reply)".to_string()]
         );
+        // R6-1: explained when the previous helper was stopped with one
+        // request in flight (its last audit requests − ok = 1) …
+        let stop = |ok: i64, signalled: bool| {
+            vec![
+                format!(
+                    r#"{{"w":1,"side":"a","kind":"audit-line","ts":1.0,"requests":387,"ok":{ok},"pid":7}}"#
+                ),
+                format!(
+                    r#"{{"w":1,"side":"a","kind":"helper-exit","rc":0,"signalled":{signalled},"pid":7}}"#
+                ),
+                r#"{"w":2,"side":"a","kind":"drain","bytes":14,"ms":310,"quiet":true,"pid":8}"#
+                    .to_string(),
+            ]
+        };
+        let lines = stop(386, true);
+        write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(run().is_empty());
+        // … not after a clean stop (requests = ok), nor an unsignalled exit
+        for (ok, sig) in [(387, true), (386, false)] {
+            let lines = stop(ok, sig);
+            write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(
+                run(),
+                vec!["(helper starts with a stale adapter reply)".to_string()],
+                "ok {ok} signalled {sig}"
+            );
+        }
+        write("a", &[]);
+        // R6-1: a wait over the bound at the `stopped` status of a helper
+        // stopped with a request in flight is explained up to + the ATZ
+        // reset; the same wait on another edge, a clean stop, or beyond
+        // 1000 ms FAILS.
+        let cut_stop = |wait: i64, ok: i64, edge_kind: &str| {
+            vec![
+                format!(
+                    r#"{{"w":1,"side":"a","edge":5,"kind":"{edge_kind}","wait_ms":{wait},"timeout":false,"pid":9}}"#
+                ),
+                format!(
+                    r#"{{"w":2,"side":"a","kind":"audit-line","ts":2.0,"requests":383,"ok":{ok},"pid":9}}"#
+                ),
+                r#"{"w":2,"side":"a","kind":"helper-exit","rc":0,"signalled":true,"pid":9}"#
+                    .to_string(),
+                r#"{"w":3,"side":"a","edge":6,"kind":"exit","wait_ms":3,"timeout":false,"pid":9}"#
+                    .to_string(),
+            ]
+        };
+        let lines = cut_stop(454, 382, "status");
+        write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(
+            run(),
+            vec!["(barrier wait: own close cut a request in flight)".to_string()],
+            "cited (tolerated), not UNTOLERATED"
+        );
+        for (wait, ok, kind) in [
+            (454, 383, "status"),
+            (1001, 382, "status"),
+            (454, 382, "profile"),
+        ] {
+            let lines = cut_stop(wait, ok, kind);
+            write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(
+                run(),
+                vec!["(barrier wait over bound)".to_string()],
+                "{wait} {ok} {kind}"
+            );
+        }
         write("a", &[]);
         // R5-2: an edge a relay delivered > 50 ms after its shared GO FAILS.
         write(

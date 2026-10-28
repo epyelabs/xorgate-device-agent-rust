@@ -355,8 +355,9 @@ for line in iter(child.stdout.readline, b""):
         # so the diff ties it to these.
         try:
             a = json.loads(line)
+            c = a.get("counters") or {}
             log_wait({"w": int(time.time() * 1000), "side": SIDE, "kind": "audit-line",
-                      "ts": a.get("ts"), "requests": (a.get("counters") or {}).get("requests")})
+                      "ts": a.get("ts"), "requests": c.get("requests"), "ok": c.get("ok")})
         except ValueError:
             pass
     rel = None
