@@ -779,9 +779,34 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
         }
     }
     for (label, waits) in [("A", a.unwrap_or_default()), ("B", b.unwrap_or_default())] {
+        // The relay's pre-spawn drain of the adapter line (fresh state per
+        // helper start): summarised; one that never went quiet FAILS.
+        let drains: Vec<&serde_json::Value> =
+            waits.iter().filter(|w| w["kind"] == "drain").collect();
+        if !drains.is_empty() {
+            let bytes: i64 = drains.iter().filter_map(|w| w["bytes"].as_i64()).sum();
+            let stale = drains
+                .iter()
+                .filter(|w| w["bytes"].as_i64().unwrap_or(0) > 0)
+                .count();
+            summary.push(format!(
+                "{label} {} helper start(s) drained, {stale} with stale bytes ({bytes} B)",
+                drains.len()
+            ));
+            for w in drains.iter().filter(|w| w["quiet"] == false) {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!("{label} drain at {}", w["w"]),
+                    path: "(adapter line quiet before the helper start)".into(),
+                    a: format!("{} B in {} ms, never quiet", w["bytes"], w["ms"]),
+                    b: "quiet".into(),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
         let waits: Vec<serde_json::Value> = waits
             .into_iter()
-            .filter(|w| w["kind"] != "profile-rate")
+            .filter(|w| w["kind"] != "profile-rate" && w["kind"] != "drain")
             .collect();
         let max = waits
             .iter()
@@ -865,6 +890,24 @@ mod tests {
             &[r#"{"w":1,"side":"a","edge":3,"kind":"exit","wait_ms":3001,"timeout":true}"#],
         );
         assert_eq!(run(), vec!["(barrier timeout)".to_string()]);
+        // The pre-spawn drain: quiet (with or without stale bytes) is only
+        // summarised and is not an edge; one that never went quiet FAILS.
+        write(
+            "a",
+            &[
+                r#"{"w":1,"side":"a","kind":"drain","bytes":3,"ms":320,"quiet":true}"#,
+                r#"{"w":2,"side":"a","edge":1,"kind":"ready","wait_ms":0,"timeout":false}"#,
+            ],
+        );
+        assert!(run().is_empty());
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","kind":"drain","bytes":900,"ms":2000,"quiet":false}"#],
+        );
+        assert_eq!(
+            run(),
+            vec!["(adapter line quiet before the helper start)".to_string()]
+        );
         // T17 carry check: B's report must carry ITS helper's 19.2 exactly.
         write("a", &[]);
         write(

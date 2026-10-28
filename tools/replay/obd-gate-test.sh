@@ -53,4 +53,33 @@ print("ok   report hold: profile released %.2f s after the status line" % gap if
 sys.exit(0 if 3.1 <= gap <= 3.6 else 1)
 P
 [ $? = 0 ] || fail=1
+# Adapter drain (orchestrator ruling 2026-10-27): a reply queued on the pty
+# for the PREVIOUS helper (and one arriving 0.15 s after the relay starts) never
+# reaches the next helper; the drain is logged with its byte count. Without the
+# drain the helper reads the stale "OK>" as the answer to its first command.
+mkdir -p "$W/dr"; cp /t/obd-gate.py "$W/dr/obd_read.py"
+cat > "$W/dr/obd_read_real.py" <<'P'
+import os, sys, time, tty
+p = sys.argv[sys.argv.index("--serial") + 1]
+fd = os.open(p, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK); tty.setraw(fd)
+time.sleep(0.2)
+try: got = os.read(fd, 4096)
+except BlockingIOError: got = b""
+print(repr(got), flush=True)
+P
+cat > "$W/dr/drive.py" <<'P'
+import os, pty, subprocess, sys, threading, time, tty
+m, s = pty.openpty(); tty.setraw(s); path = os.ttyname(s)
+os.write(m, b"OK\r\r>")                         # the old helper's unread reply
+threading.Timer(0.15, lambda: os.write(m, b"ELM327 v1.5\r\r>")).start()  # still in flight
+env = dict(os.environ, RIG_OBD_WAITLOG=sys.argv[2], RIG_OBD_SIDE="a")
+out = subprocess.run([sys.executable, sys.argv[1], "--serial", path], env=env,
+                     capture_output=True, text=True, timeout=10).stdout.strip()
+os.close(s)  # held open meanwhile: the queued reply stays in the input queue
+print(out)
+P
+rm -f "$G"
+got=$(python3 "$W/dr/drive.py" "$W/dr/obd_read.py" "$W/dr/wait.ndjson")
+[ "$got" = "b''" ] && ok "drain: the next helper reads no stale reply" || bad "drain: helper read $got"
+python3 -c 'import json,sys; w=[json.loads(l) for l in open(sys.argv[1])]; d=[x for x in w if x["kind"]=="drain"]; sys.exit(0 if len(d)==1 and d[0]["bytes"]==len("OK\r\r>")+len("ELM327 v1.5\r\r>") and d[0]["quiet"] and d[0]["ms"]>=300 else 1)' "$W/dr/wait.ndjson" && ok "drain logged: both stale replies' bytes, quiet" || bad "drain log: $(cat "$W/dr/wait.ndjson")"
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"; exit $fail
