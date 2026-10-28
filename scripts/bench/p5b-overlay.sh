@@ -47,7 +47,7 @@ if [ "$CMD" = wheels ]; then
   mkdir -p "$WHEELS"
   docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-p5b-rig}" --platform linux/arm64 \
     -v "$WHEELS:/w" debian:bookworm sh -c \
-    'apt-get update -qq >/dev/null && apt-get install -y -qq python3-pip >/dev/null && pip3 download --break-system-packages -q -d /w "ELM327-emulator==4.0.0" && ls /w'
+    'apt-get update -qq >/dev/null && apt-get install -y -qq python3-pip >/dev/null && pip3 wheel -q -w /w "ELM327-emulator==4.0.0" && ls /w'
   exit 0
 fi
 

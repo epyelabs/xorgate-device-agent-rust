@@ -137,5 +137,25 @@ for bad in XORGATE_OBD_SERIAL=/dev/rfcomm0 XORGATE_OBD_ADAPTER=00:1D:A5:68:98:8B
   cp "$LOGS/env.bak" "$RS_ENV"
 done
 for f in /proc/[0-9]*/cmdline; do grep -q p5b-fake "$f" 2>/dev/null && kill "$(basename "$(dirname "$f")")" 2>/dev/null; done; true
+echo "== wheels: the container command builds an offline-installable wheelhouse (gate 2026-10-28)"
+# Found by the Phase 5b gate: (1) bookworm's pip 23.0.1 has no
+# --break-system-packages on `download` (install-only option): "no such option"
+# before anything was fetched; (2) `pip3 download` leaves ELM327-emulator 4.0.0
+# as an sdist, and the bench's offline `pip install --no-index --find-links`
+# (apply) cannot build it (no setuptools>=61 in the wheelhouse). `pip3 wheel`
+# builds every requirement into a wheel, so the offline install never builds.
+WSTUB=$(mktemp -d)
+cat > "$WSTUB/docker" <<'S'
+#!/bin/sh
+printf '%s\n' "$@" > "$DOCKER_ARGV"
+S
+chmod 0755 "$WSTUB/docker"
+DOCKER_ARGV="$LOGS/wheels.argv" PATH="$WSTUB:$PATH" P5B_WHEELS="$LOGS/wheels" bash "$B/p5b-overlay.sh" wheels >"$LOGS/w1.log" 2>&1
+expect $? "wheels rc=0 (docker stubbed)"
+WCMD=$(tail -n 1 "$LOGS/wheels.argv")
+printf '%s' "$WCMD" | grep -q 'pip3 wheel .*-w /w "ELM327-emulator==4.0.0"' && ! printf '%s' "$WCMD" | grep -q -e '--break-system-packages' -e 'pip3 download'
+expect $? "wheels: 'pip3 wheel -w /w' (wheels only), no 'pip3 download', no install-only --break-system-packages"
+rm -rf "$WSTUB"
+
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail
