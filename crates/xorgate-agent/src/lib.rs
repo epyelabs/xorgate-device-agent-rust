@@ -7,6 +7,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod alloc;
 pub mod build_info;
 pub mod cli;
 pub mod collectors;
