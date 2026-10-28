@@ -819,11 +819,11 @@ mod tests {
             h.join().unwrap();
         }
         let text = fs::read_to_string(&f).unwrap();
-        let n = text
+        let recs: Vec<Value> = text
             .lines()
-            .map(|l| serde_json::from_str::<Value>(l).expect("a whole record per line"))
-            .count();
-        assert_eq!(n, 8 * 400);
+            .map(|l| serde_json::from_str(l).expect("a whole record per line"))
+            .collect();
+        assert_eq!(recs.len(), 8 * 400);
         let _ = fs::remove_dir_all(&d);
     }
 

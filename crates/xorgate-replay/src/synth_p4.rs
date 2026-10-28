@@ -130,7 +130,10 @@ fn cclk_at(t: u64, ahead_s: i64) -> String {
 fn factory_cclk(t: u64) -> String {
     const GPS_EPOCH_S: i64 = 315_964_800;
     let (y, mo, d, h, mi, s) = civil_from_epoch(GPS_EPOCH_S + (t / 1000) as i64);
-    format!("{:02}/{mo:02}/{d:02},{h:02}:{mi:02}:{s:02}+00", y.rem_euclid(100))
+    format!(
+        "{:02}/{mo:02}/{d:02},{h:02}:{mi:02}:{s:02}+00",
+        y.rem_euclid(100)
+    )
 }
 
 /// The Pi identity + boot config + both cameras' DT rotation at 0.
