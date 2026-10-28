@@ -36,7 +36,7 @@ A LAN fake bucket works too: `http://<mac-ip>:8000`.
 3. **Convert (G9).** Use the bucket copy (the Q3 one-liner, with `--from` set to the DEV bucket, because the bench `agent.env` names the PROD bucket), or `scp` the tarball and use `--tarball <file>` (its `.sha256` next to it):
    `ssh pi@192.168.8.203 'B=https://xorgate-device-dist-dev-111910761410-us-east-1.s3.us-east-1.amazonaws.com; cd /tmp && curl -fsSLO "$B/install-rs.sh" -O "$B/install-rs.sh.sha256" && sha256sum -c install-rs.sh.sha256 && sudo bash install-rs.sh --from "$B" -y'`
    - [ ] Final line: `[install-rs] converted: xorgate-agent-rs <ver> (dev) active; xorgate-agent stopped + disabled. …`
-   - [ ] `90-bench-dev.conf`, `95-inputs.conf` and `99-exclusive.conf` are named as foreign drop-ins and kept. The identity stays DEV (a73f7a36…) and the state stays in `/var/lib/xorgate-rs`.
+   - [ ] `90-bench-dev.conf` and `95-inputs.conf` are named as foreign drop-ins and kept. The window's runtime drop-ins (`/run/…/98-tape.conf`, `99-exclusive.conf`) are not under `/etc`, so the script does not name them; check `systemctl show xorgate-agent-rs -p DropInPaths` still lists them. The identity stays DEV (a73f7a36…) and the state stays in `/var/lib/xorgate-rs`.
    - [ ] `pgrep -a node` is empty. `/proc/<master>/exe` is recorded (CF69: the JS tree's KVS runtime).
    - [ ] The dev console live tile plays cam0, and a recorded session lands in `media-sessions/v1/<a73f7a36…>/…`.
    - [ ] A second `sudo bash /opt/xorgate-rs/install-rs.sh` prints `changed (0)`.
@@ -52,7 +52,7 @@ A LAN fake bucket works too: `http://<mac-ip>:8000`.
 7. `scripts/bench/exclusive.sh end` (exit 0; exit 1 = `end INCOMPLETE`: revert first).
    - [ ] `systemctl is-enabled xorgate-agent` = `enabled`, and `is-active` = `active` three times.
    - [ ] `xorgate-agent-rs` is active on DEV in the shared profile. The dead-man is cancelled.
-   - [ ] `systemctl is-enabled xorgate-agent-rs` = `enabled`. A keep-mode revert DISABLES the Rust unit, and `install.sh` and `end` do not re-enable it. If it reads `disabled`, run `scripts/bench/start.sh` (`enable --now` of the bench flavour), then re-check `is-active`.
+   - [ ] `systemctl is-enabled xorgate-agent-rs` = `enabled`. A keep-mode revert DISABLES the Rust unit, and `install.sh` and `end` do not re-enable it. If it reads `disabled`, run `scripts/bench/profile.sh shared --no-restart && scripts/bench/start.sh` (`enable --now` of the bench flavour), then re-check `is-active`. The `profile.sh` step is needed because `end` restarts the Rust agent, whose first cloud apply re-writes the shared `hardware.json` with the DEV `imu` block, and `start.sh` refuses on that (`missing: imu: null …`) until the copy is re-written (Phase 5 gate, 2026-10-28).
 
 ## On ANY abort
 1. `ssh pi@192.168.8.203 sudo /opt/xorgate-rs/install-rs.sh --revert` FIRST, if a conversion started (`exclusive.sh status` shows `conversion record: state=converted|converting`).
