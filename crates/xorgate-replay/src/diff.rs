@@ -1585,7 +1585,19 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                         && frac.bytes().all(|c| c.is_ascii_digit())
                 };
                 let shape_ok = id != "T17" || (one_decimal(x) && one_decimal(y));
-                let t = if shape_ok && (p - q).abs() <= tol + 1e-9 {
+                // T17 (orchestrator ruling 2026-10-28): the helper-measured rate
+                // is a HOST measurement (each side's helper against its own
+                // emulator); it is not compared across sides. Each side must
+                // carry its OWN helper's value exactly (diff_p4::diff_obd_gate,
+                // report and state paths) and stay inside the per-side
+                // plausibility bounds below; `tol` is the upper bound.
+                let in_band = if id == "T17" {
+                    let lo = obd_rate_floor(path);
+                    [p, q].iter().all(|v| *v >= lo && *v <= tol + 1e-9)
+                } else {
+                    (p - q).abs() <= tol + 1e-9
+                };
+                let t = if shape_ok && in_band {
                     id
                 } else if !shape_ok {
                     UNTOLERATED.into()
@@ -1878,6 +1890,22 @@ fn num_strict_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
 fn fffd_equiv(a: &str, b: &str) -> bool {
     let strip = |s: &str| s.replace('\u{FFFD}', "").replace("\\ud83d", "");
     a != b && (a.contains('\u{FFFD}') || b.contains('\u{FFFD}')) && strip(a) == strip(b)
+}
+
+/// T17's per-side plausibility FLOOR (the ceiling is the rule's tolerance,
+/// 40 req/s): the helper's probe rate `effective.obd.profile.rate_req_s` is
+/// raw adapter throughput — all 398 probes logged on the rig (stepC,
+/// stepC-H9 relay logs) lie in 16.8–19.7 req/s (an emulator round trip
+/// ≈ 52 ms) — so below
+/// 5 req/s (200 ms a request) the helper or its link is broken. The state
+/// `obd.reqPerSec` may legitimately be low (requestRate over two audits
+/// across a silent ECU or a restart: 0.2 req/s seen), so its floor is 0.
+fn obd_rate_floor(path: &str) -> f64 {
+    if path.ends_with("profile.rate_req_s") {
+        5.0
+    } else {
+        0.0
+    }
 }
 
 fn ts_of(v: &Value) -> Option<i64> {
@@ -6816,10 +6844,12 @@ mod tests {
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
 
-    /// T17 (review-wp4 R4-3a; ±1.5 by the orchestrator 2026-10-27, the
-    /// JS-vs-JS max 1.4 rounded up to the next 0.25): the profile rate within
-    /// ±1.5 and as a 1-decimal JS number on both sides; 1.6 or 2.0 apart, a
-    /// float-rendered or 2-decimal value fail; another path is not T17.
+    /// T17 (orchestrator ruling 2026-10-28): the helper-measured rate is NOT
+    /// compared across sides; each value must be a 1-decimal JS number inside
+    /// the per-side plausibility band (profile rate 5–40 req/s); 19.0 vs 16.8
+    /// passes here (the carry checks in diff_p4 pin each side to its own
+    /// helper), 4.9 / 40.1, a float-rendered or 2-decimal value fail; another
+    /// path is not T17.
     #[test]
     fn t17_only_a_one_decimal_rate_within_one_req_s() {
         let t = table();
@@ -6855,18 +6885,19 @@ mod tests {
             vec![(p.clone(), "T17".to_string())]
         );
         assert_eq!(
-            tol(serde_json::json!(18.3), serde_json::json!(19.7), 1.0, 1.0),
+            tol(serde_json::json!(18.7), serde_json::json!(16.9), 1.0, 1.0),
             vec![(p.clone(), "T17".to_string())],
-            "the measured JS-vs-JS max (1.4)"
+            "a host-noise gap (stepC p5b-obd-config.r29.rsjs2): no cross-side band"
         );
         assert_eq!(
-            tol(serde_json::json!(18.1), serde_json::json!(19.7), 1.0, 1.0),
+            tol(serde_json::json!(19.2), serde_json::json!(4.9), 1.0, 1.0),
             vec![(p.clone(), UNTOLERATED.to_string())],
-            "1.6 apart"
+            "below the 5 req/s floor"
         );
         assert_eq!(
-            tol(serde_json::json!(19.2), serde_json::json!(17.2), 1.0, 1.0),
-            vec![(p.clone(), UNTOLERATED.to_string())]
+            tol(serde_json::json!(40.1), serde_json::json!(19.2), 1.0, 1.0),
+            vec![(p.clone(), UNTOLERATED.to_string())],
+            "above the 40 req/s ceiling"
         );
         assert_eq!(
             tol(

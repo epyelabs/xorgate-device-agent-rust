@@ -782,6 +782,20 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
             .filter_map(|w| Some((w["w"].as_i64()?, w["rate_req_s"].as_f64()?)))
             .collect();
         let rates: Vec<f64> = profiles.iter().map(|(_, r)| *r).collect();
+        // T17 (orchestrator ruling 2026-10-28): with no cross-side band, a
+        // broken helper must still FAIL on its own — every probe rate it
+        // printed inside the plausibility band (5–40 req/s; all 398 logged
+        // probes lie in 16.8–19.7).
+        for (w, r) in profiles.iter().filter(|(_, r)| !(5.0..=40.0).contains(r)) {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: format!("{label} probe at {w}"),
+                path: "(helper probe rate plausible)".into(),
+                a: r.to_string(),
+                b: "5–40 req/s".into(),
+                tol: UNTOLERATED.into(),
+            });
+        }
         // T17's carry check (report path): every
         // `effective.obd.profile.rate_req_s` a side reports must be
         // (numerically exactly) a rate its OWN helper printed. A side that
@@ -1094,6 +1108,14 @@ mod tests {
                 "{bad}"
             );
         }
+        // T17 ruling 2026-10-28: a helper probe rate outside 5–40 FAILS even
+        // when both sides carry it.
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","kind":"profile-rate","rate_req_s":0.0}"#],
+        );
+        rep("0.0");
+        assert_eq!(run(), vec!["(helper probe rate plausible)".to_string()]);
         // R5 NIT: a report carrying a rate with NO profile in the relay log
         // FAILS (no pre-R4-3 skip).
         write("b", &[]);
