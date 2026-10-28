@@ -792,6 +792,41 @@ pub fn finish(a: &ObsAgent) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// `procs.ndjson` is appended by the exit runners and the observer at
+    /// once: every record must land as one whole line.
+    #[test]
+    fn concurrent_appends_never_interleave_a_record() {
+        let d = std::env::temp_dir().join(format!("media-append-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let f = d.join("procs.ndjson");
+        let hs: Vec<_> = (0..8)
+            .map(|t| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    for i in 0..400 {
+                        append(
+                            &f,
+                            &json!({"w": i, "k": "external", "role": "capture", "key": "cam1",
+                                "pid": t * 1000 + i, "attempt": i, "due": i, "code": 1,
+                                "sig": null, "channel": null, "ok": true}),
+                        );
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        let text = fs::read_to_string(&f).unwrap();
+        let n = text
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).expect("a whole record per line"))
+            .count();
+        assert_eq!(n, 8 * 400);
+        let _ = fs::remove_dir_all(&d);
+    }
+
     /// Per-attempt external exits (orchestrator ruling 2026-10-23): the
     /// tape's N-th attempt's exit lands on each side's OWN N-th attempt at its
     /// own spawn + the tape offset, whatever the two sides' phase; a side
