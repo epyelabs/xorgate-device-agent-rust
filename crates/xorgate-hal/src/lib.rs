@@ -42,5 +42,6 @@ pub mod shm_reaper;
 pub mod sms_clear_token;
 pub mod system;
 pub mod tape;
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support;
