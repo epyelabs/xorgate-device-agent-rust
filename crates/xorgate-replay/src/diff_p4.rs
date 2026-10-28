@@ -749,6 +749,30 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
     };
     let (a, b) = (load("a"), load("b"));
     if a.is_none() && b.is_none() {
+        // Review-wp4 R6 NIT: an OBD run (either side has the rig's OBD
+        // emulator serial) with NO relay log on either side would compare the
+        // T17 fields without their carry checks: UNTOLERATED, unless the
+        // player ran with `--no-gate` (play.json `noGate`).
+        let obd = ["a", "b"].iter().any(|l| {
+            std::fs::read(run.join(l).join("meta.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .is_some_and(|m| m["env"]["XORGATE_OBD_SERIAL"].as_str().is_some())
+        });
+        let no_gate = std::fs::read(run.join("play.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .is_some_and(|p| p["noGate"] == true);
+        if obd && !no_gate {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: "relay logs".into(),
+                path: "(relay log present on both sides)".into(),
+                a: "missing".into(),
+                b: "missing".into(),
+                tol: UNTOLERATED.into(),
+            });
+        }
         return;
     }
     // Review-wp4 R5 NIT: an OBD run (one side has a relay log) whose other
@@ -1128,6 +1152,22 @@ mod tests {
         // R5 NIT: a side with no relay log at all FAILS.
         std::fs::remove_file(d.join("b").join(crate::p5b::OBD_GATE_LOG)).unwrap();
         assert_eq!(run(), vec!["(relay log present on both sides)".to_string()]);
+        write("b", &[]);
+        // R6 NIT: BOTH logs missing on an OBD run FAILS, unless --no-gate.
+        std::fs::remove_file(d.join("a").join(crate::p5b::OBD_GATE_LOG)).unwrap();
+        std::fs::remove_file(d.join("b").join(crate::p5b::OBD_GATE_LOG)).unwrap();
+        assert!(run().is_empty(), "not an OBD run");
+        std::fs::write(
+            d.join("a").join("meta.json"),
+            r#"{"env":{"XORGATE_OBD_SERIAL":"/dev/pts/1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(run(), vec!["(relay log present on both sides)".to_string()]);
+        std::fs::write(d.join("play.json"), r#"{"noGate":true}"#).unwrap();
+        assert!(run().is_empty(), "--no-gate");
+        std::fs::remove_file(d.join("play.json")).unwrap();
+        std::fs::remove_file(d.join("a").join("meta.json")).unwrap();
+        write("a", &[]);
         write("b", &[]);
         // R5 NIT: stale-reply drains compared across sides.
         write(

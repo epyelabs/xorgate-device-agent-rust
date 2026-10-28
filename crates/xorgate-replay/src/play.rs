@@ -2455,6 +2455,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         skips: Vec::new(),
         releases: Vec::new(),
         nmea_resumes,
+        no_gate: args.no_gate,
     };
     fs::write(
         args.out.join("play.json"),

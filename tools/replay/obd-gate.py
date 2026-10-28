@@ -308,7 +308,12 @@ real = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "obd_read_rea
 child = subprocess.Popen([sys.executable, "-u", real] + sys.argv[1:], stdout=subprocess.PIPE)
 
 
+signalled = False
+
+
 def forward(sig, _frame):
+    global signalled
+    signalled = True  # the agent asked this helper to stop (review-wp4 R6-1)
     try:
         child.send_signal(sig)
     except ProcessLookupError:
@@ -380,6 +385,11 @@ for line in iter(child.stdout.readline, b""):
         r = time.time() if rel is None else go
         report_hold = (r + 2.0 - REPORT_MARGIN_S, r + 3.0 + REPORT_MARGIN_S)
 rc = child.wait()
+# Review-wp4 R6-1: whether the agent stopped this helper (a forwarded signal),
+# so the diff knows its last audit is a stop audit, which may hold one
+# request cut in flight (python/obd/gate.py:131-136, :187; session.py:90).
+log_wait({"w": int(time.time() * 1000), "side": SIDE, "kind": "helper-exit",
+          "rc": rc, "signalled": signalled})
 # The exit is not held for a report: the agent's stop waits only a bounded
 # time for the helper (SIGKILL after), which a hold could change. Its tick
 # gate is the shared GO like every edge.

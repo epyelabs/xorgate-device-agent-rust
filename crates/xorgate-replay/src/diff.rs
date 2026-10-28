@@ -70,6 +70,10 @@ pub struct PlayInfo {
     /// agents have reopened their port by then; T7/D23).
     #[serde(default)]
     pub nmea_resumes: Vec<i64>,
+    /// The player ran with `--no-gate` (debugging only): no OBD relay gate,
+    /// so an OBD run without relay logs is then not judged by them.
+    #[serde(default, rename = "noGate")]
+    pub no_gate: bool,
     /// Host reference samples `(wall ms, series → value)` from the player's
     /// `host.ndjson` (T3 host attribution); loaded by `load_run`.
     #[serde(skip)]
@@ -713,6 +717,43 @@ pub struct Capture {
     /// The LAST present `agent.pid` snapshot of `files.ndjson` (both agents
     /// remove the pidfile at exit, so the end has none; re-review R3).
     pub pid_snapshot: Option<String>,
+    /// Review-wp4 R6-1: the `requests` counts of the audits that were the
+    /// LAST audit of an OBD helper the agent signalled to stop (the rig
+    /// relay's log, obd-gate.py: `audit-line` + `helper-exit` per relay pid).
+    /// Only such a stop audit may carry one request cut in flight.
+    pub obd_stop_audits: BTreeSet<i64>,
+}
+
+/// Review-wp4 R6-1: see `Capture::obd_stop_audits`. Per relay process (one
+/// helper session): its last `audit-line`, when its `helper-exit` says the
+/// relay forwarded a stop signal to the helper.
+fn obd_stop_audits(dir: &Path) -> BTreeSet<i64> {
+    let text = std::fs::read_to_string(dir.join(crate::p5b::OBD_GATE_LOG)).unwrap_or_default();
+    let mut last: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut stopped: BTreeSet<i64> = BTreeSet::new();
+    for l in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
+        let Some(pid) = v["pid"].as_i64() else {
+            continue;
+        };
+        match v["kind"].as_str() {
+            Some("audit-line") => {
+                if let Some(r) = v["requests"].as_i64() {
+                    last.insert(pid, r);
+                }
+            }
+            Some("helper-exit") if v["signalled"] == true => {
+                stopped.insert(pid);
+            }
+            _ => {}
+        }
+    }
+    last.into_iter()
+        .filter(|(pid, _)| stopped.contains(pid))
+        .map(|(_, r)| r)
+        .collect()
 }
 
 /// Replace the agent's deviceId by `{id}` (T2).
@@ -937,6 +978,7 @@ impl Capture {
             events,
             sudo,
             pid_snapshot,
+            obd_stop_audits: obd_stop_audits(dir),
         })
     }
 
@@ -3454,7 +3496,7 @@ fn diff_reports(
                         ..cx
                     };
                     flags_pair(&cx, x, y, rep);
-                    let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, rep);
+                    let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, (a, b), rep);
                     cmp(&cx, "", Some(&px), Some(&py), rep);
                 }
             } else if let (Some(x), Some(y)) = (pa.last(), pb.last()) {
@@ -3467,7 +3509,7 @@ fn diff_reports(
                     ..cx
                 };
                 flags_pair(&cx, x, y, rep);
-                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, rep);
+                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, (a, b), rep);
                 cmp(&cx, "", Some(&px), Some(&py), rep);
             }
         } else {
@@ -3492,7 +3534,7 @@ fn diff_reports(
                     ack_rate_limit: false,
                 };
                 flags_pair(&cx, x, y, rep);
-                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, rep);
+                let (px, py) = obd_audit_cycle(&cx, &x.payload, &y.payload, (a, b), rep);
                 cmp(&cx, "", Some(&px), Some(&py), rep);
             }
         }
@@ -3515,7 +3557,13 @@ fn diff_reports(
 /// timeouts, err_*, forbidden, reconnects, voltage_low, …) and every other
 /// audit key EQUAL. Then those leaves are removed (cited) and the rest of the
 /// payload is compared as usual.
-fn obd_audit_cycle(cx: &Cx, x: &Value, y: &Value, rep: &mut Report) -> (Value, Value) {
+fn obd_audit_cycle(
+    cx: &Cx,
+    x: &Value,
+    y: &Value,
+    caps: (&Capture, &Capture),
+    rep: &mut Report,
+) -> (Value, Value) {
     let (x, y) = (x.clone(), y.clone());
     let Some((rid, row)) = cx.table.decision_row("obd-audit-cycle") else {
         return (x, y);
@@ -3529,7 +3577,16 @@ fn obd_audit_cycle(cx: &Cx, x: &Value, y: &Value, rep: &mut Report) -> (Value, V
     ) else {
         return (x, y);
     };
-    let Some(cycle) = audit_cycle_delta(ax, ay) else {
+    let req = |m: &serde_json::Map<String, Value>| {
+        m.get("counters")
+            .and_then(|c| c.get("requests"))
+            .and_then(Value::as_i64)
+    };
+    let stop = (
+        req(ax).is_some_and(|r| caps.0.obd_stop_audits.contains(&r)),
+        req(ay).is_some_and(|r| caps.1.obd_stop_audits.contains(&r)),
+    );
+    let Some(cycle) = audit_cycle_delta(ax, ay, stop) else {
         return (x, y);
     };
     let tol = format!("{rid}/obd-audit-cycle");
@@ -3560,9 +3617,23 @@ fn obd_audit_cycle(cx: &Cx, x: &Value, y: &Value, rep: &mut Report) -> (Value, V
 
 /// The leaves `(path under audit, A, B)` of a one-cycle split, or `None`
 /// when the two audit blocks are not exactly that.
+///
+/// Review-wp4 R6-1 (orchestrator ruling 2026-10-28): `stop.0` / `stop.1` =
+/// that side's audit is the LAST audit of a helper the agent signalled to
+/// stop. Only such an audit may hold ONE request cut in flight: the helper
+/// counts `requests`, `bytes_tx` and `inventory` BEFORE it writes and reads
+/// (python/obd/gate.py:131-136 @09da38d), `ok` only after a reply
+/// (:187), and the stop signal raises `Shutdown` out of the read
+/// (session.py:90), so that request is counted as sent and never as
+/// answered, timed out or failed. Then that side's `requests − ok` is exactly
+/// 1, every other counter unmoved, and the cycle arithmetic holds with `ok`
+/// short by that one request (seen on both agents: stepC
+/// p5b-obd-config.r27.rsjs3 JS side, r28.jsrs4 Rust side). Every other audit
+/// keeps `requests − ok` differences exact.
 fn audit_cycle_delta(
     ax: &serde_json::Map<String, Value>,
     ay: &serde_json::Map<String, Value>,
+    stop: (bool, bool),
 ) -> Option<Vec<(String, Value, Value)>> {
     // Every key but the two count tables must be equal.
     let keys: BTreeSet<&String> = ax.keys().chain(ay.keys()).collect();
@@ -3601,24 +3672,49 @@ fn audit_cycle_delta(
         bytes += k.len() as i64 + 1;
         out.push((format!("inventory.{k}"), ix[k].clone(), iy[k].clone()));
     }
+    // R6-1: the in-flight request of a stop audit (0 or 1 per side).
+    let cut = |c: &serde_json::Map<String, Value>, is_stop: bool| -> Option<i64> {
+        let u = num(c, "requests")? - num(c, "ok")?;
+        Some(if is_stop && u == 1 { 1 } else { 0 })
+    };
+    let (fa, fb) = (cut(cx_, stop.0)?, cut(cy, stop.1)?);
     if steps == 0 {
-        return None;
+        // Only an in-flight request on one side, which the other answered.
+        if fa == fb {
+            return None;
+        }
+        sign = 1;
     }
+    // In `sign` orientation (the side ahead minus the other): `ok` falls short
+    // of the steps by the ahead side's cut request, and gains the behind
+    // side's (it answered a request the behind side only sent).
+    let (f_hi, f_lo) = if sign > 0 { (fb, fa) } else { (fa, fb) };
+    let want_ok = steps - f_hi + f_lo;
     let c_keys: BTreeSet<&String> = cx_.keys().chain(cy.keys()).collect();
     for k in c_keys {
         let (a, b) = (num(cx_, k)?, num(cy, k)?);
         let d = (b - a) * sign;
         match k.as_str() {
-            "requests" | "ok" if d == steps => {}
+            "requests" if d == steps => {}
+            "ok" if d == want_ok => {}
             "bytes_tx" if d == bytes => {}
             _ if d == 0 => continue,
             _ => return None,
         }
+        if d == 0 {
+            continue;
+        }
         out.push((format!("counters.{k}"), cx_[k].clone(), cy[k].clone()));
     }
-    // requests, ok and bytes_tx must all have moved.
+    // What moved must be exactly what the cycle (and the cut request) says.
     let moved = |k: &str| out.iter().any(|(l, ..)| l == &format!("counters.{k}"));
-    (moved("requests") && moved("ok") && moved("bytes_tx")).then_some(out)
+    let ok_moved = want_ok != 0;
+    let ok = if steps > 0 {
+        moved("requests") && moved("bytes_tx") && moved("ok") == ok_moved
+    } else {
+        moved("ok") && !moved("requests") && !moved("bytes_tx")
+    };
+    ok.then_some(out)
 }
 
 /// The `level: msg` key of a state.json event after the T8 normalisations:
@@ -4993,6 +5089,7 @@ mod tests {
             events: vec![],
             sudo: vec![],
             pid_snapshot: None,
+            obd_stop_audits: BTreeSet::new(),
         }
     }
 
@@ -7553,9 +7650,12 @@ mod tests {
             &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
             0,
         );
-        let got = audit_cycle_delta(&a, &b).expect("one-cycle split");
+        let got = audit_cycle_delta(&a, &b, (false, false)).expect("one-cycle split");
         assert_eq!(got.len(), 6, "{got:?}");
-        assert!(audit_cycle_delta(&b, &a).is_some(), "either side ahead");
+        assert!(
+            audit_cycle_delta(&b, &a, (false, false)).is_some(),
+            "either side ahead"
+        );
         // NEGATIVE: requests ≠ the inventory steps.
         let c = audit(
             505,
@@ -7563,7 +7663,7 @@ mod tests {
             &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
             0,
         );
-        assert!(audit_cycle_delta(&a, &c).is_none());
+        assert!(audit_cycle_delta(&a, &c, (false, false)).is_none());
         // NEGATIVE (R4-N1): bytes_tx ≠ Σ(len(command) + 1) of the steps (18).
         let c2 = audit(
             504,
@@ -7571,7 +7671,7 @@ mod tests {
             &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
             0,
         );
-        assert!(audit_cycle_delta(&a, &c2).is_none());
+        assert!(audit_cycle_delta(&a, &c2, (false, false)).is_none());
         // NEGATIVE: one PID two ahead.
         let d = audit(
             504,
@@ -7579,7 +7679,7 @@ mod tests {
             &[("01041", 26), ("01051", 25), ("01111", 24), ("010C1", 25)],
             0,
         );
-        assert!(audit_cycle_delta(&a, &d).is_none());
+        assert!(audit_cycle_delta(&a, &d, (false, false)).is_none());
         // NEGATIVE: an error counter moved.
         let e = audit(
             504,
@@ -7587,7 +7687,7 @@ mod tests {
             &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
             1,
         );
-        assert!(audit_cycle_delta(&a, &e).is_none());
+        assert!(audit_cycle_delta(&a, &e, (false, false)).is_none());
         // NEGATIVE: mixed directions.
         let f = audit(
             502,
@@ -7595,11 +7695,11 @@ mod tests {
             &[("01041", 25), ("01051", 23), ("01111", 25), ("010C1", 25)],
             0,
         );
-        assert!(audit_cycle_delta(&a, &f).is_none());
+        assert!(audit_cycle_delta(&a, &f, (false, false)).is_none());
         // NEGATIVE: another audit key differs.
         let mut g = b.clone();
         g.insert("seq".into(), serde_json::json!(4));
-        assert!(audit_cycle_delta(&a, &g).is_none());
+        assert!(audit_cycle_delta(&a, &g, (false, false)).is_none());
         // NEGATIVE: bytes off the per-request bound.
         let h = audit(
             504,
@@ -7607,7 +7707,65 @@ mod tests {
             &[("01041", 25), ("01051", 25), ("01111", 25), ("010C1", 25)],
             0,
         );
-        assert!(audit_cycle_delta(&a, &h).is_none());
+        assert!(audit_cycle_delta(&a, &h, (false, false)).is_none());
+    }
+
+    /// Review-wp4 R6-1: ONE request cut in flight is allowed only in the stop
+    /// audit of a helper the agent signalled (that side's `requests − ok` = 1,
+    /// every other counter unmoved); 2 unanswered, a moved timeout, or the
+    /// same shape in a non-stop audit FAIL.
+    #[test]
+    fn audit_cycle_one_in_flight_request_only_in_a_stop_audit() {
+        let audit = |req: i64, ok: i64, bytes: i64, n01461: i64, timeouts: i64| {
+            serde_json::json!({"counters": {"requests": req, "ok": ok, "timeouts": timeouts, "bytes_tx": bytes},
+                   "inventory": {"01461": n01461, "010C1": 20}, "last_stop": null})
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        // review-wp4 cfg.jsrs2: JS req 386 ok 386, Rust req 387 ok 386 with
+        // 01461 +1 and bytes_tx + len("01461") + 1.
+        let js = audit(386, 386, 2302, 19, 0);
+        let rs = audit(387, 386, 2308, 20, 0);
+        assert!(
+            audit_cycle_delta(&js, &rs, (false, true)).is_some(),
+            "Rust stop audit"
+        );
+        assert!(
+            audit_cycle_delta(&rs, &js, (true, false)).is_some(),
+            "either column"
+        );
+        // NEGATIVE: the same shape in a non-stop audit
+        assert!(audit_cycle_delta(&js, &rs, (false, false)).is_none());
+        assert!(
+            audit_cycle_delta(&js, &rs, (true, false)).is_none(),
+            "the flag on the wrong side"
+        );
+        // NEGATIVE: two unanswered requests in a stop audit
+        let rs2 = audit(388, 386, 2314, 21, 0);
+        assert!(audit_cycle_delta(&js, &rs2, (false, true)).is_none());
+        // NEGATIVE: the cut request counted as a timeout too
+        let rs_t = audit(387, 386, 2308, 20, 1);
+        assert!(audit_cycle_delta(&js, &rs_t, (false, true)).is_none());
+        // The behind side's request cut in flight, the other answered it
+        // (no inventory step): only `ok` differs by one.
+        let a = audit(387, 386, 2308, 20, 0);
+        let b = audit(387, 387, 2308, 20, 0);
+        assert!(audit_cycle_delta(&a, &b, (true, false)).is_some());
+        assert!(audit_cycle_delta(&a, &b, (false, false)).is_none());
+        // stepC r28.jsrs4 shape: A ahead by steps, B's stop audit one short.
+        let ahead = serde_json::json!({"counters": {"requests": 492, "ok": 492, "bytes_tx": 2932},
+            "inventory": {"0104": 25, "0105": 25}})
+        .as_object()
+        .unwrap()
+        .clone();
+        let behind = serde_json::json!({"counters": {"requests": 490, "ok": 489, "bytes_tx": 2922},
+            "inventory": {"0104": 24, "0105": 24}})
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(audit_cycle_delta(&behind, &ahead, (true, false)).is_some());
+        assert!(audit_cycle_delta(&behind, &ahead, (false, false)).is_none());
     }
 
     /// T8/obd-sample-split: a one-sample split of a `metrics.obd.*` value is
