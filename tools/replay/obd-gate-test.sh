@@ -53,6 +53,45 @@ print("ok   report hold: profile released %.2f s after the status line" % gap if
 sys.exit(0 if 3.1 <= gap <= 3.6 else 1)
 P
 [ $? = 0 ] || fail=1
+# Symmetric report hold (review 2026-10-28): side a's relay is descheduled
+# (SIGSTOP) for 0.2 s while it waits at the first status edge, so it sees that
+# edge's release 0.15 s after side b does. The second status reaches the
+# barrier 1.80-1.85 s after the first edge's shared release — inside the hold
+# window measured from b's view, outside a's own late view. Both relays must
+# still make the SAME decision (held to the shared window's end). The old
+# per-side wall clock released a at once and held b 1.4 s.
+mkdir -p "$W/sy/bar" "$W/sy/a" "$W/sy/b"; echo 1 > "$W/sy/gate"
+for s in a b; do cp /t/obd-gate.py "$W/sy/$s/obd_read.py"; done
+cat > "$W/sy/helper.py" <<'P'
+import json, os, time
+t0 = float(os.environ["T0"]); d1, d2 = float(os.environ["D1"]), float(os.environ["D2"])
+def at(t):
+    time.sleep(max(0.0, t0 + t - time.time()))
+at(d1); print(json.dumps({"type": "status", "link": 1, "n": 1}), flush=True)
+at(d2); print(json.dumps({"type": "status", "link": 1, "n": 2}), flush=True)
+time.sleep(0.2)
+P
+cp "$W/sy/helper.py" "$W/sy/a/obd_read_real.py"; cp "$W/sy/helper.py" "$W/sy/b/obd_read_real.py"
+cat > "$W/sy/stamp.py" <<'P'
+import sys, time
+for l in sys.stdin:
+    print(f"{time.time():.3f} {l.strip()}", flush=True)
+P
+T0=$(python3 -c 'import time; print(time.time() + 1.0)')
+export T0 RIG_OBD_GATE="$W/sy/gate" RIG_OBD_BARRIER="$W/sy/bar" RIG_OBD_PEERS=a,b
+RIG_OBD_SIDE=a RIG_OBD_WAITLOG="$W/sy/a/wait.ndjson" D1=0.0 D2=1.95 python3 "$W/sy/a/obd_read.py" > >(python3 "$W/sy/stamp.py" > "$W/sy/a/out") & PA=$!
+RIG_OBD_SIDE=b RIG_OBD_WAITLOG="$W/sy/b/wait.ndjson" D1=0.1 D2=1.90 python3 "$W/sy/b/obd_read.py" > >(python3 "$W/sy/stamp.py" > "$W/sy/b/out") & PB=$!
+python3 -c 'import os, time; time.sleep(max(0.0, float(os.environ["T0"]) + 0.05 - time.time()))'; kill -STOP $PA
+python3 -c 'import os, time; time.sleep(max(0.0, float(os.environ["T0"]) + 0.25 - time.time()))'; kill -CONT $PA
+wait $PA $PB; sleep 0.3
+python3 - "$W/sy/a/out" "$W/sy/b/out" "$T0" <<'P' && ok "report hold: the same decision on both sides when one relay is descheduled" || bad "report hold asymmetric: a=$(tail -1 "$W/sy/a/out") b=$(tail -1 "$W/sy/b/out")"
+import sys
+t0 = float(sys.argv[3])
+second = [float(next(l for l in open(f) if '"n": 2' in l).split()[0]) - t0 for f in sys.argv[1:3]]
+print("second status delivered at", second)
+sys.exit(0 if abs(second[0] - second[1]) < 0.1 and min(second) > 3.2 else 1)
+P
+unset T0 RIG_OBD_GATE RIG_OBD_BARRIER RIG_OBD_PEERS
 # Adapter drain (orchestrator ruling 2026-10-27): a reply queued on the pty
 # for the PREVIOUS helper (and one arriving 0.15 s after the relay starts) never
 # reaches the next helper; the drain is logged with its byte count. Without the

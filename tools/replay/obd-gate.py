@@ -75,15 +75,35 @@ def log_wait(rec):
         pass
 
 
-def barrier(kind, what):
-    if not (BARRIER and SIDE and PEERS):
-        return
-    n = _count(SIDE, kind) + 1
-    tmp = os.path.join(BARRIER, f".{SIDE}.{kind}.tmp")
+def _put(name, text):
+    tmp = os.path.join(BARRIER, f".{SIDE}.{name}.tmp")
     with open(tmp, "w") as f:
-        f.write(str(n))
-    os.replace(tmp, os.path.join(BARRIER, f"{SIDE}.{kind}"))
+        f.write(text)
+    os.replace(tmp, os.path.join(BARRIER, name))
+
+
+def _arrival(side, kind, n):
+    try:
+        with open(os.path.join(BARRIER, f"{side}.{kind}.arr.{n}")) as f:
+            return float(f.read())
+    except (OSError, ValueError):
+        return None
+
+
+def barrier(kind, what):
+    """Wait for every peer's k-th edge; return the edge's SHARED release
+    instant: the latest arrival among the sides (each side writes its own
+    arrival before its count, so a released side can read them all). Both
+    sides compute the same value from the same files — unlike each side's
+    own wall clock after the wait, which differs by its scheduling (a relay
+    descheduled for 0.15 s under load saw the release 0.15 s late). None
+    without a barrier."""
+    if not (BARRIER and SIDE and PEERS):
+        return None
+    n = _count(SIDE, kind) + 1
     t0 = time.time()
+    _put(f"{SIDE}.{kind}.arr.{n}", repr(t0))
+    _put(f"{SIDE}.{kind}", str(n))
     deadline = t0 + BARRIER_S
     timeout = False
     while any(_count(p, kind) < n for p in PEERS):
@@ -91,8 +111,12 @@ def barrier(kind, what):
             timeout = True
             break
         time.sleep(0.005)
+    arr = [t0] + [a for a in (_arrival(p, kind, n) for p in PEERS) if a is not None]
+    rel = max(arr)
     log_wait({"w": int(t0 * 1000), "side": SIDE, "edge": n, "kind": what,
-              "wait_ms": int((time.time() - t0) * 1000), "timeout": timeout})
+              "wait_ms": int((time.time() - t0) * 1000), "timeout": timeout,
+              "rel": int(rel * 1000)})
+    return rel
 
 
 def kind_of(line):
@@ -123,7 +147,15 @@ def is_open():
 # (stepC-H9 p5b-obd-crank.rp.cal09: the `profile` between them). So after a
 # status line, hold from r + 2000 - REPORT_MARGIN_S to r + 3000 + REPORT_MARGIN_S.
 # Both sides release their status lines together (the barrier), so the hold is
-# symmetric.
+# symmetric — and it is decided on SHARED instants (review 2026-10-28): the hold
+# window starts from the status edge's shared release instant (`barrier`), and
+# whether a later edge is held is decided on THAT edge's shared release instant,
+# so both relays always make the same decision. (Before, each relay used its
+# own wall clock after the barrier: a relay descheduled for a moment released
+# the status ~0.1 s later, its window started later, and a `probing` line due
+# ~1.7 s after the connect status — right at the r + 1.75 edge — was held on
+# one side and released on the other: stepC p5b-obd-config.r27.rsjs1, relay
+# waits 1001-1890 ms. Non-edge lines (samples) use the same shared window.)
 REPORT_MARGIN_S = 0.25
 report_hold = None  # (start, end) epoch seconds
 
@@ -232,6 +264,7 @@ out = sys.stdout.buffer
 # `live` ends at its own instant (stepC p5b-obd-crank.fin.jsrs: the group
 # present on one side one tick earlier). Later samples are not edges.
 first_sample_due = False
+first_sample_rel = None
 for line in iter(child.stdout.readline, b""):
     k = kind_of(line)
     if k == "status":
@@ -241,7 +274,7 @@ for line in iter(child.stdout.readline, b""):
             pass
     elif k == "sample" and first_sample_due:
         first_sample_due = False
-        barrier("edge", "first-sample")
+        first_sample_rel = barrier("edge", "first-sample")
     if k == "profile":
         # The helper's own measured rate (review-wp4 R4-3): the diff checks
         # each agent CARRIES exactly this value (no rounding, no float noise).
@@ -250,16 +283,29 @@ for line in iter(child.stdout.readline, b""):
                       "rate_req_s": json.loads(line).get("rate_req_s")})
         except ValueError:
             pass
+    rel = None
+    if k == "sample" and first_sample_rel is not None:
+        rel, first_sample_rel = first_sample_rel, None
     if k in EDGE_KINDS:
-        barrier("edge", k)
-    wait_open()
+        rel = barrier("edge", k)
+    held_until = 0.0
+    if rel is None:
+        wait_open()
+    else:
+        # The shared decision: held iff the edge's SHARED release instant
+        # lies in the window, and then until the window's (shared) end.
+        if GATE and report_hold is not None and report_hold[0] <= rel < report_hold[1]:
+            held_until = report_hold[1]
+            while time.time() < held_until:
+                time.sleep(0.005)
+        wait_open(report=False)
     try:
         out.write(line)
         out.flush()
     except BrokenPipeError:
         break
     if k == "status":
-        r = time.time()
+        r = time.time() if rel is None else max(rel, held_until)
         report_hold = (r + 2.0 - REPORT_MARGIN_S, r + 3.0 + REPORT_MARGIN_S)
 rc = child.wait()
 barrier("edge", "exit")
