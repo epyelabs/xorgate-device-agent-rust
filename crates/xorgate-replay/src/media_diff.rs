@@ -1615,17 +1615,22 @@ fn rec_values_m(
         } else {
             (BTreeMap::new(), BTreeMap::new())
         };
-        for (g, va, vb) in [("imu", &va_imu, &vb_imu), ("gps", &va_gps, &vb_gps)] {
-            if let Some((summary, failed)) = oracle_age_check(&la, &lb, va, vb) {
+        let imu_ws: Vec<i64> = facts.imu_samples.iter().map(|(w, _)| *w).collect();
+        let gps_ws: Vec<i64> = facts.gps_snaps.iter().map(|(w, _)| *w).collect();
+        for (g, va, vb, ws) in [
+            ("imu", &va_imu, &vb_imu, &imu_ws),
+            ("gps", &va_gps, &vb_gps, &gps_ws),
+        ] {
+            if let Some((summary, failed)) = oracle_lag_check(&la, &lb, va, vb, ws) {
                 rep.inputs
                     .insert(format!("T4 oracle {g} {at}"), summary.clone());
                 if failed {
                     rep.push(mm(
                         "rec-telemetry",
                         &at,
-                        &format!("metrics.{g}(oracle input age)"),
+                        &format!("metrics.{g}(oracle input lag)"),
                         summary,
-                        "within the skew".into(),
+                        format!("≤ {ORACLE_STALE_MS} ms on each side"),
                         UNTOLERATED,
                     ));
                 }
@@ -1932,33 +1937,53 @@ fn rec_values_m(
 /// its read (the hold gate releases IMU lines in bursts after pair windows;
 /// the recorder reads its cache on its own phase): 400 ms → 361 untolerated,
 /// 800 → 58, 1 000 → 6, 1 500 → 0. A STALE side is caught instead by the
-/// median-age check (ORACLE_AGE_SKEW_MS).
+/// median-lag check (ORACLE_STALE_MS).
 const ORACLE_LAG_MS: i64 = 1_500;
 
-/// Review-wp4 R4-10: a STALE side. Each verified sample's matched input has
-/// an age (its read instant − the input's release); both agents read the same
-/// tape through the same rig, so their MEDIAN ages must agree within
-/// ORACLE_AGE_SKEW_MS. A recorder reading 1 s-stale inputs shifts its median
-/// by ~1 s and FAILS; isolated late reads do not move a median.
-const ORACLE_AGE_SKEW_MS: i64 = 250;
+/// Review-wp4 R4-10: a STALE side. For each verified sample, its LAG is the
+/// release of the NEWEST input the tape had delivered by the read (`oracle_
+/// span`'s end) minus the release of the input the sample matched (the
+/// oracle takes the newest match, so an unchanged value never lags). A
+/// recorder reading what was current lags 0 bar read/release races; one
+/// reading 1 s-stale inputs lags ~1 s on every changing value. Each side's
+/// MEDIAN lag must stay within ORACLE_STALE_MS. (Was a cross-side compare of
+/// median AGES, read − matched release: that measures each recorder's phase
+/// against the 1 s NMEA epoch grid, which differs per side — stepC
+/// p5b-clock-fallback.r27.jsrs1 A −8 ms / B 803 ms, both lagging 0.)
+const ORACLE_STALE_MS: i64 = 500;
 
-/// The per-group median-age check (ORACLE_AGE_SKEW_MS): `(summary, failed)`.
-fn oracle_age_check(
+/// The per-group median-lag check (ORACLE_STALE_MS): `(summary, failed)`.
+fn oracle_lag_check(
     la: &RecSamples,
     lb: &RecSamples,
     va: &BTreeMap<usize, i64>,
     vb: &BTreeMap<usize, i64>,
+    ws: &[i64],
 ) -> Option<(String, bool)> {
     let med = |l: &RecSamples, v: &BTreeMap<usize, i64>| -> Option<i64> {
         let reads = read_instants(l);
-        let mut ages: Vec<i64> = v.iter().map(|(i, w)| reads[*i] - w).collect();
-        ages.sort();
-        ages.get(ages.len() / 2).copied()
+        let mut lags: Vec<i64> = v
+            .iter()
+            .filter_map(|(i, w)| {
+                let (_, end) = oracle_span(ws, reads[*i]);
+                Some(ws[end.checked_sub(1)?] - w)
+            })
+            .collect();
+        lags.sort();
+        lags.get(lags.len() / 2).copied()
     };
-    let (ma, mb) = (med(la, va)?, med(lb, vb)?);
+    let (ma, mb) = (med(la, va), med(lb, vb));
+    if ma.is_none() && mb.is_none() {
+        return None;
+    }
+    let show = |m: Option<i64>| m.map_or("-".to_string(), |x| format!("{x} ms"));
     Some((
-        format!("median matched-input age A {ma} ms / B {mb} ms (±{ORACLE_AGE_SKEW_MS})"),
-        (ma - mb).abs() > ORACLE_AGE_SKEW_MS,
+        format!(
+            "median lag behind the newest input A {} / B {} (≤ {ORACLE_STALE_MS} ms)",
+            show(ma),
+            show(mb)
+        ),
+        ma.is_some_and(|x| x > ORACLE_STALE_MS) || mb.is_some_and(|x| x > ORACLE_STALE_MS),
     ))
 }
 
@@ -6208,21 +6233,29 @@ kind = "decisions"
             !imu_oracle(&l2, &lines1, None).contains_key(&0),
             "1.0 is not the JS text of 1"
         );
-        // R4-10: a recorder reading 1 s-stale lines shifts its median age.
+        // R4-10: a recorder reading 1 s-stale lines lags ~1 s behind the
+        // newest line; a fresh one at ANY phase of the grid lags 0.
+        let ws: Vec<i64> = lines.iter().map(|(w, _)| *w).collect();
         let fresh: RecSamples = (0..4)
             .map(|k| (1_000 + k * 1000, leaves(&near(1_000 + k * 1000), None)))
+            .collect();
+        let late_phase: RecSamples = (0..4)
+            .map(|k| (1_040 + k * 1000, leaves(&near(1_040 + k * 1000), None)))
             .collect();
         let stale: RecSamples = (0..4)
             .map(|k| (1_010 + k * 1000, leaves(&near(10 + k * 1000), None)))
             .collect();
-        let (vf, vs) = (
+        let (vf, vp, vs) = (
             imu_oracle(&fresh, &lines, None),
+            imu_oracle(&late_phase, &lines, None),
             imu_oracle(&stale, &lines, None),
         );
         assert_eq!(vs.len(), 4, "each stale read is still a genuine (old) line");
-        let (_, bad) = oracle_age_check(&fresh, &stale, &vf, &vs).unwrap();
-        assert!(bad, "a 1 s-stale side FAILS the median-age check");
-        let (_, same) = oracle_age_check(&fresh, &fresh, &vf, &vf).unwrap();
-        assert!(!same);
+        let (_, bad) = oracle_lag_check(&fresh, &stale, &vf, &vs, &ws).unwrap();
+        assert!(bad, "a 1 s-stale side FAILS the median-lag check");
+        let (_, bad) = oracle_lag_check(&stale, &fresh, &vs, &vf, &ws).unwrap();
+        assert!(bad, "either side");
+        let (_, ok) = oracle_lag_check(&fresh, &late_phase, &vf, &vp, &ws).unwrap();
+        assert!(!ok, "two fresh recorders on different phases pass");
     }
 }
