@@ -34,25 +34,27 @@ paths = ["ts", "**.*At", "*At", "**.at", "lastWriteAt", "connectionSince", "star
 
 [[rule]]
 id = "T17"
-title = "Phase 5b (WP4; NEW RULE — reviewer sign-off required, rule 7; narrowed after review-wp4 R4-3): the OBD helper's MEASURED request rate, ±1.25 req/s (orchestrator 2026-10-27: the JS-vs-JS max rounded up to the next 0.25), its TEXT a 1-decimal JS number on both sides"
+title = "Phase 5b (WP4; NEW RULE — reviewer sign-off required, rule 7; narrowed after review-wp4 R4-3): the OBD helper's MEASURED request rate, ±1.5 req/s (orchestrator 2026-10-27: the JS-vs-JS max, 1.4 over 29 runs, rounded up to the next 0.25), its TEXT a 1-decimal JS number on both sides"
 basis = "python/obd/session.py:471-472,504 @09da38d: `rate = (requests − n0) / elapsed` over the probe window on time.monotonic(), rounded to 0.1 — a wall-rate of the emulator's answers, measured by the SAME vendored helper on both sides (each side has its own emulator pty); the agent seeds `reqPerSec` from it, then from two audit lines (ts:src/agent/collectors/obd.ts:666-677 `reqPerSec`, `requestRate`). JS-vs-JS @09da38d p5b-obd-emulator: 19 vs 18.8 (stepB/p5b-obd-emulator.cal09). Every other OBD value (link, profile, fields, counters) is exact"
 kind = "numeric"
 streams = ["report", "state"]
-# ±1.25 (orchestrator ruling 2026-10-27): the profile rate is requests / elapsed
-# over the ~2 s probe (session.py:471-472), each side against ITS OWN emulator,
-# so the spread is that emulator's throughput on a loaded host. JS@09 vs JS@09
-# helper rates (relay log, |A − B| per helper start): stepC-H9
-# p5b-obd-audit.fin.cal09 19.0/17.8 = 1.2 (reported 19 / 17.8), .fin2.cal09 0.1,
-# p5b-obd-config.fin.cal09 ≤ 0.6, p5b-obd-crank.fin.cal09 0.3,
-# p5b-obd-emulator.fin.cal09 0.3 — max 1.2 over 5 runs → 1.25 (±2.0 rejected:
-# only above a 1.75 JS-vs-JS max). The CARRY check (diff_p4::diff_obd_gate)
+# ±1.5 (orchestrator ruling 2026-10-27: the measured JS-vs-JS max rounded up
+# to the next 0.25; ±2.0 only above a 1.75 max). The profile rate is
+# requests / elapsed over the ~2 s probe (session.py:471-472), each side against
+# ITS OWN emulator, so the spread is that emulator's throughput on a loaded
+# host. JS@09 vs JS@09 helper rates (relay log, max |A − B| per run) over 29
+# runs (stepC-H9 *.{fin,fin2,r27}.cal*): max 1.4 (p5b-obd-config.r27.cal3
+# 18.3 / 19.7), then 1.2 (.r27.cal2, p5b-obd-audit.fin.cal09), all others ≤ 0.9.
+# Side-swapped runs (Rust as A, stepC *.r27.rsjs*) flip the sign (Rust 18.1 vs
+# JS 19.4, then Rust 19.5 vs JS 18.1): no side is systematically slower. The
+# CARRY check (diff_p4::diff_obd_gate)
 # still ties every reported rate to a rate its OWN helper printed, so a shifted,
 # integer- or f32-rendered rate FAILS whatever this bound. The dead keys
 # (`effective.obd.status.reqPerSec`: status is a string; `obd.profile.rate_req_s`:
 # a summary string in state.json) and the `telemetry` stream (no rate there) are
 # gone. The audit-MEASURED `obd.reqPerSec` is exercised by p5b-obd-audit.
 # Pinned by diff::tests::t17_only_a_one_decimal_rate_within_one_req_s.
-tolerance = { "effective.obd.profile.rate_req_s" = 1.25, "obd.reqPerSec" = 1.25 }
+tolerance = { "effective.obd.profile.rate_req_s" = 1.5, "obd.reqPerSec" = 1.5 }
 
 [[rule]]
 id = "T2"

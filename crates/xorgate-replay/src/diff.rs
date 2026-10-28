@@ -6816,10 +6816,10 @@ mod tests {
         assert_eq!(rep.untolerated(), 0, "{tols:?}");
     }
 
-    /// T17 (review-wp4 R4-3a; ±1.25 by the orchestrator 2026-10-27): the
-    /// profile rate within ±1.25 and as a 1-decimal JS number on both sides;
-    /// 1.3 or 2.0 apart, a float-rendered or 2-decimal value fail; another
-    /// path is not T17.
+    /// T17 (review-wp4 R4-3a; ±1.5 by the orchestrator 2026-10-27, the
+    /// JS-vs-JS max 1.4 rounded up to the next 0.25): the profile rate within
+    /// ±1.5 and as a 1-decimal JS number on both sides; 1.6 or 2.0 apart, a
+    /// float-rendered or 2-decimal value fail; another path is not T17.
     #[test]
     fn t17_only_a_one_decimal_rate_within_one_req_s() {
         let t = table();
@@ -6855,14 +6855,14 @@ mod tests {
             vec![(p.clone(), "T17".to_string())]
         );
         assert_eq!(
-            tol(serde_json::json!(19.0), serde_json::json!(17.8), 1.0, 1.0),
+            tol(serde_json::json!(18.3), serde_json::json!(19.7), 1.0, 1.0),
             vec![(p.clone(), "T17".to_string())],
-            "the measured JS-vs-JS max (1.2)"
+            "the measured JS-vs-JS max (1.4)"
         );
         assert_eq!(
-            tol(serde_json::json!(19.1), serde_json::json!(17.8), 1.0, 1.0),
+            tol(serde_json::json!(18.1), serde_json::json!(19.7), 1.0, 1.0),
             vec![(p.clone(), UNTOLERATED.to_string())],
-            "1.3 apart"
+            "1.6 apart"
         );
         assert_eq!(
             tol(serde_json::json!(19.2), serde_json::json!(17.2), 1.0, 1.0),
