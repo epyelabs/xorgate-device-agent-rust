@@ -721,6 +721,23 @@ fn iso_ms(s: &str) -> Option<i64> {
 /// wait above [`OBD_BARRIER_WAIT_MAX_MS`], is UNTOLERATED (stream `obd-gate`).
 pub const OBD_BARRIER_WAIT_MAX_MS: i64 = 400;
 
+/// Review-wp4 R5-2: every edge is delivered by both relays at ONE shared GO
+/// (obd-gate.py `shared_go`); a relay that reached the GO later than this
+/// (descheduled) delivered the edge apart from the other side: UNTOLERATED.
+pub const OBD_GO_LATE_MAX_MS: i64 = 50;
+
+/// `requestRate(prev, cur)` (ts:src/agent/collectors/obd.ts:270-278):
+/// `Math.round((Δrequests / Δts) * 10) / 10`, None when Δts ≤ 0 or Δreq < 0.
+fn request_rate(prev: (f64, f64), cur: (f64, f64)) -> Option<f64> {
+    let dt = cur.0 - prev.0;
+    let dr = cur.1 - prev.1;
+    if dt.is_nan() || dt <= 0.0 || dr < 0.0 {
+        return None;
+    }
+    // JS Math.round: half up (the value is ≥ 0 here)
+    Some(((dr / dt) * 10.0 + 0.5).floor() / 10.0)
+}
+
 pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
     let load = |label: &str| -> Option<Vec<serde_json::Value>> {
         let text = std::fs::read_to_string(run.join(label).join(crate::p5b::OBD_GATE_LOG)).ok()?;
@@ -734,37 +751,56 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
     if a.is_none() && b.is_none() {
         return;
     }
-    let mut summary = Vec::new();
-    // T17's carry check: every `effective.obd.profile.rate_req_s` a side
-    // reports must be (numerically exactly) a rate its OWN helper printed.
-    for (label, dir, log) in [("A", "a", &a), ("B", "b", &b)] {
-        let rates: Vec<f64> = log
-            .iter()
-            .flatten()
-            .filter(|w| w["kind"] == "profile-rate")
-            .filter_map(|w| w["rate_req_s"].as_f64())
-            .collect();
-        if rates.is_empty() {
-            continue; // a pre-R4-3 relay log (no profile lines recorded)
+    // Review-wp4 R5 NIT: an OBD run (one side has a relay log) whose other
+    // side has none is not judged by half: UNTOLERATED.
+    for (label, log) in [("A", &a), ("B", &b)] {
+        if log.is_none() {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: format!("{label} relay log"),
+                path: "(relay log present on both sides)".into(),
+                a: "missing".into(),
+                b: "present".into(),
+                tol: UNTOLERATED.into(),
+            });
         }
-        let reported: Vec<(i64, Value)> =
-            std::fs::read_to_string(run.join(dir).join("mqtt.ndjson"))
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                .filter(|m| {
-                    m["topic"]
-                        .as_str()
-                        .is_some_and(|t| t.ends_with("/config/reported"))
-                })
-                .filter_map(|m| {
-                    let p: Value = serde_json::from_str(m["payload"].as_str()?).ok()?;
-                    Some((
-                        m["w"].as_i64()?,
-                        p.pointer("/effective/obd/profile/rate_req_s")?.clone(),
-                    ))
-                })
-                .collect();
+    }
+    let mut summary = Vec::new();
+    let mqtt = |dir: &str| -> Vec<Value> {
+        std::fs::read_to_string(run.join(dir).join("mqtt.ndjson"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .collect()
+    };
+    for (label, dir, log) in [("A", "a", &a), ("B", "b", &b)] {
+        let Some(log) = log else { continue };
+        // The side's own helper rates, as logged by its relay at receipt.
+        let profiles: Vec<(i64, f64)> = log
+            .iter()
+            .filter(|w| w["kind"] == "profile-rate")
+            .filter_map(|w| Some((w["w"].as_i64()?, w["rate_req_s"].as_f64()?)))
+            .collect();
+        let rates: Vec<f64> = profiles.iter().map(|(_, r)| *r).collect();
+        // T17's carry check (report path): every
+        // `effective.obd.profile.rate_req_s` a side reports must be
+        // (numerically exactly) a rate its OWN helper printed. A side that
+        // reports one with no profile logged FAILS (R5 NIT: no skip).
+        let reported: Vec<(i64, Value)> = mqtt(dir)
+            .into_iter()
+            .filter(|m| {
+                m["topic"]
+                    .as_str()
+                    .is_some_and(|t| t.ends_with("/config/reported"))
+            })
+            .filter_map(|m| {
+                let p: Value = serde_json::from_str(m["payload"].as_str()?).ok()?;
+                Some((
+                    m["w"].as_i64()?,
+                    p.pointer("/effective/obd/profile/rate_req_s")?.clone(),
+                ))
+            })
+            .collect();
         for (w, v) in reported {
             if !v.as_f64().is_some_and(|x| rates.contains(&x)) {
                 rep.push(Mismatch {
@@ -777,6 +813,93 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
                 });
             }
         }
+        // Review-wp4 R5-1: the state path `obd.reqPerSec` is COMPUTED by the
+        // agent (ts:src/agent/collectors/obd.ts:666-677 `reqPerSec`): null
+        // without a helper; else requestRate() over its two latest audits;
+        // else the seed `Math.round(profile.rate_req_s * 10) / 10`. Each value
+        // a state snapshot shows must be null, one of the two latest profile
+        // rates its own helper printed by then (the newest may not be
+        // delivered yet: the relay logs a line on receipt), or the rate of a
+        // pair of consecutive audits its own helper printed by then.
+        let audits: Vec<(i64, f64, f64)> = log
+            .iter()
+            .filter(|w| w["kind"] == "audit-line")
+            .filter_map(|w| Some((w["w"].as_i64()?, w["ts"].as_f64()?, w["requests"].as_f64()?)))
+            .collect();
+        let pair_rates: Vec<(i64, f64)> = audits
+            .windows(2)
+            .filter_map(|p| Some((p[1].0, request_rate((p[0].1, p[0].2), (p[1].1, p[1].2))?)))
+            .collect();
+        let mut last: Option<Value> = None;
+        let text = std::fs::read_to_string(run.join(dir).join("files.ndjson")).unwrap_or_default();
+        for l in text.lines() {
+            let Ok(f) = serde_json::from_str::<Value>(l) else {
+                continue;
+            };
+            if f["name"] != "state.json" {
+                continue;
+            }
+            let (Some(w), Some(t)) = (f["w"].as_i64(), f["text"].as_str()) else {
+                continue;
+            };
+            let Ok(st) = serde_json::from_str::<Value>(t) else {
+                continue;
+            };
+            let Some(v) = st.pointer("/obd/reqPerSec").cloned() else {
+                continue;
+            };
+            if last.as_ref() == Some(&v) || v.is_null() {
+                last = Some(v);
+                continue;
+            }
+            last = Some(v.clone());
+            let seen: Vec<f64> = profiles
+                .iter()
+                .filter(|(pw, _)| *pw <= w)
+                .map(|(_, r)| *r)
+                .collect();
+            let mut ok: Vec<f64> = seen.iter().rev().take(2).copied().collect();
+            ok.extend(
+                pair_rates
+                    .iter()
+                    .filter(|(pw, _)| *pw <= w)
+                    .map(|(_, r)| *r),
+            );
+            if !v
+                .as_f64()
+                .is_some_and(|x| ok.iter().any(|r| (r - x).abs() < 1e-9))
+            {
+                rep.push(Mismatch {
+                    stream: "obd-gate".into(),
+                    at: format!("{label} state at {w}"),
+                    path: "(state obd.reqPerSec carried from its helper)".into(),
+                    a: v.to_string(),
+                    b: format!("null or one of {ok:?}"),
+                    tol: UNTOLERATED.into(),
+                });
+            }
+        }
+    }
+    // Review-wp4 R5 NIT: the stale replies each side's drain found, compared
+    // across sides (an agent whose stop leaves MORE in-flight replies — e.g.
+    // a helper killed before its close — stays visible).
+    let stale = |log: &Option<Vec<Value>>| -> usize {
+        log.iter()
+            .flatten()
+            .filter(|w| w["kind"] == "drain" && w["bytes"].as_i64().unwrap_or(0) > 0)
+            .count()
+    };
+    let (sa, sb) = (stale(&a), stale(&b));
+    rep.stats.entry("obd-gate".into()).or_default().compared += 1;
+    if sa != sb {
+        rep.push(Mismatch {
+            stream: "obd-gate".into(),
+            at: "drains".into(),
+            path: "(helper starts with a stale adapter reply)".into(),
+            a: sa.to_string(),
+            b: sb.to_string(),
+            tol: UNTOLERATED.into(),
+        });
     }
     for (label, waits) in [("A", a.unwrap_or_default()), ("B", b.unwrap_or_default())] {
         // The relay's pre-spawn drain of the adapter line (fresh state per
@@ -804,9 +927,39 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
                 });
             }
         }
+        // R5-2: each edge's shared GO, reached late by a descheduled relay.
+        let gos: Vec<serde_json::Value> = waits
+            .iter()
+            .filter(|w| w["kind"] == "go")
+            .cloned()
+            .collect();
+        let late_max = gos
+            .iter()
+            .filter_map(|w| w["late_ms"].as_i64())
+            .max()
+            .unwrap_or(0);
+        if !gos.is_empty() {
+            summary.push(format!(
+                "{label} {} GO(s), max late {late_max} ms",
+                gos.len()
+            ));
+        }
+        for w in gos
+            .iter()
+            .filter(|w| w["late_ms"].as_i64().unwrap_or(0) > OBD_GO_LATE_MAX_MS)
+        {
+            rep.push(Mismatch {
+                stream: "obd-gate".into(),
+                at: format!("{label} edge #{} GO", w["edge"]),
+                path: "(edge delivered late after its shared GO)".into(),
+                a: format!("{} ms", w["late_ms"]),
+                b: format!("≤ {OBD_GO_LATE_MAX_MS} ms"),
+                tol: UNTOLERATED.into(),
+            });
+        }
         let waits: Vec<serde_json::Value> = waits
             .into_iter()
-            .filter(|w| w["kind"] != "profile-rate" && w["kind"] != "drain")
+            .filter(|w| w["edge"].is_number() && w["kind"] != "go")
             .collect();
         let max = waits
             .iter()
@@ -818,7 +971,7 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
             waits.len()
         ));
         let st = rep.stats.entry("obd-gate".into()).or_default();
-        st.compared += waits.len();
+        st.compared += waits.len() + gos.len();
         for w in &waits {
             let (ms, timeout) = (w["wait_ms"].as_i64().unwrap_or(0), w["timeout"] == true);
             if timeout || ms > OBD_BARRIER_WAIT_MAX_MS {
@@ -843,7 +996,10 @@ pub fn diff_obd_gate(run: &Path, rep: &mut Report) {
     }
     rep.inputs.insert(
         "obd-gate barrier (rig-owned waits)".into(),
-        format!("{}; bound {OBD_BARRIER_WAIT_MAX_MS} ms", summary.join(", ")),
+        format!(
+            "{}; bounds: wait {OBD_BARRIER_WAIT_MAX_MS} ms, GO late {OBD_GO_LATE_MAX_MS} ms",
+            summary.join(", ")
+        ),
     );
 }
 
@@ -899,10 +1055,18 @@ mod tests {
                 r#"{"w":2,"side":"a","edge":1,"kind":"ready","wait_ms":0,"timeout":false}"#,
             ],
         );
+        write(
+            "b",
+            &[r#"{"w":1,"side":"b","kind":"drain","bytes":5,"ms":310,"quiet":true}"#],
+        );
         assert!(run().is_empty());
         write(
+            "b",
+            &[r#"{"w":1,"side":"b","edge":1,"kind":"ready","wait_ms":0,"timeout":false}"#],
+        );
+        write(
             "a",
-            &[r#"{"w":1,"side":"a","kind":"drain","bytes":900,"ms":2000,"quiet":false}"#],
+            &[r#"{"w":1,"side":"a","kind":"drain","bytes":0,"ms":2000,"quiet":false}"#],
         );
         assert_eq!(
             run(),
@@ -930,6 +1094,114 @@ mod tests {
                 "{bad}"
             );
         }
+        // R5 NIT: a report carrying a rate with NO profile in the relay log
+        // FAILS (no pre-R4-3 skip).
+        write("b", &[]);
+        rep("19.2");
+        assert_eq!(
+            run(),
+            vec!["(profile rate carried from its helper)".to_string()]
+        );
+        std::fs::remove_file(d.join("b").join("mqtt.ndjson")).unwrap();
+        // R5 NIT: a side with no relay log at all FAILS.
+        std::fs::remove_file(d.join("b").join(crate::p5b::OBD_GATE_LOG)).unwrap();
+        assert_eq!(run(), vec!["(relay log present on both sides)".to_string()]);
+        write("b", &[]);
+        // R5 NIT: stale-reply drains compared across sides.
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","kind":"drain","bytes":14,"ms":310,"quiet":true}"#],
+        );
+        assert_eq!(
+            run(),
+            vec!["(helper starts with a stale adapter reply)".to_string()]
+        );
+        write("a", &[]);
+        // R5-2: an edge a relay delivered > 50 ms after its shared GO FAILS.
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":4,"kind":"go","decider":false,"late_ms":157}"#],
+        );
+        assert_eq!(
+            run(),
+            vec!["(edge delivered late after its shared GO)".to_string()]
+        );
+        write(
+            "a",
+            &[r#"{"w":1,"side":"a","edge":4,"kind":"go","decider":false,"late_ms":6}"#],
+        );
+        assert!(run().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Review-wp4 R5-1: the state path `obd.reqPerSec` must be null, one of
+    /// the two latest profile rates the side's own helper printed by then, or
+    /// requestRate() of two consecutive audits of its own helper; the
+    /// reviewer's integer-rounded 18 and shifted 19.7 FAIL.
+    #[test]
+    fn state_req_per_sec_is_carried_from_its_own_helper() {
+        let d = std::env::temp_dir().join(format!("obd-state-rate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for l in ["a", "b"] {
+            std::fs::create_dir_all(d.join(l)).unwrap();
+            std::fs::write(d.join(l).join(crate::p5b::OBD_GATE_LOG), "").unwrap();
+        }
+        std::fs::write(
+            d.join("b").join(crate::p5b::OBD_GATE_LOG),
+            [
+                r#"{"w":1000,"side":"b","kind":"profile-rate","rate_req_s":18.3}"#,
+                r#"{"w":61000,"side":"b","kind":"audit-line","ts":61.0,"requests":1000}"#,
+                r#"{"w":121000,"side":"b","kind":"audit-line","ts":121.0,"requests":2110}"#,
+                r#"{"w":150000,"side":"b","kind":"profile-rate","rate_req_s":19.1}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let run = |vals: &[(i64, &str)]| {
+            let lines: Vec<String> = vals
+                .iter()
+                .map(|(w, v)| {
+                    let text = format!(r#"{{"obd":{{"reqPerSec":{v}}}}}"#);
+                    serde_json::json!({"w": w, "name": "state.json", "text": text}).to_string()
+                })
+                .collect();
+            std::fs::write(d.join("b").join("files.ndjson"), lines.join("\n")).unwrap();
+            let mut rep = Report::default();
+            diff_obd_gate(&d, &mut rep);
+            rep.mismatches
+                .iter()
+                .map(|m| (m.at.clone(), m.a.clone()))
+                .collect::<Vec<_>>()
+        };
+        // null, the seed, the audit-pair rate (1110 / 60 = 18.5), the next seed
+        assert!(run(&[
+            (500, "null"),
+            (2000, "18.3"),
+            (122_000, "18.5"),
+            (151_000, "19.1")
+        ])
+        .is_empty());
+        // the previous seed while the next profile is still in flight
+        assert!(run(&[(2000, "18.3"), (151_000, "18.3")]).is_empty());
+        // the reviewer's mutations: integer-rounded / shifted
+        assert_eq!(
+            run(&[(2000, "18")]),
+            vec![("B state at 2000".into(), "18".into())]
+        );
+        assert_eq!(
+            run(&[(2000, "19.7")]),
+            vec![("B state at 2000".into(), "19.7".into())]
+        );
+        // a profile rate shown BEFORE its helper printed it
+        assert_eq!(
+            run(&[(2000, "19.1")]),
+            vec![("B state at 2000".into(), "19.1".into())]
+        );
+        // an audit-pair rate before its second audit
+        assert_eq!(
+            run(&[(100_000, "18.5")]),
+            vec![("B state at 100000".into(), "18.5".into())]
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
