@@ -1882,6 +1882,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // Phase 5b: the OBD helpers' stdout follows the hold gate (obd-gate.py).
     let has_obd = !args.no_gate && p5b::ObdPlan::of(&tape).is_some();
     let mut obd_gate = ObdGate::new(obd_gate_path(&args.work));
+    let obd_bar = obd_gate_path(&args.work).with_file_name("obd-barrier");
 
     // Release order = tape order, except that a record the WATCH gate holds
     // (lte_file / cli / config, `watch.rs`) waits in `pending` together with
@@ -2034,7 +2035,8 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                 if fence {
                     fenced.insert(pi);
                 }
-                let held = watch_holds(ev, now) || fence;
+                let held =
+                    watch_holds(ev, now) || fence || (has_obd && obd_relays_holding(&obd_bar, now));
                 let timeout = held && now - due_w > watch::MAX_HOLD_MS;
                 if (!held || timeout) && !post_cut(now) && tel_open(now) {
                     pending.pop_front();
@@ -2050,6 +2052,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
                     if !args.no_gate
                         && barrier(&r.ev)
                         && (!pending.is_empty()
+                            || (has_obd && obd_relays_holding(&obd_bar, now))
                             || watch_holds(&r.ev, now)
                             || post_cut(now)
                             || fenced_at(&r.ev, now, now) == Some(true))
@@ -2571,19 +2574,46 @@ fn obd_gate_path(work: &Path) -> PathBuf {
     work.join("obd-gate")
 }
 
+/// Review-wp4 R7-1: the most a barrier input waits for the OBD relays' held
+/// helper lines (a relay that died with its flag set cannot wedge the tape).
+const OBD_FLUSH_CAP_MS: i64 = 2_000;
+
+/// Does an OBD relay still HOLD a helper line (obd-gate.py `_held`: the
+/// `<side>.held` flag in the shared barrier dir, its content the wall second
+/// the hold began)? Then no barrier input (config / command / cli / LTE file /
+/// conn) is released: at a gate opening the held helper lines reach both
+/// agents first, in the same order on both sides. A flag older than
+/// OBD_FLUSH_CAP_MS no longer holds.
+fn obd_relays_holding(bar: &Path, now: i64) -> bool {
+    ["a", "b"].iter().any(|side| {
+        fs::read_to_string(bar.join(format!("{side}.held")))
+            .ok()
+            .and_then(|t| t.trim().parse::<f64>().ok())
+            .is_some_and(|since| now - (since * 1000.0) as i64 <= OBD_FLUSH_CAP_MS)
+    })
+}
+
 /// The OBD relays' gate file: `1` open / `0` closed, rewritten on every change
 /// and at least every [`OBD_GATE_BEAT_MS`] (a relay treats a file older than
 /// 1.5 s, or none, as OPEN, so a stopped player never wedges a helper).
 struct ObdGate {
     path: PathBuf,
     last: Option<(bool, i64)>,
+    /// Review-wp4 R7-1: the number of closed → open transitions, written
+    /// after the state (`1 <epoch>`), so the relays release the lines one
+    /// opening freed at ONE shared GO (obd-gate.py `wait_open_line`).
+    epoch: u64,
 }
 
 const OBD_GATE_BEAT_MS: i64 = 500;
 
 impl ObdGate {
     fn new(path: PathBuf) -> Self {
-        Self { path, last: None }
+        Self {
+            path,
+            last: None,
+            epoch: 0,
+        }
     }
 
     fn write(&mut self, open: bool, now: i64) {
@@ -2593,8 +2623,11 @@ impl ObdGate {
         {
             return;
         }
+        if open && self.last.is_none_or(|(o, _)| !o) {
+            self.epoch += 1;
+        }
         let tmp = self.path.with_extension("tmp");
-        if fs::write(&tmp, if open { "1" } else { "0" }).is_ok()
+        if fs::write(&tmp, format!("{} {}", u8::from(open), self.epoch)).is_ok()
             && fs::rename(&tmp, &self.path).is_ok()
         {
             self.last = Some((open, now));
@@ -3052,19 +3085,47 @@ mod tests {
         let mut g = ObdGate::new(obd_gate_path(&d));
         let read = || fs::read_to_string(d.join("obd-gate")).unwrap();
         g.write(false, 1_000);
-        assert_eq!(read(), "0");
+        assert_eq!(read(), "0 0");
         // A change is written at once…
         g.write(true, 1_010);
-        assert_eq!(read(), "1");
+        assert_eq!(read(), "1 1");
         // …an unchanged state only on the heartbeat.
         fs::write(d.join("obd-gate"), "x").unwrap();
         g.write(true, 1_400);
         assert_eq!(read(), "x");
         g.write(true, 1_510);
-        assert_eq!(read(), "1");
+        assert_eq!(read(), "1 1");
+        // R7-1: every closed → open transition is a new opening epoch.
+        g.write(false, 2_000);
+        assert_eq!(read(), "0 1");
+        g.write(true, 2_010);
+        assert_eq!(read(), "1 2");
         // Tape done: no file = the relays' OPEN fallback.
         g.clear();
         assert!(!d.join("obd-gate").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Review-wp4 R7-1: a barrier input waits while a relay's `<side>.held`
+    /// flag is set (fresh), never past OBD_FLUSH_CAP_MS.
+    #[test]
+    fn barrier_inputs_wait_for_the_relays_held_lines() {
+        let d = std::env::temp_dir().join(format!("obd-held-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let now = 1_793_000_000_000i64;
+        assert!(!obd_relays_holding(&d, now), "no flags");
+        fs::write(d.join("b.held"), format!("{}", (now - 100) as f64 / 1000.0)).unwrap();
+        assert!(obd_relays_holding(&d, now), "b holds a line");
+        fs::write(
+            d.join("b.held"),
+            format!("{}", (now - 2_500) as f64 / 1000.0),
+        )
+        .unwrap();
+        assert!(!obd_relays_holding(&d, now), "past the cap");
+        fs::remove_file(d.join("b.held")).unwrap();
+        fs::write(d.join("a.held"), "garbage").unwrap();
+        assert!(!obd_relays_holding(&d, now), "unparseable = not holding");
         let _ = fs::remove_dir_all(&d);
     }
 

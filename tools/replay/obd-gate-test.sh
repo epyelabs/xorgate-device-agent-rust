@@ -119,6 +119,55 @@ print("first status delivered at", first, "a's GO:", go[:1])
 sys.exit(0 if abs(first[0] - first[1]) < 0.2 and max(first) < 0.5 and go and go[0]["late_ms"] >= 100 and not go[0]["decider"] else 1)
 P
 unset T0 RIG_OBD_GATE RIG_OBD_BARRIER RIG_OBD_PEERS
+# Held helper lines before barrier inputs (review-wp4 R7-1): both helpers
+# print a sample while the tick gate is closed; relay a is descheduled across
+# the gate opening. The player (played here) waits until no relay flags a
+# held line before it releases a barrier input; both samples must reach their
+# agents BEFORE that input. The old relay flagged nothing: the input went out
+# at the opening and a's sample 0.1 s after it.
+mkdir -p "$W/hl/bar" "$W/hl/a" "$W/hl/b"
+cat > "$W/hl/helper.py" <<'P'
+import json, os, time
+t0 = float(os.environ["T0"])
+time.sleep(max(0.0, t0 - time.time()))
+print(json.dumps({"type": "sample", "fields": {"rpm": 800}}), flush=True)
+time.sleep(1.5)
+P
+for s in a b; do cp /t/obd-gate.py "$W/hl/$s/obd_read.py"; cp "$W/hl/helper.py" "$W/hl/$s/obd_read_real.py"; done
+T0=$(python3 -c 'import time; print(time.time() + 1.0)')
+export T0 RIG_OBD_GATE="$W/hl/gate" RIG_OBD_BARRIER="$W/hl/bar" RIG_OBD_PEERS=a,b
+echo "0 1" > "$W/hl/gate"
+RIG_OBD_SIDE=a RIG_OBD_WAITLOG="$W/hl/a/wait.ndjson" python3 "$W/hl/a/obd_read.py" > >(python3 "$W/sy/stamp.py" > "$W/hl/a/out") & PA=$!
+RIG_OBD_SIDE=b RIG_OBD_WAITLOG="$W/hl/b/wait.ndjson" python3 "$W/hl/b/obd_read.py" > >(python3 "$W/sy/stamp.py" > "$W/hl/b/out") & PB=$!
+at() { python3 -c 'import os, sys, time; time.sleep(max(0.0, float(os.environ["T0"]) + float(sys.argv[1]) - time.time()))' "$1"; }
+at 0.2; echo "0 1" > "$W/hl/gate.tmp" && mv "$W/hl/gate.tmp" "$W/hl/gate"; kill -STOP $PA
+at 0.3; echo "1 2" > "$W/hl/gate.tmp" && mv "$W/hl/gate.tmp" "$W/hl/gate"
+( at 0.4; kill -CONT $PA ) &
+# the player: no barrier input while a relay holds a line (cap 2 s)
+python3 - "$W/hl/bar" > "$W/hl/input_at" <<'P'
+import os, sys, time
+bar = sys.argv[1]; start = time.time()
+def holding():
+    for s in "ab":
+        try:
+            if time.time() - float(open(os.path.join(bar, s + ".held")).read()) <= 2.0:
+                return True
+        except (OSError, ValueError):
+            pass
+    return False
+while holding() and time.time() - start < 2.0:
+    time.sleep(0.005)
+print(f"{time.time():.3f}")
+P
+wait $PA $PB; sleep 0.3
+python3 - "$W/hl/a/out" "$W/hl/b/out" "$W/hl/input_at" <<'P' && ok "held helper lines reach both agents before the barrier input" || bad "a held line after the barrier input: a=$(head -1 "$W/hl/a/out") b=$(head -1 "$W/hl/b/out") input=$(cat "$W/hl/input_at")"
+import sys
+inp = float(open(sys.argv[3]).read())
+got = [float(next(l for l in open(f) if '"sample"' in l).split()[0]) for f in sys.argv[1:3]]
+print("samples at", [round(g - inp, 3) for g in got], "relative to the input")
+sys.exit(0 if all(g <= inp for g in got) else 1)
+P
+unset T0 RIG_OBD_GATE RIG_OBD_BARRIER RIG_OBD_PEERS
 # Adapter drain (orchestrator ruling 2026-10-27): a reply queued on the pty
 # for the PREVIOUS helper (and one arriving 0.15 s after the relay starts) never
 # reaches the next helper; the drain is logged with its byte count. Without the

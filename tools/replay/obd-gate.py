@@ -153,6 +153,7 @@ def shared_go(kind, n, earliest):
         return time.time()
     path = os.path.join(BARRIER, f"{kind}.go.{n}")
     decided = False
+    _held(True)
     while True:
         go = _read_float(path)
         if go is not None:
@@ -227,9 +228,82 @@ def in_report_hold():
     return report_hold[0] <= now < report_hold[1]
 
 
+def gate_epoch():
+    """The player's gate-opening counter (`1 <epoch>` / `0 <epoch>`): it
+    grows by one at every closed → open transition. None without one."""
+    try:
+        with open(GATE) as f:
+            parts = f.read().split()
+        return int(parts[1]) if len(parts) > 1 else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+# Review-wp4 R7-1: a line HELD here is flagged (`<side>.held`), so the player
+# releases no barrier input (config / command / cli / LTE file) while any
+# relay still holds a helper line: at a gate opening the held helper lines
+# reach both agents BEFORE the input, in the same order on both sides. (Before,
+# a pre-SIGINT sample held by the tick gate reached the JS after the config
+# that disabled OBD — resurrecting link 2 and 23 fields — and the Rust before
+# it: rev4 runs4/cfg.jsrs.)
+_holding = False
+
+
+def _held(on):
+    """Set when a line starts to be held; cleared only AFTER it was written
+    (the main loop), so the player never releases an input between the
+    decision and the delivery."""
+    global _holding
+    if not (BARRIER and SIDE) or on == _holding:
+        return
+    _holding = on
+    try:
+        if on:
+            _put(f"{SIDE}.held", repr(time.time()))
+        else:
+            os.remove(os.path.join(BARRIER, f"{SIDE}.held"))
+    except OSError:
+        pass
+
+
 def wait_open(report=True):
-    while not is_open() or (report and in_report_hold()):
-        time.sleep(0.005)
+    if is_open() and not (report and in_report_hold()):
+        return
+    _held(True)
+    try:
+        while not is_open() or (report and in_report_hold()):
+            time.sleep(0.005)
+    finally:
+        _held(False)
+
+
+def wait_open_line():
+    """A held NON-edge line (a sample, an audit): released at the SHARED GO
+    of the gate opening that frees it — the first relay to see that opening
+    publishes it, the others deliver at it — so the tick-gate decision for a
+    held line is made once for both relays (review-wp4 R7-1)."""
+    if is_open() and not in_report_hold():
+        return
+    _held(True)
+    try:
+        while not is_open() or in_report_hold():
+            time.sleep(0.005)
+        e = gate_epoch()
+        if BARRIER and SIDE and PEERS and e is not None:
+            path = os.path.join(BARRIER, f"open.go.{e}")
+            if _read_float(path) is None:
+                tmp = os.path.join(BARRIER, f".{SIDE}.open.go.{e}.tmp")
+                with open(tmp, "w") as f:
+                    f.write(repr(time.time()))
+                try:
+                    os.link(tmp, path)
+                except FileExistsError:
+                    pass
+                finally:
+                    os.remove(tmp)
+    except BaseException:
+        _held(False)
+        raise
 
 
 # Fresh adapter state per helper start (orchestrator ruling 2026-10-27): the
@@ -367,7 +441,7 @@ for line in iter(child.stdout.readline, b""):
         rel = barrier("edge", k)
     held_until = 0.0
     if rel is None:
-        wait_open()
+        wait_open_line()
     else:
         n, rel = rel
         # The shared decisions: held iff the edge's SHARED release instant
@@ -380,7 +454,9 @@ for line in iter(child.stdout.readline, b""):
         out.write(line)
         out.flush()
     except BrokenPipeError:
+        _held(False)
         break
+    _held(False)
     if k == "status":
         # the window starts at the status's shared delivery instant (its GO)
         r = time.time() if rel is None else go
@@ -399,6 +475,7 @@ if _x is None:
     wait_open(report=False)
 else:
     shared_go("edge", _x[0], _x[1])
+_held(False)
 if rc < 0:
     signal.signal(-rc, signal.SIG_DFL)
     os.kill(os.getpid(), -rc)
