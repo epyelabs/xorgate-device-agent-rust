@@ -828,6 +828,17 @@ fn tape_mode(tape: &Tape) -> &'static str {
     }
 }
 
+/// The tape's first `i2cdetect` stdout, unless that first record is
+/// `notFound` (then the shim is left off PATH instead, `first_i2c_absent`).
+fn boot_i2c_answer(tape: &Tape) -> Option<&str> {
+    tape.records.iter().find_map(|r| match &r.ev {
+        TapeEvent::I2cdetect { stdout, not_found } => {
+            Some(if *not_found { None } else { stdout.as_deref() })
+        }
+        _ => None,
+    })?
+}
+
 impl Agent {
     #[allow(clippy::too_many_arguments)]
     fn prepare(
@@ -855,6 +866,18 @@ impl Agent {
             &dir.join("final"),
         ] {
             fs::create_dir_all(d)?;
+        }
+        // The I2C bus as it was at boot (Phase 5b gate R-P5bG-3): the tape's
+        // FIRST i2cdetect answer is what the recorded agent saw on its own boot
+        // probe (bench tapes: t = 1.1–1.5 s), i.e. the bus state from power-on.
+        // Released only at that t, an agent that probes earlier (the Rust
+        // agent probes at ~1.08 s in the rig) got the shim's "no bus" error and,
+        // like the TS (detection is not retried until a reader stream ends),
+        // never streamed the IMU, while a slower JS start landed after the
+        // release and did: a one-sided `metrics.imu` on every tick. Seed it
+        // before the agents start; the tape-time release rewrites the same text.
+        if let Some(out) = boot_i2c_answer(tape) {
+            write_atomic(&state.join("i2cdetect.out"), out.as_bytes())?;
         }
         // PATH shims (copied so i2cdetect can be absent per agent).
         for entry in
@@ -2711,6 +2734,67 @@ fn apply_state(agents: &[Agent], ev: &TapeEvent, shift_s: i64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_i2c_answer_is_the_first_i2cdetect_record_only() {
+        use xorgate_hal::tape::TapeRecord;
+        let rec = |t: u64, ev: TapeEvent| TapeRecord { t, w: t as i64, ev };
+        let mut tape = Tape {
+            meta: xorgate_hal::tape::TapeMeta::new("d", "b", 0),
+            records: vec![],
+            truncated: false,
+        };
+        assert_eq!(
+            boot_i2c_answer(&tape),
+            None,
+            "no i2cdetect record: nothing seeded"
+        );
+        tape.records = vec![
+            rec(
+                1_396,
+                TapeEvent::I2cdetect {
+                    stdout: Some("40: -- 4a\n".into()),
+                    not_found: false,
+                },
+            ),
+            rec(
+                276_394,
+                TapeEvent::I2cdetect {
+                    stdout: Some("40: --\n".into()),
+                    not_found: false,
+                },
+            ),
+        ];
+        assert_eq!(
+            boot_i2c_answer(&tape),
+            Some("40: -- 4a\n"),
+            "the FIRST answer, not a later one"
+        );
+        tape.records[0] = rec(
+            1_000,
+            TapeEvent::I2cdetect {
+                stdout: None,
+                not_found: true,
+            },
+        );
+        assert_eq!(
+            boot_i2c_answer(&tape),
+            None,
+            "first notFound: the shim is absent, nothing seeded"
+        );
+        tape.records[0] = rec(
+            1_000,
+            TapeEvent::I2cdetect {
+                stdout: None,
+                not_found: false,
+            },
+        );
+        assert_eq!(
+            boot_i2c_answer(&tape),
+            None,
+            "first record without stdout: nothing seeded"
+        );
+    }
 
     #[test]
     fn gate_holds_between_paired_ticks() {
