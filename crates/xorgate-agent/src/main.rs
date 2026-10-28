@@ -7,6 +7,9 @@
 #![deny(unsafe_code)]
 
 fn main() {
+    // F-P3-MEM: glibc keeps freed ~7 MB upload buffers resident under its
+    // dynamic mmap threshold; pin the threshold before any thread exists.
+    xorgate_agent::alloc::tune();
     // `process.argv.slice(2)`; non-UTF-8 arguments are decoded lossily.
     let argv: Vec<String> = std::env::args_os()
         .skip(1)

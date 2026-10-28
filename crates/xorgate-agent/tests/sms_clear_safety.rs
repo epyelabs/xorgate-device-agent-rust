@@ -382,6 +382,7 @@ fn unsafe_code_is_denied_except_at_todays_ffi_sites() {
     assert_eq!(
         allows,
         [
+            "xorgate-agent/src/alloc.rs tune",
             "xorgate-agent/src/cli/manage/format.rs clock",
             "xorgate-agent/src/cli/sms.rs stdout_columns",
             "xorgate-agent/src/recording/capture/backend.rs renice",
