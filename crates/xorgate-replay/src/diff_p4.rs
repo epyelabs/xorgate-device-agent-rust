@@ -742,7 +742,12 @@ pub const OBD_ATZ_REPLY_BYTES: i64 = 14;
 
 /// R6-1: the edge numbers of the final `stopped` status (the status edge
 /// right before the exit edge) of every helper session (relay pid) the agent
-/// signalled while a request was in flight (its last audit requests − ok = 1).
+/// signalled while a request was in flight (its last audit requests − ok = 1)
+/// — MID-RUN stops only. At the run's final stop (the agents' own shutdown)
+/// no side waits out the ATZ reset: every cut final stop seen waited 0–7 ms
+/// (stepC p5b-obd-config.r32.jsrs1 edge 35, r33.jsrs1 edge 35,
+/// p5b-obd-audit.r33.jsrs1 / p5b-obd-emulator.r33.jsrs1 edge 8), so there the
+/// normal 400 ms bound applies and nothing is extended or required.
 fn cut_stop_edges(log: &[Value]) -> BTreeSet<i64> {
     let mut last_audit: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
     let mut signalled: BTreeSet<i64> = BTreeSet::new();
@@ -770,10 +775,18 @@ fn cut_stop_edges(log: &[Value]) -> BTreeSet<i64> {
             _ => {}
         }
     }
+    let last_edge = log.iter().filter_map(|w| w["edge"].as_i64()).max();
+    let exit_of: BTreeMap<i64, i64> = log
+        .iter()
+        .filter(|w| w["kind"] == "exit")
+        .filter_map(|w| Some((w["pid"].as_i64()?, w["edge"].as_i64()?)))
+        .collect();
     stop_edges
         .into_iter()
         .filter(|(pid, _)| {
-            signalled.contains(pid) && last_audit.get(pid).is_some_and(|(r, o)| r - o == 1)
+            signalled.contains(pid)
+                && last_audit.get(pid).is_some_and(|(r, o)| r - o == 1)
+                && exit_of.get(pid).copied() != last_edge
         })
         .map(|(_, e)| e)
         .collect()
@@ -1354,6 +1367,9 @@ mod tests {
                     .to_string(),
                 r#"{"w":3,"side":"a","edge":6,"kind":"exit","wait_ms":3,"timeout":false,"pid":9}"#
                     .to_string(),
+                // the next helper's start: the stop above is MID-RUN
+                r#"{"w":4,"side":"a","edge":7,"kind":"ready","wait_ms":2,"timeout":false,"pid":10}"#
+                    .to_string(),
             ]
         };
         let lines = cut_stop(454, 382, "status");
@@ -1398,6 +1414,20 @@ mod tests {
                 )],
                 "{wait}"
             );
+        }
+        // The run's FINAL stop (no later edge): a cut final stop waits ~0 on
+        // the rig (both agents' own shutdown); there the normal bound applies
+        // and nothing is required — 0 ms passes, 454 ms FAILS as usual.
+        for (wait, want) in [
+            (0, vec![]),
+            (454, vec!["(barrier wait over bound)".to_string()]),
+        ] {
+            let lines: Vec<String> = cut_stop(wait, 382, "status")
+                .into_iter()
+                .filter(|l| !l.contains(r#""kind":"ready""#))
+                .collect();
+            write("a", &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(run(), want, "final stop {wait}");
         }
         // …and when BOTH sides' helpers were cut at that edge, the normal
         // bound applies to both (neither is early)
