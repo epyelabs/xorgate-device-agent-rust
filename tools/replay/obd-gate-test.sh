@@ -92,6 +92,33 @@ print("second status delivered at", second)
 sys.exit(0 if abs(second[0] - second[1]) < 0.1 and min(second) > 3.2 else 1)
 P
 unset T0 RIG_OBD_GATE RIG_OBD_BARRIER RIG_OBD_PEERS
+# Shared tick-gate GO (review-wp4 R5-2): side a's relay is descheduled while
+# it waits at an edge; b arrives, finds the gate open and delivers; the gate
+# then closes (a tick-pair window) before a resumes. Both must still deliver
+# the edge at the ONE published GO (a's lateness is logged); the old per-relay
+# gate read held a's copy until the gate reopened (0.9 s apart).
+mkdir -p "$W/gg/bar" "$W/gg/a" "$W/gg/b"
+for s in a b; do cp /t/obd-gate.py "$W/gg/$s/obd_read.py"; cp "$W/sy/helper.py" "$W/gg/$s/obd_read_real.py"; done
+T0=$(python3 -c 'import time; print(time.time() + 1.0)')
+export T0 RIG_OBD_GATE="$W/gg/gate" RIG_OBD_BARRIER="$W/gg/bar" RIG_OBD_PEERS=a,b
+echo 1 > "$W/gg/gate"
+RIG_OBD_SIDE=a RIG_OBD_WAITLOG="$W/gg/a/wait.ndjson" D1=0.0 D2=3.0 python3 "$W/gg/a/obd_read.py" > >(python3 "$W/sy/stamp.py" > "$W/gg/a/out") & PA=$!
+RIG_OBD_SIDE=b RIG_OBD_WAITLOG="$W/gg/b/wait.ndjson" D1=0.1 D2=3.0 python3 "$W/gg/b/obd_read.py" > >(python3 "$W/sy/stamp.py" > "$W/gg/b/out") & PB=$!
+at() { python3 -c 'import os, sys, time; time.sleep(max(0.0, float(os.environ["T0"]) + float(sys.argv[1]) - time.time()))' "$1"; }
+at 0.05; kill -STOP $PA
+at 0.15; echo 0 > "$W/gg/gate.tmp" && mv "$W/gg/gate.tmp" "$W/gg/gate"
+at 0.25; kill -CONT $PA
+at 1.0; echo 1 > "$W/gg/gate.tmp" && mv "$W/gg/gate.tmp" "$W/gg/gate"
+wait $PA $PB; sleep 0.3
+python3 - "$W/gg/a/out" "$W/gg/b/out" "$T0" "$W/gg/a/wait.ndjson" <<'P' && ok "tick gate: one shared GO per edge (a descheduled relay delivers at the GO, late logged)" || bad "tick gate asymmetric: a=$(head -1 "$W/gg/a/out") b=$(head -1 "$W/gg/b/out")"
+import json, sys
+t0 = float(sys.argv[3])
+first = [float(next(l for l in open(f) if '"n": 1' in l).split()[0]) - t0 for f in sys.argv[1:3]]
+go = [json.loads(l) for l in open(sys.argv[4]) if '"go"' in l]
+print("first status delivered at", first, "a's GO:", go[:1])
+sys.exit(0 if abs(first[0] - first[1]) < 0.2 and max(first) < 0.5 and go and go[0]["late_ms"] >= 100 and not go[0]["decider"] else 1)
+P
+unset T0 RIG_OBD_GATE RIG_OBD_BARRIER RIG_OBD_PEERS
 # Adapter drain (orchestrator ruling 2026-10-27): a reply queued on the pty
 # for the PREVIOUS helper (and one arriving 0.15 s after the relay starts) never
 # reaches the next helper; the drain is logged with its byte count. Without the

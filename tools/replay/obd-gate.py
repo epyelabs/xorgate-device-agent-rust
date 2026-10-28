@@ -68,6 +68,7 @@ WAITLOG = os.environ.get("RIG_OBD_WAITLOG")
 def log_wait(rec):
     if not WAITLOG:
         return
+    rec.setdefault("pid", os.getpid())  # one relay process = one helper session
     try:
         with open(WAITLOG, "a") as f:
             f.write(json.dumps(rec) + "\n")
@@ -116,7 +117,66 @@ def barrier(kind, what):
     log_wait({"w": int(t0 * 1000), "side": SIDE, "edge": n, "kind": what,
               "wait_ms": int((time.time() - t0) * 1000), "timeout": timeout,
               "rel": int(rel * 1000)})
-    return rel
+    return n, rel
+
+
+# The tick gate, decided ONCE per edge for both relays (review-wp4 R5-2): the
+# first relay to find the player's gate open at/after the edge's shared
+# earliest instant publishes that instant as the edge's GO (an exclusive
+# hard link — at most one decision per edge); every relay delivers the edge at
+# the published GO. Before, each relay read the gate at its own instant after
+# the barrier: one found it open and delivered the `stopped` status at once,
+# the other found the tick-pair window just opened and held it 270 ms
+# (rev4/runs2 obd-config.rev: `metrics.obd.link` JS 2 vs Rust 0) — and the
+# same held a helper EXIT on one side only, so one agent learned of the exit
+# ~400 ms after the other (stepC p5b-obd-config.r28.rsjs1/.rsjs5/.jsrs4,
+# relay waits ~430 ms). The gate closes guard_ms (150) before the lead tick,
+# so a delivery a few ms after a GO is still outside the pair; a relay that
+# reaches a GO more than GO_LATE_MS late (descheduled) logs it and the diff
+# FAILS the run rather than let the two agents see the edge apart.
+GO_LATE_MS = 50
+
+
+def _read_float(path):
+    try:
+        with open(path) as f:
+            return float(f.read())
+    except (OSError, ValueError):
+        return None
+
+
+def shared_go(kind, n, earliest):
+    if not (BARRIER and SIDE and PEERS):
+        while time.time() < earliest:
+            time.sleep(0.005)
+        wait_open(report=False)
+        return time.time()
+    path = os.path.join(BARRIER, f"{kind}.go.{n}")
+    decided = False
+    while True:
+        go = _read_float(path)
+        if go is not None:
+            break
+        now = time.time()
+        if now >= earliest and is_open():
+            tmp = os.path.join(BARRIER, f".{SIDE}.{kind}.go.{n}.tmp")
+            with open(tmp, "w") as f:
+                f.write(repr(now))
+            try:
+                os.link(tmp, path)
+                go, decided = now, True
+            except FileExistsError:
+                pass
+            finally:
+                os.remove(tmp)
+            if go is not None:
+                break
+            continue
+        time.sleep(min(0.005, max(0.0005, earliest - now)))
+    late_ms = max(0, int((time.time() - go) * 1000))
+    log_wait({"w": int(go * 1000), "side": SIDE, "edge": n, "kind": "go",
+              "decider": decided, "late_ms": late_ms})
+    return go
 
 
 def kind_of(line):
@@ -283,6 +343,17 @@ for line in iter(child.stdout.readline, b""):
                       "rate_req_s": json.loads(line).get("rate_req_s")})
         except ValueError:
             pass
+    if k == "audit":
+        # The helper's audit snapshot (review-wp4 R5-1): the agent's state
+        # `obd.reqPerSec` is requestRate() over two consecutive audits of its
+        # CURRENT helper (ts:src/agent/collectors/obd.ts:270-278, 666-677),
+        # so the diff ties it to these.
+        try:
+            a = json.loads(line)
+            log_wait({"w": int(time.time() * 1000), "side": SIDE, "kind": "audit-line",
+                      "ts": a.get("ts"), "requests": (a.get("counters") or {}).get("requests")})
+        except ValueError:
+            pass
     rel = None
     if k == "sample" and first_sample_rel is not None:
         rel, first_sample_rel = first_sample_rel, None
@@ -292,26 +363,31 @@ for line in iter(child.stdout.readline, b""):
     if rel is None:
         wait_open()
     else:
-        # The shared decision: held iff the edge's SHARED release instant
-        # lies in the window, and then until the window's (shared) end.
+        n, rel = rel
+        # The shared decisions: held iff the edge's SHARED release instant
+        # lies in the report-hold window (then until its shared end), and
+        # delivered at the edge's shared GO (the tick gate, decided once).
         if GATE and report_hold is not None and report_hold[0] <= rel < report_hold[1]:
             held_until = report_hold[1]
-            while time.time() < held_until:
-                time.sleep(0.005)
-        wait_open(report=False)
+        go = shared_go("edge", n, max(rel, held_until))
     try:
         out.write(line)
         out.flush()
     except BrokenPipeError:
         break
     if k == "status":
-        r = time.time() if rel is None else max(rel, held_until)
+        # the window starts at the status's shared delivery instant (its GO)
+        r = time.time() if rel is None else go
         report_hold = (r + 2.0 - REPORT_MARGIN_S, r + 3.0 + REPORT_MARGIN_S)
 rc = child.wait()
-barrier("edge", "exit")
 # The exit is not held for a report: the agent's stop waits only a bounded
-# time for the helper (SIGKILL after), which a hold could change.
-wait_open(report=False)
+# time for the helper (SIGKILL after), which a hold could change. Its tick
+# gate is the shared GO like every edge.
+_x = barrier("edge", "exit")
+if _x is None:
+    wait_open(report=False)
+else:
+    shared_go("edge", _x[0], _x[1])
 if rc < 0:
     signal.signal(-rc, signal.SIG_DFL)
     os.kill(os.getpid(), -rc)
