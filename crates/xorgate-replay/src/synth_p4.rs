@@ -125,6 +125,14 @@ fn cclk_at(t: u64, ahead_s: i64) -> String {
     )
 }
 
+/// The SIM7600's un-NITZ'd factory clock `t` ms after the modem's boot
+/// (80/01/06 00:00:00 = the GPS epoch, zone +00).
+fn factory_cclk(t: u64) -> String {
+    const GPS_EPOCH_S: i64 = 315_964_800;
+    let (y, mo, d, h, mi, s) = civil_from_epoch(GPS_EPOCH_S + (t / 1000) as i64);
+    format!("{:02}/{mo:02}/{d:02},{h:02}:{mi:02}:{s:02}+00", y.rem_euclid(100))
+}
+
 /// The Pi identity + boot config + both cameras' DT rotation at 0.
 fn pi_rig(dt_writes: Vec<Value>) -> Value {
     json!({
@@ -300,18 +308,27 @@ pub fn add(scenario: &str, b: &mut Builder, dur_ms: u64, fixtures: &Path) -> Res
             // (ts:src/agent/clock-trust.ts:147-152), and 300 s is also the
             // 300th 1 s telemetry tick: with an instant probe the two fall on
             // the same instant and the held count is 298 or 299 in the TS
-            // itself (stepC p5b-clock-fallback.cal09 298/298, .jsrs 299). A
-            // 500 ms probe latency puts the check mid-second on both sides.
-            m.rig.insert("ntpProbeDelayMs".into(), json!(500));
+            // itself (stepC p5b-clock-fallback.cal09 298/298, .jsrs 299).
+            // The probe latency moves the check off the tick, but every
+            // trust text prints its seconds with toFixed(0)
+            // (ts:src/agent/clock-trust.ts:104-106): at 500 ms the elapsed
+            // 300.5 s rounded to 300 or 301 run to run (stepC
+            // p4-clock-cap.clk.jsrs2 300 / 301). 250 ms sits midway between
+            // the tick (.0) and the rounding edge (.5).
+            m.rig.insert("ntpProbeDelayMs".into(), json!(250));
             b.push(20, TapeEvent::NtpProbe { synced: false });
             nmea(b, dur_ms, 200_000, CLOCK_AHEAD_S);
             // From 15 s (review-wp4 R4-5): the implausible NITZ lands on
             // check tick 1, so the D40 step race (Rust ~330 s, JS ~360 s)
             // falls AFTER the 300 s trust grace on both sides instead of
             // coinciding with it (a ±1-tick knife edge on the held count).
-            lte_with_clock(b, dur_ms, &|t| {
-                (t >= 15_000).then(|| ("80/01/06,00:00:00+00".to_string(), 1))
-            });
+            // The factory clock RUNS from 80/01/06 00:00:00 (the modem's
+            // boot), like the SIM7600's: every snapshot implies the same
+            // offset, so which 10 s snapshot a check reads cannot change the
+            // NITZ target (a constant `cclk` with an advancing `read_at` made
+            // two reads 62 ms apart straddling a release 10 s apart,
+            // stepC p4-clock-cap.clk.jsrs).
+            lte_with_clock(b, dur_ms, &|t| (t >= 15_000).then(|| (factory_cclk(t), 1)));
             let mut home = Map::new();
             home.insert(
                 "settings.json".into(),
@@ -496,9 +513,10 @@ fn add_p5b(
         // grace ends (ts:src/agent/clock-trust.ts:126-137), publishing and
         // recording resume on an untrusted clock.
         "p5b-clock-fallback" => {
-            // 500 ms NTP probe latency (see p4-clock-cap): the grace check
-            // runs after the probe, so it lands mid-second, not on tick 300.
-            m.rig.insert("ntpProbeDelayMs".into(), json!(500));
+            // 250 ms NTP probe latency (see p4-clock-cap): the grace check
+            // runs after the probe, so it lands 250 ms past tick 300 and
+            // 250 ms short of toFixed(0)'s rounding edge.
+            m.rig.insert("ntpProbeDelayMs".into(), json!(250));
             b.push(20, TapeEvent::NtpProbe { synced: false });
             nmea(b, dur_ms, u64::MAX, 0);
             lte_with_clock(b, dur_ms, &|t| Some((cclk_at(t, 0), 0)));
