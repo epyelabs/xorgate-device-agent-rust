@@ -3743,6 +3743,18 @@ fn shm_orphans_verdict(
         n.strip_prefix("shmpipe.")
             .is_some_and(|r| r.starts_with(' '))
     };
+    // Per JS orphan of a side: (a) reaper miss / (b) end of run / neither.
+    let arms_of = |m: &MediaCapture| -> Vec<Option<&'static str>> {
+        m.shm_orphan_names
+            .iter()
+            .zip(m.shm_orphan_gone.iter())
+            .map(|(n, g)| match *g {
+                Some(g) if g < end_wall && padded(n) => Some("reaper-miss"),
+                Some(g) if g >= end_wall && m.agent_hung => Some("end-of-run"),
+                _ => None,
+            })
+            .collect()
+    };
     for (side, m) in [("A", a), ("B", b)] {
         if m.kind == "rust" && m.shm_orphans > 0 {
             let names = format!("{:?}", m.shm_orphan_names);
@@ -3767,17 +3779,7 @@ fn shm_orphans_verdict(
         ("js", "rust") | ("rust", "js") => {
             let (js, rs) = if a.kind == "js" { (a, b) } else { (b, a) };
             let d41 = table.matcher_rows("d41_js_shm_orphans", "shm");
-            // Per JS orphan: (a) reaper miss / (b) end of run / neither.
-            let arms: Vec<Option<&str>> = js
-                .shm_orphan_names
-                .iter()
-                .zip(js.shm_orphan_gone.iter())
-                .map(|(n, g)| match *g {
-                    Some(g) if g < end_wall && padded(n) => Some("reaper-miss"),
-                    Some(g) if g >= end_wall && js.agent_hung => Some("end-of-run"),
-                    _ => None,
-                })
-                .collect();
+            let arms = arms_of(js);
             rep.inputs.insert(
                 "D41 arms (JS orphans)".into(),
                 format!(
@@ -3794,6 +3796,30 @@ fn shm_orphans_verdict(
                     id.clone()
                 }
                 _ => UNTOLERATED.to_string(),
+            }
+        }
+        // T18/shm-js-end-of-run (orchestrator ruling 2026-11-06), JS-vs-JS
+        // calibration ONLY: the two JS references may differ in how many
+        // END-OF-RUN orphans their hung shutdowns leave (bug 3 / P7: whether
+        // a SIGINTed capture finished its EOS before the 30 s SIGKILL of the
+        // hung agent). Tolerated only when every orphan on BOTH sides is
+        // explained (arm a or b) and the arm-(a) (reaper-miss) counts are
+        // EQUAL, so the difference is made of arm-(b) orphans only.
+        ("js", "js") => {
+            let (xa, xb) = (arms_of(a), arms_of(b));
+            let n = |v: &[Option<&str>], k: &str| v.iter().filter(|x| **x == Some(k)).count();
+            rep.inputs.insert(
+                "orphan arms (JS-vs-JS)".into(),
+                format!("A {xa:?}, B {xb:?}"),
+            );
+            let id = "T18/shm-js-end-of-run";
+            if has_row(table, id)
+                && xa.iter().chain(xb.iter()).all(Option::is_some)
+                && n(&xa, "reaper-miss") == n(&xb, "reaper-miss")
+            {
+                id.to_string()
+            } else {
+                UNTOLERATED.to_string()
             }
         }
         _ => UNTOLERATED.to_string(),
@@ -5959,10 +5985,62 @@ kind = "decisions"
             ),
             vec![rust_row.clone(), rust_row.clone()]
         );
-        // NEGATIVE: JS-vs-JS stays exact (a stranded segment on one side fails,
-        // whatever its arm).
+        // JS-vs-JS (T18/shm-js-end-of-run, ruling 2026-11-06): a difference
+        // made ONLY of arm-(b) orphans on hung sides is the reference's own
+        // nondeterminism (rec-preset.cal.rv1: A [1196 (a)], B [1195 (a), 5832 (b)]).
+        let t18 = vec!["(orphan shmpipe segments) T18/shm-js-end-of-run".to_string()];
+        assert_eq!(
+            run(
+                cap("js", &[("shmpipe. 1196.    0", MID)], true),
+                cap(
+                    "js",
+                    &[("shmpipe. 1195.    0", MID), ("shmpipe. 5832.    0", LATE)],
+                    true
+                )
+            ),
+            t18
+        );
+        assert_eq!(
+            run(cap("js", &[(wide, LATE)], true), none("js")),
+            t18,
+            "any width"
+        );
+        assert_eq!(
+            run(none("js"), cap("js", &[(pad, LATE), (wide, LATE)], true)),
+            t18
+        );
+        // NEGATIVE: a JS-vs-JS difference that includes an arm-(a) orphan stays
+        // exact (one side's reaper miss the other lacks) …
         assert_eq!(run(cap("js", &[(pad, MID)], false), none("js")), unt);
-        assert_eq!(run(cap("js", &[(wide, LATE)], true), none("js")), unt);
+        assert_eq!(
+            run(
+                cap("js", &[(pad, MID), (wide, LATE)], true),
+                cap("js", &[(wide, LATE)], true)
+            ),
+            unt,
+            "the (b) counts match; the extra is an (a)"
+        );
+        // … and so does one with an UNEXPLAINED orphan: a late orphan of a side
+        // that did NOT hang, a 5-digit mid-run one, an owner never seen gone.
+        assert_eq!(run(cap("js", &[(wide, LATE)], false), none("js")), unt);
+        assert_eq!(
+            run(
+                cap("js", &[(pad, MID), (wide, MID)], true),
+                cap("js", &[(pad, MID)], true)
+            ),
+            unt
+        );
+        let mut g = cap("js", &[(pad, LATE)], true);
+        g.shm_orphan_gone = vec![None];
+        assert_eq!(run(g, none("js")), unt);
+        // … and an unexplained orphan on the OTHER side too.
+        assert_eq!(
+            run(
+                cap("js", &[(wide, LATE)], true),
+                cap("js", &[(wide, MID), (wide, LATE), (pad, LATE)], true)
+            ),
+            unt
+        );
         assert!(run(
             cap("js", &[(pad, MID)], false),
             cap("js", &[("shmpipe. 1199.    0", MID)], false)
