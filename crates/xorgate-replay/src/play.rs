@@ -1906,6 +1906,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let has_obd = !args.no_gate && p5b::ObdPlan::of(&tape).is_some();
     let mut obd_gate = ObdGate::new(obd_gate_path(&args.work));
     let obd_bar = obd_gate_path(&args.work).with_file_name("obd-barrier");
+    let mut obd_cap_log = ObdCapLog::default();
 
     // Release order = tape order, except that a record the WATCH gate holds
     // (lte_file / cli / config, `watch.rs`) waits in `pending` together with
@@ -2015,6 +2016,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
             let open_now = tel_open(now);
             if has_obd {
+                for line in obd_cap_log.released(&obd_bar, now) {
+                    plog(line);
+                }
                 // Closed inside a tick pair AND while a config-report pair is
                 // open (a report build reads `effective.obd` at each agent's
                 // own instant: stepC p5b-obd-config.bar.* `probing` vs `live`).
@@ -2608,12 +2612,49 @@ const OBD_FLUSH_CAP_MS: i64 = 2_000;
 /// agents first, in the same order on both sides. A flag older than
 /// OBD_FLUSH_CAP_MS no longer holds.
 fn obd_relays_holding(bar: &Path, now: i64) -> bool {
-    ["a", "b"].iter().any(|side| {
-        fs::read_to_string(bar.join(format!("{side}.held")))
-            .ok()
-            .and_then(|t| t.trim().parse::<f64>().ok())
-            .is_some_and(|since| now - (since * 1000.0) as i64 <= OBD_FLUSH_CAP_MS)
-    })
+    obd_held_flags(bar)
+        .iter()
+        .any(|(_, since)| now - since <= OBD_FLUSH_CAP_MS)
+}
+
+/// The relays' `<side>.held` flags present now: `(side, hold start in wall ms)`
+/// (an unparseable flag is not a flag).
+fn obd_held_flags(bar: &Path) -> Vec<(&'static str, i64)> {
+    ["a", "b"]
+        .into_iter()
+        .filter_map(|side| {
+            let t = fs::read_to_string(bar.join(format!("{side}.held"))).ok()?;
+            let since = t.trim().parse::<f64>().ok()?;
+            Some((side, (since * 1000.0) as i64))
+        })
+        .collect()
+}
+
+/// Review-wp4 NIT (Phase 5b WP5): a flag still present but older than
+/// [`OBD_FLUSH_CAP_MS`] no longer holds the barrier inputs — the cap released
+/// them. Logged ONCE per flag (side + hold start) so such a release is never
+/// silent; a cap release only happens when a relay died with its flag set or
+/// a barrier wait already went past the 400 ms the diff tolerates.
+#[derive(Default)]
+struct ObdCapLog {
+    logged: std::collections::BTreeSet<(&'static str, i64)>,
+}
+
+impl ObdCapLog {
+    /// The lines to log for flags the cap releases at `now` (new ones only).
+    fn released(&mut self, bar: &Path, now: i64) -> Vec<String> {
+        obd_held_flags(bar)
+            .into_iter()
+            .filter(|(_, since)| now - since > OBD_FLUSH_CAP_MS)
+            .filter(|k| self.logged.insert(*k))
+            .map(|(side, since)| {
+                format!(
+                    "obd relay {side}: held flag from {since} is {} ms old (> {OBD_FLUSH_CAP_MS} ms cap) — barrier inputs released past it",
+                    now - since
+                )
+            })
+            .collect()
+    }
 }
 
 /// The OBD relays' gate file: `1` open / `0` closed, rewritten on every change
@@ -3210,6 +3251,52 @@ mod tests {
         fs::remove_file(d.join("b.held")).unwrap();
         fs::write(d.join("a.held"), "garbage").unwrap();
         assert!(!obd_relays_holding(&d, now), "unparseable = not holding");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Phase 5b WP5 (review-wp4 NIT): a cap release is logged, once per flag;
+    /// a fresh flag, no flag or an unparseable one logs nothing.
+    #[test]
+    fn a_cap_release_of_a_held_flag_is_logged_once() {
+        let d = std::env::temp_dir().join(format!("obd-cap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let now = 1_793_000_000_000i64;
+        let mut log = ObdCapLog::default();
+        assert!(log.released(&d, now).is_empty(), "no flags");
+        fs::write(d.join("a.held"), format!("{}", (now - 100) as f64 / 1000.0)).unwrap();
+        assert!(
+            log.released(&d, now).is_empty(),
+            "fresh flag: still holding"
+        );
+        fs::write(
+            d.join("a.held"),
+            format!("{}", (now - 2_500) as f64 / 1000.0),
+        )
+        .unwrap();
+        let l = log.released(&d, now);
+        assert_eq!(l.len(), 1, "{l:?}");
+        assert!(
+            l[0].starts_with("obd relay a: held flag from ") && l[0].contains("2500 ms old"),
+            "{l:?}"
+        );
+        assert!(
+            log.released(&d, now + 5).is_empty(),
+            "the same flag is logged once"
+        );
+        fs::write(d.join("b.held"), "garbage").unwrap();
+        assert!(
+            log.released(&d, now + 10).is_empty(),
+            "unparseable = not a flag"
+        );
+        // A NEW hold that ages past the cap is a new release.
+        fs::write(
+            d.join("a.held"),
+            format!("{}", (now - 1_000) as f64 / 1000.0),
+        )
+        .unwrap();
+        assert!(log.released(&d, now).is_empty());
+        assert_eq!(log.released(&d, now + 1_500).len(), 1);
         let _ = fs::remove_dir_all(&d);
     }
 
