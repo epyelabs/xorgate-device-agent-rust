@@ -9,6 +9,7 @@
 
 pub mod alloc;
 pub mod build_info;
+pub mod capture_host;
 pub mod cli;
 pub mod collectors;
 pub mod command_plane;

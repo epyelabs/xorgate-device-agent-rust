@@ -14,3 +14,7 @@
 /tools/replay/.cache/
 *.ndjson.gz
 !/fixtures/replay/smoke.ndjson.gz
+
+# Phase 7a capture-host harness cache (binary, run outputs).
+/tools/capture-host/.cache/
+/tools/capture-host/__pycache__/

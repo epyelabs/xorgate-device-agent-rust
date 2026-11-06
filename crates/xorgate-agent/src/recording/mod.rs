@@ -146,6 +146,8 @@ impl manager::RecordingBackend for Backend {
             self.clock.clone(),
         );
         o.encoder = Some(spec.encoder);
+        // Phase 7a: `XORGATE_CAPTURE_BACKEND` (unset = gst-launch, today's).
+        o.backend = capture::backend_from_env();
         o.stagger_ms = spec.stagger_ms;
         o.home = self.home.clone();
         let closed = spec.on_segment_closed;
