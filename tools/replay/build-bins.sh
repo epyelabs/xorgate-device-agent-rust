@@ -24,5 +24,8 @@ docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform l
   -v xorgate-rs-cargo-git:/usr/local/cargo/git \
   -v xorgate-rs-target:/target \
   -e CARGO_TARGET_DIR="$TARGET_DIR" -e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" -w /src "$IMAGE" \
-  sh -c "cargo build --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/"
+  sh -c "cargo build --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/ \
+    && cc -shared -fPIC -O2 -Wall -Wextra -o /src/tools/replay/.cache/bin/rig-statvfs.so /src/tools/replay/statvfs-shim/rig_statvfs.c -ldl"
+# (Phase 5b WP5 item 4: rig-statvfs.so = the deterministic root filesystem both
+# agents' disk_usage reads, preloaded by the player; statvfs-shim/test.sh.)
 ls -l "$HERE/.cache/bin"

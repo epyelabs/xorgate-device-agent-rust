@@ -101,6 +101,10 @@ fixture_bench() {
   install -d -o pi -g pi -m 0700 /var/lib/xorgate-rs
   install -d -o pi -g pi -m 0755 /var/lib/xorgate-rs/evidence
   touch /etc/systemd/system/xorgate-agent-rs.service
+  # install.sh's bench drop-in (DEV identity + own state dir); Phase 6 Q6:
+  # every Rust (re)start refuses without it.
+  mkdir -p /etc/systemd/system/xorgate-agent-rs.service.d
+  printf '[Unit]\nConflicts=\n[Service]\nEnvironmentFile=\nEnvironmentFile=/etc/xorgate/agent-rs-dev.env\n' > /etc/systemd/system/xorgate-agent-rs.service.d/90-bench-dev.conf
   echo "DEVICE_ID=58b51737-0000-4000-8000-000000000002" > /etc/xorgate/agent.env
   echo '{"deviceId":"58b51737","region":"us-east-1","credentialEndpoint":"c.example","roleAlias":"r","channels":[{"streamKey":"cam0","channelName":"p0"}]}' > /etc/xorgate/kvs.json
   echo '{"v":2,"imu":"bno085","cameras":{}}' > /etc/xorgate/hardware.json

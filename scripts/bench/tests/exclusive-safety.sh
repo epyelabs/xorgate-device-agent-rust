@@ -485,6 +485,40 @@ bash "$B/gate-seam.sh" off --restart >"$LOGS/p13c.log" 2>&1; rc=$?
 expect $? "gate-seam.sh off --restart: seam torn down, Rust restart refused (rc=$rc)"
 bench_unit; bash "$B/gate-seam.sh" off >/dev/null 2>&1; reset
 
+echo "== case (q6): Phase 6 Q6 — with 90-bench-dev.conf PARKED, nothing (re)starts the bench-flavour Rust unit (it would run on the PROD identity)"
+BDD=/etc/systemd/system/xorgate-agent-rs.service.d/90-bench-dev.conf
+Q6="the bench drop-in $BDD is MISSING (parked for a convert?)"
+park() { mv "$BDD" "$LOGS/90-bench-dev.conf.parked"; }
+unpark() { mv "$LOGS/90-bench-dev.conf.parked" "$BDD"; }
+no_rs_start() { ! grep -Eq "^systemctl (restart|start|enable --now|try-restart|reload-or-restart) xorgate-agent-rs" "$STATE/systemctl.log"; }
+reset; bench_unit; no_record; park; : > "$STATE/systemctl.log"
+bash "$B/exclusive.sh" end >"$LOGS/q6a.log" 2>&1; rc=$?
+check active "q6 end: JS still restored"
+no_rs_start && grep -qF "REFUSING: $Q6" "$LOGS/q6a.log"; expect $? "exclusive.sh end: the Rust restart is refused, loudly (rc=$rc)"
+: > "$STATE/systemctl.log"
+bash "$B/exclusive.sh" tape-off >"$LOGS/q6b.log" 2>&1; rc=$?
+[ "$rc" != 0 ] && no_rs_start && grep -qF "$Q6" "$LOGS/q6b.log"; expect $? "exclusive.sh tape-off: refuses, no Rust restart (rc=$rc)"
+bash "$B/profile.sh" shared >"$LOGS/q6c.log" 2>&1; rc=$?
+[ "$rc" != 0 ] && no_rs_start && grep -qF "$Q6" "$LOGS/q6c.log"; expect $? "profile.sh shared (restart): refuses, no Rust restart (rc=$rc)"
+bash "$B/exclusive.sh" begin >"$LOGS/q6d.log" 2>&1; rc=$?
+[ "$rc" != 0 ] && no_rs_start && grep -qF "refusing: $Q6" "$LOGS/q6d.log" && ! grep -q "stop xorgate-agent$" "$STATE/systemctl.log"
+expect $? "exclusive.sh begin: refuses in preflight, BEFORE the JS stop (rc=$rc)"
+check active "q6: JS untouched by the refused begin"
+bash "$B/gate-seam.sh" on --restart >"$LOGS/q6e.log" 2>&1; rc=$?
+[ "$rc" != 0 ] && no_rs_start && grep -qF "$Q6" "$LOGS/q6e.log"; expect $? "gate-seam.sh on --restart: refuses the Rust restart (rc=$rc)"
+bash "$B/gate-seam.sh" off >/dev/null 2>&1
+echo inactive > "$STATE/xorgate-agent"; mkdir -p /run/systemd/system/xorgate-agent-rs.service.d; touch /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf; rm -f /var/lib/xorgate-rs/ntp-unsync.state
+bash "$B/ntp-unsync.sh" break >"$LOGS/q6f.log" 2>&1; rc=$?
+[ "$rc" = 1 ] && no_rs_start && ! grep -q "stop xorgate-agent-rs" "$STATE/systemctl.log" && [ ! -e /var/lib/xorgate-rs/ntp-unsync.state ] && grep -qF "$Q6" "$LOGS/q6f.log"
+expect $? "ntp-unsync.sh break: refuses before stopping Rust or touching the clock (rc=$rc)"
+rm -f /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf; echo active > "$STATE/xorgate-agent"
+bash "$B/start.sh" >"$LOGS/q6g.log" 2>&1; rc=$?
+[ "$rc" = 1 ] && no_rs_start; expect $? "start.sh: refuses (its existing check, rc=$rc)"
+unpark; : > "$STATE/systemctl.log"
+bash "$B/profile.sh" shared >"$LOGS/q6h.log" 2>&1; rc=$?
+grep -q "^systemctl restart xorgate-agent-rs" "$STATE/systemctl.log"; expect $? "drop-in restored: profile.sh shared restarts Rust again (rc=$rc)"
+reset
+
 echo "== case (p14): the dead-man waits (bounded) for a RUNNING install-rs.sh before it reverts (review-wp3 S2)"
 reset; bench_unit; no_record; LOCKD=/run/xorgate-rs-install.lock; rm -rf "$LOCKD"
 XORGATE_TEST_DEADMAN_LOCK_SECS=4 bash "$B/exclusive.sh" begin >"$LOGS/p14-begin.log" 2>&1; rc=$?

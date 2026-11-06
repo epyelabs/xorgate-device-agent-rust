@@ -91,6 +91,8 @@ followup() {
   if [ "$RESTART" = 1 ]; then
     # Phase 5 (CF65, review-wp3 S1): never restart a SHIPPED (converted) unit.
     if rs_unit_converted; then echo "  REFUSING the restart: $RS_CONVERTED_REFUSAL"; return 1; fi
+    # Phase 6 Q6 (WP5): a parked bench drop-in = PROD identity on restart.
+    rs_bench_dropin_ok || return 1
     act systemctl restart "$UNIT"; note "$UNIT restarted"
   else
     echo "  follow-up (not done here): sudo systemctl restart $UNIT   # the agent reads LTE_TELEMETRY_FILE at start"

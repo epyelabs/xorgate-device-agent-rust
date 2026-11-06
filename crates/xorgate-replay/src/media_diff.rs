@@ -88,6 +88,14 @@ pub struct MediaCapture {
     pub s3_bodies: BTreeMap<String, Vec<u8>>,
     /// Orphan shmpipe names at the end (pid = a dead gst child of this side).
     pub shm_orphans: usize,
+    /// The same orphans by name (`shm_orphans` = its length), sorted.
+    pub shm_orphan_names: Vec<String>,
+    /// Per orphan (same order): the wall ms its owner child was seen gone.
+    pub shm_orphan_gone: Vec<Option<i64>>,
+    /// The agent did NOT exit within 30 s of the player's SIGTERM and was
+    /// SIGKILLed (the player's `[rig] agent <x> did NOT exit in 30 s` line in
+    /// `<side>/stderr.log`) — the JS SIGTERM hang (js-bug-triage bug 3).
+    pub agent_hung: bool,
     /// Wall ms (publish `w`) of every telemetry tick whose
     /// `recording.powerShed` / `recording.liveBlock` differs from the
     /// previous tick's (`mqtt.ndjson`; T7/D30 `d30_shed_tick_session_end` (d)).
@@ -562,7 +570,11 @@ impl MediaCapture {
             .map(|(k, v)| (n.path(k), v["size"].as_u64().unwrap_or(0)))
             .collect();
         // Orphan shm segments at the end: shmpipe.<pid>.* whose pid is one of
-        // this side's gst children that is gone.
+        // this side's gst children that is gone. The owner pid is shmsink's
+        // SPACE-padded "%5d" field (`shmpipe. 1185.    0`, gst shmpipe.c:307):
+        // parsed by the agent's own `shm_owner_pid`. Before Phase 5b WP5 this
+        // parsed `" 1185"` as a u32, which fails, so every rig child (4-digit
+        // pids) counted 0 and this row could never fail (js-bug-triage §4).
         let last_names: Vec<String> = shm
             .last()
             .and_then(|v| v["names"].as_array())
@@ -575,17 +587,36 @@ impl MediaCapture {
             .filter(|s| s.role == "capture")
             .map(|s| s.pid)
             .collect();
-        let shm_orphans = last_names
+        let shm_orphan_names: Vec<String> = last_names
             .iter()
-            .filter_map(|nm| {
-                nm.strip_prefix("shmpipe.")?
-                    .split('.')
-                    .next()?
-                    .parse::<u32>()
-                    .ok()
+            .filter(|nm| {
+                xorgate_core::capture_ladder::shm_owner_pid(nm)
+                    .is_some_and(|p| mine.contains(&p) && gone.contains(&p))
             })
-            .filter(|p| mine.contains(p) && gone.contains(p))
-            .count();
+            .cloned()
+            .collect();
+        let shm_orphans = shm_orphan_names.len();
+        let gone_w: BTreeMap<u32, i64> = procs
+            .iter()
+            .filter(|v| v["k"] == "gone")
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["w"].as_i64()?)))
+            .fold(BTreeMap::new(), |mut m, (p, w)| {
+                m.entry(p).or_insert(w);
+                m
+            });
+        let shm_orphan_gone: Vec<Option<i64>> = shm_orphan_names
+            .iter()
+            .map(|nm| {
+                xorgate_core::capture_ladder::shm_owner_pid(nm)
+                    .and_then(|p| gone_w.get(&p).copied())
+            })
+            .collect();
+        let agent_hung = std::fs::read_to_string(dir.join("stderr.log"))
+            .map(|t| {
+                t.lines()
+                    .any(|l| l.starts_with("[rig] agent ") && l.contains(" did NOT exit in 30 s"))
+            })
+            .unwrap_or(false);
         let present = !spawns.is_empty() || !rec.is_empty() || !s3.is_empty();
         let mut shed_changes = Vec::new();
         let mut shed_events: Vec<(i64, String)> = Vec::new();
@@ -657,6 +688,9 @@ impl MediaCapture {
             s3,
             s3_bodies,
             shm_orphans,
+            shm_orphan_names,
+            shm_orphan_gone,
+            agent_hung,
             shed_changes,
             last_tick_backlog,
             live_flags,
@@ -2492,6 +2526,22 @@ fn d30_session_end(
 /// (worker.ts:1207) — so the two sides' spawn-minus-change lags differ by at
 /// most one publish period (`tickMs`) — or neither side had a change (a
 /// boot-started session).
+///
+/// Phase 5b WP5 (R-P5bG-1), SCOPE only (no number changed): the cut may also
+/// be a CLOUD-CONFIG video-tuple change (preset / record / segmentSeconds /
+/// encoder). TS @09da38d: the config message handler applies the document and
+/// calls `recording.reapply()` synchronously (worker.ts:960-980) → `apply()` →
+/// `applyVideo()`, whose key holds the preset (manager.ts:570-580); a changed
+/// key chains `prev.stopAndWait()` at once (manager.ts:620-626) and only then
+/// starts the new session. So the cut instant is the player's release of that
+/// config record — ONE instant for both agents, like the stop's SIGTERM — not
+/// a per-agent timer (the 5 s settings poll, manager.ts:327, only catches
+/// local edits). Instead of "never respawned": on BOTH sides the capture is
+/// respawned for a NEW session at/after a released `…/config` `mqtt_in`
+/// record `r` (the latest before both ends), both end instants lie in
+/// [r, r + `endMs`] (so they also agree within `endMs`), and neither side
+/// published a powerShed / liveBlock change within ±`tickMs` of `r` (a shed
+/// cut is D30's, never this). (c) and (d) apply unchanged.
 #[allow(clippy::too_many_arguments)]
 fn t12_cut_fragment(
     a: &MediaCapture,
@@ -2503,6 +2553,7 @@ fn t12_cut_fragment(
     key: &(String, u64),
     end_ms: f64,
     tick_ms: i64,
+    config_releases: &[i64],
 ) -> bool {
     let (sid, seq) = (&key.0, key.1);
     let last = |f: &BTreeMap<String, BTreeMap<u64, u64>>, c: &BTreeMap<(String, u64), Value>| {
@@ -2516,19 +2567,24 @@ fn t12_cut_fragment(
     if !last(fa, ca) || !last(fb, cb) {
         return false;
     }
-    let spawn_at = |m: &MediaCapture| -> Option<i64> {
+    // (spawn w, the next capture spawn of that camera: (w, sid)) — the child
+    // ended by the agent (int/eos), never by a kill.
+    #[allow(clippy::type_complexity)]
+    let spawn_at = |m: &MediaCapture| -> Option<(i64, Option<(i64, Option<String>)>)> {
         let s = m
             .spawns
             .iter()
             .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid.as_str()))?;
         let at_stop = matches!(s.end.as_deref(), Some("int") | Some("eos"));
-        let respawned = m
+        let next = m
             .spawns
             .iter()
-            .any(|o| o.role == "capture" && o.key == s.key && o.w > s.w);
-        (at_stop && !respawned).then_some(s.w)
+            .filter(|o| o.role == "capture" && o.key == s.key && o.w > s.w)
+            .min_by_key(|o| o.w)
+            .map(|o| (o.w, o.sid.clone()));
+        at_stop.then_some((s.w, next))
     };
-    let (Some(wa), Some(wb)) = (spawn_at(a), spawn_at(b)) else {
+    let (Some((wa, na)), Some((wb, nb))) = (spawn_at(a), spawn_at(b)) else {
         return false;
     };
     let f64_at = |c: &BTreeMap<(String, u64), Value>, q: u64, k: &str| {
@@ -2542,6 +2598,37 @@ fn t12_cut_fragment(
     };
     if (ea - eb).abs() > end_ms {
         return false;
+    }
+    match (&na, &nb) {
+        // The stop arm: never respawned on either side.
+        (None, None) => {}
+        // The config arm (R-P5bG-1): a new session on both sides after ONE
+        // released config record that both end instants follow within endMs.
+        (Some((ra, sa)), Some((rb, sb))) => {
+            let new_session = |n: &Option<String>| n.as_deref().is_some_and(|x| x != sid.as_str());
+            let Some(&r) = config_releases
+                .iter()
+                .filter(|r| (**r as f64) <= ea.min(eb))
+                .max()
+            else {
+                return false;
+            };
+            let within = |e: f64| e >= r as f64 && e - r as f64 <= end_ms;
+            let shed_near =
+                |m: &MediaCapture| m.shed_changes.iter().any(|c| (*c - r).abs() <= tick_ms);
+            if !(new_session(sa) && new_session(sb))
+                || *ra < r
+                || *rb < r
+                || !within(ea)
+                || !within(eb)
+                || shed_near(a)
+                || shed_near(b)
+            {
+                return false;
+            }
+        }
+        // Respawned on one side only: not the same cut.
+        _ => return false,
     }
     let lag = |m: &MediaCapture, w: i64| {
         m.shed_changes
@@ -2567,6 +2654,15 @@ pub fn diff_media(
 ) {
     // The tape's input facts (also the R-P3G-2 oracle's, before the values).
     let facts_early = crate::diff::InputFacts::for_play(play);
+    // R-WP5-4: whether disk_usage was isolated (the statvfs shim) in this run.
+    rep.inputs.insert(
+        "disk source (disk_usage)".into(),
+        if play.disk_source.is_empty() {
+            "unrecorded (pre-WP5 run)".to_string()
+        } else {
+            play.disk_source.clone()
+        },
+    );
     for k in [
         "children",
         "session",
@@ -2822,6 +2918,38 @@ pub fn diff_media(
 
     // ---- sidecars (T12) + D8 lag figures
     let (ca, cb) = (sidecars(a), sidecars(b));
+    // R-P5bG-1: the player's release instants of the tape's cloud-config
+    // records (`mqtt_in` on `…/config`) — the shared cut of a config-driven
+    // video change (T12/cut-fragment's config arm).
+    let config_releases: Vec<i64> = {
+        // review-wp5 R-WP5-8: joined by (kind, tape t, occurrence) — the
+        // player releases records in tape order, so the n-th `mqtt_in`
+        // release at tape t is the n-th `mqtt_in` record at t; a non-config
+        // message sharing a t with a config one is never counted.
+        let mut is_cfg: BTreeMap<u64, Vec<bool>> = BTreeMap::new();
+        for r in tape_recs(Path::new(&play.tape))
+            .iter()
+            .filter(|r| r["k"] == "mqtt_in")
+        {
+            if let Some(t) = r["t"].as_u64() {
+                is_cfg
+                    .entry(t)
+                    .or_default()
+                    .push(r["topic"].as_str().is_some_and(|x| x.ends_with("/config")));
+            }
+        }
+        let mut seen: BTreeMap<u64, usize> = BTreeMap::new();
+        play.releases
+            .iter()
+            .filter(|r| r.k == "mqtt_in")
+            .filter_map(|r| {
+                let n = seen.entry(r.t).or_default();
+                let cfg = is_cfg.get(&r.t).and_then(|v| v.get(*n)).copied() == Some(true);
+                *n += 1;
+                cfg.then_some(r.w)
+            })
+            .collect()
+    };
     let start_ms = row_tol(table, "T12", "startTs", 300.0);
     let mono_ms = row_tol(table, "T12", "startMono", 300.0);
     let dur_ms = row_tol(table, "T12", "durationMs", 150.0);
@@ -2889,6 +3017,7 @@ pub fn diff_media(
                 key,
                 row_tol(table, "T12/cut-fragment", "endMs", 0.0),
                 row_tol(table, "T12/cut-fragment", "tickMs", 0.0) as i64,
+                &config_releases,
             );
         // review-wp6 F5: an INTERIOR fragment (its successor exists on both
         // sides) has no duration of its own — `durationMs` = mtime − birthtime
@@ -3574,20 +3703,135 @@ pub fn diff_media(
     stat(rep, "shm").compared += 1;
     rep.inputs.insert(
         "shm orphans at end".into(),
-        format!("A {}, B {}", a.shm_orphans, b.shm_orphans),
+        format!(
+            "A {} {:?}, B {} {:?}",
+            a.shm_orphans, a.shm_orphan_names, b.shm_orphans, b.shm_orphan_names
+        ),
     );
-    if a.shm_orphans != b.shm_orphans {
-        rep.push(mm(
-            "shm",
-            "end",
-            "(orphan shmpipe segments)",
-            a.shm_orphans.to_string(),
-            b.shm_orphans.to_string(),
-            UNTOLERATED,
-        ));
-    }
+    shm_orphans_verdict(a, b, play.end_wall, table, rep);
     d30_js_reference(a, b, &pmic_series(play), table, rep);
     d30_js_late_shed(a, b, play.start_wall, &power_changes(play), table, rep);
+}
+
+/// The end-of-run `/dev/shm` orphans (Phase 5b WP5, item 9 + D41, split by
+/// mechanism per review-wp5 R-WP5-2):
+/// - a RUST side's orphan is never tolerated: one row per Rust side that
+///   strands anything, whatever the other side holds (D41: the Rust reaper
+///   matches shmsink's padded names and the agent stops its children cleanly);
+/// - JS-vs-Rust with Rust 0: `T7/D41` only when EVERY JS orphan is one of
+///   - (a) REAPER MISS: its owner capture died MID-RUN (gone before the
+///     player's SIGTERM `end_wall`: the JS agent alive, its ladder or the
+///     tape SIGKILLed the child, `onExit` → `reapShmSegments` ran) AND the
+///     name is SPACE-padded (owner pid < 10000) — the names the TS prefix
+///     `shmpipe.${pid}.` can never match (ts:src/recording/video-capture.ts
+///     :873-891, :876 @09da38d; gst shmpipe.c:307 `"/shmpipe.%5d.%5d"`); a 5+
+///     digit name IS matched by the TS reaper, so it is UNTOLERATED;
+///   - (b) END OF RUN: its owner capture was still running when the JS agent
+///     was told to stop (gone at/after `end_wall`) AND that JS agent hung
+///     past 30 s and was SIGKILLed (`agent_hung`, bug 3: its wedged event
+///     loop never runs `onExit`'s reaper at all, so the pid width does not
+///     matter) — any pid width;
+/// - every other count difference (JS-vs-JS, Rust-vs-Rust) is UNTOLERATED.
+fn shm_orphans_verdict(
+    a: &MediaCapture,
+    b: &MediaCapture,
+    end_wall: i64,
+    table: &Table,
+    rep: &mut Report,
+) {
+    let padded = |n: &str| {
+        n.strip_prefix("shmpipe.")
+            .is_some_and(|r| r.starts_with(' '))
+    };
+    // Per JS orphan of a side: (a) reaper miss / (b) end of run / neither.
+    let arms_of = |m: &MediaCapture| -> Vec<Option<&'static str>> {
+        m.shm_orphan_names
+            .iter()
+            .zip(m.shm_orphan_gone.iter())
+            .map(|(n, g)| match *g {
+                Some(g) if g < end_wall && padded(n) => Some("reaper-miss"),
+                Some(g) if g >= end_wall && m.agent_hung => Some("end-of-run"),
+                _ => None,
+            })
+            .collect()
+    };
+    for (side, m) in [("A", a), ("B", b)] {
+        if m.kind == "rust" && m.shm_orphans > 0 {
+            let names = format!("{:?}", m.shm_orphan_names);
+            rep.push(mm(
+                "shm",
+                "end",
+                "(orphan shmpipe segments of a Rust side)",
+                if side == "A" {
+                    names.clone()
+                } else {
+                    String::new()
+                },
+                if side == "B" { names } else { String::new() },
+                UNTOLERATED,
+            ));
+        }
+    }
+    if a.shm_orphans == b.shm_orphans {
+        return;
+    }
+    let tol = match (a.kind.as_str(), b.kind.as_str()) {
+        ("js", "rust") | ("rust", "js") => {
+            let (js, rs) = if a.kind == "js" { (a, b) } else { (b, a) };
+            let d41 = table.matcher_rows("d41_js_shm_orphans", "shm");
+            let arms = arms_of(js);
+            rep.inputs.insert(
+                "D41 arms (JS orphans)".into(),
+                format!(
+                    "{:?}",
+                    js.shm_orphan_names.iter().zip(&arms).collect::<Vec<_>>()
+                ),
+            );
+            match d41.first() {
+                Some(id)
+                    if rs.shm_orphans == 0
+                        && js.shm_orphans == arms.len()
+                        && arms.iter().all(Option::is_some) =>
+                {
+                    id.clone()
+                }
+                _ => UNTOLERATED.to_string(),
+            }
+        }
+        // T18/shm-js-end-of-run (orchestrator ruling 2026-11-06), JS-vs-JS
+        // calibration ONLY: the two JS references may differ in how many
+        // END-OF-RUN orphans their hung shutdowns leave (bug 3 / P7: whether
+        // a SIGINTed capture finished its EOS before the 30 s SIGKILL of the
+        // hung agent). Tolerated only when every orphan on BOTH sides is
+        // explained (arm a or b) and the arm-(a) (reaper-miss) counts are
+        // EQUAL, so the difference is made of arm-(b) orphans only.
+        ("js", "js") => {
+            let (xa, xb) = (arms_of(a), arms_of(b));
+            let n = |v: &[Option<&str>], k: &str| v.iter().filter(|x| **x == Some(k)).count();
+            rep.inputs.insert(
+                "orphan arms (JS-vs-JS)".into(),
+                format!("A {xa:?}, B {xb:?}"),
+            );
+            let id = "T18/shm-js-end-of-run";
+            if has_row(table, id)
+                && xa.iter().chain(xb.iter()).all(Option::is_some)
+                && n(&xa, "reaper-miss") == n(&xb, "reaper-miss")
+            {
+                id.to_string()
+            } else {
+                UNTOLERATED.to_string()
+            }
+        }
+        _ => UNTOLERATED.to_string(),
+    };
+    rep.push(mm(
+        "shm",
+        "end",
+        "(orphan shmpipe segments)",
+        format!("{} {:?}", a.shm_orphans, a.shm_orphan_names),
+        format!("{} {:?}", b.shm_orphans, b.shm_orphan_names),
+        &tol,
+    ));
 }
 
 /// Release instants (wall ms) where a power input changed: the pmic EXT5V
@@ -4811,6 +5055,269 @@ kind = "decisions"
         );
     }
 
+    /// Phase 5b WP5 (R-P5bG-1): a fragment CUT by a cloud-config preset
+    /// change is judged by T12/cut-fragment's end instant when both ends
+    /// follow the shared release of that config record within endMs (TS: the
+    /// config handler's synchronous `recording.reapply()` → `stopAndWait`,
+    /// worker.ts:960-980, manager.ts:620-626). Numbers from the gate's
+    /// `rec-preset.jsrs09` (cam1#0/00006: JS 4079 ms ending r + 14, Rust 4239
+    /// ending r + 70; the JS session started 129 ms later). Every other shape
+    /// stays UNTOLERATED.
+    #[test]
+    fn t12_cut_fragment_covers_a_config_preset_cut_only() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam1#0>";
+        let next_sid = "<sid:video:cam1#1>";
+        let r = 1_793_198_919_363i64; // the config release
+                                      // (kind, first startTs, last durationMs, next capture sid, end tag)
+        let side = |kind: &str, st0: i64, last_dur: i64, next: Option<&str>, end: &str| {
+            let mut finals = BTreeMap::new();
+            for (seq, st, dur) in [(0u64, st0, 10_000), (1, st0 + 10_000, last_dur)] {
+                finals.insert(
+                    format!("recordings/video/cam1/{sid}/{seq:05}.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "seq": seq, "startTs": st, "startMono": (st - st0) + 5,
+                        "durationMs": dur, "sizeBytes": 100,
+                    }))
+                    .unwrap(),
+                );
+            }
+            let spawn = |w: i64, sid: Option<&str>, end: Option<&str>| Spawn {
+                w,
+                role: "capture".into(),
+                key: "cam1".into(),
+                pid: 7,
+                argv: vec!["gst".into()],
+                env: BTreeMap::new(),
+                playing: Some(w + 2_000),
+                end: end.map(Into::into),
+                end_w: None,
+                sid: sid.map(Into::into),
+            };
+            let mut spawns = vec![spawn(st0 - 2_000, Some(sid), Some(end))];
+            if let Some(n) = next {
+                spawns.push(spawn(r + 2_000, Some(n), None));
+            }
+            MediaCapture {
+                kind: kind.into(),
+                spawns,
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        // A ends r + 14, B ends r + 70 (dur differs by 185 > T12's 150).
+        let js = |next: Option<&str>| side("js", r + 14 - 4_079 - 10_000, 4_079, next, "int");
+        let rs = |next: Option<&str>| side("rust", r + 70 - 4_239 - 10_000, 4_239, next, "int");
+        // the tape: the boot config at t 400 and the preset change at t 70000
+        let dir = std::env::temp_dir().join(format!("t12-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tape = |topic: &str| {
+            let p = dir.join(format!("{}.ndjson", topic.replace('/', "_")));
+            let rec = |t: u64| {
+                serde_json::json!({"t": t, "w": 0, "k": "mqtt_in", "topic": topic, "payload": "{}"})
+                    .to_string()
+            };
+            std::fs::write(&p, format!("{}\n{}\n", rec(400), rec(70_000))).unwrap();
+            p.display().to_string()
+        };
+        let play_at = |topic: &str, release: i64| PlayInfo {
+            tape: tape(topic),
+            releases: vec![
+                crate::diff::Release {
+                    w: r - 70_000,
+                    due: 0,
+                    t: 400,
+                    k: "mqtt_in".into(),
+                },
+                crate::diff::Release {
+                    w: release,
+                    due: 0,
+                    t: 70_000,
+                    k: "mqtt_in".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let cfg = "xorgate/devices/x/config";
+        let run = |a: MediaCapture, b: MediaCapture, play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_media(&a, &b, play, &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "sidecar" && m.path == "durationMs")
+                .map(|m| format!("{} {}", m.at, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let row = |tol: &str| vec![format!("{sid}/00001 {tol}")];
+        let cut = "T12/cut-fragment";
+        let play = play_at(cfg, r);
+        assert_eq!(run(js(Some(next_sid)), rs(Some(next_sid)), &play), row(cut));
+        assert_eq!(
+            run(rs(Some(next_sid)), js(Some(next_sid)), &play),
+            row(cut),
+            "either order"
+        );
+        // NEGATIVE: no config release on the tape (the pre-WP5 scope) — e.g. a
+        // local edit picked up by each agent's own 5 s poll.
+        assert_eq!(
+            run(js(Some(next_sid)), rs(Some(next_sid)), &PlayInfo::default()),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: the release is on another topic (not a config document).
+        assert_eq!(
+            run(
+                js(Some(next_sid)),
+                rs(Some(next_sid)),
+                &play_at("xorgate/devices/x/commands", r)
+            ),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: one end more than endMs (150) after the release (both ends
+        // still within 150 of each other: 14 vs 160).
+        assert_eq!(
+            run(
+                js(Some(next_sid)),
+                side(
+                    "rust",
+                    r + 160 - 4_239 - 10_000,
+                    4_239,
+                    Some(next_sid),
+                    "int"
+                ),
+                &play
+            ),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: the fragment ended BEFORE the release (not cut by it).
+        assert_eq!(
+            run(
+                js(Some(next_sid)),
+                rs(Some(next_sid)),
+                &play_at(cfg, r + 20)
+            ),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: respawned on one side only / not a new session / a kill.
+        assert_eq!(run(js(Some(next_sid)), rs(None), &play), row(UNTOLERATED));
+        assert_eq!(run(js(Some(sid)), rs(Some(sid)), &play), row(UNTOLERATED));
+        assert_eq!(run(js(None), rs(Some(next_sid)), &play), row(UNTOLERATED));
+        let k = |m: MediaCapture| {
+            let mut m = m;
+            m.spawns[0].end = Some("external".into());
+            m
+        };
+        assert_eq!(
+            run(k(js(Some(next_sid))), rs(Some(next_sid)), &play),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: a powerShed/liveBlock change within tickMs of the release
+        // (a shed cut is D30's, never this arm).
+        let mut j = js(Some(next_sid));
+        j.shed_changes = vec![r + 900];
+        let mut b = rs(Some(next_sid));
+        b.shed_changes = vec![r + 905];
+        assert_eq!(run(j, b, &play), row(UNTOLERATED));
+
+        // review-wp5 R-WP5-1: PER-SIDE negatives — each condition of the
+        // config arm, loosened on ONE side only, must still fail.
+        // (1) A's end > r + endMs while B's is in range (|Δ end| = 90 ≤ 150).
+        let js_late = side("js", r + 160 - 4_079 - 10_000, 4_079, Some(next_sid), "int");
+        assert_eq!(
+            run(js_late, rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A end r+160"
+        );
+        // (2) the new session's capture spawned BEFORE r on one side only.
+        let early = |mut m: MediaCapture| {
+            m.spawns[1].w = r - 50;
+            m
+        };
+        assert_eq!(
+            run(early(js(Some(next_sid))), rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A respawn before r"
+        );
+        assert_eq!(
+            run(js(Some(next_sid)), early(rs(Some(next_sid))), &play),
+            row(UNTOLERATED),
+            "B respawn before r"
+        );
+        // (3) a same-session respawn on ONE side only.
+        assert_eq!(
+            run(js(Some(sid)), rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A same session"
+        );
+        assert_eq!(
+            run(js(Some(next_sid)), rs(Some(sid)), &play),
+            row(UNTOLERATED),
+            "B same session"
+        );
+        // (4) a shed change near r on ONE side only.
+        let shed = |mut m: MediaCapture| {
+            m.shed_changes = vec![r + 900];
+            m
+        };
+        assert_eq!(
+            run(shed(js(Some(next_sid))), rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A shed near r"
+        );
+        assert_eq!(
+            run(js(Some(next_sid)), shed(rs(Some(next_sid))), &play),
+            row(UNTOLERATED),
+            "B shed near r"
+        );
+        // R-WP5-8: a non-config message released at the SAME tape t as the
+        // config record is not a config release (joined by occurrence).
+        let mixed = dir.join("mixed.ndjson");
+        let rec = |t: u64, topic: &str| {
+            serde_json::json!({"t": t, "w": 0, "k": "mqtt_in", "topic": topic, "payload": "{}"})
+                .to_string()
+        };
+        std::fs::write(
+            &mixed,
+            format!(
+                "{}\n{}\n{}\n",
+                rec(400, cfg),
+                rec(70_000, cfg),
+                rec(70_000, "xorgate/devices/x/commands")
+            ),
+        )
+        .unwrap();
+        let rel = |w: i64, t: u64| crate::diff::Release {
+            w,
+            due: 0,
+            t,
+            k: "mqtt_in".into(),
+        };
+        // config released early (r − 500: the ends are > endMs after it), the
+        // command at r: only the command explains the ends → UNTOLERATED.
+        let p = PlayInfo {
+            tape: mixed.display().to_string(),
+            releases: vec![rel(r - 70_000, 400), rel(r - 500, 70_000), rel(r, 70_000)],
+            ..Default::default()
+        };
+        assert_eq!(
+            run(js(Some(next_sid)), rs(Some(next_sid)), &p),
+            row(UNTOLERATED)
+        );
+        // … and with the config released at r it is the config arm again.
+        let p = PlayInfo {
+            tape: mixed.display().to_string(),
+            releases: vec![rel(r - 70_000, 400), rel(r, 70_000), rel(r + 1, 70_000)],
+            ..Default::default()
+        };
+        assert_eq!(run(js(Some(next_sid)), rs(Some(next_sid)), &p), row(cut));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// review-wp6 F5 (re-review run rr-m1, 15 busy loops + host overload):
     /// an interior fragment's boundary moved 272 ms on one side (inside
     /// T12's startTs ±300) while its neighbour compensated — its durationMs
@@ -5287,6 +5794,259 @@ kind = "decisions"
             vec![format!("metrics.gps.snr_max.value(values) {UNTOLERATED}")]
         );
         let _ = std::fs::remove_file(&tape_path);
+    }
+
+    /// review-wp5 R-WP5-4: the diff reports the run's disk source (play.json
+    /// `diskSource`); a pre-WP5 run says so.
+    #[test]
+    fn the_disk_source_is_reported() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let src = |play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_media(
+                &MediaCapture::default(),
+                &MediaCapture::default(),
+                play,
+                &table,
+                &mut rep,
+            );
+            rep.inputs["disk source (disk_usage)"].clone()
+        };
+        let p: PlayInfo = serde_json::from_str(r#"{"diskSource":"shim"}"#).unwrap();
+        assert_eq!(src(&p), "shim");
+        let p: PlayInfo = serde_json::from_str(r#"{"diskSource":"host"}"#).unwrap();
+        assert_eq!(src(&p), "host");
+        assert_eq!(src(&PlayInfo::default()), "unrecorded (pre-WP5 run)");
+        let back: serde_json::Value = serde_json::to_value(PlayInfo {
+            disk_source: "shim".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(back["diskSource"], "shim");
+    }
+
+    /// Phase 5b WP5 item 9: the end-of-run orphan counter reads shmsink's REAL
+    /// names (`"shmpipe.%5d.%5d"`, gst shmpipe.c:307 — a 4-digit pid is
+    /// space-padded). The pre-fix parse (`" 1185".parse::<u32>()`) failed on
+    /// every rig child, so a stranded segment counted 0 and the `shm` row
+    /// could never fail (`replay-20261019T181016Z`: 3 present, "A 0, B 0").
+    #[test]
+    fn shm_orphans_count_padded_names_and_a_strand_fails() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-shm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            concat!(
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":1185,"argv":["videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam0.sock"],"w":1000}"#,
+                "\n",
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":1190,"argv":["videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam1.sock"],"w":1000}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            "{\"k\":\"gone\",\"pid\":1185,\"w\":3100}\n",
+        )
+        .unwrap();
+        // 1185 dead + stranded; 1190 still alive (not an orphan); 4242 not ours.
+        let shm = [serde_json::json!({"w": 4000, "names": [
+            "shmpipe. 1185.    0", "shmpipe. 1190.    0", "shmpipe. 4242.    0"
+        ]})];
+        let m = MediaCapture::load(&dir, &shm);
+        assert_eq!(m.shm_orphans, 1);
+        assert_eq!(m.shm_orphan_names, ["shmpipe. 1185.    0"]);
+        assert_eq!(m.shm_orphan_gone, [Some(3100)], "the owner's gone instant");
+        assert!(!m.agent_hung);
+        std::fs::write(
+            dir.join("stderr.log"),
+            "x\n[rig] agent a did NOT exit in 30 s; SIGKILLed after SIGTERM in 30021 ms (its process group lingered 0 ms)\n",
+        )
+        .unwrap();
+        assert!(
+            MediaCapture::load(&dir, &shm).agent_hung,
+            "the player's hang line"
+        );
+        std::fs::write(
+            dir.join("stderr.log"),
+            "[rig] agent a exited after SIGTERM in 89 ms (its process group lingered 0 ms)\n",
+        )
+        .unwrap();
+        assert!(!MediaCapture::load(&dir, &shm).agent_hung);
+        // The old parse never saw it:
+        assert!(" 1185.    0"
+            .split('.')
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        // review-wp5 R-WP5-2: D41 split by mechanism. The run's SIGTERM is at
+        // END; an orphan's owner died MID (before it) or LATE (after it).
+        const END: i64 = 100_000;
+        const MID: i64 = 50_000;
+        const LATE: i64 = END + 60;
+        // (kind, [(name, owner gone w)], agent hung past 30 s?)
+        let cap = |kind: &str, orphans: &[(&str, i64)], hung: bool| MediaCapture {
+            kind: kind.into(),
+            shm_orphans: orphans.len(),
+            shm_orphan_names: orphans.iter().map(|(n, _)| n.to_string()).collect(),
+            shm_orphan_gone: orphans.iter().map(|(_, g)| Some(*g)).collect(),
+            agent_hung: hung,
+            present: true,
+            ..Default::default()
+        };
+        let run = |a: MediaCapture, b: MediaCapture| {
+            let mut rep = Report::default();
+            shm_orphans_verdict(&a, &b, END, &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .map(|m| format!("{} {}", m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let pad = "shmpipe. 1185.    0";
+        let wide = "shmpipe.12022.    0";
+        let d41 = vec!["(orphan shmpipe segments) T7/D41".to_string()];
+        let unt = vec![format!("(orphan shmpipe segments) {UNTOLERATED}")];
+        let rust_row = format!("(orphan shmpipe segments of a Rust side) {UNTOLERATED}");
+        let none = |k: &str| cap(k, &[], false);
+        // (a) reaper miss: a padded orphan of a child that died mid-run, Rust 0
+        // (either column order; several orphans).
+        assert_eq!(run(cap("js", &[(pad, MID)], false), none("rust")), d41);
+        assert_eq!(
+            run(
+                none("rust"),
+                cap("js", &[(pad, MID), ("shmpipe.  983.    0", MID)], false)
+            ),
+            d41
+        );
+        // (b) end of run: a child still running at the stop of a JS agent that
+        // hung past 30 s — any pid width.
+        assert_eq!(run(cap("js", &[(wide, LATE)], true), none("rust")), d41);
+        assert_eq!(run(cap("js", &[(pad, LATE)], true), none("rust")), d41);
+        assert_eq!(
+            run(cap("js", &[(pad, MID), (wide, LATE)], true), none("rust")),
+            d41,
+            "one orphan per arm"
+        );
+        // NEGATIVE (a): a 5-digit JS orphan from a mid-run death (the TS
+        // reaper matches it) — hung agent or not.
+        assert_eq!(run(cap("js", &[(wide, MID)], false), none("rust")), unt);
+        assert_eq!(run(cap("js", &[(wide, MID)], true), none("rust")), unt);
+        assert_eq!(
+            run(cap("js", &[(pad, MID), (wide, MID)], false), none("rust")),
+            unt
+        );
+        // NEGATIVE (b): an end-of-run orphan of a capture that had ALREADY ended
+        // before the stop is not (b) (a wide one fails; a padded one is (a)).
+        assert_eq!(run(cap("js", &[(wide, END - 1)], true), none("rust")), unt);
+        // NEGATIVE (b): the JS agent exited gracefully (not hung) — a late orphan
+        // is not the bug-3 path, whatever its width.
+        assert_eq!(run(cap("js", &[(wide, LATE)], false), none("rust")), unt);
+        assert_eq!(run(cap("js", &[(pad, LATE)], false), none("rust")), unt);
+        // NEGATIVE: an orphan whose owner was never seen gone.
+        let mut g = cap("js", &[(pad, MID)], true);
+        g.shm_orphan_gone = vec![None];
+        assert_eq!(run(g, none("rust")), unt);
+        // NEGATIVE: every Rust orphan shape fails (mid-run / end-of-run, padded /
+        // wide, hung or not, equal counts, Rust-vs-Rust, Rust-only).
+        for (n, w) in [(pad, MID), (wide, MID), (pad, LATE), (wide, LATE)] {
+            for hung in [false, true] {
+                assert_eq!(
+                    run(
+                        cap("js", &[(pad, MID)], false),
+                        cap("rust", &[(n, w)], hung)
+                    ),
+                    vec![rust_row.clone()],
+                    "rust orphan {n:?} at {w} hung={hung} (equal counts)"
+                );
+                assert_eq!(
+                    run(cap("rust", &[(n, w)], hung), none("js")),
+                    vec![rust_row.clone(), unt[0].clone()],
+                    "rust-only orphan {n:?}"
+                );
+            }
+        }
+        assert_eq!(
+            run(
+                cap("rust", &[("shmpipe. 1199.    0", MID)], false),
+                cap("rust", &[("shmpipe. 1189.    0", LATE)], true)
+            ),
+            vec![rust_row.clone(), rust_row.clone()]
+        );
+        // JS-vs-JS (T18/shm-js-end-of-run, ruling 2026-11-06): a difference
+        // made ONLY of arm-(b) orphans on hung sides is the reference's own
+        // nondeterminism (rec-preset.cal.rv1: A [1196 (a)], B [1195 (a), 5832 (b)]).
+        let t18 = vec!["(orphan shmpipe segments) T18/shm-js-end-of-run".to_string()];
+        assert_eq!(
+            run(
+                cap("js", &[("shmpipe. 1196.    0", MID)], true),
+                cap(
+                    "js",
+                    &[("shmpipe. 1195.    0", MID), ("shmpipe. 5832.    0", LATE)],
+                    true
+                )
+            ),
+            t18
+        );
+        assert_eq!(
+            run(cap("js", &[(wide, LATE)], true), none("js")),
+            t18,
+            "any width"
+        );
+        assert_eq!(
+            run(none("js"), cap("js", &[(pad, LATE), (wide, LATE)], true)),
+            t18
+        );
+        // NEGATIVE: a JS-vs-JS difference that includes an arm-(a) orphan stays
+        // exact (one side's reaper miss the other lacks) …
+        assert_eq!(run(cap("js", &[(pad, MID)], false), none("js")), unt);
+        assert_eq!(
+            run(
+                cap("js", &[(pad, MID), (wide, LATE)], true),
+                cap("js", &[(wide, LATE)], true)
+            ),
+            unt,
+            "the (b) counts match; the extra is an (a)"
+        );
+        // … and so does one with an UNEXPLAINED orphan: a late orphan of a side
+        // that did NOT hang, a 5-digit mid-run one, an owner never seen gone.
+        assert_eq!(run(cap("js", &[(wide, LATE)], false), none("js")), unt);
+        assert_eq!(
+            run(
+                cap("js", &[(pad, MID), (wide, MID)], true),
+                cap("js", &[(pad, MID)], true)
+            ),
+            unt
+        );
+        let mut g = cap("js", &[(pad, LATE)], true);
+        g.shm_orphan_gone = vec![None];
+        assert_eq!(run(g, none("js")), unt);
+        // … and an unexplained orphan on the OTHER side too.
+        assert_eq!(
+            run(
+                cap("js", &[(wide, LATE)], true),
+                cap("js", &[(wide, MID), (wide, LATE), (pad, LATE)], true)
+            ),
+            unt
+        );
+        assert!(run(
+            cap("js", &[(pad, MID)], false),
+            cap("js", &[("shmpipe. 1199.    0", MID)], false)
+        )
+        .is_empty());
+        assert!(run(none("js"), none("rust")).is_empty());
     }
 
     /// A capture SIGINTed at the agent's stop and killed by the agent's exit

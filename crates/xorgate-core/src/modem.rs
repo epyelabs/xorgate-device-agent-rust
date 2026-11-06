@@ -168,4 +168,28 @@ mod tests {
         );
         assert_eq!(find_modem_line_default("ID1e0e:9011"), None);
     }
+
+    /// Phase 6 map TP7 (GAP 1): `mapTelemetry` returns null for csq 99
+    /// (ts:src/agent/collectors/lte.ts:43 @09da38d, `typeof t.csq !== "number"
+    /// || t.csq === 99`), so the worker omits the `lte` group. The TS case
+    /// itself is `fixtures/collectors/lte-scenarios.json` "omits the group when
+    /// the signal is unknown (csq 99) (modem.test.ts:143)" (re-dumped at
+    /// 09da38d byte-identical, Phase 5b WP5), run end-to-end by
+    /// `xorgate-agent/tests/collectors.rs::lte_scenarios_match_the_ts_collector`.
+    /// This pins `lte_group` directly: 99 (`99` and `99.0` are one JS number,
+    /// one f64) and a missing csq → no group; 98, 0 and 31 → a group.
+    #[test]
+    fn lte_group_is_omitted_at_csq_99() {
+        let t = |csq: Option<f64>| ModemTelemetry {
+            csq,
+            ..Default::default()
+        };
+        for csq in [Some(99.0), None] {
+            assert!(lte_group(&t(csq)).is_none(), "{csq:?}");
+        }
+        for q in [98.0, 0.0, 31.0] {
+            let g = lte_group(&t(Some(q))).unwrap_or_else(|| panic!("{q}"));
+            assert_eq!(g.quality, MetricLeaf::with_unit(q, "asu"));
+        }
+    }
 }

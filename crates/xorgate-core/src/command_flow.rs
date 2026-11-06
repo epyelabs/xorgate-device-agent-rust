@@ -253,8 +253,11 @@ pub enum SmsSource {
 /// The accepted-path marker of [`Effect::ClearSms`]: its field is private
 /// and its one constructor is private to this module, called only by
 /// [`decide_command`]'s `clear_sms` arm (pinned by
-/// `xorgate-agent/tests/sms_clear_safety.rs`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `xorgate-agent/tests/sms_clear_safety.rs`). Deliberately NOT `Clone` (so
+/// neither is [`Effect`] nor [`CommandDecision`]): a claim cannot be copied
+/// into a second `Effect::ClearSms` (review-wp3 N5; pinned at compile time by
+/// `the_clear_claim_is_not_clone`).
+#[derive(Debug, PartialEq, Eq)]
 pub struct ClearClaim {
     _private: (),
 }
@@ -266,7 +269,7 @@ impl ClearClaim {
 }
 
 /// One side effect of the command handler, in TS order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Effect {
     /// `claimCommand`'s `atomicWriteJson(commands.json)` — ALWAYS first when
     /// present. On a write error the interpreter drops every later effect
@@ -339,7 +342,7 @@ pub struct RefreshWindow {
 }
 
 /// What [`decide_command`] decided.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct CommandDecision {
     /// The parsed command (`None` = malformed).
     pub command: Option<DeviceCommand>,

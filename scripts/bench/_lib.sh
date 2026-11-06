@@ -283,6 +283,8 @@ reload_restart_rs() {
     echo "  REFUSING to restart $UNIT: bench flavour lost (above) — run scripts/bench/install.sh <tarball>, then retry"
     return 1
   fi
+  # Phase 6 Q6 (WP5): a parked 90-bench-dev.conf = PROD identity on restart.
+  rs_bench_dropin_ok || return 1
   act systemctl daemon-reload
   # Phase 4 (WP6): an `xorgate-rs update` (E11) reinstalls the SHIPPED unit,
   # whose Conflicts=xorgate-agent.service would stop the JS prod agent on this
@@ -947,6 +949,24 @@ enable_start_js_verified() {
     fi
   fi
   start_js_verified
+}
+# ---------------------------------------------------------------------------
+# Phase 6 Q6 (Phase 5b WP5 item 10). The bench drop-in 90-bench-dev.conf is
+# what points the bench-flavour unit at the DEV identity
+# (EnvironmentFile=/etc/xorgate/agent-rs-dev.env) and its own state dir. The
+# bench-flavour unit itself has no Conflicts= and reads the PROD
+# /etc/xorgate/agent.env, so with the drop-in PARKED (the Phase 6 convert
+# prep) any (re)start puts a SECOND agent on the PROD identity next to the JS
+# one. rs_unit_converted / bench_flavour_ok do not see that state; every path
+# that starts or restarts $UNIT checks this as well (start.sh:24 did already).
+BENCH_DEV_DROPIN=$DROPIN_DIR/90-bench-dev.conf
+RS_DROPIN_REFUSAL="the bench drop-in $BENCH_DEV_DROPIN is MISSING (parked for a convert?) — without it $UNIT reads the PROD /etc/xorgate/agent.env and would run a SECOND agent on the PROD identity beside $JS_UNIT; NOT starting $UNIT (restore the drop-in, or run scripts/bench/install.sh <tarball>)"
+# Loud refusal when the drop-in is missing; 0 = present (safe to start).
+rs_bench_dropin_ok() {
+  [ -f "$BENCH_DEV_DROPIN" ] && return 0
+  echo "!!!! REFUSING: $RS_DROPIN_REFUSAL" >&2
+  echo "  REFUSING: $RS_DROPIN_REFUSAL"
+  return 1
 }
 LIB
 }

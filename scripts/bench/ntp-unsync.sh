@@ -66,6 +66,8 @@ break)
   # Phase 5 (CF65, review-wp3 S1): break ends with `systemctl start` of the Rust
   # unit — never for a SHIPPED (converted) unit; refuse before touching the clock.
   if rs_unit_converted; then echo "REFUSING: $RS_CONVERTED_REFUSAL"; exit 1; fi
+  # Phase 6 Q6 (WP5): break ends with a start; a parked bench drop-in = PROD identity.
+  rs_bench_dropin_ok || exit 1
   echo "  ok: exclusive window open, $JS_UNIT stopped"
   # Idempotent (review-wp6 S1/M4): the original offset is recorded ONCE; a
   # re-run never moves the clock again.

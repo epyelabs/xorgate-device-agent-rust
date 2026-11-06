@@ -170,6 +170,19 @@ pub trait CaptureApi: Send + Sync {
     fn stop(&self);
     /// Stop and wait until every child is gone (10 s grace → SIGKILL + reap).
     fn stop_and_wait(&self) -> BoxFut<'_, ()>;
+    /// D41 agent-exit cleanup, phase 1: mark exiting and SIGKILL every child
+    /// still alive (see `VideoCaptureSupervisor::exit_kill`). Default: none.
+    fn exit_kill(&self) -> Vec<crate::recording::capture::ExitKilled> {
+        Vec::new()
+    }
+    /// Phase 2, after the caller's ONE bounded wait: unlink the killed
+    /// children's segments; `(key, every segment unlinked during the cleanup)`.
+    fn exit_finish(
+        &self,
+        _killed: &[crate::recording::capture::ExitKilled],
+    ) -> Vec<(String, Vec<String>)> {
+        Vec::new()
+    }
     fn active_session_ids(&self) -> HashSet<String>;
     fn any_recording(&self) -> bool;
     fn status(&self) -> Vec<CaptureStatus>;
@@ -252,12 +265,44 @@ pub struct UploaderSpec {
     pub on_uploaded: NotifyFn,
 }
 
+/// The D41 agent-exit cleanup over a set of supervisors (R-WP5R-6; split out
+/// of [`RecordingManager::reap_capture_at_exit`] so the cross-supervisor
+/// order is testable, review-wp5-r3 R-WP5R3-2): EVERY supervisor's
+/// `exit_kill` first (all SIGKILLs land before any wait), then ONE wait with a
+/// TOTAL `bound` for every killed child, then each `exit_finish`. Returns
+/// `(key, segments unlinked)` per killed child, in supervisor order.
+#[doc(hidden)]
+pub async fn exit_cleanup(
+    caps: &[Arc<dyn CaptureApi>],
+    bound: Duration,
+) -> Vec<(String, Vec<String>)> {
+    let killed: Vec<_> = caps.iter().map(|c| c.exit_kill()).collect();
+    let _ = tokio::time::timeout(bound, async {
+        for k in killed.iter().flatten() {
+            let mut rx = k.exited.clone();
+            let _ = rx.wait_for(|v| *v).await;
+        }
+    })
+    .await;
+    caps.iter()
+        .zip(&killed)
+        .flat_map(|(c, k)| c.exit_finish(k))
+        .collect()
+}
+
 /// Builds the components and runs the crash-recovery passes.
 pub trait RecordingBackend: Send + Sync {
     /// `finalizeOrphanSegments(telemetryRoot)` — count finalized.
     fn finalize_orphan_segments(&self, telemetry_root: &Path) -> usize;
     /// `recoverOrphanVideoSessions(videoRoot)` — sidecars backfilled.
     fn recover_orphan_video_sessions(&self, video_root: &Path) -> usize;
+    /// Accepted divergence D41 (no TS counterpart): the start-up sweep of
+    /// `/dev/shm` — every shmsink area whose owner pid is not a live process
+    /// (`xorgate_hal::shm_reaper::sweep_dead_owner_segments`), as
+    /// `(name, owner pid)` per segment removed. Default: nothing.
+    fn sweep_dead_shm_segments(&self) -> Vec<(String, u32)> {
+        Vec::new()
+    }
     /// `readBootId()` (stable per process).
     fn boot_id(&self) -> String;
     fn disk(
@@ -356,6 +401,13 @@ struct Slots {
     disk: Option<Arc<dyn DiskApi>>,
     uploader: Option<Arc<dyn UploaderApi>>,
     capture: Option<Arc<dyn CaptureApi>>,
+    /// The capture `stop()` retired at shutdown, kept for the agent-exit
+    /// cleanup ([`RecordingManager::reap_capture_at_exit`]).
+    exiting_capture: Option<Arc<dyn CaptureApi>>,
+    /// review-wp5-r2 R-WP5R-3: supervisors handed to a pending video
+    /// transition (`StopAndWait` / `Replace { prev }`), until its
+    /// `stop_and_wait` returns — the exit cleanup covers their children too.
+    retiring: Vec<Arc<dyn CaptureApi>>,
 }
 
 struct State {
@@ -592,11 +644,27 @@ impl RecordingManager {
         u.kick();
     }
 
-    /// `start()` (`manager.ts:294-329`): crash recovery (only when a previous
-    /// run created the tree), the ≤2 s time-source probe, the first apply,
+    /// `start()` (`manager.ts:294-329`): the D41 `/dev/shm` sweep (Rust
+    /// only), crash recovery (only when a previous run created the tree), the
+    /// ≤2 s time-source probe, the first apply,
     /// the 5 s settings poll, and the initial uploader kick.
     pub async fn start(&self) {
         let inner = &self.inner;
+        // D41: a killed predecessor's capture children strand their 20 MiB
+        // shmsink areas until reboot (the TS has no sweep, P7). Before any
+        // capture spawns, unlink those whose owner is dead — journal only,
+        // never an activity event (no new cloud-visible shape).
+        // ASSUMPTION (review-wp5 R-WP5-5): this agent shares the pid namespace
+        // of every process that can own a segment in its /dev/shm (the bench
+        // host; the rig container). A container that shares /dev/shm across
+        // pid namespaces (--ipc=host, a bind-mounted /dev/shm) would see LIVE
+        // owners as dead and unlink their segments — Phase 7 containers must
+        // revisit this before running the agent that way.
+        for (name, pid) in inner.backend.sweep_dead_shm_segments() {
+            tracing::info!(
+                "[recording] removed stale shm segment {name:?} (owner pid {pid} not running)"
+            );
+        }
         if inner.root.exists() {
             let finalized = inner
                 .backend
@@ -721,11 +789,34 @@ impl RecordingManager {
         let capture = lock(&inner.slots).capture.take();
         if let Some(c) = capture {
             c.stop();
+            lock(&inner.slots).exiting_capture = Some(c);
         }
         st.video_key.clear();
         st.video_cameras_key.clear();
         inner.publish(&st);
         finalized
+    }
+
+    /// D41 agent-exit cleanup (Rust only; orchestrator rulings 2026-11-06):
+    /// after the shutdown sequence, every capture child still alive — in the
+    /// supervisor the shutdown `stop()` retired AND in any supervisor still
+    /// inside a pending video transition (R-WP5R-3) — is SIGKILLed (all
+    /// first), waited for ONCE with a TOTAL `bound` (R-WP5R-6), and its shm
+    /// segments unlinked. The killed children's fragments are left to the
+    /// next boot's recovery, as before (R-WP5R-1). Journal only.
+    pub async fn reap_capture_at_exit(&self, bound: Duration) {
+        let caps: Vec<Arc<dyn CaptureApi>> = {
+            let mut sl = lock(&self.inner.slots);
+            let mut v: Vec<Arc<dyn CaptureApi>> = sl.exiting_capture.take().into_iter().collect();
+            v.append(&mut sl.retiring);
+            v
+        };
+        for (key, segs) in exit_cleanup(&caps, bound).await {
+            tracing::info!(
+                "[recording] capture {key} still running at exit: killed, {} shm segment(s) unlinked {segs:?}",
+                segs.len()
+            );
+        }
     }
 
     /// `videoStatus()` (`manager.ts:390-395`).
@@ -776,6 +867,12 @@ impl RecordingManager {
 }
 
 impl Inner {
+    /// R-WP5R-3: a transition's `stop_and_wait` returned — `c` leaves the
+    /// retiring list (pointer identity).
+    fn retired(&self, c: &Arc<dyn CaptureApi>) {
+        lock(&self.slots).retiring.retain(|x| !Arc::ptr_eq(x, c));
+    }
+
     fn self_weak(&self) -> std::sync::Weak<Inner> {
         self.self_weak.clone()
     }
@@ -1011,6 +1108,7 @@ impl Inner {
             CapturePlan::StopAll { warn } => {
                 let prev = lock(&self.slots).capture.take();
                 if let Some(prev) = prev {
+                    lock(&self.slots).retiring.push(prev.clone());
                     let _ = self.transitions.send(Transition::StopAndWait(prev));
                 }
                 if warn {
@@ -1030,6 +1128,9 @@ impl Inner {
                     self.ensure_disk(st);
                 }
                 let prev = lock(&self.slots).capture.take();
+                if let Some(p) = &prev {
+                    lock(&self.slots).retiring.push(p.clone());
+                }
                 let _ = self.transitions.send(Transition::Replace {
                     prev,
                     key,
@@ -1375,7 +1476,10 @@ async fn transition_task(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Tran
             Transition::Barrier(done) => {
                 let _ = done.send(());
             }
-            Transition::StopAndWait(c) => c.stop_and_wait().await,
+            Transition::StopAndWait(c) => {
+                c.stop_and_wait().await;
+                inner.retired(&c);
+            }
             Transition::SetCameras(c, cams) => c.set_cameras(cams).await,
             Transition::Replace {
                 prev,
@@ -1388,6 +1492,7 @@ async fn transition_task(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Tran
             } => {
                 if let Some(p) = prev {
                     p.stop_and_wait().await;
+                    inner.retired(&p);
                 }
                 let st = lock(&inner.state);
                 // Superseded by a newer change while we were stopping.
