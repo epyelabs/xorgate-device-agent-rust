@@ -64,6 +64,13 @@ impl manager::RecordingBackend for Backend {
         );
         res.recovered
     }
+    /// D41: the start-up `/dev/shm` sweep of dead owners' shmsink areas.
+    fn sweep_dead_shm_segments(&self) -> Vec<(String, u32)> {
+        xorgate_hal::shm_reaper::sweep_dead_owner_segments(
+            Path::new(xorgate_core::capture_ladder::SHM_SEGMENT_DIR),
+            &xorgate_hal::shm_reaper::pid_alive,
+        )
+    }
     /// `readBootId()` (`session.ts:49-65`, cached per process).
     fn boot_id(&self) -> String {
         xorgate_hal::boot_id::read_boot_id()
@@ -167,6 +174,10 @@ impl manager::RecordingBackend for Backend {
 /// WP4's supervisor behind [`manager::CaptureApi`].
 struct CaptureAdapter(Arc<capture::VideoCaptureSupervisor>);
 
+/// D41 agent-exit cleanup: the TOTAL wait for every still-running capture
+/// child after their SIGKILLs (well inside systemd's TimeoutStopSec).
+pub const CAPTURE_EXIT_REAP_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// `stopAndWait(graceMs = 10_000)` (`video-capture.ts:516`).
 const STOP_AND_WAIT_GRACE: std::time::Duration = std::time::Duration::from_millis(10_000);
 
@@ -185,6 +196,12 @@ impl manager::CaptureApi for CaptureAdapter {
     }
     fn stop_and_wait(&self) -> crate::ctx::BoxFut<'_, ()> {
         Box::pin(async move { self.0.stop_and_wait(STOP_AND_WAIT_GRACE).await })
+    }
+    fn exit_kill(&self) -> Vec<capture::ExitKilled> {
+        self.0.exit_kill()
+    }
+    fn exit_finish(&self, killed: &[capture::ExitKilled]) -> Vec<(String, Vec<String>)> {
+        self.0.exit_finish(killed)
     }
     fn active_session_ids(&self) -> std::collections::HashSet<String> {
         self.0.active_session_ids()

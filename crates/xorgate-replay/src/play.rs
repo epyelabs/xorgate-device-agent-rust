@@ -176,6 +176,17 @@ pub struct PlayArgs {
     /// behaviour) instead of binding the tape's fixed meminfo over it.
     #[arg(long)]
     pub host_meminfo: bool,
+    /// Phase 5b WP5 (item 4): the preload that answers statvfs() of the root
+    /// filesystem from [`RIG_STATVFS_ROOT`] for BOTH agents (and the TS's `df`
+    /// child) — `tools/replay/statvfs-shim/rig_statvfs.c`, built by
+    /// build-bins.sh. A missing file FAILS the run unless `--host-disk`
+    /// (review-wp5 R-WP5-4); `play.json` records `diskSource`.
+    #[arg(long, default_value = "/rig/cache/bin/rig-statvfs.so")]
+    pub statvfs_shim: PathBuf,
+    /// Read the rig VM's own root filesystem for `disk_usage` (the pre-WP5
+    /// behaviour) instead of the fixed [`RIG_STATVFS_ROOT`].
+    #[arg(long)]
+    pub host_disk: bool,
     /// Phase 4 (E12): the REAL camera-rotation helper the `sudo` shim executes
     /// for `xorgate-camrotate` (default: the Rust repo's vendored
     /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
@@ -1011,6 +1022,14 @@ impl Agent {
             if p4_state.pi_dir.is_none() {
                 p4_state.pi_dir = Some(work.join("no-pi"));
             }
+        }
+        // Phase 5b WP5 (item 4): `disk_usage` (and the recording disk
+        // manager's free-space probe of a root-fs path) reads the fixture, not
+        // the shared Docker VM's disk that other containers and the run's own
+        // recordings move (phase-3 gate D3 FINAL `.jsrs09`).
+        for (k, v) in disk_isolation_env(args)? {
+            env.retain(|(e, _)| *e != k);
+            env.push((k, v));
         }
         for (k, v) in p4_env {
             env.retain(|(ek, _)| *ek != k);
@@ -1906,6 +1925,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let has_obd = !args.no_gate && p5b::ObdPlan::of(&tape).is_some();
     let mut obd_gate = ObdGate::new(obd_gate_path(&args.work));
     let obd_bar = obd_gate_path(&args.work).with_file_name("obd-barrier");
+    let mut obd_cap_log = ObdCapLog::default();
 
     // Release order = tape order, except that a record the WATCH gate holds
     // (lte_file / cli / config, `watch.rs`) waits in `pending` together with
@@ -2015,6 +2035,9 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             // restart: a tick orphaned with no `skip`) ticks went unpaired.
             let open_now = tel_open(now);
             if has_obd {
+                for line in obd_cap_log.released(&obd_bar, now) {
+                    plog(line);
+                }
                 // Closed inside a tick pair AND while a config-report pair is
                 // open (a report build reads `effective.obd` at each agent's
                 // own instant: stepC p5b-obd-config.bar.* `probing` vs `live`).
@@ -2482,6 +2505,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         releases: Vec::new(),
         nmea_resumes,
         no_gate: args.no_gate,
+        disk_source: disk_source(&args).into(),
     };
     fs::write(
         args.out.join("play.json"),
@@ -2502,6 +2526,39 @@ pub async fn run(args: PlayArgs) -> Result<()> {
 /// TS and the Rust collector both compute (MemTotal − MemAvailable) / MemTotal
 /// (ts:src/hardware/system.ts:86-98, rs xorgate-hal system.rs `read_memory`).
 pub const RIG_MEMINFO: &str = "MemTotal:        8245360 kB\nMemFree:         5990000 kB\nMemAvailable:    6500000 kB\nBuffers:           80000 kB\nCached:           600000 kB\nSwapCached:            0 kB\nSwapTotal:        204796 kB\nSwapFree:         204796 kB\n";
+
+/// The fixed root filesystem every agent's `disk_usage` reads (Phase 5b WP5
+/// item 4): `f_blocks:f_bfree:f_bavail:f_frsize` = 30 GB, 19.2 % used (df's
+/// `Used` = blocks − bfree, as both agents compute it), 5 % reserved.
+pub const RIG_STATVFS_ROOT: &str = "7500000:6060000:5685000:4096";
+
+/// `LD_PRELOAD` + `RIG_STATVFS_ROOT` for an agent; nothing under
+/// `--host-disk`. A shim that was not built is an ERROR (review-wp5 R-WP5-4:
+/// a silent fallback made a non-isolated run look like an isolated one).
+fn disk_isolation_env(args: &PlayArgs) -> Result<Vec<(String, String)>> {
+    if args.host_disk {
+        return Ok(Vec::new());
+    }
+    if !args.statvfs_shim.is_file() {
+        bail!(
+            "{} missing — run tools/replay/build-bins.sh, or pass --host-disk to read the HOST disk on purpose",
+            args.statvfs_shim.display()
+        );
+    }
+    Ok(vec![
+        ("LD_PRELOAD".into(), args.statvfs_shim.display().to_string()),
+        ("RIG_STATVFS_ROOT".into(), RIG_STATVFS_ROOT.into()),
+    ])
+}
+
+/// `play.json` `diskSource`: what every agent's `disk_usage` read.
+fn disk_source(args: &PlayArgs) -> &'static str {
+    if args.host_disk {
+        "host"
+    } else {
+        "shim"
+    }
+}
 
 /// Is the per-agent meminfo bind usable here (not `--host-meminfo`, and the
 /// rig may `unshare -m`)? Probed once per process.
@@ -2608,12 +2665,49 @@ const OBD_FLUSH_CAP_MS: i64 = 2_000;
 /// agents first, in the same order on both sides. A flag older than
 /// OBD_FLUSH_CAP_MS no longer holds.
 fn obd_relays_holding(bar: &Path, now: i64) -> bool {
-    ["a", "b"].iter().any(|side| {
-        fs::read_to_string(bar.join(format!("{side}.held")))
-            .ok()
-            .and_then(|t| t.trim().parse::<f64>().ok())
-            .is_some_and(|since| now - (since * 1000.0) as i64 <= OBD_FLUSH_CAP_MS)
-    })
+    obd_held_flags(bar)
+        .iter()
+        .any(|(_, since)| now - since <= OBD_FLUSH_CAP_MS)
+}
+
+/// The relays' `<side>.held` flags present now: `(side, hold start in wall ms)`
+/// (an unparseable flag is not a flag).
+fn obd_held_flags(bar: &Path) -> Vec<(&'static str, i64)> {
+    ["a", "b"]
+        .into_iter()
+        .filter_map(|side| {
+            let t = fs::read_to_string(bar.join(format!("{side}.held"))).ok()?;
+            let since = t.trim().parse::<f64>().ok()?;
+            Some((side, (since * 1000.0) as i64))
+        })
+        .collect()
+}
+
+/// Review-wp4 NIT (Phase 5b WP5): a flag still present but older than
+/// [`OBD_FLUSH_CAP_MS`] no longer holds the barrier inputs — the cap released
+/// them. Logged ONCE per flag (side + hold start) so such a release is never
+/// silent; a cap release only happens when a relay died with its flag set or
+/// a barrier wait already went past the 400 ms the diff tolerates.
+#[derive(Default)]
+struct ObdCapLog {
+    logged: std::collections::BTreeSet<(&'static str, i64)>,
+}
+
+impl ObdCapLog {
+    /// The lines to log for flags the cap releases at `now` (new ones only).
+    fn released(&mut self, bar: &Path, now: i64) -> Vec<String> {
+        obd_held_flags(bar)
+            .into_iter()
+            .filter(|(_, since)| now - since > OBD_FLUSH_CAP_MS)
+            .filter(|k| self.logged.insert(*k))
+            .map(|(side, since)| {
+                format!(
+                    "obd relay {side}: held flag from {since} is {} ms old (> {OBD_FLUSH_CAP_MS} ms cap) — barrier inputs released past it",
+                    now - since
+                )
+            })
+            .collect()
+    }
 }
 
 /// The OBD relays' gate file: `1` open / `0` closed, rewritten on every change
@@ -3211,6 +3305,99 @@ mod tests {
         fs::write(d.join("a.held"), "garbage").unwrap();
         assert!(!obd_relays_holding(&d, now), "unparseable = not holding");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Phase 5b WP5 (review-wp4 NIT): a cap release is logged, once per flag;
+    /// a fresh flag, no flag or an unparseable one logs nothing.
+    #[test]
+    fn a_cap_release_of_a_held_flag_is_logged_once() {
+        let d = std::env::temp_dir().join(format!("obd-cap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let now = 1_793_000_000_000i64;
+        let mut log = ObdCapLog::default();
+        assert!(log.released(&d, now).is_empty(), "no flags");
+        fs::write(d.join("a.held"), format!("{}", (now - 100) as f64 / 1000.0)).unwrap();
+        assert!(
+            log.released(&d, now).is_empty(),
+            "fresh flag: still holding"
+        );
+        fs::write(
+            d.join("a.held"),
+            format!("{}", (now - 2_500) as f64 / 1000.0),
+        )
+        .unwrap();
+        let l = log.released(&d, now);
+        assert_eq!(l.len(), 1, "{l:?}");
+        assert!(
+            l[0].starts_with("obd relay a: held flag from ") && l[0].contains("2500 ms old"),
+            "{l:?}"
+        );
+        assert!(
+            log.released(&d, now + 5).is_empty(),
+            "the same flag is logged once"
+        );
+        fs::write(d.join("b.held"), "garbage").unwrap();
+        assert!(
+            log.released(&d, now + 10).is_empty(),
+            "unparseable = not a flag"
+        );
+        // A NEW hold that ages past the cap is a new release.
+        fs::write(
+            d.join("a.held"),
+            format!("{}", (now - 1_000) as f64 / 1000.0),
+        )
+        .unwrap();
+        assert!(log.released(&d, now).is_empty());
+        assert_eq!(log.released(&d, now + 1_500).len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Phase 5b WP5 item 4: both agents get the statvfs preload + the fixture
+    /// (both agents' formulas give 19.2 %); `--host-disk` or a missing shim
+    /// gives nothing.
+    #[test]
+    fn disk_isolation_env_is_the_preload_and_the_fixture() {
+        use clap::Parser;
+        let shim = std::env::temp_dir().join(format!("rig-statvfs-{}.so", std::process::id()));
+        std::fs::write(&shim, b"x").unwrap();
+        #[derive(clap::Parser)]
+        struct W {
+            #[command(flatten)]
+            play: PlayArgs,
+        }
+        let parse = |extra: &[&str]| {
+            let mut v = vec!["x", "--tape", "t", "--out", "o"];
+            v.extend_from_slice(extra);
+            W::parse_from(v).play
+        };
+        let s = shim.display().to_string();
+        let env = disk_isolation_env(&parse(&["--statvfs-shim", &s])).unwrap();
+        assert_eq!(disk_source(&parse(&["--statvfs-shim", &s])), "shim");
+        assert_eq!(
+            env,
+            vec![
+                ("LD_PRELOAD".to_string(), s.clone()),
+                ("RIG_STATVFS_ROOT".to_string(), RIG_STATVFS_ROOT.to_string())
+            ]
+        );
+        let host = parse(&["--statvfs-shim", &s, "--host-disk"]);
+        assert!(disk_isolation_env(&host).unwrap().is_empty());
+        assert_eq!(disk_source(&host), "host");
+        // R-WP5-4: a missing shim FAILS (no silent host fallback) …
+        let err = disk_isolation_env(&parse(&["--statvfs-shim", "/nonexistent.so"])).unwrap_err();
+        assert!(err.to_string().contains("--host-disk"), "{err:#}");
+        // … unless the host disk is asked for.
+        let host_missing = parse(&["--statvfs-shim", "/nonexistent.so", "--host-disk"]);
+        assert!(disk_isolation_env(&host_missing).unwrap().is_empty());
+        assert_eq!(disk_source(&host_missing), "host");
+        let _ = std::fs::remove_file(&shim);
+        let f: Vec<u64> = RIG_STATVFS_ROOT
+            .split(':')
+            .map(|x| x.parse().unwrap())
+            .collect();
+        let u = xorgate_core::system::disk_usage_from_statvfs(f[0], f[1], f[3]).unwrap();
+        assert_eq!((u.used_pct * 10.0).round() / 10.0, 19.2);
     }
 
     #[test]

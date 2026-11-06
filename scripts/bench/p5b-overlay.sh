@@ -10,8 +10,10 @@
 #
 # apply: the DEV manifest copy ($HW_SHARED) gains peripherals.obd (the original
 # is kept in /run/xorgate-rs-p5b/); /run/xorgate-rs-obd-python/ = symlinks to
-# the installed helper (/opt/xorgate-rs/python/obd_read.py, obd_scan.py, obd/;
-# NO bno085_read.py); an ELM327-emulator pty (taos-2022, venv in /tmp from the
+# the installed helper (/opt/xorgate-rs/python/obd_scan.py, obd/; NO
+# bno085_read.py) and, as obd_read.py, the pty-drain launcher
+# scripts/bench/obd-drain.py (drains the emulator pty, then execs the installed
+# /opt/xorgate-rs/python/obd_read.py: the rig's obd-gate.py drain, WP5); an ELM327-emulator pty (taos-2022, venv in /tmp from the
 # copied wheelhouse — nothing system-wide) and WP3's FakeModem pty
 # (tools/sms-fake-modem, the p4-sms inbox, --allow-clear), both run as `pi`;
 # the runtime drop-in /run/systemd/system/xorgate-agent-rs.service.d/97-p5b.conf
@@ -41,6 +43,7 @@ case "$CMD" in wheels|apply|revert|status) ;; *) sed -n '2,26p' "$0"; exit 2 ;; 
 WHEELS="${P5B_WHEELS:-$REPO/tools/replay/.cache/p5b-wheels}"
 PY="${P5B_PYTHON_SRC:-$REPO/python}"
 FAKE_MODEM="${P5B_FAKE_MODEM:-$REPO/tools/sms-fake-modem/sms_fake_modem.py}"
+DRAIN="$HERE/obd-drain.py"
 INBOX="$REPO/fixtures/replay/p4-sms-modem.json"
 
 if [ "$CMD" = wheels ]; then
@@ -54,7 +57,7 @@ fi
 # Files the bench needs in /tmp (apply only): the emulator launcher + the
 # harness and scenario it imports, the FakeModem + its inbox, the wheelhouse.
 if [ "$CMD" = apply ] && [ "${P5B_NO_COPY:-0}" != 1 ]; then
-  for f in "$PY/tests/emulator_harness.py" "$PY/obd/emulator/taos_2022.py" "$FAKE_MODEM" "$INBOX" "$REPO/tools/replay/obd-emulator.py"; do
+  for f in "$PY/tests/emulator_harness.py" "$PY/obd/emulator/taos_2022.py" "$FAKE_MODEM" "$INBOX" "$REPO/tools/replay/obd-emulator.py" "$DRAIN"; do
     [ -f "$f" ] || { echo "missing $f (WP2/WP3 merged? P5B_PYTHON_SRC / P5B_FAKE_MODEM)" >&2; exit 1; }
   done
   ls "$WHEELS"/*.whl >/dev/null 2>&1 || ls "$WHEELS"/*.tar.gz >/dev/null 2>&1 || { echo "no wheelhouse in $WHEELS (run: $0 wheels)" >&2; exit 1; }
@@ -62,7 +65,7 @@ if [ "$CMD" = apply ] && [ "${P5B_NO_COPY:-0}" != 1 ]; then
   mkdir -p "$STAGE/pyemu/tests" "$STAGE/pyemu/obd/emulator" "$STAGE/wheels"
   cp "$PY/tests/emulator_harness.py" "$STAGE/pyemu/tests/"
   cp "$PY/obd/emulator/taos_2022.py" "$STAGE/pyemu/obd/emulator/"
-  cp "$REPO/tools/replay/obd-emulator.py" "$FAKE_MODEM" "$INBOX" "$STAGE/"
+  cp "$REPO/tools/replay/obd-emulator.py" "$FAKE_MODEM" "$INBOX" "$DRAIN" "$STAGE/"
   cp "$WHEELS"/* "$STAGE/wheels/"
   log "p5b-overlay: copying the emulator + FakeModem files to $BENCH:/tmp/xorgate-p5b"
   if [ "$DRY" = 1 ]; then echo "  [dry-run] would scp $STAGE/* → $BENCH:/tmp/xorgate-p5b/"
@@ -122,7 +125,8 @@ PY
   act rm -rf "$P5B_OBD_PY" "$P5B_RUN" "$P5B_TMP"
   act systemctl daemon-reload
   echo "== restart $UNIT only"
-  act systemctl restart $UNIT
+  # Phase 6 Q6 (WP5): never restart with the bench drop-in parked (PROD identity).
+  if rs_bench_dropin_ok; then act systemctl restart $UNIT; else echo "  $UNIT NOT restarted (above)"; fi
   for i in 1 2 3; do echo "  $JS_UNIT is-active ($i/3): $(js_state)"; [ "$DRY" = 1 ] || sleep 1; done
   echo "  next: scripts/bench/profile.sh shared   (verify must PASS)"
   status
@@ -133,6 +137,7 @@ preconditions() {
   [ "$js" = active ] || { echo "REFUSING: $JS_UNIT is ${js:-unknown} — the overlay runs in the SHARED profile only (JS prod agent active)"; return 1; }
   [ ! -f "$EXCLUSIVE_DROPIN" ] || { echo "REFUSING: an exclusive window is open ($EXCLUSIVE_DROPIN)"; return 1; }
   if rs_unit_converted; then echo "REFUSING: $RS_CONVERTED_REFUSAL"; return 1; fi
+  rs_bench_dropin_ok || return 1   # Phase 6 Q6 (WP5)
   [ -f "$HW_SHARED" ] || { echo "REFUSING: no $HW_SHARED (profile.sh shared first)"; return 1; }
   [ -f /opt/xorgate-rs/python/obd_read.py ] || { echo "REFUSING: /opt/xorgate-rs/python/obd_read.py missing (install a Phase 5b Rust tarball)"; return 1; }
   return 0
@@ -180,7 +185,12 @@ PY
   fi
   echo "== 2. obd-only python dir $P5B_OBD_PY (no bno085_read.py: the IMU stays the JS agent's)"
   act install -d -o pi -g pi -m 0755 "$P5B_OBD_PY"
-  for n in obd_read.py obd_scan.py obd; do act ln -sfn "/opt/xorgate-rs/python/$n" "$P5B_OBD_PY/$n"; done
+  for n in obd_scan.py obd; do act ln -sfn "/opt/xorgate-rs/python/$n" "$P5B_OBD_PY/$n"; done
+  # obd_read.py = the pty-drain launcher: every helper (re)start first drains
+  # the emulator pty (a stale reply to the previous helper's last command),
+  # then execs the installed helper (WP5; the rig's obd-gate.py drain).
+  [ -f "$P5B_TMP/obd-drain.py" ] || { echo "FAILED: $P5B_TMP/obd-drain.py missing (not copied)"; false; }
+  act install -o pi -g pi -m 0755 "$P5B_TMP/obd-drain.py" "$P5B_OBD_PY/obd_read.py"
   echo "== 3. ELM327-emulator venv in $P5B_TMP (as pi, from the copied wheelhouse)"
   act chown -R pi:pi "$P5B_TMP"
   if [ "${XORGATE_TEST_P5B_SKIP_VENV:-0}" != 1 ]; then

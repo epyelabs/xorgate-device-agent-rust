@@ -102,10 +102,17 @@ for _ in $(seq 1 50); do
 done
 
 rm -rf "$OUT"
+# Phase 5b WP5 (R-WP5-4): the player FAILS without the statvfs shim unless
+# --host-disk; build it here (the CI image has cc), else read the host disk
+# on purpose (play.json then records diskSource=host).
+DISK_ARGS=(--host-disk)
+if command -v cc >/dev/null 2>&1 && cc -shared -fPIC -O2 -o /tmp/rig-statvfs.so "$HERE/statvfs-shim/rig_statvfs.c" -ldl; then
+  DISK_ARGS=(--statvfs-shim /tmp/rig-statvfs.so)
+fi
 "$RP" play --tape "$TAPE" --out "$OUT" --a rust --b rust --rs-bin "$RS" \
   --broker-host localhost --broker-port 8884 --proxy-listen 127.0.0.1:8883 \
   --certs "$CERTS" --shims "$HERE/shims" --fake-python "$HERE/fake-python" \
-  --work "/tmp/replay-ci-work-$MODE" --settle-s 10 --stagger-ms "$STAGGER_MS" ${MEDIA_ARGS[@]+"${MEDIA_ARGS[@]}"}
+  --work "/tmp/replay-ci-work-$MODE" --settle-s 10 --stagger-ms "$STAGGER_MS" "${DISK_ARGS[@]}" ${MEDIA_ARGS[@]+"${MEDIA_ARGS[@]}"}
 # SMOKE ONLY: the host-load-dependent system fields are excluded. Both agents
 # read the CI runner's live /proc/stat, /proc/meminfo and statfs, so under a
 # loaded shared runner cpu_usage swings by tens of points between the two

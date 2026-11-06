@@ -245,3 +245,55 @@ async fn abort_drops_the_link_without_disconnect_and_the_will_fires() {
         vec![(WILL_TOPIC.to_string(), WILL_PAYLOAD.to_string())]
     );
 }
+
+/// Accepted divergence D42 (the LWT re-stamp; Phase 0 review.md:13): the
+/// Last-Will is rebuilt by the factory before EVERY connect attempt, so the
+/// will the broker holds for a RE-connection carries that attempt's `ts`.
+/// The TS builds its will once per process (`ts:src/agent/mqtt.ts:44-49`
+/// @09da38d, `ts: Date.now()`) and mqtt.js resends the same options on every
+/// reconnect. The abort after the reconnect makes the broker publish the
+/// connection-2 will: it is the SECOND stamp, never the first.
+#[tokio::test]
+async fn d42_the_will_is_restamped_before_every_connect_attempt() {
+    use std::sync::atomic::AtomicUsize;
+    let b = broker().await;
+    let stamps = Arc::new(AtomicUsize::new(0));
+    let mut cfg = stub_broker::client_config(b.port, 60);
+    let s2 = stamps.clone();
+    cfg.will = Some(Arc::new(move || {
+        let n = s2.fetch_add(1, Ordering::SeqCst) + 1;
+        Will {
+            topic: WILL_TOPIC.into(),
+            payload: format!(r#"{{"ts":{n},"online":false}}"#).into_bytes(),
+            qos: QoS::AtMostOnce,
+            retain: false,
+        }
+    }));
+    let (_p, mut events, end) = MqttClient::connect(cfg).split();
+    connected(&mut events).await;
+    let first = stamps.load(Ordering::SeqCst);
+    assert!(first >= 1);
+    b.cmd(1, Cmd::Kill);
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if matches!(next(&mut events).await, MqttEvent::Connected { .. }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("never reconnected");
+    let latest = stamps.load(Ordering::SeqCst);
+    assert!(
+        latest > first,
+        "the will was not rebuilt for the reconnect ({first} → {latest})"
+    );
+    end.abort().await;
+    broker_closed(&b, 2).await;
+    let wills = b.ctl.wills.lock().unwrap().clone();
+    assert_eq!(
+        wills.last().map(|w| w.1.clone()),
+        Some(format!(r#"{{"ts":{latest},"online":false}}"#)),
+        "the broker published the connection-2 will with the re-stamped ts: {wills:?}"
+    );
+}

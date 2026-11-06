@@ -619,10 +619,14 @@ async fn reaps_the_killed_childs_orphaned_shmsink_segments_and_only_its_own() {
     let home = Home::new("shm");
     let shm = home.0.join("devshm");
     std::fs::create_dir_all(&shm).unwrap();
+    // shmsink's REAL names ("shmpipe.%5d.%5d", gst shmpipe.c:307): a 4-digit
+    // pid is space-padded (D41; the TS test's unpadded "shmpipe.4242.    0"
+    // is a name shmsink never writes, which is how the TS bug hid).
     for n in [
-        "shmpipe.4242.    0",
-        "shmpipe.4242.    1",
-        "shmpipe.9999.    0",
+        "shmpipe. 4242.    0",
+        "shmpipe. 4242.    1",
+        "shmpipe. 9999.    0",
+        "shmpipe.14242.    0",
         "lttng-ust-wait-8",
     ] {
         std::fs::write(shm.join(n), [0u8; 8]).unwrap();
@@ -638,7 +642,14 @@ async fn reaps_the_killed_childs_orphaned_shmsink_segments_and_only_its_own() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     left.sort();
-    assert_eq!(left, ["lttng-ust-wait-8", "shmpipe.9999.    0"]);
+    assert_eq!(
+        left,
+        [
+            "lttng-ust-wait-8",
+            "shmpipe. 9999.    0",
+            "shmpipe.14242.    0"
+        ]
+    );
     sup.stop();
 }
 
@@ -795,6 +806,197 @@ async fn set_cameras_is_inert_after_stop() {
 // ---------------------------------------------------------------------------
 // extras (not in the TS suite)
 
+/// D41 agent-exit cleanup (orchestrator ruling 2026-11-06), REAL process: a
+/// capture child that ignores SIGINT is still running when the agent exits
+/// (the rec-disk rv5 race: its EOS outlived the agent). The exit cleanup
+/// SIGKILLs it, waits, and unlinks its padded shmsink segment; another live
+/// owner's segment stays. Before the cleanup existed the runtime drop's
+/// `kill_on_drop` killed it with nobody left to reap, and the segment stayed.
+#[tokio::test]
+async fn d41_a_capture_still_running_at_exit_is_killed_and_its_segment_unlinked() {
+    let home = Home::new("exit-reap");
+    let devshm = home.0.join("devshm");
+    std::fs::create_dir_all(&devshm).unwrap();
+    // A live foreign owner (this test process) that must survive.
+    let me = format!("shmpipe.{:>5}.    0", std::process::id());
+    std::fs::write(devshm.join(&me), b"x").unwrap();
+    let script = home.0.join("fake-gst.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ntrap '' INT\nname=$(printf 'shmpipe.%5d.    0' $$)\n: > '{}'/\"$name\"\nwhile :; do sleep 0.05; done\n",
+            devshm.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ev = Events::default();
+    let mut o = opts(&home, cam0(), true, Arc::new(FakeBackend::default()), &ev);
+    o.backend = Arc::new(GstLaunchBackend::with_program(script.display().to_string()));
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    let child_seg = || {
+        std::fs::read_dir(&devshm)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .find(|n| n != &me && n.starts_with("shmpipe."))
+    };
+    let t0 = std::time::Instant::now();
+    let name = loop {
+        if let Some(n) = child_seg() {
+            break n;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the child never wrote its segment"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let pid = xorgate_core::capture_ladder::shm_owner_pid(&name).expect("a shmsink name");
+    // shmsink's own "%5d" form (space-padded below 10000; the pid width
+    // depends on the host — padded matching is pinned by the reaper's tests).
+    assert_eq!(name, format!("shmpipe.{pid:>5}.    0"));
+    // Two fragments on disk (the newest one is the child's open file).
+    let sid = first_session(&sup);
+    let sdir = home.session_dir("cam0", &sid);
+    std::fs::write(sdir.join("00000.mp4"), vec![1u8; 4096]).unwrap();
+    std::fs::write(sdir.join("00001.mp4"), vec![1u8; 2048]).unwrap();
+    // The shutdown `stop()`: SIGINT, ignored — the child is still running.
+    sup.stop();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        xorgate_hal::shm_reaper::pid_alive(pid),
+        "still running at exit"
+    );
+    assert!(devshm.join(&name).exists());
+    // The agent-exit cleanup.
+    let t1 = std::time::Instant::now();
+    let killed = sup.kill_and_reap_at_exit(Duration::from_millis(500)).await;
+    assert!(
+        t1.elapsed() <= Duration::from_millis(600),
+        "bounded: {:?}",
+        t1.elapsed()
+    );
+    assert_eq!(
+        killed,
+        vec![("cam0".to_string(), vec![name.clone()])],
+        "the real count"
+    );
+    assert!(
+        !devshm.join(&name).exists(),
+        "the child's segment is unlinked"
+    );
+    assert!(
+        !xorgate_hal::shm_reaper::pid_alive(pid),
+        "the child is gone"
+    );
+    assert!(
+        devshm.join(&me).exists(),
+        "a live owner's segment is never touched"
+    );
+    // Idempotent: nothing left to kill.
+    assert!(sup
+        .kill_and_reap_at_exit(Duration::from_millis(500))
+        .await
+        .is_empty());
+    // review-wp5-r2 R-WP5R-1: the exit cleanup did NOT finalise anything —
+    // the newest (killed mid-EOS) fragment has NO sidecar at exit, exactly as
+    // when the runtime drop killed it unobserved (and as the TS) …
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !sdir.join("00001.json").exists(),
+        "no newest-fragment sidecar at exit"
+    );
+    // … so the next boot's recovery stamps it finalized:false.
+    let rec = recover_orphan_video_sessions(
+        &home.video(),
+        &RecoverOpts {
+            active_session_ids: &HashSet::new(),
+            clock: &AgentClock::following_tokio(1_760_000_000_000),
+        },
+    );
+    assert!(rec.recovered >= 1, "recovered {}", rec.recovered);
+    assert_eq!(
+        read_json(&sdir.join("00001.json"))["finalized"],
+        Value::Bool(false)
+    );
+    assert!(
+        !has_event(&ev, "exited"),
+        "no capture event from the exit cleanup's onExit: {:?}",
+        ev.lock().unwrap()
+    );
+}
+
+/// D41 agent-exit cleanup, the timeout arm: a child whose exit is never
+/// observed within the bound (a fake that ignores every signal) still has its
+/// segment unlinked after the bounded wait — the explicit reap, not only the
+/// `onExit` one.
+#[tokio::test(start_paused = true)]
+async fn d41_exit_cleanup_unlinks_even_when_the_exit_is_not_observed_in_the_bound() {
+    struct Deaf {
+        inner: FakeBackend,
+    }
+    struct DeafChild(Arc<Entry>);
+    impl CaptureChild for DeafChild {
+        fn pid(&self) -> Option<u32> {
+            Some(4242)
+        }
+        fn signal(&self, sig: i32) {
+            *self.0.stopped.lock().unwrap() = Some(sig); // never exits
+        }
+        fn renice(&self, _n: i32) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl CaptureBackend for Deaf {
+        fn program(&self) -> &str {
+            "gst-launch-1.0"
+        }
+        fn spawn(
+            &self,
+            args: &[String],
+        ) -> (Box<dyn CaptureChild>, mpsc::UnboundedReceiver<ChildEvent>) {
+            let (_c, rx) = self.inner.spawn(args);
+            (Box::new(DeafChild(self.inner.last())), rx)
+        }
+    }
+    let home = Home::new("exit-reap-deaf");
+    let devshm = home.0.join("devshm");
+    std::fs::create_dir_all(&devshm).unwrap();
+    std::fs::write(devshm.join("shmpipe. 4242.    0"), b"x").unwrap();
+    std::fs::write(devshm.join("shmpipe. 4243.    0"), b"x").unwrap();
+    let be = Arc::new(Deaf {
+        inner: FakeBackend::default(),
+    });
+    let ev = Events::default();
+    let mut o = opts(&home, cam0(), true, Arc::new(FakeBackend::default()), &ev);
+    o.backend = be.clone();
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    sup.stop();
+    let t0 = tokio::time::Instant::now();
+    let killed = sup.kill_and_reap_at_exit(Duration::from_millis(500)).await;
+    assert_eq!(
+        t0.elapsed(),
+        Duration::from_millis(500),
+        "waited exactly the bound"
+    );
+    assert_eq!(
+        *be.inner.get(0).stopped.lock().unwrap(),
+        Some(libc::SIGKILL)
+    );
+    assert_eq!(
+        killed,
+        vec![("cam0".to_string(), vec!["shmpipe. 4242.    0".to_string()])]
+    );
+    assert!(!devshm.join("shmpipe. 4242.    0").exists());
+    assert!(
+        devshm.join("shmpipe. 4243.    0").exists(),
+        "only its own pid"
+    );
+}
+
 /// `stopAndWait`: a child that ignores SIGINT is SIGKILLed after the grace,
 /// and its shm segments are reaped once it is gone.
 #[tokio::test(start_paused = true)]
@@ -832,7 +1034,7 @@ async fn stop_and_wait_escalates_to_sigkill_after_the_grace() {
     let home = Home::new("saw");
     let shm = home.0.join("devshm");
     std::fs::create_dir_all(&shm).unwrap();
-    std::fs::write(shm.join("shmpipe.777.    0"), b"x").unwrap();
+    std::fs::write(shm.join("shmpipe.  777.    0"), b"x").unwrap();
     let be = Arc::new(Stubborn {
         inner: FakeBackend::default(),
     });
@@ -847,7 +1049,7 @@ async fn stop_and_wait_escalates_to_sigkill_after_the_grace() {
     sup.stop_and_wait(Duration::from_millis(10_000)).await;
     assert!(t0.elapsed() >= Duration::from_millis(10_000));
     assert_eq!(be.inner.get(0).stopped(), Some(libc::SIGKILL));
-    assert!(!shm.join("shmpipe.777.    0").exists());
+    assert!(!shm.join("shmpipe.  777.    0").exists());
     assert_eq!(sup.status()[0].state, CaptureState::Stopped);
 }
 
@@ -1052,8 +1254,8 @@ async fn tape_hooks_report_spawn_lines_signals_exits_shm_and_fragments() {
     o.tape = tape.clone();
     let devshm = home.0.join("devshm");
     std::fs::create_dir_all(&devshm).unwrap();
-    std::fs::write(devshm.join("shmpipe.4242.    0"), b"x").unwrap();
-    std::fs::write(devshm.join("shmpipe.9999.    0"), b"x").unwrap();
+    std::fs::write(devshm.join("shmpipe. 4242.    0"), b"x").unwrap();
+    std::fs::write(devshm.join("shmpipe. 9999.    0"), b"x").unwrap();
     let sup = VideoCaptureSupervisor::new(o);
     sup.start();
     let sid = first_session(&sup);
@@ -1094,13 +1296,13 @@ async fn tape_hooks_report_spawn_lines_signals_exits_shm_and_fragments() {
         format!("fs_out create {rel}/00001.mp4 30"),
         "exit capture cam0 pid=4242 code=Some(1) external=true".into(),
         // The dead child's own segment is reaped first; the JS-owned one stays.
-        r#"shm ["shmpipe.9999.    0"]"#.into(),
+        r#"shm ["shmpipe. 9999.    0"]"#.into(),
         format!("fs_out close {rel}/00001.mp4 30"),
         format!("fs_out sidecar {rel}/00001.json {sc1}"),
         format!("spawn capture cam0 pid=4242 nice=Some(10) argv0=gst-launch-1.0 n={argc}"),
         format!("signal capture cam0 4242 {}", libc::SIGINT),
         "exit capture cam0 pid=4242 code=Some(0) external=false".into(),
-        r#"shm ["shmpipe.9999.    0"]"#.into(),
+        r#"shm ["shmpipe. 9999.    0"]"#.into(),
     ];
     assert_eq!(lines, want);
 }

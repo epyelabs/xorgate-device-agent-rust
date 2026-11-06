@@ -469,14 +469,13 @@ fn proofs_exist_only_for_an_accepted_clear_or_a_confirmed_cli() {
         .effects
         .iter()
         .find(|e| matches!(e, Effect::ClearSms { .. }))
-        .expect("accepted clear_sms yields the effect")
-        .clone();
+        .expect("accepted clear_sms yields the effect");
     let read = Effect::ReadSms {
         source: SmsSource::Reader,
         request_id: "r".into(),
         limit: 10,
     };
-    assert!(AcceptedClearSms::from_effect(&clear).is_some());
+    assert!(AcceptedClearSms::from_effect(clear).is_some());
     assert!(AcceptedClearSms::from_effect(&read).is_none());
     assert!(AcceptedClearSms::from_effect(&Effect::RequestReport).is_none());
     assert!(CliConfirmation::from_gate(ClearGate::Proceed, None).is_some());
@@ -512,4 +511,25 @@ fn the_reader_module_still_names_no_destructive_command() {
             assert!(!text.contains(bad), "{rel} names {bad}");
         }
     }
+}
+
+/// Phase 5b WP5 (review-wp3 N5): the accepted-clear claim cannot be COPIED.
+/// `ClearClaim` (and so `Effect` and `CommandDecision`, which carry it) is not
+/// `Clone`, so a second `Effect::ClearSms` can never be built by cloning the
+/// claim of a real accepted clear (review-wp3's remaining survivor (2)). The
+/// check is at compile time: if `ClearClaim: Clone`, the `_` below has two
+/// candidate impls and the call is ambiguous (E0283), so this file fails to
+/// build.
+#[test]
+fn the_clear_claim_is_not_clone() {
+    trait AmbiguousIfClone<A> {
+        fn probe() {}
+    }
+    impl<T: ?Sized> AmbiguousIfClone<()> for T {}
+    #[allow(dead_code)]
+    struct IsClone;
+    impl<T: Clone> AmbiguousIfClone<IsClone> for T {}
+    <xorgate_core::command_flow::ClearClaim as AmbiguousIfClone<_>>::probe();
+    <xorgate_core::command_flow::Effect as AmbiguousIfClone<_>>::probe();
+    <xorgate_core::command_flow::CommandDecision as AmbiguousIfClone<_>>::probe();
 }

@@ -319,17 +319,42 @@ pub fn stderr_log_line(stream_key: &str, line: &str) -> Option<String> {
     }
 }
 
+/// The owner pid of a shmsink area name, `None` for any other name.
+///
+/// shmsink names its areas `"/shmpipe.%5d.%5d"` with `getpid()` and a
+/// counter (gst-plugins-bad `sys/shm/shmpipe.c:307` @ 1.22, `sp_writer_create`;
+/// observed with gst 1.22.0: `shmpipe.   16.    0`, `shmpipe.12022.    0`;
+/// bench: `shmpipe. 1035.    0`). So a pid below 10000 is SPACE-padded to 5
+/// columns and a pid above 99999 is not padded at all. The pid field is the
+/// text between `shmpipe.` and the next `.`, leading spaces trimmed; nothing
+/// else about the name is checked, so every unpadded name the TS prefix
+/// `shmpipe.<pid>.` matches still matches (D41).
+pub fn shm_owner_pid(name: &str) -> Option<u32> {
+    let (field, _) = name.strip_prefix("shmpipe.")?.split_once('.')?;
+    let digits = field.trim_start_matches(' ');
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// The names `reapShmSegments` unlinks (`video-capture.ts:873-891`): only
-/// the dead child's OWN `shmpipe.<pid>.` prefix — never another process's
-/// segments (the JS agent's live on the same tmpfs). No pid → nothing.
+/// the dead child's OWN segments — never another process's (the JS agent's
+/// live on the same tmpfs). No pid → nothing.
+///
+/// Accepted divergence D41: the TS matches the prefix `shmpipe.${pid}.`
+/// (`:876`), which never matches shmsink's real name for a pid below 10000
+/// (`shmpipe. 1035.    0`, see [`shm_owner_pid`]), so the TS reaper silently
+/// leaks 20 MiB per killed child started near boot. Rust compares the
+/// trimmed owner pid instead: the same names for 5+ digit pids (and for every
+/// TS fixture), plus the padded ones.
 pub fn shm_names_to_reap(names: &[String], pid: Option<u32>) -> Vec<&str> {
     let Some(pid) = pid else {
         return Vec::new();
     };
-    let prefix = format!("shmpipe.{pid}.");
     names
         .iter()
-        .filter(|n| n.starts_with(&prefix))
+        .filter(|n| shm_owner_pid(n) == Some(pid))
         .map(String::as_str)
         .collect()
 }
@@ -376,5 +401,48 @@ mod tests {
             .collect();
         assert_eq!(shm_names_to_reap(&names, Some(42)), ["shmpipe.42.    0"]);
         assert!(shm_names_to_reap(&names, None).is_empty());
+    }
+
+    /// D41: shmsink's REAL names (`"shmpipe.%5d.%5d"`, shmpipe.c:307):
+    /// 2-4 digit pids are space-padded, 5 digits fill the field, 6+ overflow.
+    #[test]
+    fn shm_owner_pid_reads_shmsinks_padded_names() {
+        for (name, pid) in [
+            ("shmpipe.   16.    0", Some(16)),
+            ("shmpipe.  983.    0", Some(983)),
+            ("shmpipe. 1035.    0", Some(1035)),
+            ("shmpipe. 1035.    1", Some(1035)),
+            ("shmpipe.12022.    0", Some(12022)),
+            ("shmpipe.123456.    0", Some(123456)),
+            ("shmpipe.4242.    0", Some(4242)), // unpadded (the TS fixture form)
+            ("shmpipe.    .    0", None),
+            ("shmpipe. 10 35.    0", None),
+            ("shmpipe.-1035.    0", None),
+            ("shmpipe. 1035", None),
+            ("xshmpipe. 1035.    0", None),
+            ("lttng-ust-wait-8", None),
+        ] {
+            assert_eq!(shm_owner_pid(name), pid, "{name:?}");
+        }
+        let names: Vec<String> = [
+            "shmpipe. 1035.    0",
+            "shmpipe. 1035.    1",
+            "shmpipe.  103.    0",
+            "shmpipe.10350.    0",
+            "shmpipe.12022.    0",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // The pre-D41 prefix match reaped NOTHING here (the bench leak).
+        assert_eq!(
+            shm_names_to_reap(&names, Some(1035)),
+            ["shmpipe. 1035.    0", "shmpipe. 1035.    1"]
+        );
+        assert_eq!(
+            shm_names_to_reap(&names, Some(12022)),
+            ["shmpipe.12022.    0"]
+        );
+        assert!(shm_names_to_reap(&names, Some(35)).is_empty());
     }
 }
