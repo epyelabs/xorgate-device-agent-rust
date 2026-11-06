@@ -10,21 +10,31 @@ pipeline state change (gst-launch's bus sync handler, which the host
 reproduces). The PAUSED->PLAYING graph is the K3 row; NULL->READY and
 READY->PAUSED are compared too.
 
+Instrumentation (rig only, BOTH programs): tools/capture-host/dotshim.c is
+LD_PRELOADed into gst-launch AND the host. It ORs SHOW_FULL_PARAMS into every
+dump, so no property value is truncated with "..." (R-WP0-1), and makes
+g_random_int() deterministic, so mp4mux's random faststart-file DEFAULT is
+identical in both and is compared unmasked (R-WP0-2). --no-shim falls back
+to the plain dumps (then see TRUNC_ALLOW and the faststart-file rule below).
+
 Normalisation (and nothing else):
   1. the timestamp prefix of the file name is dropped;
   2. every pointer (0x...) becomes P<n>, numbered by first appearance, so the
      node/edge STRUCTURE is still compared exactly (a different link or a
      different element order renumbers and fails);
-  3. the values of the properties in VOLATILE (read-only run-time counters
-     and mp4mux's random faststart-file default) become "<volatile>"; the
-     property NAME stays, so a property appearing or disappearing fails;
+  3. read-only run-time counters, SCOPED to their element's node label
+     (GstQueue current-level-*, GstVideoRate in/out/drop/duplicate), become
+     "<volatile>"; the property NAME stays. Without the shim only, a
+     faststart-file value that has the random default's shape
+     ("/tmp/qtmux" + 6-10 digit int) is masked too;
   4. in the three TRANSITION dumps only, an edge's attribute list (its link
      caps, which the source thread is still negotiating when the dump runs)
      becomes [<link-caps>]; both endpoints stay. The SIGHUP snapshot (2 s into
      PLAYING) keeps the negotiated link caps and is compared in full.
 Everything else (factories, element names, non-default properties
 including mp4mux fragment-duration inside splitmuxsink, pad caps, states,
-link caps) must be byte-equal.
+link caps) must be byte-equal, and a graph that still contains a truncated
+("...") value outside TRUNC_ALLOW FAILS (with the shim, TRUNC_ALLOW is empty).
 
     dot_equiv.py run --gst /usr/bin/gst-launch-1.0 --host PATH --outdir DIR
         [--only NAME] [--self-check] [--mutate 'TOKEN=>REPLACEMENT' | 'A<=>B']
@@ -58,28 +68,45 @@ REQUIRED = ("NULL_READY", "READY_PAUSED", "PAUSED_PLAYING", "snapshot")
 ATTEMPTS = 3
 
 # Read-only run-time counters whose value at dump time depends on how many
-# buffers happened to flow before the state change (measured: gst-vs-gst
-# self-check). Their NAMES are still compared.
-VOLATILE = {
-    # mp4mux's default is a per-instance random "/tmp/qtmux<random>" name
-    # (qtmux.c: g_random), so it always reads as "non-default".
-    "faststart-file",
-    # queue's fill level at dump time.
-    "current-level-buffers",
-    "current-level-bytes",
-    "current-level-time",
-    # videorate's frame counters (read-only stats; the 30->15 fps bridge).
-    "in",
-    "out",
-    "drop",
-    "duplicate",
+# buffers happened to flow before the dump (measured: gst-vs-gst self-check),
+# scoped to the element type whose node label carries them.
+SCOPED_VOLATILE = {
+    "GstQueue": {"current-level-buffers", "current-level-bytes", "current-level-time"},
+    "GstVideoRate": {"in", "out", "drop", "duplicate"},
 }
+# Without the shim: mp4mux's default "/tmp/qtmux%d" of g_random_int().
+RANDOM_QTMUX = re.compile(r'^\\"/tmp/qtmux-?\d{6,10}\\"$')
+# Without the shim: (element type, property) whose truncated value is
+# accepted, because the full value is pinned elsewhere (a capsfilter's caps
+# are the argv token itself, identical by the argv matrix).
+TRUNC_ALLOW_NO_SHIM = {("GstCapsFilter", "caps")}
+ELLIPSIS = "\u2026"
+SHIM = {"enabled": True, "path": None}
 
 PTR = re.compile(r"0x[0-9a-fA-F]+")
 FILE_RX = re.compile(r"^[0-9.]+-gst-launch\.(?P<t>[A-Z_]+|snapshot|error|warning)\.dot$")
 
 
 EDGE = re.compile(r"^(\s*\S+\s*->\s*\S+)\s*\[.*\]\s*$", re.M)
+LABEL = re.compile(r'label="((?:[^"\\]|\\.)*)"')
+
+
+def label_parts(body):
+    """A dot node label "GstQueue\\nqueue0\\n[>]\\nk=v..." -> its lines."""
+    return body.split("\\n")
+
+
+def truncated(text):
+    """(element type, property) of every "..."-truncated value in a graph."""
+    out = []
+    for m in LABEL.finditer(text):
+        parts = label_parts(m.group(1))
+        for part in parts[1:]:
+            if ELLIPSIS in part:
+                out.append((parts[0], part.partition("=")[0]))
+    if text.count(ELLIPSIS) > len(out):
+        out.append(("<outside a node label>", "?"))
+    return out
 
 
 def normalise(text, mask_link_caps=False):
@@ -97,13 +124,20 @@ def normalise(text, mask_link_caps=False):
         # negotiated by the streaming thread when the state-change dump runs.
         # The two endpoints (the structure) stay compared.
         text = EDGE.sub(lambda m: m.group(1) + " [<link-caps>]", text)
-    for name in VOLATILE:
-        # dot labels carry "name=value"; a string value is escaped-quoted
-        # (\"...\"), anything else runs to the next "\n" escape or quote.
-        # Anchored at a label line start (the literal "\n" escape before
-        # each property), so "in" never matches inside another name.
-        text = re.sub(r'(\\n)' + re.escape(name) + r'=(?:\\"[^"]*?\\"|[^\\"\n]*)',
-                      lambda m: m.group(1) + name + "=<volatile>", text)
+
+    def fix(m):
+        parts = label_parts(m.group(1))
+        scoped = SCOPED_VOLATILE.get(parts[0], ())
+        for k, part in enumerate(parts[1:], 1):
+            key, eq, val = part.partition("=")
+            if not eq:
+                continue
+            if key in scoped or (not SHIM["enabled"] and key == "faststart-file"
+                                 and RANDOM_QTMUX.match(val)):
+                parts[k] = key + "=<volatile>"
+        return 'label="' + "\\n".join(parts) + '"'
+
+    text = LABEL.sub(fix, text)
     return text
 
 
@@ -112,6 +146,8 @@ def run_side(program, arg0, prefix, argv, timeout=20):
     os.makedirs(DOT, exist_ok=True)
     env = dict(os.environ)
     env["GST_DEBUG_DUMP_DOT_DIR"] = DOT
+    if SHIM["enabled"]:
+        env["LD_PRELOAD"] = SHIM["path"]
     p = subprocess.Popen([arg0] + prefix + argv, executable=program, stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True)
     deadline = time.monotonic() + timeout
@@ -164,6 +200,12 @@ def compare(a, b):
         if da is None or db is None:
             rows[t] = "missing:" + ("a" if da is None else "b")
             continue
+        allow = set() if SHIM["enabled"] else TRUNC_ALLOW_NO_SHIM
+        cut = [x for x in truncated(da) + truncated(db) if x not in allow]
+        if cut:
+            rows[t] = "truncated:" + ",".join(sorted({f"{e}.{p}" for e, p in cut}))
+            first = first or f"{t}: truncated values {sorted(set(cut))}"
+            continue
         mask = t != "snapshot"
         na, nb = normalise(da, mask), normalise(db, mask)
         rows[t] = na == nb
@@ -200,7 +242,15 @@ def main():
     r.add_argument("--only", action="append")
     r.add_argument("--self-check", action="store_true")
     r.add_argument("--mutate", help="'OLD=>NEW' replaces one host argv token; 'A<=>B' swaps two")
+    r.add_argument("--no-shim", action="store_true", help="plain dumps (no LD_PRELOAD instrumentation)")
     a = ap.parse_args()
+
+    SHIM["enabled"] = not a.no_shim
+    if SHIM["enabled"]:
+        so = "/tmp/xg-dotshim.so"
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dotshim.c")
+        subprocess.run(["gcc", "-shared", "-fPIC", "-O2", "-o", so, src, "-ldl"], check=True)
+        SHIM["path"] = so
 
     m, cases = tr.load_matrix()
     os.makedirs(a.outdir, exist_ok=True)
@@ -260,13 +310,25 @@ def main():
         if a.self_check and not row["selfCheck"]["equal"]:
             print(f"    self-check diff: {row['selfCheck']['firstDiff']}", flush=True)
     with open(os.path.join(a.outdir, "summary.json"), "w") as f:
-        json.dump({"mutate": a.mutate, "selfCheck": a.self_check, "volatile": sorted(VOLATILE),
+        json.dump({"mutate": a.mutate, "selfCheck": a.self_check, "shim": SHIM["enabled"],
+                   "scopedVolatile": {k: sorted(v) for k, v in SCOPED_VOLATILE.items()},
                    "stamp": tr.stamp(a.gst), "cases": summary}, f, indent=1)
         f.write("\n")
     if a.mutate:
-        mutated_differs = any(not c["equal"] for c in summary)
-        print(f"MUTATION {'DETECTED (harness FAILS, as required)' if mutated_differs else 'NOT DETECTED'}")
-        return 0 if mutated_differs else 1
+        # R-WP0-7: only a graph that was BUILT on both sides and differs is a
+        # detection. A host argv that no longer parses ("missing") is a
+        # different parse outcome, reported apart.
+        graph = any(v is False or (isinstance(v, str) and v.startswith("truncated"))
+                    for c in summary for v in c["rows"].values())
+        parse_only = not graph and any(not c["equal"] for c in summary)
+        if graph:
+            print("MUTATION DETECTED by a graph diff (harness FAILS, as required)")
+            return 0
+        if parse_only:
+            print("MUTATION CHANGED THE PARSE OUTCOME ONLY (no graph to compare; not a graph detection)")
+            return 2
+        print("MUTATION NOT DETECTED")
+        return 1
     return 0 if ok_all else 1
 
 

@@ -99,6 +99,7 @@
   "fragments": []
  },
  "racy": [],
+ "racyTail": {},
  "stamp": {
   "program": "/usr/bin/gst-launch-1.0",
   "gstLaunchVersion": [
@@ -108,7 +109,7 @@
   "debianVersion": "12.13",
   "arch": "aarch64",
   "kernel": "6.12.76-linuxkit",
-  "recordedAt": "2026-11-06T15:00:58Z",
+  "recordedAt": "2026-11-06T15:43:21Z",
   "recorder": "tools/capture-host/transcript.py",
   "packages": [
    "gstreamer1.0-plugins-bad 1.22.0-4+deb12u8",

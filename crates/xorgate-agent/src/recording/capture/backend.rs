@@ -81,10 +81,14 @@ pub fn select_backend(value: Option<&str>) -> Result<BackendKind, String> {
 }
 
 /// The backend the process environment selects (read per supervisor build).
-/// An unknown value warns ONCE per process and falls back to `gst-launch`.
 pub fn backend_from_env() -> Arc<dyn CaptureBackend> {
-    let raw = std::env::var(CAPTURE_BACKEND_ENV).ok();
-    let kind = select_backend(raw.as_deref()).unwrap_or_else(|bad| {
+    backend_for(std::env::var(CAPTURE_BACKEND_ENV).ok().as_deref())
+}
+
+/// The backend a `XORGATE_CAPTURE_BACKEND` value selects (`None` = unset).
+/// An unknown value warns ONCE per process and falls back to `gst-launch`.
+pub fn backend_for(value: Option<&str>) -> Arc<dyn CaptureBackend> {
+    let kind = select_backend(value).unwrap_or_else(|bad| {
         static WARN: Once = Once::new();
         WARN.call_once(|| {
             tracing::warn!(
@@ -132,15 +136,23 @@ pub struct HostBackend {
     exe: String,
 }
 
+/// What the host backend executes when `XORGATE_CAPTURE_HOST_BIN` is unset:
+/// the running binary's own inode, so a re-exec still works after
+/// `xorgate-rs update` replaced the file on disk.
+pub const SELF_EXE: &str = "/proc/self/exe";
+
 impl HostBackend {
-    /// `/proc/self/exe` — the running binary's own inode, so a re-exec still
-    /// works after `xorgate-rs update` replaced the file on disk — unless
-    /// `XORGATE_CAPTURE_HOST_BIN` names another program.
+    /// [`SELF_EXE`], unless `XORGATE_CAPTURE_HOST_BIN` names another program.
     pub fn from_env() -> Self {
-        let exe = std::env::var(CAPTURE_HOST_BIN_ENV)
-            .ok()
+        Self::from_host_bin(std::env::var(CAPTURE_HOST_BIN_ENV).ok().as_deref())
+    }
+
+    /// [`Self::from_env`] for a given `XORGATE_CAPTURE_HOST_BIN` value
+    /// (`None` = unset; empty/blank = unset).
+    pub fn from_host_bin(value: Option<&str>) -> Self {
+        let exe = value
             .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| "/proc/self/exe".to_string());
+            .map_or_else(|| SELF_EXE.to_string(), str::to_string);
         Self { exe }
     }
 
@@ -227,6 +239,40 @@ mod tests {
             select_backend(Some("gstreamer")),
             Err("gstreamer".to_string())
         );
+    }
+
+    /// R-WP0-5: the switch's default is today's object, not the host.
+    #[test]
+    fn backend_for_maps_unset_empty_and_gst_launch_to_gst_launch() {
+        for v in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("gst-launch"),
+            Some("bogus"),
+        ] {
+            assert_eq!(backend_for(v).program(), GST_LAUNCH, "{v:?}");
+        }
+        assert_eq!(backend_for(Some("host")).program(), "xorgate-capture");
+        assert_eq!(backend_for(Some(" host\n")).program(), "xorgate-capture");
+    }
+
+    #[test]
+    fn host_backend_reexecs_proc_self_exe_unless_overridden() {
+        assert_eq!(HostBackend::from_host_bin(None).exe(), "/proc/self/exe");
+        assert_eq!(HostBackend::from_host_bin(Some("")).exe(), "/proc/self/exe");
+        assert_eq!(
+            HostBackend::from_host_bin(Some(" ")).exe(),
+            "/proc/self/exe"
+        );
+        assert_eq!(
+            HostBackend::from_host_bin(Some("/var/lib/xorgate-rs/shared-shims/xorgate-capture"))
+                .exe(),
+            "/var/lib/xorgate-rs/shared-shims/xorgate-capture"
+        );
+        let spec = HostBackend::from_host_bin(None).spec(&["videotestsrc".to_string()]);
+        assert_eq!(spec.program, "/proc/self/exe");
+        assert_eq!(spec.arg0.as_deref(), Some("xorgate-capture"));
     }
 
     #[test]

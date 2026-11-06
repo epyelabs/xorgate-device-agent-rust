@@ -52,127 +52,127 @@
  "lines": [
   {
    "fd": 1,
-   "t": 14,
+   "t": 7,
    "line": "Setting pipeline to PAUSED ..."
   },
   {
    "fd": 1,
-   "t": 15,
+   "t": 8,
    "line": "Pipeline is live and does not need PREROLL ..."
   },
   {
    "fd": 1,
-   "t": 15,
+   "t": 8,
    "line": "Pipeline is PREROLLED ..."
   },
   {
    "fd": 1,
-   "t": 15,
+   "t": 8,
    "line": "Setting pipeline to PLAYING ..."
   },
   {
    "fd": 1,
-   "t": 15,
+   "t": 8,
    "line": "New clock: GstSystemClock"
   },
   {
    "fd": 1,
-   "t": 19,
+   "t": 10,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 27,
+   "t": 15,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 27,
+   "t": 15,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 27,
+   "t": 15,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 94,
+   "t": 82,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 2029,
+   "t": 2025,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 5017,
+   "t": 5011,
    "line": "handling interrupt."
   },
   {
    "fd": 1,
-   "t": 5017,
+   "t": 5011,
    "line": "Interrupt: Stopping pipeline ..."
   },
   {
    "fd": 1,
-   "t": 5017,
+   "t": 5011,
    "line": "EOS on shutdown enabled -- Forcing EOS on the pipeline"
   },
   {
    "fd": 1,
-   "t": 5018,
+   "t": 5011,
    "line": "Waiting for EOS..."
   },
   {
    "fd": 1,
-   "t": 5019,
+   "t": 5011,
    "line": "Got EOS from element \"pipeline0\"."
   },
   {
    "fd": 1,
-   "t": 5019,
+   "t": 5011,
    "line": "EOS received - stopping pipeline..."
   },
   {
    "fd": 1,
-   "t": 5019,
-   "line": "Execution ended after 0:00:05.003646628"
+   "t": 5011,
+   "line": "Execution ended after 0:00:05.003675669"
   },
   {
    "fd": 1,
-   "t": 5019,
+   "t": 5011,
    "line": "Setting pipeline to NULL ..."
   },
   {
    "fd": 2,
-   "t": 5021,
+   "t": 5012,
    "line": "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity"
   },
   {
    "fd": 2,
-   "t": 5021,
+   "t": 5012,
    "line": "Additional debug info:"
   },
   {
    "fd": 2,
-   "t": 5021,
+   "t": 5012,
    "line": "../sys/shm/gstshmsink.c(842): pollthread_func (): /GstPipeline:pipeline0/GstShmSink:shmsink0:"
   },
   {
    "fd": 2,
-   "t": 5021,
+   "t": 5012,
    "line": "gst_poll_wait returned -1, errno: 16"
   },
   {
    "fd": 1,
-   "t": 5021,
+   "t": 5012,
    "line": "An error happened while waiting for EOS"
   },
   {
    "fd": 1,
-   "t": 5021,
+   "t": 5013,
    "line": "Freeing pipeline ..."
   }
  ],
@@ -186,7 +186,7 @@
    "Name": "gst-launch-1.0",
    "State": "S (sleeping)",
    "Threads": "13",
-   "SigQ": "1/31334",
+   "SigQ": "0/31334",
    "SigPnd": "0000000000000000",
    "ShdPnd": "0000000000000000",
    "SigBlk": "0000000000000000",
@@ -222,13 +222,13 @@
    ],
    "SigIgnNames": [],
    "SigBlkNames": [],
-   "t": 1016
+   "t": 1010
   },
   "after_intr": {
    "Name": "gst-launch-1.0",
    "State": "S (sleeping)",
    "Threads": "13",
-   "SigQ": "1/31334",
+   "SigQ": "0/31334",
    "SigPnd": "0000000000000000",
    "ShdPnd": "0000000000000000",
    "SigBlk": "0000000000000000",
@@ -263,21 +263,21 @@
    ],
    "SigIgnNames": [],
    "SigBlkNames": [],
-   "t": 5018
+   "t": 5011
   }
  },
  "events": [
   {
-   "t": 15,
+   "t": 8,
    "action": "wait-line ^New clock:",
    "ok": true
   },
   {
-   "t": 5017,
+   "t": 5010,
    "action": "signal SIGINT"
   },
   {
-   "t": 5017,
+   "t": 5011,
    "action": "wait-line ^handling interrupt\\.",
    "ok": true
   }
@@ -291,6 +291,7 @@
  "racy": [
   "SigCgt@after_intr"
  ],
+ "racyTail": {},
  "stamp": {
   "program": "/usr/bin/gst-launch-1.0",
   "gstLaunchVersion": [
@@ -300,7 +301,7 @@
   "debianVersion": "12.13",
   "arch": "aarch64",
   "kernel": "6.12.76-linuxkit",
-  "recordedAt": "2026-11-06T15:00:58Z",
+  "recordedAt": "2026-11-06T15:43:21Z",
   "recorder": "tools/capture-host/transcript.py",
   "packages": [
    "gstreamer1.0-plugins-bad 1.22.0-4+deb12u8",

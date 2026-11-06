@@ -92,8 +92,9 @@ def scenarios():
             argv=record,
             actions=playing + [("sleep", 4.0), ("signal", "SIGINT"), ("line", r"^handling interrupt\.", 5), ("signal", "SIGINT")],
             # Where the second SIGINT lands in the EOS sequence is a race:
-            # the stdout tail before the death varies run to run.
-            racy=["fd1 lines"],
+            # only the stdout AFTER `handling interrupt.` varies run to run
+            # (R-WP0-8); everything through that line is compared exactly.
+            racy_tail={"1": r"^handling interrupt\.$"},
         ),
         "3-record-sigkill": dict(
             desc="record start (-e), SIGKILL after ~5 s",
@@ -146,6 +147,14 @@ def scenarios():
             desc="record (-e) with a finite head (num-buffers=45): natural EOS",
             argv=lambda m, c: list(c["record-finite/720p15-1mbps/sw-h264"]),
             actions=playing,
+        ),
+        "9-sigint-before-watch": dict(
+            desc="SIGINT while set_state(PAUSED) blocks (filesrc on a FIFO with no writer), "
+                 "i.e. before g_unix_signal_add: the default action",
+            argv=lambda m, c: ["filesrc", "location=/work/in.fifo", "!", "fakesink"],
+            setup=lambda: os.mkfifo("/work/in.fifo"),
+            actions=[("line", r"^Setting pipeline to PAUSED", 10), ("sleep", 0.5), ("proc", "pre_arm"),
+                     ("signal", "SIGINT")],
         ),
         "8-bridge-sighup": dict(
             desc="bridge-only, SIGHUP at PLAYING (no GST_DEBUG_DUMP_DOT_DIR), then SIGINT",
@@ -212,6 +221,8 @@ def decode_mask(hexmask):
 
 def run(program, arg0, prefix, sc_name, sc, m, cases, extra_env):
     reset_work()
+    if "setup" in sc:
+        sc["setup"]()
     argv = sc["argv"](m, cases)
     env = dict(os.environ)
     env.update(extra_env)
@@ -327,6 +338,7 @@ def run(program, arg0, prefix, sc_name, sc, m, cases, extra_env):
         "events": events,
         "after": {"shmLeft": shm_left, "fragments": frags},
         "racy": sc.get("racy", []),
+        "racyTail": sc.get("racy_tail", {}),
     }
 
 
@@ -389,8 +401,48 @@ def norm(line):
     return line
 
 
+# R-WP0-3: the agent DROPS an unterminated tail (xorgate-hal child.rs), so a
+# missing final newline is a real difference: it is part of the line.
+SETXID_BIT = 1 << 32  # signal 33 (glibc SIGSETXID) in a /proc mask
+UNTERMINATED = " \u27e8no newline\u27e9"
+
+
 def fd_lines(t, fd):
-    return [norm(l["line"]) for l in t["lines"] if l["fd"] == fd]
+    return [norm(l["line"]) + (UNTERMINATED if l.get("unterminated") else "")
+            for l in t["lines"] if l["fd"] == fd]
+
+
+def split_at(lines, rx):
+    """(lines through the first match of rx, the rest); no match = (all, [])."""
+    r = re.compile(rx)
+    for i, l in enumerate(lines):
+        if r.search(l):
+            return lines[: i + 1], lines[i + 1:]
+    return lines, []
+
+
+def sigint_latency(t):
+    """ms from each driver SIGINT to the next `handling interrupt.` line."""
+    out = []
+    for e in t.get("events", []):
+        if e["action"] == "signal SIGINT":
+            nxt = [l["t"] for l in t["lines"] if l["line"] == "handling interrupt." and l["t"] >= e["t"]]
+            if nxt:
+                out.append(nxt[0] - e["t"])
+    return out
+
+
+def host_mask_row(g):
+    """R-WP0-4, host only: the mask was set before ANY thread existed, so
+    every thread but the wait thread blocks SIGINT|SIGHUP at PLAYING."""
+    p = g["proc"].get("playing", {})
+    if p.get("cmdline0") != "xorgate-capture" or "taskSigBlk" not in p:
+        return None
+    need = (1 << (signal.SIGINT - 1)) | (1 << (signal.SIGHUP - 1))
+    bad = {m: n for m, n in p["taskSigBlk"].items()
+           if int(m, 16) & need != need and [x for x in n if x != "xg-sigwait"]}
+    return ("host per-thread SigBlk (SIGINT|SIGHUP on every thread but xg-sigwait)", not bad,
+            f"unblocked: {bad}")
 
 
 def cmd_compare(a):
@@ -407,35 +459,71 @@ def cmd_compare(a):
         with open(gp) as f:
             g = json.load(f)
         rows = []
+        known = set()
         rows.append(("exit", r["exit"]["code"] == g["exit"]["code"] and r["exit"]["signal"] == g["exit"]["signal"],
                      f"ref={r['exit']} got={g['exit']}"))
         for key in ("SigCgt", "SigIgn"):
-            for when in ("playing", "after_intr"):
+            for when in ("pre_arm", "playing", "after_intr"):
                 rv = r["proc"].get(when, {}).get(key)
                 gv = g["proc"].get(when, {}).get(key)
                 if rv is None and gv is None:
                     continue
-                rows.append((f"{key}@{when}", rv == gv,
-                             f"ref={r['proc'].get(when, {}).get(key + 'Names')} got={g['proc'].get(when, {}).get(key + 'Names')}"))
+                label = f"{key}@{when}"
+                detail = f"ref={r['proc'].get(when, {}).get(key + 'Names')} got={g['proc'].get(when, {}).get(key + 'Names')}"
+                ok = rv == gv
+                if (not ok and key == "SigCgt" and when == "pre_arm" and rv and gv
+                        and int(gv, 16) == int(rv, 16) | SETXID_BIT):
+                    # Known, exact: glibc installs its internal SIGSETXID (33)
+                    # handler on the process's first pthread_create. Before
+                    # its watch, gst-launch has no thread yet; the host's
+                    # signal-wait thread exists from startup by design (R3).
+                    # Invisible to every consumer (D-row candidate, wp0.md).
+                    known.add(label)
+                rows.append((label, ok, detail))
+        rt = r["proc"].get("playing", {}).get("Threads")
+        gt = g["proc"].get("playing", {}).get("Threads")
+        if rt is not None or gt is not None:
+            rows.append(("Threads@playing", rt == gt, f"ref={rt} got={gt}"))
+        hm = host_mask_row(g)
+        if hm:
+            rows.append(hm)
         ra, ga = r.get("after", {}), g.get("after", {})
         rows.append(("shm segments left (count)", len(ra.get("shmLeft", [])) == len(ga.get("shmLeft", [])),
                      f"ref={ra.get('shmLeft')} got={ga.get('shmLeft')}"))
         rows.append(("fragments", ra.get("fragments") == ga.get("fragments"),
                      f"ref={ra.get('fragments')} got={ga.get('fragments')}"))
-        for fd in (1, 2):
-            rl, gl = fd_lines(r, fd), fd_lines(g, fd)
+        racy = set(r.get("racy", [])) | known
+        tails = r.get("racyTail", {})
+
+        def diff_row(label, rl, gl):
             same = rl == gl
             detail = ""
             if not same:
                 import difflib
                 detail = "\n" + "\n".join("      " + d for d in difflib.unified_diff(rl, gl, "ref", "got", lineterm="", n=1))
-            rows.append((f"fd{fd} lines", same, detail))
-        racy = set(r.get("racy", []))
+            rows.append((label, same, detail))
+
+        for fd in (1, 2):
+            rl, gl = fd_lines(r, fd), fd_lines(g, fd)
+            anchor = tails.get(str(fd))
+            if anchor:
+                rh, rtail = split_at(rl, anchor)
+                gh, gtail = split_at(gl, anchor)
+                diff_row(f"fd{fd} lines through {anchor}", rh, gh)
+                diff_row(f"fd{fd} tail after {anchor}", rtail, gtail)
+                racy.add(f"fd{fd} tail after {anchor}")
+            else:
+                diff_row(f"fd{fd} lines", rl, gl)
         bad = [x for x in rows if not x[1] and x[0] not in racy]
         ok_all &= not bad
         print(f"[{'PASS' if not bad else 'DIFF'}] {name}")
+        rl_, gl_ = sigint_latency(r), sigint_latency(g)
+        if rl_ or gl_:
+            print(f"    info: SIGINT -> 'handling interrupt.' ms: ref={rl_} got={gl_}")
         for label, ok, detail in rows:
-            if label in racy and not ok:
+            if label in known and not ok:
+                print(f"    !! {label} (known divergence: glibc SIGSETXID installed by the host's startup thread): {detail}")
+            elif label in racy and not ok:
                 print(f"    ~~ {label} (racy, informational): {detail}")
             elif not ok or a.verbose:
                 print(f"    {'ok ' if ok else 'XX '}{label}: {detail}")

@@ -18,87 +18,87 @@
  "lines": [
   {
    "fd": 1,
-   "t": 4,
+   "t": 7,
    "line": "Setting pipeline to PAUSED ..."
   },
   {
    "fd": 1,
-   "t": 4,
+   "t": 7,
    "line": "Pipeline is live and does not need PREROLL ..."
   },
   {
    "fd": 1,
-   "t": 4,
+   "t": 7,
    "line": "Pipeline is PREROLLED ..."
   },
   {
    "fd": 1,
-   "t": 4,
+   "t": 7,
    "line": "Setting pipeline to PLAYING ..."
   },
   {
    "fd": 1,
-   "t": 4,
+   "t": 7,
    "line": "New clock: GstSystemClock"
   },
   {
    "fd": 1,
-   "t": 7,
+   "t": 11,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 1006,
+   "t": 1008,
    "line": "SIGHUP: not dumping dot file snapshot, GST_DEBUG_DUMP_DOT_DIR environment variable not set."
   },
   {
    "fd": 1,
-   "t": 2007,
+   "t": 2012,
    "line": "handling interrupt."
   },
   {
    "fd": 1,
-   "t": 2007,
+   "t": 2012,
    "line": "Interrupt: Stopping pipeline ..."
   },
   {
    "fd": 1,
-   "t": 2007,
-   "line": "Execution ended after 0:00:02.002878543"
+   "t": 2012,
+   "line": "Execution ended after 0:00:02.004765876"
   },
   {
    "fd": 1,
-   "t": 2007,
+   "t": 2012,
    "line": "Setting pipeline to NULL ..."
   },
   {
    "fd": 2,
-   "t": 2012,
+   "t": 2015,
    "line": "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity"
   },
   {
    "fd": 2,
-   "t": 2012,
+   "t": 2015,
    "line": "Additional debug info:"
   },
   {
    "fd": 2,
-   "t": 2012,
+   "t": 2015,
    "line": "../sys/shm/gstshmsink.c(842): pollthread_func (): /GstPipeline:pipeline0/GstShmSink:shmsink0:"
   },
   {
    "fd": 2,
-   "t": 2012,
+   "t": 2015,
    "line": "gst_poll_wait returned -1, errno: 16"
   },
   {
    "fd": 1,
-   "t": 2012,
+   "t": 2015,
    "line": "An error happened while waiting for EOS"
   },
   {
    "fd": 1,
-   "t": 2013,
+   "t": 2015,
    "line": "Freeing pipeline ..."
   }
  ],
@@ -112,7 +112,7 @@
    "Name": "gst-launch-1.0",
    "State": "S (sleeping)",
    "Threads": "5",
-   "SigQ": "2/31334",
+   "SigQ": "0/31334",
    "SigPnd": "0000000000000000",
    "ShdPnd": "0000000000000000",
    "SigBlk": "0000000000000000",
@@ -140,21 +140,21 @@
    ],
    "SigIgnNames": [],
    "SigBlkNames": [],
-   "t": 1006
+   "t": 1008
   }
  },
  "events": [
   {
-   "t": 4,
+   "t": 7,
    "action": "wait-line ^New clock:",
    "ok": true
   },
   {
-   "t": 1006,
+   "t": 1008,
    "action": "signal SIGHUP"
   },
   {
-   "t": 2007,
+   "t": 2012,
    "action": "signal SIGINT"
   }
  ],
@@ -163,6 +163,7 @@
   "fragments": []
  },
  "racy": [],
+ "racyTail": {},
  "stamp": {
   "program": "/usr/bin/gst-launch-1.0",
   "gstLaunchVersion": [
@@ -172,7 +173,7 @@
   "debianVersion": "12.13",
   "arch": "aarch64",
   "kernel": "6.12.76-linuxkit",
-  "recordedAt": "2026-11-06T15:00:58Z",
+  "recordedAt": "2026-11-06T15:43:21Z",
   "recorder": "tools/capture-host/transcript.py",
   "packages": [
    "gstreamer1.0-plugins-bad 1.22.0-4+deb12u8",

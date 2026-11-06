@@ -103,16 +103,26 @@ fn block(sigs: &[Signal]) {
     let _ = sigset(sigs).thread_block();
 }
 
-/// The default action of `sig`, now, from the calling thread (the process
-/// terminates: SIGINT/SIGHUP default to Term).
-fn die_by(sig: Signal) -> ! {
+/// The default action of `sig`, now, from the calling thread (SIGINT and
+/// SIGHUP default to Term, so the process dies by `sig`).
+///
+/// It returns only in one race (R-WP0-6): `arm()` installed
+/// [`watched_handler`] between the `SIG_DFL` below and `raise`, so the
+/// handler ran instead and recorded the signal in [`LATE`]. That is
+/// gst-launch's "the signal arrived just as `g_unix_signal_add` installed
+/// GLib's handler": it is dispatched. The signal is re-blocked on this thread
+/// and the bus loop's `take_late()` hands it to [`deliver`], now ARMED. It
+/// never `exit()`s off the main thread.
+fn default_action(sig: Signal) {
     set_disposition(sig as i32, libc::SIG_DFL);
-    // Unblock `sig` for this thread only, then raise it at this thread: the
-    // default action terminates the whole process.
-    let _ = sigset(&[sig]).thread_unblock();
+    #[cfg(test)]
+    tests::before_raise();
+    let set = sigset(&[sig]);
+    // Unblock `sig` for this thread only and raise it at this thread.
+    let _ = set.thread_unblock();
     let _ = nix::sys::signal::raise(sig);
-    // Unreachable for Term signals; keep the type honest.
-    std::process::exit(128 + sig as i32);
+    // Still alive: the race above. Hand the signal to the loop.
+    let _ = set.thread_block();
 }
 
 fn wait_loop() {
@@ -132,7 +142,7 @@ pub fn deliver(sig: i32) {
     match st.compare_exchange(ARMED, PENDING, Ordering::SeqCst, Ordering::SeqCst) {
         Ok(_) => post_signal(sig),
         Err(PENDING) => {}
-        Err(_) => die_by(if sig == libc::SIGINT {
+        Err(_) => default_action(if sig == libc::SIGINT {
             Signal::SIGINT
         } else {
             Signal::SIGHUP
@@ -140,9 +150,12 @@ pub fn deliver(sig: i32) {
     }
 }
 
+/// Posts while HOLDING the `POST` lock, so once `disarm()` has taken the lock
+/// and emptied it, no post is in flight or can start (R-WP0-10). The bus's
+/// sync handler runs inside `post` on this thread and never takes `POST`.
 fn post_signal(sig: i32) {
-    let bus = POST.lock().ok().and_then(|g| g.clone());
-    if let Some(bus) = bus {
+    let Ok(g) = POST.lock() else { return };
+    if let Some(bus) = g.as_ref() {
         let s = gstreamer::Structure::builder(SIGNAL_MESSAGE)
             .field("signo", sig)
             .build();
@@ -284,8 +297,9 @@ fn itoa(mut v: i64, buf: &mut [u8; 12]) -> &[u8] {
 /// (and [`super::nls`]) follow the environment's locale as gst-launch's do.
 #[allow(unsafe_code)]
 pub fn setlocale_from_env() {
-    // SAFETY: called on the main thread before any other thread but the
-    // signal-wait thread (which never reads locale data) exists.
+    // SAFETY: called on the main thread before ANY other thread exists
+    // (`capture_host::main` spawns the signal-wait thread afterwards), so
+    // nothing can read locale data concurrently.
     unsafe {
         libc::setlocale(libc::LC_ALL, c"".as_ptr());
     }
@@ -349,14 +363,50 @@ pub fn parse_launchv(tokens: &[std::ffi::CString]) -> Parsed {
 #[allow(unsafe_code)]
 pub fn deinit() {
     // SAFETY: the caller (`capture_host::main`) has dropped the pipeline,
-    // its bus and every message; the wait thread posts only through `POST`,
-    // which `disarm()` emptied; nothing touches GStreamer afterwards.
+    // its bus and every message. The wait thread touches GStreamer only in
+    // `post_signal`, under the `POST` lock; `disarm()` took that lock (so no
+    // post was in flight) and emptied it (so none can start). After a run
+    // that never armed, `POST` was never set.
     unsafe { gstreamer::deinit() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs between `default_action`'s `SIG_DFL` and its `raise` (tests only).
+    pub(super) static BEFORE_RAISE: Mutex<Option<fn()>> = Mutex::new(None);
+
+    pub(super) fn before_raise() {
+        let hook = *BEFORE_RAISE.lock().unwrap();
+        if let Some(f) = hook {
+            f();
+        }
+    }
+
+    /// R-WP0-6, forced: `arm()` installs the watch between `SIG_DFL` and
+    /// `raise`. The process must NOT die or exit: the handler records the
+    /// signal, `default_action` re-blocks it and returns, and `take_late`
+    /// hands it to the loop. SIGHUP: nothing else in this test binary uses it.
+    #[test]
+    fn a_watch_armed_mid_default_action_hands_the_signal_to_the_loop() {
+        fn arm_now() {
+            set_disposition(
+                libc::SIGHUP,
+                watched_handler as *const () as libc::sighandler_t,
+            );
+        }
+        let set = sigset(&[Signal::SIGHUP]);
+        set.thread_block().unwrap(); // as on the wait thread
+        LATE.store(0, Ordering::SeqCst);
+        *BEFORE_RAISE.lock().unwrap() = Some(arm_now);
+        default_action(Signal::SIGHUP);
+        *BEFORE_RAISE.lock().unwrap() = None;
+        assert_eq!(take_late(), vec![libc::SIGHUP]);
+        assert!(SigSet::thread_get_mask().unwrap().contains(Signal::SIGHUP));
+        set_disposition(libc::SIGHUP, libc::SIG_DFL);
+        set.thread_unblock().unwrap();
+    }
 
     #[test]
     fn itoa_formats_without_allocating() {

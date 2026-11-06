@@ -52,57 +52,57 @@
  "lines": [
   {
    "fd": 1,
-   "t": 17,
+   "t": 7,
    "line": "Setting pipeline to PAUSED ..."
   },
   {
    "fd": 1,
-   "t": 18,
+   "t": 7,
    "line": "Pipeline is live and does not need PREROLL ..."
   },
   {
    "fd": 1,
-   "t": 18,
+   "t": 7,
    "line": "Pipeline is PREROLLED ..."
   },
   {
    "fd": 1,
-   "t": 18,
+   "t": 7,
    "line": "Setting pipeline to PLAYING ..."
   },
   {
    "fd": 1,
-   "t": 18,
+   "t": 7,
    "line": "New clock: GstSystemClock"
   },
   {
    "fd": 1,
-   "t": 22,
+   "t": 10,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 28,
+   "t": 14,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 28,
+   "t": 14,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 28,
+   "t": 14,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 97,
+   "t": 81,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 2027,
+   "t": 2014,
    "line": "Redistribute latency..."
   }
  ],
@@ -116,7 +116,7 @@
    "Name": "gst-launch-1.0",
    "State": "S (sleeping)",
    "Threads": "13",
-   "SigQ": "2/31334",
+   "SigQ": "0/31334",
    "SigPnd": "0000000000000000",
    "ShdPnd": "0000000000000000",
    "SigBlk": "0000000000000000",
@@ -152,29 +152,30 @@
    ],
    "SigIgnNames": [],
    "SigBlkNames": [],
-   "t": 1019
+   "t": 1008
   }
  },
  "events": [
   {
-   "t": 18,
+   "t": 7,
    "action": "wait-line ^New clock:",
    "ok": true
   },
   {
-   "t": 3020,
+   "t": 3010,
    "action": "signal SIGTERM"
   }
  ],
  "after": {
   "shmLeft": [
-   "shmpipe.  215.    0"
+   "shmpipe.  389.    0"
   ],
   "fragments": [
    "00000.mp4"
   ]
  },
  "racy": [],
+ "racyTail": {},
  "stamp": {
   "program": "/usr/bin/gst-launch-1.0",
   "gstLaunchVersion": [
@@ -184,7 +185,7 @@
   "debianVersion": "12.13",
   "arch": "aarch64",
   "kernel": "6.12.76-linuxkit",
-  "recordedAt": "2026-11-06T15:00:58Z",
+  "recordedAt": "2026-11-06T15:43:21Z",
   "recorder": "tools/capture-host/transcript.py",
   "packages": [
    "gstreamer1.0-plugins-bad 1.22.0-4+deb12u8",

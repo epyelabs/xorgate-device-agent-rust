@@ -98,57 +98,57 @@
   },
   {
    "fd": 1,
-   "t": 79,
+   "t": 78,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 2012,
+   "t": 2011,
    "line": "Redistribute latency..."
   },
   {
    "fd": 1,
-   "t": 2945,
+   "t": 2949,
    "line": "Got EOS from element \"pipeline0\"."
   },
   {
    "fd": 1,
-   "t": 2945,
+   "t": 2949,
    "line": "EOS received - stopping pipeline..."
   },
   {
    "fd": 1,
-   "t": 2945,
-   "line": "Execution ended after 0:00:02.939962918"
+   "t": 2949,
+   "line": "Execution ended after 0:00:02.943422251"
   },
   {
    "fd": 1,
-   "t": 2945,
+   "t": 2949,
    "line": "Setting pipeline to NULL ..."
   },
   {
    "fd": 2,
-   "t": 2946,
+   "t": 2950,
    "line": "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity"
   },
   {
    "fd": 2,
-   "t": 2946,
+   "t": 2950,
    "line": "Additional debug info:"
   },
   {
    "fd": 2,
-   "t": 2946,
+   "t": 2950,
    "line": "../sys/shm/gstshmsink.c(842): pollthread_func (): /GstPipeline:pipeline0/GstShmSink:shmsink0:"
   },
   {
    "fd": 2,
-   "t": 2946,
+   "t": 2950,
    "line": "gst_poll_wait returned -1, errno: 16"
   },
   {
    "fd": 1,
-   "t": 2946,
+   "t": 2950,
    "line": "Freeing pipeline ..."
   }
  ],
@@ -162,7 +162,7 @@
    "Name": "gst-launch-1.0",
    "State": "S (sleeping)",
    "Threads": "13",
-   "SigQ": "2/31334",
+   "SigQ": "0/31334",
    "SigPnd": "0000000000000000",
    "ShdPnd": "0000000000000000",
    "SigBlk": "0000000000000000",
@@ -198,7 +198,7 @@
    ],
    "SigIgnNames": [],
    "SigBlkNames": [],
-   "t": 1007
+   "t": 1006
   }
  },
  "events": [
@@ -215,6 +215,7 @@
   ]
  },
  "racy": [],
+ "racyTail": {},
  "stamp": {
   "program": "/usr/bin/gst-launch-1.0",
   "gstLaunchVersion": [
@@ -224,7 +225,7 @@
   "debianVersion": "12.13",
   "arch": "aarch64",
   "kernel": "6.12.76-linuxkit",
-  "recordedAt": "2026-11-06T15:00:58Z",
+  "recordedAt": "2026-11-06T15:43:21Z",
   "recorder": "tools/capture-host/transcript.py",
   "packages": [
    "gstreamer1.0-plugins-bad 1.22.0-4+deb12u8",

@@ -118,6 +118,32 @@ async fn host_backend_sigint_eos_process_name_and_dispositions() {
         u64::from_str_radix(&status_field(pid, "SigIgn"), 16).unwrap(),
         want
     );
+    // R-WP0-4: the mask was in place before ANY thread existed, so every
+    // thread (main + every GStreamer thread) blocks SIGINT|SIGHUP. Only the
+    // wait thread reads 0: the kernel unblocks the waited set during
+    // rt_sigtimedwait.
+    let mut blocked = Vec::new();
+    for t in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+        let st = std::fs::read_to_string(t.unwrap().path().join("status")).unwrap();
+        let get = |k: &str| {
+            st.lines()
+                .find_map(|l| l.strip_prefix(&format!("{k}:")))
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        let (name, blk) = (get("Name"), get("SigBlk"));
+        if name == "xg-sigwait" {
+            continue;
+        }
+        assert!(
+            mask_has(&blk, libc::SIGINT) && mask_has(&blk, libc::SIGHUP),
+            "thread {name:?} SigBlk {blk}: the mask was not inherited"
+        );
+        blocked.push(name);
+    }
+    // main + at least fakesrc's streaming thread: never vacuous.
+    assert!(blocked.len() >= 2, "{blocked:?}");
     // Nice is per process at spawn and inherited (the supervisor renices).
     child.renice(10).unwrap();
 
@@ -240,6 +266,99 @@ async fn parse_errors_print_gst_launch_texts_and_exit_1() {
         assert_eq!(run.err, vec![want.to_string()], "{argv:?}");
         assert!(run.out.is_empty(), "{argv:?}: {run:?}");
     }
+}
+
+/// R-WP0-12: a SIGINT before the watch is armed (`g_unix_signal_add` runs
+/// after `set_state(PAUSED)` returns) has the default action. A FIFO with no
+/// writer blocks filesrc's open() inside `set_state(PAUSED)`, holding the
+/// host in that window for as long as the test needs (rig scenario 9).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sigint_before_the_watch_is_armed_kills_by_sigint() {
+    let dir = std::env::temp_dir().join(format!("xg-host-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("in.fifo");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+    let b = HostBackend::with_exe(BIN);
+    let (child, mut rx) = b.spawn(&toks(&format!(
+        "filesrc location={} ! fakesink",
+        fifo.display()
+    )));
+    let mut run = Run::default();
+    drain(&mut rx, &mut run, Some("Setting pipeline to PAUSED ...")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    child.signal(libc::SIGINT);
+    drain(&mut rx, &mut run, None).await;
+    let d = run.done.clone().unwrap();
+    assert_eq!(
+        (d.exit_code, d.signal),
+        (None, Some(libc::SIGINT)),
+        "{run:?}"
+    );
+    assert_eq!(run.out, vec!["Setting pipeline to PAUSED ...".to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// R-WP0-12: SIGHUP's watch is G_SOURCE_CONTINUE: two SIGHUPs, two lines,
+/// the pipeline keeps running, then a SIGINT stops it (exit 0).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sighup_watch_stays_armed() {
+    let b = HostBackend::with_exe(BIN);
+    let (child, mut rx) = b.spawn(&toks("fakesrc ! identity sleep-time=10000 ! fakesink"));
+    let mut run = Run::default();
+    drain(&mut rx, &mut run, Some("New clock:")).await;
+    for _ in 0..2 {
+        child.signal(libc::SIGHUP);
+        drain(&mut rx, &mut run, Some("SIGHUP: ")).await;
+        assert!(run.done.is_none(), "{run:?}");
+    }
+    child.signal(libc::SIGINT);
+    drain(&mut rx, &mut run, None).await;
+    let d = run.done.clone().unwrap();
+    assert_eq!((d.exit_code, d.signal), (Some(0), None), "{run:?}");
+    assert_eq!(
+        run.out.iter().filter(|l| l.starts_with("SIGHUP: ")).count(),
+        2
+    );
+}
+
+/// R-WP0-12: a READY→PAUSED failure is `LEC_STATE_CHANGE_FAILURE` (-1 =
+/// exit 255) after `Failed to set pipeline to PAUSED.` (scenario 6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_paused_failure_exits_255() {
+    let b = HostBackend::with_exe(BIN);
+    let (_child, mut rx) = b.spawn(&toks("fakesrc ! filesink location=/nonexistent-xg/dir/x"));
+    let mut run = Run::default();
+    drain(&mut rx, &mut run, None).await;
+    let d = run.done.clone().unwrap();
+    assert_eq!((d.exit_code, d.signal), (Some(255), None), "{run:?}");
+    assert_eq!(
+        run.out,
+        vec![
+            "Setting pipeline to PAUSED ...".to_string(),
+            "Setting pipeline to NULL ...".to_string(),
+            "Freeing pipeline ...".to_string(),
+        ]
+    );
+    assert!(
+        run.err
+            .iter()
+            .any(|l| l
+                .starts_with("ERROR: from element /GstPipeline:pipeline0/GstFileSink:filesink0:")),
+        "{:?}",
+        run.err
+    );
+    assert!(
+        run.err
+            .iter()
+            .any(|l| l == "ERROR: pipeline doesn't want to preroll."),
+        "{:?}",
+        run.err
+    );
+    assert_eq!(
+        run.err.last().map(String::as_str),
+        Some("Failed to set pipeline to PAUSED.")
+    );
 }
 
 #[test]
