@@ -117,6 +117,15 @@ impl Drop for Home {
 }
 
 fn sup(home: &Home, be: Arc<FakeHost>, timing: SidecarTiming) -> VideoCaptureSupervisor {
+    sup_with(home, be, timing, |_| {})
+}
+
+fn sup_with(
+    home: &Home,
+    be: Arc<FakeHost>,
+    timing: SidecarTiming,
+    tweak: impl FnOnce(&mut VideoCaptureOpts),
+) -> VideoCaptureSupervisor {
     let mut o = VideoCaptureOpts::new(
         "dev-1",
         vec![CaptureCamera {
@@ -138,6 +147,7 @@ fn sup(home: &Home, be: Arc<FakeHost>, timing: SidecarTiming) -> VideoCaptureSup
     o.stable_ms = 50;
     o.shm_segment_dir = home.0.join("devshm");
     o.sidecar_timing = timing;
+    tweak(&mut o);
     VideoCaptureSupervisor::new(o)
 }
 
@@ -383,6 +393,94 @@ async fn legacy_ignores_the_timing_lines() {
     }
     s.stop();
     settle().await;
+}
+
+/// WP1 final report: the host prints `XG-FRAGMENT*` in `host` + `legacy` too
+/// (it does not know the sidecar mode). Legacy must ignore them completely:
+/// the same number of sweeps as a run that printed nothing (no per-line
+/// sweep; reviewer mutant R8), and every sidecar byte-identical to the
+/// legacy core plan of the same listing (`plan_sweep`, today's code).
+#[tokio::test(start_paused = true)]
+async fn legacy_with_real_host_lines_is_byte_identical_and_sweeps_no_more() {
+    async fn run(with_lines: bool) -> (usize, PathBuf, Home) {
+        let home = Home::new(if with_lines { "leg-lines" } else { "leg-quiet" });
+        let be = Arc::new(FakeHost::default());
+        let sweeps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let s = {
+            let n = sweeps.clone();
+            sup_with(&home, be.clone(), SidecarTiming::Legacy, move |o| {
+                o.on_active_path = Some(Arc::new(move |_k: &str, _p: Option<&Path>| {
+                    n.fetch_add(1, Ordering::SeqCst);
+                }))
+            })
+        };
+        s.start();
+        let d = dir(&home, &s);
+        let c = be.last();
+        for k in 0..4 {
+            if with_lines {
+                c.line(start_line(k, if k == 0 { 12 } else { 2_000 }));
+            }
+            frag(&d, k, cb(k + 1));
+        }
+        settle().await;
+        ms(2 * POLL + 1).await; // two poll sweeps
+        let n = sweeps.load(Ordering::SeqCst);
+        s.stop();
+        settle().await;
+        (n, d, home)
+    }
+    let (quiet, _, _h1) = run(false).await;
+    let (loud, d, _h2) = run(true).await;
+    assert_eq!(loud, quiet, "timing lines triggered sweeps in legacy");
+    assert!(quiet >= 2);
+    // Byte identity with the legacy plan: re-plan the same listing with the
+    // pair each sidecar was written with (startMono's derivation inverted).
+    let manifest = xorgate_core::sidecar::read_session_manifest_text(
+        &std::fs::read_to_string(d.join("session.json")).unwrap(),
+    )
+    .unwrap();
+    let entries: Vec<xorgate_core::sidecar::DirEntry> = (0..4)
+        .map(|k| {
+            let name = format!("{k:05}.mp4");
+            xorgate_core::sidecar::DirEntry {
+                stat: xorgate_hal::fragment_stat::stat_fragment(&d.join(&name)).ok(),
+                name,
+            }
+        })
+        .collect();
+    let mut checked = 0;
+    for k in 0..4u64 {
+        let p = d.join(format!("{k:05}.json"));
+        let Ok(bytes) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let sc: Value = serde_json::from_str(&bytes).unwrap();
+        assert_ne!(sc["anchor"], "pts");
+        let pair = xorgate_core::sidecar::ClockPair {
+            wall_ms: sc["startTs"].as_f64().unwrap(),
+            mono_ms: sc["startMono"].as_f64().unwrap(),
+        };
+        let plan = xorgate_core::sidecar::plan_sweep(
+            &d.to_string_lossy(),
+            &manifest,
+            &entries,
+            &xorgate_core::sidecar::SweepOpts {
+                include_newest: k == 3,
+                finalized: (k == 3).then_some(true),
+                time_source: Some(TimeSource::Ntp),
+                clock_pair: pair,
+            },
+        );
+        let w = plan
+            .writes
+            .iter()
+            .find(|w| w.sidecar_path == p.to_string_lossy())
+            .expect("planned");
+        assert_eq!(w.sidecar.to_json(), bytes, "fragment {k}");
+        checked += 1;
+    }
+    assert_eq!(checked, 4, "0..2 on the polls, 3 by the final sweep");
 }
 
 /// `exact` with a child that never prints a timing line (the host's clock
