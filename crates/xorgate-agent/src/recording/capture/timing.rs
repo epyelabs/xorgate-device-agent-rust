@@ -230,7 +230,8 @@ mod tests {
             end_ts: 1_760_000_105_366,
         };
         let line = end.to_line();
-        r.apply(&parse_timing_line(&line).unwrap().unwrap()).unwrap();
+        r.apply(&parse_timing_line(&line).unwrap().unwrap())
+            .unwrap();
         assert_eq!(r.table.exact(0).unwrap().lag_ms, 3.0);
         assert_eq!(r.table.exact(1).unwrap().end_ts, Some(1_760_000_105_366.0));
     }
