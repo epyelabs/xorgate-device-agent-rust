@@ -90,6 +90,12 @@ pub struct MediaCapture {
     pub shm_orphans: usize,
     /// The same orphans by name (`shm_orphans` = its length), sorted.
     pub shm_orphan_names: Vec<String>,
+    /// Per orphan (same order): the wall ms its owner child was seen gone.
+    pub shm_orphan_gone: Vec<Option<i64>>,
+    /// The agent did NOT exit within 30 s of the player's SIGTERM and was
+    /// SIGKILLed (the player's `[rig] agent <x> did NOT exit in 30 s` line in
+    /// `<side>/stderr.log`) — the JS SIGTERM hang (js-bug-triage bug 3).
+    pub agent_hung: bool,
     /// Wall ms (publish `w`) of every telemetry tick whose
     /// `recording.powerShed` / `recording.liveBlock` differs from the
     /// previous tick's (`mqtt.ndjson`; T7/D30 `d30_shed_tick_session_end` (d)).
@@ -590,6 +596,27 @@ impl MediaCapture {
             .cloned()
             .collect();
         let shm_orphans = shm_orphan_names.len();
+        let gone_w: BTreeMap<u32, i64> = procs
+            .iter()
+            .filter(|v| v["k"] == "gone")
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["w"].as_i64()?)))
+            .fold(BTreeMap::new(), |mut m, (p, w)| {
+                m.entry(p).or_insert(w);
+                m
+            });
+        let shm_orphan_gone: Vec<Option<i64>> = shm_orphan_names
+            .iter()
+            .map(|nm| {
+                xorgate_core::capture_ladder::shm_owner_pid(nm)
+                    .and_then(|p| gone_w.get(&p).copied())
+            })
+            .collect();
+        let agent_hung = std::fs::read_to_string(dir.join("stderr.log"))
+            .map(|t| {
+                t.lines()
+                    .any(|l| l.starts_with("[rig] agent ") && l.contains(" did NOT exit in 30 s"))
+            })
+            .unwrap_or(false);
         let present = !spawns.is_empty() || !rec.is_empty() || !s3.is_empty();
         let mut shed_changes = Vec::new();
         let mut shed_events: Vec<(i64, String)> = Vec::new();
@@ -662,6 +689,8 @@ impl MediaCapture {
             s3_bodies,
             shm_orphans,
             shm_orphan_names,
+            shm_orphan_gone,
+            agent_hung,
             shed_changes,
             last_tick_backlog,
             live_flags,
@@ -3655,23 +3684,37 @@ pub fn diff_media(
             a.shm_orphans, a.shm_orphan_names, b.shm_orphans, b.shm_orphan_names
         ),
     );
-    shm_orphans_verdict(a, b, table, rep);
+    shm_orphans_verdict(a, b, play.end_wall, table, rep);
     d30_js_reference(a, b, &pmic_series(play), table, rep);
     d30_js_late_shed(a, b, play.start_wall, &power_changes(play), table, rep);
 }
 
-/// The end-of-run `/dev/shm` orphans (Phase 5b WP5, item 9 + D41):
+/// The end-of-run `/dev/shm` orphans (Phase 5b WP5, item 9 + D41, split by
+/// mechanism per review-wp5 R-WP5-2):
 /// - a RUST side's orphan is never tolerated: one row per Rust side that
 ///   strands anything, whatever the other side holds (D41: the Rust reaper
 ///   matches shmsink's padded names and the agent stops its children cleanly);
-/// - JS-vs-Rust with Rust 0: the JS orphans are `T7/D41` only when EVERY one is
-///   a SPACE-padded name (`shmpipe. 1185.    0`, owner pid < 10000) — the
-///   names the TS reaper's `shmpipe.${pid}.` prefix can never match
-///   (ts:src/recording/video-capture.ts:873-891 @09da38d; gst shmpipe.c:307
-///   `"/shmpipe.%5d.%5d"`), so the TS strands them; a 5+ digit JS orphan is
-///   UNTOLERATED;
+/// - JS-vs-Rust with Rust 0: `T7/D41` only when EVERY JS orphan is one of
+///   - (a) REAPER MISS: its owner capture died MID-RUN (gone before the
+///     player's SIGTERM `end_wall`: the JS agent alive, its ladder or the
+///     tape SIGKILLed the child, `onExit` → `reapShmSegments` ran) AND the
+///     name is SPACE-padded (owner pid < 10000) — the names the TS prefix
+///     `shmpipe.${pid}.` can never match (ts:src/recording/video-capture.ts
+///     :873-891, :876 @09da38d; gst shmpipe.c:307 `"/shmpipe.%5d.%5d"`); a 5+
+///     digit name IS matched by the TS reaper, so it is UNTOLERATED;
+///   - (b) END OF RUN: its owner capture was still running when the JS agent
+///     was told to stop (gone at/after `end_wall`) AND that JS agent hung
+///     past 30 s and was SIGKILLed (`agent_hung`, bug 3: its wedged event
+///     loop never runs `onExit`'s reaper at all, so the pid width does not
+///     matter) — any pid width;
 /// - every other count difference (JS-vs-JS, Rust-vs-Rust) is UNTOLERATED.
-fn shm_orphans_verdict(a: &MediaCapture, b: &MediaCapture, table: &Table, rep: &mut Report) {
+fn shm_orphans_verdict(
+    a: &MediaCapture,
+    b: &MediaCapture,
+    end_wall: i64,
+    table: &Table,
+    rep: &mut Report,
+) {
     let padded = |n: &str| {
         n.strip_prefix("shmpipe.")
             .is_some_and(|r| r.starts_with(' '))
@@ -3699,10 +3742,30 @@ fn shm_orphans_verdict(a: &MediaCapture, b: &MediaCapture, table: &Table, rep: &
     let tol = match (a.kind.as_str(), b.kind.as_str()) {
         ("js", "rust") | ("rust", "js") => {
             let (js, rs) = if a.kind == "js" { (a, b) } else { (b, a) };
-            let d41 = table.matcher_rows("d41_js_padded_shm_orphans", "shm");
+            let d41 = table.matcher_rows("d41_js_shm_orphans", "shm");
+            // Per JS orphan: (a) reaper miss / (b) end of run / neither.
+            let arms: Vec<Option<&str>> = js
+                .shm_orphan_names
+                .iter()
+                .zip(js.shm_orphan_gone.iter())
+                .map(|(n, g)| match *g {
+                    Some(g) if g < end_wall && padded(n) => Some("reaper-miss"),
+                    Some(g) if g >= end_wall && js.agent_hung => Some("end-of-run"),
+                    _ => None,
+                })
+                .collect();
+            rep.inputs.insert(
+                "D41 arms (JS orphans)".into(),
+                format!(
+                    "{:?}",
+                    js.shm_orphan_names.iter().zip(&arms).collect::<Vec<_>>()
+                ),
+            );
             match d41.first() {
                 Some(id)
-                    if rs.shm_orphans == 0 && js.shm_orphan_names.iter().all(|n| padded(n)) =>
+                    if rs.shm_orphans == 0
+                        && js.shm_orphans == arms.len()
+                        && arms.iter().all(Option::is_some) =>
                 {
                     id.clone()
                 }
@@ -5674,6 +5737,23 @@ kind = "decisions"
         let m = MediaCapture::load(&dir, &shm);
         assert_eq!(m.shm_orphans, 1);
         assert_eq!(m.shm_orphan_names, ["shmpipe. 1185.    0"]);
+        assert_eq!(m.shm_orphan_gone, [Some(3100)], "the owner's gone instant");
+        assert!(!m.agent_hung);
+        std::fs::write(
+            dir.join("stderr.log"),
+            "x\n[rig] agent a did NOT exit in 30 s; SIGKILLed after SIGTERM in 30021 ms (its process group lingered 0 ms)\n",
+        )
+        .unwrap();
+        assert!(
+            MediaCapture::load(&dir, &shm).agent_hung,
+            "the player's hang line"
+        );
+        std::fs::write(
+            dir.join("stderr.log"),
+            "[rig] agent a exited after SIGTERM in 89 ms (its process group lingered 0 ms)\n",
+        )
+        .unwrap();
+        assert!(!MediaCapture::load(&dir, &shm).agent_hung);
         // The old parse never saw it:
         assert!(" 1185.    0"
             .split('.')
@@ -5688,56 +5768,109 @@ kind = "decisions"
                 .join("../../tools/replay/tolerances.toml"),
         )
         .unwrap();
-        let cap = |kind: &str, names: &[&str]| MediaCapture {
+        // review-wp5 R-WP5-2: D41 split by mechanism. The run's SIGTERM is at
+        // END; an orphan's owner died MID (before it) or LATE (after it).
+        const END: i64 = 100_000;
+        const MID: i64 = 50_000;
+        const LATE: i64 = END + 60;
+        // (kind, [(name, owner gone w)], agent hung past 30 s?)
+        let cap = |kind: &str, orphans: &[(&str, i64)], hung: bool| MediaCapture {
             kind: kind.into(),
-            shm_orphans: names.len(),
-            shm_orphan_names: names.iter().map(|n| n.to_string()).collect(),
+            shm_orphans: orphans.len(),
+            shm_orphan_names: orphans.iter().map(|(n, _)| n.to_string()).collect(),
+            shm_orphan_gone: orphans.iter().map(|(_, g)| Some(*g)).collect(),
+            agent_hung: hung,
             present: true,
             ..Default::default()
         };
         let run = |a: MediaCapture, b: MediaCapture| {
             let mut rep = Report::default();
-            shm_orphans_verdict(&a, &b, &table, &mut rep);
+            shm_orphans_verdict(&a, &b, END, &table, &mut rep);
             rep.mismatches
                 .into_iter()
                 .map(|m| format!("{} {}", m.path, m.tol))
                 .collect::<Vec<_>>()
         };
         let pad = "shmpipe. 1185.    0";
+        let wide = "shmpipe.12022.    0";
         let d41 = vec!["(orphan shmpipe segments) T7/D41".to_string()];
         let unt = vec![format!("(orphan shmpipe segments) {UNTOLERATED}")];
         let rust_row = format!("(orphan shmpipe segments of a Rust side) {UNTOLERATED}");
-        // D41: JS strands padded names (the TS reaper's prefix misses them), Rust 0.
-        assert_eq!(run(cap("js", &[pad]), cap("rust", &[])), d41);
-        assert_eq!(
-            run(cap("rust", &[]), cap("js", &[pad, "shmpipe.  983.    0"])),
-            d41
-        );
-        // NEGATIVE: a JS orphan the TS reaper WOULD match (5+ digits).
-        assert_eq!(
-            run(cap("js", &[pad, "shmpipe.12022.    0"]), cap("rust", &[])),
-            unt
-        );
-        // NEGATIVE: any Rust orphan fails, even with equal counts.
-        assert_eq!(
-            run(cap("js", &[pad]), cap("rust", &["shmpipe. 1199.    0"])),
-            vec![rust_row.clone()]
-        );
+        let none = |k: &str| cap(k, &[], false);
+        // (a) reaper miss: a padded orphan of a child that died mid-run, Rust 0
+        // (either column order; several orphans).
+        assert_eq!(run(cap("js", &[(pad, MID)], false), none("rust")), d41);
         assert_eq!(
             run(
-                cap("rust", &["shmpipe. 1199.    0"]),
-                cap("rust", &["shmpipe. 1189.    0"])
+                none("rust"),
+                cap("js", &[(pad, MID), ("shmpipe.  983.    0", MID)], false)
+            ),
+            d41
+        );
+        // (b) end of run: a child still running at the stop of a JS agent that
+        // hung past 30 s — any pid width.
+        assert_eq!(run(cap("js", &[(wide, LATE)], true), none("rust")), d41);
+        assert_eq!(run(cap("js", &[(pad, LATE)], true), none("rust")), d41);
+        assert_eq!(
+            run(cap("js", &[(pad, MID), (wide, LATE)], true), none("rust")),
+            d41,
+            "one orphan per arm"
+        );
+        // NEGATIVE (a): a 5-digit JS orphan from a mid-run death (the TS
+        // reaper matches it) — hung agent or not.
+        assert_eq!(run(cap("js", &[(wide, MID)], false), none("rust")), unt);
+        assert_eq!(run(cap("js", &[(wide, MID)], true), none("rust")), unt);
+        assert_eq!(
+            run(cap("js", &[(pad, MID), (wide, MID)], false), none("rust")),
+            unt
+        );
+        // NEGATIVE (b): an end-of-run orphan of a capture that had ALREADY ended
+        // before the stop is not (b) (a wide one fails; a padded one is (a)).
+        assert_eq!(run(cap("js", &[(wide, END - 1)], true), none("rust")), unt);
+        // NEGATIVE (b): the JS agent exited gracefully (not hung) — a late orphan
+        // is not the bug-3 path, whatever its width.
+        assert_eq!(run(cap("js", &[(wide, LATE)], false), none("rust")), unt);
+        assert_eq!(run(cap("js", &[(pad, LATE)], false), none("rust")), unt);
+        // NEGATIVE: an orphan whose owner was never seen gone.
+        let mut g = cap("js", &[(pad, MID)], true);
+        g.shm_orphan_gone = vec![None];
+        assert_eq!(run(g, none("rust")), unt);
+        // NEGATIVE: every Rust orphan shape fails (mid-run / end-of-run, padded /
+        // wide, hung or not, equal counts, Rust-vs-Rust, Rust-only).
+        for (n, w) in [(pad, MID), (wide, MID), (pad, LATE), (wide, LATE)] {
+            for hung in [false, true] {
+                assert_eq!(
+                    run(
+                        cap("js", &[(pad, MID)], false),
+                        cap("rust", &[(n, w)], hung)
+                    ),
+                    vec![rust_row.clone()],
+                    "rust orphan {n:?} at {w} hung={hung} (equal counts)"
+                );
+                assert_eq!(
+                    run(cap("rust", &[(n, w)], hung), none("js")),
+                    vec![rust_row.clone(), unt[0].clone()],
+                    "rust-only orphan {n:?}"
+                );
+            }
+        }
+        assert_eq!(
+            run(
+                cap("rust", &[("shmpipe. 1199.    0", MID)], false),
+                cap("rust", &[("shmpipe. 1189.    0", LATE)], true)
             ),
             vec![rust_row.clone(), rust_row.clone()]
         );
-        assert_eq!(
-            run(cap("rust", &["shmpipe. 1199.    0"]), cap("js", &[])),
-            vec![rust_row.clone(), unt[0].clone()]
-        );
-        // NEGATIVE: JS-vs-JS stays exact (a stranded segment on one side fails).
-        assert_eq!(run(cap("js", &[pad]), cap("js", &[])), unt);
-        assert!(run(cap("js", &[pad]), cap("js", &["shmpipe. 1199.    0"])).is_empty());
-        assert!(run(cap("js", &[]), cap("rust", &[])).is_empty());
+        // NEGATIVE: JS-vs-JS stays exact (a stranded segment on one side fails,
+        // whatever its arm).
+        assert_eq!(run(cap("js", &[(pad, MID)], false), none("js")), unt);
+        assert_eq!(run(cap("js", &[(wide, LATE)], true), none("js")), unt);
+        assert!(run(
+            cap("js", &[(pad, MID)], false),
+            cap("js", &[("shmpipe. 1199.    0", MID)], false)
+        )
+        .is_empty());
+        assert!(run(none("js"), none("rust")).is_empty());
     }
 
     /// A capture SIGINTed at the agent's stop and killed by the agent's exit
