@@ -312,6 +312,16 @@ struct Inner {
     runs: IndexMap<String, Run>,
     stopped: bool,
     counter: u64,
+    /// D41 agent-exit cleanup under way (review-wp5-r2 R-WP5R-1): `onExit`
+    /// then ONLY reaps the dead child's shm segments — no final sweep, no
+    /// sidecar, no `onSegmentClosed`/enforcer, no tape close records, no
+    /// event — exactly what the runtime drop's `kill_on_drop` left before
+    /// (and the TS process exit leaves): the fragments wait for the next
+    /// boot's recovery, which stamps the newest `finalized:false`.
+    exiting: bool,
+    /// The segments `onExit` reaped while `exiting`, per stream key (the
+    /// exit cleanup's count includes them, R-WP5R-5).
+    exit_reaped: Vec<(String, Vec<String>)>,
 }
 
 fn next(counter: &mut u64) -> u64 {
@@ -329,6 +339,15 @@ enum Fx {
 }
 
 /// A deferred signal (delivered after the callbacks).
+/// One capture child the agent-exit cleanup SIGKILLed ([`VideoCaptureSupervisor::exit_kill`]).
+#[derive(Debug, Clone)]
+pub struct ExitKilled {
+    pub key: String,
+    pub pid: Option<u32>,
+    /// Flips to true once its `onExit` has run.
+    pub exited: watch::Receiver<bool>,
+}
+
 struct Sig {
     child: Arc<dyn CaptureChild>,
     key: String,
@@ -366,6 +385,8 @@ impl VideoCaptureSupervisor {
                     runs: IndexMap::new(),
                     stopped: false,
                     counter: 0,
+                    exiting: false,
+                    exit_reaped: Vec::new(),
                 }),
             }),
         }
@@ -464,40 +485,81 @@ impl VideoCaptureSupervisor {
         s.flush(out);
     }
 
-    /// Agent-exit cleanup (D41, orchestrator ruling 2026-11-06; Rust only —
-    /// the TS process exit leaves execa's `cleanup` to kill the child and
-    /// reaps nothing). Every capture child STILL ALIVE at exit — the SIGINT
-    /// from [`Self::stop`] has not finished its EOS — is SIGKILLed explicitly
-    /// and WAITED for (≤ `bound` each), then every shmsink segment its pid
-    /// owns is unlinked (`shm_reaper::reap_shm_segments`, the same
-    /// `shm_owner_pid` matcher as the exit reaper). Without this the runtime
-    /// drop's `kill_on_drop` SIGKILLs it with nobody left to reap, stranding
-    /// 20 MiB of /dev/shm (RAM on a Pi) until reboot (rec-disk rv5). This
-    /// adds NO wait for the EOS: the child is killed at the same instant the
-    /// runtime drop killed it before, so the final fragment is unchanged.
-    /// Returns `(stream key, segments unlinked)` per child killed here.
-    pub async fn kill_and_reap_at_exit(&self, bound: Duration) -> Vec<(String, Vec<String>)> {
+    /// Agent-exit cleanup, phase 1 (D41, orchestrator rulings 2026-11-06;
+    /// Rust only — the TS process exit leaves execa's `cleanup` to kill the
+    /// child and reaps nothing). Marks the supervisor EXITING (its `onExit`
+    /// then only reaps shm, see [`Inner::exiting`]), sends the shutdown
+    /// SIGINTs if `stop()` has not, and SIGKILLs every capture child still
+    /// alive (the SIGINT's EOS outlived the agent). Returns those children;
+    /// the caller waits for ALL of them with ONE total bound (R-WP5R-6), then
+    /// calls [`Self::exit_finish`]. No wait for the EOS is added: the caller
+    /// runs this where the runtime drop's `kill_on_drop` used to land.
+    pub fn exit_kill(&self) -> Vec<ExitKilled> {
         let s = &self.shared;
         let handles = {
             let mut g = s.lock();
             let mut out = Out::default();
             let h = stop_locked(&mut g, &mut out);
+            g.exiting = true;
             drop(g);
-            // Not stopped yet (no `stop()` before exit): its SIGINTs first.
             s.flush(out);
             h
         };
         let mut killed = Vec::new();
         for (sig, rx) in handles {
             if *rx.borrow() {
-                continue; // exited already: its `onExit` reaped its segments
+                continue; // exited already (its normal `onExit` ran)
             }
             s.deliver(&sig); // SIGKILL (taped like every other signal)
-            let _ = tokio::time::timeout(bound, wait_exited(rx)).await;
-            let reaped = shm_reaper::reap_shm_segments(&s.opts.shm_segment_dir, sig.pid);
-            killed.push((sig.key.clone(), reaped));
+            killed.push(ExitKilled {
+                key: sig.key.clone(),
+                pid: sig.pid,
+                exited: rx,
+            });
         }
         killed
+    }
+
+    /// Agent-exit cleanup, phase 2: unlink every shmsink segment each killed
+    /// child's pid owns (`shm_reaper::reap_shm_segments`, the same
+    /// `shm_owner_pid` matcher — also when its exit was not observed within
+    /// the bound) and report, per child, every segment unlinked during the
+    /// cleanup, its `onExit`'s included (R-WP5R-5).
+    pub fn exit_finish(&self, killed: &[ExitKilled]) -> Vec<(String, Vec<String>)> {
+        let s = &self.shared;
+        let mut by_onexit = std::mem::take(&mut s.lock().exit_reaped);
+        killed
+            .iter()
+            .map(|k| {
+                let mut segs: Vec<String> = Vec::new();
+                by_onexit.retain(|(key, names)| {
+                    if key == &k.key {
+                        segs.extend(names.iter().cloned());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                segs.extend(shm_reaper::reap_shm_segments(
+                    &s.opts.shm_segment_dir,
+                    k.pid,
+                ));
+                (k.key.clone(), segs)
+            })
+            .collect()
+    }
+
+    /// Both phases for ONE supervisor: [`Self::exit_kill`], wait ≤ `bound`
+    /// in total for the killed children, [`Self::exit_finish`].
+    pub async fn kill_and_reap_at_exit(&self, bound: Duration) -> Vec<(String, Vec<String>)> {
+        let killed = self.exit_kill();
+        let _ = tokio::time::timeout(bound, async {
+            for k in &killed {
+                wait_exited(k.exited.clone()).await;
+            }
+        })
+        .await;
+        self.exit_finish(&killed)
     }
 
     /// `stopAndWait(graceMs = 10_000)` (`video-capture.ts:516-531`): stop and
@@ -962,6 +1024,7 @@ fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
         runs,
         stopped,
         counter,
+        ..
     } = g;
     let Some(run) = runs.get_mut(key) else {
         return;
@@ -1129,7 +1192,13 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
     {
         let mut g = s.lock();
         let stopped = g.stopped;
-        let Inner { runs, counter, .. } = &mut *g;
+        let exiting = g.exiting;
+        let Inner {
+            runs,
+            counter,
+            exit_reaped,
+            ..
+        } = &mut *g;
         let Some(run) = runs.get_mut(key) else {
             return;
         };
@@ -1138,6 +1207,17 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
         }
         cancel(&mut run.stable_timer);
         let slot = run.child.take().expect("checked");
+        if exiting {
+            // R-WP5R-1: killed by the agent-exit cleanup. Nothing but the shm
+            // reap — as when the runtime drop killed it unobserved: no final
+            // sweep (the newest fragment keeps no sidecar; the next boot's
+            // recovery stamps it finalized:false, like the TS), no
+            // onSegmentClosed/enforcer, no tape close/sidecar/child_exit, no
+            // event. The reaped names count in the cleanup's journal line.
+            let reaped = shm_reaper::reap_shm_segments(&o.shm_segment_dir, slot.pid);
+            exit_reaped.push((key.to_string(), reaped));
+            return;
+        }
         let stalled = std::mem::take(&mut run.stalled);
         run.stop_watching();
         // The child is gone, so anything of its still in the shm tmpfs is

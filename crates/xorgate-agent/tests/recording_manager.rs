@@ -1184,8 +1184,8 @@ async fn a_failed_finalize_at_shutdown_still_stops_capture() {
 }
 
 /// D41 agent-exit cleanup (ruling 2026-11-06): the capture the shutdown
-/// `stop()` retired is handed the exit cleanup ONCE, with the bound; before
-/// any stop there is nothing to clean; a second call does nothing.
+/// `stop()` retired is exit-killed ONCE; before any stop there is nothing to
+/// clean; a second call does nothing; the journal line reports the segments.
 #[tokio::test(start_paused = true)]
 async fn the_shutdown_capture_gets_the_exit_cleanup_once() {
     let rig = Rig::new("exit-reap");
@@ -1198,7 +1198,7 @@ async fn the_shutdown_capture_gets_the_exit_cleanup_once() {
     assert_eq!(rig.live_cams(), vec!["cam0"]);
     m.reap_capture_at_exit(Duration::from_millis(500)).await;
     assert!(
-        rig.log.exit_reaps.lock().unwrap().is_empty(),
+        rig.log.exit_kills.lock().unwrap().is_empty(),
         "no stop yet: nothing retired"
     );
     m.stop();
@@ -1206,9 +1206,48 @@ async fn the_shutdown_capture_gets_the_exit_cleanup_once() {
     m.reap_capture_at_exit(Duration::from_millis(500)).await;
     m.reap_capture_at_exit(Duration::from_millis(500)).await;
     drop(guard);
+    assert_eq!(rig.log.exit_kills.lock().unwrap().len(), 1);
+    let logs = logs.lock().unwrap().clone();
+    assert!(
+        logs.iter().any(|l| l.starts_with(
+            "[recording] capture cam0 still running at exit: killed, 1 shm segment(s) unlinked"
+        )),
+        "{logs:?}"
+    );
+}
+
+/// review-wp5-r2 R-WP5R-3: a config cut (preset change) hands the old
+/// supervisor to a pending video transition; its child is still in its EOS
+/// (`stop_and_wait` pending) when SIGTERM arrives. The exit cleanup must cover
+/// that RETIRING supervisor too (and the transition must not start the new
+/// one after shutdown).
+#[tokio::test(start_paused = true)]
+async fn a_supervisor_inside_a_pending_transition_gets_the_exit_cleanup() {
+    let rig = Rig::new("exit-reap-retiring");
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off", "preset": "720p15-1mbps"}}),
+    );
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0"]);
+    rig.log.hang_stop_and_wait.store(true, Ordering::SeqCst);
+    // The config cut: preset change → Replace { prev } → prev.stop_and_wait hangs.
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off", "preset": "1080p15-2mbps"}}),
+    );
+    m.reapply().unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let captures_before = rig.log.captures.lock().unwrap().len();
+    // SIGTERM while the old child is still in its EOS.
+    m.stop();
+    let (logs, guard) = capture_logs();
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    drop(guard);
     assert_eq!(
-        *rig.log.exit_reaps.lock().unwrap(),
-        vec![Duration::from_millis(500)]
+        *rig.log.exit_kills.lock().unwrap(),
+        vec!["720p15-1mbps".to_string()],
+        "the retiring (old-preset) supervisor was exit-killed"
     );
     let logs = logs.lock().unwrap().clone();
     assert!(
@@ -1217,6 +1256,48 @@ async fn the_shutdown_capture_gets_the_exit_cleanup_once() {
         )),
         "{logs:?}"
     );
+    // The released transition does not start the new preset after shutdown.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(rig.log.captures.lock().unwrap().len(), captures_before);
+    // Once its stop_and_wait returned it left the retiring list: a second
+    // cleanup has nothing to kill.
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    assert_eq!(rig.log.exit_kills.lock().unwrap().len(), 1);
+}
+
+/// review-wp5-r2 R-WP5R-6: every SIGKILL first, then ONE wait with a TOTAL
+/// bound — two killed children (two cameras) whose exits are never observed
+/// cost 500 ms in all, not 500 ms each; both are reported.
+#[tokio::test(start_paused = true)]
+async fn the_exit_cleanup_waits_once_with_a_total_bound() {
+    let mut rig = Rig::new("exit-reap-total");
+    rig.cameras = vec!["cam0".into(), "cam1".into()];
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off", "spawnStaggerSecs": 0}}),
+    );
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0", "cam1"]);
+    rig.log.exit_never.store(true, Ordering::SeqCst);
+    m.stop();
+    let (logs, guard) = capture_logs();
+    let t0 = tokio::time::Instant::now();
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    let took = t0.elapsed();
+    drop(guard);
+    assert_eq!(
+        took,
+        Duration::from_millis(500),
+        "one TOTAL bound for both children"
+    );
+    let logs = logs.lock().unwrap().clone();
+    for cam in ["cam0", "cam1"] {
+        assert!(
+            logs.iter().any(|l| l.starts_with(&format!("[recording] capture {cam} still running at exit"))),
+            "{logs:?}"
+        );
+    }
 }
 
 /// review-wp2 N1 (manager side): `onSegmentClosed: () => void this.runEnforce()`

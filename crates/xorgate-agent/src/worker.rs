@@ -898,27 +898,76 @@ async fn run(args: &[String]) -> Result<i32> {
     // to finish (execa `cleanup` SIGTERMs it, it writes its `close` audit
     // record); here SIGTERM + a bounded wait before the runtime drop.
     source.shutdown_children().await;
-    // D41 (ruling 2026-11-06): capture children still in their EOS are killed
-    // and waited for (≤ 500 ms each), and their /dev/shm segments unlinked,
-    // instead of being SIGKILLed unreaped by the runtime drop.
-    if let Some(m) = hooks.manager() {
-        m.reap_capture_at_exit(crate::recording::CAPTURE_EXIT_REAP_BOUND)
-            .await;
-    }
     // `clockTrust?.stop()` (`worker.ts:1497` @ 09da38d), after `recording.stop()`.
     if let Some(t) = &clock_trust {
         t.stop();
     }
-    ctx.tracker.close();
-    let _ = tokio::time::timeout(Duration::from_millis(500), ctx.tracker.wait()).await;
+    // D41 (rulings 2026-11-06): capture children still in their EOS are
+    // SIGKILLed, waited for (≤ 500 ms in TOTAL) and their /dev/shm segments
+    // unlinked, instead of being SIGKILLed unreaped by the runtime drop —
+    // AFTER the tracker wait (review-wp5-r2 R-WP5R-2: the SIGKILL lands no
+    // earlier than the runtime drop's kill_on_drop did) and before the tape
+    // close (so the SIGKILL is taped). Their fragments are left to the next
+    // boot's recovery (R-WP5R-1).
+    after_tracker_wait(&ctx.tracker, Duration::from_millis(500), async {
+        if let Some(m) = hooks.manager() {
+            m.reap_capture_at_exit(crate::recording::CAPTURE_EXIT_REAP_BOUND)
+                .await;
+        }
+    })
+    .await;
     ctx.tape.close();
     sd_notify(&[sd_notify::NotifyState::Stopping]);
     Ok(code)
 }
 
+/// The shutdown tail (review-wp5-r2 R-WP5R-2): close the task tracker, wait
+/// ≤ `bound` for the supervised subsystem tasks, THEN run `then` (the D41
+/// exit cleanup) — so its SIGKILL can never precede the tracker wait, after
+/// which the runtime drop's `kill_on_drop` used to land.
+async fn after_tracker_wait<F: std::future::Future<Output = ()>>(
+    tracker: &tokio_util::task::TaskTracker,
+    bound: Duration,
+    then: F,
+) {
+    tracker.close();
+    let _ = tokio::time::timeout(bound, tracker.wait()).await;
+    then.await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-WP5R-2: the exit cleanup runs only after the tracker wait (a task
+    /// still finishing delays it), and the wait stays bounded.
+    #[tokio::test(start_paused = true)]
+    async fn the_exit_cleanup_runs_after_the_tracker_wait() {
+        let at = |tracked_ms: u64| async move {
+            let tracker = tokio_util::task::TaskTracker::new();
+            tracker.spawn(tokio::time::sleep(Duration::from_millis(tracked_ms)));
+            let t0 = tokio::time::Instant::now();
+            let ran = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let r = ran.clone();
+            after_tracker_wait(&tracker, Duration::from_millis(500), async move {
+                *r.lock().unwrap() = Some(t0.elapsed());
+            })
+            .await;
+            let v = *ran.lock().unwrap();
+            v
+        };
+        assert_eq!(
+            at(200).await,
+            Some(Duration::from_millis(200)),
+            "after the 200 ms task"
+        );
+        assert_eq!(
+            at(5_000).await,
+            Some(Duration::from_millis(500)),
+            "bounded at 500 ms"
+        );
+        assert_eq!(at(0).await, Some(Duration::ZERO));
+    }
 
     /// D38 (Phase 5b): `sim` mode emits no synthetic `obd` group, whatever the
     /// boot hardware block declares (the TS `createSimulator({obd: true})`,

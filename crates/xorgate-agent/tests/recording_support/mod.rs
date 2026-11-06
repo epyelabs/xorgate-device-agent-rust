@@ -7,9 +7,8 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use indexmap::IndexMap;
 use xorgate_agent::ctx::BoxFut;
@@ -87,8 +86,15 @@ pub struct Log {
     pub finalize_calls: AtomicUsize,
     /// D41: start-up shm sweeps, and `finalize_calls` at the time of each.
     pub sweeps: Mutex<Vec<usize>>,
-    /// D41: agent-exit capture cleanups, with the bound each was given.
-    pub exit_reaps: Mutex<Vec<Duration>>,
+    /// D41: agent-exit cleanups: the preset of every supervisor exit-killed.
+    pub exit_kills: Mutex<Vec<String>>,
+    /// R-WP5R-3: when set, a supervisor's `stop_and_wait` hangs (its child
+    /// "in its EOS") until the exit cleanup kills it.
+    pub hang_stop_and_wait: AtomicBool,
+    /// R-WP5R-6: when set, an exit-killed child's exit is never observed
+    /// (its watch sender is held here, never sent).
+    pub exit_never: AtomicBool,
+    pub exit_never_tx: Mutex<Vec<tokio::sync::watch::Sender<bool>>>,
     pub recover_calls: AtomicUsize,
     pub disks: AtomicUsize,
     pub enforces: AtomicUsize,
@@ -117,6 +123,10 @@ pub struct FakeCapture {
     /// (stream key, index into log.spawns) of the live children.
     live: Mutex<Vec<(String, usize)>>,
     on_spawned: Arc<dyn Fn(&str) + Send + Sync>,
+    /// R-WP5R-3: released by `exit_kill` (a hung `stop_and_wait`).
+    killed: Arc<tokio::sync::Notify>,
+    /// The cameras it was built with (one exit-killed child each).
+    cams: Vec<String>,
 }
 
 impl FakeCapture {
@@ -172,11 +182,50 @@ impl CaptureApi for FakeCapture {
         self.stop_all();
     }
     fn stop_and_wait(&self) -> BoxFut<'_, ()> {
-        Box::pin(async move { self.stop_all() })
+        Box::pin(async move {
+            if self.log.hang_stop_and_wait.load(Ordering::SeqCst) {
+                self.killed.notified().await;
+            }
+            self.stop_all()
+        })
     }
-    fn reap_at_exit(&self, bound: Duration) -> BoxFut<'_, Vec<(String, Vec<String>)>> {
-        self.log.exit_reaps.lock().unwrap().push(bound);
-        Box::pin(async { vec![("cam0".to_string(), vec!["shmpipe. 1162.    0".to_string()])] })
+    fn exit_kill(&self) -> Vec<xorgate_agent::recording::capture::ExitKilled> {
+        self.log
+            .exit_kills
+            .lock()
+            .unwrap()
+            .push(self.preset.to_string());
+        self.killed.notify_one();
+        let never = self.log.exit_never.load(Ordering::SeqCst);
+        self.cams
+            .iter()
+            .enumerate()
+            .map(|(i, cam)| {
+                let (tx, rx) = tokio::sync::watch::channel(!never);
+                if never {
+                    self.log.exit_never_tx.lock().unwrap().push(tx);
+                }
+                xorgate_agent::recording::capture::ExitKilled {
+                    key: cam.clone(),
+                    pid: Some(1162 + i as u32),
+                    exited: rx,
+                }
+            })
+            .collect()
+    }
+    fn exit_finish(
+        &self,
+        killed: &[xorgate_agent::recording::capture::ExitKilled],
+    ) -> Vec<(String, Vec<String>)> {
+        killed
+            .iter()
+            .map(|k| {
+                (
+                    k.key.clone(),
+                    vec![format!("shmpipe.{:>5}.    0", k.pid.unwrap_or(0))],
+                )
+            })
+            .collect()
     }
     fn active_session_ids(&self) -> HashSet<String> {
         HashSet::new()
@@ -344,6 +393,8 @@ impl RecordingBackend for FakeBackend {
             preset: spec.preset.name,
             live: Mutex::new(Vec::new()),
             on_spawned: spec.on_spawned.clone(),
+            killed: Arc::new(tokio::sync::Notify::new()),
+            cams: spec.cameras.iter().map(|c| c.stream_key.clone()).collect(),
         });
         // `launch()`: index 0 spawns now; later cameras after index × stagger
         // (the fixtures only use stagger 0 with two cameras).

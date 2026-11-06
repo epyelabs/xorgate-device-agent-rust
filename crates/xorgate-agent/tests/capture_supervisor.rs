@@ -857,6 +857,11 @@ async fn d41_a_capture_still_running_at_exit_is_killed_and_its_segment_unlinked(
     // shmsink's own "%5d" form (space-padded below 10000; the pid width
     // depends on the host — padded matching is pinned by the reaper's tests).
     assert_eq!(name, format!("shmpipe.{pid:>5}.    0"));
+    // Two fragments on disk (the newest one is the child's open file).
+    let sid = first_session(&sup);
+    let sdir = home.session_dir("cam0", &sid);
+    std::fs::write(sdir.join("00000.mp4"), vec![1u8; 4096]).unwrap();
+    std::fs::write(sdir.join("00001.mp4"), vec![1u8; 2048]).unwrap();
     // The shutdown `stop()`: SIGINT, ignored — the child is still running.
     sup.stop();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -873,8 +878,11 @@ async fn d41_a_capture_still_running_at_exit_is_killed_and_its_segment_unlinked(
         "bounded: {:?}",
         t1.elapsed()
     );
-    assert_eq!(killed.len(), 1, "{killed:?}");
-    assert_eq!(killed[0].0, "cam0");
+    assert_eq!(
+        killed,
+        vec![("cam0".to_string(), vec![name.clone()])],
+        "the real count"
+    );
     assert!(
         !devshm.join(&name).exists(),
         "the child's segment is unlinked"
@@ -892,6 +900,32 @@ async fn d41_a_capture_still_running_at_exit_is_killed_and_its_segment_unlinked(
         .kill_and_reap_at_exit(Duration::from_millis(500))
         .await
         .is_empty());
+    // review-wp5-r2 R-WP5R-1: the exit cleanup did NOT finalise anything —
+    // the newest (killed mid-EOS) fragment has NO sidecar at exit, exactly as
+    // when the runtime drop killed it unobserved (and as the TS) …
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !sdir.join("00001.json").exists(),
+        "no newest-fragment sidecar at exit"
+    );
+    // … so the next boot's recovery stamps it finalized:false.
+    let rec = recover_orphan_video_sessions(
+        &home.video(),
+        &RecoverOpts {
+            active_session_ids: &HashSet::new(),
+            clock: &AgentClock::following_tokio(1_760_000_000_000),
+        },
+    );
+    assert!(rec.recovered >= 1, "recovered {}", rec.recovered);
+    assert_eq!(
+        read_json(&sdir.join("00001.json"))["finalized"],
+        Value::Bool(false)
+    );
+    assert!(
+        !has_event(&ev, "exited"),
+        "no capture event from the exit cleanup's onExit: {:?}",
+        ev.lock().unwrap()
+    );
 }
 
 /// D41 agent-exit cleanup, the timeout arm: a child whose exit is never
