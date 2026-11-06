@@ -525,6 +525,15 @@ pub(super) mod testing {
         LATE.store(1, Ordering::SeqCst);
     }
 
+    pub fn take_late_for_test() {
+        LATE.store(0, Ordering::SeqCst);
+    }
+
+    /// As if the wait thread had taken the ARMED watch to PENDING.
+    pub fn set_intr_pending() {
+        INTR.store(PENDING, Ordering::SeqCst);
+    }
+
     pub fn intr_is_off() -> bool {
         INTR.load(Ordering::SeqCst) == OFF
     }

@@ -601,20 +601,20 @@ impl Launch {
         }
     }
 
-    /// `intr_handler` (`gst-launch.c:504-520`), dispatched on the loop thread.
+    /// `intr_handler` (`gst-launch.c:504-520`), dispatched on the loop thread,
+    /// in gst-launch's order: print `handling interrupt.`, post the
+    /// interrupt, and only then remove the one-shot watch (G_SOURCE_REMOVE →
+    /// SIG_DFL). A second SIGINT inside that window coalesces into the
+    /// pending dispatch (swallowed), one after it takes the default action.
     ///
-    /// The host removes the watch BEFORE printing `handling interrupt.`;
-    /// gst-launch prints, posts, and only then removes it (G_SOURCE_REMOVE →
-    /// SIG_DFL). In that sub-millisecond gst-launch window a second SIGINT is
-    /// still caught by GLib's handler with no source left, i.e. SWALLOWED
-    /// (review-wp0-r2 µs probe: swallowed 7/10 at 15–38 µs after the line,
-    /// fatal 3/10 at 110–125 µs); the host dies on ANY second SIGINT after
-    /// the line. Divergence D50 (wp0.md). gst-launch's order (mutation MH)
-    /// reproduces the window but, on the dev build, fails transcripts 1
-    /// (`SigCgt@after_intr`) and 2b, whose ~1 ms reaction outruns the dev
-    /// host's print→removal gap; WP1 retries MH on a release build.
+    /// WP1 (mutation MH of review-wp0-r2, adopted; D50 dropped): on a RELEASE
+    /// build the rig transcripts 1 (`SigCgt@after_intr`) and 2b (death by the
+    /// second SIGINT) PASS with this order (2 × 15/15). The window is the
+    /// same mechanism as gst-launch's but narrower (the host's print → post →
+    /// removal is a few µs; GLib's return-and-remove ~50-75 µs: a second
+    /// SIGINT 15-43 µs after the line was swallowed 4/10 by gst-launch, 0/10
+    /// by the host): timing only, not an ordering difference.
     fn intr_handler(&mut self) {
-        sys::dispatched(libc::SIGINT);
         print("handling interrupt.\n");
         let s = gst::Structure::builder("GstLaunchInterrupt")
             .field("message", "Pipeline interrupted")
@@ -624,6 +624,7 @@ impl Launch {
                 .src(&self.pipeline)
                 .build(),
         );
+        sys::dispatched(libc::SIGINT);
     }
 
     /// `hup_handler` (`gst-launch.c:523-540`).
@@ -802,6 +803,59 @@ mod tests {
             _ => None,
         };
         assert_eq!(name.as_deref(), Some("GstLaunchInterrupt"));
+        sys::testing::reset();
+    }
+
+    /// WP1 (MH adopted, D50 dropped): gst-launch's order. When the
+    /// interrupt is POSTED the SIGINT watch is still installed (a second
+    /// SIGINT then coalesces); it is removed only after, before the handler
+    /// returns. The old host order removed it before the print.
+    #[test]
+    fn intr_handler_removes_the_watch_only_after_print_and_post() {
+        let _g = sys::testing::lock();
+        sys::testing::reset();
+        gst::init().unwrap();
+        let pipeline: gst::Element = gst::Pipeline::new().upcast();
+        let bus = pipeline.bus().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(None::<bool>));
+        let s2 = seen.clone();
+        bus.set_sync_handler(move |_, m| {
+            if let gst::MessageView::Application(a) = m.view() {
+                if a.structure()
+                    .is_some_and(|s| s.name() == "GstLaunchInterrupt")
+                {
+                    *s2.lock().unwrap() = Some(sys::testing::intr_is_off());
+                }
+            }
+            gst::BusSyncReply::Pass
+        });
+        let mut l = Launch {
+            pipeline: pipeline.clone(),
+            bus: bus.clone(),
+            eos_on_shutdown: true,
+            is_live: false,
+            buffering: false,
+            prerolled: false,
+            in_progress: false,
+            waiting_eos: false,
+            tfthen: None,
+            shared: Arc::new(Shared::default()),
+            timing: None,
+            pending_end: None,
+            diag: None,
+            playing_seen: false,
+        };
+        sys::testing::prime_race_path_sigint(&bus); // INTR = ARMED
+        sys::testing::take_late_for_test();
+        sys::testing::set_intr_pending();
+        l.intr_handler();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(false),
+            "watch removed before the post"
+        );
+        assert!(sys::testing::intr_is_off(), "watch not removed at all");
+        bus.unset_sync_handler();
         sys::testing::reset();
     }
 

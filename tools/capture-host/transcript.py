@@ -92,10 +92,11 @@ def scenarios():
             argv=record,
             actions=playing + [("sleep", 4.0), ("signal", "SIGINT"), ("line", r"^handling interrupt\.", 5), ("signal", "SIGINT")],
             # Death by the second SIGINT holds only because this driver reacts
-            # ~1 ms after the line: gst-launch SWALLOWS a second SIGINT that
-            # lands within ~0.1 ms of `handling interrupt.` (its watch is still
-            # installed, with no source left; review-wp0-r2 µs probe), the host
-            # never does (D50). How many tail lines print before death is
+            # ~1 ms after the line: both programs remove the watch only after
+            # printing `handling interrupt.` and posting the interrupt (the
+            # host since WP1, mutation MH), so a second SIGINT inside that
+            # window is SWALLOWED (gst-launch's window ~50-75 µs, the host's a
+            # few µs; d50probe.py). How many tail lines print before death is
             # timing-only in both, so only the stdout AFTER the line is
             # waived (R-WP0-8); everything through it is compared exactly.
             racy_tail={"1": r"^handling interrupt\.$"},

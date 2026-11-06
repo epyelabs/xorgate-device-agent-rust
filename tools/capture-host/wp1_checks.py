@@ -190,7 +190,7 @@ def cmd_timing(a):
     if any(TIMING_RX.match(ln) for _, _, ln in g["lines"]):
         errs.append("gst-launch printed a timing line?")
     ids = [s["id"] for s in starts]
-    seqs = [int(f[:5]) for f in h["files"]]
+    seqs = [int(f[:5]) if f[:5].isdigit() else f for f in h["files"]]
     if ids != seqs:
         errs.append(f"XG-FRAGMENT ids {ids} != %05d sequences {seqs}")
     lags = [s["lagMs"] for s in starts]
@@ -226,7 +226,9 @@ def cmd_timing(a):
     durs = [discover_duration_ms(os.path.join(h["out"], f)) for f in h["files"]]
     res["fileDurationsMs"] = durs
     for i, d in enumerate(spacing):
-        if durs[i] is not None and abs(d - durs[i]) > frame_ms + 20:
+        if i >= len(durs):
+            errs.append(f"fragment {i}: no file for its startTs delta {d}")
+        elif durs[i] is not None and abs(d - durs[i]) > frame_ms + 20:
             errs.append(f"fragment {i}: startTs delta {d} vs file duration {durs[i]}")
     res["exit"] = {"host": h["rc"], "gst": g["rc"]}
     res["hostStderr"] = [ln for fd, _, ln in h["lines"] if fd == 2]

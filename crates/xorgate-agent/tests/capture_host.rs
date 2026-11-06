@@ -534,3 +534,62 @@ async fn diag_probes_are_off_by_default_and_name_a_starved_branch_when_on() {
         assert!(!run.out.iter().any(|l| l.starts_with("XG-")), "{run:?}");
     }
 }
+
+/// WP1: nothing of the host is reachable from the agent's default path. The
+/// agent names the host only to DISPATCH `__capture-host` (`main.rs`) and to
+/// build the `HostBackend` spec (`backend.rs`, selected only by
+/// `XORGATE_CAPTURE_BACKEND=host`; its default is pinned by
+/// `backend::tests::backend_from_env_is_gst_launch_when_the_switch_is_unset`).
+/// The timing callbacks, the nice sync and the diag probes live in
+/// `capture_host/` and run only inside that child; the diag switch is named
+/// nowhere else.
+#[test]
+fn the_host_is_reachable_only_through_its_dispatch_and_backend() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut refs = Vec::new();
+    let mut diag_env = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let rel = p.strip_prefix(&src).unwrap().display().to_string();
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            if text.contains("XORGATE_CAPTURE_HOST_DIAG") {
+                diag_env.push(rel.clone());
+            }
+            if rel.starts_with("capture_host/") {
+                continue;
+            }
+            for l in text.lines() {
+                if l.contains("capture_host::") {
+                    let item = l.split("capture_host::").nth(1).unwrap_or("");
+                    let item: String = item
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    refs.push(format!("{rel} {item}"));
+                }
+            }
+        }
+    }
+    refs.sort();
+    refs.dedup();
+    assert_eq!(
+        refs,
+        [
+            "main.rs SUBCOMMAND",
+            "main.rs main",
+            "recording/capture/backend.rs PROCESS_NAME",
+            "recording/capture/backend.rs SUBCOMMAND",
+        ]
+    );
+    assert!(
+        diag_env.contains(&"capture_host/diag.rs".to_string())
+            && diag_env.iter().all(|f| f.starts_with("capture_host/")),
+        "{diag_env:?}"
+    );
+}
