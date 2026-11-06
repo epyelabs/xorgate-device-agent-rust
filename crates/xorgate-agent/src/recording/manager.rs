@@ -265,6 +265,31 @@ pub struct UploaderSpec {
     pub on_uploaded: NotifyFn,
 }
 
+/// The D41 agent-exit cleanup over a set of supervisors (R-WP5R-6; split out
+/// of [`RecordingManager::reap_capture_at_exit`] so the cross-supervisor
+/// order is testable, review-wp5-r3 R-WP5R3-2): EVERY supervisor's
+/// `exit_kill` first (all SIGKILLs land before any wait), then ONE wait with a
+/// TOTAL `bound` for every killed child, then each `exit_finish`. Returns
+/// `(key, segments unlinked)` per killed child, in supervisor order.
+#[doc(hidden)]
+pub async fn exit_cleanup(
+    caps: &[Arc<dyn CaptureApi>],
+    bound: Duration,
+) -> Vec<(String, Vec<String>)> {
+    let killed: Vec<_> = caps.iter().map(|c| c.exit_kill()).collect();
+    let _ = tokio::time::timeout(bound, async {
+        for k in killed.iter().flatten() {
+            let mut rx = k.exited.clone();
+            let _ = rx.wait_for(|v| *v).await;
+        }
+    })
+    .await;
+    caps.iter()
+        .zip(&killed)
+        .flat_map(|(c, k)| c.exit_finish(k))
+        .collect()
+}
+
 /// Builds the components and runs the crash-recovery passes.
 pub trait RecordingBackend: Send + Sync {
     /// `finalizeOrphanSegments(telemetryRoot)` — count finalized.
@@ -786,21 +811,11 @@ impl RecordingManager {
             v.append(&mut sl.retiring);
             v
         };
-        let killed: Vec<_> = caps.iter().map(|c| c.exit_kill()).collect();
-        let _ = tokio::time::timeout(bound, async {
-            for k in killed.iter().flatten() {
-                let mut rx = k.exited.clone();
-                let _ = rx.wait_for(|v| *v).await;
-            }
-        })
-        .await;
-        for (c, k) in caps.iter().zip(&killed) {
-            for (key, segs) in c.exit_finish(k) {
-                tracing::info!(
-                    "[recording] capture {key} still running at exit: killed, {} shm segment(s) unlinked {segs:?}",
-                    segs.len()
-                );
-            }
+        for (key, segs) in exit_cleanup(&caps, bound).await {
+            tracing::info!(
+                "[recording] capture {key} still running at exit: killed, {} shm segment(s) unlinked {segs:?}",
+                segs.len()
+            );
         }
     }
 

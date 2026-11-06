@@ -1294,6 +1294,123 @@ async fn a_supervisor_inside_a_pending_stop_all_gets_the_exit_cleanup() {
     );
 }
 
+/// review-wp5-r3 R-WP5R3-1: a COMPLETED transition removes its supervisor
+/// from the retiring list (`retired()`), for both arms: a Replace (preset
+/// change) and a StopAndWait (every camera disabled) that finished long before
+/// SIGTERM must not be exit-killed — only the live supervisor is.
+#[tokio::test(start_paused = true)]
+async fn completed_transitions_leave_the_retiring_list() {
+    let rig = Rig::new("exit-reap-retired");
+    let v = |preset: &str, cam0: bool| json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off", "preset": preset, "cameras": {"cam0": cam0}}});
+    rig.save_recording(&v("720p15-1mbps", true));
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    // Replace: 720p15-1mbps → 720p15-2mbps (completes).
+    rig.save_recording(&v("720p15-2mbps", true));
+    m.reapply().unwrap();
+    m.settled().await;
+    // StopAll: every camera disabled (completes).
+    rig.save_recording(&v("720p15-2mbps", false));
+    m.reapply().unwrap();
+    m.settled().await;
+    // A live supervisor again.
+    rig.save_recording(&v("1080p15-2mbps", true));
+    m.reapply().unwrap();
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0"]);
+    m.stop();
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    assert_eq!(
+        *rig.log.exit_kills.lock().unwrap(),
+        vec!["1080p15-2mbps".to_string()],
+        "only the live supervisor; the two retired ones left the list"
+    );
+}
+
+/// review-wp5-r3 R-WP5R3-2: across SUPERVISORS (the shutdown capture plus a
+/// retiring one, both with an exit never observed), every SIGKILL lands
+/// before the wait and the whole cleanup costs ONE 500 ms bound.
+#[tokio::test(start_paused = true)]
+async fn the_exit_cleanup_kills_every_supervisor_before_one_total_wait() {
+    use std::sync::Mutex as M;
+    use xorgate_agent::recording::capture::ExitKilled;
+    use xorgate_agent::recording::manager::{exit_cleanup, CaptureApi, CaptureStatus};
+    struct Never {
+        key: &'static str,
+        kills: Arc<M<Vec<(&'static str, tokio::time::Instant)>>>,
+        tx: M<Vec<tokio::sync::watch::Sender<bool>>>,
+    }
+    impl CaptureApi for Never {
+        fn start(&self) {}
+        fn set_cameras(
+            &self,
+            _c: Vec<xorgate_core::video_capture::CaptureCamera>,
+        ) -> xorgate_agent::ctx::BoxFut<'_, ()> {
+            Box::pin(async {})
+        }
+        fn stop(&self) {}
+        fn stop_and_wait(&self) -> xorgate_agent::ctx::BoxFut<'_, ()> {
+            Box::pin(async {})
+        }
+        fn active_session_ids(&self) -> std::collections::HashSet<String> {
+            Default::default()
+        }
+        fn any_recording(&self) -> bool {
+            false
+        }
+        fn status(&self) -> Vec<CaptureStatus> {
+            Vec::new()
+        }
+        fn exit_kill(&self) -> Vec<ExitKilled> {
+            self.kills
+                .lock()
+                .unwrap()
+                .push((self.key, tokio::time::Instant::now()));
+            let (tx, rx) = tokio::sync::watch::channel(false); // never exits
+            self.tx.lock().unwrap().push(tx);
+            vec![ExitKilled {
+                key: self.key.into(),
+                pid: Some(7),
+                exited: rx,
+            }]
+        }
+        fn exit_finish(&self, k: &[ExitKilled]) -> Vec<(String, Vec<String>)> {
+            k.iter()
+                .map(|k| (k.key.clone(), vec!["seg".to_string()]))
+                .collect()
+        }
+    }
+    let kills = Arc::new(M::new(Vec::new()));
+    let cap = |key| -> Arc<dyn CaptureApi> {
+        Arc::new(Never {
+            key,
+            kills: kills.clone(),
+            tx: M::new(Vec::new()),
+        })
+    };
+    let caps = vec![cap("shutdown"), cap("retiring")];
+    let t0 = tokio::time::Instant::now();
+    let out = exit_cleanup(&caps, Duration::from_millis(500)).await;
+    assert_eq!(t0.elapsed(), Duration::from_millis(500), "ONE total bound");
+    let k = kills.lock().unwrap().clone();
+    assert_eq!(
+        k.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        vec!["shutdown", "retiring"]
+    );
+    assert!(
+        k.iter().all(|(_, at)| *at == t0),
+        "every SIGKILL before the wait: {k:?}"
+    );
+    assert_eq!(
+        out,
+        vec![
+            ("shutdown".to_string(), vec!["seg".to_string()]),
+            ("retiring".to_string(), vec!["seg".to_string()])
+        ]
+    );
+}
+
 /// review-wp5-r2 R-WP5R-6: every SIGKILL first, then ONE wait with a TOTAL
 /// bound — two killed children (two cameras) whose exits are never observed
 /// cost 500 ms in all, not 500 ms each; both are reported.
