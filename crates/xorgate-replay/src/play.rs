@@ -176,6 +176,16 @@ pub struct PlayArgs {
     /// behaviour) instead of binding the tape's fixed meminfo over it.
     #[arg(long)]
     pub host_meminfo: bool,
+    /// Phase 5b WP5 (item 4): the preload that answers statvfs() of the root
+    /// filesystem from [`RIG_STATVFS_ROOT`] for BOTH agents (and the TS's `df`
+    /// child) — `tools/replay/statvfs-shim/rig_statvfs.c`, built by
+    /// build-bins.sh. Missing file = the host's disk, with a warning.
+    #[arg(long, default_value = "/rig/cache/bin/rig-statvfs.so")]
+    pub statvfs_shim: PathBuf,
+    /// Read the rig VM's own root filesystem for `disk_usage` (the pre-WP5
+    /// behaviour) instead of the fixed [`RIG_STATVFS_ROOT`].
+    #[arg(long)]
+    pub host_disk: bool,
     /// Phase 4 (E12): the REAL camera-rotation helper the `sudo` shim executes
     /// for `xorgate-camrotate` (default: the Rust repo's vendored
     /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
@@ -1011,6 +1021,14 @@ impl Agent {
             if p4_state.pi_dir.is_none() {
                 p4_state.pi_dir = Some(work.join("no-pi"));
             }
+        }
+        // Phase 5b WP5 (item 4): `disk_usage` (and the recording disk
+        // manager's free-space probe of a root-fs path) reads the fixture, not
+        // the shared Docker VM's disk that other containers and the run's own
+        // recordings move (phase-3 gate D3 FINAL `.jsrs09`).
+        for (k, v) in disk_isolation_env(args) {
+            env.retain(|(e, _)| *e != k);
+            env.push((k, v));
         }
         for (k, v) in p4_env {
             env.retain(|(ek, _)| *ek != k);
@@ -2507,6 +2525,30 @@ pub async fn run(args: PlayArgs) -> Result<()> {
 /// (ts:src/hardware/system.ts:86-98, rs xorgate-hal system.rs `read_memory`).
 pub const RIG_MEMINFO: &str = "MemTotal:        8245360 kB\nMemFree:         5990000 kB\nMemAvailable:    6500000 kB\nBuffers:           80000 kB\nCached:           600000 kB\nSwapCached:            0 kB\nSwapTotal:        204796 kB\nSwapFree:         204796 kB\n";
 
+/// The fixed root filesystem every agent's `disk_usage` reads (Phase 5b WP5
+/// item 4): `f_blocks:f_bfree:f_bavail:f_frsize` = 30 GB, 19.2 % used (df's
+/// `Used` = blocks − bfree, as both agents compute it), 5 % reserved.
+pub const RIG_STATVFS_ROOT: &str = "7500000:6060000:5685000:4096";
+
+/// `LD_PRELOAD` + `RIG_STATVFS_ROOT` for an agent, or nothing (with a
+/// warning) under `--host-disk` or when the shim was not built.
+fn disk_isolation_env(args: &PlayArgs) -> Vec<(String, String)> {
+    if args.host_disk {
+        return Vec::new();
+    }
+    if !args.statvfs_shim.is_file() {
+        eprintln!(
+            "rig: WARNING: {} missing (run build-bins.sh) — disk_usage reads the HOST disk",
+            args.statvfs_shim.display()
+        );
+        return Vec::new();
+    }
+    vec![
+        ("LD_PRELOAD".into(), args.statvfs_shim.display().to_string()),
+        ("RIG_STATVFS_ROOT".into(), RIG_STATVFS_ROOT.into()),
+    ]
+}
+
 /// Is the per-agent meminfo bind usable here (not `--host-meminfo`, and the
 /// rig may `unshare -m`)? Probed once per process.
 fn meminfo_isolation(args: &PlayArgs) -> bool {
@@ -3298,6 +3340,44 @@ mod tests {
         assert!(log.released(&d, now).is_empty());
         assert_eq!(log.released(&d, now + 1_500).len(), 1);
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Phase 5b WP5 item 4: both agents get the statvfs preload + the fixture
+    /// (both agents' formulas give 19.2 %); `--host-disk` or a missing shim
+    /// gives nothing.
+    #[test]
+    fn disk_isolation_env_is_the_preload_and_the_fixture() {
+        use clap::Parser;
+        let shim = std::env::temp_dir().join(format!("rig-statvfs-{}.so", std::process::id()));
+        std::fs::write(&shim, b"x").unwrap();
+        #[derive(clap::Parser)]
+        struct W {
+            #[command(flatten)]
+            play: PlayArgs,
+        }
+        let parse = |extra: &[&str]| {
+            let mut v = vec!["x", "--tape", "t", "--out", "o"];
+            v.extend_from_slice(extra);
+            W::parse_from(v).play
+        };
+        let s = shim.display().to_string();
+        let env = disk_isolation_env(&parse(&["--statvfs-shim", &s]));
+        assert_eq!(
+            env,
+            vec![
+                ("LD_PRELOAD".to_string(), s.clone()),
+                ("RIG_STATVFS_ROOT".to_string(), RIG_STATVFS_ROOT.to_string())
+            ]
+        );
+        assert!(disk_isolation_env(&parse(&["--statvfs-shim", &s, "--host-disk"])).is_empty());
+        assert!(disk_isolation_env(&parse(&["--statvfs-shim", "/nonexistent.so"])).is_empty());
+        let _ = std::fs::remove_file(&shim);
+        let f: Vec<u64> = RIG_STATVFS_ROOT
+            .split(':')
+            .map(|x| x.parse().unwrap())
+            .collect();
+        let u = xorgate_core::system::disk_usage_from_statvfs(f[0], f[1], f[3]).unwrap();
+        assert_eq!((u.used_pct * 10.0).round() / 10.0, 19.2);
     }
 
     #[test]
