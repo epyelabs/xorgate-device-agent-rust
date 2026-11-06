@@ -1265,7 +1265,7 @@ async fn a_supervisor_inside_a_pending_transition_gets_the_exit_cleanup() {
     assert_eq!(rig.log.exit_kills.lock().unwrap().len(), 1);
 }
 
-/// R-WP5R-3, the `StopAll` arm: video switched OFF hands the old supervisor
+/// R-WP5R-3, the `StopAll` arm: every camera disabled hands the old supervisor
 /// to a pending `StopAndWait`; its child is still in its EOS at SIGTERM — the
 /// exit cleanup must cover it too.
 #[tokio::test(start_paused = true)]
@@ -1278,7 +1278,11 @@ async fn a_supervisor_inside_a_pending_stop_all_gets_the_exit_cleanup() {
     m.start().await;
     m.settled().await;
     rig.log.hang_stop_and_wait.store(true, Ordering::SeqCst);
-    rig.save_recording(&json!({"telemetry": {"enabled": true}, "video": {"enabled": false}}));
+    // Every camera disabled → no camera left → StopAll (video:false alone
+    // would keep a bridge-only Replace).
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off", "preset": "720p15-1mbps", "cameras": {"cam0": false}}}),
+    );
     m.reapply().unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
     m.stop();
