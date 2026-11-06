@@ -86,7 +86,7 @@ use xorgate_hal::fragment_stat::{hrtime_ns, monotonic_ms, size_or_zero};
 use xorgate_hal::io::{null_tape, ChildExitRec, ChildSpawnRec, FsOp, TapeSink, ROLE_CAPTURE};
 use xorgate_hal::{fs_watch, shm_reaper};
 
-pub use backend::{CaptureBackend, CaptureChild, GstLaunchBackend};
+pub use backend::{backend_from_env, CaptureBackend, CaptureChild, GstLaunchBackend, HostBackend};
 pub use recover::{recover_orphan_video_sessions, RecoverOpts, RecoverResult};
 pub use sweep::{sweep_session_dir, write_session_manifest, SweepIo, SweepOutcome};
 pub use xorgate_core::video_capture::CaptureCamera;

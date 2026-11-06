@@ -91,6 +91,7 @@ pub fn master_spec(
         args: vec![channel.into(), media_type.into(), source.into()],
         env: master_env(env, inherited_ld),
         cwd: None,
+        arg0: None,
     }
 }
 

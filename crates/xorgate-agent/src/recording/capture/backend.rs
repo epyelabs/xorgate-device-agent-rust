@@ -10,8 +10,17 @@
 //! The TS seam is `CaptureSpawn = typeof runStream` (`video-capture.ts:264`);
 //! `run.handle.stop(sig)` is execa's `child.kill(sig)`: the child pid only,
 //! not its group (P11).
+//!
+//! Phase 7a WP0 adds [`HostBackend`]: the agent binary re-executed as
+//! `xorgate-capture __capture-host <the same tokens>` (`crate::capture_host`,
+//! gstreamer-rs in a supervised child, Q-A3/R1), spawned through the same
+//! `xorgate-hal::child` path so process group, `kill_on_drop`, pipes,
+//! signals and renice are unchanged. [`backend_from_env`] picks it only when
+//! `XORGATE_CAPTURE_BACKEND=host`; unset (the default) is today's
+//! [`GstLaunchBackend`], byte for byte.
 
 use std::io;
+use std::sync::{Arc, Once};
 
 use tokio::sync::mpsc::UnboundedReceiver;
 use xorgate_hal::child::{self, ChildEvent, ChildHandle, ChildSpec};
@@ -45,6 +54,51 @@ pub trait CaptureBackend: Send + Sync {
     fn spawn(&self, args: &[String]) -> (Box<dyn CaptureChild>, UnboundedReceiver<ChildEvent>);
 }
 
+/// The backend switch (phase-7a §Design 9). Unset/empty = `gst-launch`.
+pub const CAPTURE_BACKEND_ENV: &str = "XORGATE_CAPTURE_BACKEND";
+/// Overrides the program the host backend executes (the rig shim, the
+/// shared profile's blocking shim). Unset = the running agent binary.
+pub const CAPTURE_HOST_BIN_ENV: &str = "XORGATE_CAPTURE_HOST_BIN";
+
+/// Which capture backend a `XORGATE_CAPTURE_BACKEND` value selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    /// `gst-launch-1.0` (the default; byte parity with JS 09da38d).
+    GstLaunch,
+    /// The gstreamer-rs capture host.
+    Host,
+}
+
+/// `XORGATE_CAPTURE_BACKEND` → backend: unset or empty → `gst-launch`;
+/// `gst-launch` / `host` (trimmed, case-sensitive); anything else →
+/// `gst-launch` and `Err(value)` so the caller warns once.
+pub fn select_backend(value: Option<&str>) -> Result<BackendKind, String> {
+    match value.map(str::trim) {
+        None | Some("") | Some("gst-launch") => Ok(BackendKind::GstLaunch),
+        Some("host") => Ok(BackendKind::Host),
+        Some(other) => Err(other.to_string()),
+    }
+}
+
+/// The backend the process environment selects (read per supervisor build).
+/// An unknown value warns ONCE per process and falls back to `gst-launch`.
+pub fn backend_from_env() -> Arc<dyn CaptureBackend> {
+    let raw = std::env::var(CAPTURE_BACKEND_ENV).ok();
+    let kind = select_backend(raw.as_deref()).unwrap_or_else(|bad| {
+        static WARN: Once = Once::new();
+        WARN.call_once(|| {
+            tracing::warn!(
+                "[video-capture] {CAPTURE_BACKEND_ENV}={bad:?} is not gst-launch|host; using gst-launch"
+            )
+        });
+        BackendKind::GstLaunch
+    });
+    match kind {
+        BackendKind::GstLaunch => Arc::new(GstLaunchBackend::default()),
+        BackendKind::Host => Arc::new(HostBackend::from_env()),
+    }
+}
+
 /// `gst-launch-1.0` through `PATH` (P2).
 #[derive(Debug, Clone)]
 pub struct GstLaunchBackend {
@@ -66,6 +120,58 @@ impl CaptureBackend for GstLaunchBackend {
 
     fn spawn(&self, args: &[String]) -> (Box<dyn CaptureChild>, UnboundedReceiver<ChildEvent>) {
         let (handle, rx) = child::spawn(&ChildSpec::new(self.program.clone(), args.to_vec()));
+        (Box::new(GstChild(handle)), rx)
+    }
+}
+
+/// The capture host: `<exe> __capture-host <tokens…>` with `argv[0] =
+/// xorgate-capture`. `program()` is `xorgate-capture` (tape
+/// `child_spawn.argv[0]`); the tokens are exactly the gst-launch tokens.
+#[derive(Debug, Clone)]
+pub struct HostBackend {
+    exe: String,
+}
+
+impl HostBackend {
+    /// `/proc/self/exe` — the running binary's own inode, so a re-exec still
+    /// works after `xorgate-rs update` replaced the file on disk — unless
+    /// `XORGATE_CAPTURE_HOST_BIN` names another program.
+    pub fn from_env() -> Self {
+        let exe = std::env::var(CAPTURE_HOST_BIN_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "/proc/self/exe".to_string());
+        Self { exe }
+    }
+
+    /// A host backend executing `exe` (tests, rig).
+    pub fn with_exe(exe: impl Into<String>) -> Self {
+        Self { exe: exe.into() }
+    }
+
+    /// The program executed (not the tape name; see [`CaptureBackend::program`]).
+    pub fn exe(&self) -> &str {
+        &self.exe
+    }
+
+    /// The spawn spec for one capture argv.
+    pub fn spec(&self, args: &[String]) -> ChildSpec {
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push(crate::capture_host::SUBCOMMAND.to_string());
+        argv.extend_from_slice(args);
+        let mut spec = ChildSpec::new(self.exe.clone(), argv);
+        spec.arg0 = Some(crate::capture_host::PROCESS_NAME.to_string());
+        spec
+    }
+}
+
+impl CaptureBackend for HostBackend {
+    fn program(&self) -> &str {
+        crate::capture_host::PROCESS_NAME
+    }
+
+    fn spawn(&self, args: &[String]) -> (Box<dyn CaptureChild>, UnboundedReceiver<ChildEvent>) {
+        let (handle, rx) = child::spawn(&self.spec(args));
         (Box::new(GstChild(handle)), rx)
     }
 }
@@ -100,5 +206,48 @@ impl CaptureChild for GstChild {
         } else {
             Err(io::Error::last_os_error())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_switch_defaults_to_gst_launch() {
+        assert_eq!(select_backend(None), Ok(BackendKind::GstLaunch));
+        assert_eq!(select_backend(Some("")), Ok(BackendKind::GstLaunch));
+        assert_eq!(
+            select_backend(Some("gst-launch")),
+            Ok(BackendKind::GstLaunch)
+        );
+        assert_eq!(select_backend(Some(" host ")), Ok(BackendKind::Host));
+        assert_eq!(select_backend(Some("Host")), Err("Host".to_string()));
+        assert_eq!(
+            select_backend(Some("gstreamer")),
+            Err("gstreamer".to_string())
+        );
+    }
+
+    #[test]
+    fn host_spec_reexecs_with_the_unchanged_tokens() {
+        let b = HostBackend::with_exe("/opt/xorgate-rs/bin/xorgate-rs");
+        let toks: Vec<String> = [
+            "-e",
+            "videotestsrc",
+            "!",
+            "muxer=mp4mux fragment-duration=1000",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let spec = b.spec(&toks);
+        assert_eq!(spec.program, "/opt/xorgate-rs/bin/xorgate-rs");
+        assert_eq!(spec.arg0.as_deref(), Some("xorgate-capture"));
+        assert_eq!(spec.args[0], "__capture-host");
+        assert_eq!(&spec.args[1..], &toks[..]);
+        assert!(spec.env.is_empty() && spec.cwd.is_none());
+        assert_eq!(b.program(), "xorgate-capture");
+        assert_eq!(GstLaunchBackend::default().program(), "gst-launch-1.0");
     }
 }

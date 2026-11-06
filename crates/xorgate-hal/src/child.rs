@@ -46,6 +46,9 @@ pub struct ChildSpec {
     /// Extra environment, MERGED onto the inherited one (execa's default).
     pub env: Vec<(String, String)>,
     pub cwd: Option<PathBuf>,
+    /// `argv[0]` when it must differ from `program` (Phase 7a: the agent
+    /// re-execs itself as `xorgate-capture`); `None` = `program` (execa).
+    pub arg0: Option<String>,
 }
 
 impl ChildSpec {
@@ -180,6 +183,9 @@ pub fn spawn(spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEve
         .kill_on_drop(true);
     if let Some(cwd) = &spec.cwd {
         cmd.current_dir(cwd);
+    }
+    if let Some(arg0) = &spec.arg0 {
+        cmd.arg0(arg0);
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
