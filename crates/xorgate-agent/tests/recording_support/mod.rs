@@ -84,6 +84,8 @@ pub struct Log {
     /// Every `disk.setActivePath("telemetry", …)`.
     pub active_paths: Mutex<Vec<Option<PathBuf>>>,
     pub finalize_calls: AtomicUsize,
+    /// D41: start-up shm sweeps, and `finalize_calls` at the time of each.
+    pub sweeps: Mutex<Vec<usize>>,
     pub recover_calls: AtomicUsize,
     pub disks: AtomicUsize,
     pub enforces: AtomicUsize,
@@ -268,6 +270,11 @@ impl RecordingBackend for FakeBackend {
     fn recover_orphan_video_sessions(&self, _v: &Path) -> usize {
         self.log.recover_calls.fetch_add(1, Ordering::SeqCst);
         self.backfilled
+    }
+    fn sweep_dead_shm_segments(&self) -> Vec<(String, u32)> {
+        let f = self.log.finalize_calls.load(Ordering::SeqCst);
+        self.log.sweeps.lock().unwrap().push(f);
+        vec![("shmpipe. 1035.    0".into(), 1035)]
     }
     fn boot_id(&self) -> String {
         "boot-1".into()

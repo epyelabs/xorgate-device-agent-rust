@@ -278,6 +278,31 @@ async fn the_default_probe_bound_is_two_seconds() {
     m.stop();
 }
 
+/// D41 (Rust only): `start()` sweeps dead owners' `/dev/shm` segments ONCE,
+/// before the crash recovery and before any capture can spawn, even with
+/// recording off; the removal is journal-only (no activity event).
+#[tokio::test(start_paused = true)]
+async fn start_sweeps_dead_shm_segments_once_before_recovery() {
+    let mut rig = Rig::new("shm");
+    rig.video = false;
+    std::fs::create_dir_all(rig.root().join("telemetry").join("prev-session")).unwrap();
+    let m = rig.build();
+    m.start().await;
+    yields().await;
+    assert_eq!(
+        *rig.log.sweeps.lock().unwrap(),
+        vec![0],
+        "one sweep, before finalize"
+    );
+    assert_eq!(rig.log.finalize_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        rig.events().iter().all(|e| !e.contains("shm")),
+        "no activity event: {:?}",
+        rig.events()
+    );
+    m.stop();
+}
+
 /// "finalizes orphans from a previous run on start, even with recording off".
 #[tokio::test(start_paused = true)]
 async fn finalizes_orphans_on_start_with_recording_off() {

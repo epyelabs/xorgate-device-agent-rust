@@ -64,6 +64,13 @@ impl manager::RecordingBackend for Backend {
         );
         res.recovered
     }
+    /// D41: the start-up `/dev/shm` sweep of dead owners' shmsink areas.
+    fn sweep_dead_shm_segments(&self) -> Vec<(String, u32)> {
+        xorgate_hal::shm_reaper::sweep_dead_owner_segments(
+            Path::new(xorgate_core::capture_ladder::SHM_SEGMENT_DIR),
+            &xorgate_hal::shm_reaper::pid_alive,
+        )
+    }
     /// `readBootId()` (`session.ts:49-65`, cached per process).
     fn boot_id(&self) -> String {
         xorgate_hal::boot_id::read_boot_id()

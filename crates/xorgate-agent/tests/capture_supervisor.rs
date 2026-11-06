@@ -619,10 +619,14 @@ async fn reaps_the_killed_childs_orphaned_shmsink_segments_and_only_its_own() {
     let home = Home::new("shm");
     let shm = home.0.join("devshm");
     std::fs::create_dir_all(&shm).unwrap();
+    // shmsink's REAL names ("shmpipe.%5d.%5d", gst shmpipe.c:307): a 4-digit
+    // pid is space-padded (D41; the TS test's unpadded "shmpipe.4242.    0"
+    // is a name shmsink never writes, which is how the TS bug hid).
     for n in [
-        "shmpipe.4242.    0",
-        "shmpipe.4242.    1",
-        "shmpipe.9999.    0",
+        "shmpipe. 4242.    0",
+        "shmpipe. 4242.    1",
+        "shmpipe. 9999.    0",
+        "shmpipe.14242.    0",
         "lttng-ust-wait-8",
     ] {
         std::fs::write(shm.join(n), [0u8; 8]).unwrap();
@@ -638,7 +642,14 @@ async fn reaps_the_killed_childs_orphaned_shmsink_segments_and_only_its_own() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     left.sort();
-    assert_eq!(left, ["lttng-ust-wait-8", "shmpipe.9999.    0"]);
+    assert_eq!(
+        left,
+        [
+            "lttng-ust-wait-8",
+            "shmpipe. 9999.    0",
+            "shmpipe.14242.    0"
+        ]
+    );
     sup.stop();
 }
 
@@ -832,7 +843,7 @@ async fn stop_and_wait_escalates_to_sigkill_after_the_grace() {
     let home = Home::new("saw");
     let shm = home.0.join("devshm");
     std::fs::create_dir_all(&shm).unwrap();
-    std::fs::write(shm.join("shmpipe.777.    0"), b"x").unwrap();
+    std::fs::write(shm.join("shmpipe.  777.    0"), b"x").unwrap();
     let be = Arc::new(Stubborn {
         inner: FakeBackend::default(),
     });
@@ -847,7 +858,7 @@ async fn stop_and_wait_escalates_to_sigkill_after_the_grace() {
     sup.stop_and_wait(Duration::from_millis(10_000)).await;
     assert!(t0.elapsed() >= Duration::from_millis(10_000));
     assert_eq!(be.inner.get(0).stopped(), Some(libc::SIGKILL));
-    assert!(!shm.join("shmpipe.777.    0").exists());
+    assert!(!shm.join("shmpipe.  777.    0").exists());
     assert_eq!(sup.status()[0].state, CaptureState::Stopped);
 }
 
@@ -1052,8 +1063,8 @@ async fn tape_hooks_report_spawn_lines_signals_exits_shm_and_fragments() {
     o.tape = tape.clone();
     let devshm = home.0.join("devshm");
     std::fs::create_dir_all(&devshm).unwrap();
-    std::fs::write(devshm.join("shmpipe.4242.    0"), b"x").unwrap();
-    std::fs::write(devshm.join("shmpipe.9999.    0"), b"x").unwrap();
+    std::fs::write(devshm.join("shmpipe. 4242.    0"), b"x").unwrap();
+    std::fs::write(devshm.join("shmpipe. 9999.    0"), b"x").unwrap();
     let sup = VideoCaptureSupervisor::new(o);
     sup.start();
     let sid = first_session(&sup);
@@ -1094,13 +1105,13 @@ async fn tape_hooks_report_spawn_lines_signals_exits_shm_and_fragments() {
         format!("fs_out create {rel}/00001.mp4 30"),
         "exit capture cam0 pid=4242 code=Some(1) external=true".into(),
         // The dead child's own segment is reaped first; the JS-owned one stays.
-        r#"shm ["shmpipe.9999.    0"]"#.into(),
+        r#"shm ["shmpipe. 9999.    0"]"#.into(),
         format!("fs_out close {rel}/00001.mp4 30"),
         format!("fs_out sidecar {rel}/00001.json {sc1}"),
         format!("spawn capture cam0 pid=4242 nice=Some(10) argv0=gst-launch-1.0 n={argc}"),
         format!("signal capture cam0 4242 {}", libc::SIGINT),
         "exit capture cam0 pid=4242 code=Some(0) external=false".into(),
-        r#"shm ["shmpipe.9999.    0"]"#.into(),
+        r#"shm ["shmpipe. 9999.    0"]"#.into(),
     ];
     assert_eq!(lines, want);
 }

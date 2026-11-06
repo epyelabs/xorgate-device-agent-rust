@@ -258,6 +258,13 @@ pub trait RecordingBackend: Send + Sync {
     fn finalize_orphan_segments(&self, telemetry_root: &Path) -> usize;
     /// `recoverOrphanVideoSessions(videoRoot)` — sidecars backfilled.
     fn recover_orphan_video_sessions(&self, video_root: &Path) -> usize;
+    /// Accepted divergence D41 (no TS counterpart): the start-up sweep of
+    /// `/dev/shm` — every shmsink area whose owner pid is not a live process
+    /// (`xorgate_hal::shm_reaper::sweep_dead_owner_segments`), as
+    /// `(name, owner pid)` per segment removed. Default: nothing.
+    fn sweep_dead_shm_segments(&self) -> Vec<(String, u32)> {
+        Vec::new()
+    }
     /// `readBootId()` (stable per process).
     fn boot_id(&self) -> String;
     fn disk(
@@ -592,11 +599,21 @@ impl RecordingManager {
         u.kick();
     }
 
-    /// `start()` (`manager.ts:294-329`): crash recovery (only when a previous
-    /// run created the tree), the ≤2 s time-source probe, the first apply,
+    /// `start()` (`manager.ts:294-329`): the D41 `/dev/shm` sweep (Rust
+    /// only), crash recovery (only when a previous run created the tree), the
+    /// ≤2 s time-source probe, the first apply,
     /// the 5 s settings poll, and the initial uploader kick.
     pub async fn start(&self) {
         let inner = &self.inner;
+        // D41: a killed predecessor's capture children strand their 20 MiB
+        // shmsink areas until reboot (the TS has no sweep, P7). Before any
+        // capture spawns, unlink those whose owner is dead — journal only,
+        // never an activity event (no new cloud-visible shape).
+        for (name, pid) in inner.backend.sweep_dead_shm_segments() {
+            tracing::info!(
+                "[recording] removed stale shm segment {name:?} (owner pid {pid} not running)"
+            );
+        }
         if inner.root.exists() {
             let finalized = inner
                 .backend
