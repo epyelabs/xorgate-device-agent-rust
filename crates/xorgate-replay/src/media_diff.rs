@@ -2492,6 +2492,22 @@ fn d30_session_end(
 /// (worker.ts:1207) — so the two sides' spawn-minus-change lags differ by at
 /// most one publish period (`tickMs`) — or neither side had a change (a
 /// boot-started session).
+///
+/// Phase 5b WP5 (R-P5bG-1), SCOPE only (no number changed): the cut may also
+/// be a CLOUD-CONFIG video-tuple change (preset / record / segmentSeconds /
+/// encoder). TS @09da38d: the config message handler applies the document and
+/// calls `recording.reapply()` synchronously (worker.ts:960-980) → `apply()` →
+/// `applyVideo()`, whose key holds the preset (manager.ts:570-580); a changed
+/// key chains `prev.stopAndWait()` at once (manager.ts:620-626) and only then
+/// starts the new session. So the cut instant is the player's release of that
+/// config record — ONE instant for both agents, like the stop's SIGTERM — not
+/// a per-agent timer (the 5 s settings poll, manager.ts:327, only catches
+/// local edits). Instead of "never respawned": on BOTH sides the capture is
+/// respawned for a NEW session at/after a released `…/config` `mqtt_in`
+/// record `r` (the latest before both ends), both end instants lie in
+/// [r, r + `endMs`] (so they also agree within `endMs`), and neither side
+/// published a powerShed / liveBlock change within ±`tickMs` of `r` (a shed
+/// cut is D30's, never this). (c) and (d) apply unchanged.
 #[allow(clippy::too_many_arguments)]
 fn t12_cut_fragment(
     a: &MediaCapture,
@@ -2503,6 +2519,7 @@ fn t12_cut_fragment(
     key: &(String, u64),
     end_ms: f64,
     tick_ms: i64,
+    config_releases: &[i64],
 ) -> bool {
     let (sid, seq) = (&key.0, key.1);
     let last = |f: &BTreeMap<String, BTreeMap<u64, u64>>, c: &BTreeMap<(String, u64), Value>| {
@@ -2516,19 +2533,24 @@ fn t12_cut_fragment(
     if !last(fa, ca) || !last(fb, cb) {
         return false;
     }
-    let spawn_at = |m: &MediaCapture| -> Option<i64> {
+    // (spawn w, the next capture spawn of that camera: (w, sid)) — the child
+    // ended by the agent (int/eos), never by a kill.
+    #[allow(clippy::type_complexity)]
+    let spawn_at = |m: &MediaCapture| -> Option<(i64, Option<(i64, Option<String>)>)> {
         let s = m
             .spawns
             .iter()
             .find(|s| s.role == "capture" && s.sid.as_deref() == Some(sid.as_str()))?;
         let at_stop = matches!(s.end.as_deref(), Some("int") | Some("eos"));
-        let respawned = m
+        let next = m
             .spawns
             .iter()
-            .any(|o| o.role == "capture" && o.key == s.key && o.w > s.w);
-        (at_stop && !respawned).then_some(s.w)
+            .filter(|o| o.role == "capture" && o.key == s.key && o.w > s.w)
+            .min_by_key(|o| o.w)
+            .map(|o| (o.w, o.sid.clone()));
+        at_stop.then_some((s.w, next))
     };
-    let (Some(wa), Some(wb)) = (spawn_at(a), spawn_at(b)) else {
+    let (Some((wa, na)), Some((wb, nb))) = (spawn_at(a), spawn_at(b)) else {
         return false;
     };
     let f64_at = |c: &BTreeMap<(String, u64), Value>, q: u64, k: &str| {
@@ -2542,6 +2564,37 @@ fn t12_cut_fragment(
     };
     if (ea - eb).abs() > end_ms {
         return false;
+    }
+    match (&na, &nb) {
+        // The stop arm: never respawned on either side.
+        (None, None) => {}
+        // The config arm (R-P5bG-1): a new session on both sides after ONE
+        // released config record that both end instants follow within endMs.
+        (Some((ra, sa)), Some((rb, sb))) => {
+            let new_session = |n: &Option<String>| n.as_deref().is_some_and(|x| x != sid.as_str());
+            let Some(&r) = config_releases
+                .iter()
+                .filter(|r| (**r as f64) <= ea.min(eb))
+                .max()
+            else {
+                return false;
+            };
+            let within = |e: f64| e >= r as f64 && e - r as f64 <= end_ms;
+            let shed_near =
+                |m: &MediaCapture| m.shed_changes.iter().any(|c| (*c - r).abs() <= tick_ms);
+            if !(new_session(sa) && new_session(sb))
+                || *ra < r
+                || *rb < r
+                || !within(ea)
+                || !within(eb)
+                || shed_near(a)
+                || shed_near(b)
+            {
+                return false;
+            }
+        }
+        // Respawned on one side only: not the same cut.
+        _ => return false,
     }
     let lag = |m: &MediaCapture, w: i64| {
         m.shed_changes
@@ -2822,6 +2875,23 @@ pub fn diff_media(
 
     // ---- sidecars (T12) + D8 lag figures
     let (ca, cb) = (sidecars(a), sidecars(b));
+    // R-P5bG-1: the player's release instants of the tape's cloud-config
+    // records (`mqtt_in` on `…/config`) — the shared cut of a config-driven
+    // video change (T12/cut-fragment's config arm).
+    let config_releases: Vec<i64> = {
+        let cfg_t: BTreeSet<u64> = tape_recs(Path::new(&play.tape))
+            .iter()
+            .filter(|r| {
+                r["k"] == "mqtt_in" && r["topic"].as_str().is_some_and(|t| t.ends_with("/config"))
+            })
+            .filter_map(|r| r["t"].as_u64())
+            .collect();
+        play.releases
+            .iter()
+            .filter(|r| r.k == "mqtt_in" && cfg_t.contains(&r.t))
+            .map(|r| r.w)
+            .collect()
+    };
     let start_ms = row_tol(table, "T12", "startTs", 300.0);
     let mono_ms = row_tol(table, "T12", "startMono", 300.0);
     let dur_ms = row_tol(table, "T12", "durationMs", 150.0);
@@ -2889,6 +2959,7 @@ pub fn diff_media(
                 key,
                 row_tol(table, "T12/cut-fragment", "endMs", 0.0),
                 row_tol(table, "T12/cut-fragment", "tickMs", 0.0) as i64,
+                &config_releases,
             );
         // review-wp6 F5: an INTERIOR fragment (its successor exists on both
         // sides) has no duration of its own — `durationMs` = mtime − birthtime
@@ -4809,6 +4880,177 @@ kind = "decisions"
                 format!("{sid}/00001 durationMs {UNTOLERATED}"),
             ]
         );
+    }
+
+    /// Phase 5b WP5 (R-P5bG-1): a fragment CUT by a cloud-config preset
+    /// change is judged by T12/cut-fragment's end instant when both ends
+    /// follow the shared release of that config record within endMs (TS: the
+    /// config handler's synchronous `recording.reapply()` → `stopAndWait`,
+    /// worker.ts:960-980, manager.ts:620-626). Numbers from the gate's
+    /// `rec-preset.jsrs09` (cam1#0/00006: JS 4079 ms ending r + 14, Rust 4239
+    /// ending r + 70; the JS session started 129 ms later). Every other shape
+    /// stays UNTOLERATED.
+    #[test]
+    fn t12_cut_fragment_covers_a_config_preset_cut_only() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let sid = "<sid:video:cam1#0>";
+        let next_sid = "<sid:video:cam1#1>";
+        let r = 1_793_198_919_363i64; // the config release
+                                      // (kind, first startTs, last durationMs, next capture sid, end tag)
+        let side = |kind: &str, st0: i64, last_dur: i64, next: Option<&str>, end: &str| {
+            let mut finals = BTreeMap::new();
+            for (seq, st, dur) in [(0u64, st0, 10_000), (1, st0 + 10_000, last_dur)] {
+                finals.insert(
+                    format!("recordings/video/cam1/{sid}/{seq:05}.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "seq": seq, "startTs": st, "startMono": (st - st0) + 5,
+                        "durationMs": dur, "sizeBytes": 100,
+                    }))
+                    .unwrap(),
+                );
+            }
+            let spawn = |w: i64, sid: Option<&str>, end: Option<&str>| Spawn {
+                w,
+                role: "capture".into(),
+                key: "cam1".into(),
+                pid: 7,
+                argv: vec!["gst".into()],
+                env: BTreeMap::new(),
+                playing: Some(w + 2_000),
+                end: end.map(Into::into),
+                end_w: None,
+                sid: sid.map(Into::into),
+            };
+            let mut spawns = vec![spawn(st0 - 2_000, Some(sid), Some(end))];
+            if let Some(n) = next {
+                spawns.push(spawn(r + 2_000, Some(n), None));
+            }
+            MediaCapture {
+                kind: kind.into(),
+                spawns,
+                finals,
+                present: true,
+                ..Default::default()
+            }
+        };
+        // A ends r + 14, B ends r + 70 (dur differs by 185 > T12's 150).
+        let js = |next: Option<&str>| side("js", r + 14 - 4_079 - 10_000, 4_079, next, "int");
+        let rs = |next: Option<&str>| side("rust", r + 70 - 4_239 - 10_000, 4_239, next, "int");
+        // the tape: the boot config at t 400 and the preset change at t 70000
+        let dir = std::env::temp_dir().join(format!("t12-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tape = |topic: &str| {
+            let p = dir.join(format!("{}.ndjson", topic.replace('/', "_")));
+            let rec = |t: u64| {
+                serde_json::json!({"t": t, "w": 0, "k": "mqtt_in", "topic": topic, "payload": "{}"})
+                    .to_string()
+            };
+            std::fs::write(&p, format!("{}\n{}\n", rec(400), rec(70_000))).unwrap();
+            p.display().to_string()
+        };
+        let play_at = |topic: &str, release: i64| PlayInfo {
+            tape: tape(topic),
+            releases: vec![
+                crate::diff::Release {
+                    w: r - 70_000,
+                    due: 0,
+                    t: 400,
+                    k: "mqtt_in".into(),
+                },
+                crate::diff::Release {
+                    w: release,
+                    due: 0,
+                    t: 70_000,
+                    k: "mqtt_in".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let cfg = "xorgate/devices/x/config";
+        let run = |a: MediaCapture, b: MediaCapture, play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_media(&a, &b, play, &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .filter(|m| m.stream == "sidecar" && m.path == "durationMs")
+                .map(|m| format!("{} {}", m.at, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let row = |tol: &str| vec![format!("{sid}/00001 {tol}")];
+        let cut = "T12/cut-fragment";
+        let play = play_at(cfg, r);
+        assert_eq!(run(js(Some(next_sid)), rs(Some(next_sid)), &play), row(cut));
+        assert_eq!(
+            run(rs(Some(next_sid)), js(Some(next_sid)), &play),
+            row(cut),
+            "either order"
+        );
+        // NEGATIVE: no config release on the tape (the pre-WP5 scope) — e.g. a
+        // local edit picked up by each agent's own 5 s poll.
+        assert_eq!(
+            run(js(Some(next_sid)), rs(Some(next_sid)), &PlayInfo::default()),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: the release is on another topic (not a config document).
+        assert_eq!(
+            run(
+                js(Some(next_sid)),
+                rs(Some(next_sid)),
+                &play_at("xorgate/devices/x/commands", r)
+            ),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: one end more than endMs (150) after the release (both ends
+        // still within 150 of each other: 14 vs 160).
+        assert_eq!(
+            run(
+                js(Some(next_sid)),
+                side(
+                    "rust",
+                    r + 160 - 4_239 - 10_000,
+                    4_239,
+                    Some(next_sid),
+                    "int"
+                ),
+                &play
+            ),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: the fragment ended BEFORE the release (not cut by it).
+        assert_eq!(
+            run(
+                js(Some(next_sid)),
+                rs(Some(next_sid)),
+                &play_at(cfg, r + 20)
+            ),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: respawned on one side only / not a new session / a kill.
+        assert_eq!(run(js(Some(next_sid)), rs(None), &play), row(UNTOLERATED));
+        assert_eq!(run(js(Some(sid)), rs(Some(sid)), &play), row(UNTOLERATED));
+        assert_eq!(run(js(None), rs(Some(next_sid)), &play), row(UNTOLERATED));
+        let k = |m: MediaCapture| {
+            let mut m = m;
+            m.spawns[0].end = Some("external".into());
+            m
+        };
+        assert_eq!(
+            run(k(js(Some(next_sid))), rs(Some(next_sid)), &play),
+            row(UNTOLERATED)
+        );
+        // NEGATIVE: a powerShed/liveBlock change within tickMs of the release
+        // (a shed cut is D30's, never this arm).
+        let mut j = js(Some(next_sid));
+        j.shed_changes = vec![r + 900];
+        let mut b = rs(Some(next_sid));
+        b.shed_changes = vec![r + 905];
+        assert_eq!(run(j, b, &play), row(UNTOLERATED));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// review-wp6 F5 (re-review run rr-m1, 15 busy loops + host overload):
