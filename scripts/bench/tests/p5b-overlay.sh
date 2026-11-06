@@ -33,6 +33,8 @@ fake_install() {
   mkdir -p /opt/xorgate-rs/python/obd
   : > /opt/xorgate-rs/python/obd_read.py; : > /opt/xorgate-rs/python/obd_scan.py
   rm -rf /tmp/xorgate-p5b; mkdir -p /tmp/xorgate-p5b
+  # (P5B_NO_COPY: what apply's copy step would stage)
+  cp "$B/obd-drain.py" /tmp/xorgate-p5b/
 }
 
 fixture_bench; reset_units; fake_install
@@ -70,8 +72,75 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["periphera
 expect $? "$HW gains peripherals.obd (elm327/bt-spp), imu still null"
 grep -qx 'Environment=XORGATE_OBD_SERIAL=/dev/pts/77' "$DROP" && grep -qx 'Environment=XORGATE_PYTHON_DIR=/run/xorgate-rs-obd-python' "$DROP" && grep -qx 'Environment=XORGATE_SMS_PORT=/run/xorgate-rs-p5b/sms-pty' "$DROP"
 expect $? "97-p5b.conf: python dir, emulator pty, FakeModem link"
-[ "$(readlink /run/xorgate-rs-obd-python/obd_read.py)" = /opt/xorgate-rs/python/obd_read.py ] && [ ! -e /run/xorgate-rs-obd-python/bno085_read.py ]
+[ "$(readlink /run/xorgate-rs-obd-python/obd_scan.py)" = /opt/xorgate-rs/python/obd_scan.py ] && [ "$(readlink /run/xorgate-rs-obd-python/obd)" = /opt/xorgate-rs/python/obd ] && [ ! -e /run/xorgate-rs-obd-python/bno085_read.py ]
 expect $? "obd-only python dir (symlinks to the install, no bno085_read.py)"
+[ ! -L /run/xorgate-rs-obd-python/obd_read.py ] && cmp -s /run/xorgate-rs-obd-python/obd_read.py "$B/obd-drain.py" && [ "$(stat -c %U /run/xorgate-rs-obd-python/obd_read.py)" = pi ]
+expect $? "obd_read.py is the pty-drain launcher (scripts/bench/obd-drain.py), owned by pi"
+
+echo "== WP5: every helper start drains the emulator pty first (the rig's obd-gate.py drain)"
+# A real pty: the "emulator" holds the master and queues the replies to the
+# PREVIOUS helper's last commands; the helper (a stand-in for the installed
+# obd_read.py) reads its serial for 0.2 s and reports what it got. Spawned the
+# way the agent does: python3 <XORGATE_PYTHON_DIR>/obd_read.py <argv>.
+cat > "$LOGS/fake_obd_read.py" <<'P'
+import os, select, sys, time, json
+a = sys.argv[1:]; ser = a[a.index("--serial") + 1]
+fd = os.open(ser, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+import termios, tty
+tty.setraw(fd, termios.TCSANOW)
+got = b""; t0 = time.time()
+while time.time() - t0 < 0.2:
+    r, _, _ = select.select([fd], [], [], 0.02)
+    if r:
+        try: got += os.read(fd, 4096)
+        except BlockingIOError: pass
+print(json.dumps({"pid": os.getpid(), "argv": a, "got": got.decode()}), flush=True)
+P
+cat > "$LOGS/pty_case.py" <<'P'
+# <launcher> <real helper> <drain log>: queue two stale replies, then one
+# that is still "in flight" (written 150 ms after the launcher starts).
+import json, os, pty, subprocess, sys, time, termios, tty
+launcher, real, log = sys.argv[1:4]
+m, s = pty.openpty(); name = os.ttyname(s)
+tty.setraw(s, termios.TCSANOW)
+os.write(m, b"OK\r\r>"); os.write(m, b"ELM327 v1.5\r\r>")
+env = dict(os.environ, XORGATE_P5B_REAL_HELPER=real, XORGATE_P5B_DRAIN_LOG=log)
+p = subprocess.Popen(["python3", launcher, "--serial", name, "--poll-hz", "1"], stdout=subprocess.PIPE, env=env)
+time.sleep(0.15); os.write(m, b"41 00 BE 3F A8 13\r\r>")
+out, _ = p.communicate(timeout=10)
+print(json.dumps({"rc": p.returncode, "launcher_pid": p.pid, "helper": json.loads(out.decode() or "null")}))
+P
+L=/run/xorgate-rs-obd-python/obd_read.py
+python3 "$LOGS/pty_case.py" "$L" "$LOGS/fake_obd_read.py" "$LOGS/drain.ndjson" > "$LOGS/drain-case.json" 2>"$LOGS/drain-case.err"
+python3 - "$LOGS/drain-case.json" "$LOGS/drain.ndjson" <<'P'
+import json, sys
+r = json.load(open(sys.argv[1])); d = [json.loads(l) for l in open(sys.argv[2])]
+h = r["helper"]
+assert r["rc"] == 0 and h["got"] == "", r               # no stale reply reached the helper
+assert h["pid"] == r["launcher_pid"], r                  # exec: same pid (agent signals reach the helper)
+assert h["argv"][1:] == ["--poll-hz", "1"] or h["argv"][2:] == ["--poll-hz", "1"], r  # argv passed through
+want = len("OK\r\r>") + len("ELM327 v1.5\r\r>") + len("41 00 BE 3F A8 13\r\r>")
+assert len(d) == 1 and d[0]["bytes"] == want and d[0]["quiet"] and d[0]["ms"] >= 300, d
+P
+expect $? "drain: queued + in-flight stale replies never reach the helper; exec keeps pid + argv; logged (bytes, quiet)"
+# Negative: the pre-WP5 overlay (obd_read.py = a symlink to the installed
+# helper, no drain) hands the next helper the stale replies.
+python3 "$LOGS/pty_case.py" "$LOGS/fake_obd_read.py" "$LOGS/fake_obd_read.py" "$LOGS/drain-none.ndjson" > "$LOGS/nodrain-case.json" 2>&1
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if r["helper"]["got"].startswith("OK\r\r>ELM327") else 1)' "$LOGS/nodrain-case.json"
+expect $? "negative: without the launcher the helper reads the previous helper's stale replies"
+python3 - "$L" "$LOGS/fake_obd_read.py" <<'P'
+import json, os, subprocess, sys
+# no --serial / an unopenable one: no drain, the helper still starts
+for argv in ([], ["--serial", "/nonexistent/pty"]):
+    env = dict(os.environ, XORGATE_P5B_REAL_HELPER=sys.argv[2], XORGATE_P5B_DRAIN_LOG="/nonexistent/dir/log")
+    if not argv:
+        r = subprocess.run(["python3", sys.argv[1]], env=env, capture_output=True, text=True, timeout=10)
+        assert "--serial" in r.stderr or r.returncode != 0  # the stand-in needs --serial: it was exec'd
+    else:
+        r = subprocess.run(["python3", sys.argv[1]] + argv, env=env, capture_output=True, text=True, timeout=10)
+        assert "FileNotFoundError" in r.stderr, r.stderr     # exec'd the helper (it failed to open), no drain hang
+P
+expect $? "drain: no --serial / unopenable serial = no drain, helper still exec'd; an unwritable log never blocks"
 p=$(cat /run/xorgate-rs-p5b/emulator.pid); [ "$(stat -c %U /proc/"$p")" = pi ]; expect $? "the emulator runs as pi"
 bash "$B/exclusive.sh" status >"$LOGS/a2.log" 2>&1
 grep -q "inputs: SAFE" "$LOGS/a2.log"; expect $? "inputs_safe SAFE while the overlay is applied (marker present)"
