@@ -5110,6 +5110,57 @@ kind = "decisions"
         let mut b = rs(Some(next_sid));
         b.shed_changes = vec![r + 905];
         assert_eq!(run(j, b, &play), row(UNTOLERATED));
+
+        // review-wp5 R-WP5-1: PER-SIDE negatives — each condition of the
+        // config arm, loosened on ONE side only, must still fail.
+        // (1) A's end > r + endMs while B's is in range (|Δ end| = 90 ≤ 150).
+        let js_late = side("js", r + 160 - 4_079 - 10_000, 4_079, Some(next_sid), "int");
+        assert_eq!(
+            run(js_late, rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A end r+160"
+        );
+        // (2) the new session's capture spawned BEFORE r on one side only.
+        let early = |mut m: MediaCapture| {
+            m.spawns[1].w = r - 50;
+            m
+        };
+        assert_eq!(
+            run(early(js(Some(next_sid))), rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A respawn before r"
+        );
+        assert_eq!(
+            run(js(Some(next_sid)), early(rs(Some(next_sid))), &play),
+            row(UNTOLERATED),
+            "B respawn before r"
+        );
+        // (3) a same-session respawn on ONE side only.
+        assert_eq!(
+            run(js(Some(sid)), rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A same session"
+        );
+        assert_eq!(
+            run(js(Some(next_sid)), rs(Some(sid)), &play),
+            row(UNTOLERATED),
+            "B same session"
+        );
+        // (4) a shed change near r on ONE side only.
+        let shed = |mut m: MediaCapture| {
+            m.shed_changes = vec![r + 900];
+            m
+        };
+        assert_eq!(
+            run(shed(js(Some(next_sid))), rs(Some(next_sid)), &play),
+            row(UNTOLERATED),
+            "A shed near r"
+        );
+        assert_eq!(
+            run(js(Some(next_sid)), shed(rs(Some(next_sid))), &play),
+            row(UNTOLERATED),
+            "B shed near r"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
