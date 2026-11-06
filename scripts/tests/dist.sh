@@ -187,6 +187,15 @@ for ch, trig in (("dev", {"push", "workflow_dispatch"}), ("prod", {"release", "w
     r = up["run"]
     chk(re.search(r'put\(\) \{[^}]*scripts/dist-guard\.sh "\$2"\s*\n\s*aws s3 cp "\$1" "s3://\$BUCKET/\$2"', r) is not None, "%s: put() runs dist-guard on the key before aws s3 cp" % ch)
     chk(r.lstrip().startswith("set -euo pipefail"), "%s: upload step runs under set -euo pipefail" % ch)
+    # In a `container:` job GitHub's default run shell is `sh -e` (dash): a
+    # bash-only step must say `shell: bash` (c6b818b's deploy-dev died on
+    # `set: Illegal option -o pipefail`).
+    dflt = ((job.get("defaults") or {}).get("run") or {}).get("shell")
+    for s_ in steps:
+        body = s_.get("run", "")
+        if re.search(r"pipefail|<<<|\[\[|\$'", body):
+            sh = s_.get("shell", dflt)
+            chk(sh == "bash", "%s: bash-only step %r declares shell: bash (got %r)" % (ch, s_.get("name"), sh))
     chk("scripts/dist-manifest.sh" in r and "<<EOF" not in r and "cat >" not in r, "%s: latest-rs.json from dist-manifest.sh (no heredoc)" % ch)
     chk("--channel %s " % ch in r, "%s: dist-manifest.sh --channel %s" % (ch, ch))
     puts = re.findall(r"^\s*put (\S+) (\S+) (\S+) (\S+)\s*$", r, re.M)
