@@ -361,6 +361,53 @@ async fn a_paused_failure_exits_255() {
     );
 }
 
+/// R-WP0R-5: the host dumps exactly as gst-launch does,
+/// `GST_DEBUG_GRAPH_SHOW_ALL` WITHOUT `SHOW_FULL_PARAMS` (`gst-launch.c:966`),
+/// so a non-default value over 80 characters is cut with "…" (the rig's K3
+/// shim ORs FULL_PARAMS into both programs and so cannot see this flag).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dot_dumps_use_show_all_without_full_params() {
+    let dir = std::env::temp_dir().join(format!("xg-host-dot-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A filesink location of 120+ characters: a long, non-default string.
+    let long = dir.join(format!("{}.bin", "x".repeat(100)));
+    let long = long.display().to_string();
+    assert!(long.len() > 100);
+    let mut spec = HostBackend::with_exe(BIN).spec(&toks(&format!(
+        "fakesrc num-buffers=3 ! filesink location={long}"
+    )));
+    spec.env.push((
+        "GST_DEBUG_DUMP_DOT_DIR".to_string(),
+        dir.display().to_string(),
+    ));
+    let (_child, mut rx) = xorgate_hal::child::spawn(&spec);
+    let mut run = Run::default();
+    drain(&mut rx, &mut run, None).await;
+    let d = run.done.clone().unwrap();
+    assert_eq!((d.exit_code, d.signal), (Some(0), None), "{run:?}");
+    let dot = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .ends_with("gst-launch.NULL_READY.dot")
+        })
+        .expect("the NULL_READY dump (gst-launch's name)");
+    let text = std::fs::read_to_string(dot.path()).unwrap();
+    assert!(text.contains("location="), "{text}");
+    assert!(
+        !text.contains(&long),
+        "the full {}-char value is in the dump: FULL_PARAMS is set",
+        long.len()
+    );
+    assert!(text.contains('\u{2026}'), "no truncated value in the dump");
+    // SHOW_ALL's other bits: states ([-] in NULL→READY) and non-default params.
+    assert!(text.contains("num-buffers=3"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn unknown_option_is_an_initialisation_error() {
     let out = std::process::Command::new(BIN)

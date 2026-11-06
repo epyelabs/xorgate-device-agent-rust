@@ -91,9 +91,13 @@ def scenarios():
             desc="record start (-e), SIGINT, then a second SIGINT right after 'handling interrupt.'",
             argv=record,
             actions=playing + [("sleep", 4.0), ("signal", "SIGINT"), ("line", r"^handling interrupt\.", 5), ("signal", "SIGINT")],
-            # Where the second SIGINT lands in the EOS sequence is a race:
-            # only the stdout AFTER `handling interrupt.` varies run to run
-            # (R-WP0-8); everything through that line is compared exactly.
+            # Death by the second SIGINT holds only because this driver reacts
+            # ~1 ms after the line: gst-launch SWALLOWS a second SIGINT that
+            # lands within ~0.1 ms of `handling interrupt.` (its watch is still
+            # installed, with no source left; review-wp0-r2 µs probe), the host
+            # never does (D50). How many tail lines print before death is
+            # timing-only in both, so only the stdout AFTER the line is
+            # waived (R-WP0-8); everything through it is compared exactly.
             racy_tail={"1": r"^handling interrupt\.$"},
         ),
         "3-record-sigkill": dict(

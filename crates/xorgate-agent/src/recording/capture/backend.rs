@@ -257,6 +257,18 @@ mod tests {
         assert_eq!(backend_for(Some(" host\n")).program(), "xorgate-capture");
     }
 
+    /// R-WP0R-3: the env read itself. With `XORGATE_CAPTURE_BACKEND` unset
+    /// (the default on every device), the supervisor's backend is
+    /// gst-launch, i.e. `recording/mod.rs:150` installs today's object.
+    #[test]
+    fn backend_from_env_is_gst_launch_when_the_switch_is_unset() {
+        if std::env::var_os(CAPTURE_BACKEND_ENV).is_some() {
+            eprintln!("skip: {CAPTURE_BACKEND_ENV} is set in this test process");
+            return;
+        }
+        assert_eq!(backend_from_env().program(), GST_LAUNCH);
+    }
+
     #[test]
     fn host_backend_reexecs_proc_self_exe_unless_overridden() {
         assert_eq!(HostBackend::from_host_bin(None).exe(), "/proc/self/exe");

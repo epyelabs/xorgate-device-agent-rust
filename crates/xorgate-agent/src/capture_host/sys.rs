@@ -163,6 +163,15 @@ fn post_signal(sig: i32) {
     }
 }
 
+/// The bus loop's per-tick poll: hand every signal that reached the
+/// fallback handler (a library thread with it unblocked, or the
+/// `default_action` race) to [`deliver`].
+pub fn poll_late() {
+    for sig in take_late() {
+        deliver(sig);
+    }
+}
+
 /// Signals that reached the fallback handler since the last call.
 pub fn take_late() -> Vec<i32> {
     let bits = LATE.swap(0, Ordering::SeqCst);
@@ -370,6 +379,39 @@ pub fn deinit() {
     unsafe { gstreamer::deinit() }
 }
 
+/// Test hooks for `capture_host` unit tests (the statics are process-wide).
+#[cfg(test)]
+pub(super) mod testing {
+    use super::*;
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// Serialises the tests that touch `LATE` / the watch states / `POST`.
+    pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// As if a library thread caught a SIGINT while the watch is ARMED:
+    /// `POST` = `bus`, INTR = ARMED, `LATE` holds SIGINT. No real handler is
+    /// installed in the test process.
+    pub fn prime_race_path_sigint(bus: &gstreamer::Bus) {
+        *POST.lock().unwrap() = Some(bus.clone());
+        INTR.store(ARMED, Ordering::SeqCst);
+        LATE.store(1, Ordering::SeqCst);
+    }
+
+    pub fn intr_is_off() -> bool {
+        INTR.load(Ordering::SeqCst) == OFF
+    }
+
+    pub fn reset() {
+        INTR.store(OFF, Ordering::SeqCst);
+        HUP.store(OFF, Ordering::SeqCst);
+        LATE.store(0, Ordering::SeqCst);
+        *POST.lock().unwrap() = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +432,7 @@ mod tests {
     /// hands it to the loop. SIGHUP: nothing else in this test binary uses it.
     #[test]
     fn a_watch_armed_mid_default_action_hands_the_signal_to_the_loop() {
+        let _g = testing::lock();
         fn arm_now() {
             set_disposition(
                 libc::SIGHUP,

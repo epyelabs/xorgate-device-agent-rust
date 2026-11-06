@@ -302,24 +302,27 @@ impl Launch {
         self.shared.quit.store(false, Ordering::SeqCst);
         let position = sys::stdout_is_tty();
         let mut next_position = Instant::now() + TICK;
-        loop {
-            if self.shared.quit.load(Ordering::SeqCst) {
-                break;
-            }
-            for sig in sys::take_late() {
-                sys::deliver(sig);
-            }
-            let msg = self.bus.timed_pop(gst::ClockTime::from_mseconds(100));
-            if position && Instant::now() >= next_position {
-                next_position = Instant::now() + TICK;
-                self.print_position();
-            }
-            let Some(msg) = msg else { continue };
-            if self.shared.quit.load(Ordering::SeqCst) {
-                break;
-            }
-            self.bus_handler(&msg);
+        while !self.shared.quit.load(Ordering::SeqCst) {
+            self.tick(position, &mut next_position);
         }
+    }
+
+    /// One loop iteration (≤ one [`TICK`]): hand any race-path signal to
+    /// `deliver` (R-WP0-6 / R-WP0R-4), pop one bus message for up to 100 ms,
+    /// the tty position line, then dispatch the message unless a quit landed
+    /// meanwhile.
+    fn tick(&mut self, position: bool, next_position: &mut Instant) {
+        sys::poll_late();
+        let msg = self.bus.timed_pop(gst::ClockTime::from_mseconds(100));
+        if position && Instant::now() >= *next_position {
+            *next_position = Instant::now() + TICK;
+            self.print_position();
+        }
+        let Some(msg) = msg else { return };
+        if self.shared.quit.load(Ordering::SeqCst) {
+            return;
+        }
+        self.bus_handler(&msg);
     }
 
     fn quit(&self) {
@@ -517,10 +520,17 @@ impl Launch {
     }
 
     /// `intr_handler` (`gst-launch.c:504-520`), dispatched on the loop thread.
-    /// The watch is removed BEFORE the line is printed: gst-launch's
-    /// removal (G_SOURCE_REMOVE → SIG_DFL) lands within microseconds of the
-    /// print, so anything reacting to `handling interrupt.` (a second SIGINT,
-    /// a `/proc` read) sees it gone; transcripts 1 and 2b pin both.
+    ///
+    /// The host removes the watch BEFORE printing `handling interrupt.`;
+    /// gst-launch prints, posts, and only then removes it (G_SOURCE_REMOVE →
+    /// SIG_DFL). In that sub-millisecond gst-launch window a second SIGINT is
+    /// still caught by GLib's handler with no source left, i.e. SWALLOWED
+    /// (review-wp0-r2 µs probe: swallowed 7/10 at 15–38 µs after the line,
+    /// fatal 3/10 at 110–125 µs); the host dies on ANY second SIGINT after
+    /// the line. Divergence D50 (wp0.md). gst-launch's order (mutation MH)
+    /// reproduces the window but, on the dev build, fails transcripts 1
+    /// (`SigCgt@after_intr`) and 2b, whose ~1 ms reaction outruns the dev
+    /// host's print→removal gap; WP1 retries MH on a release build.
     fn intr_handler(&mut self) {
         sys::dispatched(libc::SIGINT);
         print("handling interrupt.\n");
@@ -592,7 +602,8 @@ fn state_name(s: gst::State) -> &'static str {
     }
 }
 
-/// `GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS (bin, GST_DEBUG_GRAPH_SHOW_ALL, name)`.
+/// `GST_DEBUG_BIN_TO_DOT_FILE_WITH_TS (bin, GST_DEBUG_GRAPH_SHOW_ALL, name)`
+/// (pinned by `tests/capture_host.rs::dot_dumps_use_show_all_without_full_params`).
 fn dump(p: &gst::Element, name: &str) {
     if let Some(bin) = p.downcast_ref::<gst::Bin>() {
         bin.debug_to_dot_file_with_ts(gst::DebugGraphDetails::ALL, name);
@@ -665,6 +676,47 @@ mod tests {
             parse_args(&os(&["-v", "fakesrc"])).unwrap_err(),
             "Unknown option -v"
         );
+    }
+
+    /// R-WP0R-4: a race-path signal (the fallback handler recorded it in
+    /// `LATE` while the watch is ARMED) is dispatched within ONE loop tick:
+    /// `tick` polls it, the bus pops the private signal message, and
+    /// `intr_handler` runs (the watch goes OFF, `GstLaunchInterrupt` is
+    /// posted). Deleting the poll leaves the watch ARMED after the tick.
+    #[test]
+    fn a_race_path_signal_is_dispatched_within_one_tick() {
+        let _g = sys::testing::lock();
+        gst::init().unwrap();
+        let pipeline: gst::Element = gst::Pipeline::new().upcast();
+        let bus = pipeline.bus().unwrap();
+        let mut l = Launch {
+            pipeline: pipeline.clone(),
+            bus: bus.clone(),
+            eos_on_shutdown: true,
+            is_live: false,
+            buffering: false,
+            prerolled: false,
+            in_progress: false,
+            waiting_eos: false,
+            tfthen: None,
+            shared: Arc::new(Shared::default()),
+        };
+        sys::testing::prime_race_path_sigint(&bus);
+        let mut next = Instant::now() + TICK;
+        let t0 = Instant::now();
+        l.tick(false, &mut next);
+        assert!(t0.elapsed() < TICK * 2, "{:?}", t0.elapsed());
+        assert!(
+            sys::testing::intr_is_off(),
+            "the race-path SIGINT was not dispatched within one tick"
+        );
+        let msg = bus.pop().expect("GstLaunchInterrupt posted");
+        let name = match msg.view() {
+            gst::MessageView::Application(a) => a.structure().map(|s| s.name().to_string()),
+            _ => None,
+        };
+        assert_eq!(name.as_deref(), Some("GstLaunchInterrupt"));
+        sys::testing::reset();
     }
 
     #[test]
