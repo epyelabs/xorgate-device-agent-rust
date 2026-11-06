@@ -176,15 +176,15 @@ mod tests {
     /// the signal is unknown (csq 99) (modem.test.ts:143)" (re-dumped at
     /// 09da38d byte-identical, Phase 5b WP5), run end-to-end by
     /// `xorgate-agent/tests/collectors.rs::lte_scenarios_match_the_ts_collector`.
-    /// This pins `lte_group` directly: 99 and 99.0 (one JS number) and a
-    /// missing csq → no group; 98, 0 and 31 → a group.
+    /// This pins `lte_group` directly: 99 (`99` and `99.0` are one JS number,
+    /// one f64) and a missing csq → no group; 98, 0 and 31 → a group.
     #[test]
     fn lte_group_is_omitted_at_csq_99() {
         let t = |csq: Option<f64>| ModemTelemetry {
             csq,
             ..Default::default()
         };
-        for csq in [Some(99.0), Some(f64::from(99u8)), None] {
+        for csq in [Some(99.0), None] {
             assert!(lte_group(&t(csq)).is_none(), "{csq:?}");
         }
         for q in [98.0, 0.0, 31.0] {

@@ -143,7 +143,7 @@ process.stdout.write(
       jsSourceFile: "src/agent/collectors/lte.ts (createLteCollector) + src/hardware/modem.ts (readModemTelemetry)",
       jsCommit: process.env.JS_COMMIT_FULL ?? "09da38dcc8b75c248625a3a0bee43b70e7def55d",
       generatedBy:
-        "npx tsx dump-lte-scenarios.mts in a git-archive scratch copy of 89b5c64 (phase-2 WP2; LTE_TELEMETRY_FILE scratch file, Date.now/hrtime mocked to wall = baseWallMs + mono)",
+        "npx tsx tools/replay/js/dump-lte-scenarios.mts from the root of the shared JS build at jsCommit (phase-2 WP2 driver, written at 89b5c64; re-run per CF78 / redump-all.sh; LTE_TELEMETRY_FILE scratch file, Date.now/hrtime mocked to wall = baseWallMs + mono)",
       cases,
     },
     null,
