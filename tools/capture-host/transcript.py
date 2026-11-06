@@ -417,6 +417,11 @@ def cmd_compare(a):
                     continue
                 rows.append((f"{key}@{when}", rv == gv,
                              f"ref={r['proc'].get(when, {}).get(key + 'Names')} got={g['proc'].get(when, {}).get(key + 'Names')}"))
+        ra, ga = r.get("after", {}), g.get("after", {})
+        rows.append(("shm segments left (count)", len(ra.get("shmLeft", [])) == len(ga.get("shmLeft", [])),
+                     f"ref={ra.get('shmLeft')} got={ga.get('shmLeft')}"))
+        rows.append(("fragments", ra.get("fragments") == ga.get("fragments"),
+                     f"ref={ra.get('fragments')} got={ga.get('fragments')}"))
         for fd in (1, 2):
             rl, gl = fd_lines(r, fd), fd_lines(g, fd)
             same = rl == gl

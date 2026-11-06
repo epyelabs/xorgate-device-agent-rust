@@ -1,0 +1,62 @@
+{
+ "scenario": "4-missing-element",
+ "description": "bridge-only argv as built (libcamerasrc is not installed in the rig)",
+ "argv": [
+  "libcamerasrc",
+  "camera-name=/base/axi/pcie@1000120000/rp1/i2c@88000/imx708@1a",
+  "!",
+  "video/x-raw,format=I420,width=1280,height=720,framerate=15/1",
+  "!",
+  "shmsink",
+  "socket-path=/work/shm/cam0.sock",
+  "wait-for-connection=false",
+  "sync=false",
+  "shm-size=20971520"
+ ],
+ "user": "root",
+ "lines": [
+  {
+   "fd": 2,
+   "t": 8,
+   "line": "WARNING: erroneous pipeline: no element \"libcamerasrc\""
+  }
+ ],
+ "exit": {
+  "code": 1,
+  "signal": null,
+  "timeoutKilled": false
+ },
+ "proc": {},
+ "events": [],
+ "after": {
+  "shmLeft": [],
+  "fragments": []
+ },
+ "racy": [],
+ "stamp": {
+  "program": "/usr/bin/gst-launch-1.0",
+  "gstLaunchVersion": [
+   "gst-launch-1.0 version 1.22.0",
+   "GStreamer 1.22.0"
+  ],
+  "debianVersion": "12.13",
+  "arch": "aarch64",
+  "kernel": "6.12.76-linuxkit",
+  "recordedAt": "2026-11-06T15:00:58Z",
+  "recorder": "tools/capture-host/transcript.py",
+  "packages": [
+   "gstreamer1.0-plugins-bad 1.22.0-4+deb12u8",
+   "gstreamer1.0-plugins-base 1.22.0-3+deb12u7",
+   "gstreamer1.0-plugins-good 1.22.0-5+deb12u4",
+   "gstreamer1.0-plugins-ugly 1.22.0-2+deb12u2",
+   "gstreamer1.0-tools 1.22.0-2+deb12u1",
+   "libgstreamer1.0-0 1.22.0-2+deb12u1"
+  ],
+  "env": {
+   "LANG": null,
+   "LC_ALL": null,
+   "GST_DEBUG": null,
+   "GST_DEBUG_DUMP_DOT_DIR": null
+  }
+ }
+}

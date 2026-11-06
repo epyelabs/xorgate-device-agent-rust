@@ -224,14 +224,18 @@ def main():
                 print(f"[SKIP] {name}: mutation token {old!r} not in argv", flush=True)
                 continue
             host_argv[host_argv.index(old)] = new
+        history = []
         for attempt in range(1, ATTEMPTS + 1):
             g = run_side(a.gst, "gst-launch-1.0", [], argv)
             h = run_side(a.host, "xorgate-capture", ["__capture-host"], host_argv)
             sides = {"gst-launch": g, "host": h}
             if a.self_check:
                 sides["gst-launch-2"] = run_side(a.gst, "gst-launch-1.0", [], argv)
-            done = compare(g, h)[0] and (not a.self_check or compare(g, sides["gst-launch-2"])[0])
-            if done or a.mutate:
+            hv = compare(g, h)
+            sv = compare(g, sides["gst-launch-2"]) if a.self_check else (True, {}, None, False)
+            history.append({"attempt": attempt, "host": hv[1], "hostFirstDiff": hv[2],
+                            "selfCheck": sv[1], "selfCheckFirstDiff": sv[2]})
+            if (hv[0] and sv[0]) or a.mutate:
                 break
         for side, res in sides.items():
             d = os.path.join(a.outdir, slug(name), side)
@@ -240,7 +244,7 @@ def main():
                 with open(os.path.join(d, t + ".dot"), "w") as f:
                     f.write(text)
         eq, rows, first, no_dots = compare(g, h)
-        row = {"case": name, "equal": eq, "rows": rows, "noDots": no_dots, "attempts": attempt,
+        row = {"case": name, "equal": eq, "rows": rows, "noDots": no_dots, "attempts": attempt, "history": history,
                "exit": {"gst": g["exit"], "host": h["exit"]}, "firstDiff": first}
         if a.self_check:
             seq, srows, sfirst, _ = compare(g, sides["gst-launch-2"])

@@ -24,6 +24,8 @@ use std::ffi::CStr;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 
+use nix::sys::signal::{SigSet, Signal};
+
 /// Watch states of one signal (SIGINT / SIGHUP).
 const OFF: u8 = 0; // no watch: the default action
 const ARMED: u8 = 1; // watched: the next signal is dispatched
@@ -48,26 +50,16 @@ fn state(sig: i32) -> &'static AtomicU8 {
 }
 
 /// `PR_SET_NAME`: `comm` (and so `ps`/`pkill -x`) reads `xorgate-capture`.
-#[allow(unsafe_code)]
 pub fn set_process_name(name: &CStr) {
-    // SAFETY: PR_SET_NAME reads a NUL-terminated string (truncated to 15
-    // bytes by the kernel); `name` outlives the call.
-    unsafe {
-        libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0);
-    }
+    let _ = nix::sys::prctl::set_name(name);
 }
 
-#[allow(unsafe_code)]
-fn sigset(sigs: &[i32]) -> libc::sigset_t {
-    // SAFETY: sigemptyset/sigaddset initialise a stack sigset_t.
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        for &s in sigs {
-            libc::sigaddset(&mut set, s);
-        }
-        set
+fn sigset(sigs: &[Signal]) -> SigSet {
+    let mut set = SigSet::empty();
+    for &s in sigs {
+        set.add(s);
     }
+    set
 }
 
 #[allow(unsafe_code)]
@@ -100,49 +92,36 @@ static LATE: AtomicU8 = AtomicU8::new(0);
 pub fn init_signals() -> std::io::Result<()> {
     set_disposition(libc::SIGPIPE, libc::SIG_DFL);
     set_disposition(libc::SIGBUS, libc::SIG_DFL);
-    block(&[libc::SIGINT, libc::SIGHUP]);
+    block(&[Signal::SIGINT, Signal::SIGHUP]);
     std::thread::Builder::new()
         .name("xg-sigwait".into())
         .spawn(wait_loop)?;
     Ok(())
 }
 
-#[allow(unsafe_code)]
-fn block(sigs: &[i32]) {
-    let set = sigset(sigs);
-    // SAFETY: pthread_sigmask on the calling thread with a valid set.
-    unsafe {
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-    }
+fn block(sigs: &[Signal]) {
+    let _ = sigset(sigs).thread_block();
 }
 
 /// The default action of `sig`, now, from the calling thread (the process
 /// terminates: SIGINT/SIGHUP default to Term).
-#[allow(unsafe_code)]
-fn die_by(sig: i32) -> ! {
-    set_disposition(sig, libc::SIG_DFL);
-    let set = sigset(&[sig]);
-    // SAFETY: unblock `sig` for this thread only, then raise it at this
-    // thread: the default action terminates the whole process.
-    unsafe {
-        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
-        libc::raise(sig);
-    }
+fn die_by(sig: Signal) -> ! {
+    set_disposition(sig as i32, libc::SIG_DFL);
+    // Unblock `sig` for this thread only, then raise it at this thread: the
+    // default action terminates the whole process.
+    let _ = sigset(&[sig]).thread_unblock();
+    let _ = nix::sys::signal::raise(sig);
     // Unreachable for Term signals; keep the type honest.
-    std::process::exit(128 + sig);
+    std::process::exit(128 + sig as i32);
 }
 
-#[allow(unsafe_code)]
 fn wait_loop() {
-    let set = sigset(&[libc::SIGINT, libc::SIGHUP]);
+    let set = sigset(&[Signal::SIGINT, Signal::SIGHUP]);
     loop {
-        let mut sig: libc::c_int = 0;
-        // SAFETY: sigwait on signals this thread (and every other) blocks.
-        let rc = unsafe { libc::sigwait(&set, &mut sig) };
-        if rc != 0 {
-            continue;
+        // sigwait on signals this thread (and every other) blocks.
+        if let Ok(sig) = set.wait() {
+            deliver(sig as i32);
         }
-        deliver(sig);
     }
 }
 
@@ -153,7 +132,11 @@ pub fn deliver(sig: i32) {
     match st.compare_exchange(ARMED, PENDING, Ordering::SeqCst, Ordering::SeqCst) {
         Ok(_) => post_signal(sig),
         Err(PENDING) => {}
-        Err(_) => die_by(sig),
+        Err(_) => die_by(if sig == libc::SIGINT {
+            Signal::SIGINT
+        } else {
+            Signal::SIGHUP
+        }),
     }
 }
 
@@ -309,10 +292,9 @@ pub fn setlocale_from_env() {
 }
 
 /// `isatty (STDOUT_FILENO)` (position printing, `gst-launch.c:1298`).
-#[allow(unsafe_code)]
 pub fn stdout_is_tty() -> bool {
-    // SAFETY: isatty(3) on fd 1.
-    unsafe { libc::isatty(1) == 1 }
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
 }
 
 // ---------------------------------------------------------------------------

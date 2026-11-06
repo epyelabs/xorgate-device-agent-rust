@@ -1,0 +1,204 @@
+{
+ "scenario": "3b-record-sigterm",
+ "description": "record start (-e), SIGTERM after ~3 s (default action expected)",
+ "argv": [
+  "-e",
+  "videotestsrc",
+  "is-live=true",
+  "pattern=ball",
+  "!",
+  "video/x-raw,format=I420,width=1280,height=720,framerate=15/1",
+  "!",
+  "tee",
+  "name=t",
+  "t.",
+  "!",
+  "queue",
+  "!",
+  "x264enc",
+  "speed-preset=ultrafast",
+  "tune=zerolatency",
+  "threads=2",
+  "bitrate=1000",
+  "key-int-max=30",
+  "!",
+  "h264parse",
+  "!",
+  "splitmuxsink",
+  "muxer=mp4mux fragment-duration=1000",
+  "location=/work/out/%05d.mp4",
+  "max-size-time=10000000000",
+  "t.",
+  "!",
+  "queue",
+  "leaky=downstream",
+  "max-size-buffers=5",
+  "!",
+  "videorate",
+  "!",
+  "video/x-raw,framerate=15/1",
+  "!",
+  "videoscale",
+  "!",
+  "video/x-raw,format=I420,width=1280,height=720,framerate=15/1",
+  "!",
+  "shmsink",
+  "socket-path=/work/shm/cam0.sock",
+  "wait-for-connection=false",
+  "sync=false",
+  "shm-size=20971520"
+ ],
+ "user": "root",
+ "lines": [
+  {
+   "fd": 1,
+   "t": 17,
+   "line": "Setting pipeline to PAUSED ..."
+  },
+  {
+   "fd": 1,
+   "t": 18,
+   "line": "Pipeline is live and does not need PREROLL ..."
+  },
+  {
+   "fd": 1,
+   "t": 18,
+   "line": "Pipeline is PREROLLED ..."
+  },
+  {
+   "fd": 1,
+   "t": 18,
+   "line": "Setting pipeline to PLAYING ..."
+  },
+  {
+   "fd": 1,
+   "t": 18,
+   "line": "New clock: GstSystemClock"
+  },
+  {
+   "fd": 1,
+   "t": 22,
+   "line": "Redistribute latency..."
+  },
+  {
+   "fd": 1,
+   "t": 28,
+   "line": "Redistribute latency..."
+  },
+  {
+   "fd": 1,
+   "t": 28,
+   "line": "Redistribute latency..."
+  },
+  {
+   "fd": 1,
+   "t": 28,
+   "line": "Redistribute latency..."
+  },
+  {
+   "fd": 1,
+   "t": 97,
+   "line": "Redistribute latency..."
+  },
+  {
+   "fd": 1,
+   "t": 2027,
+   "line": "Redistribute latency..."
+  }
+ ],
+ "exit": {
+  "code": null,
+  "signal": "SIGTERM",
+  "timeoutKilled": false
+ },
+ "proc": {
+  "playing": {
+   "Name": "gst-launch-1.0",
+   "State": "S (sleeping)",
+   "Threads": "13",
+   "SigQ": "2/31334",
+   "SigPnd": "0000000000000000",
+   "ShdPnd": "0000000000000000",
+   "SigBlk": "0000000000000000",
+   "SigIgn": "0000000000000000",
+   "SigCgt": "0000000100000407",
+   "taskSigBlk": {
+    "0000000000000000": [
+     "gst-launch-1.0",
+     "gst-launch-1.0",
+     "mp4mux0:src",
+     "pool-gst-launch",
+     "queue0:src",
+     "queue0:src",
+     "queue0:src",
+     "queue0:src",
+     "queue0:src",
+     "queue1:src",
+     "queue_video:src",
+     "videotestsrc0:s"
+    ],
+    "fffffffe7ffbfeff": [
+     "gmain"
+    ]
+   },
+   "cmdline0": "gst-launch-1.0",
+   "comm": "gst-launch-1.0",
+   "SigCgtNames": [
+    "SIGHUP",
+    "SIGINT",
+    "SIGQUIT",
+    "SIGSEGV",
+    "SIG33"
+   ],
+   "SigIgnNames": [],
+   "SigBlkNames": [],
+   "t": 1019
+  }
+ },
+ "events": [
+  {
+   "t": 18,
+   "action": "wait-line ^New clock:",
+   "ok": true
+  },
+  {
+   "t": 3020,
+   "action": "signal SIGTERM"
+  }
+ ],
+ "after": {
+  "shmLeft": [
+   "shmpipe.  215.    0"
+  ],
+  "fragments": [
+   "00000.mp4"
+  ]
+ },
+ "racy": [],
+ "stamp": {
+  "program": "/usr/bin/gst-launch-1.0",
+  "gstLaunchVersion": [
+   "gst-launch-1.0 version 1.22.0",
+   "GStreamer 1.22.0"
+  ],
+  "debianVersion": "12.13",
+  "arch": "aarch64",
+  "kernel": "6.12.76-linuxkit",
+  "recordedAt": "2026-11-06T15:00:58Z",
+  "recorder": "tools/capture-host/transcript.py",
+  "packages": [
+   "gstreamer1.0-plugins-bad 1.22.0-4+deb12u8",
+   "gstreamer1.0-plugins-base 1.22.0-3+deb12u7",
+   "gstreamer1.0-plugins-good 1.22.0-5+deb12u4",
+   "gstreamer1.0-plugins-ugly 1.22.0-2+deb12u2",
+   "gstreamer1.0-tools 1.22.0-2+deb12u1",
+   "libgstreamer1.0-0 1.22.0-2+deb12u1"
+  ],
+  "env": {
+   "LANG": null,
+   "LC_ALL": null,
+   "GST_DEBUG": null,
+   "GST_DEBUG_DUMP_DOT_DIR": null
+  }
+ }
+}

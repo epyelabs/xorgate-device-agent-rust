@@ -114,7 +114,10 @@ async fn host_backend_sigint_eos_process_name_and_dispositions() {
     // both gst-launch and the host).
     let parent_ign = u64::from_str_radix(&status_field(std::process::id(), "SigIgn"), 16).unwrap();
     let want = parent_ign & !(1u64 << (libc::SIGPIPE - 1));
-    assert_eq!(u64::from_str_radix(&status_field(pid, "SigIgn"), 16).unwrap(), want);
+    assert_eq!(
+        u64::from_str_radix(&status_field(pid, "SigIgn"), 16).unwrap(),
+        want
+    );
     // Nice is per process at spawn and inherited (the supervisor renices).
     child.renice(10).unwrap();
 
