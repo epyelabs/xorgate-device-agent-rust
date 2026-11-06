@@ -174,6 +174,10 @@ impl manager::RecordingBackend for Backend {
 /// WP4's supervisor behind [`manager::CaptureApi`].
 struct CaptureAdapter(Arc<capture::VideoCaptureSupervisor>);
 
+/// D41 agent-exit cleanup: the most each still-running capture child is waited
+/// for after its SIGKILL (well inside systemd's TimeoutStopSec).
+pub const CAPTURE_EXIT_REAP_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// `stopAndWait(graceMs = 10_000)` (`video-capture.ts:516`).
 const STOP_AND_WAIT_GRACE: std::time::Duration = std::time::Duration::from_millis(10_000);
 
@@ -192,6 +196,12 @@ impl manager::CaptureApi for CaptureAdapter {
     }
     fn stop_and_wait(&self) -> crate::ctx::BoxFut<'_, ()> {
         Box::pin(async move { self.0.stop_and_wait(STOP_AND_WAIT_GRACE).await })
+    }
+    fn reap_at_exit(
+        &self,
+        bound: std::time::Duration,
+    ) -> crate::ctx::BoxFut<'_, Vec<(String, Vec<String>)>> {
+        Box::pin(async move { self.0.kill_and_reap_at_exit(bound).await })
     }
     fn active_session_ids(&self) -> std::collections::HashSet<String> {
         self.0.active_session_ids()

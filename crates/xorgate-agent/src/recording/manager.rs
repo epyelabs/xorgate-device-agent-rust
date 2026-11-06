@@ -170,6 +170,12 @@ pub trait CaptureApi: Send + Sync {
     fn stop(&self);
     /// Stop and wait until every child is gone (10 s grace → SIGKILL + reap).
     fn stop_and_wait(&self) -> BoxFut<'_, ()>;
+    /// D41 agent-exit cleanup: SIGKILL + wait (≤ `bound` each) every child
+    /// still alive, then unlink its shm segments; `(key, segments)` per
+    /// child killed. Default: nothing (fakes).
+    fn reap_at_exit(&self, _bound: std::time::Duration) -> BoxFut<'_, Vec<(String, Vec<String>)>> {
+        Box::pin(async { Vec::new() })
+    }
     fn active_session_ids(&self) -> HashSet<String>;
     fn any_recording(&self) -> bool;
     fn status(&self) -> Vec<CaptureStatus>;
@@ -363,6 +369,9 @@ struct Slots {
     disk: Option<Arc<dyn DiskApi>>,
     uploader: Option<Arc<dyn UploaderApi>>,
     capture: Option<Arc<dyn CaptureApi>>,
+    /// The capture `stop()` retired at shutdown, kept for the agent-exit
+    /// cleanup ([`RecordingManager::reap_capture_at_exit`]).
+    exiting_capture: Option<Arc<dyn CaptureApi>>,
 }
 
 struct State {
@@ -744,11 +753,26 @@ impl RecordingManager {
         let capture = lock(&inner.slots).capture.take();
         if let Some(c) = capture {
             c.stop();
+            lock(&inner.slots).exiting_capture = Some(c);
         }
         st.video_key.clear();
         st.video_cameras_key.clear();
         inner.publish(&st);
         finalized
+    }
+
+    /// D41 agent-exit cleanup (Rust only): after the shutdown sequence, kill
+    /// and reap the capture children the shutdown `stop()` SIGINTed that are
+    /// still alive, so none strands its /dev/shm segment. Journal only.
+    pub async fn reap_capture_at_exit(&self, bound: Duration) {
+        let c = lock(&self.inner.slots).exiting_capture.take();
+        let Some(c) = c else { return };
+        for (key, segs) in c.reap_at_exit(bound).await {
+            tracing::info!(
+                "[recording] capture {key} still running at exit: killed, {} shm segment(s) unlinked {segs:?}",
+                segs.len()
+            );
+        }
     }
 
     /// `videoStatus()` (`manager.ts:390-395`).

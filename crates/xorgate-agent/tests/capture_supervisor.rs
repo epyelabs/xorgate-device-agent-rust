@@ -806,6 +806,164 @@ async fn set_cameras_is_inert_after_stop() {
 // ---------------------------------------------------------------------------
 // extras (not in the TS suite)
 
+/// D41 agent-exit cleanup (orchestrator ruling 2026-11-06), REAL process: a
+/// capture child that ignores SIGINT is still running when the agent exits
+/// (the rec-disk rv5 race: its EOS outlived the agent). The exit cleanup
+/// SIGKILLs it, waits, and unlinks its padded shmsink segment; another live
+/// owner's segment stays. Before the cleanup existed the runtime drop's
+/// `kill_on_drop` killed it with nobody left to reap, and the segment stayed.
+#[tokio::test]
+async fn d41_a_capture_still_running_at_exit_is_killed_and_its_segment_unlinked() {
+    let home = Home::new("exit-reap");
+    let devshm = home.0.join("devshm");
+    std::fs::create_dir_all(&devshm).unwrap();
+    // A live foreign owner (this test process) that must survive.
+    let me = format!("shmpipe.{:>5}.    0", std::process::id());
+    std::fs::write(devshm.join(&me), b"x").unwrap();
+    let script = home.0.join("fake-gst.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ntrap '' INT\nname=$(printf 'shmpipe.%5d.    0' $$)\n: > '{}'/\"$name\"\nwhile :; do sleep 0.05; done\n",
+            devshm.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let ev = Events::default();
+    let mut o = opts(&home, cam0(), true, Arc::new(FakeBackend::default()), &ev);
+    o.backend = Arc::new(GstLaunchBackend::with_program(script.display().to_string()));
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    let child_seg = || {
+        std::fs::read_dir(&devshm)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .find(|n| n != &me && n.starts_with("shmpipe."))
+    };
+    let t0 = std::time::Instant::now();
+    let name = loop {
+        if let Some(n) = child_seg() {
+            break n;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the child never wrote its segment"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let pid = xorgate_core::capture_ladder::shm_owner_pid(&name).expect("padded name");
+    assert!(
+        name.starts_with("shmpipe. "),
+        "a padded (4-digit) pid: {name:?}"
+    );
+    // The shutdown `stop()`: SIGINT, ignored — the child is still running.
+    sup.stop();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        xorgate_hal::shm_reaper::pid_alive(pid),
+        "still running at exit"
+    );
+    assert!(devshm.join(&name).exists());
+    // The agent-exit cleanup.
+    let t1 = std::time::Instant::now();
+    let killed = sup.kill_and_reap_at_exit(Duration::from_millis(500)).await;
+    assert!(
+        t1.elapsed() <= Duration::from_millis(600),
+        "bounded: {:?}",
+        t1.elapsed()
+    );
+    assert_eq!(killed.len(), 1, "{killed:?}");
+    assert_eq!(killed[0].0, "cam0");
+    assert!(
+        !devshm.join(&name).exists(),
+        "the child's segment is unlinked"
+    );
+    assert!(
+        !xorgate_hal::shm_reaper::pid_alive(pid),
+        "the child is gone"
+    );
+    assert!(
+        devshm.join(&me).exists(),
+        "a live owner's segment is never touched"
+    );
+    // Idempotent: nothing left to kill.
+    assert!(sup
+        .kill_and_reap_at_exit(Duration::from_millis(500))
+        .await
+        .is_empty());
+}
+
+/// D41 agent-exit cleanup, the timeout arm: a child whose exit is never
+/// observed within the bound (a fake that ignores every signal) still has its
+/// segment unlinked after the bounded wait — the explicit reap, not only the
+/// `onExit` one.
+#[tokio::test(start_paused = true)]
+async fn d41_exit_cleanup_unlinks_even_when_the_exit_is_not_observed_in_the_bound() {
+    struct Deaf {
+        inner: FakeBackend,
+    }
+    struct DeafChild(Arc<Entry>);
+    impl CaptureChild for DeafChild {
+        fn pid(&self) -> Option<u32> {
+            Some(4242)
+        }
+        fn signal(&self, sig: i32) {
+            *self.0.stopped.lock().unwrap() = Some(sig); // never exits
+        }
+        fn renice(&self, _n: i32) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl CaptureBackend for Deaf {
+        fn program(&self) -> &str {
+            "gst-launch-1.0"
+        }
+        fn spawn(
+            &self,
+            args: &[String],
+        ) -> (Box<dyn CaptureChild>, mpsc::UnboundedReceiver<ChildEvent>) {
+            let (_c, rx) = self.inner.spawn(args);
+            (Box::new(DeafChild(self.inner.last())), rx)
+        }
+    }
+    let home = Home::new("exit-reap-deaf");
+    let devshm = home.0.join("devshm");
+    std::fs::create_dir_all(&devshm).unwrap();
+    std::fs::write(devshm.join("shmpipe. 4242.    0"), b"x").unwrap();
+    std::fs::write(devshm.join("shmpipe. 4243.    0"), b"x").unwrap();
+    let be = Arc::new(Deaf {
+        inner: FakeBackend::default(),
+    });
+    let ev = Events::default();
+    let mut o = opts(&home, cam0(), true, Arc::new(FakeBackend::default()), &ev);
+    o.backend = be.clone();
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    sup.stop();
+    let t0 = tokio::time::Instant::now();
+    let killed = sup.kill_and_reap_at_exit(Duration::from_millis(500)).await;
+    assert_eq!(
+        t0.elapsed(),
+        Duration::from_millis(500),
+        "waited exactly the bound"
+    );
+    assert_eq!(
+        *be.inner.get(0).stopped.lock().unwrap(),
+        Some(libc::SIGKILL)
+    );
+    assert_eq!(
+        killed,
+        vec![("cam0".to_string(), vec!["shmpipe. 4242.    0".to_string()])]
+    );
+    assert!(!devshm.join("shmpipe. 4242.    0").exists());
+    assert!(
+        devshm.join("shmpipe. 4243.    0").exists(),
+        "only its own pid"
+    );
+}
+
 /// `stopAndWait`: a child that ignores SIGINT is SIGKILLed after the grace,
 /// and its shm segments are reaped once it is gone.
 #[tokio::test(start_paused = true)]

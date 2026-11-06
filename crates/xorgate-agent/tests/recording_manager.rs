@@ -1183,6 +1183,42 @@ async fn a_failed_finalize_at_shutdown_still_stops_capture() {
     assert!(fatal.try_recv().is_err(), "no second exit path");
 }
 
+/// D41 agent-exit cleanup (ruling 2026-11-06): the capture the shutdown
+/// `stop()` retired is handed the exit cleanup ONCE, with the bound; before
+/// any stop there is nothing to clean; a second call does nothing.
+#[tokio::test(start_paused = true)]
+async fn the_shutdown_capture_gets_the_exit_cleanup_once() {
+    let rig = Rig::new("exit-reap");
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off"}}),
+    );
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0"]);
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    assert!(
+        rig.log.exit_reaps.lock().unwrap().is_empty(),
+        "no stop yet: nothing retired"
+    );
+    m.stop();
+    let (logs, guard) = capture_logs();
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    drop(guard);
+    assert_eq!(
+        *rig.log.exit_reaps.lock().unwrap(),
+        vec![Duration::from_millis(500)]
+    );
+    let logs = logs.lock().unwrap().clone();
+    assert!(
+        logs.iter().any(|l| l.starts_with(
+            "[recording] capture cam0 still running at exit: killed, 1 shm segment(s) unlinked"
+        )),
+        "{logs:?}"
+    );
+}
+
 /// review-wp2 N1 (manager side): `onSegmentClosed: () => void this.runEnforce()`
 /// runs `setActivePath` + the disk's synchronous scan prefix INSIDE the
 /// callback (the rotation), not one task hop later — including when the

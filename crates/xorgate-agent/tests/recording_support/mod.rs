@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use indexmap::IndexMap;
 use xorgate_agent::ctx::BoxFut;
@@ -86,6 +87,8 @@ pub struct Log {
     pub finalize_calls: AtomicUsize,
     /// D41: start-up shm sweeps, and `finalize_calls` at the time of each.
     pub sweeps: Mutex<Vec<usize>>,
+    /// D41: agent-exit capture cleanups, with the bound each was given.
+    pub exit_reaps: Mutex<Vec<Duration>>,
     pub recover_calls: AtomicUsize,
     pub disks: AtomicUsize,
     pub enforces: AtomicUsize,
@@ -170,6 +173,10 @@ impl CaptureApi for FakeCapture {
     }
     fn stop_and_wait(&self) -> BoxFut<'_, ()> {
         Box::pin(async move { self.stop_all() })
+    }
+    fn reap_at_exit(&self, bound: Duration) -> BoxFut<'_, Vec<(String, Vec<String>)>> {
+        self.log.exit_reaps.lock().unwrap().push(bound);
+        Box::pin(async { vec![("cam0".to_string(), vec!["shmpipe. 1162.    0".to_string()])] })
     }
     fn active_session_ids(&self) -> HashSet<String> {
         HashSet::new()

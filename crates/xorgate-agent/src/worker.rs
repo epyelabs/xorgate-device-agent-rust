@@ -898,6 +898,13 @@ async fn run(args: &[String]) -> Result<i32> {
     // to finish (execa `cleanup` SIGTERMs it, it writes its `close` audit
     // record); here SIGTERM + a bounded wait before the runtime drop.
     source.shutdown_children().await;
+    // D41 (ruling 2026-11-06): capture children still in their EOS are killed
+    // and waited for (≤ 500 ms each), and their /dev/shm segments unlinked,
+    // instead of being SIGKILLed unreaped by the runtime drop.
+    if let Some(m) = hooks.manager() {
+        m.reap_capture_at_exit(crate::recording::CAPTURE_EXIT_REAP_BOUND)
+            .await;
+    }
     // `clockTrust?.stop()` (`worker.ts:1497` @ 09da38d), after `recording.stop()`.
     if let Some(t) = &clock_trust {
         t.stop();

@@ -464,6 +464,42 @@ impl VideoCaptureSupervisor {
         s.flush(out);
     }
 
+    /// Agent-exit cleanup (D41, orchestrator ruling 2026-11-06; Rust only —
+    /// the TS process exit leaves execa's `cleanup` to kill the child and
+    /// reaps nothing). Every capture child STILL ALIVE at exit — the SIGINT
+    /// from [`Self::stop`] has not finished its EOS — is SIGKILLed explicitly
+    /// and WAITED for (≤ `bound` each), then every shmsink segment its pid
+    /// owns is unlinked (`shm_reaper::reap_shm_segments`, the same
+    /// `shm_owner_pid` matcher as the exit reaper). Without this the runtime
+    /// drop's `kill_on_drop` SIGKILLs it with nobody left to reap, stranding
+    /// 20 MiB of /dev/shm (RAM on a Pi) until reboot (rec-disk rv5). This
+    /// adds NO wait for the EOS: the child is killed at the same instant the
+    /// runtime drop killed it before, so the final fragment is unchanged.
+    /// Returns `(stream key, segments unlinked)` per child killed here.
+    pub async fn kill_and_reap_at_exit(&self, bound: Duration) -> Vec<(String, Vec<String>)> {
+        let s = &self.shared;
+        let handles = {
+            let mut g = s.lock();
+            let mut out = Out::default();
+            let h = stop_locked(&mut g, &mut out);
+            drop(g);
+            // Not stopped yet (no `stop()` before exit): its SIGINTs first.
+            s.flush(out);
+            h
+        };
+        let mut killed = Vec::new();
+        for (sig, rx) in handles {
+            if *rx.borrow() {
+                continue; // exited already: its `onExit` reaped its segments
+            }
+            s.deliver(&sig); // SIGKILL (taped like every other signal)
+            let _ = tokio::time::timeout(bound, wait_exited(rx)).await;
+            let reaped = shm_reaper::reap_shm_segments(&s.opts.shm_segment_dir, sig.pid);
+            killed.push((sig.key.clone(), reaped));
+        }
+        killed
+    }
+
     /// `stopAndWait(graceMs = 10_000)` (`video-capture.ts:516-531`): stop and
     /// WAIT for every child to exit, escalating to SIGKILL after `grace`.
     /// Required before a replacement supervisor spawns: an exiting shmsink

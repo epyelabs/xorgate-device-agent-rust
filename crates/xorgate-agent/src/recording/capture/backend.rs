@@ -59,6 +59,16 @@ impl Default for GstLaunchBackend {
     }
 }
 
+impl GstLaunchBackend {
+    /// Another program in place of `gst-launch-1.0` (tests: a real child with
+    /// chosen signal behaviour; the argv is unchanged).
+    pub fn with_program(program: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+        }
+    }
+}
+
 impl CaptureBackend for GstLaunchBackend {
     fn program(&self) -> &str {
         &self.program
