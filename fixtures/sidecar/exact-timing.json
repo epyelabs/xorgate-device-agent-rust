@@ -35,28 +35,32 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000180300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000182400
        }
       }
      ],
@@ -143,14 +147,16 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       }
      ],
@@ -213,7 +219,8 @@
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       }
      ],
@@ -279,21 +286,24 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000180300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000182400
        }
       }
      ],
@@ -352,7 +362,7 @@
        },
        "00001.json": {
         "startTs": 1760000060300,
-        "durationMs": 60000,
+        "durationMs": 62100,
         "startMono": 360300,
         "finalized": true
        }
@@ -375,14 +385,16 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       }
      ],
@@ -530,7 +542,7 @@
       "exact": {
        "00001.json": {
         "startTs": 1760000060300,
-        "durationMs": 60000,
+        "durationMs": 62100,
         "startMono": 360300,
         "finalized": true
        }
@@ -551,7 +563,8 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       }
      ],
@@ -597,7 +610,7 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 60000,
+        "durationMs": 62100,
         "startMono": 300300,
         "finalized": true
        }
@@ -622,21 +635,24 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       }
      ],
@@ -714,21 +730,24 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       },
       {
@@ -816,28 +835,32 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000210300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000212400
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000270300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000272400
        }
       }
      ],
@@ -926,28 +949,32 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000100300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000102400
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000160300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000162400
        }
       }
      ],
@@ -1036,28 +1063,32 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000030300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000032400
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000090300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000092400
        }
       }
      ],
@@ -1143,35 +1174,40 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 7001
+        "lagMs": 7001,
+        "cbWallMs": 1760000067301
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 7000
+        "lagMs": 7000,
+        "cbWallMs": 1760000127300
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000180300,
-        "lagMs": -1
+        "lagMs": -1,
+        "cbWallMs": 1760000180299
        }
       },
       {
        "start": {
         "id": 4,
         "startTs": 1760000240300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000242400
        }
       }
      ],
@@ -1232,13 +1268,13 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 64901,
+        "durationMs": 67001,
         "startMono": 300300,
         "finalized": true
        },
        "00002.json": {
         "startTs": 1760000120300,
-        "durationMs": 52999,
+        "durationMs": 59999,
         "startMono": 420300,
         "finalized": true
        }
@@ -1265,21 +1301,24 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 0,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       }
      ],
@@ -1324,7 +1363,7 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 60000,
+        "durationMs": 62100,
         "startMono": 300300,
         "finalized": true
        }
@@ -1349,14 +1388,16 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       }
      ],
@@ -1414,7 +1455,8 @@
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       }
      ],
@@ -1470,21 +1512,24 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       }
      ],
@@ -1691,7 +1736,8 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
        }
       }
      ],
@@ -1751,21 +1797,24 @@
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000180300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000182400
        }
       }
      ],
@@ -1844,28 +1893,32 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 12
+        "lagMs": 12,
+        "cbWallMs": 1760000000312
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2000
+        "lagMs": 2000,
+        "cbWallMs": 1760000062300
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2000
+        "lagMs": 2000,
+        "cbWallMs": 1760000122300
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000180300,
-        "lagMs": 2000
+        "lagMs": 2000,
+        "cbWallMs": 1760000182300
        }
       }
      ],
@@ -1943,7 +1996,7 @@
    ]
   },
   {
-   "name": "WP1 rig shape, line 1 lost: fragment 0 fallback overstates by lag(1) - lag(0) < one GOP",
+   "name": "WP1 rig shape, line 1 lost: fragment 0 absorbs lag(1) to stay contiguous with legacy 1",
    "steps": [
     {
      "lines": [
@@ -1951,21 +2004,24 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 12
+        "lagMs": 12,
+        "cbWallMs": 1760000000312
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2000
+        "lagMs": 2000,
+        "cbWallMs": 1760000122300
        }
       },
       {
        "start": {
         "id": 3,
         "startTs": 1760000180300,
-        "lagMs": 2000
+        "lagMs": 2000,
+        "cbWallMs": 1760000182300
        }
       }
      ],
@@ -2018,7 +2074,7 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 61988,
+        "durationMs": 62000,
         "startMono": 300300,
         "finalized": true
        },
@@ -2047,21 +2103,24 @@
        "start": {
         "id": 0,
         "startTs": 1760000000300,
-        "lagMs": 12
+        "lagMs": 12,
+        "cbWallMs": 1760000000312
        }
       },
       {
        "start": {
         "id": 1,
         "startTs": 1760000060300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
        }
       },
       {
        "start": {
         "id": 2,
         "startTs": 1760000120300,
-        "lagMs": 2100
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
        }
       },
       {
@@ -2133,6 +2192,308 @@
       "legacy": [],
       "deferred": [],
       "rejected": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "R-WP2-3 lost line N+1: exact N is contiguous with the legacy N+1 (no replay gap)",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 12,
+        "cbWallMs": 1760000000312
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2000,
+        "cbWallMs": 1760000062300
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000180300,
+        "lagMs": 2000,
+        "cbWallMs": 1760000182300
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000000313,
+        "mtimeMs": 1760000062300
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062301,
+        "mtimeMs": 1760000122300
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122301,
+        "mtimeMs": 1760000182300
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182301,
+        "mtimeMs": 1760000242300
+       }
+      },
+      {
+       "name": "00004.mp4",
+       "stat": {
+        "sizeBytes": 1004,
+        "birthtimeMs": 1760000242301,
+        "mtimeMs": 1760000302300
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 62000,
+        "startMono": 360300,
+        "finalized": true
+       }
+      },
+      "legacy": [
+       "00002.json"
+      ],
+      "deferred": [
+       3
+      ],
+      "rejected": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "R-WP2-2 crash final sweep: newest fragment's own line pending, written legacy finalized:false",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000122400
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122401,
+        "mtimeMs": 1760000127400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": true,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 62100,
+        "startMono": 360300,
+        "finalized": true
+       }
+      },
+      "legacy": [
+       "00002.json"
+      ],
+      "deferred": [],
+      "rejected": [],
+      "activePath": null
+     }
+    }
+   ]
+  },
+  {
+   "name": "R-WP2-7 startTs off cbWallMs - lagMs by 2 ms is rejected, by 1 ms accepted",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000062402
+       }
+      },
+      {
+       "start": {
+        "id": 2,
+        "startTs": 1760000120300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000122399
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000180300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000182400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000122400
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122401,
+        "mtimeMs": 1760000182400
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182401,
+        "mtimeMs": 1760000242400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 62100,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00002.json": {
+        "startTs": 1760000120300,
+        "durationMs": 60000,
+        "startMono": 420300,
+        "finalized": true
+       }
+      },
+      "legacy": [
+       "00001.json"
+      ],
+      "deferred": [],
+      "rejected": [
+       1
+      ]
      }
     }
    ]

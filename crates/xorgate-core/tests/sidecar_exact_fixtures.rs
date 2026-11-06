@@ -80,7 +80,7 @@ fn is_int(v: f64) -> bool {
 fn exact_timing_fixtures() {
     let f = load();
     let m: SessionManifest = parse_session_manifest(&f.manifest).unwrap().into();
-    assert!(f.cases.len() >= 20, "fixture lost cases");
+    assert!(f.cases.len() >= 23, "fixture lost cases");
     for c in &f.cases {
         let mut table = TimingTable::default();
         let mut deferred_since: BTreeMap<u64, f64> = BTreeMap::new();
@@ -97,6 +97,7 @@ fn exact_timing_fixtures() {
                         id,
                         s["startTs"].as_f64().unwrap(),
                         s["lagMs"].as_f64().unwrap(),
+                        s["cbWallMs"].as_f64().unwrap(),
                     );
                     if r.is_err() {
                         rejected.push(id);
@@ -248,6 +249,24 @@ fn exact_timing_fixtures() {
                 deferred_since.entry(*id).or_insert(step.now_ms);
             }
             written.extend(seen);
+        }
+        // R-WP2-3: no replay gap between consecutive FINALIZED sidecars. The
+        // backend's rule (`replay-manifest.ts:37`, CONTIGUITY_SLACK_MS =
+        // 2000): a hole `start(N+1) − (start(N) + dur(N))` above 2000 ms is a
+        // `missing-segments` gap. Overlaps are harmless. A crash-cut N
+        // (`finalized:false`) never bridges, so it is not checked.
+        for (k, sc) in &by_seq {
+            let Some(next) = by_seq.get(&(k + 1)) else {
+                continue;
+            };
+            if sc.finalized {
+                let hole = next.start_ts - (sc.start_ts + sc.duration_ms);
+                assert!(
+                    hole <= 2_000.0,
+                    "{}: replay gap {hole} ms after fragment {k}",
+                    c.name
+                );
+            }
         }
         // Clock step between N and N+1: exactly fragment N moves, by S
         // (what clock-step.ts:50-62 needs); floored at 0 (int ≥ 0).

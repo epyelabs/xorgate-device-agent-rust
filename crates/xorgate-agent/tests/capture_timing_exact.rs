@@ -284,13 +284,9 @@ async fn a_lost_line_is_waited_for_one_poll_period_at_most() {
     ms(POLL - 1).await; // t ≈ 15 s: the 10 s poll tick passed, budget not spent
     assert!(sidecar(&d, 1).is_none(), "deferred < one poll period");
     ms(2).await; // t ≈ 15.001 s: the one-shot fired (the next poll is at 20 s)
-                 // mtime − lag − startTs (the successor's stamp never came).
-    assert_exact(
-        &sidecar(&d, 1).unwrap(),
-        frame(1),
-        cb(2) - LAG - frame(1),
-        true,
-    );
+                 // The successor's stamp never came but file 2 is listed (legacy): N ends
+                 // at mtime, contiguous with the legacy fragment 2 (R-WP2-3).
+    assert_exact(&sidecar(&d, 1).unwrap(), frame(1), cb(2) - frame(1), true);
     s.stop();
     settle().await;
 }
@@ -333,9 +329,9 @@ async fn crash_cut_final_sweep_never_defers_and_respawn_starts_a_fresh_table() {
     frag(&d2, 0, cb(1) + 1_500);
     frag(&d2, 1, cb(2));
     ms(POLL + 1).await;
-    // successor rejected → mtime − lag − startTs = cb(1) + 1500 − (LAG + 500) − frame(0)
+    // successor rejected, file 1 listed (legacy) → mtime − startTs (R-WP2-3)
     let sc = sidecar(&d2, 0).unwrap();
-    assert_exact(&sc, frame(0), cb(1) + 1_500 - (LAG + 500) - frame(0), true);
+    assert_exact(&sc, frame(0), cb(1) + 1_500 - frame(0), true);
     assert_ne!(sc["durationMs"], SEG, "the old run's stamp 1 leaked in");
     s.stop();
     settle().await;

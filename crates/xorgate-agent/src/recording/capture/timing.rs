@@ -107,10 +107,12 @@ impl RunTiming {
     /// Feed one line; `Err` = the warning detail (the caller warns once).
     pub fn apply(&mut self, line: &TimingLine) -> Result<(), StampReject> {
         match line {
-            TimingLine::Start(s) => {
-                self.table
-                    .record_start(u64::from(s.id), s.start_ts as f64, s.lag_ms as f64)
-            }
+            TimingLine::Start(s) => self.table.record_start(
+                u64::from(s.id),
+                s.start_ts as f64,
+                s.lag_ms as f64,
+                s.cb_wall_ms as f64,
+            ),
             TimingLine::End(e) => self.table.record_end(u64::from(e.id), e.end_ts as f64),
         }
     }

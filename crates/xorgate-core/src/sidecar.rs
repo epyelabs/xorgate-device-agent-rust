@@ -738,7 +738,13 @@ pub fn plan_sweep_timed(
         let finalized = opts.finalized.unwrap_or(!is_newest);
         let exact_times = match exact {
             None => None,
-            Some(x) => match x.decide(*seq, finalized, st.mtime_ms, opts.include_newest) {
+            Some(x) => match x.decide(
+                *seq,
+                finalized,
+                st.mtime_ms,
+                opts.include_newest,
+                frags.iter().any(|(_, s)| *s == *seq + 1.0),
+            ) {
                 ExactDecision::Defer(id) => {
                     plan.deferred.push(id);
                     continue;
@@ -811,6 +817,13 @@ pub enum StampReject {
     Lag(f64),
     /// `startTs` not a sane epoch ms (≤ 2001 or not a number).
     StartTs(f64),
+    /// `startTs` disagrees with the line's own `cbWallMs − lagMs` by more
+    /// than 1 ms (WP1 computes it from ns, so ±1 is normal; review R-WP2-7).
+    Inconsistent {
+        start_ts: f64,
+        cb_wall_ms: f64,
+        lag_ms: f64,
+    },
     /// `endTs` not a sane epoch ms (the start stamp is kept).
     EndTs(f64),
     /// A second `XG-FRAGMENT` for an id already recorded (first wins).
@@ -829,6 +842,17 @@ impl std::fmt::Display for StampReject {
                 js_num_text(LAG_GUARD_MAX_MS)
             ),
             StampReject::StartTs(v) => write!(f, "startTs {} is not a sane epoch", js_num_text(*v)),
+            StampReject::Inconsistent {
+                start_ts,
+                cb_wall_ms,
+                lag_ms,
+            } => write!(
+                f,
+                "startTs {} is not cbWallMs {} - lagMs {} (\u{b1}1)",
+                js_num_text(*start_ts),
+                js_num_text(*cb_wall_ms),
+                js_num_text(*lag_ms)
+            ),
             StampReject::EndTs(v) => write!(f, "endTs {} is not a sane epoch", js_num_text(*v)),
             StampReject::Duplicate => f.write_str("duplicate fragment id"),
             StampReject::EndWithoutStart => f.write_str("end stamp without a start stamp"),
@@ -870,10 +894,17 @@ fn int_ms(v: f64) -> Option<f64> {
 }
 
 impl TimingTable {
-    /// `XG-FRAGMENT`: validate (§8.2 guard, sane epoch) and record. A
-    /// rejected line is recorded as [`Stamp::Rejected`] (the fragment keeps
-    /// the legacy anchors and is never waited for). Duplicates keep the first.
-    pub fn record_start(&mut self, id: u64, start_ts: f64, lag_ms: f64) -> Result<(), StampReject> {
+    /// `XG-FRAGMENT`: validate (§8.2 guard, sane epoch, `startTs` within
+    /// 1 ms of the line's own `cbWallMs − lagMs`) and record. A rejected
+    /// line is recorded as [`Stamp::Rejected`] (the fragment keeps the
+    /// legacy anchors and is never waited for). Duplicates keep the first.
+    pub fn record_start(
+        &mut self,
+        id: u64,
+        start_ts: f64,
+        lag_ms: f64,
+        cb_wall_ms: f64,
+    ) -> Result<(), StampReject> {
         self.max_id = Some(self.max_id.map_or(id, |m| m.max(id)));
         if self.stamps.contains_key(&id) {
             return Err(StampReject::Duplicate);
@@ -881,11 +912,20 @@ impl TimingTable {
         let stamp = match (int_ms(start_ts), int_ms(lag_ms)) {
             (_, None) => Err(StampReject::Lag(lag_ms)),
             (_, Some(l)) if !(0.0..=LAG_GUARD_MAX_MS).contains(&l) => Err(StampReject::Lag(lag_ms)),
-            (Some(s), _) if s > SANE_EPOCH_MS => Ok(FragmentTiming {
-                start_ts: s,
-                lag_ms: int_ms(lag_ms).expect("checked"),
-                end_ts: None,
-            }),
+            (Some(s), Some(l)) if s > SANE_EPOCH_MS => {
+                match int_ms(cb_wall_ms).map(|c| (s - (c - l)).abs() <= 1.0) {
+                    Some(true) => Ok(FragmentTiming {
+                        start_ts: s,
+                        lag_ms: l,
+                        end_ts: None,
+                    }),
+                    _ => Err(StampReject::Inconsistent {
+                        start_ts,
+                        cb_wall_ms,
+                        lag_ms,
+                    }),
+                }
+            }
             _ => Err(StampReject::StartTs(start_ts)),
         };
         match stamp {
@@ -961,8 +1001,17 @@ pub struct ExactTimes {
 /// across it, as `mtime − birthtime` does today:
 /// - finalized with the successor's accepted stamp: `startTs(N+1) − startTs(N)`;
 /// - else with an end stamp (clean EOS of the final fragment): `endTs − startTs`;
-/// - else (crash-cut `finalized:false`, or a successor/end stamp that never
-///   came): `mtime − lag(N) − startTs` (= mtime − the callback's wall time).
+/// - else, when the successor fragment N+1 is LISTED but falls back to the
+///   legacy anchors (its stamp lost, rejected, or still missing when the
+///   wait ran out): `mtime(N) − startTs(N)`, so N ends where the legacy N+1
+///   starts (`birth(N+1)` ≈ `mtime(N)`) and the replay timeline has no seam
+///   (`replay-manifest.ts` `CONTIGUITY_SLACK_MS` = 2000 would otherwise see a
+///   ≈ lag(N) ≈ 2.1 s hole as a gap; review R-WP2-3, orchestrator ruling).
+///   N absorbs ≈ lag(N) (≤ the 7 s guard), below the backend's
+///   `CLOCK_STEP_MIN_MS` (10 s default);
+/// - else (no successor: crash-cut `finalized:false`, the final fragment
+///   without an end stamp, a successor line without its file):
+///   `mtime − lag(N) − startTs` (= mtime − the callback's wall time).
 ///
 /// Every result is floored at 0 (backend `durationMs: int ≥ 0`) and never
 /// clamped from above: on a SIGINT EOS `endTs` can be up to one frame
@@ -971,19 +1020,21 @@ pub struct ExactTimes {
 /// is then the file's media span exactly.
 ///
 /// WP1 rig shape: fragment 0 opens at its first frame (lag ≈ 3–20 ms),
-/// fragments N ≥ 1 one GOP late (lag ≈ 2 s). Both are in the guard. The
-/// mtime fallback uses N's OWN lag, so for fragment 0 with a lost line 1 it
-/// overstates by `lag(1) − lag(0)` (< one GOP): far below the backend's
-/// `clockStepMinMs` (10 s), so no false clock step.
+/// fragments N ≥ 1 one GOP late (lag ≈ 2 s). Both are in the guard.
+///
+/// The no-fake-step margin holds only while the backend's
+/// `CLOCK_STEP_MIN_MS` stays above [`LAG_GUARD_MAX_MS`] (7000).
 pub fn exact_times(
     own: &FragmentTiming,
     successor: Option<&FragmentTiming>,
+    successor_listed: bool,
     finalized: bool,
     mtime_ms: f64,
 ) -> ExactTimes {
     let raw = match (finalized, successor, own.end_ts) {
         (true, Some(next), _) => next.start_ts - own.start_ts,
         (_, _, Some(end)) => end - own.start_ts,
+        _ if successor_listed => js_math_round(mtime_ms - own.start_ts),
         _ => js_math_round(mtime_ms - own.lag_ms - own.start_ts),
     };
     ExactTimes {
@@ -1026,12 +1077,17 @@ pub fn seq_id(seq: f64) -> Option<u64> {
 
 impl ExactSweep<'_> {
     /// The decision for one closed, non-empty fragment (§8.4–8.5).
+    ///
+    /// `successor_listed`: the listing holds fragment `seq + 1`'s file, so a
+    /// successor without an accepted stamp gets a legacy sidecar (and
+    /// [`exact_times`] keeps N contiguous with it).
     pub fn decide(
         &self,
         seq: f64,
         finalized: bool,
         mtime_ms: f64,
         final_sweep: bool,
+        successor_listed: bool,
     ) -> ExactDecision {
         let Some(id) = seq_id(seq) else {
             return ExactDecision::Legacy;
@@ -1048,9 +1104,13 @@ impl ExactSweep<'_> {
             }
         }
         match t.exact(id) {
-            Some(own) => {
-                ExactDecision::Exact(exact_times(own, t.exact(id + 1), finalized, mtime_ms))
-            }
+            Some(own) => ExactDecision::Exact(exact_times(
+                own,
+                t.exact(id + 1),
+                successor_listed,
+                finalized,
+                mtime_ms,
+            )),
             None => ExactDecision::Legacy,
         }
     }
@@ -1503,7 +1563,8 @@ mod tests {
     fn timing_table_guard_order_and_pending() {
         let mut t = TimingTable::default();
         assert!(!t.timed() && !t.pending(0));
-        t.record_start(0, T0 + 300.4, 2100.2).unwrap();
+        t.record_start(0, T0 + 300.4, 2100.2, T0 + 300.4 + 2100.2)
+            .unwrap();
         assert_eq!(
             t.exact(0),
             Some(&FragmentTiming {
@@ -1515,28 +1576,38 @@ mod tests {
         assert!(t.timed());
         assert!(!t.pending(0) && t.pending(1) && t.pending(7));
         // First wins.
-        assert_eq!(t.record_start(0, T0, 1.0), Err(StampReject::Duplicate));
+        assert_eq!(
+            t.record_start(0, T0, 1.0, T0 + 1.0),
+            Err(StampReject::Duplicate)
+        );
         assert_eq!(t.exact(0).unwrap().start_ts, T0 + 300.0);
         // Guard edges: [0, 7000] accepted, outside rejected (recorded, not pending).
         assert_eq!(LAG_GUARD_MAX_MS, 7_000.0);
-        assert!(t.record_start(1, T0 + 60_300.0, 7_000.0).is_ok());
-        assert!(t.record_start(2, T0 + 120_300.0, 0.0).is_ok());
+        assert!(t
+            .record_start(1, T0 + 60_300.0, 7_000.0, T0 + 60_300.0 + 7_000.0)
+            .is_ok());
+        assert!(t
+            .record_start(2, T0 + 120_300.0, 0.0, T0 + 120_300.0 + 0.0)
+            .is_ok());
         assert_eq!(
-            t.record_start(3, T0 + 180_300.0, 7_000.6),
+            t.record_start(3, T0 + 180_300.0, 7_000.6, T0 + 180_300.0 + 7_000.6),
             Err(StampReject::Lag(7_000.6))
         );
-        assert_eq!(t.record_start(4, T0, -0.6), Err(StampReject::Lag(-0.6)));
         assert_eq!(
-            t.record_start(5, T0, f64::NAN)
+            t.record_start(4, T0, -0.6, T0 + -0.6),
+            Err(StampReject::Lag(-0.6))
+        );
+        assert_eq!(
+            t.record_start(5, T0, f64::NAN, T0 + f64::NAN)
                 .map_err(|e| matches!(e, StampReject::Lag(_))),
             Err(true)
         );
         assert_eq!(
-            t.record_start(6, 0.0, 2100.0),
+            t.record_start(6, 0.0, 2100.0, 0.0 + 2100.0),
             Err(StampReject::StartTs(0.0))
         );
         assert_eq!(
-            t.record_start(7, SANE_EPOCH_MS, 2100.0),
+            t.record_start(7, SANE_EPOCH_MS, 2100.0, SANE_EPOCH_MS + 2100.0),
             Err(StampReject::StartTs(SANE_EPOCH_MS))
         );
         for id in 3..=7 {
@@ -1544,7 +1615,8 @@ mod tests {
             assert!(!t.pending(id));
         }
         // A gap below the highest id is lost, never pending.
-        t.record_start(10, T0 + 600_300.0, 2100.0).unwrap();
+        t.record_start(10, T0 + 600_300.0, 2100.0, T0 + 600_300.0 + 2100.0)
+            .unwrap();
         assert!(!t.pending(8) && !t.pending(9) && t.pending(11));
         // End stamps.
         assert_eq!(t.record_end(9, T0), Err(StampReject::EndWithoutStart));
@@ -1553,6 +1625,19 @@ mod tests {
         assert_eq!(t.exact(10).unwrap().end_ts, None);
         t.record_end(10, T0 + 640_300.2).unwrap();
         assert_eq!(t.exact(10).unwrap().end_ts, Some(T0 + 640_300.0));
+        // R-WP2-7: startTs must be within 1 ms of cbWallMs − lagMs.
+        assert!(t
+            .record_start(30, T0 + 480_300.0, 2_100.0, T0 + 482_401.0)
+            .is_ok());
+        assert!(matches!(
+            t.record_start(31, T0 + 540_300.0, 2_100.0, T0 + 542_402.0),
+            Err(StampReject::Inconsistent { .. })
+        ));
+        assert!(matches!(
+            t.record_start(32, T0 + 660_300.0, 2_100.0, f64::NAN),
+            Err(StampReject::Inconsistent { .. })
+        ));
+        assert_eq!(t.get(31), Some(&Stamp::Rejected));
         t.clear();
         assert!(t.is_empty() && !t.timed());
     }
@@ -1573,15 +1658,15 @@ mod tests {
         let mt = T0 + 62_400.0; // = the next callback's wall
                                 // Non-final: the stamp delta, whatever the mtime says (a +S step).
         assert_eq!(
-            exact_times(&own, Some(&next(150_000.0)), true, mt).duration_ms,
+            exact_times(&own, Some(&next(150_000.0)), false, true, mt).duration_ms,
             150_000.0
         );
         assert_eq!(
-            exact_times(&own, Some(&next(40_000.0)), true, mt).duration_ms,
+            exact_times(&own, Some(&next(40_000.0)), false, true, mt).duration_ms,
             40_000.0
         );
         assert_eq!(
-            exact_times(&own, Some(&next(-30_000.0)), true, mt).duration_ms,
+            exact_times(&own, Some(&next(-30_000.0)), false, true, mt).duration_ms,
             0.0
         );
         // Clean final: endTs − startTs (before the successor-less mtime rule).
@@ -1589,7 +1674,10 @@ mod tests {
             end_ts: Some(T0 + 45_300.0),
             ..own
         };
-        assert_eq!(exact_times(&ended, None, true, mt).duration_ms, 45_000.0);
+        assert_eq!(
+            exact_times(&ended, None, false, true, mt).duration_ms,
+            45_000.0
+        );
         assert_eq!(
             exact_times(
                 &FragmentTiming {
@@ -1597,6 +1685,7 @@ mod tests {
                     ..own
                 },
                 None,
+                false,
                 true,
                 mt
             )
@@ -1605,14 +1694,39 @@ mod tests {
         );
         // Crash-cut (finalized:false): mtime − lag − startTs even with a successor stamp.
         assert_eq!(
-            exact_times(&own, Some(&next(60_000.0)), false, T0 + 32_400.4).duration_ms,
+            exact_times(&own, Some(&next(60_000.0)), false, false, T0 + 32_400.4).duration_ms,
             30_000.0
         );
+        // R-WP2-3: a LISTED successor without an accepted stamp (legacy N+1
+        // starts at its birth ≈ mtime(N)): N ends at mtime, no − lag.
+        assert_eq!(
+            exact_times(&own, None, true, true, mt).duration_ms,
+            62_100.0
+        );
+        assert_eq!(exact_times(&own, None, true, true, T0).duration_ms, 0.0);
+        // ... but an accepted successor stamp or an end stamp still wins.
+        assert_eq!(
+            exact_times(&own, Some(&next(60_000.0)), true, true, mt).duration_ms,
+            60_000.0
+        );
+        assert_eq!(
+            exact_times(&ended, None, true, true, mt).duration_ms,
+            45_000.0
+        );
         // No successor, no end: the same mtime rule.
-        assert_eq!(exact_times(&own, None, true, mt).duration_ms, 60_000.0);
-        assert_eq!(exact_times(&own, None, true, T0).duration_ms, 0.0);
-        assert_eq!(exact_times(&own, None, true, f64::NAN).duration_ms, 0.0);
-        assert_eq!(exact_times(&own, None, true, mt).start_ts, T0 + 300.0);
+        assert_eq!(
+            exact_times(&own, None, false, true, mt).duration_ms,
+            60_000.0
+        );
+        assert_eq!(exact_times(&own, None, false, true, T0).duration_ms, 0.0);
+        assert_eq!(
+            exact_times(&own, None, false, true, f64::NAN).duration_ms,
+            0.0
+        );
+        assert_eq!(
+            exact_times(&own, None, false, true, mt).start_ts,
+            T0 + 300.0
+        );
     }
 
     /// §8.5: a live sweep defers while a stamp may be in flight, at most
@@ -1620,7 +1734,8 @@ mod tests {
     #[test]
     fn deferral_is_bounded_and_never_final() {
         let mut t = TimingTable::default();
-        t.record_start(0, T0 + 300.0, 2_100.0).unwrap();
+        t.record_start(0, T0 + 300.0, 2_100.0, T0 + 300.0 + 2_100.0)
+            .unwrap();
         let mut since = std::collections::BTreeMap::new();
         let x = |since: &std::collections::BTreeMap<u64, f64>, now: f64| {
             ExactSweep {
@@ -1629,7 +1744,7 @@ mod tests {
                 now_ms: now,
                 defer_max_ms: 10_000.0,
             }
-            .decide(0.0, true, T0 + 62_400.0, false)
+            .decide(0.0, true, T0 + 62_400.0, false, false)
         };
         assert_eq!(x(&since, 1_000.0), ExactDecision::Defer(0));
         since.insert(0, 1_000.0);
@@ -1642,15 +1757,21 @@ mod tests {
             defer_max_ms: 10_000.0,
         };
         assert!(matches!(
-            fin.decide(0.0, true, T0 + 62_400.0, true),
+            fin.decide(0.0, true, T0 + 62_400.0, true, false),
             ExactDecision::Exact(_)
         ));
         // Own stamp missing (lost) → legacy; a non-integral seq → legacy.
-        assert_eq!(fin.decide(5.0, true, T0, true), ExactDecision::Legacy);
-        assert_eq!(fin.decide(0.5, true, T0, false), ExactDecision::Legacy);
+        assert_eq!(
+            fin.decide(5.0, true, T0, true, false),
+            ExactDecision::Legacy
+        );
+        assert_eq!(
+            fin.decide(0.5, true, T0, false, false),
+            ExactDecision::Legacy
+        );
         // A crash-cut fragment does not wait for its successor's stamp.
         assert!(matches!(
-            fin.decide(0.0, false, T0 + 62_400.0, false),
+            fin.decide(0.0, false, T0 + 62_400.0, false, false),
             ExactDecision::Exact(_)
         ));
         assert_eq!(seq_id(3.0), Some(3));
