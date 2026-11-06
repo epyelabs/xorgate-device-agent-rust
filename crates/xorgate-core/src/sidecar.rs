@@ -76,7 +76,18 @@ pub enum SidecarAnchor {
     /// segment length (Phase 6.6) — fragment 0's own birthtime is the
     /// capture-process spawn, ~2 s before real frames.
     Boundary,
+    /// Phase 7a (Q-A2): the capture host's exact stamp of the fragment's
+    /// first frame (`XG-FRAGMENT`, buffer PTS on the pipeline clock mapped to
+    /// wall time). Emitted only with `XORGATE_SIDECAR_TIMING=exact`, through
+    /// [`EXACT_ANCHOR`]. The backend enum must accept `"pts"` BEFORE any
+    /// device enables `exact` (an unknown value DLQs the segment, K15).
+    Pts,
 }
+
+/// The `anchor` every exact-timed sidecar carries (phase-7a §8.7; user
+/// answer Q-A2 = a new `"pts"`). One constant so the label is a one-line
+/// change, pinned by `exact_anchor_is_pts`.
+pub const EXACT_ANCHOR: SidecarAnchor = SidecarAnchor::Pts;
 
 /// The literal `codec: "h264"` of [`VideoSidecar`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -371,12 +382,25 @@ pub fn build_sidecar(
     stat: FragmentStat,
     opts: &SidecarOpts,
 ) -> VideoSidecar {
+    build_sidecar_typed(manifest, seq, stat, opts, None)
+}
+
+/// [`build_sidecar`] with an optional exact override (phase-7a); `None` is
+/// the legacy derivation, byte for byte.
+fn build_sidecar_typed(
+    manifest: &VideoSessionManifest,
+    seq: f64,
+    stat: FragmentStat,
+    opts: &SidecarOpts,
+    exact: Option<ExactTimes>,
+) -> VideoSidecar {
     let (start_ts, duration_ms, anchor) = sidecar_times(
         manifest.anchor_ts,
         manifest.segment_seconds,
         seq,
         stat,
         opts,
+        exact,
     );
     let pair = opts.clock_pair;
     VideoSidecar {
@@ -403,13 +427,21 @@ pub fn build_sidecar(
 /// The `startTs`/`durationMs`/`anchor` derivation of `buildSidecar`
 /// (`video-segments.ts:170-191`), shared by the typed and the raw build.
 /// `segment_seconds` is the JS `ToNumber` of the manifest field.
+///
+/// Phase 7a: `exact` (computed by [`exact_times`] from the capture host's
+/// stamps) takes precedence and is labelled [`EXACT_ANCHOR`]; `None` runs
+/// the TS derivation below unchanged.
 fn sidecar_times(
     anchor_ts: f64,
     segment_seconds: f64,
     seq: f64,
     stat: FragmentStat,
     opts: &SidecarOpts,
+    exact: Option<ExactTimes>,
 ) -> (f64, f64, SidecarAnchor) {
+    if let Some(x) = exact {
+        return (x.start_ts, x.duration_ms, EXACT_ANCHOR);
+    }
     // ext4 gives real birthtimes; a zero/bogus one (some tmpfs, copied trees)
     // falls back to anchor arithmetic — that's exactly what `anchor` records.
     let nominal_start = anchor_ts + seq * segment_seconds * 1000.0;
@@ -482,8 +514,25 @@ pub fn build_sidecar_body(
     stat: FragmentStat,
     opts: &SidecarOpts,
 ) -> SidecarBody {
+    build_sidecar_body_exact(manifest, seq, stat, opts, None)
+}
+
+/// [`build_sidecar_body`] with an optional exact override (phase-7a):
+/// `Some` replaces `startTs`/`durationMs`/`anchor` (= [`EXACT_ANCHOR`]) and
+/// nothing else — `startMono` keeps its derivation from the write-time pair,
+/// so it moves with `startTs` by construction (§8.6). `None` = legacy, byte
+/// for byte.
+pub fn build_sidecar_body_exact(
+    manifest: &SessionManifest,
+    seq: f64,
+    stat: FragmentStat,
+    opts: &SidecarOpts,
+    exact: Option<ExactTimes>,
+) -> SidecarBody {
     let m = match manifest {
-        SessionManifest::Typed(m) => return SidecarBody::Typed(build_sidecar(m, seq, stat, opts)),
+        SessionManifest::Typed(m) => {
+            return SidecarBody::Typed(build_sidecar_typed(m, seq, stat, opts, exact))
+        }
         SessionManifest::Raw(m) => m,
     };
     let anchor_ts = m
@@ -496,6 +545,7 @@ pub fn build_sidecar_body(
         seq,
         stat,
         opts,
+        exact,
     );
     let pair = opts.clock_pair;
     let start_mono = js_math_round(pair.mono_ms - (pair.wall_ms - start_ts));
@@ -581,6 +631,10 @@ pub struct SweepPlan {
     pub reap: Vec<String>,
     /// `activePath` of the result.
     pub active_path: Option<String>,
+    /// Phase 7a, `exact` only: closed fragments (seq) NOT sidecar'd this
+    /// pass because their own or their successor's stamp may still be in
+    /// flight (§8.5). Always empty for legacy plans and final sweeps.
+    pub deferred: Vec<u64>,
 }
 
 impl SweepPlan {
@@ -608,6 +662,28 @@ pub fn plan_sweep(
     manifest: &SessionManifest,
     entries: &[DirEntry],
     opts: &SweepOpts,
+) -> SweepPlan {
+    plan_sweep_timed(dir, manifest, entries, opts, None)
+}
+
+/// [`plan_sweep`] with the run's exact timing (phase-7a §8.4–8.5). `None`
+/// is the legacy plan, byte for byte (`plan_sweep` is exactly this with
+/// `None`). With `Some`:
+/// - a fragment with an [`Stamp::Exact`] stamp gets [`exact_times`]
+///   (anchor [`EXACT_ANCHOR`]); one without (lost line, rejected stamp, an
+///   untimed session) gets the legacy derivation, fragment 0's `boundary`
+///   walk-back included — for that fragment only;
+/// - on a LIVE sweep (`!include_newest`) a closed fragment whose own stamp
+///   or successor's stamp is [`TimingTable::pending`] is deferred
+///   (`deferred`), until it has been deferred for `defer_max_ms`; then it is
+///   written with the fallback. The FINAL sweep (`include_newest`) never
+///   defers.
+pub fn plan_sweep_timed(
+    dir: &str,
+    manifest: &SessionManifest,
+    entries: &[DirEntry],
+    opts: &SweepOpts,
+    exact: Option<&ExactSweep<'_>>,
 ) -> SweepPlan {
     // `.map(segmentSeq).filter(seq !== null).sort((a, b) => a.seq - b.seq)` — stable.
     let mut frags: Vec<(&DirEntry, f64)> = entries
@@ -657,18 +733,31 @@ pub fn plan_sweep(
             }
             continue;
         }
-        let sidecar = build_sidecar_body(
+        // The newest fragment of a dead session may have been cut
+        // mid-write; all others were finalised by splitmuxsink.
+        let finalized = opts.finalized.unwrap_or(!is_newest);
+        let exact_times = match exact {
+            None => None,
+            Some(x) => match x.decide(*seq, finalized, st.mtime_ms, opts.include_newest) {
+                ExactDecision::Defer(id) => {
+                    plan.deferred.push(id);
+                    continue;
+                }
+                ExactDecision::Exact(t) => Some(t),
+                ExactDecision::Legacy => None,
+            },
+        };
+        let sidecar = build_sidecar_body_exact(
             manifest,
             *seq,
             st,
             &SidecarOpts {
-                // The newest fragment of a dead session may have been cut
-                // mid-write; all others were finalised by splitmuxsink.
-                finalized: opts.finalized.unwrap_or(!is_newest),
+                finalized,
                 boundary_end_ms,
                 time_source: opts.time_source,
                 clock_pair: opts.clock_pair,
             },
+            exact_times,
         );
         plan.writes.push(SidecarWrite {
             sidecar_path: sidecar_path_for(&mp4_path),
@@ -677,6 +766,279 @@ pub fn plan_sweep(
         });
     }
     plan
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7a: exact fragment timing (phase-7a-inprocess-gstreamer.md §8.1–8.7)
+//
+// The capture host stamps every fragment's first frame in splitmuxsink's
+// `format-location-full` (`XG-FRAGMENT {id, startTs, lagMs, …}`) and the
+// clean-EOS end of the last one (`XG-FRAGMENT-END {id, endTs, …}`). Both are
+// "host wall at callback − measured mono lag", so a wall-clock step moves
+// them exactly as it moves a birthtime. The agent keeps them per run in a
+// [`TimingTable`]; the sweep turns them into `startTs`/`durationMs` here.
+// No media-time (PTS) quantity ever reaches this code: [`FragmentTiming`]
+// carries wall stamps and the lag only, so `durationMs` is wall-derived by
+// construction and the backend's clock-step detection
+// (`clock-step.ts:50-62`, `durationMs > nominal + minStep`) keeps working.
+
+/// The GOP of every capture preset: `key-int-max = 2 × fps`
+/// (`video_capture.rs`, [`crate::video_capture::build_capture_pipeline_args`]).
+pub const CAPTURE_GOP_MS: f64 = 2_000.0;
+
+/// §8.2 validity guard: a stamp is accepted only if
+/// `0 ≤ lagMs ≤ 3 × GOP + 1 s`. Outside it the clock domain is wrong and
+/// the fragment keeps the legacy anchors. The host applies the guard
+/// (WP1); the agent re-checks every line it is handed.
+pub const LAG_GUARD_MAX_MS: f64 = 3.0 * CAPTURE_GOP_MS + 1_000.0;
+
+/// One fragment's accepted stamps (all integer epoch ms / ms).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FragmentTiming {
+    /// Wall time of the fragment's first frame (`XG-FRAGMENT.startTs`).
+    pub start_ts: f64,
+    /// Host-measured `clock_now − frameMono` at the callback (`lagMs`).
+    pub lag_ms: f64,
+    /// Wall time of the end of the last frame (`XG-FRAGMENT-END.endTs`),
+    /// clean EOS of the final fragment only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_ts: Option<f64>,
+}
+
+/// Why a timing line was not accepted (the agent warns once per session).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StampReject {
+    /// `lagMs` outside `[0, LAG_GUARD_MAX_MS]` (or not a number).
+    Lag(f64),
+    /// `startTs` not a sane epoch ms (≤ 2001 or not a number).
+    StartTs(f64),
+    /// `endTs` not a sane epoch ms (the start stamp is kept).
+    EndTs(f64),
+    /// A second `XG-FRAGMENT` for an id already recorded (first wins).
+    Duplicate,
+    /// `XG-FRAGMENT-END` for an id with no accepted start stamp.
+    EndWithoutStart,
+}
+
+impl std::fmt::Display for StampReject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StampReject::Lag(v) => write!(
+                f,
+                "lagMs {} outside [0, {}]",
+                js_num_text(*v),
+                js_num_text(LAG_GUARD_MAX_MS)
+            ),
+            StampReject::StartTs(v) => write!(f, "startTs {} is not a sane epoch", js_num_text(*v)),
+            StampReject::EndTs(v) => write!(f, "endTs {} is not a sane epoch", js_num_text(*v)),
+            StampReject::Duplicate => f.write_str("duplicate fragment id"),
+            StampReject::EndWithoutStart => f.write_str("end stamp without a start stamp"),
+        }
+    }
+}
+
+fn js_num_text(v: f64) -> String {
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+/// What the run knows about one fragment id.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Stamp {
+    Exact(FragmentTiming),
+    /// A line arrived but failed the guard: legacy anchors, nothing to wait for.
+    Rejected,
+}
+
+/// The run's per-fragment timing, keyed by splitmuxsink's `fragment_id`
+/// (= the `%05d` seq). Cleared per spawn: every spawn mints a new session
+/// dir, so ids never carry across a respawn.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TimingTable {
+    stamps: std::collections::BTreeMap<u64, Stamp>,
+    /// The highest id any line (accepted or rejected) carried. The host
+    /// writes lines in id order on one pipe, so a missing id BELOW it was
+    /// never emitted (lost), not in flight.
+    max_id: Option<u64>,
+}
+
+/// A JS-number ms as an integer, or `None` when not finite.
+fn int_ms(v: f64) -> Option<f64> {
+    v.is_finite().then(|| js_math_round(v))
+}
+
+impl TimingTable {
+    /// `XG-FRAGMENT`: validate (§8.2 guard, sane epoch) and record. A
+    /// rejected line is recorded as [`Stamp::Rejected`] (the fragment keeps
+    /// the legacy anchors and is never waited for). Duplicates keep the first.
+    pub fn record_start(&mut self, id: u64, start_ts: f64, lag_ms: f64) -> Result<(), StampReject> {
+        self.max_id = Some(self.max_id.map_or(id, |m| m.max(id)));
+        if self.stamps.contains_key(&id) {
+            return Err(StampReject::Duplicate);
+        }
+        let stamp = match (int_ms(start_ts), int_ms(lag_ms)) {
+            (_, None) => Err(StampReject::Lag(lag_ms)),
+            (_, Some(l)) if !(0.0..=LAG_GUARD_MAX_MS).contains(&l) => Err(StampReject::Lag(lag_ms)),
+            (Some(s), _) if s > SANE_EPOCH_MS => Ok(FragmentTiming {
+                start_ts: s,
+                lag_ms: int_ms(lag_ms).expect("checked"),
+                end_ts: None,
+            }),
+            _ => Err(StampReject::StartTs(start_ts)),
+        };
+        match stamp {
+            Ok(t) => {
+                self.stamps.insert(id, Stamp::Exact(t));
+                Ok(())
+            }
+            Err(e) => {
+                self.stamps.insert(id, Stamp::Rejected);
+                Err(e)
+            }
+        }
+    }
+
+    /// `XG-FRAGMENT-END`: attach `endTs` to an accepted start stamp.
+    pub fn record_end(&mut self, id: u64, end_ts: f64) -> Result<(), StampReject> {
+        let Some(Stamp::Exact(t)) = self.stamps.get_mut(&id) else {
+            return Err(StampReject::EndWithoutStart);
+        };
+        match int_ms(end_ts) {
+            Some(e) if e > SANE_EPOCH_MS => {
+                t.end_ts = Some(e);
+                Ok(())
+            }
+            _ => Err(StampReject::EndTs(end_ts)),
+        }
+    }
+
+    pub fn get(&self, id: u64) -> Option<&Stamp> {
+        self.stamps.get(&id)
+    }
+
+    /// The accepted stamp of `id`, if any.
+    pub fn exact(&self, id: u64) -> Option<&FragmentTiming> {
+        match self.stamps.get(&id) {
+            Some(Stamp::Exact(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// At least one timing line arrived this run: the host emits them (an
+    /// untimed run — `gst-launch`, a host whose clock precondition failed —
+    /// never waits for one).
+    pub fn timed(&self) -> bool {
+        self.max_id.is_some()
+    }
+
+    /// `id`'s line may still be in flight: the run is timed, nothing is
+    /// recorded for `id`, and no line with a higher id has arrived (lines
+    /// come in id order, so one above it proves `id`'s was never written).
+    pub fn pending(&self, id: u64) -> bool {
+        self.timed() && !self.stamps.contains_key(&id) && self.max_id.is_some_and(|m| m < id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stamps.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// The exact `startTs`/`durationMs` of one sidecar (integers, `durationMs ≥ 0`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExactTimes {
+    pub start_ts: f64,
+    pub duration_ms: f64,
+}
+
+/// §8.4 — `durationMs` stays WALL-derived, so a clock step between two
+/// fragments' callbacks inflates (or shrinks) exactly the fragment open
+/// across it, as `mtime − birthtime` does today:
+/// - finalized with the successor's accepted stamp: `startTs(N+1) − startTs(N)`;
+/// - else with an end stamp (clean EOS of the final fragment): `endTs − startTs`;
+/// - else (crash-cut `finalized:false`, or a successor/end stamp that never
+///   came): `mtime − lag(N) − startTs` (= mtime − the callback's wall time).
+///
+/// Every result is floored at 0 (backend `durationMs: int ≥ 0`).
+pub fn exact_times(
+    own: &FragmentTiming,
+    successor: Option<&FragmentTiming>,
+    finalized: bool,
+    mtime_ms: f64,
+) -> ExactTimes {
+    let raw = match (finalized, successor, own.end_ts) {
+        (true, Some(next), _) => next.start_ts - own.start_ts,
+        (_, _, Some(end)) => end - own.start_ts,
+        _ => js_math_round(mtime_ms - own.lag_ms - own.start_ts),
+    };
+    ExactTimes {
+        start_ts: own.start_ts,
+        duration_ms: if raw.is_finite() && raw > 0.0 { raw } else { 0.0 },
+    }
+}
+
+/// The run's timing as one sweep sees it (`exact` only).
+#[derive(Debug, Clone, Copy)]
+pub struct ExactSweep<'a> {
+    pub table: &'a TimingTable,
+    /// seq → `now_ms` of the sweep that first deferred it (agent-held,
+    /// updated from [`SweepPlan::deferred`]).
+    pub deferred_since: &'a std::collections::BTreeMap<u64, f64>,
+    /// The sweep's monotonic ms (same clock as `deferred_since`).
+    pub now_ms: f64,
+    /// How long a fragment may stay deferred: one sweep-poll period (§8.5:
+    /// a deferral never delays a sidecar beyond one poll + line latency).
+    pub defer_max_ms: f64,
+}
+
+/// What [`plan_sweep_timed`] does with one closed fragment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExactDecision {
+    Exact(ExactTimes),
+    Legacy,
+    Defer(u64),
+}
+
+/// `seq` as a table id (an integral, non-negative, exactly representable seq).
+pub fn seq_id(seq: f64) -> Option<u64> {
+    (seq.is_finite() && seq >= 0.0 && seq.fract() == 0.0 && seq <= 9_007_199_254_740_991.0)
+        .then_some(seq as u64)
+}
+
+impl ExactSweep<'_> {
+    /// The decision for one closed, non-empty fragment (§8.4–8.5).
+    pub fn decide(&self, seq: f64, finalized: bool, mtime_ms: f64, final_sweep: bool) -> ExactDecision {
+        let Some(id) = seq_id(seq) else {
+            return ExactDecision::Legacy;
+        };
+        let t = self.table;
+        let waiting = t.pending(id) || (finalized && t.pending(id + 1));
+        if waiting && !final_sweep {
+            let expired = self
+                .deferred_since
+                .get(&id)
+                .is_some_and(|since| self.now_ms - since >= self.defer_max_ms);
+            if !expired {
+                return ExactDecision::Defer(id);
+            }
+        }
+        match t.exact(id) {
+            Some(own) => ExactDecision::Exact(exact_times(own, t.exact(id + 1), finalized, mtime_ms)),
+            None => ExactDecision::Legacy,
+        }
+    }
+}
+
+/// The one-per-session warning for a rejected timing line.
+pub fn stamp_rejected_warning(stream_key: &str, id: u64, why: &StampReject) -> String {
+    format!("[video-capture {stream_key}] fragment {id} timing ignored ({why}); legacy anchors for it")
 }
 
 /// One session directory as `recoverOrphanVideoSessions` walks it
@@ -1041,5 +1403,244 @@ mod tests {
         assert!(sc(plan, 0).finalized);
         assert!(!sc(plan, 1).finalized);
         assert_eq!(sc(plan, 1).seq, 2.0);
+    }
+
+    // -- Phase 7a WP2: exact timing ------------------------------------------
+
+    #[test]
+    fn exact_anchor_is_pts() {
+        // Q-A2 (user, 2026-11-06): a NEW value "pts". Changing the label is
+        // this one constant; the backend enum must accept it first (K15).
+        assert_eq!(EXACT_ANCHOR, SidecarAnchor::Pts);
+        assert_eq!(serde_json::to_string(&EXACT_ANCHOR).unwrap(), r#""pts""#);
+        let back: SidecarAnchor = serde_json::from_str(r#""pts""#).unwrap();
+        assert_eq!(back, SidecarAnchor::Pts);
+        // The legacy labels are unchanged.
+        for (a, s) in [
+            (SidecarAnchor::Fstat, "fstat"),
+            (SidecarAnchor::Computed, "computed"),
+            (SidecarAnchor::Boundary, "boundary"),
+        ] {
+            assert_eq!(serde_json::to_string(&a).unwrap(), format!("\"{s}\""));
+        }
+    }
+
+    /// The exact sidecar has the legacy key set and order; only `startTs`,
+    /// `startMono`, `durationMs` and `anchor` carry new values.
+    #[test]
+    fn exact_sidecar_byte_shape() {
+        let pair = ClockPair {
+            wall_ms: T0 + 180_000.0,
+            mono_ms: 500_000.0 + 180_000.0,
+        };
+        let opts = SidecarOpts {
+            finalized: true,
+            boundary_end_ms: Some(T0 + 62_400.0),
+            time_source: None,
+            clock_pair: pair,
+        };
+        let stat = FragmentStat {
+            size_bytes: 123.0,
+            birthtime_ms: T0 + 2_400.0,
+            mtime_ms: T0 + 62_400.0,
+        };
+        let x = ExactTimes {
+            start_ts: T0 + 300.0,
+            duration_ms: 60_000.0,
+        };
+        let body = build_sidecar_body_exact(&manifest().into(), 0.0, stat, &opts, Some(x));
+        assert_eq!(
+            body.to_json(),
+            r#"{"v":1,"deviceId":"dev-1","streamKey":"cam0","sessionId":"sess-1","seq":0,"startTs":1750000000300,"startMono":500300,"durationMs":60000,"sizeBytes":123,"timeSource":"ntp","codec":"h264","width":1920,"height":1080,"fps":15,"bitrateKbps":2000,"anchor":"pts","finalized":true}"#
+        );
+        // `None` is the legacy body (here: the fragment-0 boundary walk-back).
+        assert_eq!(
+            build_sidecar_body_exact(&manifest().into(), 0.0, stat, &opts, None),
+            build_sidecar_body(&manifest().into(), 0.0, stat, &opts)
+        );
+        assert_eq!(
+            build_sidecar_body(&manifest().into(), 0.0, stat, &opts)
+                .typed()
+                .unwrap()
+                .start_ts,
+            T0 + 2_400.0
+        );
+        // The raw-manifest path takes the same override.
+        let raw: SessionManifest = SessionManifest::Raw(
+            serde_json::to_value(manifest())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let rb = build_sidecar_body_exact(&raw, 0.0, stat, &opts, Some(x));
+        assert_eq!(rb.to_json(), body.to_json());
+    }
+
+    #[test]
+    fn timing_table_guard_order_and_pending() {
+        let mut t = TimingTable::default();
+        assert!(!t.timed() && !t.pending(0));
+        t.record_start(0, T0 + 300.4, 2100.2).unwrap();
+        assert_eq!(
+            t.exact(0),
+            Some(&FragmentTiming {
+                start_ts: T0 + 300.0,
+                lag_ms: 2100.0,
+                end_ts: None
+            })
+        );
+        assert!(t.timed());
+        assert!(!t.pending(0) && t.pending(1) && t.pending(7));
+        // First wins.
+        assert_eq!(
+            t.record_start(0, T0, 1.0),
+            Err(StampReject::Duplicate)
+        );
+        assert_eq!(t.exact(0).unwrap().start_ts, T0 + 300.0);
+        // Guard edges: [0, 7000] accepted, outside rejected (recorded, not pending).
+        assert_eq!(LAG_GUARD_MAX_MS, 7_000.0);
+        assert!(t.record_start(1, T0 + 60_300.0, 7_000.0).is_ok());
+        assert!(t.record_start(2, T0 + 120_300.0, 0.0).is_ok());
+        assert_eq!(
+            t.record_start(3, T0 + 180_300.0, 7_000.6),
+            Err(StampReject::Lag(7_000.6))
+        );
+        assert_eq!(
+            t.record_start(4, T0, -0.6),
+            Err(StampReject::Lag(-0.6))
+        );
+        assert_eq!(
+            t.record_start(5, T0, f64::NAN).map_err(|e| matches!(e, StampReject::Lag(_))),
+            Err(true)
+        );
+        assert_eq!(t.record_start(6, 0.0, 2100.0), Err(StampReject::StartTs(0.0)));
+        assert_eq!(
+            t.record_start(7, SANE_EPOCH_MS, 2100.0),
+            Err(StampReject::StartTs(SANE_EPOCH_MS))
+        );
+        for id in 3..=7 {
+            assert_eq!(t.get(id), Some(&Stamp::Rejected), "{id}");
+            assert!(!t.pending(id));
+        }
+        // A gap below the highest id is lost, never pending.
+        t.record_start(10, T0 + 600_300.0, 2100.0).unwrap();
+        assert!(!t.pending(8) && !t.pending(9) && t.pending(11));
+        // End stamps.
+        assert_eq!(t.record_end(9, T0), Err(StampReject::EndWithoutStart));
+        assert_eq!(t.record_end(3, T0), Err(StampReject::EndWithoutStart));
+        assert_eq!(t.record_end(10, 5.0), Err(StampReject::EndTs(5.0)));
+        assert_eq!(t.exact(10).unwrap().end_ts, None);
+        t.record_end(10, T0 + 640_300.2).unwrap();
+        assert_eq!(t.exact(10).unwrap().end_ts, Some(T0 + 640_300.0));
+        t.clear();
+        assert!(t.is_empty() && !t.timed());
+    }
+
+    /// §8.4: durationMs is wall-derived in every branch and never negative.
+    #[test]
+    fn exact_durations_are_wall_derived_and_floored() {
+        let own = FragmentTiming {
+            start_ts: T0 + 300.0,
+            lag_ms: 2_100.0,
+            end_ts: None,
+        };
+        let next = |dt: f64| FragmentTiming {
+            start_ts: T0 + 300.0 + dt,
+            lag_ms: 2_100.0,
+            end_ts: None,
+        };
+        let mt = T0 + 62_400.0; // = the next callback's wall
+        // Non-final: the stamp delta, whatever the mtime says (a +S step).
+        assert_eq!(
+            exact_times(&own, Some(&next(150_000.0)), true, mt).duration_ms,
+            150_000.0
+        );
+        assert_eq!(exact_times(&own, Some(&next(40_000.0)), true, mt).duration_ms, 40_000.0);
+        assert_eq!(exact_times(&own, Some(&next(-30_000.0)), true, mt).duration_ms, 0.0);
+        // Clean final: endTs − startTs (before the successor-less mtime rule).
+        let ended = FragmentTiming {
+            end_ts: Some(T0 + 45_300.0),
+            ..own
+        };
+        assert_eq!(exact_times(&ended, None, true, mt).duration_ms, 45_000.0);
+        assert_eq!(
+            exact_times(
+                &FragmentTiming {
+                    end_ts: Some(T0),
+                    ..own
+                },
+                None,
+                true,
+                mt
+            )
+            .duration_ms,
+            0.0
+        );
+        // Crash-cut (finalized:false): mtime − lag − startTs even with a successor stamp.
+        assert_eq!(
+            exact_times(&own, Some(&next(60_000.0)), false, T0 + 32_400.4).duration_ms,
+            30_000.0
+        );
+        // No successor, no end: the same mtime rule.
+        assert_eq!(exact_times(&own, None, true, mt).duration_ms, 60_000.0);
+        assert_eq!(exact_times(&own, None, true, T0).duration_ms, 0.0);
+        assert_eq!(exact_times(&own, None, true, f64::NAN).duration_ms, 0.0);
+        assert_eq!(exact_times(&own, None, true, mt).start_ts, T0 + 300.0);
+    }
+
+    /// §8.5: a live sweep defers while a stamp may be in flight, at most
+    /// `defer_max_ms`; a final sweep never does.
+    #[test]
+    fn deferral_is_bounded_and_never_final() {
+        let mut t = TimingTable::default();
+        t.record_start(0, T0 + 300.0, 2_100.0).unwrap();
+        let mut since = std::collections::BTreeMap::new();
+        let x = |since: &std::collections::BTreeMap<u64, f64>, now: f64| {
+            ExactSweep {
+                table: &t,
+                deferred_since: since,
+                now_ms: now,
+                defer_max_ms: 10_000.0,
+            }
+            .decide(0.0, true, T0 + 62_400.0, false)
+        };
+        assert_eq!(x(&since, 1_000.0), ExactDecision::Defer(0));
+        since.insert(0, 1_000.0);
+        assert_eq!(x(&since, 10_999.0), ExactDecision::Defer(0));
+        assert!(matches!(x(&since, 11_000.0), ExactDecision::Exact(_)));
+        let fin = ExactSweep {
+            table: &t,
+            deferred_since: &std::collections::BTreeMap::new(),
+            now_ms: 0.0,
+            defer_max_ms: 10_000.0,
+        };
+        assert!(matches!(
+            fin.decide(0.0, true, T0 + 62_400.0, true),
+            ExactDecision::Exact(_)
+        ));
+        // Own stamp missing (lost) → legacy; a non-integral seq → legacy.
+        assert_eq!(fin.decide(5.0, true, T0, true), ExactDecision::Legacy);
+        assert_eq!(fin.decide(0.5, true, T0, false), ExactDecision::Legacy);
+        // A crash-cut fragment does not wait for its successor's stamp.
+        assert!(matches!(
+            fin.decide(0.0, false, T0 + 62_400.0, false),
+            ExactDecision::Exact(_)
+        ));
+        assert_eq!(seq_id(3.0), Some(3));
+        assert_eq!(seq_id(-1.0), None);
+        assert_eq!(seq_id(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn stamp_rejected_warning_text() {
+        assert_eq!(
+            stamp_rejected_warning("cam0", 3, &StampReject::Lag(9_000.0)),
+            "[video-capture cam0] fragment 3 timing ignored (lagMs 9000 outside [0, 7000]); legacy anchors for it"
+        );
+        assert_eq!(
+            stamp_rejected_warning("cam1", 0, &StampReject::StartTs(0.0)),
+            "[video-capture cam1] fragment 0 timing ignored (startTs 0 is not a sane epoch); legacy anchors for it"
+        );
     }
 }
