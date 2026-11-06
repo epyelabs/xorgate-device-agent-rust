@@ -74,6 +74,11 @@ pub struct PlayInfo {
     /// so an OBD run without relay logs is then not judged by them.
     #[serde(default, rename = "noGate")]
     pub no_gate: bool,
+    /// Phase 5b WP5 (R-WP5-4): what the agents' `disk_usage` read — `shim`
+    /// (the fixed RIG_STATVFS_ROOT) or `host` (`--host-disk`); empty in a
+    /// pre-WP5 run.
+    #[serde(default, rename = "diskSource")]
+    pub disk_source: String,
     /// Host reference samples `(wall ms, series → value)` from the player's
     /// `host.ndjson` (T3 host attribution); loaded by `load_run`.
     #[serde(skip)]

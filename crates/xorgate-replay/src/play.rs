@@ -179,7 +179,8 @@ pub struct PlayArgs {
     /// Phase 5b WP5 (item 4): the preload that answers statvfs() of the root
     /// filesystem from [`RIG_STATVFS_ROOT`] for BOTH agents (and the TS's `df`
     /// child) — `tools/replay/statvfs-shim/rig_statvfs.c`, built by
-    /// build-bins.sh. Missing file = the host's disk, with a warning.
+    /// build-bins.sh. A missing file FAILS the run unless `--host-disk`
+    /// (review-wp5 R-WP5-4); `play.json` records `diskSource`.
     #[arg(long, default_value = "/rig/cache/bin/rig-statvfs.so")]
     pub statvfs_shim: PathBuf,
     /// Read the rig VM's own root filesystem for `disk_usage` (the pre-WP5
@@ -1026,7 +1027,7 @@ impl Agent {
         // manager's free-space probe of a root-fs path) reads the fixture, not
         // the shared Docker VM's disk that other containers and the run's own
         // recordings move (phase-3 gate D3 FINAL `.jsrs09`).
-        for (k, v) in disk_isolation_env(args) {
+        for (k, v) in disk_isolation_env(args)? {
             env.retain(|(e, _)| *e != k);
             env.push((k, v));
         }
@@ -2504,6 +2505,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         releases: Vec::new(),
         nmea_resumes,
         no_gate: args.no_gate,
+        disk_source: disk_source(&args).into(),
     };
     fs::write(
         args.out.join("play.json"),
@@ -2530,23 +2532,32 @@ pub const RIG_MEMINFO: &str = "MemTotal:        8245360 kB\nMemFree:         599
 /// `Used` = blocks − bfree, as both agents compute it), 5 % reserved.
 pub const RIG_STATVFS_ROOT: &str = "7500000:6060000:5685000:4096";
 
-/// `LD_PRELOAD` + `RIG_STATVFS_ROOT` for an agent, or nothing (with a
-/// warning) under `--host-disk` or when the shim was not built.
-fn disk_isolation_env(args: &PlayArgs) -> Vec<(String, String)> {
+/// `LD_PRELOAD` + `RIG_STATVFS_ROOT` for an agent; nothing under
+/// `--host-disk`. A shim that was not built is an ERROR (review-wp5 R-WP5-4:
+/// a silent fallback made a non-isolated run look like an isolated one).
+fn disk_isolation_env(args: &PlayArgs) -> Result<Vec<(String, String)>> {
     if args.host_disk {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     if !args.statvfs_shim.is_file() {
-        eprintln!(
-            "rig: WARNING: {} missing (run build-bins.sh) — disk_usage reads the HOST disk",
+        bail!(
+            "{} missing — run tools/replay/build-bins.sh, or pass --host-disk to read the HOST disk on purpose",
             args.statvfs_shim.display()
         );
-        return Vec::new();
     }
-    vec![
+    Ok(vec![
         ("LD_PRELOAD".into(), args.statvfs_shim.display().to_string()),
         ("RIG_STATVFS_ROOT".into(), RIG_STATVFS_ROOT.into()),
-    ]
+    ])
+}
+
+/// `play.json` `diskSource`: what every agent's `disk_usage` read.
+fn disk_source(args: &PlayArgs) -> &'static str {
+    if args.host_disk {
+        "host"
+    } else {
+        "shim"
+    }
 }
 
 /// Is the per-agent meminfo bind usable here (not `--host-meminfo`, and the
@@ -3361,7 +3372,8 @@ mod tests {
             W::parse_from(v).play
         };
         let s = shim.display().to_string();
-        let env = disk_isolation_env(&parse(&["--statvfs-shim", &s]));
+        let env = disk_isolation_env(&parse(&["--statvfs-shim", &s])).unwrap();
+        assert_eq!(disk_source(&parse(&["--statvfs-shim", &s])), "shim");
         assert_eq!(
             env,
             vec![
@@ -3369,8 +3381,16 @@ mod tests {
                 ("RIG_STATVFS_ROOT".to_string(), RIG_STATVFS_ROOT.to_string())
             ]
         );
-        assert!(disk_isolation_env(&parse(&["--statvfs-shim", &s, "--host-disk"])).is_empty());
-        assert!(disk_isolation_env(&parse(&["--statvfs-shim", "/nonexistent.so"])).is_empty());
+        let host = parse(&["--statvfs-shim", &s, "--host-disk"]);
+        assert!(disk_isolation_env(&host).unwrap().is_empty());
+        assert_eq!(disk_source(&host), "host");
+        // R-WP5-4: a missing shim FAILS (no silent host fallback) …
+        let err = disk_isolation_env(&parse(&["--statvfs-shim", "/nonexistent.so"])).unwrap_err();
+        assert!(err.to_string().contains("--host-disk"), "{err:#}");
+        // … unless the host disk is asked for.
+        let host_missing = parse(&["--statvfs-shim", "/nonexistent.so", "--host-disk"]);
+        assert!(disk_isolation_env(&host_missing).unwrap().is_empty());
+        assert_eq!(disk_source(&host_missing), "host");
         let _ = std::fs::remove_file(&shim);
         let f: Vec<u64> = RIG_STATVFS_ROOT
             .split(':')

@@ -2654,6 +2654,15 @@ pub fn diff_media(
 ) {
     // The tape's input facts (also the R-P3G-2 oracle's, before the values).
     let facts_early = crate::diff::InputFacts::for_play(play);
+    // R-WP5-4: whether disk_usage was isolated (the statvfs shim) in this run.
+    rep.inputs.insert(
+        "disk source (disk_usage)".into(),
+        if play.disk_source.is_empty() {
+            "unrecorded (pre-WP5 run)".to_string()
+        } else {
+            play.disk_source.clone()
+        },
+    );
     for k in [
         "children",
         "session",
@@ -2913,17 +2922,32 @@ pub fn diff_media(
     // records (`mqtt_in` on `…/config`) — the shared cut of a config-driven
     // video change (T12/cut-fragment's config arm).
     let config_releases: Vec<i64> = {
-        let cfg_t: BTreeSet<u64> = tape_recs(Path::new(&play.tape))
+        // review-wp5 R-WP5-8: joined by (kind, tape t, occurrence) — the
+        // player releases records in tape order, so the n-th `mqtt_in`
+        // release at tape t is the n-th `mqtt_in` record at t; a non-config
+        // message sharing a t with a config one is never counted.
+        let mut is_cfg: BTreeMap<u64, Vec<bool>> = BTreeMap::new();
+        for r in tape_recs(Path::new(&play.tape))
             .iter()
-            .filter(|r| {
-                r["k"] == "mqtt_in" && r["topic"].as_str().is_some_and(|t| t.ends_with("/config"))
-            })
-            .filter_map(|r| r["t"].as_u64())
-            .collect();
+            .filter(|r| r["k"] == "mqtt_in")
+        {
+            if let Some(t) = r["t"].as_u64() {
+                is_cfg
+                    .entry(t)
+                    .or_default()
+                    .push(r["topic"].as_str().is_some_and(|x| x.ends_with("/config")));
+            }
+        }
+        let mut seen: BTreeMap<u64, usize> = BTreeMap::new();
         play.releases
             .iter()
-            .filter(|r| r.k == "mqtt_in" && cfg_t.contains(&r.t))
-            .map(|r| r.w)
+            .filter(|r| r.k == "mqtt_in")
+            .filter_map(|r| {
+                let n = seen.entry(r.t).or_default();
+                let cfg = is_cfg.get(&r.t).and_then(|v| v.get(*n)).copied() == Some(true);
+                *n += 1;
+                cfg.then_some(r.w)
+            })
             .collect()
     };
     let start_ms = row_tol(table, "T12", "startTs", 300.0);
@@ -5224,6 +5248,47 @@ kind = "decisions"
             row(UNTOLERATED),
             "B shed near r"
         );
+        // R-WP5-8: a non-config message released at the SAME tape t as the
+        // config record is not a config release (joined by occurrence).
+        let mixed = dir.join("mixed.ndjson");
+        let rec = |t: u64, topic: &str| {
+            serde_json::json!({"t": t, "w": 0, "k": "mqtt_in", "topic": topic, "payload": "{}"})
+                .to_string()
+        };
+        std::fs::write(
+            &mixed,
+            format!(
+                "{}\n{}\n{}\n",
+                rec(400, cfg),
+                rec(70_000, cfg),
+                rec(70_000, "xorgate/devices/x/commands")
+            ),
+        )
+        .unwrap();
+        let rel = |w: i64, t: u64| crate::diff::Release {
+            w,
+            due: 0,
+            t,
+            k: "mqtt_in".into(),
+        };
+        // config released early (r − 500: the ends are > endMs after it), the
+        // command at r: only the command explains the ends → UNTOLERATED.
+        let p = PlayInfo {
+            tape: mixed.display().to_string(),
+            releases: vec![rel(r - 70_000, 400), rel(r - 500, 70_000), rel(r, 70_000)],
+            ..Default::default()
+        };
+        assert_eq!(
+            run(js(Some(next_sid)), rs(Some(next_sid)), &p),
+            row(UNTOLERATED)
+        );
+        // … and with the config released at r it is the config arm again.
+        let p = PlayInfo {
+            tape: mixed.display().to_string(),
+            releases: vec![rel(r - 70_000, 400), rel(r, 70_000), rel(r + 1, 70_000)],
+            ..Default::default()
+        };
+        assert_eq!(run(js(Some(next_sid)), rs(Some(next_sid)), &p), row(cut));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5703,6 +5768,39 @@ kind = "decisions"
             vec![format!("metrics.gps.snr_max.value(values) {UNTOLERATED}")]
         );
         let _ = std::fs::remove_file(&tape_path);
+    }
+
+    /// review-wp5 R-WP5-4: the diff reports the run's disk source (play.json
+    /// `diskSource`); a pre-WP5 run says so.
+    #[test]
+    fn the_disk_source_is_reported() {
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let src = |play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_media(
+                &MediaCapture::default(),
+                &MediaCapture::default(),
+                play,
+                &table,
+                &mut rep,
+            );
+            rep.inputs["disk source (disk_usage)"].clone()
+        };
+        let p: PlayInfo = serde_json::from_str(r#"{"diskSource":"shim"}"#).unwrap();
+        assert_eq!(src(&p), "shim");
+        let p: PlayInfo = serde_json::from_str(r#"{"diskSource":"host"}"#).unwrap();
+        assert_eq!(src(&p), "host");
+        assert_eq!(src(&PlayInfo::default()), "unrecorded (pre-WP5 run)");
+        let back: serde_json::Value = serde_json::to_value(PlayInfo {
+            disk_source: "shim".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(back["diskSource"], "shim");
     }
 
     /// Phase 5b WP5 item 9: the end-of-run orphan counter reads shmsink's REAL
