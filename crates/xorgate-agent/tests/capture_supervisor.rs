@@ -853,11 +853,10 @@ async fn d41_a_capture_still_running_at_exit_is_killed_and_its_segment_unlinked(
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
-    let pid = xorgate_core::capture_ladder::shm_owner_pid(&name).expect("padded name");
-    assert!(
-        name.starts_with("shmpipe. "),
-        "a padded (4-digit) pid: {name:?}"
-    );
+    let pid = xorgate_core::capture_ladder::shm_owner_pid(&name).expect("a shmsink name");
+    // shmsink's own "%5d" form (space-padded below 10000; the pid width
+    // depends on the host — padded matching is pinned by the reaper's tests).
+    assert_eq!(name, format!("shmpipe.{pid:>5}.    0"));
     // The shutdown `stop()`: SIGINT, ignored — the child is still running.
     sup.stop();
     tokio::time::sleep(Duration::from_millis(300)).await;
