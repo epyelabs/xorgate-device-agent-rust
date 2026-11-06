@@ -24,9 +24,13 @@
 //!   `startTs` is computed from the nanosecond values, so it can differ by
 //!   ±1 from `cbWallMs − lagMs`.
 //! - `XG-FRAGMENT-END` is emitted once, for the LAST fragment, on a clean EOS:
-//!   `endMonoNs` = base_time plus the `splitmuxsink-fragment-closed` running
-//!   time plus one frame period, i.e. the end of the fragment's last frame;
-//!   `endTs = round((cbWall_ns − (cbMonoNs − endMonoNs)) / 1e6)`.
+//!   `endMonoNs` = base_time plus the final `splitmuxsink-fragment-closed`
+//!   running time (the START of the fragment's last frame) plus one frame
+//!   period, i.e. the END of its last frame; `endTs = round((cbWall_ns −
+//!   (cbMonoNs − endMonoNs)) / 1e6)`. On an EOS forced by SIGINT the last
+//!   frame can still be "running", so `endMonoNs` may exceed `cbMonoNs` by
+//!   up to one frame period (measured on the rig, WP1); the guard applies to
+//!   the last frame's START.
 //! - A stamp outside the [`lag_in_guard`] bound is never emitted (the
 //!   fragment keeps the legacy anchors, §Design 8.2).
 //!
@@ -142,16 +146,27 @@ impl FragmentStart {
 }
 
 impl FragmentEnd {
-    /// The end stamp of the last fragment, guarded like a start.
+    /// The end stamp of the last fragment: its last frame STARTS at
+    /// `last_frame_mono_ns` (guarded like a start) and lasts
+    /// `frame_period_ns`.
     pub fn from_clocks(
         id: u32,
-        end_mono_ns: u64,
+        last_frame_mono_ns: u64,
+        frame_period_ns: u64,
         cb_mono_ns: u64,
         cb_wall_ns: u64,
     ) -> Result<Self, Reject> {
-        let lag = i128::from(cb_mono_ns) - i128::from(end_mono_ns);
+        let lag = i128::from(cb_mono_ns) - i128::from(last_frame_mono_ns);
         if !lag_in_guard(lag) {
             return Err(Reject::Guard(lag));
+        }
+        let end_mono_ns = last_frame_mono_ns.saturating_add(frame_period_ns);
+        // cb − end may be negative (the last frame still "running").
+        let end_wall = i128::from(cb_wall_ns) - (i128::from(cb_mono_ns) - i128::from(end_mono_ns));
+        let end_wall = u64::try_from(end_wall).map_err(|_| Reject::Wall(cb_wall_ns))?;
+        let end_ts = ns_to_ms_round(end_wall);
+        if end_ts == 0 {
+            return Err(Reject::Wall(cb_wall_ns));
         }
         Ok(Self {
             v: VERSION,
@@ -159,7 +174,7 @@ impl FragmentEnd {
             end_mono_ns,
             cb_mono_ns,
             cb_wall_ms: ns_to_ms_round(cb_wall_ns),
-            end_ts: wall_before(cb_wall_ns, lag as u64)?,
+            end_ts,
         })
     }
 
@@ -250,8 +265,9 @@ mod tests {
 
     #[test]
     fn end_line_has_the_frozen_key_order_and_round_trips() {
-        let e =
-            FragmentEnd::from_clocks(7, 50 * S, 50 * S + 40 * MS, 1_762_400_000_000 * MS).unwrap();
+        // Last frame starts at 50 s, lasts 0 ns here; the close is 40 ms later.
+        let e = FragmentEnd::from_clocks(7, 50 * S, 0, 50 * S + 40 * MS, 1_762_400_000_000 * MS)
+            .unwrap();
         assert_eq!(
             e.to_line(),
             "XG-FRAGMENT-END {\"v\":1,\"id\":7,\"endMonoNs\":50000000000,\"cbMonoNs\":50040000000,\
@@ -288,9 +304,24 @@ mod tests {
         );
         assert!(FragmentStart::from_clocks(0, 10 * S, 17 * S, wall).is_ok());
         assert_eq!(
-            FragmentEnd::from_clocks(0, 10 * S, 9 * S, wall),
+            FragmentEnd::from_clocks(0, 10 * S, 0, 9 * S, wall),
             Err(Reject::Guard(-i128::from(S)))
         );
+    }
+
+    /// Measured on the rig (WP1): at an EOS forced by SIGINT the final close
+    /// comes 1-2 ms after the last frame STARTED, so the frame's end (+1
+    /// frame period) lies in the future of the callback. The stamp is still
+    /// valid: the guard is on the frame's start, the end is ahead of `cb`.
+    #[test]
+    fn the_end_may_lie_up_to_one_frame_ahead_of_the_close() {
+        let wall = 1_762_400_000_000 * MS;
+        let period = 66_666_666;
+        let e = FragmentEnd::from_clocks(4, 100 * S, period, 100 * S + 2 * MS, wall).unwrap();
+        assert_eq!(e.end_mono_ns, 100 * S + period);
+        // end = wall + (66.67 − 2) ms.
+        assert_eq!(e.end_ts, 1_762_400_000_065);
+        assert!(e.end_mono_ns > e.cb_mono_ns);
     }
 
     #[test]
