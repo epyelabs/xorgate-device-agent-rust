@@ -166,6 +166,9 @@ begin)
   # Phase 5 (CF65): the window opens on the bench flavour only; a SHIPPED
   # (converted) unit would stop the PROD JS agent on the step-5 restart.
   if rs_unit_converted; then need "$RS_CONVERTED_REFUSAL"; fi
+  # Phase 6 Q6 (WP5): nor with the bench drop-in parked (the step-5 restart
+  # would bring the unit up on the PROD identity) — refuse BEFORE the JS stop.
+  [ -f "$BENCH_DEV_DROPIN" ] || need "$RS_DROPIN_REFUSAL"
   # review-wp3 N1: nor on an unreverted (or unreadable) conversion record.
   case "$(conversion_state)" in
     converted|converting|unknown) need "conversion record $RS_INSTALL_RECORD says state=$(conversion_state) — run: sudo $RS_INSTALLER --revert first" ;;

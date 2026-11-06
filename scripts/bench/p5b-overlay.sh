@@ -125,7 +125,8 @@ PY
   act rm -rf "$P5B_OBD_PY" "$P5B_RUN" "$P5B_TMP"
   act systemctl daemon-reload
   echo "== restart $UNIT only"
-  act systemctl restart $UNIT
+  # Phase 6 Q6 (WP5): never restart with the bench drop-in parked (PROD identity).
+  if rs_bench_dropin_ok; then act systemctl restart $UNIT; else echo "  $UNIT NOT restarted (above)"; fi
   for i in 1 2 3; do echo "  $JS_UNIT is-active ($i/3): $(js_state)"; [ "$DRY" = 1 ] || sleep 1; done
   echo "  next: scripts/bench/profile.sh shared   (verify must PASS)"
   status
@@ -136,6 +137,7 @@ preconditions() {
   [ "$js" = active ] || { echo "REFUSING: $JS_UNIT is ${js:-unknown} — the overlay runs in the SHARED profile only (JS prod agent active)"; return 1; }
   [ ! -f "$EXCLUSIVE_DROPIN" ] || { echo "REFUSING: an exclusive window is open ($EXCLUSIVE_DROPIN)"; return 1; }
   if rs_unit_converted; then echo "REFUSING: $RS_CONVERTED_REFUSAL"; return 1; fi
+  rs_bench_dropin_ok || return 1   # Phase 6 Q6 (WP5)
   [ -f "$HW_SHARED" ] || { echo "REFUSING: no $HW_SHARED (profile.sh shared first)"; return 1; }
   [ -f /opt/xorgate-rs/python/obd_read.py ] || { echo "REFUSING: /opt/xorgate-rs/python/obd_read.py missing (install a Phase 5b Rust tarball)"; return 1; }
   return 0

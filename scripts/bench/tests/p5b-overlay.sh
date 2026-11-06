@@ -51,6 +51,13 @@ mkdir -p /run/systemd/system/xorgate-agent-rs.service.d; : > /run/systemd/system
 bash "$B/p5b-overlay.sh" apply >"$LOGS/r2.log" 2>&1; rc=$?
 [ "$rc" = 1 ] && grep -q "REFUSING: an exclusive window is open" "$LOGS/r2.log"; expect $? "apply refuses inside an exclusive window"
 rm -f /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf
+# Phase 6 Q6 (WP5): the bench drop-in parked → apply refuses (its restart would
+# run the bench-flavour unit on the PROD identity).
+mv /etc/systemd/system/xorgate-agent-rs.service.d/90-bench-dev.conf "$LOGS/bdd.parked"; : > "$STATE/systemctl.log"
+bash "$B/p5b-overlay.sh" apply >"$LOGS/r4.log" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -q "REFUSING: the bench drop-in .* is MISSING" "$LOGS/r4.log" && [ ! -e "$DROP" ] && ! grep -q "restart xorgate-agent-rs" "$STATE/systemctl.log"
+expect $? "apply refuses with 90-bench-dev.conf parked (rc=$rc)"
+mv "$LOGS/bdd.parked" /etc/systemd/system/xorgate-agent-rs.service.d/90-bench-dev.conf
 mv /opt/xorgate-rs/python/obd_read.py /opt/xorgate-rs/python/obd_read.py.x
 bash "$B/p5b-overlay.sh" apply >"$LOGS/r3.log" 2>&1; rc=$?
 [ "$rc" = 1 ] && grep -q "obd_read.py missing" "$LOGS/r3.log"; expect $? "apply refuses without the installed helper"
