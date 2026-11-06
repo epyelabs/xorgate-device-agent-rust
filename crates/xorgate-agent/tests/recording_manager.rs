@@ -1265,6 +1265,31 @@ async fn a_supervisor_inside_a_pending_transition_gets_the_exit_cleanup() {
     assert_eq!(rig.log.exit_kills.lock().unwrap().len(), 1);
 }
 
+/// R-WP5R-3, the `StopAll` arm: video switched OFF hands the old supervisor
+/// to a pending `StopAndWait`; its child is still in its EOS at SIGTERM — the
+/// exit cleanup must cover it too.
+#[tokio::test(start_paused = true)]
+async fn a_supervisor_inside_a_pending_stop_all_gets_the_exit_cleanup() {
+    let rig = Rig::new("exit-reap-stopall");
+    rig.save_recording(
+        &json!({"telemetry": {"enabled": true}, "video": {"enabled": true, "bootDefer": "off", "preset": "720p15-1mbps"}}),
+    );
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    rig.log.hang_stop_and_wait.store(true, Ordering::SeqCst);
+    rig.save_recording(&json!({"telemetry": {"enabled": true}, "video": {"enabled": false}}));
+    m.reapply().unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    m.stop();
+    m.reap_capture_at_exit(Duration::from_millis(500)).await;
+    assert_eq!(
+        *rig.log.exit_kills.lock().unwrap(),
+        vec!["720p15-1mbps".to_string()],
+        "the supervisor inside the pending StopAndWait was exit-killed"
+    );
+}
+
 /// review-wp5-r2 R-WP5R-6: every SIGKILL first, then ONE wait with a TOTAL
 /// bound — two killed children (two cameras) whose exits are never observed
 /// cost 500 ms in all, not 500 ms each; both are reported.
