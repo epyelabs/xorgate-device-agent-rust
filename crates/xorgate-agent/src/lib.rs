@@ -21,6 +21,7 @@ pub mod mqtt_plane;
 pub mod ops;
 pub mod pidfile;
 pub mod recording;
+pub mod replay;
 pub mod scope;
 pub mod shutdown;
 pub mod state;

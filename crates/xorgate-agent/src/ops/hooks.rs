@@ -95,6 +95,11 @@ pub struct OpsHooks {
     /// `clockTrust` (`worker.ts:476` @ 09da38d): bound in real mode only
     /// (else `null`: never held, no hint).
     clock_trust: OnceLock<ClockTrust>,
+    /// Replay mode (Phase 7e): `ledTelemetryNow()` answers `null` (the
+    /// recorded `system.*` passes through untouched).
+    led_replay: AtomicBool,
+    /// Replay mode (Phase 7e): `replay?.reapply()` after `recording.reapply()`.
+    replay_reapply: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl OpsHooks {
@@ -111,7 +116,17 @@ impl OpsHooks {
             camera: OnceLock::new(),
             reports: Arc::new(OnceLock::new()),
             clock_trust: OnceLock::new(),
+            led_replay: AtomicBool::new(false),
+            replay_reapply: OnceLock::new(),
         }
+    }
+
+    /// Replay mode (Phase 7e): LED telemetry `null`, and the replay source's
+    /// `reapply()` joins the config path.
+    pub fn bind_replay(&self, reapply: Arc<dyn Fn() + Send + Sync>) {
+        self.led_replay.store(true, Ordering::SeqCst);
+        self.led_starting.store(false, Ordering::SeqCst);
+        let _ = self.replay_reapply.set(reapply);
     }
 
     /// The clock trust gate (real mode only), bound right after it is built
@@ -193,7 +208,11 @@ impl PhaseHooks for OpsHooks {
         self.rec.overlay_media(media)
     }
     fn reapply_recording(&self) -> Result<(), String> {
-        self.rec.reapply_recording()
+        self.rec.reapply_recording()?;
+        if let Some(f) = self.replay_reapply.get() {
+            f();
+        }
+        Ok(())
     }
     fn rearm_upload(&self) {
         self.rec.rearm_upload()
@@ -274,6 +293,9 @@ impl PhaseHooks for OpsHooks {
     /// `ledTelemetrySource?.() ?? LED_TELEMETRY_STARTING` (the source is
     /// late-bound, like the TS), sim → `LED_TELEMETRY_SIM`.
     fn led_telemetry(&self) -> Option<LedTelemetry> {
+        if self.led_replay.load(Ordering::SeqCst) {
+            return None;
+        }
         if self.led_sim.load(Ordering::SeqCst) {
             return Some(LED_TELEMETRY_SIM);
         }

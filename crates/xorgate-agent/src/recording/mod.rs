@@ -157,6 +157,7 @@ impl manager::RecordingBackend for Backend {
         o.on_status = Some(spec.on_status);
         o.on_event = Some(spec.on_event);
         o.on_spawned = Some(spec.on_spawned);
+        o.replay = spec.replay;
         o.tape = self.tape.clone();
         Arc::new(CaptureAdapter(Arc::new(
             capture::VideoCaptureSupervisor::new(o),
@@ -182,6 +183,9 @@ impl manager::CaptureApi for CaptureAdapter {
     }
     fn stop(&self) {
         self.0.stop()
+    }
+    fn cycle_all(&self) {
+        self.0.cycle_all()
     }
     fn stop_and_wait(&self) -> crate::ctx::BoxFut<'_, ()> {
         Box::pin(async move { self.0.stop_and_wait(STOP_AND_WAIT_GRACE).await })

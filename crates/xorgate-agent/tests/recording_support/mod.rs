@@ -500,6 +500,7 @@ impl Rig {
             set_disabled_cameras: Some(Arc::new(move |k: &[String]| {
                 l2.disabled.lock().unwrap().push(k.to_vec())
             })),
+            replay: None,
         };
         let (reading, clock, l4) = (self.reading.clone(), self.clock.clone(), log.clone());
         let power: Option<PowerSampleFn> = self.power_sample.then(|| -> PowerSampleFn {
