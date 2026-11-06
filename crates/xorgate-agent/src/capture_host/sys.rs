@@ -21,7 +21,7 @@
 //! process dies by that signal as gst-launch does.
 
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use nix::sys::signal::{SigSet, Signal};
@@ -76,14 +76,56 @@ fn set_disposition(sig: i32, handler: libc::sighandler_t) {
 }
 
 /// The handler a watched signal carries while ARMED. The signal is blocked in
-/// every thread, so this only runs if some library thread unblocked it; it
-/// then just records the signal for the bus loop's poll (async-signal-safe).
+/// every thread, so this only runs if some library thread unblocked it, or
+/// in the `default_action` race (R-WP0-6) on the wait thread itself.
+/// Async-signal-safe: atomics and the raw `gettid`/`tgkill` syscalls only.
+///
+/// - On another thread (WP1 residual (a)): the signal is FORWARDED to the
+///   wait thread (`tgkill`; it has the signal blocked, so it becomes
+///   pending there and `sigwait` returns it at once) with its [`FWD`] bit
+///   set, so it is dispatched immediately instead of at the next loop tick.
+/// - On the wait thread (the race): recorded in [`LATE`]; `default_action`
+///   then wakes the bus loop ([`post_wake`]), which polls it.
+///
+/// Either way the signal is handled as GLib handles one its handler caught
+/// ([`deliver_late`]): dispatched, coalesced, or swallowed — never fatal.
 extern "C" fn watched_handler(sig: libc::c_int) {
-    LATE.fetch_or(if sig == libc::SIGINT { 1 } else { 2 }, Ordering::SeqCst);
+    let bit = if sig == libc::SIGINT { 1 } else { 2 };
+    let wait = WAIT_THREAD.load(Ordering::SeqCst);
+    if wait != 0 && nix::unistd::gettid().as_raw() != wait {
+        FWD.fetch_or(bit, Ordering::SeqCst);
+        if thread_kill(wait, sig) {
+            return;
+        }
+        // The forward failed: fall back to the loop's poll.
+        FWD.fetch_and(!bit, Ordering::SeqCst);
+    }
+    LATE.fetch_or(bit, Ordering::SeqCst);
 }
 
-/// Signals that reached [`watched_handler`] (bit 1 = SIGINT, 2 = SIGHUP).
+/// Signals that reached [`watched_handler`] on the wait thread, or whose
+/// forward failed (bit 1 = SIGINT, 2 = SIGHUP); polled by the bus loop.
 static LATE: AtomicU8 = AtomicU8::new(0);
+/// Signals [`watched_handler`] forwarded to the wait thread (same bits).
+static FWD: AtomicU8 = AtomicU8::new(0);
+/// The wait thread's tid (0 = not started yet).
+static WAIT_THREAD: AtomicI32 = AtomicI32::new(0);
+
+/// `tgkill(getpid(), tid, sig)`: a signal to one thread of this process.
+/// Async-signal-safe (two raw syscalls).
+#[allow(unsafe_code)]
+fn thread_kill(tid: i32, sig: i32) -> bool {
+    // SAFETY: raw getpid/tgkill syscalls with plain integer arguments.
+    unsafe {
+        let pid = libc::syscall(libc::SYS_getpid);
+        libc::syscall(
+            libc::SYS_tgkill,
+            pid,
+            libc::c_long::from(tid),
+            libc::c_long::from(sig),
+        ) == 0
+    }
+}
 
 /// Startup, BEFORE any thread exists (`main` dispatches here first):
 /// undo what the Rust runtime set that gst-launch does not have (SIGPIPE
@@ -121,16 +163,30 @@ fn default_action(sig: Signal) {
     // Unblock `sig` for this thread only and raise it at this thread.
     let _ = set.thread_unblock();
     let _ = nix::sys::signal::raise(sig);
-    // Still alive: the race above. Hand the signal to the loop.
+    // Still alive: the race above. Hand the signal to the loop, and wake it
+    // now rather than at its next 100 ms tick (WP1 residual (a)).
     let _ = set.thread_block();
+    if LATE.load(Ordering::SeqCst) != 0 {
+        post_wake();
+    }
 }
 
 fn wait_loop() {
+    WAIT_THREAD.store(nix::unistd::gettid().as_raw(), Ordering::SeqCst);
     let set = sigset(&[Signal::SIGINT, Signal::SIGHUP]);
     loop {
         // sigwait on signals this thread (and every other) blocks.
         if let Ok(sig) = set.wait() {
-            deliver(sig as i32);
+            let sig = sig as i32;
+            let bit = if sig == libc::SIGINT { 1 } else { 2 };
+            if FWD.fetch_and(!bit, Ordering::SeqCst) & bit != 0 {
+                // Forwarded by `watched_handler`: a signal GLib's handler
+                // would have caught. (A genuine one coalesced with it is
+                // handled the same way: a µs-wide double race.)
+                deliver_late(sig);
+            } else {
+                deliver(sig);
+            }
         }
     }
 }
@@ -148,6 +204,28 @@ pub fn deliver(sig: i32) {
             Signal::SIGHUP
         }),
     }
+}
+
+/// A signal that reached [`watched_handler`]: GLib's handler caught it, so
+/// it is never fatal (WP1 residual (b)). Watched → dispatched; pending →
+/// coalesced; the watch already removed (dispatched, or `disarm`) →
+/// swallowed, as GLib swallows a signal its handler catches with no source
+/// left. This removes the start-up inversion where a race-path SIGINT,
+/// polled after a second SIGINT had already been dispatched, killed the
+/// host while GLib coalesces both.
+pub fn deliver_late(sig: i32) {
+    let st = state(sig);
+    if st
+        .compare_exchange(ARMED, PENDING, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        post_signal(sig);
+    }
+}
+
+/// Wakes the bus loop (a `signo: 0` message): it then polls [`LATE`].
+fn post_wake() {
+    post_signal(0);
 }
 
 /// Posts while HOLDING the `POST` lock, so once `disarm()` has taken the lock
@@ -168,7 +246,7 @@ fn post_signal(sig: i32) {
 /// `default_action` race) to [`deliver`].
 pub fn poll_late() {
     for sig in take_late() {
-        deliver(sig);
+        deliver_late(sig);
     }
 }
 
@@ -190,9 +268,11 @@ pub fn arm(bus: &gstreamer::Bus) {
     if let Ok(mut g) = POST.lock() {
         *g = Some(bus.clone());
     }
+    // ARMED first, then the handler: a signal the handler catches always
+    // finds its watch armed (or later), never OFF (WP1).
     for sig in [libc::SIGINT, libc::SIGHUP] {
-        set_disposition(sig, watched_handler as *const () as libc::sighandler_t);
         state(sig).store(ARMED, Ordering::SeqCst);
+        set_disposition(sig, watched_handler as *const () as libc::sighandler_t);
     }
 }
 
@@ -314,6 +394,51 @@ pub fn setlocale_from_env() {
     }
 }
 
+/// Nice inheritance (phase-7a §Design 5, WP1): the agent renices the host's
+/// pid (= its main thread; Linux nice is per thread) right after spawn, and
+/// every thread created after that inherits the value. The one thread that
+/// can predate the renice is `xg-sigwait` (started first, R3). At PLAYING
+/// the bus loop raises every thread whose nice is BELOW the main thread's to
+/// the main thread's value (raising nice needs no privilege; a thread is
+/// never made less nice). Returns the number of threads changed.
+#[allow(unsafe_code)]
+pub fn nice_threads_like_main() -> usize {
+    let pid = std::process::id();
+    let prio = |tid: u32| thread_nice(&format!("/proc/self/task/{tid}/stat"));
+    let Some(main) = prio(pid) else { return 0 };
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return 0;
+    };
+    let mut changed = 0;
+    for t in tasks.flatten() {
+        let Some(tid) = t.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        if tid == pid || prio(tid).is_none_or(|n| n >= main) {
+            continue;
+        }
+        // SAFETY: setpriority(2) on a thread of this process, to a nice
+        // value no lower than its own (an unprivileged raise).
+        if unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, main) } == 0 {
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// The nice value (field 19) of a `/proc/<pid>/task/<tid>/stat`.
+pub fn thread_nice(stat_path: &str) -> Option<i32> {
+    let st = std::fs::read_to_string(stat_path).ok()?;
+    // `pid (comm) state ppid …`: comm may hold spaces/parens; split after
+    // the LAST ')'. Field 19 (nice) is the 17th after it.
+    st.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(16)?
+        .parse()
+        .ok()
+}
+
 /// `isatty (STDOUT_FILENO)` (position printing, `gst-launch.c:1298`).
 pub fn stdout_is_tty() -> bool {
     use std::io::IsTerminal;
@@ -408,6 +533,8 @@ pub(super) mod testing {
         INTR.store(OFF, Ordering::SeqCst);
         HUP.store(OFF, Ordering::SeqCst);
         LATE.store(0, Ordering::SeqCst);
+        FWD.store(0, Ordering::SeqCst);
+        WAIT_THREAD.store(0, Ordering::SeqCst);
         *POST.lock().unwrap() = None;
     }
 }
@@ -449,6 +576,115 @@ mod tests {
         assert!(SigSet::thread_get_mask().unwrap().contains(Signal::SIGHUP));
         set_disposition(libc::SIGHUP, libc::SIG_DFL);
         set.thread_unblock().unwrap();
+    }
+
+    fn signal_messages(bus: &gstreamer::Bus) -> Vec<i32> {
+        let mut v = Vec::new();
+        while let Some(m) = bus.pop() {
+            if let gstreamer::MessageView::Application(a) = m.view() {
+                if let Some(s) = a.structure() {
+                    if s.name() == SIGNAL_MESSAGE {
+                        v.push(s.get::<i32>("signo").unwrap());
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    fn test_bus() -> gstreamer::Bus {
+        gstreamer::init().unwrap();
+        gstreamer::Bus::new()
+    }
+
+    /// WP1 residual (b): a signal the handler caught (LATE) whose watch is
+    /// already gone is SWALLOWED, as GLib swallows a signal its handler
+    /// catches with no source left; it never takes the default action. The
+    /// start-up inversion, forced: SIGINT #1 lands on the race path (LATE),
+    /// SIGINT #2 is dispatched first and removes the watch, then the loop
+    /// polls #1. Before WP1 that poll killed the host (death by SIGINT; GLib
+    /// coalesces both). SIGHUP alone, OFF + LATE, is the same rule.
+    #[test]
+    fn a_late_signal_after_its_watch_is_gone_is_swallowed() {
+        let _g = testing::lock();
+        testing::reset();
+        let bus = test_bus();
+        *POST.lock().unwrap() = Some(bus.clone());
+        INTR.store(ARMED, Ordering::SeqCst);
+        LATE.store(1, Ordering::SeqCst); // #1, race path
+        deliver(libc::SIGINT); // #2, through the wait thread
+        assert_eq!(signal_messages(&bus), vec![libc::SIGINT]);
+        dispatched(libc::SIGINT); // the loop ran intr_handler: watch OFF
+        poll_late(); // #1 now: must be swallowed
+        assert!(testing::intr_is_off());
+        assert_eq!(signal_messages(&bus), Vec::<i32>::new());
+        // SIGHUP, never armed, caught by the handler: swallowed too.
+        LATE.store(2, Ordering::SeqCst);
+        poll_late();
+        assert_eq!(signal_messages(&bus), Vec::<i32>::new());
+        set_disposition(libc::SIGINT, libc::SIG_DFL);
+        testing::reset();
+    }
+
+    /// WP1 residual (a), race path: when `default_action` survives because
+    /// the handler ran (R-WP0-6), it wakes the bus loop at once with a
+    /// `signo: 0` message instead of leaving the signal for the next tick.
+    #[test]
+    fn the_race_path_wakes_the_bus_loop_at_once() {
+        let _g = testing::lock();
+        testing::reset();
+        let bus = test_bus();
+        *POST.lock().unwrap() = Some(bus.clone());
+        fn arm_now() {
+            set_disposition(
+                libc::SIGHUP,
+                watched_handler as *const () as libc::sighandler_t,
+            );
+        }
+        let set = sigset(&[Signal::SIGHUP]);
+        set.thread_block().unwrap();
+        *BEFORE_RAISE.lock().unwrap() = Some(arm_now);
+        default_action(Signal::SIGHUP);
+        *BEFORE_RAISE.lock().unwrap() = None;
+        assert_eq!(signal_messages(&bus), vec![0], "no wake posted");
+        assert_eq!(take_late(), vec![libc::SIGHUP]);
+        set_disposition(libc::SIGHUP, libc::SIG_DFL);
+        set.thread_unblock().unwrap();
+        testing::reset();
+    }
+
+    /// WP1 residual (a), library thread: a watched signal caught on a thread
+    /// that is NOT the wait thread is forwarded to the wait thread (pending
+    /// there, so its sigwait returns at once) instead of waiting for the
+    /// next loop tick in LATE.
+    #[test]
+    fn a_signal_caught_off_the_wait_thread_is_forwarded_to_it() {
+        let _g = testing::lock();
+        testing::reset();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (got_tx, got_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let set = sigset(&[Signal::SIGHUP]);
+            set.thread_block().unwrap();
+            WAIT_THREAD.store(nix::unistd::gettid().as_raw(), Ordering::SeqCst);
+            ready_tx.send(()).unwrap();
+            if let Ok(s) = set.wait() {
+                let _ = got_tx.send(s as i32);
+            }
+        });
+        ready_rx.recv().unwrap();
+        set_disposition(
+            libc::SIGHUP,
+            watched_handler as *const () as libc::sighandler_t,
+        );
+        // This thread has SIGHUP unblocked: raise() runs the handler HERE.
+        nix::sys::signal::raise(Signal::SIGHUP).unwrap();
+        let got = got_rx.recv_timeout(std::time::Duration::from_secs(2));
+        set_disposition(libc::SIGHUP, libc::SIG_DFL);
+        assert_eq!(got, Ok(libc::SIGHUP), "the signal was not forwarded");
+        assert_eq!(FWD.swap(0, Ordering::SeqCst), 2);
+        assert_eq!(take_late(), Vec::<i32>::new());
+        testing::reset();
     }
 
     #[test]

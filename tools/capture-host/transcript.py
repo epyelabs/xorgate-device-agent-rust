@@ -411,9 +411,54 @@ SETXID_BIT = 1 << 32  # signal 33 (glibc SIGSETXID) in a /proc mask
 UNTERMINATED = " \u27e8no newline\u27e9"
 
 
+# WP1: the host's own timing lines (xorgate-core capture_timing). They are
+# host-only by design (gst-launch never prints them) and are validated by
+# their own row; every OTHER line is compared byte for byte.
+TIMING_RX = re.compile(r"^XG-FRAGMENT(-END)? \{")
+
+
 def fd_lines(t, fd):
     return [norm(l["line"]) + (UNTERMINATED if l.get("unterminated") else "")
-            for l in t["lines"] if l["fd"] == fd]
+            for l in t["lines"] if l["fd"] == fd and not (fd == 1 and TIMING_RX.match(l["line"]))]
+
+
+def timing_row(r, g):
+    """The host's XG-FRAGMENT lines: v1 JSON, one start per fragment file
+    (id == the %05d sequence), an END only after a clean EOS and only for the
+    last id, startTs ascending. The reference (gst-launch) must have none."""
+    ref_t = [l for l in r["lines"] if l["fd"] == 1 and TIMING_RX.match(l["line"])]
+    got = [l for l in g["lines"] if TIMING_RX.match(l["line"])]
+    errs = []
+    if ref_t:
+        errs.append(f"reference has timing lines: {ref_t}")
+    starts, ends = [], []
+    for l in got:
+        if l["fd"] != 1:
+            errs.append(f"timing line on fd{l['fd']}")
+        prefix, _, body = l["line"].partition(" ")
+        try:
+            j = json.loads(body)
+        except ValueError:
+            errs.append(f"not JSON: {l['line']}")
+            continue
+        if j.get("v") != 1:
+            errs.append(f"v != 1: {l['line']}")
+        (ends if prefix == "XG-FRAGMENT-END" else starts).append(j)
+    seqs = sorted(int(f[:5]) for f in g.get("after", {}).get("fragments", []) if f[:5].isdigit())
+    ids = [j.get("id") for j in starts]
+    if g["proc"].get("playing", {}).get("cmdline0") == "xorgate-capture" and seqs and ids != seqs:
+        errs.append(f"start ids {ids} != fragment sequences {seqs}")
+    ts = [j.get("startTs") for j in starts]
+    if ts != sorted(ts):
+        errs.append(f"startTs not ascending: {ts}")
+    clean_eos = g["exit"]["signal"] is None and any(
+        l["line"] == 'Got EOS from element "pipeline0".' for l in g["lines"])
+    if ends and (not clean_eos or len(ends) != 1 or not ids or ends[0].get("id") != ids[-1]):
+        errs.append(f"END {ends} (clean EOS {clean_eos}, last id {ids[-1:] or None})")
+    if clean_eos and ids and not ends:
+        errs.append("clean EOS without an XG-FRAGMENT-END")
+    detail = f"starts={ids} lagMs={[j.get('lagMs') for j in starts]} ends={[j.get('id') for j in ends]}"
+    return ("host timing lines (XG-FRAGMENT*)", not errs, detail + ("" if not errs else f" ERRORS {errs}"))
 
 
 def split_at(lines, rx):
@@ -491,6 +536,7 @@ def cmd_compare(a):
         hm = host_mask_row(g)
         if hm:
             rows.append(hm)
+        rows.append(timing_row(r, g))
         ra, ga = r.get("after", {}), g.get("after", {})
         rows.append(("shm segments left (count)", len(ra.get("shmLeft", [])) == len(ga.get("shmLeft", [])),
                      f"ref={ra.get('shmLeft')} got={ga.get('shmLeft')}"))

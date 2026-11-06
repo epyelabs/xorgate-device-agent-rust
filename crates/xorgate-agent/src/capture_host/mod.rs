@@ -38,8 +38,10 @@
 //! exec in the fault handler, and GLib's charset conversion of output in a
 //! non-UTF-8 locale (the host writes UTF-8 as is).
 
+mod diag;
 pub mod nls;
 mod sys;
+mod timing;
 
 use std::ffi::{CStr, CString, OsString};
 use std::io::Write;
@@ -179,7 +181,16 @@ fn run(eos_on_shutdown: bool, tokens: &[CString]) -> i32 {
         return 1;
     };
     let shared = Arc::new(Shared::default());
-    install_sync_handler(&bus, &pipeline, &shared);
+    // WP1 (§Design 8): exact fragment timing on the one splitmuxsink (record
+    // mode); bridge-only and every other argv have none.
+    let timing = timing::Timing::find_splitmuxsink(&pipeline).map(|sm| {
+        let t = Arc::new(timing::Timing::default());
+        t.connect(&sm, &pipeline);
+        t
+    });
+    // §Design 6: nothing is installed unless XORGATE_CAPTURE_HOST_DIAG=1.
+    let diag = diag::enabled_from_env().then(|| diag::Diag::install(&pipeline));
+    install_sync_handler(&bus, &pipeline, &shared, timing.clone());
 
     let mut l = Launch {
         pipeline: pipeline.clone(),
@@ -192,6 +203,10 @@ fn run(eos_on_shutdown: bool, tokens: &[CString]) -> i32 {
         waiting_eos: false,
         tfthen: None,
         shared: shared.clone(),
+        timing,
+        pending_end: None,
+        diag,
+        playing_seen: false,
     };
 
     print(&tr(c"Setting pipeline to PAUSED ...\n"));
@@ -240,7 +255,17 @@ fn run(eos_on_shutdown: bool, tokens: &[CString]) -> i32 {
 
 /// `bus_sync_handler` (`gst-launch.c:945-1004`): runs on the POSTING thread.
 /// Never blocks, takes no lock the loop holds, and a panic is contained.
-fn install_sync_handler(bus: &gst::Bus, pipeline: &gst::Element, shared: &Arc<Shared>) {
+///
+/// WP1 additions (both no-ops without a splitmuxsink): the R5 clock check at
+/// the pipeline's PLAYING, and the end stamp of `splitmuxsink-fragment-
+/// closed`, read here on the posting thread so the clocks are read at the
+/// close and not when the loop gets to the message.
+fn install_sync_handler(
+    bus: &gst::Bus,
+    pipeline: &gst::Element,
+    shared: &Arc<Shared>,
+    timing: Option<Arc<timing::Timing>>,
+) {
     let weak = pipeline.downgrade();
     let sh = shared.clone();
     bus.set_sync_handler(move |_bus, msg| {
@@ -252,6 +277,20 @@ fn install_sync_handler(bus: &gst::Bus, pipeline: &gst::Element, shared: &Arc<Sh
                     dump(&p, &format!("gst-launch.{name}"));
                     // "place a marker into e.g. strace logs" (an access(2) probe).
                     let _ = gst::glib::tmp_dir().join("gst-launch").join(&name).exists();
+                    if sc.current() == gst::State::Playing {
+                        if let Some(line) = timing.as_ref().and_then(|t| t.on_playing(&p)) {
+                            printerr(&line);
+                        }
+                    }
+                }
+                gst::MessageView::Element(e) => {
+                    if let (Some(t), Some(s)) = (timing.as_ref(), e.structure()) {
+                        if s.name() == timing::FRAGMENT_CLOSED {
+                            if let Some(ev) = t.on_fragment_closed(s, &p) {
+                                timing::post(&p, ev);
+                            }
+                        }
+                    }
                 }
                 gst::MessageView::Error(e) => {
                     dump(&p, "gst-launch.error");
@@ -289,6 +328,14 @@ struct Launch {
     waiting_eos: bool,
     tfthen: Option<gst::ClockTime>,
     shared: Arc<Shared>,
+    /// WP1: exact fragment timing (record mode only).
+    timing: Option<Arc<timing::Timing>>,
+    /// The last `XG-FRAGMENT-END` seen, printed on the pipeline's EOS.
+    pending_end: Option<(u32, String)>,
+    /// WP1: the optional buffer-flow probes (`XORGATE_CAPTURE_HOST_DIAG=1`).
+    diag: Option<diag::Diag>,
+    /// The pipeline reached PLAYING once (nice sync, diag start).
+    playing_seen: bool,
 }
 
 /// The loop's poll period: the late-signal check and the tty position line.
@@ -314,6 +361,11 @@ impl Launch {
     fn tick(&mut self, position: bool, next_position: &mut Instant) {
         sys::poll_late();
         let msg = self.bus.timed_pop(gst::ClockTime::from_mseconds(100));
+        if let Some(d) = self.diag.as_mut() {
+            for line in d.check() {
+                printerr(&line);
+            }
+        }
         if position && Instant::now() >= *next_position {
             *next_position = Instant::now() + TICK;
             self.print_position();
@@ -361,6 +413,13 @@ impl Launch {
                 let _ = self.pipeline.set_state(gst::State::Playing);
             }
             V::Eos(_) => {
+                // WP1: the last fragment's end, on a clean EOS only.
+                if let (Some((id, line)), Some(t)) = (self.pending_end.take(), self.timing.as_ref())
+                {
+                    if t.last_open() == Some(id) {
+                        print(&format!("{line}\n"));
+                    }
+                }
                 print(&trf(
                     c"Got EOS from element \"%s\".\n",
                     &[Arg::S(&src_name(msg))],
@@ -389,6 +448,15 @@ impl Launch {
             V::StateChanged(sc) => {
                 if !is_from(msg, &self.pipeline) {
                     return;
+                }
+                if sc.current() == gst::State::Playing && !self.playing_seen {
+                    self.playing_seen = true;
+                    // WP1: every thread at the main thread's nice (the
+                    // agent's renice can land after `xg-sigwait` exists).
+                    sys::nice_threads_like_main();
+                    if let Some(d) = self.diag.as_mut() {
+                        d.playing();
+                    }
                 }
                 if !self.shared.target_playing.load(Ordering::SeqCst)
                     && sc.current() == gst::State::Paused
@@ -450,6 +518,20 @@ impl Launch {
                     match s.get::<i32>("signo") {
                         Ok(libc::SIGINT) => self.intr_handler(),
                         Ok(libc::SIGHUP) => self.hup_handler(),
+                        // A wake from the race path: poll it now.
+                        Ok(0) => sys::poll_late(),
+                        _ => {}
+                    }
+                } else if s.name() == timing::TIMING_MESSAGE {
+                    match timing::decode(s) {
+                        Some(timing::Event::Start(line)) => print(&format!("{line}\n")),
+                        Some(timing::Event::ClockOff(line)) => printerr(&line),
+                        Some(timing::Event::End(id, line)) => self.pending_end = Some((id, line)),
+                        Some(timing::Event::Rejected(line))
+                            if self.timing.as_ref().is_some_and(|t| t.first_rejection()) =>
+                        {
+                            printerr(&line)
+                        }
                         _ => {}
                     }
                 } else if s.name() == "GstLaunchInterrupt" {
@@ -700,6 +782,10 @@ mod tests {
             waiting_eos: false,
             tfthen: None,
             shared: Arc::new(Shared::default()),
+            timing: None,
+            pending_end: None,
+            diag: None,
+            playing_seen: false,
         };
         sys::testing::prime_race_path_sigint(&bus);
         let mut next = Instant::now() + TICK;

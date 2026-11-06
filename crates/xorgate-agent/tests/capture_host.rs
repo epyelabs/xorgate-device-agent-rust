@@ -420,3 +420,117 @@ fn unknown_option_is_an_initialisation_error() {
         "Error initializing: Unknown option -v\n"
     );
 }
+
+fn task_nices(pid: u32) -> Vec<(String, i32)> {
+    let mut v = Vec::new();
+    for t in std::fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
+        let p = t.unwrap().path();
+        let comm = std::fs::read_to_string(p.join("comm")).unwrap_or_default();
+        let st = std::fs::read_to_string(p.join("stat")).unwrap_or_default();
+        let nice = st
+            .rsplit_once(')')
+            .and_then(|(_, r)| r.split_whitespace().nth(16))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(i32::MIN);
+        v.push((comm.trim().to_string(), nice));
+    }
+    v
+}
+
+/// WP1 (§Design 5 "Nice"): after the agent's renice (the supervisor renices
+/// the pid right after spawn, `capture/mod.rs` `child.renice(10)`), EVERY
+/// host thread runs at nice 10, including `xg-sigwait`, which exists from
+/// startup and so predates the renice, and the threads created at PAUSED
+/// and PLAYING. A FIFO with no writer holds the host inside
+/// `set_state(PAUSED)` so the renice lands deterministically AFTER the wait
+/// thread started (the race the real agent can lose).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_thread_runs_at_the_agents_nice_after_playing() {
+    let dir = std::env::temp_dir().join(format!("xg-host-nice-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("in.fifo");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+    let b = HostBackend::with_exe(BIN);
+    let (child, mut rx) = b.spawn(&toks(&format!(
+        "filesrc location={} ! queue ! identity sleep-time=10000 ! fakesink",
+        fifo.display()
+    )));
+    let pid = child.pid().unwrap();
+    let mut run = Run::default();
+    drain(&mut rx, &mut run, Some("Setting pipeline to PAUSED ...")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let before = task_nices(pid);
+    assert!(
+        before.iter().any(|(n, v)| n == "xg-sigwait" && *v == 0),
+        "{before:?}"
+    );
+    child.renice(10).unwrap();
+    // Unblock PAUSED: the writer opens the FIFO and keeps feeding it.
+    let fifo2 = fifo.clone();
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let mut w = std::fs::OpenOptions::new().write(true).open(fifo2).unwrap();
+        let chunk = [0u8; 4096];
+        for _ in 0..200 {
+            if w.write_all(&chunk).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    drain(&mut rx, &mut run, Some("New clock:")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = task_nices(pid);
+    assert!(after.len() >= 4, "{after:?}"); // main, xg-sigwait, filesrc, queue
+    assert!(after.iter().all(|(_, v)| *v == 10), "{after:?}");
+    child.signal(libc::SIGINT);
+    drain(&mut rx, &mut run, None).await;
+    let _ = writer.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// WP1 (§Design 6): the buffer-flow probes are OFF by default — a branch
+/// that never gets a buffer prints nothing — and with
+/// `XORGATE_CAPTURE_HOST_DIAG=1` one stderr line names the starved branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diag_probes_are_off_by_default_and_name_a_starved_branch_when_on() {
+    // valve drop=true: buffers never reach the sink; async=false lets the
+    // pipeline reach PLAYING without a preroll buffer.
+    let argv = toks("fakesrc is-live=true ! valve drop=true ! fakesink async=false");
+    for on in [false, true] {
+        let mut spec = HostBackend::with_exe(BIN).spec(&argv);
+        spec.env.push((
+            "XORGATE_CAPTURE_HOST_DIAG_STALL_MS".to_string(),
+            "300".to_string(),
+        ));
+        if on {
+            spec.env
+                .push(("XORGATE_CAPTURE_HOST_DIAG".to_string(), "1".to_string()));
+        }
+        let (child, mut rx) = xorgate_hal::child::spawn(&spec);
+        let mut run = Run::default();
+        drain(&mut rx, &mut run, Some("New clock:")).await;
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        child.signal(libc::SIGINT);
+        drain(&mut rx, &mut run, None).await;
+        let d = run.done.clone().unwrap();
+        assert_eq!((d.exit_code, d.signal), (Some(0), None), "{run:?}");
+        let diag: Vec<&String> = run
+            .err
+            .iter()
+            .chain(run.out.iter())
+            .filter(|l| l.contains("diag"))
+            .collect();
+        if on {
+            assert_eq!(
+                run.err,
+                vec!["xorgate-capture diag: fakesink0 (fakesink0) no buffers for 0 s".to_string()],
+                "{run:?}"
+            );
+        } else {
+            assert!(diag.is_empty() && run.err.is_empty(), "{run:?}");
+        }
+        assert!(!run.out.iter().any(|l| l.starts_with("XG-")), "{run:?}");
+    }
+}
