@@ -70,6 +70,14 @@ Wants=network-online.target
 # One identity, one agent: starting this unit stops the JS agent and vice
 # versa (see header). Reset to empty by the bench-only drop-in.
 Conflicts=xorgate-agent.service
+# Break crash-loops: 10 failures in 60s and systemd holds off until the operator
+# runs `systemctl reset-failed xorgate-agent-rs`. Both are [Unit] keys (O-P5G-1,
+# user-approved 2026-11-06). Under [Service], systemd 252 (bookworm) logs
+# "Unknown key 'StartLimitIntervalSec' in section [Service], ignoring." and
+# uses the default 10 s window (only StartLimitBurst= is still accepted there,
+# as a compat alias). Pinned by scripts/tests/unit-sections.sh.
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 Type=notify
@@ -95,11 +103,6 @@ ExecStopPost=-/usr/local/bin/xorgate-rs led exit-state
 # a brief IoT/cert outage and from operator-induced stops.
 Restart=always
 RestartSec=5s
-
-# Break crash-loops: 10 failures in 60s and systemd holds off until the operator
-# runs `systemctl reset-failed xorgate-agent-rs`.
-StartLimitIntervalSec=60
-StartLimitBurst=10
 
 [Install]
 WantedBy=multi-user.target
