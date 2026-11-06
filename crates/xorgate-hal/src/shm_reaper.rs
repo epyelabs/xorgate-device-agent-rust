@@ -47,6 +47,14 @@ pub fn reap_shm_segments(dir: &Path, pid: Option<u32>) -> Vec<String> {
 /// Is `pid` a live process (`kill(pid, 0)`: success or EPERM = it exists)?
 /// pid 0 and pids past `i32::MAX` are never "dead" (kill would mean a group).
 pub fn pid_alive(pid: u32) -> bool {
+    pid_alive_with(pid, |p| nix::sys::signal::kill(p, None))
+}
+
+/// [`pid_alive`] over an injectable `kill(pid, 0)` probe (the test seam that
+/// pins the EPERM branch, review-wp5 R-WP5-6: the suites run as root, where
+/// EPERM never happens; production is `User=root` too, so the branch is
+/// defensive — a live process of another user must never look dead).
+fn pid_alive_with(pid: u32, probe: impl Fn(nix::unistd::Pid) -> nix::Result<()>) -> bool {
     use nix::errno::Errno;
     let Ok(raw) = i32::try_from(pid) else {
         return true;
@@ -54,7 +62,7 @@ pub fn pid_alive(pid: u32) -> bool {
     if raw == 0 {
         return true;
     }
-    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None) {
+    match probe(nix::unistd::Pid::from_raw(raw)) {
         Ok(()) | Err(Errno::EPERM) => true,
         Err(_) => false,
     }
@@ -142,6 +150,20 @@ mod tests {
         assert_eq!(reaped, ["shmpipe. 4242.    0", "shmpipe. 4242.    1"]);
         assert_eq!(shm_pipe_names(&dir), ["shmpipe.14242.    0"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R-WP5-6: the probe's answer decides: Ok and EPERM (alive, another
+    /// user's) are alive; ESRCH (and any other error) is dead; pid 0 and
+    /// out-of-range pids never reach the probe.
+    #[test]
+    fn pid_alive_treats_eperm_as_alive() {
+        use nix::errno::Errno;
+        assert!(pid_alive_with(4242, |_| Ok(())));
+        assert!(pid_alive_with(4242, |_| Err(Errno::EPERM)));
+        assert!(!pid_alive_with(4242, |_| Err(Errno::ESRCH)));
+        let never = |_| -> nix::Result<()> { panic!("probed") };
+        assert!(pid_alive_with(0, never));
+        assert!(pid_alive_with(u32::MAX, never));
     }
 
     /// D41 start-up sweep: only segments whose owner pid is DEAD go; a live

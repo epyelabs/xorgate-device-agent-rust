@@ -609,6 +609,12 @@ impl RecordingManager {
         // shmsink areas until reboot (the TS has no sweep, P7). Before any
         // capture spawns, unlink those whose owner is dead — journal only,
         // never an activity event (no new cloud-visible shape).
+        // ASSUMPTION (review-wp5 R-WP5-5): this agent shares the pid namespace
+        // of every process that can own a segment in its /dev/shm (the bench
+        // host; the rig container). A container that shares /dev/shm across
+        // pid namespaces (--ipc=host, a bind-mounted /dev/shm) would see LIVE
+        // owners as dead and unlink their segments — Phase 7 containers must
+        // revisit this before running the agent that way.
         for (name, pid) in inner.backend.sweep_dead_shm_segments() {
             tracing::info!(
                 "[recording] removed stale shm segment {name:?} (owner pid {pid} not running)"
