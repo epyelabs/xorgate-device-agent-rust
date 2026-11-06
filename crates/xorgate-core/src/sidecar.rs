@@ -782,15 +782,13 @@ pub fn plan_sweep_timed(
 // construction and the backend's clock-step detection
 // (`clock-step.ts:50-62`, `durationMs > nominal + minStep`) keeps working.
 
-/// The GOP of every capture preset: `key-int-max = 2 × fps`
-/// (`video_capture.rs`, [`crate::video_capture::build_capture_pipeline_args`]).
-pub const CAPTURE_GOP_MS: f64 = 2_000.0;
-
-/// §8.2 validity guard: a stamp is accepted only if
-/// `0 ≤ lagMs ≤ 3 × GOP + 1 s`. Outside it the clock domain is wrong and
-/// the fragment keeps the legacy anchors. The host applies the guard
-/// (WP1); the agent re-checks every line it is handed.
-pub const LAG_GUARD_MAX_MS: f64 = 3.0 * CAPTURE_GOP_MS + 1_000.0;
+/// §8.2 validity guard in ms: a stamp is accepted only if
+/// `0 ≤ lagMs ≤ 3 × GOP + 1 s` (GOP = `key-int-max / fps` = 2 s). Outside
+/// it the clock domain is wrong and the fragment keeps the legacy anchors.
+/// The host applies the guard in ns ([`crate::capture_timing::lag_in_guard`],
+/// WP1) and never emits such a line; the agent re-checks every line it is
+/// handed against the same bound.
+pub const LAG_GUARD_MAX_MS: f64 = (crate::capture_timing::MAX_LAG_NS / 1_000_000) as f64;
 
 /// One fragment's accepted stamps (all integer epoch ms / ms).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -980,7 +978,11 @@ pub fn exact_times(
     };
     ExactTimes {
         start_ts: own.start_ts,
-        duration_ms: if raw.is_finite() && raw > 0.0 { raw } else { 0.0 },
+        duration_ms: if raw.is_finite() && raw > 0.0 {
+            raw
+        } else {
+            0.0
+        },
     }
 }
 
@@ -1014,7 +1016,13 @@ pub fn seq_id(seq: f64) -> Option<u64> {
 
 impl ExactSweep<'_> {
     /// The decision for one closed, non-empty fragment (§8.4–8.5).
-    pub fn decide(&self, seq: f64, finalized: bool, mtime_ms: f64, final_sweep: bool) -> ExactDecision {
+    pub fn decide(
+        &self,
+        seq: f64,
+        finalized: bool,
+        mtime_ms: f64,
+        final_sweep: bool,
+    ) -> ExactDecision {
         let Some(id) = seq_id(seq) else {
             return ExactDecision::Legacy;
         };
@@ -1030,7 +1038,9 @@ impl ExactSweep<'_> {
             }
         }
         match t.exact(id) {
-            Some(own) => ExactDecision::Exact(exact_times(own, t.exact(id + 1), finalized, mtime_ms)),
+            Some(own) => {
+                ExactDecision::Exact(exact_times(own, t.exact(id + 1), finalized, mtime_ms))
+            }
             None => ExactDecision::Legacy,
         }
     }
@@ -1038,7 +1048,9 @@ impl ExactSweep<'_> {
 
 /// The one-per-session warning for a rejected timing line.
 pub fn stamp_rejected_warning(stream_key: &str, id: u64, why: &StampReject) -> String {
-    format!("[video-capture {stream_key}] fragment {id} timing ignored ({why}); legacy anchors for it")
+    format!(
+        "[video-capture {stream_key}] fragment {id} timing ignored ({why}); legacy anchors for it"
+    )
 }
 
 /// One session directory as `recoverOrphanVideoSessions` walks it
@@ -1493,10 +1505,7 @@ mod tests {
         assert!(t.timed());
         assert!(!t.pending(0) && t.pending(1) && t.pending(7));
         // First wins.
-        assert_eq!(
-            t.record_start(0, T0, 1.0),
-            Err(StampReject::Duplicate)
-        );
+        assert_eq!(t.record_start(0, T0, 1.0), Err(StampReject::Duplicate));
         assert_eq!(t.exact(0).unwrap().start_ts, T0 + 300.0);
         // Guard edges: [0, 7000] accepted, outside rejected (recorded, not pending).
         assert_eq!(LAG_GUARD_MAX_MS, 7_000.0);
@@ -1506,15 +1515,16 @@ mod tests {
             t.record_start(3, T0 + 180_300.0, 7_000.6),
             Err(StampReject::Lag(7_000.6))
         );
+        assert_eq!(t.record_start(4, T0, -0.6), Err(StampReject::Lag(-0.6)));
         assert_eq!(
-            t.record_start(4, T0, -0.6),
-            Err(StampReject::Lag(-0.6))
-        );
-        assert_eq!(
-            t.record_start(5, T0, f64::NAN).map_err(|e| matches!(e, StampReject::Lag(_))),
+            t.record_start(5, T0, f64::NAN)
+                .map_err(|e| matches!(e, StampReject::Lag(_))),
             Err(true)
         );
-        assert_eq!(t.record_start(6, 0.0, 2100.0), Err(StampReject::StartTs(0.0)));
+        assert_eq!(
+            t.record_start(6, 0.0, 2100.0),
+            Err(StampReject::StartTs(0.0))
+        );
         assert_eq!(
             t.record_start(7, SANE_EPOCH_MS, 2100.0),
             Err(StampReject::StartTs(SANE_EPOCH_MS))
@@ -1551,13 +1561,19 @@ mod tests {
             end_ts: None,
         };
         let mt = T0 + 62_400.0; // = the next callback's wall
-        // Non-final: the stamp delta, whatever the mtime says (a +S step).
+                                // Non-final: the stamp delta, whatever the mtime says (a +S step).
         assert_eq!(
             exact_times(&own, Some(&next(150_000.0)), true, mt).duration_ms,
             150_000.0
         );
-        assert_eq!(exact_times(&own, Some(&next(40_000.0)), true, mt).duration_ms, 40_000.0);
-        assert_eq!(exact_times(&own, Some(&next(-30_000.0)), true, mt).duration_ms, 0.0);
+        assert_eq!(
+            exact_times(&own, Some(&next(40_000.0)), true, mt).duration_ms,
+            40_000.0
+        );
+        assert_eq!(
+            exact_times(&own, Some(&next(-30_000.0)), true, mt).duration_ms,
+            0.0
+        );
         // Clean final: endTs − startTs (before the successor-less mtime rule).
         let ended = FragmentTiming {
             end_ts: Some(T0 + 45_300.0),

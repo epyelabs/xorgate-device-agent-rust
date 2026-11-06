@@ -52,6 +52,11 @@ pub trait CaptureBackend: Send + Sync {
     fn program(&self) -> &str;
     /// Spawn; never fails synchronously — a spawn failure is a lone `Done`.
     fn spawn(&self, args: &[String]) -> (Box<dyn CaptureChild>, UnboundedReceiver<ChildEvent>);
+    /// The child prints the phase-7a `XG-FRAGMENT*` timing lines (only the
+    /// capture host does), so `XORGATE_SIDECAR_TIMING=exact` can take effect.
+    fn emits_timing(&self) -> bool {
+        false
+    }
 }
 
 /// The backend switch (phase-7a §Design 9). Unset/empty = `gst-launch`.
@@ -196,6 +201,10 @@ impl CaptureBackend for HostBackend {
         let (handle, rx) = child::spawn(&self.spec(args));
         (Box::new(GstChild(handle)), rx)
     }
+
+    fn emits_timing(&self) -> bool {
+        true
+    }
 }
 
 /// A [`ChildHandle`] as a [`CaptureChild`].
@@ -317,5 +326,15 @@ mod tests {
         assert!(spec.env.is_empty() && spec.cwd.is_none());
         assert_eq!(b.program(), "xorgate-capture");
         assert_eq!(GstLaunchBackend::default().program(), "gst-launch-1.0");
+    }
+
+    /// Phase 7a WP2: only the host prints timing lines, so only it lets
+    /// `XORGATE_SIDECAR_TIMING=exact` take effect.
+    #[test]
+    fn only_the_host_emits_timing() {
+        assert!(HostBackend::with_exe("/x").emits_timing());
+        assert!(!GstLaunchBackend::default().emits_timing());
+        assert!(backend_for(Some("host")).emits_timing());
+        assert!(!backend_for(None).emits_timing());
     }
 }

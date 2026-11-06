@@ -9,15 +9,18 @@
 //!
 //! `startTs` comes from the fragment's birth time (`xorgate_hal::fragment_stat`,
 //! P10) — the ~2.1 s splitmuxsink GOP lag is REPRODUCED, not corrected (memory
-//! `video-sidecar-gop-latency`; Phase 7 fixes it).
+//! `video-sidecar-gop-latency`). Phase 7a: [`sweep_session_dir_timed`] with
+//! the run's exact timing (`XORGATE_SIDECAR_TIMING=exact`) takes `startTs`
+//! from the capture host's stamps instead (core `plan_sweep_timed`); the
+//! stats, the listing and the execution order are the same.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use tracing::{error, warn};
 use xorgate_core::sidecar::{
-    dropped_empty_fragment_warning, plan_sweep, segment_seq, sidecar_path_for,
-    sidecar_write_failed_error, ClockPair, DirEntry, SessionManifest, SweepOpts,
+    dropped_empty_fragment_warning, plan_sweep_timed, segment_seq, sidecar_path_for,
+    sidecar_write_failed_error, ClockPair, DirEntry, ExactSweep, SessionManifest, SweepOpts,
     VideoSessionManifest, SESSION_MANIFEST_NAME,
 };
 use xorgate_core::types::TimeSource;
@@ -51,6 +54,9 @@ pub struct SweepOutcome {
     pub active_path: Option<PathBuf>,
     /// 0-byte fragments unlinked (final sweeps only).
     pub reaped: Vec<PathBuf>,
+    /// Phase 7a, `exact` only: closed fragments (seq) deferred this pass
+    /// (core `SweepPlan::deferred`); always empty in legacy.
+    pub deferred: Vec<u64>,
 }
 
 /// The directory as a `String` for the core plan (paths the agent builds are UTF-8).
@@ -65,6 +71,17 @@ fn dir_str(dir: &Path) -> String {
 /// (`:281-288`). A stat that throws leaves the entry without one (`raced an
 /// eviction — skip`).
 pub fn sweep_session_dir(dir: &Path, manifest: &SessionManifest, opts: &SweepIo) -> SweepOutcome {
+    sweep_session_dir_timed(dir, manifest, opts, None)
+}
+
+/// [`sweep_session_dir`] with the run's exact timing (phase-7a); `None` is
+/// the legacy sweep, byte for byte.
+pub fn sweep_session_dir_timed(
+    dir: &Path,
+    manifest: &SessionManifest,
+    opts: &SweepIo,
+    exact: Option<&ExactSweep<'_>>,
+) -> SweepOutcome {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return SweepOutcome::default();
     };
@@ -106,7 +123,7 @@ pub fn sweep_session_dir(dir: &Path, manifest: &SessionManifest, opts: &SweepIo)
             },
         })
         .collect();
-    let plan = plan_sweep(
+    let plan = plan_sweep_timed(
         &dir_str(dir),
         manifest,
         &entries,
@@ -116,6 +133,7 @@ pub fn sweep_session_dir(dir: &Path, manifest: &SessionManifest, opts: &SweepIo)
             time_source: opts.time_source,
             clock_pair: opts.clock_pair,
         },
+        exact,
     );
     // Execute in fragment order, as the TS loop interleaves unlinks and writes.
     enum Act<'a> {
@@ -135,6 +153,7 @@ pub fn sweep_session_dir(dir: &Path, manifest: &SessionManifest, opts: &SweepIo)
     acts.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("finite seq"));
     let mut out = SweepOutcome {
         active_path: plan.active_path.as_deref().map(PathBuf::from),
+        deferred: plan.deferred.clone(),
         ..SweepOutcome::default()
     };
     for (_, act) in acts {

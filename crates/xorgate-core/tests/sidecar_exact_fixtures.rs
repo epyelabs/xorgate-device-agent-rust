@@ -157,7 +157,10 @@ fn exact_timing_fixtures() {
                 seen.insert(name.clone());
                 let sc = w.sidecar.typed().expect("typed manifest").clone();
                 // Backend schema (media-segments.ts:51-53) for EVERY sidecar.
-                assert!(sc.start_ts > 0.0 && is_int(sc.start_ts), "{ctx} {name}: startTs");
+                assert!(
+                    sc.start_ts > 0.0 && is_int(sc.start_ts),
+                    "{ctx} {name}: startTs"
+                );
                 assert!(
                     sc.duration_ms >= 0.0 && is_int(sc.duration_ms),
                     "{ctx} {name}: durationMs"
@@ -172,7 +175,11 @@ fn exact_timing_fixtures() {
                 );
                 if let Some(e) = exact_want.get(&name) {
                     assert_eq!(sc.anchor, EXACT_ANCHOR, "{ctx} {name}: anchor");
-                    assert_eq!(sc.start_ts, e["startTs"].as_f64().unwrap(), "{ctx} {name}: startTs");
+                    assert_eq!(
+                        sc.start_ts,
+                        e["startTs"].as_f64().unwrap(),
+                        "{ctx} {name}: startTs"
+                    );
                     assert_eq!(
                         sc.duration_ms,
                         e["durationMs"].as_f64().unwrap(),
@@ -183,9 +190,16 @@ fn exact_timing_fixtures() {
                         e["startMono"].as_f64().unwrap(),
                         "{ctx} {name}: startMono"
                     );
-                    assert_eq!(sc.finalized, e["finalized"].as_bool().unwrap(), "{ctx} {name}");
+                    assert_eq!(
+                        sc.finalized,
+                        e["finalized"].as_bool().unwrap(),
+                        "{ctx} {name}"
+                    );
                     // Only startTs/durationMs/anchor differ from the legacy body.
-                    if let Some(l) = legacy.writes.iter().find(|l| l.sidecar_path == w.sidecar_path)
+                    if let Some(l) = legacy
+                        .writes
+                        .iter()
+                        .find(|l| l.sidecar_path == w.sidecar_path)
                     {
                         let mut lv = l.sidecar.typed().unwrap().clone();
                         lv.start_ts = sc.start_ts;
@@ -200,7 +214,11 @@ fn exact_timing_fixtures() {
                         .iter()
                         .find(|l| l.sidecar_path == w.sidecar_path)
                         .unwrap_or_else(|| panic!("{ctx} {name}: not in the legacy plan"));
-                    assert_eq!(w.sidecar.to_json(), l.sidecar.to_json(), "{ctx} {name}: legacy bytes");
+                    assert_eq!(
+                        w.sidecar.to_json(),
+                        l.sidecar.to_json(),
+                        "{ctx} {name}: legacy bytes"
+                    );
                     assert_ne!(sc.anchor, EXACT_ANCHOR, "{ctx} {name}");
                     if let Some(a) = step.expect.get("legacyAnchor").and_then(|a| a.get(&name)) {
                         assert_eq!(serde_json::to_value(sc.anchor).unwrap(), *a, "{ctx} {name}");
@@ -239,8 +257,18 @@ fn exact_timing_fixtures() {
                 .filter(|(_, sc)| sc.duration_ms != nom)
                 .map(|(k, _)| *k)
                 .collect();
-            assert_eq!(moved, vec![n as u64], "{}: exactly one fragment moved", c.name);
-            assert_eq!(by_seq[&(n as u64)].duration_ms, (nom + s).max(0.0), "{}", c.name);
+            assert_eq!(
+                moved,
+                vec![n as u64],
+                "{}: exactly one fragment moved",
+                c.name
+            );
+            assert_eq!(
+                by_seq[&(n as u64)].duration_ms,
+                (nom + s).max(0.0),
+                "{}",
+                c.name
+            );
         }
     }
 }
@@ -272,7 +300,9 @@ fn untimed_exact_sweep_equals_legacy_on_every_ts_fixture_step() {
             let opts = SweepOpts {
                 include_newest: o["includeNewest"].as_bool().unwrap(),
                 finalized: o.get("finalized").and_then(Value::as_bool),
-                time_source: o.get("timeSource").map(|t| serde_json::from_value(t.clone()).unwrap()),
+                time_source: o
+                    .get("timeSource")
+                    .map(|t| serde_json::from_value(t.clone()).unwrap()),
                 clock_pair: serde_json::from_value(o["clockPair"].clone()).unwrap(),
             };
             let x = ExactSweep {
