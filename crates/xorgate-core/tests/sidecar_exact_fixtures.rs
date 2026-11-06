@@ -80,7 +80,7 @@ fn is_int(v: f64) -> bool {
 fn exact_timing_fixtures() {
     let f = load();
     let m: SessionManifest = parse_session_manifest(&f.manifest).unwrap().into();
-    assert!(f.cases.len() >= 17, "fixture lost cases");
+    assert!(f.cases.len() >= 20, "fixture lost cases");
     for c in &f.cases {
         let mut table = TimingTable::default();
         let mut deferred_since: BTreeMap<u64, f64> = BTreeMap::new();

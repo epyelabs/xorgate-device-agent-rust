@@ -964,7 +964,17 @@ pub struct ExactTimes {
 /// - else (crash-cut `finalized:false`, or a successor/end stamp that never
 ///   came): `mtime − lag(N) − startTs` (= mtime − the callback's wall time).
 ///
-/// Every result is floored at 0 (backend `durationMs: int ≥ 0`).
+/// Every result is floored at 0 (backend `durationMs: int ≥ 0`) and never
+/// clamped from above: on a SIGINT EOS `endTs` can be up to one frame
+/// period AHEAD of the END callback's wall and of the file mtime (WP1 rig
+/// measurement: the last frame is still "running"), and `endTs − startTs`
+/// is then the file's media span exactly.
+///
+/// WP1 rig shape: fragment 0 opens at its first frame (lag ≈ 3–20 ms),
+/// fragments N ≥ 1 one GOP late (lag ≈ 2 s). Both are in the guard. The
+/// mtime fallback uses N's OWN lag, so for fragment 0 with a lost line 1 it
+/// overstates by `lag(1) − lag(0)` (< one GOP): far below the backend's
+/// `clockStepMinMs` (10 s), so no false clock step.
 pub fn exact_times(
     own: &FragmentTiming,
     successor: Option<&FragmentTiming>,

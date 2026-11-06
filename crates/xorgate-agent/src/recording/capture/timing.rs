@@ -213,6 +213,28 @@ mod tests {
         assert_eq!(r.table.exact(3).unwrap().lag_ms, 2_100.0);
     }
 
+    /// WP1 rig measurements: fragment 0's small lag is normal, and an END
+    /// stamp ahead of its own callback wall (endMonoNs > cbMonoNs by up to
+    /// one frame on a SIGINT EOS) is taken as is.
+    #[test]
+    fn wp1_measured_shapes_are_accepted() {
+        let mut r = RunTiming::default();
+        r.apply(&start(0, 1_760_000_000_300, 3)).unwrap();
+        r.apply(&start(1, 1_760_000_060_300, 2_000)).unwrap();
+        let end = capture_timing::FragmentEnd {
+            v: capture_timing::VERSION,
+            id: 1,
+            end_mono_ns: 1_000_066_000_000,
+            cb_mono_ns: 1_000_000_000_000,
+            cb_wall_ms: 1_760_000_105_300,
+            end_ts: 1_760_000_105_366,
+        };
+        let line = end.to_line();
+        r.apply(&parse_timing_line(&line).unwrap().unwrap()).unwrap();
+        assert_eq!(r.table.exact(0).unwrap().lag_ms, 3.0);
+        assert_eq!(r.table.exact(1).unwrap().end_ts, Some(1_760_000_105_366.0));
+    }
+
     #[test]
     fn run_timing_bookkeeping() {
         let mut r = RunTiming::default();
