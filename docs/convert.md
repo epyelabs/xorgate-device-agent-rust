@@ -116,8 +116,15 @@ The last line on success:
 
 ### Running it again
 
-On a converted device the script re-checks the unit, the wrapper, the drop-ins, the 024 grant and
-the enablement, repairs what differs, and prints what it changed. It does **not** change the build:
+On a converted device, run the installed copy (any copy works, but this one always matches the
+installed build):
+
+```
+sudo /opt/xorgate-rs/install-rs.sh
+```
+
+It re-checks the unit, the wrapper, the drop-ins, the 024 grant and the enablement, repairs what
+differs, and prints what it changed. It does **not** change the build:
 
 ```
 [install-rs] already converted (<convertedAt>, <ver>); install verified, changed (0). change the build with: sudo systemctl start xorgate-updater-rs
@@ -142,7 +149,7 @@ The cloud `update` command and the console button work unchanged. The agent runs
 `/opt/xorgate-rs` and restarts the agent. By hand:
 
 ```
-sudo systemctl start xorgate-updater-rs && journalctl -u xorgate-updater-rs -n 50
+sudo systemctl start xorgate-updater-rs && sudo journalctl -u xorgate-updater-rs -n 50
 ```
 
 **The JS pin.** `agent.env` may carry `DEVICE_DIST_VERSION=<v>`, a JS build tag. `xorgate-rs update`
@@ -230,8 +237,9 @@ Common failures:
 - An interrupted run (`--status` shows `state=converting`): run the same command again to finish
   it, or `--revert`.
 
-Logs: `journalctl -u xorgate-agent-rs`, `journalctl -u xorgate-updater-rs`; the JS agent:
-`journalctl -u xorgate-agent`.
+Logs: `sudo journalctl -u xorgate-agent-rs`, `sudo journalctl -u xorgate-updater-rs`; the JS
+agent: `sudo journalctl -u xorgate-agent`. Without `sudo`, `journalctl` shows a unit's lines only
+to a user in the `adm` or `systemd-journal` group (`pi` is, on Raspberry Pi OS).
 
 ## Notes
 
