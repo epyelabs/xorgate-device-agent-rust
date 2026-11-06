@@ -88,6 +88,8 @@ pub struct MediaCapture {
     pub s3_bodies: BTreeMap<String, Vec<u8>>,
     /// Orphan shmpipe names at the end (pid = a dead gst child of this side).
     pub shm_orphans: usize,
+    /// The same orphans by name (`shm_orphans` = its length), sorted.
+    pub shm_orphan_names: Vec<String>,
     /// Wall ms (publish `w`) of every telemetry tick whose
     /// `recording.powerShed` / `recording.liveBlock` differs from the
     /// previous tick's (`mqtt.ndjson`; T7/D30 `d30_shed_tick_session_end` (d)).
@@ -562,7 +564,11 @@ impl MediaCapture {
             .map(|(k, v)| (n.path(k), v["size"].as_u64().unwrap_or(0)))
             .collect();
         // Orphan shm segments at the end: shmpipe.<pid>.* whose pid is one of
-        // this side's gst children that is gone.
+        // this side's gst children that is gone. The owner pid is shmsink's
+        // SPACE-padded "%5d" field (`shmpipe. 1185.    0`, gst shmpipe.c:307):
+        // parsed by the agent's own `shm_owner_pid`. Before Phase 5b WP5 this
+        // parsed `" 1185"` as a u32, which fails, so every rig child (4-digit
+        // pids) counted 0 and this row could never fail (js-bug-triage §4).
         let last_names: Vec<String> = shm
             .last()
             .and_then(|v| v["names"].as_array())
@@ -575,17 +581,15 @@ impl MediaCapture {
             .filter(|s| s.role == "capture")
             .map(|s| s.pid)
             .collect();
-        let shm_orphans = last_names
+        let shm_orphan_names: Vec<String> = last_names
             .iter()
-            .filter_map(|nm| {
-                nm.strip_prefix("shmpipe.")?
-                    .split('.')
-                    .next()?
-                    .parse::<u32>()
-                    .ok()
+            .filter(|nm| {
+                xorgate_core::capture_ladder::shm_owner_pid(nm)
+                    .is_some_and(|p| mine.contains(&p) && gone.contains(&p))
             })
-            .filter(|p| mine.contains(p) && gone.contains(p))
-            .count();
+            .cloned()
+            .collect();
+        let shm_orphans = shm_orphan_names.len();
         let present = !spawns.is_empty() || !rec.is_empty() || !s3.is_empty();
         let mut shed_changes = Vec::new();
         let mut shed_events: Vec<(i64, String)> = Vec::new();
@@ -657,6 +661,7 @@ impl MediaCapture {
             s3,
             s3_bodies,
             shm_orphans,
+            shm_orphan_names,
             shed_changes,
             last_tick_backlog,
             live_flags,
@@ -3645,20 +3650,75 @@ pub fn diff_media(
     stat(rep, "shm").compared += 1;
     rep.inputs.insert(
         "shm orphans at end".into(),
-        format!("A {}, B {}", a.shm_orphans, b.shm_orphans),
+        format!(
+            "A {} {:?}, B {} {:?}",
+            a.shm_orphans, a.shm_orphan_names, b.shm_orphans, b.shm_orphan_names
+        ),
     );
-    if a.shm_orphans != b.shm_orphans {
-        rep.push(mm(
-            "shm",
-            "end",
-            "(orphan shmpipe segments)",
-            a.shm_orphans.to_string(),
-            b.shm_orphans.to_string(),
-            UNTOLERATED,
-        ));
-    }
+    shm_orphans_verdict(a, b, table, rep);
     d30_js_reference(a, b, &pmic_series(play), table, rep);
     d30_js_late_shed(a, b, play.start_wall, &power_changes(play), table, rep);
+}
+
+/// The end-of-run `/dev/shm` orphans (Phase 5b WP5, item 9 + D41):
+/// - a RUST side's orphan is never tolerated: one row per Rust side that
+///   strands anything, whatever the other side holds (D41: the Rust reaper
+///   matches shmsink's padded names and the agent stops its children cleanly);
+/// - JS-vs-Rust with Rust 0: the JS orphans are `T7/D41` only when EVERY one is
+///   a SPACE-padded name (`shmpipe. 1185.    0`, owner pid < 10000) — the
+///   names the TS reaper's `shmpipe.${pid}.` prefix can never match
+///   (ts:src/recording/video-capture.ts:873-891 @09da38d; gst shmpipe.c:307
+///   `"/shmpipe.%5d.%5d"`), so the TS strands them; a 5+ digit JS orphan is
+///   UNTOLERATED;
+/// - every other count difference (JS-vs-JS, Rust-vs-Rust) is UNTOLERATED.
+fn shm_orphans_verdict(a: &MediaCapture, b: &MediaCapture, table: &Table, rep: &mut Report) {
+    let padded = |n: &str| {
+        n.strip_prefix("shmpipe.")
+            .is_some_and(|r| r.starts_with(' '))
+    };
+    for (side, m) in [("A", a), ("B", b)] {
+        if m.kind == "rust" && m.shm_orphans > 0 {
+            let names = format!("{:?}", m.shm_orphan_names);
+            rep.push(mm(
+                "shm",
+                "end",
+                "(orphan shmpipe segments of a Rust side)",
+                if side == "A" {
+                    names.clone()
+                } else {
+                    String::new()
+                },
+                if side == "B" { names } else { String::new() },
+                UNTOLERATED,
+            ));
+        }
+    }
+    if a.shm_orphans == b.shm_orphans {
+        return;
+    }
+    let tol = match (a.kind.as_str(), b.kind.as_str()) {
+        ("js", "rust") | ("rust", "js") => {
+            let (js, rs) = if a.kind == "js" { (a, b) } else { (b, a) };
+            let d41 = table.matcher_rows("d41_js_padded_shm_orphans", "shm");
+            match d41.first() {
+                Some(id)
+                    if rs.shm_orphans == 0 && js.shm_orphan_names.iter().all(|n| padded(n)) =>
+                {
+                    id.clone()
+                }
+                _ => UNTOLERATED.to_string(),
+            }
+        }
+        _ => UNTOLERATED.to_string(),
+    };
+    rep.push(mm(
+        "shm",
+        "end",
+        "(orphan shmpipe segments)",
+        format!("{} {:?}", a.shm_orphans, a.shm_orphan_names),
+        format!("{} {:?}", b.shm_orphans, b.shm_orphan_names),
+        &tol,
+    ));
 }
 
 /// Release instants (wall ms) where a power input changed: the pmic EXT5V
@@ -5529,6 +5589,104 @@ kind = "decisions"
             vec![format!("metrics.gps.snr_max.value(values) {UNTOLERATED}")]
         );
         let _ = std::fs::remove_file(&tape_path);
+    }
+
+    /// Phase 5b WP5 item 9: the end-of-run orphan counter reads shmsink's REAL
+    /// names (`"shmpipe.%5d.%5d"`, gst shmpipe.c:307 — a 4-digit pid is
+    /// space-padded). The pre-fix parse (`" 1185".parse::<u32>()`) failed on
+    /// every rig child, so a stranded segment counted 0 and the `shm` row
+    /// could never fail (`replay-20261019T181016Z`: 3 present, "A 0, B 0").
+    #[test]
+    fn shm_orphans_count_padded_names_and_a_strand_fails() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-shm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            concat!(
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":1185,"argv":["videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam0.sock"],"w":1000}"#,
+                "\n",
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":1190,"argv":["videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam1.sock"],"w":1000}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            "{\"k\":\"gone\",\"pid\":1185,\"w\":3100}\n",
+        )
+        .unwrap();
+        // 1185 dead + stranded; 1190 still alive (not an orphan); 4242 not ours.
+        let shm = [serde_json::json!({"w": 4000, "names": [
+            "shmpipe. 1185.    0", "shmpipe. 1190.    0", "shmpipe. 4242.    0"
+        ]})];
+        let m = MediaCapture::load(&dir, &shm);
+        assert_eq!(m.shm_orphans, 1);
+        assert_eq!(m.shm_orphan_names, ["shmpipe. 1185.    0"]);
+        // The old parse never saw it:
+        assert!(" 1185.    0"
+            .split('.')
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let cap = |kind: &str, names: &[&str]| MediaCapture {
+            kind: kind.into(),
+            shm_orphans: names.len(),
+            shm_orphan_names: names.iter().map(|n| n.to_string()).collect(),
+            present: true,
+            ..Default::default()
+        };
+        let run = |a: MediaCapture, b: MediaCapture| {
+            let mut rep = Report::default();
+            shm_orphans_verdict(&a, &b, &table, &mut rep);
+            rep.mismatches
+                .into_iter()
+                .map(|m| format!("{} {}", m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let pad = "shmpipe. 1185.    0";
+        let d41 = vec!["(orphan shmpipe segments) T7/D41".to_string()];
+        let unt = vec![format!("(orphan shmpipe segments) {UNTOLERATED}")];
+        let rust_row = format!("(orphan shmpipe segments of a Rust side) {UNTOLERATED}");
+        // D41: JS strands padded names (the TS reaper's prefix misses them), Rust 0.
+        assert_eq!(run(cap("js", &[pad]), cap("rust", &[])), d41);
+        assert_eq!(
+            run(cap("rust", &[]), cap("js", &[pad, "shmpipe.  983.    0"])),
+            d41
+        );
+        // NEGATIVE: a JS orphan the TS reaper WOULD match (5+ digits).
+        assert_eq!(
+            run(cap("js", &[pad, "shmpipe.12022.    0"]), cap("rust", &[])),
+            unt
+        );
+        // NEGATIVE: any Rust orphan fails, even with equal counts.
+        assert_eq!(
+            run(cap("js", &[pad]), cap("rust", &["shmpipe. 1199.    0"])),
+            vec![rust_row.clone()]
+        );
+        assert_eq!(
+            run(
+                cap("rust", &["shmpipe. 1199.    0"]),
+                cap("rust", &["shmpipe. 1189.    0"])
+            ),
+            vec![rust_row.clone(), rust_row.clone()]
+        );
+        assert_eq!(
+            run(cap("rust", &["shmpipe. 1199.    0"]), cap("js", &[])),
+            vec![rust_row.clone(), unt[0].clone()]
+        );
+        // NEGATIVE: JS-vs-JS stays exact (a stranded segment on one side fails).
+        assert_eq!(run(cap("js", &[pad]), cap("js", &[])), unt);
+        assert!(run(cap("js", &[pad]), cap("js", &["shmpipe. 1199.    0"])).is_empty());
+        assert!(run(cap("js", &[]), cap("rust", &[])).is_empty());
     }
 
     /// A capture SIGINTed at the agent's stop and killed by the agent's exit
