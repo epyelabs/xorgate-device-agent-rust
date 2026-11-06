@@ -229,7 +229,7 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
     (
         "rec-disk",
         120,
-        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        &["media-hw", "rec", "nmea-fixonly", "nmea-prefix", "lte", "exec-quiet", "clock"],
         "600 MiB filler session + maxBytes 512 MiB, uploads off: oldest-first eviction",
     ),
     (
@@ -443,6 +443,19 @@ fn dmy(t: u64) -> String {
 }
 
 /// One second's SIM7600-shaped burst (CRLF-terminated lines, as split on `\n`).
+/// `nmea-prefix` (rec-disk only; review-wp5 R-WP5-3): the first fix burst
+/// at this tape time; the bursts before it carry no fix. On rec-disk the
+/// first recorder sample lands early (~1.2-1.4 s, still the LED's `starting`
+/// telemetry), so with a fix from the first burst whether the next sample's
+/// LED tick saw `gps_no_fix` (health_flags 16, ts:src/lib/led-state.ts:249,
+/// :286) was a coin flip per side — a one-sample transient on one side only
+/// (`rec-disk.jsrs.fin`, `.cal.fin`, review run `.jsrs.rev1`). The gps port
+/// opens at the agent's first read (~1.9 s), so a fix from 4.9 s leaves ≥ 2
+/// recorder ticks of `gps_no_fix` on BOTH sides before the transition; only
+/// how many samples carry it may differ, which the per-leaf value sequence
+/// (run-length deduplicated) does not see.
+const NMEA_PREFIX_MS: u64 = 4_900;
+
 fn nmea_burst(t: u64, fix: bool, step: u64) -> Vec<String> {
     let time = hms(t);
     let date = dmy(t);
@@ -954,6 +967,8 @@ fn build_inner(
     };
     if let Some(mode) = nmea_mode {
         let fix_from = match mode {
+            // review-wp5 R-WP5-3: a no-fix lead-in (see NMEA_PREFIX_MS).
+            "fix" if has("nmea-prefix") => NMEA_PREFIX_MS,
             "fix" => 0,
             "nofix" => u64::MAX,
             // rec-boot-defer: the GPS half of the gate's release.
@@ -1518,6 +1533,33 @@ mod tests {
         assert_eq!(ext, [(35_000, "capture", "cam0"), (45_000, "kvs", "cam1")]);
         let disk = build("rec-disk", None, &fixtures()).unwrap();
         assert_eq!(disk.meta.rig.as_ref().unwrap()["filler"]["mib"], 600);
+        // review-wp5 R-WP5-3: rec-disk's NMEA has a no-fix lead-in (bursts at
+        // 0.9..3.9 s carry no GGA fix), every other recording tape fixes at once.
+        let ggas = |t: &Tape| -> Vec<(u64, bool)> {
+            t.records
+                .iter()
+                .filter_map(|r| match &r.ev {
+                    TapeEvent::Nmea { line } if line.starts_with("$GPGGA") => {
+                        Some((r.t, line.split(',').nth(6) != Some("0")))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let g = ggas(&disk);
+        assert!(
+            g.iter().filter(|(t, _)| *t < NMEA_PREFIX_MS).count() >= 3,
+            "{g:?}"
+        );
+        assert!(
+            g.iter().all(|(t, fix)| *fix == (*t >= NMEA_PREFIX_MS)),
+            "{g:?}"
+        );
+        let other = ggas(&build("rec-shed-uv", None, &fixtures()).unwrap());
+        assert!(
+            other.iter().all(|(_, fix)| *fix),
+            "fixonly tapes fix from the first burst"
+        );
         let seeded: Value = serde_json::from_str(
             disk.meta.home.as_ref().unwrap()["settings.json"]
                 .as_str()
