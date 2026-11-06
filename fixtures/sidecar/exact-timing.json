@@ -1505,7 +1505,7 @@
        "stat": {
         "sizeBytes": 1001,
         "birthtimeMs": 1760000062401,
-        "mtimeMs": 1760000122400
+        "mtimeMs": 1760000117400
        }
       }
      ],
@@ -1551,7 +1551,7 @@
        "stat": {
         "sizeBytes": 1001,
         "birthtimeMs": 1760000062401,
-        "mtimeMs": 1760000122400
+        "mtimeMs": 1760000117400
        }
       }
      ],
@@ -1567,7 +1567,7 @@
       "exact": {
        "00001.json": {
         "startTs": 1760000060300,
-        "durationMs": 60000,
+        "durationMs": 55000,
         "startMono": 360300,
         "finalized": false
        }
