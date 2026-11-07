@@ -10,7 +10,10 @@
 //!   `tools/replay/media/`) when the tape has channels, else a missing path
 //!   (Phase 2 behaviour: media self-gates);
 //! - `gst-launch-1.0` on PATH = the shim (`tools/replay/shims/`), which execs
-//!   the real binary with `videotestsrc` for `libcamerasrc`;
+//!   the real binary with `videotestsrc` for `libcamerasrc`; Phase 7a: a
+//!   Rust side run with `XORGATE_CAPTURE_BACKEND=host` reaches the
+//!   `xorgate-capture` shim through `XORGATE_CAPTURE_HOST_BIN` (play.rs
+//!   `rig_side_env`), which does the same swap and execs the real host;
 //! - `rpicam-hello` on PATH when the tape carries its `exec` answer;
 //! - `NODE_EXTRA_CA_CERTS` = the rig CA (Node; the Rust agent reads the
 //!   system store the player updated, P5);
@@ -315,6 +318,18 @@ pub fn shim_children(work: &Path) -> Vec<ShimChild> {
         .collect()
 }
 
+/// The capture programs the rig's shims log (`tool`): the JS / default Rust
+/// `gst-launch-1.0`, and the Phase 7a capture host `xorgate-capture`
+/// (`tools/replay/shims/xorgate-capture`, a Rust side with
+/// `XORGATE_CAPTURE_BACKEND=host`). Both are capture children to the rig:
+/// the same per-attempt exits, the same `eof` wait, the same key.
+pub const CAPTURE_TOOLS: &[&str] = &["gst-launch-1.0", "xorgate-capture"];
+
+/// Whether a shim `tool` is a capture child ([`CAPTURE_TOOLS`]).
+pub fn is_capture_tool(tool: &str) -> bool {
+    CAPTURE_TOOLS.contains(&tool)
+}
+
 /// The stream key a capture argv belongs to: its shmsink socket
 /// `<home>/shm/<key>.sock`.
 pub fn capture_key(argv: &[String]) -> Option<String> {
@@ -416,7 +431,7 @@ pub struct ShimSpawn {
 /// `(role, key)` of a shim spawn: a capture by its shmsink socket, a KVS
 /// master by its OWN channel (`<deviceId>-<key>`, never the tape's name).
 pub fn spawn_role_key(s: &ShimSpawn, plan: &MediaPlan) -> Option<(String, String)> {
-    if s.tool == "gst-launch-1.0" {
+    if is_capture_tool(&s.tool) {
         return capture_key(&s.argv).map(|k| (ROLE_CAPTURE.to_string(), k));
     }
     if s.tool == "xorgate-kvs-webrtc" {
@@ -586,7 +601,7 @@ pub fn external_exit(a: &ObsAgent, plan: &MediaPlan, r: &ChildExitRec) -> Value 
             .into_iter()
             .rev()
             .find(|c| {
-                c.tool == "gst-launch-1.0"
+                is_capture_tool(&c.tool)
                     && capture_key(&c.argv).as_deref() == Some(r.key.as_str())
                     && alive(c.pid)
             })
@@ -741,7 +756,7 @@ pub fn finish(a: &ObsAgent) -> Result<()> {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         {
             match (v["k"].as_str(), v["tool"].as_str()) {
-                (Some("spawn"), Some("gst-launch-1.0")) => {
+                (Some("spawn"), Some(t)) if is_capture_tool(t) => {
                     spawned.insert(v["pid"].as_u64());
                 }
                 (Some("eof"), _) => {

@@ -39,8 +39,15 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
+use xorgate_core::capture_timing::TimingLine;
+use xorgate_hal::tape::CAPTURE_LINE_MARKERS;
+
 use crate::diff::{Mismatch, PlayInfo, Report, UNTOLERATED};
 use crate::tolerances::Table;
+
+/// The capture host's hidden subcommand (`crate::capture_host::SUBCOMMAND`
+/// of the agent), argv[1] of every `xorgate-capture` spawn.
+pub const HOST_SUBCOMMAND: &str = "__capture-host";
 
 /// The TS default `spawnStaggerSecs` (config.ts:58); the synth tapes keep it.
 const STAGGER_MS: i64 = 4_000;
@@ -120,6 +127,33 @@ pub struct MediaCapture {
     pub imu_mount: Option<xorgate_core::orientation::ImuMount>,
     /// Anything media-related captured at all.
     pub present: bool,
+    /// Phase 7a (WP3): this side ran the capture host with exact sidecar
+    /// timing — a Rust side whose `meta.json` env says
+    /// `XORGATE_CAPTURE_BACKEND=host` AND `XORGATE_SIDECAR_TIMING=exact`.
+    /// The ONLY side the D51 matcher can match.
+    pub exact_timing: bool,
+    /// Phase 7a (WP3): the side's own tape `capture_timing` records (the
+    /// host's timing lines as ITS agent took them), session ids normalised.
+    pub timing: Vec<TimingRec>,
+    /// Per child pid: the shim's `tool` (`gst-launch-1.0`, `xorgate-capture`,
+    /// `xorgate-kvs-webrtc`).
+    pub child_tools: BTreeMap<u32, String>,
+    /// Per child pid: every line the shim's tee logged, `(fd, line)`, in order.
+    pub child_lines: BTreeMap<u32, Vec<(u8, String)>>,
+}
+
+/// Phase 7a (WP3): one tape `capture_timing` record (xorgate-hal
+/// `CaptureTimingRec`), with `sid` normalised like every session path.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TimingRec {
+    pub sid: String,
+    pub key: String,
+    pub pid: u32,
+    pub id: u64,
+    pub lag_ms: Option<i64>,
+    pub start_ts: Option<i64>,
+    pub end_ts: Option<i64>,
+    pub accepted: bool,
 }
 
 fn is_uuid(s: &str) -> bool {
@@ -388,6 +422,8 @@ impl MediaCapture {
         let mut spawns: Vec<Spawn> = Vec::new();
         let mut by_pid: BTreeMap<u32, usize> = BTreeMap::new();
         let mut lines_of: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        let mut child_lines: BTreeMap<u32, Vec<(u8, String)>> = BTreeMap::new();
+        let mut child_tools: BTreeMap<u32, String> = BTreeMap::new();
         let mut kvs_end: BTreeMap<u32, String> = BTreeMap::new();
         let mut exit_w: BTreeMap<u32, i64> = BTreeMap::new();
         for v in &shim {
@@ -401,6 +437,19 @@ impl MediaCapture {
                         .flatten()
                         .filter_map(|a| a.as_str().map(str::to_string))
                         .collect();
+                    child_tools.insert(pid, tool.to_string());
+                    // Phase 7a: the capture host's argv is `__capture-host`
+                    // then the gst-launch tokens (Rig form: the tokens after
+                    // the program compare EXACT against JS's gst-launch
+                    // argv). Only that exact leading subcommand is dropped;
+                    // anything else stays verbatim (and differs).
+                    let argv: Vec<String> = if tool == "xorgate-capture"
+                        && argv.first().map(String::as_str) == Some(HOST_SUBCOMMAND)
+                    {
+                        argv[1..].to_vec()
+                    } else {
+                        argv
+                    };
                     let (role, key) = if tool == "xorgate-kvs-webrtc" {
                         ("kvs", argv.first().cloned().unwrap_or_default())
                     } else {
@@ -443,6 +492,10 @@ impl MediaCapture {
                                 .get_or_insert(v["w"].as_i64().unwrap_or(0));
                         }
                     }
+                    child_lines
+                        .entry(pid)
+                        .or_default()
+                        .push((v["fd"].as_u64().unwrap_or(0) as u8, line.clone()));
                     lines_of.entry(pid).or_default().push(line);
                 }
                 Some("signal") if v["sig"] == 2 => {
@@ -679,8 +732,33 @@ impl MediaCapture {
             }
             prev = Some(cur);
         }
+        let kind = meta["kind"].as_str().unwrap_or("").to_string();
+        let env_is = |k: &str, want: &str| meta["env"][k].as_str().map(str::trim) == Some(want);
+        let exact_timing = kind == "rust"
+            && env_is("XORGATE_CAPTURE_BACKEND", "host")
+            && env_is("XORGATE_SIDECAR_TIMING", "exact");
+        let timing: Vec<TimingRec> = tape
+            .iter()
+            .filter(|v| v["k"] == "capture_timing")
+            .filter_map(|v| {
+                Some(TimingRec {
+                    sid: n.s(v["sid"].as_str()?),
+                    key: n.s(v["key"].as_str()?),
+                    pid: v["pid"].as_u64().unwrap_or(0) as u32,
+                    id: v["id"].as_u64()?,
+                    lag_ms: v["lagMs"].as_i64(),
+                    start_ts: v["startTs"].as_i64(),
+                    end_ts: v["endTs"].as_i64(),
+                    accepted: v["accepted"].as_bool()?,
+                })
+            })
+            .collect();
         Self {
-            kind: meta["kind"].as_str().unwrap_or("").to_string(),
+            kind,
+            exact_timing,
+            timing,
+            child_tools,
+            child_lines,
             spawns,
             rec,
             finals,
@@ -2701,6 +2779,25 @@ pub fn diff_media(
     };
 
     // ---- children
+    // Phase 7a: the D52 row (host timing lines set aside), if the table has it.
+    let d52 = table
+        .matcher_rows("d52_host_timing_lines", "children")
+        .into_iter()
+        .next();
+    rep.inputs.insert(
+        "capture programs".into(),
+        format!(
+            "A {:?}, B {:?}",
+            a.child_tools
+                .values()
+                .filter(|t| crate::media::is_capture_tool(t))
+                .collect::<BTreeSet<_>>(),
+            b.child_tools
+                .values()
+                .filter(|t| crate::media::is_capture_tool(t))
+                .collect::<BTreeSet<_>>()
+        ),
+    );
     let spawn_ms = row_tol(table, "T10", "spawnMs", 1000.0) as i64;
     let flash_ms = row_tol(table, "T10", "flashMs", 0.0) as i64;
     let groups = |m: &MediaCapture| {
@@ -2813,6 +2910,9 @@ pub fn diff_media(
                     format!("{:?}", sb.end),
                     UNTOLERATED,
                 ));
+            }
+            if sa.role == "capture" {
+                children_lines(a, b, sa, sb, &at, d52.as_deref(), rep);
             }
             let (da, db) = (sa.w - play.start_wall, sb.w - play.start_wall);
             if da != db {
@@ -2995,10 +3095,100 @@ pub fn diff_media(
         .into_iter()
         .next();
     let mut sid_failed: BTreeSet<String> = BTreeSet::new();
+    // Phase 7a (WP3): D51 — the exact-timing side (`host` + `exact`), when
+    // exactly one side is; `exact_is_a` orients every Δ as other − exact.
+    let d51_row = table
+        .matcher_rows("d51_exact_sidecar_timing", "sidecar")
+        .into_iter()
+        .next();
+    let d51_side: Option<bool> = match (a.exact_timing, b.exact_timing) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    };
+    rep.inputs.insert(
+        "exact sidecar timing (host + exact)".into(),
+        format!(
+            "A {}, B {} ({} / {} capture_timing records)",
+            a.exact_timing,
+            b.exact_timing,
+            a.timing.len(),
+            b.timing.len()
+        ),
+    );
     for key in ca.keys().chain(cb.keys()).collect::<BTreeSet<_>>() {
         let at = format!("{}/{:05}", key.0, key.1);
         let (Some(x), Some(y)) = (ca.get(key), cb.get(key)) else {
+            // D51 never hides a missing sidecar: on an exact-timing run, a
+            // fragment the exact side holds an ACCEPTED stamp for, whose
+            // sidecar only the OTHER side wrote, is UNTOLERATED unless it is
+            // that session's last fragment on the other side (the run's cut,
+            // which the mp4/s3 streams judge ±1 as before).
+            if let (Some(exact_a), Some(_)) = (d51_side, &d51_row) {
+                let (m, ce, co) = if exact_a {
+                    (a, &ca, &cb)
+                } else {
+                    (b, &cb, &ca)
+                };
+                let stamped = m
+                    .timing
+                    .iter()
+                    .any(|r| r.sid == key.0 && r.id == key.1 && r.accepted && r.start_ts.is_some());
+                let last_other = co.keys().filter(|k| k.0 == key.0).map(|k| k.1).max();
+                if stamped
+                    && !ce.contains_key(key)
+                    && co.contains_key(key)
+                    && last_other != Some(key.1)
+                {
+                    rep.push(mm(
+                        "sidecar",
+                        &at,
+                        "(missing on the exact side)",
+                        if exact_a {
+                            "∅".into()
+                        } else {
+                            "present".into()
+                        },
+                        if exact_a {
+                            "present".into()
+                        } else {
+                            "∅".into()
+                        },
+                        UNTOLERATED,
+                    ));
+                }
+            }
             continue; // presence: the mp4/s3 streams judge it (±1 at the cut)
+        };
+        // D51: what the exact side's fragment must differ by (None = T12).
+        let d51 = match (d51_side, &d51_row) {
+            (Some(true), Some(_)) => d51_expect(a, &key.0, key.1, x, y),
+            (Some(false), Some(_)) => d51_expect(b, &key.0, key.1, y, x),
+            _ => None,
+        };
+        // Fragment 0's own expectation (the startMono base of the session).
+        let d51_0 = match (d51_side, &d51_row) {
+            (Some(exact_a), Some(_)) => {
+                let (m, ce, co) = if exact_a {
+                    (a, &ca, &cb)
+                } else {
+                    (b, &cb, &ca)
+                };
+                let k0 = (key.0.clone(), 0);
+                match (ce.get(&k0), co.get(&k0)) {
+                    (Some(e0), Some(o0)) => d51_expect(m, &key.0, 0, e0, o0).map_or(0, |d| d.start),
+                    _ => 0,
+                }
+            }
+            _ => 0,
+        };
+        // (other − exact) of a per-side quantity given as (a value, b value).
+        let o_minus_e = |va: f64, vb: f64| {
+            if d51_side == Some(true) {
+                vb - va
+            } else {
+                va - vb
+            }
         };
         stat(rep, "sidecar").compared += 1;
         let (pa, pb) = (playing(a, &key.0), playing(b, &key.0));
@@ -3035,6 +3225,38 @@ pub fn diff_media(
         let skip = |p: &str| -> Option<String> {
             match p {
                 "sizeBytes" => Some(t12.to_string()),
+                // D51 (a fragment it covers): the Δ must be D51's expectation
+                // ±D51_START_MS; T12's ±300 never applies to it.
+                "startTs" if d51.is_some() => {
+                    let d = d51?;
+                    let (rx, ry) = (
+                        x["startTs"].as_f64()? - pa? as f64,
+                        y["startTs"].as_f64()? - pb? as f64,
+                    );
+                    ((o_minus_e(rx, ry) - d.start as f64).abs() <= D51_START_MS)
+                        .then(|| d51_row.clone())
+                        .flatten()
+                }
+                "startMono" if d51.is_some() => {
+                    let d = d51?;
+                    let rx = x["startMono"].as_f64()? - base_mono(&ca, &key.0)?;
+                    let ry = y["startMono"].as_f64()? - base_mono(&cb, &key.0)?;
+                    ((o_minus_e(rx, ry) - (d.start - d51_0) as f64).abs() <= D51_START_MS)
+                        .then(|| d51_row.clone())
+                        .flatten()
+                }
+                // D55 under D51: `pts` against the JS anchor of that kind.
+                "anchor" if d51.is_some_and(|d| d.own_stamp) => {
+                    let (e, o) = if d51_side == Some(true) {
+                        (x, y)
+                    } else {
+                        (y, x)
+                    };
+                    (e["anchor"] == "pts"
+                        && (o["anchor"] == "fstat" || (key.1 == 0 && o["anchor"] == "boundary")))
+                        .then(|| d51_row.clone())
+                        .flatten()
+                }
                 "startTs" => {
                     let (sx, sy) = (x["startTs"].as_f64()?, y["startTs"].as_f64()?);
                     let (rx, ry) = (sx - pa? as f64, sy - pb? as f64);
@@ -3047,8 +3269,18 @@ pub fn diff_media(
                 }
                 "durationMs" => {
                     let d = (x["durationMs"].as_f64()? - y["durationMs"].as_f64()?).abs();
+                    // D51 clean final: (other − exact) Δ = −lag(N), T12's band.
+                    let d51_dur = d51.filter(|d| d.dur != 0).is_some_and(|d| {
+                        let od = o_minus_e(
+                            x["durationMs"].as_f64().unwrap_or(f64::NAN),
+                            y["durationMs"].as_f64().unwrap_or(f64::NAN),
+                        );
+                        (od - d.dur as f64).abs() <= dur_ms
+                    });
                     if d <= dur_ms {
                         Some(t12.to_string())
+                    } else if d51_dur {
+                        d51_row.clone()
                     } else if interior {
                         Some("T12/interior-boundaries".to_string())
                     } else if cut_ok {
@@ -3711,6 +3943,262 @@ pub fn diff_media(
     shm_orphans_verdict(a, b, play.end_wall, table, rep);
     d30_js_reference(a, b, &pmic_series(play), table, rep);
     d30_js_late_shed(a, b, play.start_wall, &power_changes(play), table, rep);
+}
+
+// ---- Phase 7a (WP3): D52 host timing lines, D51 exact sidecar timing
+
+/// Phase 7a (WP3): the `children` line rows of one paired capture child.
+/// `(lines)`: the [`compared_lines`] of both sides, EXACT (fd included),
+/// after [`d52_set_aside`] took the host's own timing lines out — only when
+/// the table has the D52 row (`d52`), and then reported as a tolerated
+/// `(lines) host timing lines set aside` row with the counts; without the
+/// row they stay in and differ. `(timing lines)`: [`d52_sequence_ok`] on a
+/// host child's whole line list — a malformed or out-of-order timing line is
+/// UNTOLERATED.
+fn children_lines(
+    a: &MediaCapture,
+    b: &MediaCapture,
+    sa: &Spawn,
+    sb: &Spawn,
+    at: &str,
+    d52: Option<&str>,
+    rep: &mut Report,
+) {
+    let side = |m: &MediaCapture, s: &Spawn| {
+        let tool = m.child_tools.get(&s.pid).cloned().unwrap_or_default();
+        let all = m.child_lines.get(&s.pid).cloned().unwrap_or_default();
+        let cmp = compared_lines(&all);
+        let (kept, aside) = if d52.is_some() {
+            d52_set_aside(&tool, cmp)
+        } else {
+            (cmp, Vec::new())
+        };
+        (tool, all, kept, aside)
+    };
+    let (ta, all_a, ka, xa) = side(a, sa);
+    let (tb, all_b, kb, xb) = side(b, sb);
+    for (label, tool, all) in [("A", &ta, &all_a), ("B", &tb, &all_b)] {
+        if tool != "xorgate-capture" {
+            continue;
+        }
+        if let Err(e) = d52_sequence_ok(all) {
+            rep.push(mm(
+                "children",
+                at,
+                "(timing lines)",
+                if label == "A" { e.clone() } else { "-".into() },
+                if label == "B" { e } else { "-".into() },
+                UNTOLERATED,
+            ));
+        }
+    }
+    if let Some(row) = d52 {
+        if !xa.is_empty() || !xb.is_empty() {
+            rep.push(mm(
+                "children",
+                at,
+                "(lines) host timing lines set aside",
+                xa.len().to_string(),
+                xb.len().to_string(),
+                row,
+            ));
+        }
+    }
+    if ka != kb {
+        let show = |v: &[(u8, String)]| {
+            v.iter()
+                .map(|(fd, l)| format!("{fd}:{l}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        rep.push(mm(
+            "children",
+            at,
+            "(lines)",
+            show(&ka),
+            show(&kb),
+            UNTOLERATED,
+        ));
+    }
+}
+
+/// The capture lines the `children (lines)` row compares, per child: the
+/// lines the agent's tape keeps (`CAPTURE_LINE_MARKERS`: `New clock:`,
+/// `Got EOS`, `ERROR`, and the host's `XG-FRAGMENT*`), up to the child's
+/// `handling interrupt.` — the shutdown tail after it is the `(ended)` row's
+/// (`int`/`eos`/`kill`), whose length depends on when the agent's exit
+/// killed the child (WP0 2b racy tail), so it is not compared twice.
+pub fn compared_lines(lines: &[(u8, String)]) -> Vec<(u8, String)> {
+    lines
+        .iter()
+        .take_while(|(_, l)| !l.contains("handling interrupt"))
+        .filter(|(_, l)| CAPTURE_LINE_MARKERS.iter().any(|m| l.contains(m)))
+        .cloned()
+        .collect()
+}
+
+/// D52 (accepted-divergences.md): set aside EXACTLY the capture host's own
+/// timing lines — a stdout line of an `xorgate-capture` child that parses
+/// as a v1 `XG-FRAGMENT` / `XG-FRAGMENT-END` line (`capture_timing::
+/// parse_line` → `Some(Ok)`). Everything else stays: a gst-launch child's
+/// lines (even a valid-looking timing line), a host stderr line, a timing
+/// prefix with a bad body or another version, a line that merely CONTAINS a
+/// timing line, any other marker line. Returns `(kept, set aside)`.
+pub fn d52_set_aside(tool: &str, lines: Vec<(u8, String)>) -> (Vec<(u8, String)>, Vec<TimingLine>) {
+    if tool != "xorgate-capture" {
+        return (lines, Vec::new());
+    }
+    let mut kept = Vec::new();
+    let mut aside = Vec::new();
+    for (fd, l) in lines {
+        match (fd, xorgate_core::capture_timing::parse_line(&l)) {
+            (1, Some(Ok(t))) => aside.push(t),
+            _ => kept.push((fd, l)),
+        }
+    }
+    (kept, aside)
+}
+
+/// D52's own check on a host child's timing lines (ALL its lines, the
+/// shutdown tail included; `transcript.py`'s timing row): every timing line
+/// is a v1 line on stdout; start ids strictly ascending; at most one END, the
+/// last timing line, for the last start id. `Err` = the first violation.
+pub fn d52_sequence_ok(lines: &[(u8, String)]) -> Result<usize, String> {
+    let mut starts: Vec<u32> = Vec::new();
+    let mut end: Option<u32> = None;
+    let mut n = 0;
+    for (fd, l) in lines {
+        let Some(parsed) = xorgate_core::capture_timing::parse_line(l) else {
+            continue;
+        };
+        n += 1;
+        let t = parsed.map_err(|e| format!("unusable timing line {l:?}: {e:?}"))?;
+        if *fd != 1 {
+            return Err(format!("timing line on fd {fd}: {l:?}"));
+        }
+        if let Some(e) = end {
+            return Err(format!("timing line after the END of {e}: {l:?}"));
+        }
+        match t {
+            TimingLine::Start(s) => {
+                if starts.last().is_some_and(|&p| s.id <= p) {
+                    return Err(format!("start id {} after {:?}", s.id, starts.last()));
+                }
+                starts.push(s.id);
+            }
+            TimingLine::End(e) => {
+                if starts.last() != Some(&e.id) {
+                    return Err(format!(
+                        "END for {} but the last start is {:?}",
+                        e.id,
+                        starts.last()
+                    ));
+                }
+                end = Some(e.id);
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// D51 tolerance on `startTs`/`startMono` (phase-7a WP3 brief): one frame at
+/// 15 fps is 67 ms, so ±50 ms stays inside a frame; T12's own band (±300 ms
+/// vs PLAYING) is NOT used for a D51 fragment.
+pub const D51_START_MS: f64 = 50.0;
+
+/// What D51 expects of one exact-side fragment (`wp2.md` §6 table).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct D51Expect {
+    /// `pts`: the fragment's own accepted stamp; `false` = a D56 SHIFTED
+    /// legacy fallback (`fstat`, no stamp of its own, an accepted one below).
+    pub own_stamp: bool,
+    /// The expected (other − exact) `startTs` Δ, each relative to its own
+    /// side's capture PLAYING (`New clock:`), in ms.
+    pub start: i64,
+    /// The expected (other − exact) `durationMs` Δ (`-lag(N)` for a clean
+    /// final whose duration is `endTs − startTs`, else 0), judged with
+    /// T12's `durationMs` band.
+    pub dur: i64,
+}
+
+/// D51 eligibility + expectation for the exact side's sidecar `e` of
+/// `(sid, seq)` against the other side's `o` — `None` = D51 does not apply
+/// (the fragment is compared under T12 as before). Applies ONLY when the
+/// exact side ran `host` + `exact` (`exact_timing`) and:
+/// - `anchor:"pts"` AND that session has an ACCEPTED `capture_timing` start
+///   record for `seq` whose `startTs` equals the sidecar's: Δstart =
+///   lag(seq), except fragment 0 against a JS `boundary` anchor (JS walks
+///   back from birth(1)): lag(1), which needs record 1; Δdur = −lag(seq)
+///   when the sidecar's duration is exactly its accepted END record's
+///   `endTs − startTs`, else 0;
+/// - `anchor:"fstat"` with NO accepted start record of its own and an
+///   accepted one at a LOWER id in the same session (the D56 shift):
+///   Δstart = L, the lag of the highest such id; Δdur = 0.
+///
+/// Never an untimed or plain legacy sidecar, never another session's record.
+pub fn d51_expect(
+    m: &MediaCapture,
+    sid: &str,
+    seq: u64,
+    e: &Value,
+    o: &Value,
+) -> Option<D51Expect> {
+    if !m.exact_timing {
+        return None;
+    }
+    let start_rec = |id: u64| {
+        m.timing.iter().find(|r| {
+            r.sid == sid && r.id == id && r.accepted && r.start_ts.is_some() && r.lag_ms.is_some()
+        })
+    };
+    match e["anchor"].as_str()? {
+        "pts" => {
+            let r = start_rec(seq)?;
+            if e["startTs"].as_i64()? != r.start_ts? {
+                return None;
+            }
+            let start = match (seq, o["anchor"].as_str()) {
+                (0, Some("boundary")) => start_rec(1)?.lag_ms?,
+                (_, Some("fstat")) => r.lag_ms?,
+                _ => return None,
+            };
+            let clean_end = m
+                .timing
+                .iter()
+                .find(|x| x.sid == sid && x.id == seq && x.accepted && x.end_ts.is_some());
+            let dur = match clean_end {
+                Some(x) if e["durationMs"].as_i64() == Some(x.end_ts? - r.start_ts?) => -r.lag_ms?,
+                _ => 0,
+            };
+            Some(D51Expect {
+                own_stamp: true,
+                start,
+                dur,
+            })
+        }
+        "fstat" => {
+            if start_rec(seq).is_some() || o["anchor"].as_str() != Some("fstat") {
+                return None;
+            }
+            let below = m
+                .timing
+                .iter()
+                .filter(|r| {
+                    r.sid == sid
+                        && r.id < seq
+                        && r.accepted
+                        && r.start_ts.is_some()
+                        && r.lag_ms.is_some()
+                })
+                .max_by_key(|r| r.id)?;
+            Some(D51Expect {
+                own_stamp: false,
+                start: below.lag_ms?,
+                dur: 0,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// The end-of-run `/dev/shm` orphans (Phase 5b WP5, item 9 + D41, split by
@@ -7017,5 +7505,662 @@ kind = "decisions"
         assert!(bad, "either side");
         let (_, ok) = oracle_lag_check(&fresh, &late_phase, &vf, &vp, &ws).unwrap();
         assert!(!ok, "two fresh recorders on different phases pass");
+    }
+
+    // ---- Phase 7a (WP3): D51 / D52
+
+    fn committed_table() -> Table {
+        Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap()
+    }
+
+    const P7_SID: &str = "<sid:video:cam0#0>";
+    const SEG: i64 = 10_000;
+
+    /// One fragment of the synthetic exact-timing session.
+    #[derive(Clone)]
+    struct Frag {
+        st: i64,
+        dur: i64,
+        anchor: &'static str,
+    }
+
+    fn sidecar_side(kind: &str, playing: i64, frags: &[Frag]) -> MediaCapture {
+        let mut finals = BTreeMap::new();
+        let st0 = frags[0].st;
+        for (seq, f) in frags.iter().enumerate() {
+            finals.insert(
+                format!("recordings/video/cam0/{P7_SID}/{seq:05}.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "seq": seq, "startTs": f.st, "startMono": f.st - st0 + 5,
+                    "durationMs": f.dur, "sizeBytes": 100, "anchor": f.anchor,
+                }))
+                .unwrap(),
+            );
+        }
+        MediaCapture {
+            kind: kind.into(),
+            spawns: vec![Spawn {
+                w: playing - 300,
+                role: "capture".into(),
+                key: "cam0".into(),
+                pid: 7,
+                argv: vec!["x".into()],
+                env: BTreeMap::new(),
+                playing: Some(playing),
+                end: Some("int".into()),
+                end_w: None,
+                sid: Some(P7_SID.into()),
+            }],
+            finals,
+            present: true,
+            ..Default::default()
+        }
+    }
+
+    /// The WP2 §6 shapes, from a simulated timeline (not from the code under
+    /// test): frames at PLAYING + 10 + N·SEG on each side; JS stamps each
+    /// file at its birth = frame + its own lag (fragment 0: `boundary`, walked
+    /// back from birth(1) by one segment); the exact side stamps the frame
+    /// and reports its lag; the last fragment ends cleanly at the same
+    /// PLAYING-relative instant on both sides (END record).
+    struct Fixture {
+        js: MediaCapture,
+        rs: MediaCapture,
+    }
+
+    const LAG_J: [i64; 4] = [14, 2_021, 2_008, 2_015];
+    const LAG_R: [i64; 4] = [12, 2_012, 2_004, 2_020];
+    const P_J: i64 = 1_762_400_000_000;
+    const P_R: i64 = 1_762_400_000_640; // the Rust agent started 640 ms later
+    const END_REL: i64 = 10 + 3 * SEG + 6_000; // last fragment cut 6 s in
+
+    fn fixture() -> Fixture {
+        let fj = |k: usize| P_J + 10 + k as i64 * SEG;
+        let fr = |k: usize| P_R + 10 + k as i64 * SEG;
+        let birth = |k: usize| fj(k) + LAG_J[k];
+        let mut js = Vec::new();
+        for k in 0..4 {
+            let st = if k == 0 { birth(1) - SEG } else { birth(k) };
+            let end = if k == 3 { P_J + END_REL } else { birth(k + 1) };
+            js.push(Frag {
+                st,
+                dur: end - st,
+                anchor: if k == 0 { "boundary" } else { "fstat" },
+            });
+        }
+        let mut rs = Vec::new();
+        for k in 0..4 {
+            let end = if k == 3 { P_R + END_REL } else { fr(k + 1) };
+            rs.push(Frag {
+                st: fr(k),
+                dur: end - fr(k),
+                anchor: "pts",
+            });
+        }
+        let mut r = sidecar_side("rust", P_R, &rs);
+        r.exact_timing = true;
+        for (k, lag) in LAG_R.iter().enumerate() {
+            r.timing.push(TimingRec {
+                sid: P7_SID.into(),
+                key: "cam0".into(),
+                pid: 7,
+                id: k as u64,
+                lag_ms: Some(*lag),
+                start_ts: Some(fr(k)),
+                end_ts: None,
+                accepted: true,
+            });
+        }
+        r.timing.push(TimingRec {
+            sid: P7_SID.into(),
+            key: "cam0".into(),
+            pid: 7,
+            id: 3,
+            end_ts: Some(P_R + END_REL),
+            accepted: true,
+            ..Default::default()
+        });
+        Fixture {
+            js: sidecar_side("js", P_J, &js),
+            rs: r,
+        }
+    }
+
+    fn sc(m: &MediaCapture, seq: u64) -> Value {
+        serde_json::from_slice(&m.finals[&format!("recordings/video/cam0/{P7_SID}/{seq:05}.json")])
+            .unwrap()
+    }
+
+    fn set_sc(m: &mut MediaCapture, seq: u64, f: impl Fn(&mut Value)) {
+        let k = format!("recordings/video/cam0/{P7_SID}/{seq:05}.json");
+        let mut v: Value = serde_json::from_slice(&m.finals[&k]).unwrap();
+        f(&mut v);
+        m.finals.insert(k, serde_json::to_vec(&v).unwrap());
+    }
+
+    /// `(at path tol)` of every sidecar row; `unt` = only the untolerated ones.
+    fn sidecar_rows(a: &MediaCapture, b: &MediaCapture, table: &Table, unt: bool) -> Vec<String> {
+        let mut rep = Report::default();
+        diff_media(a, b, &PlayInfo::default(), table, &mut rep);
+        rep.mismatches
+            .into_iter()
+            .filter(|m| m.stream == "sidecar" && (!unt || m.tol == UNTOLERATED))
+            .map(|m| format!("{} {} {}", m.at, m.path, m.tol))
+            .collect()
+    }
+
+    /// T7/D51: every kind of the WP2 §6 table is matched (startTs Δ = lag(N),
+    /// fragment 0 vs `boundary` = lag(1), clean final durationMs Δ = −lag(N),
+    /// the `pts` label), in either column order — and NOTHING else.
+    #[test]
+    fn d51_matches_only_timed_exact_fragments() {
+        let table = committed_table();
+        let Fixture { js, rs } = fixture();
+        let d51 = "T7/D51";
+        let all = sidecar_rows(&js, &rs, &table, false);
+        assert!(sidecar_rows(&js, &rs, &table, true).is_empty(), "{all:#?}");
+        for seq in 0..4 {
+            assert!(
+                all.contains(&format!("{P7_SID}/{seq:05} startTs {d51}")),
+                "{all:#?}"
+            );
+            assert!(
+                all.contains(&format!("{P7_SID}/{seq:05} anchor {d51}")),
+                "{all:#?}"
+            );
+        }
+        assert!(
+            all.contains(&format!("{P7_SID}/00003 durationMs {d51}")),
+            "{all:#?}"
+        );
+        // Interior durations differ by lag(N+1) − lag(N) only: plain T12.
+        assert!(
+            !all.iter().any(|r| r.contains("00001 durationMs T7/D51")),
+            "{all:#?}"
+        );
+        assert!(
+            sidecar_rows(&rs, &js, &table, true).is_empty(),
+            "either column order"
+        );
+
+        let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
+        let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
+
+        // (1) Δ of the WRONG SIGN: the JS fragment 2 one lag EARLIER than its
+        // frame, i.e. the exact side later than the reference.
+        let mut j = js.clone();
+        set_sc(&mut j, 2, |v| {
+            v["startTs"] = (v["startTs"].as_i64().unwrap() - 2 * LAG_J[2]).into()
+        });
+        assert!(
+            unt(&j, &rs).contains(&row(2, "startTs")),
+            "{:#?}",
+            unt(&j, &rs)
+        );
+
+        // (2) a Δ not matching its record's lagMs: the record says 1500.
+        let mut r = rs.clone();
+        r.timing[2].lag_ms = Some(1_500);
+        assert_eq!(unt(&js, &r), vec![row(2, "startMono"), row(2, "startTs")]);
+        // ... nor one 51 ms off (just past the ±50 band) ...
+        let mut j = js.clone();
+        set_sc(&mut j, 1, |v| {
+            v["startTs"] = (v["startTs"].as_i64().unwrap() + 51 + 9).into()
+        });
+        assert!(
+            unt(&j, &rs).contains(&row(1, "startTs")),
+            "{:#?}",
+            unt(&j, &rs)
+        );
+        // ... and a Δ of ~0 (an exact side that did NOT correct) fails, even
+        // though T12's ±300 would have let it through.
+        let mut r = rs.clone();
+        set_sc(&mut r, 2, |v| {
+            v["startTs"] = (v["startTs"].as_i64().unwrap() + LAG_R[2]).into()
+        });
+        r.timing[2].start_ts = Some(sc(&r, 2)["startTs"].as_i64().unwrap());
+        assert!(
+            unt(&js, &r).contains(&row(2, "startTs")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+
+        // (3) untimed: an exact side with no records matches nothing.
+        let mut r = rs.clone();
+        r.timing.clear();
+        let u = unt(&js, &r);
+        for seq in 0..4 {
+            assert!(u.contains(&row(seq, "anchor")), "{u:#?}");
+            assert!(u.contains(&row(seq, "startTs")) || seq == 0, "{u:#?}");
+        }
+        // ... a refused record is no record ...
+        let mut r = rs.clone();
+        r.timing[1].accepted = false;
+        assert!(
+            unt(&js, &r).contains(&row(1, "startTs")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+        // ... a pts sidecar whose startTs is not its record's ...
+        let mut r = rs.clone();
+        r.timing[1].start_ts = Some(r.timing[1].start_ts.unwrap() + 1);
+        assert!(
+            unt(&js, &r).contains(&row(1, "anchor")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+        // ... another session's records ...
+        let mut r = rs.clone();
+        for t in &mut r.timing {
+            t.sid = "<sid:video:cam0#1>".into();
+        }
+        assert!(
+            unt(&js, &r).contains(&row(1, "startTs")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+        // ... a side that did not run host + exact (records alone are not enough) ...
+        let mut r = rs.clone();
+        r.exact_timing = false;
+        assert!(
+            unt(&js, &r).contains(&row(1, "startTs")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+        // ... both sides exact ...
+        let mut j = rs.clone();
+        j.kind = "rust".into();
+        let mut r2 = rs.clone();
+        set_sc(&mut r2, 1, |v| {
+            v["startTs"] = (v["startTs"].as_i64().unwrap() - 2_000).into()
+        });
+        r2.timing[1].start_ts = Some(sc(&r2, 1)["startTs"].as_i64().unwrap());
+        assert!(
+            unt(&j, &r2).contains(&row(1, "startTs")),
+            "{:#?}",
+            unt(&j, &r2)
+        );
+        // ... and a table without the D51 row.
+        let no_row = Table::parse(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tools/replay/tolerances.toml"),
+            )
+            .unwrap()
+            .replace(
+                "matcher = \"d51_exact_sidecar_timing\"",
+                "matcher = \"none\"",
+            ),
+        )
+        .unwrap();
+        assert!(sidecar_rows(&js, &rs, &no_row, true).contains(&row(1, "startTs")));
+
+        // (4) a plain legacy sidecar on the exact side (fstat, no record at or
+        // below it) is the TS's bytes: never D51, so a lag-sized shift fails.
+        let mut r = rs.clone();
+        r.timing.clear();
+        for seq in 0..4 {
+            set_sc(&mut r, seq, |v| {
+                v["anchor"] = sc(&js, seq)["anchor"].clone()
+            });
+        }
+        let u = unt(&js, &r);
+        assert!(u.contains(&row(1, "startTs")), "{u:#?}");
+        assert!(!u.iter().any(|x| x.contains("anchor")), "{u:#?}");
+
+        // (5) the clean final's duration must be −lag(N) from its END record.
+        let mut r = rs.clone();
+        set_sc(&mut r, 3, |v| {
+            v["durationMs"] = (v["durationMs"].as_i64().unwrap() + 400).into()
+        });
+        assert!(
+            unt(&js, &r).contains(&row(3, "durationMs")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+
+        // (6) a MISSING sidecar on the exact side mid-session is UNTOLERATED;
+        // the session's last one is left to the mp4/s3 streams (the cut).
+        let mut r = rs.clone();
+        r.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00001.json"));
+        assert!(
+            unt(&js, &r).contains(&row(1, "(missing on the exact side)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+        let mut r = rs.clone();
+        r.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
+        assert!(
+            !unt(&js, &r).iter().any(|x| x.contains("missing")),
+            "{:#?}",
+            unt(&js, &r)
+        );
+    }
+
+    /// T7/D51, the D56 SHIFTED legacy fallback (WP2 round 3): line 2 lost,
+    /// the exact side writes fragment 2 as the TS's `fstat` sidecar moved
+    /// earlier by L = lag(1), the most recent accepted lag below it.
+    #[test]
+    fn d51_matches_a_shifted_fallback_only_after_an_accepted_stamp() {
+        let table = committed_table();
+        let Fixture { js, rs } = fixture();
+        let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
+        let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
+        let fr = |k: i64| P_R + 10 + k * SEG;
+        let shifted = |l: i64| {
+            let mut r = rs.clone();
+            r.timing.retain(|t| t.id != 2);
+            let birth2 = fr(2) + LAG_R[2];
+            // Exact 1 before a legacy 2: mtime(1) (= the rotation, birth2)
+            // − lag(1) − startTs(1).
+            set_sc(&mut r, 1, |v| {
+                v["durationMs"] = (birth2 - LAG_R[1] - fr(1)).into()
+            });
+            set_sc(&mut r, 2, |v| {
+                v["anchor"] = "fstat".into();
+                v["startTs"] = (birth2 - l).into();
+                v["durationMs"] = (fr(3) + LAG_R[3] - birth2).into();
+            });
+            r
+        };
+        let r = shifted(LAG_R[1]);
+        let all = sidecar_rows(&js, &r, &table, false);
+        assert!(unt(&js, &r).is_empty(), "{all:#?}");
+        assert!(
+            all.contains(&format!("{P7_SID}/00002 startTs T7/D51")),
+            "{all:#?}"
+        );
+        assert!(
+            !all.iter().any(|x| x.contains("00002 anchor")),
+            "both fstat: {all:#?}"
+        );
+        // NOT shifted (a fallback that kept the full legacy start): Δ ≈ 0, not L.
+        assert!(unt(&js, &shifted(0)).contains(&row(2, "startTs")));
+        // Shifted by the wrong lag (lag(0) instead of the most recent, lag(1)).
+        assert!(unt(&js, &shifted(LAG_R[0])).contains(&row(2, "startTs")));
+        // No accepted record BELOW it (records 0 and 1 refused): plain legacy.
+        let mut r0 = shifted(LAG_R[1]);
+        for t in &mut r0.timing {
+            if t.id < 2 {
+                t.accepted = false;
+            }
+        }
+        assert!(
+            unt(&js, &r0).contains(&row(2, "startTs")),
+            "{:#?}",
+            unt(&js, &r0)
+        );
+        // A fstat sidecar that HAS its own accepted record is not a fallback.
+        let mut r1 = shifted(LAG_R[1]);
+        r1.timing = rs.timing.clone();
+        assert!(
+            unt(&js, &r1).contains(&row(2, "startTs")),
+            "{:#?}",
+            unt(&js, &r1)
+        );
+    }
+
+    fn lines_cap(kind: &str, tool: &str, lines: &[(u8, &str)], end: &str) -> MediaCapture {
+        let mut m = MediaCapture {
+            kind: kind.into(),
+            spawns: vec![Spawn {
+                w: 1_000,
+                role: "capture".into(),
+                key: "cam0".into(),
+                pid: 9,
+                argv: vec!["x".into()],
+                env: BTreeMap::new(),
+                playing: Some(1_500),
+                end: Some(end.into()),
+                end_w: None,
+                sid: None,
+            }],
+            present: true,
+            ..Default::default()
+        };
+        m.child_tools.insert(9, tool.into());
+        m.child_lines
+            .insert(9, lines.iter().map(|(f, l)| (*f, l.to_string())).collect());
+        m
+    }
+
+    fn children_rows(a: &MediaCapture, b: &MediaCapture, table: &Table) -> Vec<String> {
+        let mut rep = Report::default();
+        diff_media(a, b, &PlayInfo::default(), table, &mut rep);
+        rep.mismatches
+            .into_iter()
+            .filter(|m| m.stream == "children")
+            .map(|m| format!("{} {}", m.path, m.tol))
+            .collect()
+    }
+
+    const FRAG0: &str = r#"XG-FRAGMENT {"v":1,"id":0,"frameMonoNs":1000,"cbMonoNs":13001000,"cbWallMs":1762400000013,"lagMs":13,"startTs":1762400000000}"#;
+    const FRAG1: &str = r#"XG-FRAGMENT {"v":1,"id":1,"frameMonoNs":4000001000,"cbMonoNs":6012001000,"cbWallMs":1762400006012,"lagMs":2012,"startTs":1762400004000}"#;
+    const FEND1: &str = r#"XG-FRAGMENT-END {"v":1,"id":1,"endMonoNs":6000001000,"cbMonoNs":6000001000,"cbWallMs":1762400006000,"endTs":1762400006000}"#;
+
+    fn gst_lines() -> Vec<(u8, &'static str)> {
+        vec![
+            (1, "Setting pipeline to PAUSED ..."),
+            (1, "Setting pipeline to PLAYING ..."),
+            (1, "New clock: GstSystemClock"),
+            (1, "Redistribute latency..."),
+            (1, "handling interrupt."),
+            (1, "Got EOS from element \"pipeline0\"."),
+            (2, "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity"),
+        ]
+    }
+
+    fn host_lines(extra_before_intr: &[(u8, &'static str)]) -> Vec<(u8, &'static str)> {
+        let mut v = gst_lines();
+        let i = v
+            .iter()
+            .position(|(_, l)| l.starts_with("handling"))
+            .unwrap();
+        let mut ins = vec![(1, FRAG0), (1, FRAG1)];
+        ins.extend_from_slice(extra_before_intr);
+        for (n, x) in ins.into_iter().enumerate() {
+            v.insert(3 + n.min(i - 3), x);
+        }
+        v.push((1, FEND1));
+        v
+    }
+
+    /// T7/D52: the host's own v1 timing lines (and nothing else) are set aside
+    /// from the JS-vs-Rust `children (lines)` comparison, as a tolerated row.
+    #[test]
+    fn d52_sets_aside_only_the_hosts_own_timing_lines() {
+        let table = committed_table();
+        let js = lines_cap("js", "gst-launch-1.0", &gst_lines(), "int");
+        let host = lines_cap("rust", "xorgate-capture", &host_lines(&[]), "int");
+        assert_eq!(
+            children_rows(&js, &host, &table),
+            vec!["(lines) host timing lines set aside T7/D52".to_string()]
+        );
+        assert_eq!(
+            children_rows(&host, &js, &table),
+            vec!["(lines) host timing lines set aside T7/D52".to_string()]
+        );
+        // gst-launch vs gst-launch: nothing.
+        assert!(children_rows(&js, &js.clone(), &table).is_empty());
+        let unt = |extra: &[(u8, &'static str)]| {
+            children_rows(
+                &js,
+                &lines_cap("rust", "xorgate-capture", &host_lines(extra), "int"),
+                &table,
+            )
+            .into_iter()
+            .filter(|r| r.ends_with(UNTOLERATED))
+            .collect::<Vec<_>>()
+        };
+        let lines_unt = format!("(lines) {UNTOLERATED}");
+        // No other line can hide: an extra ERROR, a timing prefix with a bad
+        // body, another version, a line containing a timing line, a near-miss
+        // prefix, a valid timing line on STDERR.
+        for bad in [
+            (
+                2u8,
+                "ERROR: from element /GstPipeline:pipeline0/GstX:x0: boom",
+            ),
+            (1, "XG-FRAGMENT {\"v\":1,\"id\":2"),
+            (
+                1,
+                r#"XG-FRAGMENT {"v":2,"id":2,"frameMonoNs":1,"cbMonoNs":2,"cbWallMs":3,"lagMs":0,"startTs":3}"#,
+            ),
+            (
+                1,
+                r#"ERROR: XG-FRAGMENT {"v":1,"id":2,"frameMonoNs":1,"cbMonoNs":2,"cbWallMs":3,"lagMs":0,"startTs":3}"#,
+            ),
+            (
+                1,
+                r#"XG-FRAGMENT-ENDX {"v":1,"id":1,"endMonoNs":1,"cbMonoNs":2,"cbWallMs":3,"endTs":3}"#,
+            ),
+            (
+                2,
+                r#"XG-FRAGMENT {"v":1,"id":2,"frameMonoNs":1,"cbMonoNs":2,"cbWallMs":3,"lagMs":0,"startTs":3}"#,
+            ),
+            (1, "New clock: GstSystemClock"),
+        ] {
+            let u = unt(&[bad]);
+            assert!(u.contains(&lines_unt), "{bad:?} hid: {u:?}");
+        }
+        // A valid timing line from a gst-launch child is never set aside.
+        let gst_with_timing = lines_cap("rust", "gst-launch-1.0", &host_lines(&[]), "int");
+        assert!(children_rows(&js, &gst_with_timing, &table).contains(&lines_unt));
+        // Without the D52 row the host's timing lines differ.
+        let no_row = Table::parse(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tools/replay/tolerances.toml"),
+            )
+            .unwrap()
+            .replace("matcher = \"d52_host_timing_lines\"", "matcher = \"none\""),
+        )
+        .unwrap();
+        assert_eq!(children_rows(&js, &host, &no_row), vec![lines_unt.clone()]);
+        // The shutdown tail (after `handling interrupt.`) is the (ended) row's.
+        let mut tail = gst_lines();
+        tail.truncate(5);
+        let js_cut = lines_cap("js", "gst-launch-1.0", &tail, "int");
+        assert!(children_rows(&js_cut, &js, &table).is_empty());
+    }
+
+    /// D52's own check: the host's timing lines (whole list, tail included)
+    /// must be v1 stdout lines, starts ascending, at most one END, last, for
+    /// the last start.
+    #[test]
+    fn d52_sequence_check_refuses_a_bad_timing_line() {
+        let own = |v: Vec<(u8, &str)>| {
+            v.into_iter()
+                .map(|(f, l)| (f, l.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(d52_sequence_ok(&own(host_lines(&[]))), Ok(3));
+        assert_eq!(d52_sequence_ok(&own(gst_lines())), Ok(0));
+        for bad in [
+            vec![(1, FRAG1), (1, FRAG0)],
+            vec![(1, FRAG0), (1, FRAG0)],
+            vec![(1, FRAG0), (1, FEND1)],
+            vec![(1, FRAG0), (1, FRAG1), (1, FEND1), (1, FEND1)],
+            vec![(1, FRAG0), (1, FRAG1), (1, FEND1), (1, FRAG1)],
+            vec![(2, FRAG0)],
+            vec![(1, "XG-FRAGMENT {}")],
+        ] {
+            assert!(d52_sequence_ok(&own(bad.clone())).is_err(), "{bad:?}");
+        }
+        let table = committed_table();
+        let js = lines_cap("js", "gst-launch-1.0", &gst_lines(), "int");
+        let mut v = host_lines(&[]);
+        v.push((1, FEND1));
+        let host = lines_cap("rust", "xorgate-capture", &v, "int");
+        assert!(
+            children_rows(&js, &host, &table).contains(&format!("(timing lines) {UNTOLERATED}"))
+        );
+    }
+
+    /// Phase 7a: a capture host spawn loads as a capture child whose argv is
+    /// the gst-launch tokens (the exact leading `__capture-host` dropped,
+    /// nothing else), with its tool and lines; `exact_timing` needs a RUST
+    /// side with BOTH knobs; the tape's `capture_timing` records load with
+    /// the session id normalised.
+    #[test]
+    fn host_spawns_and_timing_records_load() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-p7a-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let uuid = "0e9b7f3c-0000-4000-8000-000000000001";
+        let loc = format!("location=/w/b/home/recordings/video/cam0/{uuid}/%05d.mp4");
+        let meta = |kind: &str, backend: &str, timing: &str| {
+            serde_json::json!({"label":"b","kind":kind,"deviceId":"dev","home":"/w/b/home",
+                "env":{"XORGATE_CAPTURE_BACKEND":backend,"XORGATE_SIDECAR_TIMING":timing}})
+            .to_string()
+        };
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            [
+                serde_json::json!({"k":"spawn","tool":"xorgate-capture","pid":5151,"w":1000,
+                    "argv":["__capture-host","-e","videotestsrc","!","splitmuxsink",loc,"!","shmsink","socket-path=/w/b/home/shm/cam0.sock"]}),
+                serde_json::json!({"k":"spawn","tool":"xorgate-capture","pid":5152,"w":2000,
+                    "argv":["-e","__capture-host","!","shmsink","socket-path=/w/b/home/shm/cam1.sock"]}),
+                serde_json::json!({"k":"line","pid":5151,"fd":1,"line":"New clock: GstSystemClock","w":1500}),
+                serde_json::json!({"k":"line","pid":5151,"fd":1,"line":FRAG0,"w":1501}),
+            ]
+            .iter()
+            .map(|v| v.to_string() + "\n")
+            .collect::<String>(),
+        )
+        .unwrap();
+        let tape = format!(
+            "{{\"v\":1,\"k\":\"meta\"}}\n{}\n",
+            serde_json::json!({"t":1,"w":1502,"k":"capture_timing","key":"cam0","pid":5151,"sid":uuid,"id":0,"lagMs":13,"startTs":1762400000000u64,"accepted":true})
+        );
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, tape.as_bytes()).unwrap();
+        std::fs::write(dir.join("agent-tape.ndjson.gz"), gz.finish().unwrap()).unwrap();
+        for (kind, be, tm, want) in [
+            ("rust", "host", "exact", true),
+            ("rust", "host", "legacy", false),
+            ("rust", "gst-launch", "exact", false),
+            ("js", "host", "exact", false),
+        ] {
+            std::fs::write(dir.join("meta.json"), meta(kind, be, tm)).unwrap();
+            assert_eq!(
+                MediaCapture::load(&dir, &[]).exact_timing,
+                want,
+                "{kind} {be} {tm}"
+            );
+        }
+        std::fs::write(dir.join("meta.json"), meta("rust", "host", "exact")).unwrap();
+        let m = MediaCapture::load(&dir, &[]);
+        assert_eq!(m.spawns[0].argv[0], "-e");
+        assert_eq!(m.spawns[0].key, "cam0");
+        assert_eq!(m.spawns[0].role, "capture");
+        assert_eq!(m.spawns[0].playing, Some(1500));
+        // Only the exact LEADING subcommand is dropped.
+        assert_eq!(
+            m.spawns[1].argv[..2],
+            ["-e".to_string(), "__capture-host".to_string()]
+        );
+        assert_eq!(m.child_tools[&5151], "xorgate-capture");
+        assert_eq!(m.child_lines[&5151][1], (1, FRAG0.to_string()));
+        assert_eq!(
+            m.timing,
+            vec![TimingRec {
+                sid: "<sid:video:cam0#0>".into(),
+                key: "cam0".into(),
+                pid: 5151,
+                id: 0,
+                lag_ms: Some(13),
+                start_ts: Some(1_762_400_000_000),
+                end_ts: None,
+                accepted: true,
+            }]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

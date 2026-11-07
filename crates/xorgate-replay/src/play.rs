@@ -192,9 +192,75 @@ pub struct PlayArgs {
     /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
     #[arg(long)]
     pub camrotate: Option<PathBuf>,
+    /// Phase 7a (WP3): extra env for agent A, `KEY=VALUE`, repeatable,
+    /// applied LAST (it replaces the player's own value of that key) and
+    /// recorded in the side's `meta.json`. The rig's capture-host knobs:
+    /// `XORGATE_CAPTURE_BACKEND=host` (the player then also points
+    /// `XORGATE_CAPTURE_HOST_BIN` at that side's `xorgate-capture` shim,
+    /// unless given) and `XORGATE_SIDECAR_TIMING=exact`. Refused on a JS side
+    /// (`rig_side_env`).
+    #[arg(long = "env-a", value_parser = parse_env_kv)]
+    pub env_a: Vec<(String, String)>,
+    /// Phase 7a (WP3): extra env for agent B (see `--env-a`).
+    #[arg(long = "env-b", value_parser = parse_env_kv)]
+    pub env_b: Vec<(String, String)>,
+}
+
+/// `KEY=VALUE` of `--env-a` / `--env-b` (a non-empty key without `=`).
+fn parse_env_kv(s: &str) -> Result<(String, String), String> {
+    match s.split_once('=') {
+        Some((k, v)) if !k.is_empty() && !k.contains(char::is_whitespace) => {
+            Ok((k.to_string(), v.to_string()))
+        }
+        _ => Err(format!("want KEY=VALUE, got {s:?}")),
+    }
+}
+
+/// The program name of the rig's capture-host shim (`tools/replay/shims/`).
+pub const CAPTURE_HOST_SHIM: &str = "xorgate-capture";
+
+/// Phase 7a (WP3): the env a side's `--env-a`/`--env-b` adds, in order. A
+/// `XORGATE_CAPTURE_BACKEND=host` side gets `XORGATE_CAPTURE_HOST_BIN=<bin>/
+/// xorgate-capture` (the rig shim; the agent would otherwise re-exec itself
+/// with the real `libcamerasrc`) unless the caller set one. The capture-host
+/// knobs on a JS side are an error: the JS agent ignores them, so a run
+/// labelled `host`/`exact` would silently compare gst-launch.
+pub fn rig_side_env(
+    kind: AgentKind,
+    extra: &[(String, String)],
+    bin: &Path,
+) -> Result<Vec<(String, String)>> {
+    let knob = |k: &str| k.starts_with("XORGATE_CAPTURE_") || k == "XORGATE_SIDECAR_TIMING";
+    if kind == AgentKind::Js {
+        if let Some((k, _)) = extra.iter().find(|(k, _)| knob(k)) {
+            bail!("{k} is a Rust capture-host knob: refused on a JS side");
+        }
+    }
+    let mut out = extra.to_vec();
+    let host = extra
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "XORGATE_CAPTURE_BACKEND")
+        .is_some_and(|(_, v)| v.trim() == "host");
+    if host && !extra.iter().any(|(k, _)| k == "XORGATE_CAPTURE_HOST_BIN") {
+        out.push((
+            "XORGATE_CAPTURE_HOST_BIN".to_string(),
+            bin.join(CAPTURE_HOST_SHIM).display().to_string(),
+        ));
+    }
+    Ok(out)
 }
 
 impl PlayArgs {
+    /// The `--env-a` / `--env-b` entries of the agent labelled `label`.
+    pub fn env_for(&self, label: &str) -> &[(String, String)] {
+        match label {
+            "a" => &self.env_a,
+            "b" => &self.env_b,
+            _ => &[],
+        }
+    }
+
     /// The JS build the agent labelled `label` (`a` / `b`) runs.
     pub fn js_dir_for(&self, label: &str) -> &Path {
         let side = match label {
@@ -1065,6 +1131,11 @@ impl Agent {
                 env.retain(|(ek, _)| *ek != k);
                 env.push((k, v));
             }
+        }
+        // Phase 7a (WP3): the side's own knobs, last (they win).
+        for (k, v) in rig_side_env(kind, args.env_for(label), &bin)? {
+            env.retain(|(ek, _)| *ek != k);
+            env.push((k, v));
         }
         fs::write(
             dir.join("meta.json"),
@@ -2378,7 +2449,10 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             | TapeEvent::ChildExit(_)
             | TapeEvent::FsOut { .. }
             | TapeEvent::S3Put(_)
-            | TapeEvent::Shm { .. } => {}
+            | TapeEvent::Shm { .. }
+            // Phase 7a: the host's timing lines as the agent took them
+            // (rig-only output, read by the D51 matcher).
+            | TapeEvent::CaptureTiming(_) => {}
             // Phase 4 kinds (I9): known to the reader, not replayed yet — the
             // shims (fake-modem pty, pinctrl, sudo, timedatectl) consume them
             // from WP6 step 2 on. Tolerated so a Phase 4 tape still plays.
@@ -3405,5 +3479,77 @@ mod tests {
         let m = xorgate_core::system::parse_mem_available(RIG_MEMINFO).expect("parses");
         let used = (m.total_bytes - m.available_bytes) / m.total_bytes * 100.0;
         assert_eq!((used * 10.0).round() / 10.0, 21.2);
+    }
+
+    /// Phase 7a (WP3): `--env-a`/`--env-b` parse per side; a `host` side gets
+    /// the rig shim as its host program (never the agent's own re-exec, which
+    /// would run the real libcamerasrc); an explicit HOST_BIN is kept; the
+    /// capture-host knobs are refused on a JS side; a bad pair is refused.
+    #[test]
+    fn side_env_points_a_host_side_at_the_shim_and_refuses_js() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct W {
+            #[command(flatten)]
+            play: PlayArgs,
+        }
+        let parse = |extra: &[&str]| {
+            let mut v = vec!["x", "--tape", "t", "--out", "o"];
+            v.extend_from_slice(extra);
+            W::try_parse_from(v).map(|w| w.play)
+        };
+        let p = parse(&[
+            "--env-b",
+            "XORGATE_CAPTURE_BACKEND=host",
+            "--env-b",
+            "XORGATE_SIDECAR_TIMING=exact",
+        ])
+        .unwrap();
+        assert!(p.env_for("a").is_empty());
+        let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let bin = Path::new("/tmp/rig-work/b/bin");
+        assert_eq!(
+            rig_side_env(AgentKind::Rust, p.env_for("b"), bin).unwrap(),
+            vec![
+                kv("XORGATE_CAPTURE_BACKEND", "host"),
+                kv("XORGATE_SIDECAR_TIMING", "exact"),
+                kv(
+                    "XORGATE_CAPTURE_HOST_BIN",
+                    "/tmp/rig-work/b/bin/xorgate-capture"
+                ),
+            ]
+        );
+        // gst-launch (or legacy only): no host program is added.
+        assert_eq!(
+            rig_side_env(
+                AgentKind::Rust,
+                &[kv("XORGATE_CAPTURE_BACKEND", "gst-launch")],
+                bin
+            )
+            .unwrap(),
+            vec![kv("XORGATE_CAPTURE_BACKEND", "gst-launch")]
+        );
+        // An explicit host program wins.
+        let own = [
+            kv("XORGATE_CAPTURE_BACKEND", "host"),
+            kv("XORGATE_CAPTURE_HOST_BIN", "/x"),
+        ];
+        assert_eq!(
+            rig_side_env(AgentKind::Rust, &own, bin).unwrap(),
+            own.to_vec()
+        );
+        // A JS side cannot take a capture-host knob (it would ignore it).
+        for k in [
+            "XORGATE_CAPTURE_BACKEND",
+            "XORGATE_SIDECAR_TIMING",
+            "XORGATE_CAPTURE_HOST_BIN",
+        ] {
+            let e = rig_side_env(AgentKind::Js, &[kv(k, "host")], bin).unwrap_err();
+            assert!(e.to_string().contains(k), "{e}");
+        }
+        assert!(rig_side_env(AgentKind::Js, &[kv("FOO", "1")], bin).is_ok());
+        for bad in ["NOEQUALS", "=v", "A B=1"] {
+            assert!(parse(&["--env-a", bad]).is_err(), "{bad}");
+        }
     }
 }

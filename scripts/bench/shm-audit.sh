@@ -7,7 +7,9 @@
 # For every /dev/shm/shmpipe.<pid>.* (shmsink's segments) prints name, size,
 # pid and owner: JS (the pid is in xorgate-agent.service's cgroup or descends
 # from its MainPID), RUST (same for xorgate-agent-rs), OTHER-LIVE, or DEAD (no
-# such pid / a zombie: an orphaned segment). Also lists the shm sockets
+# such pid / a zombie: an orphaned segment), plus the owner's program
+# (`prog=`: gst-launch-1.0, or xorgate-capture for the Phase 7a capture host;
+# `-` when dead). Also lists the shm sockets
 # /var/lib/xorgate-rs/shm/*.sock and /var/lib/xorgate/shm/*.sock. Ends with a
 # SUMMARY line of counts (or a JSON document with --json).
 # Exit 0 always (evidence, not a gate) unless --fail-on-dead and a DEAD row exists.
