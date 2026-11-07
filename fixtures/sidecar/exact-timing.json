@@ -3416,6 +3416,446 @@
      }
     }
    ]
+  },
+  {
+   "name": "R-WP2R3-1 a 10.5 s stall at the 0->1 rotation: fragment 0 capped at nominal + 7000, no fake step",
+   "nominalMs": 60000,
+   "minStepMs": 10000,
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 12,
+        "cbWallMs": 1760000000312
+       }
+      },
+      {
+       "start": {
+        "id": 2,
+        "startTs": 1760000120300,
+        "lagMs": 2000,
+        "cbWallMs": 1760000122300
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000180300,
+        "lagMs": 2000,
+        "cbWallMs": 1760000182300
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000000313,
+        "mtimeMs": 1760000072800
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000072801,
+        "mtimeMs": 1760000122300
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122301,
+        "mtimeMs": 1760000182300
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182301,
+        "mtimeMs": 1760000242300
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 67000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00002.json": {
+        "startTs": 1760000120300,
+        "durationMs": 60000,
+        "startMono": 420300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [],
+      "noStep": [
+       "00000.json"
+      ],
+      "gapAllowedAfter": [
+       0
+      ],
+      "shifted": {
+       "00001.json": 12
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "R-WP2R3-3 an accepted 5048 ms spike then a lost line: shifted by the median, no replay gap",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 10,
+        "cbWallMs": 1760000000310
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 1968,
+        "cbWallMs": 1760000062268
+       }
+      },
+      {
+       "start": {
+        "id": 2,
+        "startTs": 1760000120300,
+        "lagMs": 5048,
+        "cbWallMs": 1760000125348
+       }
+      },
+      {
+       "start": {
+        "id": 4,
+        "startTs": 1760000240300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000242400
+       }
+      },
+      {
+       "start": {
+        "id": 5,
+        "startTs": 1760000300300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000302400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000000311,
+        "mtimeMs": 1760000062268
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062269,
+        "mtimeMs": 1760000125348
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000125349,
+        "mtimeMs": 1760000182426
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182427,
+        "mtimeMs": 1760000242400
+       }
+      },
+      {
+       "name": "00004.mp4",
+       "stat": {
+        "sizeBytes": 1004,
+        "birthtimeMs": 1760000242401,
+        "mtimeMs": 1760000302400
+       }
+      },
+      {
+       "name": "00005.mp4",
+       "stat": {
+        "sizeBytes": 1005,
+        "birthtimeMs": 1760000302401,
+        "mtimeMs": 1760000362400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 60000,
+        "startMono": 360300,
+        "finalized": true
+       },
+       "00002.json": {
+        "startTs": 1760000120300,
+        "durationMs": 57078,
+        "startMono": 420300,
+        "finalized": true
+       },
+       "00004.json": {
+        "startTs": 1760000240300,
+        "durationMs": 60000,
+        "startMono": 540300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [],
+      "shifted": {
+       "00003.json": 3508
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "R-WP2R3-3 a spike at the exact predecessor of a lost line, many earlier lags: both seams closed",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 11,
+        "cbWallMs": 1760000000311
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2002,
+        "cbWallMs": 1760000062302
+       }
+      },
+      {
+       "start": {
+        "id": 2,
+        "startTs": 1760000120300,
+        "lagMs": 2126,
+        "cbWallMs": 1760000122426
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000180300,
+        "lagMs": 2064,
+        "cbWallMs": 1760000182364
+       }
+      },
+      {
+       "start": {
+        "id": 4,
+        "startTs": 1760000240300,
+        "lagMs": 4971,
+        "cbWallMs": 1760000245271
+       }
+      },
+      {
+       "start": {
+        "id": 6,
+        "startTs": 1760000360300,
+        "lagMs": 2000,
+        "cbWallMs": 1760000362300
+       }
+      },
+      {
+       "start": {
+        "id": 7,
+        "startTs": 1760000420300,
+        "lagMs": 2000,
+        "cbWallMs": 1760000422300
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000000312,
+        "mtimeMs": 1760000062302
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062303,
+        "mtimeMs": 1760000122426
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122427,
+        "mtimeMs": 1760000182364
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182365,
+        "mtimeMs": 1760000245271
+       }
+      },
+      {
+       "name": "00004.mp4",
+       "stat": {
+        "sizeBytes": 1004,
+        "birthtimeMs": 1760000245272,
+        "mtimeMs": 1760000302307
+       }
+      },
+      {
+       "name": "00005.mp4",
+       "stat": {
+        "sizeBytes": 1005,
+        "birthtimeMs": 1760000302308,
+        "mtimeMs": 1760000362300
+       }
+      },
+      {
+       "name": "00006.mp4",
+       "stat": {
+        "sizeBytes": 1006,
+        "birthtimeMs": 1760000362301,
+        "mtimeMs": 1760000422300
+       }
+      },
+      {
+       "name": "00007.mp4",
+       "stat": {
+        "sizeBytes": 1007,
+        "birthtimeMs": 1760000422301,
+        "mtimeMs": 1760000482300
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 60000,
+        "startMono": 360300,
+        "finalized": true
+       },
+       "00002.json": {
+        "startTs": 1760000120300,
+        "durationMs": 60000,
+        "startMono": 420300,
+        "finalized": true
+       },
+       "00003.json": {
+        "startTs": 1760000180300,
+        "durationMs": 60000,
+        "startMono": 480300,
+        "finalized": true
+       },
+       "00004.json": {
+        "startTs": 1760000240300,
+        "durationMs": 57036,
+        "startMono": 540300,
+        "finalized": true
+       },
+       "00006.json": {
+        "startTs": 1760000360300,
+        "durationMs": 60000,
+        "startMono": 660300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [],
+      "shifted": {
+       "00005.json": 3518
+      }
+     }
+    }
+   ]
   }
  ]
 }

@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 use tracing::{error, warn};
 use xorgate_core::sidecar::{
-    dropped_empty_fragment_warning, plan_sweep_timed, segment_seq, sidecar_path_for,
-    sidecar_write_failed_error, ClockPair, DirEntry, ExactSweep, SessionManifest, SweepOpts,
-    VideoSessionManifest, SESSION_MANIFEST_NAME,
+    dropped_empty_fragment_warning, plan_sweep_recovering, plan_sweep_timed, segment_seq,
+    sidecar_path_for, sidecar_write_failed_error, ClockPair, DirEntry, ExactSweep, PtsSample,
+    SessionManifest, SweepOpts, SweepPlan, VideoSessionManifest, SESSION_MANIFEST_NAME,
 };
 use xorgate_core::types::TimeSource;
 use xorgate_hal::atomic_write::{atomic_write_bytes_traced, atomic_write_json};
@@ -82,6 +82,31 @@ pub fn sweep_session_dir_timed(
     opts: &SweepIo,
     exact: Option<&ExactSweep<'_>>,
 ) -> SweepOutcome {
+    sweep_with(dir, opts, |d, entries, o| {
+        plan_sweep_timed(d, manifest, entries, o, exact)
+    })
+}
+
+/// Crash recovery's sweep with the R-WP2R3-2 shift (core
+/// `plan_sweep_recovering`): `samples` are the session's `anchor:"pts"`
+/// sidecars found on disk; none = [`sweep_session_dir`], byte for byte.
+pub fn sweep_session_dir_recovering(
+    dir: &Path,
+    manifest: &SessionManifest,
+    opts: &SweepIo,
+    samples: &[PtsSample],
+) -> SweepOutcome {
+    sweep_with(dir, opts, |d, entries, o| {
+        plan_sweep_recovering(d, manifest, entries, o, samples)
+    })
+}
+
+/// List + stat exactly as the TS does, plan with `plan`, execute in order.
+fn sweep_with(
+    dir: &Path,
+    opts: &SweepIo,
+    plan: impl FnOnce(&str, &[DirEntry], &SweepOpts) -> SweepPlan,
+) -> SweepOutcome {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return SweepOutcome::default();
     };
@@ -123,9 +148,8 @@ pub fn sweep_session_dir_timed(
             },
         })
         .collect();
-    let plan = plan_sweep_timed(
+    let plan = plan(
         &dir_str(dir),
-        manifest,
         &entries,
         &SweepOpts {
             include_newest: opts.include_newest,
@@ -133,7 +157,6 @@ pub fn sweep_session_dir_timed(
             time_source: opts.time_source,
             clock_pair: opts.clock_pair,
         },
-        exact,
     );
     // Execute in fragment order, as the TS loop interleaves unlinks and writes.
     enum Act<'a> {

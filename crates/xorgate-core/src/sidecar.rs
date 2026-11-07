@@ -708,6 +708,37 @@ pub fn plan_sweep_timed(
     opts: &SweepOpts,
     exact: Option<&ExactSweep<'_>>,
 ) -> SweepPlan {
+    let segment_ms = manifest_segment_ms(manifest);
+    plan_sweep_with(
+        dir,
+        manifest,
+        entries,
+        opts,
+        &mut |seq, finalized, mtime_ms| match exact {
+            None => ExactDecision::Legacy,
+            Some(x) => x.decide(seq, finalized, mtime_ms, opts.include_newest, segment_ms),
+        },
+    )
+}
+
+/// `segmentSeconds × 1000` of either manifest kind (JS `ToNumber` for a raw one).
+fn manifest_segment_ms(manifest: &SessionManifest) -> f64 {
+    match manifest {
+        SessionManifest::Typed(m) => m.segment_seconds * 1000.0,
+        SessionManifest::Raw(m) => js_to_number(m.get("segmentSeconds")) * 1000.0,
+    }
+}
+
+/// The `sweepSessionDir` decision loop; `decide(seq, finalized, mtime)`
+/// picks each closed, non-empty fragment's times. `ExactDecision::Legacy`
+/// everywhere IS the TS plan.
+fn plan_sweep_with(
+    dir: &str,
+    manifest: &SessionManifest,
+    entries: &[DirEntry],
+    opts: &SweepOpts,
+    decide: &mut dyn FnMut(f64, bool, f64) -> ExactDecision,
+) -> SweepPlan {
     // `.map(segmentSeq).filter(seq !== null).sort((a, b) => a.seq - b.seq)` — stable.
     let mut frags: Vec<(&DirEntry, f64)> = entries
         .iter()
@@ -759,17 +790,14 @@ pub fn plan_sweep_timed(
         // The newest fragment of a dead session may have been cut
         // mid-write; all others were finalised by splitmuxsink.
         let finalized = opts.finalized.unwrap_or(!is_newest);
-        let exact_times = match exact {
-            None => None,
-            Some(x) => match x.decide(*seq, finalized, st.mtime_ms, opts.include_newest) {
-                ExactDecision::Defer(id) => {
-                    plan.deferred.push(id);
-                    continue;
-                }
-                ExactDecision::Exact(t) => Some(TimesOverride::Exact(t)),
-                ExactDecision::LegacyShift(lag) => Some(TimesOverride::Shift(lag)),
-                ExactDecision::Legacy => None,
-            },
+        let exact_times = match decide(*seq, finalized, st.mtime_ms) {
+            ExactDecision::Defer(id) => {
+                plan.deferred.push(id);
+                continue;
+            }
+            ExactDecision::Exact(t) => Some(TimesOverride::Exact(t)),
+            ExactDecision::LegacyShift(lag) => Some(TimesOverride::Shift(lag)),
+            ExactDecision::Legacy => None,
         };
         let sidecar = build_sidecar_body_exact(
             manifest,
@@ -988,17 +1016,46 @@ impl TimingTable {
         }
     }
 
-    /// D56: the lag of the most recent ACCEPTED stamp below `id` in this run
-    /// (= session). A legacy fallback `id` is shifted by it; rejected and
-    /// lost ids in between do not break the chain (a run of lost lines after
-    /// an exact fragment stays shifted by the same lag), and the refused lag
-    /// of a rejected line is never used. `None` (no exact predecessor in the
-    /// session, e.g. fragment 0 or an untimed run) = no shift.
+    /// D56: the shift L of a legacy fallback `id` (R-WP2R3-3, median-based):
+    /// - `m` = the MEDIAN of the accepted lags of fragments `1 ≤ k < id`,
+    ///   leaving out `id − 1` when that one is exact (robust to a spike);
+    /// - when `id − 1` is exact with lag `p` (≥ 1): L = round((p + m) / 2),
+    ///   or `p` when no other seq ≥ 1 lag exists. The exact `id − 1` ends at
+    ///   `cb(id) − p` (its legacy-equivalent duration), so L ≈ p keeps the
+    ///   seam before `id` closed, and L ≈ m keeps the seam after it closed
+    ///   (the next exact fragment's lag is ≈ m); the midpoint splits a spike
+    ///   between the two seams (a pure median opens the first seam by
+    ///   `p − m`, the most recent lag the second by the same amount);
+    /// - otherwise (a lost/rejected run): L = m;
+    /// - with no accepted seq ≥ 1 lag below `id`: lag(0) when fragment 0's
+    ///   stamp was accepted (WP1 shape: fragment 0 opens at its first frame).
+    ///
+    /// A refused lag is never used. `None` (no accepted stamp below `id`:
+    /// fragment 0, an untimed run) = no shift.
     pub fn shift_lag_below(&self, id: u64) -> Option<f64> {
-        self.stamps.range(..id).rev().find_map(|(_, s)| match s {
-            Stamp::Exact(t) => Some(t.lag_ms),
-            Stamp::Rejected { .. } => None,
-        })
+        if id == 0 {
+            return None;
+        }
+        let pred = (id >= 2)
+            .then(|| self.exact(id - 1))
+            .flatten()
+            .map(|t| t.lag_ms);
+        let end = if pred.is_some() { id - 1 } else { id };
+        let mut lags: Vec<f64> = self
+            .stamps
+            .range(1..end)
+            .filter_map(|(_, s)| match s {
+                Stamp::Exact(t) => Some(t.lag_ms),
+                Stamp::Rejected { .. } => None,
+            })
+            .collect();
+        let m = median_ms(&mut lags);
+        match (pred, m) {
+            (Some(p), Some(m)) => Some(js_math_round((p + m) / 2.0)),
+            (Some(p), None) => Some(p),
+            (None, Some(m)) => Some(m),
+            (None, None) => self.exact(0).map(|t| t.lag_ms),
+        }
     }
 
     /// At least one timing line arrived this run: the host emits them (an
@@ -1118,12 +1175,16 @@ pub fn seq_id(seq: f64) -> Option<u64> {
 
 impl ExactSweep<'_> {
     /// The decision for one closed, non-empty fragment (§8.4–8.5).
+    ///
+    /// `segment_ms` = the manifest's nominal segment length (the
+    /// fragment-0 cap, R-WP2R3-1).
     pub fn decide(
         &self,
         seq: f64,
         finalized: bool,
         mtime_ms: f64,
         final_sweep: bool,
+        segment_ms: f64,
     ) -> ExactDecision {
         let Some(id) = seq_id(seq) else {
             return ExactDecision::Legacy;
@@ -1141,7 +1202,15 @@ impl ExactSweep<'_> {
         }
         match t.exact(id) {
             Some(own) => {
-                ExactDecision::Exact(exact_times(own, t.exact(id + 1), finalized, mtime_ms))
+                let mut x = exact_times(own, t.exact(id + 1), finalized, mtime_ms);
+                // R-WP2R3-1: fragment 0's mtime fallback spans its 0→1
+                // rotation lag(1), which the TS's `boundary` row never shows
+                // (its durationMs is always nominal); a stall there must not
+                // fake a step, so it is capped at nominal + the lag guard.
+                if id == 0 && finalized && t.exact(1).is_none() && own.end_ts.is_none() {
+                    x.duration_ms = x.duration_ms.min(segment_ms + LAG_GUARD_MAX_MS);
+                }
+                ExactDecision::Exact(x)
             }
             None => match t.shift_lag_below(id) {
                 Some(lag) => ExactDecision::LegacyShift(lag),
@@ -1149,6 +1218,93 @@ impl ExactSweep<'_> {
             },
         }
     }
+}
+
+/// The median of integer-ms values (sorted; an even count takes the JS-rounded
+/// mean of the two middle values). `None` when empty.
+pub fn median_ms(v: &mut [f64]) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = v.len();
+    Some(if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        js_math_round((v[n / 2 - 1] + v[n / 2]) / 2.0)
+    })
+}
+
+/// One `anchor:"pts"` sidecar found in a session dir at crash recovery
+/// (R-WP2R3-2): its fragment seq, its `startTs`, and its mp4's birthtime.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtsSample {
+    pub seq: f64,
+    pub start_ts: f64,
+    pub birthtime_ms: f64,
+}
+
+/// R-WP2R3-2 (R7 amended for this one field): the recovery shift `L_rec` =
+/// the median over the session's `pts` samples with seq ≥ 1 of
+/// `birth(N) − startTs(N)`, each clamped to `[0, LAG_GUARD_MAX_MS]`; the
+/// seq-0 value when there are none with seq ≥ 1. A sample whose birthtime
+/// or `startTs` is missing or not a sane epoch is skipped. `None` = no
+/// usable sample = no shift.
+pub fn recovery_shift_lag(samples: &[PtsSample]) -> Option<f64> {
+    let usable = |s: &&PtsSample| {
+        s.birthtime_ms.is_finite()
+            && s.birthtime_ms > SANE_EPOCH_MS
+            && s.start_ts.is_finite()
+            && s.start_ts > SANE_EPOCH_MS
+            && seq_id(s.seq).is_some()
+    };
+    let lag =
+        |s: &PtsSample| js_math_round(s.birthtime_ms - s.start_ts).clamp(0.0, LAG_GUARD_MAX_MS);
+    let mut lags: Vec<f64> = samples
+        .iter()
+        .filter(usable)
+        .filter(|s| s.seq >= 1.0)
+        .map(lag)
+        .collect();
+    median_ms(&mut lags).or_else(|| {
+        samples
+            .iter()
+            .filter(usable)
+            .find(|s| s.seq == 0.0)
+            .map(lag)
+    })
+}
+
+/// Crash recovery's sweep (`include_newest`, legacy anchors, R7) with the
+/// R-WP2R3-2 amendment: an `fstat` fragment K of a session that holds a
+/// usable `pts` sample with seq < K has its `startTs` moved earlier by
+/// [`recovery_shift_lag`] (`durationMs`, `anchor`, `finalized` as recovery
+/// computes them; `computed`/`boundary` never shifted; `startMono`
+/// follows). With no usable `pts` sample (legacy mode, untimed runs, every
+/// JS-era session) this IS [`plan_sweep`], byte for byte.
+pub fn plan_sweep_recovering(
+    dir: &str,
+    manifest: &SessionManifest,
+    entries: &[DirEntry],
+    opts: &SweepOpts,
+    samples: &[PtsSample],
+) -> SweepPlan {
+    let Some(lag) = recovery_shift_lag(samples) else {
+        return plan_sweep(dir, manifest, entries, opts);
+    };
+    let usable_seqs: Vec<f64> = samples
+        .iter()
+        .filter(|s| recovery_shift_lag(std::slice::from_ref(*s)).is_some())
+        .map(|s| s.seq)
+        .collect();
+    plan_sweep_with(dir, manifest, entries, opts, &mut |seq, _, _| {
+        if usable_seqs.iter().any(|p| *p < seq) {
+            ExactDecision::LegacyShift(lag)
+        } else {
+            ExactDecision::Legacy
+        }
+    })
 }
 
 /// The one-per-session warning for a rejected timing line.
@@ -1756,7 +1912,7 @@ mod tests {
                 now_ms: now,
                 defer_max_ms: 10_000.0,
             }
-            .decide(0.0, true, T0 + 62_400.0, false)
+            .decide(0.0, true, T0 + 62_400.0, false, 60_000.0)
         };
         assert_eq!(x(&since, 1_000.0), ExactDecision::Defer(0));
         since.insert(0, 1_000.0);
@@ -1769,19 +1925,22 @@ mod tests {
             defer_max_ms: 10_000.0,
         };
         assert!(matches!(
-            fin.decide(0.0, true, T0 + 62_400.0, true),
+            fin.decide(0.0, true, T0 + 62_400.0, true, 60_000.0),
             ExactDecision::Exact(_)
         ));
         // Own stamp missing (lost) → legacy, shifted by the last accepted lag
         // (D56: exact 0 precedes it); a non-integral seq → plain legacy.
         assert_eq!(
-            fin.decide(5.0, true, T0, true),
+            fin.decide(5.0, true, T0, true, 60_000.0),
             ExactDecision::LegacyShift(2_100.0)
         );
-        assert_eq!(fin.decide(0.5, true, T0, false), ExactDecision::Legacy);
+        assert_eq!(
+            fin.decide(0.5, true, T0, false, 60_000.0),
+            ExactDecision::Legacy
+        );
         // A crash-cut fragment does not wait for its successor's stamp.
         assert!(matches!(
-            fin.decide(0.0, false, T0 + 62_400.0, false),
+            fin.decide(0.0, false, T0 + 62_400.0, false, 60_000.0),
             ExactDecision::Exact(_)
         ));
         assert_eq!(seq_id(3.0), Some(3));
@@ -1812,10 +1971,14 @@ mod tests {
             "never the refused 9000"
         );
         assert_eq!(t.shift_lag_below(4), Some(2_000.0));
-        assert_eq!(t.shift_lag_below(5), Some(2_200.0));
+        assert_eq!(
+            t.shift_lag_below(5),
+            Some(2_100.0),
+            "median of 2000 and 2200"
+        );
         assert_eq!(
             t.shift_lag_below(9),
-            Some(2_200.0),
+            Some(2_100.0),
             "lost ids continue the chain"
         );
         let x = ExactSweep {
@@ -1825,10 +1988,13 @@ mod tests {
             defer_max_ms: 10_000.0,
         };
         assert_eq!(
-            x.decide(3.0, true, T0, true),
+            x.decide(3.0, true, T0, true, 60_000.0),
             ExactDecision::LegacyShift(2_000.0)
         );
-        assert_eq!(x.decide(0.0, true, T0, true), ExactDecision::Legacy);
+        assert_eq!(
+            x.decide(0.0, true, T0, true, 60_000.0),
+            ExactDecision::Legacy
+        );
         // The override moves an fstat start only; durationMs and the anchor stay.
         let opts = SidecarOpts {
             finalized: true,
@@ -1881,6 +2047,106 @@ mod tests {
             build_sidecar_body_exact(&m, 0.0, stat, &b, Some(TimesOverride::Shift(2_000.0))),
             build_sidecar_body(&m, 0.0, stat, &b)
         );
+    }
+
+    /// R-WP2R3-3: the live shift is median-based (anchored on an exact
+    /// predecessor, see `shift_lag_below`), robust to a spike; lag(0) only
+    /// when no seq ≥ 1 lag exists.
+    #[test]
+    fn live_shift_is_the_median_of_seq_ge_1_lags() {
+        let mut t = TimingTable::default();
+        t.record_start(0, T0 + 300.0, 10.0, T0 + 310.0).unwrap();
+        assert_eq!(t.shift_lag_below(1), Some(10.0), "lag(0) fallback");
+        t.record_start(1, T0 + 60_300.0, 1_968.0, T0 + 62_268.0)
+            .unwrap();
+        t.record_start(2, T0 + 120_300.0, 5_048.0, T0 + 125_348.0)
+            .unwrap();
+        t.record_start(3, T0 + 180_300.0, 2_126.0, T0 + 182_426.0)
+            .unwrap();
+        assert_eq!(t.shift_lag_below(2), Some(1_968.0), "pred 1 alone");
+        // pred 3 (2126) exact; m = median(1968, 5048) = 3508 → midpoint 2817.
+        assert_eq!(t.shift_lag_below(4), Some(2_817.0));
+        // pred 2 is the spike; m = median(1968) → the midpoint splits it.
+        assert_eq!(t.shift_lag_below(3), Some(3_508.0));
+        // A lost run (5 not recorded): pred not exact → the plain median of
+        // 1968, 5048, 2126 = 2126, not the spike.
+        assert_eq!(t.shift_lag_below(6), Some(2_126.0), "median, not the spike");
+        assert_eq!(median_ms(&mut []), None);
+        assert_eq!(median_ms(&mut [3.0, 1.0, 2.0]), Some(2.0));
+        assert_eq!(median_ms(&mut [1.0, 2.0]), Some(2.0)); // 1.5 → JS round 2
+    }
+
+    /// R-WP2R3-1: fragment 0 finalized without a successor stamp is capped
+    /// at nominal + the guard; crash-cut, END, and N ≥ 1 are not.
+    #[test]
+    fn fragment_0_fallback_is_capped_at_nominal_plus_guard() {
+        let mut t = TimingTable::default();
+        t.record_start(0, T0 + 300.0, 12.0, T0 + 312.0).unwrap();
+        let since = std::collections::BTreeMap::new();
+        let x = ExactSweep {
+            table: &t,
+            deferred_since: &since,
+            now_ms: 0.0,
+            defer_max_ms: 10_000.0,
+        };
+        let dur = |d: ExactDecision| match d {
+            ExactDecision::Exact(e) => e.duration_ms,
+            other => panic!("{other:?}"),
+        };
+        // 10.5 s stall at 0→1: mtime(0) = cb(1) = F1 + 12 500.
+        let mt = T0 + 300.0 + 60_000.0 + 12_500.0;
+        assert_eq!(dur(x.decide(0.0, true, mt, true, 60_000.0)), 67_000.0);
+        assert_eq!(
+            dur(x.decide(0.0, false, mt, true, 60_000.0)),
+            72_488.0,
+            "crash-cut: uncapped"
+        );
+        assert_eq!(
+            dur(x.decide(0.0, true, T0 + 62_312.0, true, 60_000.0)),
+            62_000.0,
+            "under the cap"
+        );
+        let mut u = t.clone();
+        u.record_start(1, T0 + 60_300.0, 2_000.0, T0 + 62_300.0)
+            .unwrap();
+        let y = ExactSweep { table: &u, ..x };
+        assert_eq!(
+            dur(y.decide(1.0, true, T0 + 300.0 + 120_000.0 + 12_500.0, true, 60_000.0)),
+            70_500.0,
+            "N >= 1 uncapped"
+        );
+    }
+
+    /// R-WP2R3-2: the recovery shift is the clamped median of `birth −
+    /// startTs` over usable seq ≥ 1 pts samples; seq 0 only as a fallback.
+    #[test]
+    fn recovery_shift_is_the_clamped_median_of_usable_samples() {
+        let s = |seq: f64, start: f64, birth: f64| PtsSample {
+            seq,
+            start_ts: start,
+            birthtime_ms: birth,
+        };
+        assert_eq!(recovery_shift_lag(&[]), None);
+        assert_eq!(recovery_shift_lag(&[s(0.0, T0, T0 + 13.0)]), Some(13.0));
+        let v = [
+            s(0.0, T0, T0 + 13.0),
+            s(1.0, T0, T0 + 2_001.0),
+            s(2.0, T0, T0 + 2_003.0),
+            s(3.0, T0, T0 + 20_000.0), // clamped to 7000
+            s(4.0, T0, 0.0),           // no birthtime: skipped
+            s(5.0, T0, f64::NAN),      // odd: skipped
+        ];
+        assert_eq!(
+            recovery_shift_lag(&v),
+            Some(2_003.0),
+            "median of 2001, 2003, 7000"
+        );
+        assert_eq!(
+            recovery_shift_lag(&[s(1.0, T0, T0 - 50.0)]),
+            Some(0.0),
+            "clamped at 0"
+        );
+        assert_eq!(recovery_shift_lag(&[s(1.0, T0, 0.0)]), None);
     }
 
     #[test]

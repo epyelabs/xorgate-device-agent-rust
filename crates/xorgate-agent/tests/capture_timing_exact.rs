@@ -488,6 +488,74 @@ async fn legacy_with_real_host_lines_is_byte_identical_and_sweeps_no_more() {
     assert_eq!(checked, 4, "0..2 on the polls, 3 by the final sweep");
 }
 
+/// R-WP2R3-2 end to end: an exact run killed by the agent-exit cleanup (D41
+/// `exiting`: no final sweep) leaves its newest fragment unswept; the next
+/// boot's recovery reads the session's `pts` sidecars from disk and shifts
+/// the recovered `fstat` row by the clamped median of `birth − startTs`.
+/// (The pts stamps here are the fake timeline's, the birthtimes real, so the
+/// samples clamp to the 7000 ms guard: this pins the plumbing; the values
+/// are pinned by the core `sidecar_recovery_shift` tests.)
+#[tokio::test(start_paused = true)]
+async fn agent_exit_then_recovery_shifts_the_unswept_newest() {
+    let home = Home::new("exit-rec");
+    let be = Arc::new(FakeHost::default());
+    let s = sup(&home, be.clone(), SidecarTiming::Exact);
+    s.start();
+    let d = dir(&home, &s);
+    let c = be.last();
+    for k in 0..3 {
+        c.line(start_line(k, LAG));
+    }
+    settle().await;
+    for k in 0..3 {
+        frag(&d, k, cb(k + 1));
+    }
+    ms(POLL + 1).await;
+    assert_eq!(sidecar(&d, 0).unwrap()["anchor"], "pts");
+    assert_eq!(sidecar(&d, 1).unwrap()["anchor"], "pts");
+    let killed = s.exit_kill();
+    settle().await;
+    let _ = s.exit_finish(&killed);
+    assert!(
+        sidecar(&d, 2).is_none(),
+        "the exit cleanup writes no sidecar"
+    );
+    let names: Vec<String> = std::fs::read_dir(&d)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let samples = xorgate_agent::recording::capture::recover::pts_samples(&d, &names);
+    assert_eq!(
+        samples.iter().map(|p| p.seq).collect::<Vec<_>>().len(),
+        2,
+        "the two pts sidecars"
+    );
+    let clock = AgentClock::following_tokio(T0 as i64);
+    let res = recover_orphan_video_sessions(
+        &home.0.join("video"),
+        &RecoverOpts {
+            active_session_ids: &std::collections::HashSet::new(),
+            clock: &clock,
+        },
+    );
+    assert_eq!(res.recovered, 1);
+    let sc = sidecar(&d, 2).unwrap();
+    assert_eq!(sc["finalized"], false);
+    let birth = xorgate_hal::fragment_stat::stat_fragment(&d.join("00002.mp4"))
+        .unwrap()
+        .birthtime_ms;
+    if birth > 1e12 {
+        // A filesystem with btime: fstat, shifted by the core's L_rec.
+        let lag = xorgate_core::sidecar::recovery_shift_lag(&samples).expect("usable samples");
+        assert_eq!(sc["anchor"], "fstat");
+        assert_eq!(sc["startTs"].as_f64().unwrap(), birth.round() - lag);
+    } else {
+        // No btime: computed, never shifted (and the samples were skipped).
+        assert_eq!(sc["anchor"], "computed");
+        assert_eq!(xorgate_core::sidecar::recovery_shift_lag(&samples), None);
+    }
+}
+
 /// `exact` with a child that never prints a timing line (the host's clock
 /// precondition failed): never deferred, legacy anchors.
 #[tokio::test(start_paused = true)]

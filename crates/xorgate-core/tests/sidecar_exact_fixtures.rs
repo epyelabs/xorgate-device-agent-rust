@@ -82,13 +82,21 @@ fn is_int(v: f64) -> bool {
 fn exact_timing_fixtures() {
     let f = load();
     let m: SessionManifest = parse_session_manifest(&f.manifest).unwrap().into();
-    assert!(f.cases.len() >= 32, "fixture lost cases");
+    assert!(f.cases.len() >= 34, "fixture lost cases");
     for c in &f.cases {
         let mut table = TimingTable::default();
         let mut deferred_since: BTreeMap<u64, f64> = BTreeMap::new();
         let mut written: Vec<String> = Vec::new();
         // seq → (written sidecar) for the clock-step check
         let mut by_seq: BTreeMap<u64, VideoSidecar> = BTreeMap::new();
+        // R-WP2R3-1: a capped fragment 0 before a > 7 s 0→1 stall leaves a
+        // TRUTHFUL gap (the stall); only cases that say so may have one.
+        let gap_ok: BTreeSet<u64> = c
+            .steps
+            .iter()
+            .filter_map(|st| st.expect.get("gapAllowedAfter"))
+            .flat_map(|v| serde_json::from_value::<Vec<u64>>(v.clone()).unwrap())
+            .collect();
         for (k, step) in c.steps.iter().enumerate() {
             let ctx = format!("{} step {k}", c.name);
             let mut rejected = Vec::new();
@@ -314,7 +322,7 @@ fn exact_timing_fixtures() {
             let Some(next) = by_seq.get(&(k + 1)) else {
                 continue;
             };
-            if sc.finalized {
+            if sc.finalized && !gap_ok.contains(k) {
                 let hole = next.start_ts - (sc.start_ts + sc.duration_ms);
                 assert!(
                     hole <= 2_000.0,
