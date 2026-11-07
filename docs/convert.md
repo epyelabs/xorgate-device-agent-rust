@@ -88,12 +88,20 @@ running the script again, or undone with `--revert`.
    `visudo -cf` before it lands. A refusal is a warning, not a failure. A root service user gets
    no grant.
 8. **systemctl**: `daemon-reload`, `enable xorgate-agent-rs`, `disable xorgate-agent`,
-   `start xorgate-agent-rs`. The `Conflicts=` stops the JS agent. The incoming unit is enabled
+   `start xorgate-agent-rs`. The `Conflicts=` stops the JS agent, and the unit's
+   `After=xorgate-agent.service` makes that start wait for the JS agent's WHOLE stop (its exit and
+   its `ExecStopPost` LED hook) before the Rust agent starts, so the two never run at once. That
+   is normally under a second. A JS agent that ignores SIGTERM is only SIGKILLed after its
+   `TimeoutStopSec` (systemd's default 90 s), so this step can then sit silent after
+   `== 8. systemctl` for about 100 s. **Do not interrupt it**: a Ctrl-C there triggers the
+   automatic revert (exit 4). The start is allowed 150 s. The incoming unit is enabled
    before the outgoing one is disabled, back to back (the revert does the same the other way), so
    a power cut never leaves a device with no agent enabled. Should both be enabled at boot,
    `Conflicts=` lets only one of them run, and running the script again finishes the job.
-9. **Verify**: within 90 s `xorgate-agent-rs` must be `active` and `xorgate-agent` inactive. If
-   not, the script reverts by itself (keep mode, JS restored) and exits 4.
+9. **Verify**: within 150 s `xorgate-agent-rs` must be `active` and `xorgate-agent` inactive
+   (or `failed`, after a SIGKILL). If not, the script reverts by itself (keep mode, JS restored)
+   and exits 4. With step 8's 150 s, an unhealthy convert returns after at most ~300 s plus the
+   revert.
 
 If a step from 4 to 7 fails, the script puts `/opt/xorgate-rs` back, removes the files that run
 created, restores the files it overwrote (a device with an earlier Rust install, like the bench),
@@ -178,6 +186,9 @@ It needs no network and no working Rust binary. It disables and stops `xorgate-a
 JS unit's enablement back to what the record says, and starts the JS agent if the record says it
 was enabled **or** running. The Rust files stay on disk but inert (disabled, nothing points at
 them), so converting again is quick. The record moves to `record.reverted-<UTC ts>`.
+The stop and the JS start are allowed 150 s each. A Rust agent that ignores SIGTERM is only
+SIGKILLed after its `TimeoutStopSec` (90 s), and the unit's `After=xorgate-agent.service` makes the
+JS start wait for that whole stop, so a revert can sit silent for about 100 s. Do not interrupt it.
 
 The script then compares the JS-owned files against `pre.manifest` and prints every difference:
 
@@ -221,7 +232,7 @@ the conversion itself created.
 | 1 | failed; the device is back at its pre-run state (convert), or the revert's self-check found differences | read the `failed:` line (download, checksum, missing member, smoke, write error) or the listed differences |
 | 2 | usage error | `install-rs.sh --help` |
 | 3 | refused, nothing changed: not root, not JS-provisioned, `--purge` of a pre-existing install, another `install-rs.sh` running | fix the precondition |
-| 4 | the Rust agent started but was not healthy within 90 s; the script reverted to the JS agent by itself | `journalctl -u xorgate-agent-rs -n 100`; the script printed the tail |
+| 4 | the Rust agent was not healthy after step 8's start (≤ 150 s) and step 9's verify (≤ 150 s); the script reverted to the JS agent by itself | `journalctl -u xorgate-agent-rs -n 100`; the script printed the tail |
 | 9 | only with the test-only `XORGATE_RS_CONVERT_FAIL_AT` (a simulated crash); never on a real device | run the script again, or `--revert` |
 
 Common failures:

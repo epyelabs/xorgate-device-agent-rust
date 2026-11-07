@@ -18,10 +18,12 @@
 # clientId = DEVICE_ID, and AWS IoT kicks the older session when a second one
 # connects, so two agents on the same identity would fight forever. The
 # `Conflicts=` below makes systemd stop xorgate-agent when this unit starts
-# (and vice versa) — it is the belt to install-rs.sh's braces. The bench-only
-# drop-in systemd/bench/90-bench-dev.conf resets it (and points this unit at a
-# SEPARATE dev identity + state dir) so Phase 0-5 can soak both agents on one
-# CM5; that drop-in is never shipped.
+# (and vice versa) — it is the belt to install-rs.sh's braces; `After=` below
+# orders the two jobs. On the bench, scripts/bench/install.sh comments the
+# `Conflicts=` line out of the INSTALLED copy (a drop-in cannot reset it: an
+# empty `Conflicts=` is ignored on systemd 252), and the bench-only drop-in
+# systemd/bench/90-bench-dev.conf points this unit at a SEPARATE dev identity +
+# state dir, so Phase 0-5 can soak both agents on one CM5. Neither is shipped.
 #
 # Prerequisites on the host (all handled by install-rs.sh / the converter):
 #   - The agent binary at /opt/xorgate-rs/bin/xorgate-rs (+ build-info.json).

@@ -6,6 +6,7 @@
 //! (P9) and the single live-parking call site (invariant 6). Components are
 //! the fakes of `recording_support` (the I/O halves are WP2–WP4's).
 
+mod log_capture;
 #[path = "recording_support/mod.rs"]
 mod recording_support;
 
@@ -969,10 +970,11 @@ async fn a_slow_probe_keeps_running_past_the_bound() {
 const ENOSPC: &str = "ENOSPC: no space left on device, write";
 
 /// The `[agent]`/`[recording]` log lines emitted on this thread while the
-/// guard lives (the tests run on tokio's current-thread runtime).
-fn capture_logs() -> (Arc<Mutex<Vec<String>>>, tracing::subscriber::DefaultGuard) {
+/// guard lives (the tests run on tokio's current-thread runtime), over the
+/// binary's one global subscriber (`log_capture`, F-FLAKE-1).
+fn capture_logs() -> (Arc<Mutex<Vec<String>>>, log_capture::CaptureGuard) {
     use tracing::field::{Field, Visit};
-    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+    use tracing_subscriber::layer::{Context, Layer};
     struct Msg(String);
     impl Visit for Msg {
         fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
@@ -997,8 +999,8 @@ fn capture_logs() -> (Arc<Mutex<Vec<String>>>, tracing::subscriber::DefaultGuard
         }
     }
     let logs = Arc::new(Mutex::new(Vec::new()));
-    let sub = tracing_subscriber::registry().with(Capture(logs.clone()));
-    (logs, tracing::subscriber::set_default(sub))
+    let guard = log_capture::install(Capture(logs.clone()));
+    (logs, guard)
 }
 
 /// review-wp2 N5 (1) + review-wp1 M1/S1: a throwing finalize aborts

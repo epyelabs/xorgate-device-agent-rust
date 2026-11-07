@@ -14,6 +14,12 @@
 #   N. NEGATIVE: the same with install-rs.sh's start budget put back to the old
 #      100 s (START_SECS=100) times out in step 8 and auto-reverts (exit 4)
 #   P. prompt JS (exits 1 s after SIGTERM): converts fast, no overlap
+#   R. --revert with a WEDGED Rust agent (SIGTERM ignored -> SIGKILL at 90 s,
+#      then a 15 s ExecStopPost, ~105 s; review R-P6F-2): the revert's stop
+#      gets START_SECS, reports `stopped` truthfully, JS starts only after the
+#      Rust stop (After=), the final `reverted:` line is unchanged
+#   RN. NEGATIVE: the same with the old 100 s budget: the stop times out, and
+#      the transcript says so (no false `stopped`), so R's checks fail
 # Run (systemd must be PID 1; takes ~5 min):
 #   docker run -d --name xg-irs --label xorgate.agent=<tag> --privileged --cgroupns=private \
 #     --tmpfs /run --tmpfs /run/lock -v "$PWD:/src:ro" debian:bookworm \
@@ -55,10 +61,19 @@ a = sys.argv[1:]
 if a[:1] in (["-v"], ["--version"]):
     print("xorgate-rs 0.0.0-test (fake)")
 elif a[:1] == ["led"]:
-    log("rs led " + a[1])
+    log("rs led " + a[1] + " begin")
+    if a[1] == "exit-state":
+        time.sleep(float(open("/var/lib/irs-sd/rs-poststop-secs").read()))
+    log("rs led " + a[1] + " end")
 elif a[:1] == ["run"]:
     log("rs start")
-    signal.signal(signal.SIGTERM, lambda s, f: (log("rs sigterm"), sys.exit(0)))
+    def on_term(_s, _f):
+        if open("/var/lib/irs-sd/rs-mode").read().strip() == "wedged":
+            log("rs sigterm (ignored)")
+        else:
+            log("rs sigterm")
+            sys.exit(0)
+    signal.signal(signal.SIGTERM, on_term)
     notify("READY=1")
     while True:
         time.sleep(1)
@@ -110,6 +125,7 @@ wipe() {
 provision() { # <js-mode: wedged|prompt> <ExecStopPost secs>: a JS-provisioned device, JS enabled + active
   wipe
   echo "$1" > /var/lib/irs-sd/js-mode; echo "$2" > /var/lib/irs-sd/poststop-secs
+  echo prompt > /var/lib/irs-sd/rs-mode; echo 0 > /var/lib/irs-sd/rs-poststop-secs
   install -d -m 0700 -o pi -g pi /etc/xorgate
   for f in device.cert.pem device.key.pem root-ca.pem; do echo "dummy $f" | install -m 0600 -o pi -g pi /dev/stdin "/etc/xorgate/$f"; done
   printf 'DEVICE_ID=dev-1\nIOT_DATA_ENDPOINT=x.iot\nMODE=real\nDEVICE_DIST_VERSION=latest\n' | install -m 0600 -o pi -g pi /dev/stdin /etc/xorgate/agent.env
@@ -145,10 +161,11 @@ EOF
 }
 idx() { local n; n=$(grep -nxF -- "$1" "$LOG" | head -1 | cut -d: -f1); echo "${n:-0}"; }
 before() { local a b; a=$(idx "$1"); b=$(idx "$2"); [ "$a" -gt 0 ] && [ "$b" -gt 0 ] && [ "$a" -lt "$b" ]; }
-convert() { # <installer> -> sets RC, SECS; output in $T/out
-  local t0 t1
+convert() { # <installer> [args…] (default: -y --tarball $GOOD) -> sets RC, SECS; output in $T/out
+  local t0 t1 i=$1; shift
+  [ $# -gt 0 ] || set -- -y --tarball "$GOOD"
   t0=$(date +%s%N)
-  bash "$1" -y --tarball "$GOOD" > "$T/out" 2>&1 < /dev/null; RC=$?
+  bash "$i" "$@" > "$T/out" 2>&1 < /dev/null; RC=$?
   t1=$(date +%s%N); SECS=$(( (t1 - t0) / 1000000000 ))
   echo "    install-rs.sh exit $RC after ${SECS} s; final line: $(tail -n1 "$T/out")"
   sed 's/^/    | /' "$LOG"
@@ -164,7 +181,7 @@ convert "$INSTALL_RS"
 grep -q 'auto\|revert' <(grep -v 'revert with:' "$T/out") && bad "wedged JS: the transcript mentions a revert" || ok "wedged JS: no auto-revert"
 case $(states) in inactive/active | failed/active) ok "wedged JS: JS $(states | cut -d/ -f1), Rust active" ;; *) bad "wedged JS: states $(states)" ;; esac
 [ "$SECS" -gt 100 ] && ok "wedged JS: step 8 really blocked past the old 100 s budget (${SECS} s total)" || bad "wedged JS: only ${SECS} s, the case does not discriminate"
-before "js led exit-state end" "rs led boot" && before "rs led boot" "rs start" && ok "wedged JS: no overlap (JS's ExecStopPost done before Rust's ExecStartPre)" || bad "wedged JS: overlap"
+before "js led exit-state end" "rs led boot begin" && before "rs led boot begin" "rs start" && ok "wedged JS: no overlap (JS's ExecStopPost done before Rust's ExecStartPre)" || bad "wedged JS: overlap"
 journalctl -u xorgate-agent --no-pager | grep -q "State 'stop-sigterm' timed out. Killing." && ok "wedged JS: systemd SIGKILLed it after TimeoutStopSec" || bad "wedged JS: no stop-sigterm timeout in the journal"
 
 # ---- N: negative, the old 100 s budget ----
@@ -176,6 +193,11 @@ convert "$T/install-rs-100.sh"
 [ "$RC" = 4 ] && ok "old 100 s budget: step 8 timed out and auto-reverted (exit 4)" || { bad "old 100 s budget: exit $RC (want 4)"; sed 's/^/    > /' "$T/out"; }
 grep -qF 'systemctl start xorgate-agent-rs failed' "$T/out" && ok "old 100 s budget: the transcript names the timed-out start" || bad "old 100 s budget: no start failure in the transcript"
 [ "$(tail -n1 "$T/out")" != "$FINAL" ] && ok "old 100 s budget: no converted: line" || bad "old 100 s budget: printed the converted: line"
+for _ in $(seq 30); do [ -z "$(systemctl list-jobs --no-legend 2>/dev/null)" ] && break; sleep 1; done
+[ -z "$(systemctl list-jobs --no-legend 2>/dev/null)" ] && ok "auto-revert: no job left queued" || bad "auto-revert: jobs still queued: $(systemctl list-jobs --no-legend)"
+[ "$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)/$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)" = enabled/active/disabled/inactive ] \
+  && ok "auto-revert: JS enabled + active, Rust disabled + inactive" || bad "auto-revert: end state $(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)/$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)"
+! grep -qx 'rs start' "$LOG" && ok "auto-revert: the queued Rust start never ran" || bad "auto-revert: the Rust agent ran"
 
 # ---- P: prompt JS, the shipped installer ----
 echo "== P. prompt JS (exits 1 s after SIGTERM, no ExecStopPost delay), shipped install-rs.sh"
@@ -183,8 +205,39 @@ provision prompt 0
 convert "$INSTALL_RS"
 [ "$RC" = 0 ] && [ "$(tail -n1 "$T/out")" = "$FINAL" ] && ok "prompt JS: converted (exit 0)" || { bad "prompt JS: exit $RC"; sed 's/^/    > /' "$T/out"; }
 [ "$(states)" = inactive/active ] && ok "prompt JS: JS inactive, Rust active" || bad "prompt JS: states $(states)"
-before "js led exit-state end" "rs led boot" && ok "prompt JS: no overlap" || bad "prompt JS: overlap"
+before "js led exit-state end" "rs led boot begin" && ok "prompt JS: no overlap" || bad "prompt JS: overlap"
 [ "$SECS" -lt 30 ] && ok "prompt JS: not delayed (${SECS} s)" || bad "prompt JS: ${SECS} s"
+
+# ---- R / RN: --revert against a wedged Rust agent ----
+REVERTED='[install-rs] reverted: xorgate-agent enabled + active; xorgate-agent-rs disabled (files kept). JS install matches the pre-conversion record: yes'
+wedged_rs_revert() { # <installer for --revert>: a prompt convert, then the Rust agent wedges, then --revert
+  provision prompt 0
+  bash "$INSTALL_RS" -y --tarball "$GOOD" > "$T/out" 2>&1 < /dev/null || { bad "setup convert failed"; sed 's/^/    > /' "$T/out"; }
+  for _ in $(seq 50); do [ "$(systemctl is-active xorgate-agent-rs)" = active ] && break; sleep 0.2; done
+  echo wedged > /var/lib/irs-sd/rs-mode; echo 15 > /var/lib/irs-sd/rs-poststop-secs
+  sleep 1; : > "$LOG"
+  convert "$1" --revert
+  sed -n '/systemctl\|stopped\|started/p' "$T/out" | sed 's/^/    > /'
+}
+echo "== R. --revert, wedged Rust (SIGTERM ignored, ExecStopPost 15 s), shipped install-rs.sh"
+wedged_rs_revert "$INSTALL_RS"
+[ "$RC" = 0 ] && [ "$(tail -n1 "$T/out")" = "$REVERTED" ] && ok "wedged Rust: reverted (exit 0, the unchanged reverted: line)" || { bad "wedged Rust: exit $RC"; sed 's/^/    > /' "$T/out"; }
+grep -qx '\[install-rs\]   - xorgate-agent-rs stopped' "$T/out" && ! grep -q '! systemctl stop' "$T/out" \
+  && ok "wedged Rust: the stop is reported truthfully (stopped, no failure line)" || bad "wedged Rust: stop report wrong"
+grep -qx '\[install-rs\]   - xorgate-agent started' "$T/out" && ok "wedged Rust: JS started (reported)" || bad "wedged Rust: no JS started line"
+[ "$SECS" -gt 100 ] && ok "wedged Rust: the stop really took past the old 100 s (${SECS} s)" || bad "wedged Rust: only ${SECS} s, the case does not discriminate"
+before "rs led exit-state end" "js led boot begin" && ok "wedged Rust: no overlap (Rust's ExecStopPost done before JS's ExecStartPre)" || bad "wedged Rust: overlap"
+case $(states) in active/inactive | active/failed) ok "wedged Rust: JS active, Rust $(states | cut -d/ -f2)" ;; *) bad "wedged Rust: states $(states)" ;; esac
+
+echo "== RN. NEGATIVE: the same --revert with the old 100 s budget"
+wedged_rs_revert "$T/install-rs-100.sh"
+if grep -qx '\[install-rs\]   - xorgate-agent-rs stopped' "$T/out" && ! grep -q '! systemctl stop' "$T/out"; then
+  bad "old 100 s budget: R's truthful-stop check still passes (the negative proves nothing)"
+else
+  ok "old 100 s budget: R's truthful-stop check FAILS"
+fi
+grep -q '! systemctl stop xorgate-agent-rs failed: timed out after 100s (xorgate-agent-rs is ' "$T/out" && ! grep -qx '\[install-rs\]   - xorgate-agent-rs stopped' "$T/out" \
+  && ok "old 100 s budget: the failure is reported with its real reason, and no false 'stopped'" || { bad "old 100 s budget: report"; sed 's/^/    > /' "$T/out"; }
 
 wipe
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
