@@ -95,7 +95,7 @@ bash -c "exec -a xorgate-capture $FK/sleep 1000 & wait" & JM=$!
 sleep 0.5
 kid() { local f st pp; for f in /proc/[0-9]*/stat; do st=$(cat "$f" 2>/dev/null) || continue; st=${st##*) }; read -r _ pp _ <<<"$st"; [ "$pp" = "$1" ] && { f=${f#/proc/}; echo "${f%/stat}"; return; }; done; }
 RH=$(kid "$RM"); JH=$(kid "$JM")
-[ -n "$RH" ] && [ -n "$JH" ] && [ "$(tr '\0' '\n' < /proc/$RH/cmdline | head -n1)" = xorgate-capture ]; expect $? "fake hosts running (argv[0] xorgate-capture)"
+[ -n "$RH" ] && [ -n "$JH" ] && [ "$(tr '\0' '\n' < "/proc/$RH/cmdline" | head -n1)" = xorgate-capture ]; expect $? "fake hosts running (argv[0] xorgate-capture)"
 echo "$RM" > "$STATE/xorgate-agent-rs.mainpid"; echo "$JM" > "$STATE/xorgate-agent.mainpid"
 : > "/dev/shm/shmpipe.$RH.    0"
 bash "$B/shm-audit.sh" >"$LOGS/shm.log" 2>&1

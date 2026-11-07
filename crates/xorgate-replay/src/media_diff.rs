@@ -7784,6 +7784,13 @@ kind = "decisions"
             "{:#?}",
             unt(&j, &r2)
         );
+        // ... nor a second host+exact side whose fragments all fell back to
+        // the TS's legacy anchors (no records): exact-vs-exact is plain T12.
+        let mut j = js.clone();
+        j.kind = "rust".into();
+        j.exact_timing = true;
+        assert!(unt(&j, &rs).contains(&row(1, "startTs")), "{:#?}", unt(&j, &rs));
+        assert!(unt(&rs, &j).contains(&row(1, "startTs")), "{:#?}", unt(&rs, &j));
         // ... and a table without the D51 row.
         let no_row = Table::parse(
             &std::fs::read_to_string(

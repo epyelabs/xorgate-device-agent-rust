@@ -8,6 +8,7 @@
 # camera-name=…`; tee every line with its own wall stamp; keep the pid; exec
 # with argv[0] = xorgate-capture; take the host from RIG_REAL_HOST, else from
 # /proc/<parent>/exe; refuse a parent that is not an xorgate-rs binary.
+# shellcheck disable=SC2015  # test assertions: `a && ok || no`
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SHIM_SRC="$HERE/../shims/xorgate-capture"
@@ -28,7 +29,7 @@ sys.stdout.write("tail-without-newline"); sys.stdout.flush()
 F
 cd "$T" || exit 1
 wait_eof() { for _ in $(seq 50); do grep -q '"k":"eof"' "$T/w/shim.ndjson" 2>/dev/null && return; sleep 0.1; done; }
-ARGV=(__capture-host -e libcamerasrc camera-name=/base/imx708@1a ! video/x-raw,framerate=15/1 ! "muxer=mp4mux fragment-duration=1000" "location=/h/%05d.mp4")
+ARGV=(__capture-host -e libcamerasrc camera-name=/base/imx708@1a ! "video/x-raw,framerate=15/1" ! "muxer=mp4mux fragment-duration=1000" "location=/h/%05d.mp4")
 out=$(FAKE_OUT="$T/fake.json" RIG_REAL_HOST="$T/xorgate-rs-py" "$SHIM" "${ARGV[@]}" 2>"$T/err"); rc=$?
 wait_eof
 python3 -I - "$T" <<'P' && ok "log verbatim, swap, tee with own stamps, pid kept, argv[0]" || no "log verbatim, swap, tee with own stamps, pid kept, argv[0]"
@@ -56,7 +57,7 @@ P
 [ $rc -eq 0 ] && grep -q "New clock: GstSystemClock" <<<"$out" && ok "the agent still reads every stdout line" || no "the agent still reads every stdout line (rc=$rc)"
 grep -q "ERROR: from element /x: boom" "$T/err" && ok "stderr passthrough" || no "stderr passthrough"
 rm -f "$T/w/shim.ndjson"
-FAKE_OUT="$T/fake2.json" RIG_REAL_HOST="$T/xorgate-rs-py" "$SHIM" __capture-host videotestsrc ! libcamerasrc ! fakesink >/dev/null 2>&1
+FAKE_OUT="$T/fake2.json" RIG_REAL_HOST="$T/xorgate-rs-py" "$SHIM" __capture-host videotestsrc '!' libcamerasrc '!' fakesink >/dev/null 2>&1
 wait_eof
 python3 -I -c 'import json,sys; a=json.load(open(sys.argv[1]))["orig"]; assert a==["xorgate-capture","__capture-host","videotestsrc","!","libcamerasrc","!","fakesink"], a' "$T/fake2.json" \
   && ok "nothing but libcamerasrc camera-name=… is swapped" || no "nothing but libcamerasrc camera-name=… is swapped"

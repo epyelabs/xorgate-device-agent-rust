@@ -4,6 +4,8 @@ checker). Synthetic shim logs + sidecars from a simulated timeline; every
 bound and both references are flipped to FAIL. Run:
   python3 -I tools/replay/tests/timing_truth_test.py   (prints PASS/FAIL lines)
 """
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -189,11 +191,12 @@ class T(unittest.TestCase):
         self.assertEqual(r["verdict"], "PASS", r)
 
     def test_exit_codes(self):
-        self.assertEqual(tt.main([self.tmp]), 2)  # nothing to check
-        exact_side(self.tmp).write()
-        self.assertEqual(tt.main([self.tmp]), 0)
-        exact_side(self.tmp, off={1: 500}).write()
-        self.assertEqual(tt.main([self.tmp]), 1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tt.main([self.tmp]), 2)  # nothing to check
+            exact_side(self.tmp).write()
+            self.assertEqual(tt.main([self.tmp]), 0)
+            exact_side(self.tmp, off={1: 500}).write()
+            self.assertEqual(tt.main([self.tmp]), 1)
 
 
 if __name__ == "__main__":
