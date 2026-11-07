@@ -407,9 +407,31 @@ install -d -o pi -g pi -m 0700 /var/lib/xorgate-rs; mkdir -p /usr/local/bin /etc
 printf '[Service]\nExecStart=/usr/local/bin/xorgate-blackbox.sh\n' > /etc/systemd/system/xorgate-blackbox.service
 printf '#!/bin/bash\n# old blackbox\n' > /usr/local/bin/xorgate-blackbox.sh
 echo active > "$STATE/xorgate-blackbox.service"
-BB_WAIT_S=0 bash "$CTL" install --dry-run > "$LOGS/dry" 2>&1; expect $? "install --dry-run exits 0"
-[ ! -e /usr/local/bin/xorgate-drive-blackbox ] && [ ! -e /var/lib/xorgate-rs/drive-blackbox ] && [ "$(cat "$STATE/xorgate-blackbox.service")" = active ]; expect $? "dry run writes nothing, old unit untouched"
-BB_WAIT_S=0 bash "$CTL" install > "$LOGS/inst" 2>&1; rc=$?; expect "$rc" "install exits 0"; [ "$rc" = 0 ] || cat "$LOGS/inst"
+untouched() { [ ! -e /usr/local/bin/xorgate-drive-blackbox ] && [ ! -e /etc/systemd/system/xorgate-drive-blackbox.service ] && [ ! -e /var/lib/xorgate-rs/drive-blackbox ] \
+  && [ "$(cat "$STATE/xorgate-blackbox.service")" = active ] && ! grep -qE 'systemctl (enable|disable|daemon-reload)' "$STATE/systemctl.log" 2>/dev/null; }
+# The "agent": a process whose environ carries the PROD identity (the guard reads /proc/<MainPID>/environ).
+env -i DEVICE_ID=58b51737-0000-4000-8000-000000000002 XORGATE_HOME=/var/lib/xorgate sleep 600 & AGP=$!
+echo "$AGP" > "$STATE/xorgate-agent-rs.mainpid"; sleep 0.2
+echo inactive > "$STATE/xorgate-agent-rs"
+BB_WAIT_S=0 bash "$CTL" install > "$LOGS/ref1" 2>&1; rc=$?
+[ "$rc" != 0 ] && grep -q 'REFUSING: xorgate-agent-rs is inactive' "$LOGS/ref1" && untouched; expect $? "install refuses while xorgate-agent-rs is not active (rc=$rc), nothing changed"
+echo active > "$STATE/xorgate-agent-rs"
+BB_WAIT_S=0 bash "$CTL" install --expect dev > "$LOGS/ref2" 2>&1; rc=$?
+[ "$rc" != 0 ] && grep -q "REFUSING: the Rust agent runs as '58b51737-0000-4000-8000-000000000002', expected a73f7a36" "$LOGS/ref2" && untouched
+expect $? "install --expect dev refuses on the PROD identity (rc=$rc), nothing changed"
+bash "$CTL" install --expect >/dev/null 2>&1; [ $? = 2 ]; expect $? "--expect without a value is a usage error"
+# No DEVICE_ID in the environ: the guard falls back to state.json under XORGATE_HOME.
+mkdir -p "$W/devhome"; echo '{"v":1,"deviceId":"a73f7a36-0000-4000-8000-000000000001"}' > "$W/devhome/state.json"
+env -i XORGATE_HOME="$W/devhome" sleep 600 & DVP=$!
+echo "$DVP" > "$STATE/xorgate-agent-rs.mainpid"; sleep 0.2
+BB_WAIT_S=0 bash "$CTL" install --expect dev --dry-run > "$LOGS/dry" 2>&1; expect $? "install --expect dev --dry-run exits 0 (state.json fallback)"
+grep -q 'state.json deviceId=a73f7a36-0000-4000-8000-000000000001' "$LOGS/dry" && grep -q 'ok: identity a73f7a36-0000-4000-8000-000000000001 matches the expected a73f7a36' "$LOGS/dry"
+expect $? "the identity comes from state.json when the environ has none, and is printed"
+untouched; expect $? "dry run writes nothing, old unit untouched"
+kill "$DVP" 2>/dev/null; echo "$AGP" > "$STATE/xorgate-agent-rs.mainpid"
+BB_WAIT_S=0 bash "$CTL" install > "$LOGS/inst" 2>&1; rc=$?; expect "$rc" "install exits 0 (default --expect prod)"; [ "$rc" = 0 ] || cat "$LOGS/inst"
+grep -q 'identity: DEVICE_ID=58b51737-0000-4000-8000-000000000002' "$LOGS/inst" && grep -q 'ok: identity 58b51737-0000-4000-8000-000000000002 matches the expected 58b51737' "$LOGS/inst"
+expect $? "install prints the identity it found (environ DEVICE_ID)"
 cmp -s "$PY" /usr/local/bin/xorgate-drive-blackbox && [ "$(stat -c %a /usr/local/bin/xorgate-drive-blackbox)" = 755 ]; expect $? "recorder installed 0755, byte-identical"
 cmp -s "$UNIT_SRC" /etc/systemd/system/xorgate-drive-blackbox.service; expect $? "unit installed byte-identical"
 [ "$(stat -c '%U %a' /var/lib/xorgate-rs/drive-blackbox)" = "root 755" ] && [ "$(stat -c %U /var/lib/xorgate-rs)" = pi ]; expect $? "data dir root 0755; /var/lib/xorgate-rs still pi"
@@ -422,11 +444,20 @@ for u in xorgate-agent xorgate-agent-rs sim7600-lte; do [ "$(cat "$STATE/$u")" =
 : > "$STATE/systemctl.log"
 BB_WAIT_S=0 bash "$CTL" install > "$LOGS/inst2" 2>&1; expect $? "second install exits 0"
 grep -q 'already enabled + active' "$LOGS/inst2" && grep -q 'already stopped + disabled' "$LOGS/inst2" && ! grep -q 'enable --now\|restart' "$STATE/systemctl.log"; expect $? "second install is a no-op"
-bash "$CTL" status > "$LOGS/status" 2>&1; expect $? "status exits 0"
+bash "$CTL" status > "$LOGS/status" 2>&1; rc=$?
+[ "$rc" != 0 ] && grep -q 'STALE: no files' "$LOGS/status"; expect $? "status fails with no line yet (rc=$rc)"
 grep -q 'xorgate-drive-blackbox.service *active / enabled' "$LOGS/status" && grep -q 'retired' "$LOGS/status"; expect $? "status shows both units"
 cp "$SF" /var/lib/xorgate-rs/drive-blackbox/
 bash "$CTL" summary all > "$LOGS/sum" 2>&1; expect $? "summary all (on the bench) exits 0"
 grep -q 'boots: 2' "$LOGS/sum"; expect $? "bench summary over the data dir"
+DD=/var/lib/xorgate-rs/drive-blackbox
+python3 -c 'import json,time; print(json.dumps({"v":1,"ts":int(time.time()*1000)-3000,"boot":"x"}))' > "$DD/20261107T000000Z_fresh000.ndjson"
+bash "$CTL" status > "$LOGS/status2" 2>&1; rc=$?
+[ "$rc" = 0 ] && grep -qE 'ok: last line [0-9]+ s old' "$LOGS/status2"; expect $? "status exits 0 on a 3 s old last line (rc=$rc): $(grep -o 'ok: last line.*' "$LOGS/status2")"
+sleep 1.1; python3 -c 'import json,time; print(json.dumps({"v":1,"ts":int(time.time()*1000)-60000,"boot":"x"}))' > "$DD/20261107T000001Z_stale000.ndjson"
+bash "$CTL" status > "$LOGS/status3" 2>&1; rc=$?
+[ "$rc" != 0 ] && grep -qE 'STALE: last line (59|60|61) s old' "$LOGS/status3"; expect $? "status fails on a 60 s old last line (rc=$rc): $(grep -o 'STALE.*' "$LOGS/status3")"
+rm -f "$DD/20261107T000000Z_fresh000.ndjson" "$DD/20261107T000001Z_stale000.ndjson"
 bash "$CTL" summary "$SF" | grep -q 'rail_v min 4.71'; expect $? "summary of a local file runs locally"
 bash "$CTL" summary /nonexistent/x >/dev/null 2>&1; [ $? != 0 ]; expect $? "summary of a missing path fails"
 bash "$CTL" uninstall > "$LOGS/un" 2>&1; expect $? "uninstall exits 0"
@@ -435,6 +466,7 @@ bash "$CTL" uninstall > "$LOGS/un" 2>&1; expect $? "uninstall exits 0"
 [ "$(cat "$STATE/xorgate-blackbox.service")" = inactive ] && [ "$(cat "$STATE/xorgate-blackbox.service.enabled")" = disabled ] && ! grep -q 'enable.*xorgate-blackbox.service' "$STATE/systemctl.log"; expect $? "old unit NOT re-enabled"
 [ "$(cat "$STATE/xorgate-drive-blackbox.service")" = inactive ]; expect $? "new unit stopped"
 
+kill "$AGP" 2>/dev/null
 echo "== sample lines (fixture run)"
 echo "$SAMPLE"
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
