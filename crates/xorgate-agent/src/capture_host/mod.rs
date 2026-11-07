@@ -38,8 +38,10 @@
 //! exec in the fault handler, and GLib's charset conversion of output in a
 //! non-UTF-8 locale (the host writes UTF-8 as is).
 
+mod diag;
 pub mod nls;
 mod sys;
+mod timing;
 
 use std::ffi::{CStr, CString, OsString};
 use std::io::Write;
@@ -179,7 +181,16 @@ fn run(eos_on_shutdown: bool, tokens: &[CString]) -> i32 {
         return 1;
     };
     let shared = Arc::new(Shared::default());
-    install_sync_handler(&bus, &pipeline, &shared);
+    // WP1 (§Design 8): exact fragment timing on the one splitmuxsink (record
+    // mode); bridge-only and every other argv have none.
+    let timing = timing::Timing::find_splitmuxsink(&pipeline).map(|sm| {
+        let t = Arc::new(timing::Timing::default());
+        t.connect(&sm, &pipeline);
+        t
+    });
+    // §Design 6: nothing is installed unless XORGATE_CAPTURE_HOST_DIAG=1.
+    let diag = diag::enabled_from_env().then(|| diag::Diag::install(&pipeline));
+    install_sync_handler(&bus, &pipeline, &shared, timing.clone());
 
     let mut l = Launch {
         pipeline: pipeline.clone(),
@@ -192,6 +203,10 @@ fn run(eos_on_shutdown: bool, tokens: &[CString]) -> i32 {
         waiting_eos: false,
         tfthen: None,
         shared: shared.clone(),
+        timing,
+        pending_end: None,
+        diag,
+        playing_seen: false,
     };
 
     print(&tr(c"Setting pipeline to PAUSED ...\n"));
@@ -240,11 +255,21 @@ fn run(eos_on_shutdown: bool, tokens: &[CString]) -> i32 {
 
 /// `bus_sync_handler` (`gst-launch.c:945-1004`): runs on the POSTING thread.
 /// Never blocks, takes no lock the loop holds, and a panic is contained.
-fn install_sync_handler(bus: &gst::Bus, pipeline: &gst::Element, shared: &Arc<Shared>) {
+///
+/// WP1 additions (both no-ops without a splitmuxsink): the R5 clock check at
+/// the pipeline's PLAYING, and the end stamp of `splitmuxsink-fragment-
+/// closed`, read here on the posting thread so the clocks are read at the
+/// close and not when the loop gets to the message.
+fn install_sync_handler(
+    bus: &gst::Bus,
+    pipeline: &gst::Element,
+    shared: &Arc<Shared>,
+    timing: Option<Arc<timing::Timing>>,
+) {
     let weak = pipeline.downgrade();
     let sh = shared.clone();
     bus.set_sync_handler(move |_bus, msg| {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contain((), || {
             let Some(p) = weak.upgrade() else { return };
             match msg.view() {
                 gst::MessageView::StateChanged(sc) if is_from(msg, &p) => {
@@ -252,6 +277,20 @@ fn install_sync_handler(bus: &gst::Bus, pipeline: &gst::Element, shared: &Arc<Sh
                     dump(&p, &format!("gst-launch.{name}"));
                     // "place a marker into e.g. strace logs" (an access(2) probe).
                     let _ = gst::glib::tmp_dir().join("gst-launch").join(&name).exists();
+                    if sc.current() == gst::State::Playing {
+                        if let Some(line) = timing.as_ref().and_then(|t| t.on_playing(&p)) {
+                            printerr(&line);
+                        }
+                    }
+                }
+                gst::MessageView::Element(e) => {
+                    if let (Some(t), Some(s)) = (timing.as_ref(), e.structure()) {
+                        if s.name() == timing::FRAGMENT_CLOSED {
+                            if let Some(ev) = t.on_fragment_closed(s, &p) {
+                                timing::post(&p, ev);
+                            }
+                        }
+                    }
                 }
                 gst::MessageView::Error(e) => {
                     dump(&p, "gst-launch.error");
@@ -273,9 +312,21 @@ fn install_sync_handler(bus: &gst::Bus, pipeline: &gst::Element, shared: &Arc<Sh
                 }
                 _ => {}
             }
-        }));
+        });
         gst::BusSyncReply::Pass
     });
+}
+
+/// R-WP1-2: every closure the host hands to GStreamer (the bus sync handler,
+/// `format-location-full`, the diag pad probes) runs its body through this.
+/// A panic there would otherwise unwind into C ("panic in a function that
+/// cannot unwind": SIGABRT, the pipeline dead, the last fragment lost). Here
+/// it is caught and `fallback` returned; the callback's fixed return value
+/// (`Pass`, NULL, `Ok`) then keeps the pipeline running, and a timing
+/// callback's fragment keeps the legacy anchors. Rust's default panic hook
+/// still prints its `thread '…' panicked at …` lines on stderr (D52).
+pub(crate) fn contain<R>(fallback: R, f: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
 }
 
 struct Launch {
@@ -289,6 +340,14 @@ struct Launch {
     waiting_eos: bool,
     tfthen: Option<gst::ClockTime>,
     shared: Arc<Shared>,
+    /// WP1: exact fragment timing (record mode only).
+    timing: Option<Arc<timing::Timing>>,
+    /// The last `XG-FRAGMENT-END` seen, printed on the pipeline's EOS.
+    pending_end: Option<(u32, String)>,
+    /// WP1: the optional buffer-flow probes (`XORGATE_CAPTURE_HOST_DIAG=1`).
+    diag: Option<diag::Diag>,
+    /// The pipeline reached PLAYING once (nice sync, diag start).
+    playing_seen: bool,
 }
 
 /// The loop's poll period: the late-signal check and the tty position line.
@@ -314,6 +373,11 @@ impl Launch {
     fn tick(&mut self, position: bool, next_position: &mut Instant) {
         sys::poll_late();
         let msg = self.bus.timed_pop(gst::ClockTime::from_mseconds(100));
+        if let Some(d) = self.diag.as_mut() {
+            for line in d.check() {
+                printerr(&line);
+            }
+        }
         if position && Instant::now() >= *next_position {
             *next_position = Instant::now() + TICK;
             self.print_position();
@@ -361,6 +425,13 @@ impl Launch {
                 let _ = self.pipeline.set_state(gst::State::Playing);
             }
             V::Eos(_) => {
+                // WP1: the last fragment's end, on a clean EOS only.
+                if let (Some((id, line)), Some(t)) = (self.pending_end.take(), self.timing.as_ref())
+                {
+                    if t.last_open() == Some(id) {
+                        print(&format!("{line}\n"));
+                    }
+                }
                 print(&trf(
                     c"Got EOS from element \"%s\".\n",
                     &[Arg::S(&src_name(msg))],
@@ -389,6 +460,15 @@ impl Launch {
             V::StateChanged(sc) => {
                 if !is_from(msg, &self.pipeline) {
                     return;
+                }
+                if sc.current() == gst::State::Playing && !self.playing_seen {
+                    self.playing_seen = true;
+                    // WP1: every thread at the main thread's nice (the
+                    // agent's renice can land after `xg-sigwait` exists).
+                    sys::nice_threads_like_main();
+                    if let Some(d) = self.diag.as_mut() {
+                        d.playing();
+                    }
                 }
                 if !self.shared.target_playing.load(Ordering::SeqCst)
                     && sc.current() == gst::State::Paused
@@ -450,6 +530,20 @@ impl Launch {
                     match s.get::<i32>("signo") {
                         Ok(libc::SIGINT) => self.intr_handler(),
                         Ok(libc::SIGHUP) => self.hup_handler(),
+                        // A wake from the race path: poll it now.
+                        Ok(0) => sys::poll_late(),
+                        _ => {}
+                    }
+                } else if s.name() == timing::TIMING_MESSAGE {
+                    match timing::decode(s) {
+                        Some(timing::Event::Start(line)) => print(&format!("{line}\n")),
+                        Some(timing::Event::ClockOff(line)) => printerr(&line),
+                        Some(timing::Event::End(id, line)) => self.pending_end = Some((id, line)),
+                        Some(timing::Event::Rejected(line))
+                            if self.timing.as_ref().is_some_and(|t| t.first_rejection()) =>
+                        {
+                            printerr(&line)
+                        }
                         _ => {}
                     }
                 } else if s.name() == "GstLaunchInterrupt" {
@@ -519,20 +613,23 @@ impl Launch {
         }
     }
 
-    /// `intr_handler` (`gst-launch.c:504-520`), dispatched on the loop thread.
+    /// `intr_handler` (`gst-launch.c:504-520`), dispatched on the loop thread,
+    /// in gst-launch's order: print `handling interrupt.`, post the
+    /// interrupt, and only then remove the one-shot watch (G_SOURCE_REMOVE →
+    /// SIG_DFL). A second SIGINT inside that window coalesces into the
+    /// pending dispatch (swallowed), one after it takes the default action.
     ///
-    /// The host removes the watch BEFORE printing `handling interrupt.`;
-    /// gst-launch prints, posts, and only then removes it (G_SOURCE_REMOVE →
-    /// SIG_DFL). In that sub-millisecond gst-launch window a second SIGINT is
-    /// still caught by GLib's handler with no source left, i.e. SWALLOWED
-    /// (review-wp0-r2 µs probe: swallowed 7/10 at 15–38 µs after the line,
-    /// fatal 3/10 at 110–125 µs); the host dies on ANY second SIGINT after
-    /// the line. Divergence D50 (wp0.md). gst-launch's order (mutation MH)
-    /// reproduces the window but, on the dev build, fails transcripts 1
-    /// (`SigCgt@after_intr`) and 2b, whose ~1 ms reaction outruns the dev
-    /// host's print→removal gap; WP1 retries MH on a release build.
+    /// WP1 (mutation MH of review-wp0-r2, adopted; D50 dropped): on a RELEASE
+    /// build the rig transcripts 1 (`SigCgt@after_intr`) and 2b (death by the
+    /// second SIGINT) PASS with this order (2 × 15/15). The window is the
+    /// same mechanism as gst-launch's but narrower (the host's print → post →
+    /// removal is a few µs; GLib's return-and-remove takes ~0.05-0.4 ms,
+    /// load-dependent: at load ~9 gst-launch swallowed a second SIGINT sent
+    /// 15-43 µs after the line 4/10 times (WP1) and up to ~431 µs after it
+    /// 6/8 times (review-wp1), the host 0/18): timing only, not an ordering
+    /// difference, and consumer-invisible (the agent sends ONE SIGINT, then
+    /// SIGKILL after its 10 s grace).
     fn intr_handler(&mut self) {
-        sys::dispatched(libc::SIGINT);
         print("handling interrupt.\n");
         let s = gst::Structure::builder("GstLaunchInterrupt")
             .field("message", "Pipeline interrupted")
@@ -542,6 +639,7 @@ impl Launch {
                 .src(&self.pipeline)
                 .build(),
         );
+        sys::dispatched(libc::SIGINT);
     }
 
     /// `hup_handler` (`gst-launch.c:523-540`).
@@ -700,6 +798,10 @@ mod tests {
             waiting_eos: false,
             tfthen: None,
             shared: Arc::new(Shared::default()),
+            timing: None,
+            pending_end: None,
+            diag: None,
+            playing_seen: false,
         };
         sys::testing::prime_race_path_sigint(&bus);
         let mut next = Instant::now() + TICK;
@@ -716,6 +818,59 @@ mod tests {
             _ => None,
         };
         assert_eq!(name.as_deref(), Some("GstLaunchInterrupt"));
+        sys::testing::reset();
+    }
+
+    /// WP1 (MH adopted, D50 dropped): gst-launch's order. When the
+    /// interrupt is POSTED the SIGINT watch is still installed (a second
+    /// SIGINT then coalesces); it is removed only after, before the handler
+    /// returns. The old host order removed it before the print.
+    #[test]
+    fn intr_handler_removes_the_watch_only_after_print_and_post() {
+        let _g = sys::testing::lock();
+        sys::testing::reset();
+        gst::init().unwrap();
+        let pipeline: gst::Element = gst::Pipeline::new().upcast();
+        let bus = pipeline.bus().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(None::<bool>));
+        let s2 = seen.clone();
+        bus.set_sync_handler(move |_, m| {
+            if let gst::MessageView::Application(a) = m.view() {
+                if a.structure()
+                    .is_some_and(|s| s.name() == "GstLaunchInterrupt")
+                {
+                    *s2.lock().unwrap() = Some(sys::testing::intr_is_off());
+                }
+            }
+            gst::BusSyncReply::Pass
+        });
+        let mut l = Launch {
+            pipeline: pipeline.clone(),
+            bus: bus.clone(),
+            eos_on_shutdown: true,
+            is_live: false,
+            buffering: false,
+            prerolled: false,
+            in_progress: false,
+            waiting_eos: false,
+            tfthen: None,
+            shared: Arc::new(Shared::default()),
+            timing: None,
+            pending_end: None,
+            diag: None,
+            playing_seen: false,
+        };
+        sys::testing::prime_race_path_sigint(&bus); // INTR = ARMED
+        sys::testing::take_late_for_test();
+        sys::testing::set_intr_pending();
+        l.intr_handler();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(false),
+            "watch removed before the post"
+        );
+        assert!(sys::testing::intr_is_off(), "watch not removed at all");
+        bus.unset_sync_handler();
         sys::testing::reset();
     }
 
