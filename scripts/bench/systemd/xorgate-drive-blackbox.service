@@ -1,0 +1,36 @@
+# BENCH-ONLY: the drive blackbox recorder (scripts/bench/drive-blackbox.py).
+# Installed by scripts/bench/drive-blackbox-ctl.sh install as
+#   /etc/systemd/system/xorgate-drive-blackbox.service
+# It lives under scripts/bench/ (not systemd/) on purpose: systemd/** is packed
+# into every agent tarball (scripts/pack.sh) and triggers device-rs-deploy-dev,
+# while scripts/bench/** is never shipped. It replaces the retired
+# xorgate-blackbox.service (USER 2026-11-07; the ctl disables that one and
+# keeps its files).
+#
+# Read-only toward the agent, enforced here too: the whole filesystem is
+# read-only to it (ProtectSystem=strict) except its own data dir.
+
+[Unit]
+Description=xorgate drive blackbox (5 s NDJSON recorder, bench only)
+After=xorgate-agent-rs.service
+# Restart=always forever: never hit the start rate limit on a flaky drive.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/local/bin/xorgate-drive-blackbox run --out-dir /var/lib/xorgate-rs/drive-blackbox
+Restart=always
+RestartSec=5s
+TimeoutStopSec=10s
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=10%
+MemoryMax=64M
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/xorgate-rs/drive-blackbox
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
