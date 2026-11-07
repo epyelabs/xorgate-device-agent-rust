@@ -392,7 +392,7 @@ fn build_sidecar_typed(
     seq: f64,
     stat: FragmentStat,
     opts: &SidecarOpts,
-    exact: Option<ExactTimes>,
+    exact: Option<TimesOverride>,
 ) -> VideoSidecar {
     let (start_ts, duration_ms, anchor) = sidecar_times(
         manifest.anchor_ts,
@@ -428,20 +428,40 @@ fn build_sidecar_typed(
 /// (`video-segments.ts:170-191`), shared by the typed and the raw build.
 /// `segment_seconds` is the JS `ToNumber` of the manifest field.
 ///
-/// Phase 7a: `exact` (computed by [`exact_times`] from the capture host's
-/// stamps) takes precedence and is labelled [`EXACT_ANCHOR`]; `None` runs
-/// the TS derivation below unchanged.
+/// Phase 7a: [`TimesOverride::Exact`] (from [`exact_times`]) takes
+/// precedence and is labelled [`EXACT_ANCHOR`]; [`TimesOverride::Shift`]
+/// runs the TS derivation and moves an `fstat` start earlier by a measured
+/// lag (D56); `None` runs the TS derivation below unchanged.
 fn sidecar_times(
     anchor_ts: f64,
     segment_seconds: f64,
     seq: f64,
     stat: FragmentStat,
     opts: &SidecarOpts,
-    exact: Option<ExactTimes>,
+    ov: Option<TimesOverride>,
 ) -> (f64, f64, SidecarAnchor) {
-    if let Some(x) = exact {
-        return (x.start_ts, x.duration_ms, EXACT_ANCHOR);
+    match ov {
+        Some(TimesOverride::Exact(x)) => (x.start_ts, x.duration_ms, EXACT_ANCHOR),
+        Some(TimesOverride::Shift(lag_ms)) => {
+            match legacy_sidecar_times(anchor_ts, segment_seconds, seq, stat, opts) {
+                (start, duration, SidecarAnchor::Fstat) => {
+                    (start - lag_ms, duration, SidecarAnchor::Fstat)
+                }
+                other => other,
+            }
+        }
+        None => legacy_sidecar_times(anchor_ts, segment_seconds, seq, stat, opts),
     }
+}
+
+/// The TS derivation (`video-segments.ts:170-191`), unchanged.
+fn legacy_sidecar_times(
+    anchor_ts: f64,
+    segment_seconds: f64,
+    seq: f64,
+    stat: FragmentStat,
+    opts: &SidecarOpts,
+) -> (f64, f64, SidecarAnchor) {
     // ext4 gives real birthtimes; a zero/bogus one (some tmpfs, copied trees)
     // falls back to anchor arithmetic — that's exactly what `anchor` records.
     let nominal_start = anchor_ts + seq * segment_seconds * 1000.0;
@@ -517,17 +537,19 @@ pub fn build_sidecar_body(
     build_sidecar_body_exact(manifest, seq, stat, opts, None)
 }
 
-/// [`build_sidecar_body`] with an optional exact override (phase-7a):
-/// `Some` replaces `startTs`/`durationMs`/`anchor` (= [`EXACT_ANCHOR`]) and
-/// nothing else — `startMono` keeps its derivation from the write-time pair,
-/// so it moves with `startTs` by construction (§8.6). `None` = legacy, byte
-/// for byte.
+/// [`build_sidecar_body`] with an optional override (phase-7a):
+/// [`TimesOverride::Exact`] replaces `startTs`/`durationMs`/`anchor` (=
+/// [`EXACT_ANCHOR`]); [`TimesOverride::Shift`] moves a legacy `fstat`
+/// `startTs` earlier by a lag and keeps its `durationMs` and anchor (D56).
+/// Nothing else changes — `startMono` keeps its derivation from the
+/// write-time pair, so it moves with `startTs` by construction (§8.6).
+/// `None` = legacy, byte for byte.
 pub fn build_sidecar_body_exact(
     manifest: &SessionManifest,
     seq: f64,
     stat: FragmentStat,
     opts: &SidecarOpts,
-    exact: Option<ExactTimes>,
+    exact: Option<TimesOverride>,
 ) -> SidecarBody {
     let m = match manifest {
         SessionManifest::Typed(m) => {
@@ -672,7 +694,8 @@ pub fn plan_sweep(
 /// - a fragment with an [`Stamp::Exact`] stamp gets [`exact_times`]
 ///   (anchor [`EXACT_ANCHOR`]); one without (lost line, rejected stamp, an
 ///   untimed session) gets the legacy derivation, fragment 0's `boundary`
-///   walk-back included — for that fragment only;
+///   walk-back included, and (D56) an `fstat` start shifted earlier by the
+///   session's last accepted lag when an exact fragment precedes it;
 /// - on a LIVE sweep (`!include_newest`) a closed fragment whose own stamp
 ///   or successor's stamp is [`TimingTable::pending`] is deferred
 ///   (`deferred`), until it has been deferred for `defer_max_ms`; then it is
@@ -738,18 +761,13 @@ pub fn plan_sweep_timed(
         let finalized = opts.finalized.unwrap_or(!is_newest);
         let exact_times = match exact {
             None => None,
-            Some(x) => match x.decide(
-                *seq,
-                finalized,
-                st.mtime_ms,
-                opts.include_newest,
-                frags.iter().any(|(_, s)| *s == *seq + 1.0),
-            ) {
+            Some(x) => match x.decide(*seq, finalized, st.mtime_ms, opts.include_newest) {
                 ExactDecision::Defer(id) => {
                     plan.deferred.push(id);
                     continue;
                 }
-                ExactDecision::Exact(t) => Some(t),
+                ExactDecision::Exact(t) => Some(TimesOverride::Exact(t)),
+                ExactDecision::LegacyShift(lag) => Some(TimesOverride::Shift(lag)),
                 ExactDecision::Legacy => None,
             },
         };
@@ -872,8 +890,12 @@ fn js_num_text(v: f64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Stamp {
     Exact(FragmentTiming),
-    /// A line arrived but failed the guard: legacy anchors, nothing to wait for.
-    Rejected,
+    /// A line arrived but failed the guard: legacy anchors, nothing to wait
+    /// for. `lag_ms` is the line's raw (refused) lag, kept for diagnostics
+    /// only: a D56 shift NEVER uses it (mutant "shift by the rejected lag").
+    Rejected {
+        lag_ms: f64,
+    },
 }
 
 /// The run's per-fragment timing, keyed by splitmuxsink's `fragment_id`
@@ -934,7 +956,7 @@ impl TimingTable {
                 Ok(())
             }
             Err(e) => {
-                self.stamps.insert(id, Stamp::Rejected);
+                self.stamps.insert(id, Stamp::Rejected { lag_ms });
                 Err(e)
             }
         }
@@ -966,6 +988,19 @@ impl TimingTable {
         }
     }
 
+    /// D56: the lag of the most recent ACCEPTED stamp below `id` in this run
+    /// (= session). A legacy fallback `id` is shifted by it; rejected and
+    /// lost ids in between do not break the chain (a run of lost lines after
+    /// an exact fragment stays shifted by the same lag), and the refused lag
+    /// of a rejected line is never used. `None` (no exact predecessor in the
+    /// session, e.g. fragment 0 or an untimed run) = no shift.
+    pub fn shift_lag_below(&self, id: u64) -> Option<f64> {
+        self.stamps.range(..id).rev().find_map(|(_, s)| match s {
+            Stamp::Exact(t) => Some(t.lag_ms),
+            Stamp::Rejected { .. } => None,
+        })
+    }
+
     /// At least one timing line arrived this run: the host emits them (an
     /// untimed run — `gst-launch`, a host whose clock precondition failed —
     /// never waits for one).
@@ -989,6 +1024,17 @@ impl TimingTable {
     }
 }
 
+/// How a timed sweep overrides one sidecar's legacy times.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TimesOverride {
+    /// The host's stamps (anchor [`EXACT_ANCHOR`]).
+    Exact(ExactTimes),
+    /// D56: a legacy `fstat` fallback whose session already had an exact
+    /// fragment: `startTs − lag`, legacy `durationMs` and anchor unchanged
+    /// (`computed`/`boundary` are not shifted).
+    Shift(f64),
+}
+
 /// The exact `startTs`/`durationMs` of one sidecar (integers, `durationMs ≥ 0`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExactTimes {
@@ -1001,17 +1047,14 @@ pub struct ExactTimes {
 /// across it, as `mtime − birthtime` does today:
 /// - finalized with the successor's accepted stamp: `startTs(N+1) − startTs(N)`;
 /// - else with an end stamp (clean EOS of the final fragment): `endTs − startTs`;
-/// - else, when the successor fragment N+1 is LISTED but falls back to the
-///   legacy anchors (its stamp lost, rejected, or still missing when the
-///   wait ran out): `mtime(N) − startTs(N)`, so N ends where the legacy N+1
-///   starts (`birth(N+1)` ≈ `mtime(N)`) and the replay timeline has no seam
-///   (`replay-manifest.ts` `CONTIGUITY_SLACK_MS` = 2000 would otherwise see a
-///   ≈ lag(N) ≈ 2.1 s hole as a gap; review R-WP2-3, orchestrator ruling).
-///   N absorbs ≈ lag(N) (≤ the 7 s guard), below the backend's
-///   `CLOCK_STEP_MIN_MS` (10 s default);
-/// - else (no successor: crash-cut `finalized:false`, the final fragment
-///   without an end stamp, a successor line without its file):
-///   `mtime − lag(N) − startTs` (= mtime − the callback's wall time).
+/// - else (no accepted successor stamp: crash-cut `finalized:false`, the
+///   final fragment without an end stamp, a successor whose line was lost,
+///   rejected or timed out): `mtime − lag(N) − startTs` (= mtime − the
+///   callback's wall time ≈ legacy's `mtime − birthtime`), so the backend's
+///   clock-step margin is exactly legacy's. A legacy successor is instead
+///   SHIFTED earlier by the session's last accepted lag
+///   ([`TimingTable::shift_lag_below`], ruling 2026-11-06 on R-WP2R-1), which
+///   keeps the replay timeline contiguous without touching any duration.
 ///
 /// Every result is floored at 0 (backend `durationMs: int ≥ 0`) and never
 /// clamped from above: on a SIGINT EOS `endTs` can be up to one frame
@@ -1022,19 +1065,15 @@ pub struct ExactTimes {
 /// WP1 rig shape: fragment 0 opens at its first frame (lag ≈ 3–20 ms),
 /// fragments N ≥ 1 one GOP late (lag ≈ 2 s). Both are in the guard.
 ///
-/// The no-fake-step margin holds only while the backend's
-/// `CLOCK_STEP_MIN_MS` stays above [`LAG_GUARD_MAX_MS`] (7000).
 pub fn exact_times(
     own: &FragmentTiming,
     successor: Option<&FragmentTiming>,
-    successor_listed: bool,
     finalized: bool,
     mtime_ms: f64,
 ) -> ExactTimes {
     let raw = match (finalized, successor, own.end_ts) {
         (true, Some(next), _) => next.start_ts - own.start_ts,
         (_, _, Some(end)) => end - own.start_ts,
-        _ if successor_listed => js_math_round(mtime_ms - own.start_ts),
         _ => js_math_round(mtime_ms - own.lag_ms - own.start_ts),
     };
     ExactTimes {
@@ -1066,6 +1105,8 @@ pub struct ExactSweep<'a> {
 pub enum ExactDecision {
     Exact(ExactTimes),
     Legacy,
+    /// D56: legacy, `fstat` start shifted earlier by this lag.
+    LegacyShift(f64),
     Defer(u64),
 }
 
@@ -1077,17 +1118,12 @@ pub fn seq_id(seq: f64) -> Option<u64> {
 
 impl ExactSweep<'_> {
     /// The decision for one closed, non-empty fragment (§8.4–8.5).
-    ///
-    /// `successor_listed`: the listing holds fragment `seq + 1`'s file, so a
-    /// successor without an accepted stamp gets a legacy sidecar (and
-    /// [`exact_times`] keeps N contiguous with it).
     pub fn decide(
         &self,
         seq: f64,
         finalized: bool,
         mtime_ms: f64,
         final_sweep: bool,
-        successor_listed: bool,
     ) -> ExactDecision {
         let Some(id) = seq_id(seq) else {
             return ExactDecision::Legacy;
@@ -1104,14 +1140,13 @@ impl ExactSweep<'_> {
             }
         }
         match t.exact(id) {
-            Some(own) => ExactDecision::Exact(exact_times(
-                own,
-                t.exact(id + 1),
-                successor_listed,
-                finalized,
-                mtime_ms,
-            )),
-            None => ExactDecision::Legacy,
+            Some(own) => {
+                ExactDecision::Exact(exact_times(own, t.exact(id + 1), finalized, mtime_ms))
+            }
+            None => match t.shift_lag_below(id) {
+                Some(lag) => ExactDecision::LegacyShift(lag),
+                None => ExactDecision::Legacy,
+            },
         }
     }
 }
@@ -1530,7 +1565,13 @@ mod tests {
             start_ts: T0 + 300.0,
             duration_ms: 60_000.0,
         };
-        let body = build_sidecar_body_exact(&manifest().into(), 0.0, stat, &opts, Some(x));
+        let body = build_sidecar_body_exact(
+            &manifest().into(),
+            0.0,
+            stat,
+            &opts,
+            Some(TimesOverride::Exact(x)),
+        );
         assert_eq!(
             body.to_json(),
             r#"{"v":1,"deviceId":"dev-1","streamKey":"cam0","sessionId":"sess-1","seq":0,"startTs":1750000000300,"startMono":500300,"durationMs":60000,"sizeBytes":123,"timeSource":"ntp","codec":"h264","width":1920,"height":1080,"fps":15,"bitrateKbps":2000,"anchor":"pts","finalized":true}"#
@@ -1555,7 +1596,7 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
-        let rb = build_sidecar_body_exact(&raw, 0.0, stat, &opts, Some(x));
+        let rb = build_sidecar_body_exact(&raw, 0.0, stat, &opts, Some(TimesOverride::Exact(x)));
         assert_eq!(rb.to_json(), body.to_json());
     }
 
@@ -1611,7 +1652,7 @@ mod tests {
             Err(StampReject::StartTs(SANE_EPOCH_MS))
         );
         for id in 3..=7 {
-            assert_eq!(t.get(id), Some(&Stamp::Rejected), "{id}");
+            assert!(matches!(t.get(id), Some(Stamp::Rejected { .. })), "{id}");
             assert!(!t.pending(id));
         }
         // A gap below the highest id is lost, never pending.
@@ -1637,7 +1678,7 @@ mod tests {
             t.record_start(32, T0 + 660_300.0, 2_100.0, f64::NAN),
             Err(StampReject::Inconsistent { .. })
         ));
-        assert_eq!(t.get(31), Some(&Stamp::Rejected));
+        assert!(matches!(t.get(31), Some(Stamp::Rejected { .. })));
         t.clear();
         assert!(t.is_empty() && !t.timed());
     }
@@ -1658,15 +1699,15 @@ mod tests {
         let mt = T0 + 62_400.0; // = the next callback's wall
                                 // Non-final: the stamp delta, whatever the mtime says (a +S step).
         assert_eq!(
-            exact_times(&own, Some(&next(150_000.0)), false, true, mt).duration_ms,
+            exact_times(&own, Some(&next(150_000.0)), true, mt).duration_ms,
             150_000.0
         );
         assert_eq!(
-            exact_times(&own, Some(&next(40_000.0)), false, true, mt).duration_ms,
+            exact_times(&own, Some(&next(40_000.0)), true, mt).duration_ms,
             40_000.0
         );
         assert_eq!(
-            exact_times(&own, Some(&next(-30_000.0)), false, true, mt).duration_ms,
+            exact_times(&own, Some(&next(-30_000.0)), true, mt).duration_ms,
             0.0
         );
         // Clean final: endTs − startTs (before the successor-less mtime rule).
@@ -1674,10 +1715,7 @@ mod tests {
             end_ts: Some(T0 + 45_300.0),
             ..own
         };
-        assert_eq!(
-            exact_times(&ended, None, false, true, mt).duration_ms,
-            45_000.0
-        );
+        assert_eq!(exact_times(&ended, None, true, mt).duration_ms, 45_000.0);
         assert_eq!(
             exact_times(
                 &FragmentTiming {
@@ -1685,7 +1723,6 @@ mod tests {
                     ..own
                 },
                 None,
-                false,
                 true,
                 mt
             )
@@ -1694,39 +1731,14 @@ mod tests {
         );
         // Crash-cut (finalized:false): mtime − lag − startTs even with a successor stamp.
         assert_eq!(
-            exact_times(&own, Some(&next(60_000.0)), false, false, T0 + 32_400.4).duration_ms,
+            exact_times(&own, Some(&next(60_000.0)), false, T0 + 32_400.4).duration_ms,
             30_000.0
         );
-        // R-WP2-3: a LISTED successor without an accepted stamp (legacy N+1
-        // starts at its birth ≈ mtime(N)): N ends at mtime, no − lag.
-        assert_eq!(
-            exact_times(&own, None, true, true, mt).duration_ms,
-            62_100.0
-        );
-        assert_eq!(exact_times(&own, None, true, true, T0).duration_ms, 0.0);
-        // ... but an accepted successor stamp or an end stamp still wins.
-        assert_eq!(
-            exact_times(&own, Some(&next(60_000.0)), true, true, mt).duration_ms,
-            60_000.0
-        );
-        assert_eq!(
-            exact_times(&ended, None, true, true, mt).duration_ms,
-            45_000.0
-        );
         // No successor, no end: the same mtime rule.
-        assert_eq!(
-            exact_times(&own, None, false, true, mt).duration_ms,
-            60_000.0
-        );
-        assert_eq!(exact_times(&own, None, false, true, T0).duration_ms, 0.0);
-        assert_eq!(
-            exact_times(&own, None, false, true, f64::NAN).duration_ms,
-            0.0
-        );
-        assert_eq!(
-            exact_times(&own, None, false, true, mt).start_ts,
-            T0 + 300.0
-        );
+        assert_eq!(exact_times(&own, None, true, mt).duration_ms, 60_000.0);
+        assert_eq!(exact_times(&own, None, true, T0).duration_ms, 0.0);
+        assert_eq!(exact_times(&own, None, true, f64::NAN).duration_ms, 0.0);
+        assert_eq!(exact_times(&own, None, true, mt).start_ts, T0 + 300.0);
     }
 
     /// §8.5: a live sweep defers while a stamp may be in flight, at most
@@ -1744,7 +1756,7 @@ mod tests {
                 now_ms: now,
                 defer_max_ms: 10_000.0,
             }
-            .decide(0.0, true, T0 + 62_400.0, false, false)
+            .decide(0.0, true, T0 + 62_400.0, false)
         };
         assert_eq!(x(&since, 1_000.0), ExactDecision::Defer(0));
         since.insert(0, 1_000.0);
@@ -1757,26 +1769,118 @@ mod tests {
             defer_max_ms: 10_000.0,
         };
         assert!(matches!(
-            fin.decide(0.0, true, T0 + 62_400.0, true, false),
+            fin.decide(0.0, true, T0 + 62_400.0, true),
             ExactDecision::Exact(_)
         ));
-        // Own stamp missing (lost) → legacy; a non-integral seq → legacy.
+        // Own stamp missing (lost) → legacy, shifted by the last accepted lag
+        // (D56: exact 0 precedes it); a non-integral seq → plain legacy.
         assert_eq!(
-            fin.decide(5.0, true, T0, true, false),
-            ExactDecision::Legacy
+            fin.decide(5.0, true, T0, true),
+            ExactDecision::LegacyShift(2_100.0)
         );
-        assert_eq!(
-            fin.decide(0.5, true, T0, false, false),
-            ExactDecision::Legacy
-        );
+        assert_eq!(fin.decide(0.5, true, T0, false), ExactDecision::Legacy);
         // A crash-cut fragment does not wait for its successor's stamp.
         assert!(matches!(
-            fin.decide(0.0, false, T0 + 62_400.0, false, false),
+            fin.decide(0.0, false, T0 + 62_400.0, false),
             ExactDecision::Exact(_)
         ));
         assert_eq!(seq_id(3.0), Some(3));
         assert_eq!(seq_id(-1.0), None);
         assert_eq!(seq_id(f64::INFINITY), None);
+    }
+
+    /// D56 (ruling on R-WP2R-1): a legacy fallback is shifted by the most
+    /// recent ACCEPTED lag below it; the chain runs through lost and
+    /// rejected ids; no exact predecessor = no shift; only `fstat` moves.
+    #[test]
+    fn legacy_fallbacks_shift_by_the_last_accepted_lag() {
+        let mut t = TimingTable::default();
+        assert_eq!(t.shift_lag_below(5), None);
+        t.record_start(1, T0 + 60_300.0, 2_000.0, T0 + 62_300.0)
+            .unwrap();
+        assert!(t
+            .record_start(2, T0 + 120_300.0, 9_000.0, T0 + 129_300.0)
+            .is_err());
+        t.record_start(4, T0 + 240_300.0, 2_200.0, T0 + 242_500.0)
+            .unwrap();
+        assert_eq!(t.shift_lag_below(0), None);
+        assert_eq!(t.shift_lag_below(1), None, "no exact predecessor");
+        assert_eq!(t.shift_lag_below(2), Some(2_000.0));
+        assert_eq!(
+            t.shift_lag_below(3),
+            Some(2_000.0),
+            "never the refused 9000"
+        );
+        assert_eq!(t.shift_lag_below(4), Some(2_000.0));
+        assert_eq!(t.shift_lag_below(5), Some(2_200.0));
+        assert_eq!(
+            t.shift_lag_below(9),
+            Some(2_200.0),
+            "lost ids continue the chain"
+        );
+        let x = ExactSweep {
+            table: &t,
+            deferred_since: &std::collections::BTreeMap::new(),
+            now_ms: 0.0,
+            defer_max_ms: 10_000.0,
+        };
+        assert_eq!(
+            x.decide(3.0, true, T0, true),
+            ExactDecision::LegacyShift(2_000.0)
+        );
+        assert_eq!(x.decide(0.0, true, T0, true), ExactDecision::Legacy);
+        // The override moves an fstat start only; durationMs and the anchor stay.
+        let opts = SidecarOpts {
+            finalized: true,
+            boundary_end_ms: None,
+            time_source: None,
+            clock_pair: ClockPair {
+                wall_ms: T0 + 600_000.0,
+                mono_ms: 900_000.0,
+            },
+        };
+        let stat = FragmentStat {
+            size_bytes: 9.0,
+            birthtime_ms: T0 + 182_301.0,
+            mtime_ms: T0 + 242_300.0,
+        };
+        let m: SessionManifest = manifest().into();
+        let legacy = build_sidecar_body(&m, 3.0, stat, &opts)
+            .typed()
+            .unwrap()
+            .clone();
+        let shifted =
+            build_sidecar_body_exact(&m, 3.0, stat, &opts, Some(TimesOverride::Shift(2_000.0)))
+                .typed()
+                .unwrap()
+                .clone();
+        assert_eq!(shifted.start_ts, legacy.start_ts - 2_000.0);
+        assert_eq!(shifted.duration_ms, legacy.duration_ms);
+        assert_eq!(shifted.anchor, SidecarAnchor::Fstat);
+        assert_eq!(shifted.start_mono, legacy.start_mono - 2_000.0);
+        // computed (no btime) and boundary are never shifted.
+        let no_btime = FragmentStat {
+            birthtime_ms: 0.0,
+            ..stat
+        };
+        assert_eq!(
+            build_sidecar_body_exact(
+                &m,
+                3.0,
+                no_btime,
+                &opts,
+                Some(TimesOverride::Shift(2_000.0))
+            ),
+            build_sidecar_body(&m, 3.0, no_btime, &opts)
+        );
+        let b = SidecarOpts {
+            boundary_end_ms: Some(T0 + 62_301.0),
+            ..opts
+        };
+        assert_eq!(
+            build_sidecar_body_exact(&m, 0.0, stat, &b, Some(TimesOverride::Shift(2_000.0))),
+            build_sidecar_body(&m, 0.0, stat, &b)
+        );
     }
 
     #[test]

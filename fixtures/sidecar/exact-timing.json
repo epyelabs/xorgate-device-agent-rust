@@ -362,16 +362,17 @@
        },
        "00001.json": {
         "startTs": 1760000060300,
-        "durationMs": 62100,
+        "durationMs": 60000,
         "startMono": 360300,
         "finalized": true
        }
       },
-      "legacy": [
-       "00002.json"
-      ],
+      "legacy": [],
       "deferred": [],
-      "rejected": []
+      "rejected": [],
+      "shifted": {
+       "00002.json": 2100
+      }
      }
     }
    ]
@@ -542,7 +543,7 @@
       "exact": {
        "00001.json": {
         "startTs": 1760000060300,
-        "durationMs": 62100,
+        "durationMs": 60000,
         "startMono": 360300,
         "finalized": true
        }
@@ -610,18 +611,19 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 62100,
+        "durationMs": 60000,
         "startMono": 300300,
         "finalized": true
        }
       },
-      "legacy": [
-       "00001.json",
-       "00002.json"
-      ],
+      "legacy": [],
       "deferred": [],
       "rejected": [],
-      "activePath": null
+      "activePath": null,
+      "shifted": {
+       "00001.json": 2100,
+       "00002.json": 2100
+      }
      }
     }
    ]
@@ -1268,26 +1270,27 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 67001,
+        "durationMs": 64901,
         "startMono": 300300,
         "finalized": true
        },
        "00002.json": {
         "startTs": 1760000120300,
-        "durationMs": 59999,
+        "durationMs": 52999,
         "startMono": 420300,
         "finalized": true
        }
       },
-      "legacy": [
-       "00001.json",
-       "00003.json"
-      ],
+      "legacy": [],
       "deferred": [],
       "rejected": [
        1,
        3
-      ]
+      ],
+      "shifted": {
+       "00001.json": 2100,
+       "00003.json": 7000
+      }
      }
     }
    ]
@@ -1363,18 +1366,19 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 62100,
+        "durationMs": 60000,
         "startMono": 300300,
         "finalized": true
        }
       },
-      "legacy": [
-       "00001.json"
-      ],
+      "legacy": [],
       "deferred": [],
       "rejected": [
        1
-      ]
+      ],
+      "shifted": {
+       "00001.json": 2100
+      }
      }
     }
    ]
@@ -1996,7 +2000,7 @@
    ]
   },
   {
-   "name": "WP1 rig shape, line 1 lost: fragment 0 absorbs lag(1) to stay contiguous with legacy 1",
+   "name": "WP1 rig shape, line 1 lost: legacy 1 is shifted by lag(0) = 12 ms only",
    "steps": [
     {
      "lines": [
@@ -2074,7 +2078,7 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 62000,
+        "durationMs": 61988,
         "startMono": 300300,
         "finalized": true
        },
@@ -2085,11 +2089,12 @@
         "finalized": true
        }
       },
-      "legacy": [
-       "00001.json"
-      ],
+      "legacy": [],
       "deferred": [],
-      "rejected": []
+      "rejected": [],
+      "shifted": {
+       "00001.json": 12
+      }
      }
     }
    ]
@@ -2197,7 +2202,7 @@
    ]
   },
   {
-   "name": "R-WP2-3 lost line N+1: exact N is contiguous with the legacy N+1 (no replay gap)",
+   "name": "lost line N+1: exact N and the SHIFTED legacy N+1 are contiguous (no replay gap)",
    "steps": [
     {
      "lines": [
@@ -2289,18 +2294,19 @@
        },
        "00001.json": {
         "startTs": 1760000060300,
-        "durationMs": 62000,
+        "durationMs": 60000,
         "startMono": 360300,
         "finalized": true
        }
       },
-      "legacy": [
-       "00002.json"
-      ],
+      "legacy": [],
       "deferred": [
        3
       ],
-      "rejected": []
+      "rejected": [],
+      "shifted": {
+       "00002.json": 2000
+      }
      }
     }
    ]
@@ -2374,17 +2380,18 @@
        },
        "00001.json": {
         "startTs": 1760000060300,
-        "durationMs": 62100,
+        "durationMs": 60000,
         "startMono": 360300,
         "finalized": true
        }
       },
-      "legacy": [
-       "00002.json"
-      ],
+      "legacy": [],
       "deferred": [],
       "rejected": [],
-      "activePath": null
+      "activePath": null,
+      "shifted": {
+       "00002.json": 2100
+      }
      }
     }
    ]
@@ -2476,7 +2483,7 @@
       "exact": {
        "00000.json": {
         "startTs": 1760000000300,
-        "durationMs": 62100,
+        "durationMs": 60000,
         "startMono": 300300,
         "finalized": true
        },
@@ -2487,13 +2494,925 @@
         "finalized": true
        }
       },
-      "legacy": [
-       "00001.json"
-      ],
+      "legacy": [],
       "deferred": [],
       "rejected": [
        1
-      ]
+      ],
+      "shifted": {
+       "00001.json": 2100
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 several consecutive lost lines: legacy 2 and 3 shifted by the same lag(1)",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
+       }
+      },
+      {
+       "start": {
+        "id": 4,
+        "startTs": 1760000240300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000242400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000122400
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122401,
+        "mtimeMs": 1760000182400
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182401,
+        "mtimeMs": 1760000242400
+       }
+      },
+      {
+       "name": "00004.mp4",
+       "stat": {
+        "sizeBytes": 1004,
+        "birthtimeMs": 1760000242401,
+        "mtimeMs": 1760000302400
+       }
+      },
+      {
+       "name": "00005.mp4",
+       "stat": {
+        "sizeBytes": 1005,
+        "birthtimeMs": 1760000302401,
+        "mtimeMs": 1760000362400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 60000,
+        "startMono": 360300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [
+       4
+      ],
+      "rejected": [],
+      "shifted": {
+       "00002.json": 2100,
+       "00003.json": 2100
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 lost line then a recovered exact line: exact 1, shifted 2, exact 3, both seams contiguous",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000180300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000182400
+       }
+      },
+      {
+       "start": {
+        "id": 4,
+        "startTs": 1760000240300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000242400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000122400
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122401,
+        "mtimeMs": 1760000182400
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182401,
+        "mtimeMs": 1760000242400
+       }
+      },
+      {
+       "name": "00004.mp4",
+       "stat": {
+        "sizeBytes": 1004,
+        "birthtimeMs": 1760000242401,
+        "mtimeMs": 1760000302400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 60000,
+        "startMono": 360300,
+        "finalized": true
+       },
+       "00003.json": {
+        "startTs": 1760000180300,
+        "durationMs": 60000,
+        "startMono": 480300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [],
+      "shifted": {
+       "00002.json": 2100
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 a 10.5 s rotation stall does not fake a step: durationMs = legacy's",
+   "nominalMs": 60000,
+   "minStepMs": 10000,
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000180300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000182400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000130800
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000130801,
+        "mtimeMs": 1760000182400
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182401,
+        "mtimeMs": 1760000242400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 68400,
+        "startMono": 360300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [],
+      "durationAsLegacy": [
+       "00001.json"
+      ],
+      "noStep": [
+       "00001.json"
+      ],
+      "shifted": {
+       "00002.json": 2100
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 a real 8500 ms wall step with line 2 lost is measured exactly as legacy measures it",
+   "nominalMs": 60000,
+   "minStepMs": 10000,
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000188800,
+        "lagMs": 2100,
+        "cbWallMs": 1760000190900
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000130900
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000130901,
+        "mtimeMs": 1760000190900
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000190901,
+        "mtimeMs": 1760000250900
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 68500,
+        "startMono": 360300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [],
+      "durationAsLegacy": [
+       "00001.json"
+      ],
+      "shifted": {
+       "00002.json": 2100
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 a real 30000 ms wall step with line 2 lost is measured exactly as legacy measures it",
+   "nominalMs": 60000,
+   "minStepMs": 10000,
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000062400
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000210300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000212400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000152400
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000152401,
+        "mtimeMs": 1760000212400
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000212401,
+        "mtimeMs": 1760000272400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 90000,
+        "startMono": 360300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [],
+      "durationAsLegacy": [
+       "00001.json"
+      ],
+      "shifted": {
+       "00002.json": 2100
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 a 0-byte successor with its line lost: no shift, fragment 0 unchanged (mtime - lag - start)",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 2,
+        "startTs": 1760000120300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 0,
+        "birthtimeMs": 1760000062401,
+        "mtimeMs": 1760000122400
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122401,
+        "mtimeMs": 1760000182400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 a stat-less successor with its line lost: no shift, fragment 0 unchanged (mtime - lag - start)",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 2,
+        "startTs": 1760000120300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000122400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062400
+       }
+      },
+      {
+       "name": "00001.mp4"
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122401,
+        "mtimeMs": 1760000182400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 N+1 missing while N+2 exists: legacy 3 is shifted by lag(1) through the missing id 2",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 2000,
+        "cbWallMs": 1760000062300
+       }
+      },
+      {
+       "start": {
+        "id": 4,
+        "startTs": 1760000240300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000242400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000062300
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000062301,
+        "mtimeMs": 1760000122400
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182401,
+        "mtimeMs": 1760000242400
+       }
+      },
+      {
+       "name": "00004.mp4",
+       "stat": {
+        "sizeBytes": 1004,
+        "birthtimeMs": 1760000242401,
+        "mtimeMs": 1760000302400
+       }
+      },
+      {
+       "name": "00005.mp4",
+       "stat": {
+        "sizeBytes": 1005,
+        "birthtimeMs": 1760000302401,
+        "mtimeMs": 1760000362400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 60000,
+        "startMono": 300300,
+        "finalized": true
+       },
+       "00001.json": {
+        "startTs": 1760000060300,
+        "durationMs": 60100,
+        "startMono": 360300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [
+       4
+      ],
+      "rejected": [],
+      "shifted": {
+       "00003.json": 2000
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "D56 a rejected line's lag is never used: legacy 1 and 2 shifted by lag(0) = 2100, not 7001",
+   "steps": [
+    {
+     "lines": [
+      {
+       "start": {
+        "id": 0,
+        "startTs": 1760000000300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000002400
+       }
+      },
+      {
+       "start": {
+        "id": 1,
+        "startTs": 1760000060300,
+        "lagMs": 7001,
+        "cbWallMs": 1760000067301
+       }
+      },
+      {
+       "start": {
+        "id": 3,
+        "startTs": 1760000180300,
+        "lagMs": 2100,
+        "cbWallMs": 1760000182400
+       }
+      }
+     ],
+     "entries": [
+      {
+       "name": "session.json"
+      },
+      {
+       "name": "00000.mp4",
+       "stat": {
+        "sizeBytes": 1000,
+        "birthtimeMs": 1760000002401,
+        "mtimeMs": 1760000067301
+       }
+      },
+      {
+       "name": "00001.mp4",
+       "stat": {
+        "sizeBytes": 1001,
+        "birthtimeMs": 1760000067302,
+        "mtimeMs": 1760000122400
+       }
+      },
+      {
+       "name": "00002.mp4",
+       "stat": {
+        "sizeBytes": 1002,
+        "birthtimeMs": 1760000122401,
+        "mtimeMs": 1760000182400
+       }
+      },
+      {
+       "name": "00003.mp4",
+       "stat": {
+        "sizeBytes": 1003,
+        "birthtimeMs": 1760000182401,
+        "mtimeMs": 1760000242400
+       }
+      }
+     ],
+     "opts": {
+      "includeNewest": false,
+      "clockPair": {
+       "wallMs": 1760000600000,
+       "monoMs": 900000
+      }
+     },
+     "nowMs": 100000,
+     "expect": {
+      "exact": {
+       "00000.json": {
+        "startTs": 1760000000300,
+        "durationMs": 64901,
+        "startMono": 300300,
+        "finalized": true
+       }
+      },
+      "legacy": [],
+      "deferred": [],
+      "rejected": [
+       1
+      ],
+      "shifted": {
+       "00001.json": 2100,
+       "00002.json": 2100
+      }
      }
     }
    ]

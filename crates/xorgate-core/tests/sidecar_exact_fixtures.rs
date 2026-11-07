@@ -36,6 +36,8 @@ struct Case {
     step_ms: Option<f64>,
     #[serde(rename = "steppedSeq")]
     stepped_seq: Option<f64>,
+    #[serde(rename = "minStepMs")]
+    min_step_ms: Option<f64>,
     steps: Vec<Step>,
 }
 
@@ -80,7 +82,7 @@ fn is_int(v: f64) -> bool {
 fn exact_timing_fixtures() {
     let f = load();
     let m: SessionManifest = parse_session_manifest(&f.manifest).unwrap().into();
-    assert!(f.cases.len() >= 23, "fixture lost cases");
+    assert!(f.cases.len() >= 32, "fixture lost cases");
     for c in &f.cases {
         let mut table = TimingTable::default();
         let mut deferred_since: BTreeMap<u64, f64> = BTreeMap::new();
@@ -152,6 +154,20 @@ fn exact_timing_fixtures() {
             let exact_want = step.expect["exact"].as_object().unwrap();
             let legacy_want: BTreeSet<String> =
                 serde_json::from_value(step.expect["legacy"].clone()).unwrap();
+            // D56: legacy fallbacks shifted earlier by the session's last accepted lag.
+            let set = |k: &str| -> BTreeSet<String> {
+                step.expect
+                    .get(k)
+                    .map(|v| serde_json::from_value(v.clone()).unwrap())
+                    .unwrap_or_default()
+            };
+            let shifted_want: BTreeMap<String, f64> = step
+                .expect
+                .get("shifted")
+                .map(|v| serde_json::from_value(v.clone()).unwrap())
+                .unwrap_or_default();
+            let as_legacy = set("durationAsLegacy");
+            let no_step = set("noStep");
             let mut seen = BTreeSet::new();
             for w in &plan.writes {
                 let name = base(&w.sidecar_path).to_string();
@@ -196,6 +212,30 @@ fn exact_timing_fixtures() {
                         e["finalized"].as_bool().unwrap(),
                         "{ctx} {name}"
                     );
+                    // Ruling on R-WP2R-1: where asked, the exact durationMs is
+                    // legacy's (± the 1 ms birth-after-callback jitter of the
+                    // timeline), so the backend's step margin is legacy's.
+                    if as_legacy.contains(&name) {
+                        let l = legacy
+                            .writes
+                            .iter()
+                            .find(|l| l.sidecar_path == w.sidecar_path)
+                            .expect("legacy plan writes it");
+                        let ld = l.sidecar.typed().unwrap().duration_ms;
+                        assert!(
+                            (sc.duration_ms - ld).abs() <= 1.0,
+                            "{ctx} {name}: durationMs {} vs legacy {ld}",
+                            sc.duration_ms
+                        );
+                    }
+                    if no_step.contains(&name) {
+                        let (nom, min) = (c.nominal_ms.unwrap(), c.min_step_ms.unwrap());
+                        assert!(
+                            sc.duration_ms <= nom + min,
+                            "{ctx} {name}: fakes a clock step ({} > {nom} + {min})",
+                            sc.duration_ms
+                        );
+                    }
                     // Only startTs/durationMs/anchor differ from the legacy body.
                     if let Some(l) = legacy
                         .writes
@@ -209,6 +249,20 @@ fn exact_timing_fixtures() {
                         lv.anchor = sc.anchor;
                         assert_eq!(lv, sc, "{ctx} {name}: other fields");
                     }
+                } else if let Some(lag) = shifted_want.get(&name) {
+                    // The legacy sidecar with only its fstat startTs moved
+                    // earlier by `lag` (startMono follows); durationMs and the
+                    // anchor are legacy's.
+                    let l = legacy
+                        .writes
+                        .iter()
+                        .find(|l| l.sidecar_path == w.sidecar_path)
+                        .unwrap_or_else(|| panic!("{ctx} {name}: not in the legacy plan"));
+                    let mut want = l.sidecar.typed().unwrap().clone();
+                    assert_eq!(want.anchor, SidecarAnchor::Fstat, "{ctx} {name}");
+                    want.start_ts -= lag;
+                    want.start_mono -= lag;
+                    assert_eq!(sc, want, "{ctx} {name}: shifted by {lag}");
                 } else if legacy_want.contains(&name) {
                     let l = legacy
                         .writes
@@ -241,6 +295,7 @@ fn exact_timing_fixtures() {
                 .keys()
                 .cloned()
                 .chain(legacy_want.iter().cloned())
+                .chain(shifted_want.keys().cloned())
                 .collect();
             assert_eq!(seen, want_all, "{ctx}: written set");
             // The agent's bookkeeping: keep the first deferral instant.
