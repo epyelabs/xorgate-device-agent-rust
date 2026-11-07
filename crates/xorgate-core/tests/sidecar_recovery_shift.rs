@@ -195,6 +195,25 @@ fn no_pts_predecessor_means_no_shift() {
     assert_eq!(p, l);
 }
 
+/// Class (c) ruling: a session that died in fragment 1 has only fragment
+/// 0's pts sidecar on disk (fragment 0 opens at its first frame, lag 12 ms).
+/// The recovered fragment 1 is shifted by one GOP (2000), not lag(0), and
+/// meets fragment 0 (which ended at F1, line 1 having been accepted)
+/// within the slack; lag(0) would leave a 2089 ms gap.
+#[test]
+fn died_in_fragment_1_recovers_it_shifted_by_one_gop() {
+    let t = Tl::new(&[12.0, 2_100.0, 2_100.0]);
+    let entries = t.entries(2, &[0], &BTreeMap::new());
+    let p = plan_sweep_recovering(DIR, &manifest(), &entries, &opts(), &t.samples(&[0]));
+    let l = plan_sweep(DIR, &manifest(), &entries, &opts());
+    let (got, leg) = (typed(&p), typed(&l));
+    assert_shifted(&got[&1], &leg[&1], RECOVERY_GOP_FALLBACK_MS);
+    let frag0_end = t.f(1); // pts 0 with its successor stamped: F1 − F0
+    let hole = got[&1].start_ts - frag0_end;
+    assert_eq!(hole, 2_100.0 + 1.0 - 2_000.0);
+    assert!(hole <= 2_000.0, "replay gap {hole} after fragment 0");
+}
+
 /// A pts sample with a missing or odd birthtime (or startTs) is skipped;
 /// when every sample is unusable, recovery is the legacy plan.
 #[test]

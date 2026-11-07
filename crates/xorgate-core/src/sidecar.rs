@@ -1247,10 +1247,14 @@ pub struct PtsSample {
 
 /// R-WP2R3-2 (R7 amended for this one field): the recovery shift `L_rec` =
 /// the median over the session's `pts` samples with seq ≥ 1 of
-/// `birth(N) − startTs(N)`, each clamped to `[0, LAG_GUARD_MAX_MS]`; the
-/// seq-0 value when there are none with seq ≥ 1. A sample whose birthtime
-/// or `startTs` is missing or not a sane epoch is skipped. `None` = no
-/// usable sample = no shift.
+/// `birth(N) − startTs(N)`, each clamped to `[0, LAG_GUARD_MAX_MS]`. When
+/// only fragment 0's sample is usable (a session that died in fragment 1),
+/// `RECOVERY_GOP_FALLBACK_MS` = one GOP (`capture_timing::GOP_NS`), NOT
+/// lag(0): fragment 0 opens at its first frame (lag ≈ 3–20 ms) while every
+/// later fragment opens one GOP late (lag ≈ GOP + encode), so lag(0) left a
+/// ≈ 2 s replay gap after fragment 0 (ruling 2026-11-06, class (c)). A
+/// sample whose birthtime or `startTs` is missing or not a sane epoch is
+/// skipped. `None` = no usable sample = no shift.
 pub fn recovery_shift_lag(samples: &[PtsSample]) -> Option<f64> {
     let usable = |s: &&PtsSample| {
         s.birthtime_ms.is_finite()
@@ -1272,9 +1276,14 @@ pub fn recovery_shift_lag(samples: &[PtsSample]) -> Option<f64> {
             .iter()
             .filter(usable)
             .find(|s| s.seq == 0.0)
-            .map(lag)
+            .map(|_| RECOVERY_GOP_FALLBACK_MS)
     })
 }
+
+/// The recovery shift when only fragment 0's pts sample exists: one GOP
+/// (`key-int-max = fps × 2` = 2 s at every preset), from the single source
+/// `capture_timing::GOP_NS`. The live path keeps its lag(0) fallback.
+pub const RECOVERY_GOP_FALLBACK_MS: f64 = (crate::capture_timing::GOP_NS / 1_000_000) as f64;
 
 /// Crash recovery's sweep (`include_newest`, legacy anchors, R7) with the
 /// R-WP2R3-2 amendment: an `fstat` fragment K of a session that holds a
@@ -2118,7 +2127,8 @@ mod tests {
     }
 
     /// R-WP2R3-2: the recovery shift is the clamped median of `birth −
-    /// startTs` over usable seq ≥ 1 pts samples; seq 0 only as a fallback.
+    /// startTs` over usable seq ≥ 1 pts samples; a lone seq-0 sample gives
+    /// one GOP.
     #[test]
     fn recovery_shift_is_the_clamped_median_of_usable_samples() {
         let s = |seq: f64, start: f64, birth: f64| PtsSample {
@@ -2127,7 +2137,9 @@ mod tests {
             birthtime_ms: birth,
         };
         assert_eq!(recovery_shift_lag(&[]), None);
-        assert_eq!(recovery_shift_lag(&[s(0.0, T0, T0 + 13.0)]), Some(13.0));
+        // Only fragment 0's sample: one GOP, not lag(0) (class (c) ruling).
+        assert_eq!(RECOVERY_GOP_FALLBACK_MS, 2_000.0);
+        assert_eq!(recovery_shift_lag(&[s(0.0, T0, T0 + 13.0)]), Some(2_000.0));
         let v = [
             s(0.0, T0, T0 + 13.0),
             s(1.0, T0, T0 + 2_001.0),

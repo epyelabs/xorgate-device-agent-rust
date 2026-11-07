@@ -26,9 +26,11 @@
 //!    stall is real); (b) next to a shifted row whose shift L exceeds that
 //!    row's own physical lag by > 2000 (a single accepted spike is the
 //!    whole seq ≥ 1 median, R-WP2R3-3 residual);
-//! 4. after agent exit / power loss, recovery leaves no gap, except (c) a
-//!    session that died in fragment 1 with only fragment 0's tiny lag on
-//!    disk (the ruling's seq-0 fallback).
+//! 4. after agent exit / power loss, recovery leaves no gap except class
+//!    (c), a session that died in fragment 1 with only fragment 0's sample
+//!    on disk (recovered with the one-GOP fallback); recovered rows differ
+//!    from legacy recovery in `startTs`/`startMono` only, and with no pts
+//!    sample they ARE legacy recovery.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -250,24 +252,38 @@ fn random_physical_sessions_vs_legacy_under_backend_rules() {
                     stat: None,
                 });
             }
-            let rec = plan_sweep_recovering(
-                "/v/c/s",
-                &m,
-                &ent2,
-                &SweepOpts {
-                    include_newest: true,
-                    finalized: None,
-                    time_source: None,
-                    clock_pair: pair,
-                },
-                &samples,
-            );
+            let rec_opts = SweepOpts {
+                include_newest: true,
+                finalized: None,
+                time_source: None,
+                clock_pair: pair,
+            };
+            let rec = plan_sweep_recovering("/v/c/s", &m, &ent2, &rec_opts, &samples);
+            // Recovery changes startTs (and startMono) only: every recovered
+            // duration, finalized flag and so every backend step figure is
+            // legacy recovery's, and no pts sample = legacy recovery exactly.
+            let rec_legacy = plan_sweep("/v/c/s", &m, &ent2, &rec_opts);
+            if samples.is_empty() {
+                assert_eq!(rec, rec_legacy, "{desc}: recovery without pts");
+            }
+            for (a, b) in rows(&rec).iter().zip(rows(&rec_legacy).iter()) {
+                assert_eq!(
+                    (a.seq, a.duration_ms, a.finalized, a.anchor, step_of(a)),
+                    (b.seq, b.duration_ms, b.finalized, b.anchor, step_of(b)),
+                    "{desc}: recovered row differs beyond startTs"
+                );
+                if a.start_ts != b.start_ts && samples.iter().all(|p| p.seq == 0.0) {
+                    *residual
+                        .entry("(info) recovered rows shifted by the seq-0-only fallback")
+                        .or_default() += 1;
+                }
+            }
             all.extend(rows(&rec));
             for (s, h) in gaps(&all) {
                 let only_seq0 = samples.iter().all(|p| p.seq == 0.0);
                 if s == 0 && only_seq0 {
                     *residual
-                        .entry("(c) died in fragment 1 with only lag(0) on disk")
+                        .entry("(c) died in fragment 1 with only fragment 0's sample on disk")
                         .or_default() += 1;
                     continue;
                 }
