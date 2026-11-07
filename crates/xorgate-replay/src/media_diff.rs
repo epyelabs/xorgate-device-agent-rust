@@ -8286,7 +8286,11 @@ kind = "decisions"
             v["startTs"] = (v["startTs"].as_i64().unwrap() + LAG_R[1]).into();
             v["durationMs"] = j0["durationMs"].clone();
         });
-        assert!(unt(&js, &r).contains(&row(0, "(accepted stamp not used)")), "{:#?}", unt(&js, &r));
+        assert!(
+            unt(&js, &r).contains(&row(0, "(accepted stamp not used)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // The whole session legacy while every stamp is accepted.
         let mut r = rs.clone();
         for q in 0..4 {
@@ -8313,26 +8317,41 @@ kind = "decisions"
         let Fixture { mut js, rs } = fixture();
         let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
         let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
-        js.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
+        js.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
         js.rec.remove(&format!("video/cam0/{P7_SID}/00003.mp4"));
         let mut r = rs.clone();
-        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00002.json"));
-        assert!(unt(&js, &r).contains(&row(2, "(missing on the exact side)")), "{:#?}", unt(&js, &r));
+        r.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00002.json"));
+        assert!(
+            unt(&js, &r).contains(&row(2, "(missing on the exact side)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         assert!(unt(&r, &js).contains(&row(2, "(missing on the exact side)")));
         // ... also a hole the exact side holds NO stamp for (coverage, not D51).
         let mut r = rs.clone();
         r.timing.retain(|t| t.id != 1);
-        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00001.json"));
+        r.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00001.json"));
         assert!(unt(&js, &r).contains(&row(1, "(missing on the exact side)")));
         // The exact side's OWN last fragment may lack one (D41 exit kill).
         let mut r = rs.clone();
-        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
-        assert!(!unt(&js, &r).iter().any(|x| x.contains("missing")), "{:#?}", unt(&js, &r));
+        r.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
+        assert!(
+            !unt(&js, &r).iter().any(|x| x.contains("missing")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // A session this side never spawned (seeded filler, recovery) is not checked.
         let mut r = rs.clone();
         r.live_sids.clear();
-        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00001.json"));
-        assert!(!unt(&js, &r).iter().any(|x| x.contains("missing on the exact side")));
+        r.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00001.json"));
+        assert!(!unt(&js, &r)
+            .iter()
+            .any(|x| x.contains("missing on the exact side")));
     }
 
     /// WP3 review F3: a clean final with an accepted END stamp and no
@@ -8345,11 +8364,14 @@ kind = "decisions"
         let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
         let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
         let mut r = rs.clone();
-        set_sc(&mut r, 3, |v| v["durationMs"] = (v["durationMs"].as_i64().unwrap() - 40).into());
+        set_sc(&mut r, 3, |v| {
+            v["durationMs"] = (v["durationMs"].as_i64().unwrap() - 40).into()
+        });
         assert_eq!(unt(&js, &r), vec![row(3, "(END stamp not used)")]);
         // ... also when the other side lacks the fragment (exact-only tail).
         let mut j = js.clone();
-        j.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
+        j.finals
+            .remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
         assert!(unt(&j, &r).contains(&row(3, "(END stamp not used)")));
     }
 
@@ -8578,10 +8600,17 @@ kind = "decisions"
             v.insert(4, (1, b));
             let host = lines_cap("rust", "xorgate-capture", &v, "int");
             let rows = children_rows(&js, &host, &table);
-            assert!(rows.contains(&lines_unt) && rows.contains(&seq_unt), "{b}: {rows:?}");
+            assert!(
+                rows.contains(&lines_unt) && rows.contains(&seq_unt),
+                "{b}: {rows:?}"
+            );
         }
         // (b) id gaps.
-        let s = |ids: &[u32]| ids.iter().map(|i| (1u8, start_line(*i))).collect::<Vec<_>>();
+        let s = |ids: &[u32]| {
+            ids.iter()
+                .map(|i| (1u8, start_line(*i)))
+                .collect::<Vec<_>>()
+        };
         assert!(d52_sequence_ok(&s(&[0, 1, 2])).is_ok());
         assert!(d52_sequence_ok(&s(&[0, 2])).is_err(), "a silent gap");
         assert!(d52_sequence_ok(&s(&[1, 2])).is_err(), "no fragment 0 line");
@@ -8590,12 +8619,19 @@ kind = "decisions"
         };
         let mut v = s(&[0, 2, 4]);
         v.insert(1, refusal(1));
-        assert!(d52_sequence_ok(&v).is_ok(), "gaps from the named refusal on");
+        assert!(
+            d52_sequence_ok(&v).is_ok(),
+            "gaps from the named refusal on"
+        );
         let mut v = s(&[0, 2]);
         v.push(refusal(3));
         assert!(d52_sequence_ok(&v).is_err(), "a gap BEFORE the named id");
         let mut v = s(&[0, 3]);
-        v.push((2, "thread '<unnamed>' panicked at crates/xorgate-agent/src/capture_host/timing.rs:1:1:".into()));
+        v.push((
+            2,
+            "thread '<unnamed>' panicked at crates/xorgate-agent/src/capture_host/timing.rs:1:1:"
+                .into(),
+        ));
         assert!(d52_sequence_ok(&v).is_ok(), "a contained panic");
         // (c) an UNPAIRED host child (only this side spawned it) is checked.
         let mut host = lines_cap("rust", "xorgate-capture", &host_lines(&[]), "int");
