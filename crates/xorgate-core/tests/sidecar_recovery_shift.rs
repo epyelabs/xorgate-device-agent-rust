@@ -59,12 +59,14 @@ impl Tl {
         }));
         v
     }
-    /// The pts samples of in-run exact sidecars `ks`.
+    /// The pts samples of in-run exact sidecars `ks` (each written with its
+    /// successor's stamp known: `durationMs = F(k+1) − F(k)`).
     fn samples(&self, ks: &[usize]) -> Vec<PtsSample> {
         ks.iter()
             .map(|&k| PtsSample {
                 seq: k as f64,
                 start_ts: self.f(k),
+                duration_ms: self.f(k + 1) - self.f(k),
                 birthtime_ms: self.cb(k) + 1.0,
             })
             .collect()
@@ -118,6 +120,7 @@ fn exit_with_fragments_unswept_recovers_them_shifted_and_contiguous() {
     samples3.push(PtsSample {
         seq: 2.0,
         start_ts: t.f(2),
+        duration_ms: f64::NAN, // a duplicate seq-2 sample: only the median sees it
         birthtime_ms: t.cb(2) + 1.0,
     });
     assert_eq!(
@@ -195,23 +198,85 @@ fn no_pts_predecessor_means_no_shift() {
     assert_eq!(p, l);
 }
 
-/// Class (c) ruling: a session that died in fragment 1 has only fragment
-/// 0's pts sidecar on disk (fragment 0 opens at its first frame, lag 12 ms).
-/// The recovered fragment 1 is shifted by one GOP (2000), not lag(0), and
-/// meets fragment 0 (which ended at F1, line 1 having been accepted)
-/// within the slack; lag(0) would leave a 2089 ms gap.
+/// R-WP2R4-1 end anchor: a session that died in fragment 1 has only
+/// fragment 0's pts sidecar (lag 12 ms; it ended at F1, line 1 having been
+/// accepted). The recovered fragment 1 starts exactly at F1:
+/// L_rec = birth(1) − (startTs(0) + durationMs(0)) = 2101.
 #[test]
-fn died_in_fragment_1_recovers_it_shifted_by_one_gop() {
+fn died_in_fragment_1_recovers_it_contiguous_via_the_end_anchor() {
     let t = Tl::new(&[12.0, 2_100.0, 2_100.0]);
     let entries = t.entries(2, &[0], &BTreeMap::new());
-    let p = plan_sweep_recovering(DIR, &manifest(), &entries, &opts(), &t.samples(&[0]));
+    let samples = t.samples(&[0]);
+    assert_eq!(
+        recovery_end_anchor_lag(&samples, 1.0, t.cb(1) + 1.0),
+        Some(2_101.0)
+    );
+    let p = plan_sweep_recovering(DIR, &manifest(), &entries, &opts(), &samples);
+    let l = plan_sweep(DIR, &manifest(), &entries, &opts());
+    let (got, leg) = (typed(&p), typed(&l));
+    assert_shifted(&got[&1], &leg[&1], 2_101.0);
+    assert_eq!(got[&1].start_ts, t.f(1), "hole 0 after fragment 0");
+}
+
+/// Its predecessor's numbers unusable (no `durationMs`): the end anchor is
+/// skipped and the median rule applies; with only fragment 0's sample that
+/// is one GOP (the class (c) ruling), hole 101 ms (lag(0) would give 2089).
+#[test]
+fn an_unusable_predecessor_falls_back_to_the_median_rule_and_one_gop() {
+    let t = Tl::new(&[12.0, 2_100.0, 2_100.0]);
+    let entries = t.entries(2, &[0], &BTreeMap::new());
+    let mut samples = t.samples(&[0]);
+    samples[0].duration_ms = f64::NAN;
+    assert_eq!(recovery_end_anchor_lag(&samples, 1.0, t.cb(1) + 1.0), None);
+    let p = plan_sweep_recovering(DIR, &manifest(), &entries, &opts(), &samples);
     let l = plan_sweep(DIR, &manifest(), &entries, &opts());
     let (got, leg) = (typed(&p), typed(&l));
     assert_shifted(&got[&1], &leg[&1], RECOVERY_GOP_FALLBACK_MS);
-    let frag0_end = t.f(1); // pts 0 with its successor stamped: F1 − F0
-    let hole = got[&1].start_ts - frag0_end;
-    assert_eq!(hole, 2_100.0 + 1.0 - 2_000.0);
-    assert!(hole <= 2_000.0, "replay gap {hole} after fragment 0");
+    let hole = got[&1].start_ts - t.f(1);
+    assert_eq!(hole, 101.0);
+}
+
+/// R-WP2R4-1 class (d): the newest fragment's own line was ACCEPTED in-run
+/// with a ~5 s spike (lag 6900), the table is gone at boot. The end anchor
+/// recovers it exactly contiguous; the session median (2101) would leave a
+/// 4800 ms `missing-segments` gap.
+#[test]
+fn a_spiked_newest_recovers_contiguous_via_the_end_anchor() {
+    let t = Tl::new(&[12.0, 2_100.0, 2_100.0, 6_900.0, 2_100.0]);
+    let entries = t.entries(4, &[0, 1, 2], &BTreeMap::new());
+    let samples = t.samples(&[0, 1, 2]);
+    assert_eq!(
+        recovery_shift_lag(&samples),
+        Some(2_101.0),
+        "the median alone"
+    );
+    let p = plan_sweep_recovering(DIR, &manifest(), &entries, &opts(), &samples);
+    let l = plan_sweep(DIR, &manifest(), &entries, &opts());
+    let (got, leg) = (typed(&p), typed(&l));
+    assert_shifted(&got[&3], &leg[&3], 6_901.0);
+    // pts 2 ends at F3 (its successor's stamp was accepted in-run).
+    assert_eq!(got[&3].start_ts, t.f(2) + (t.f(3) - t.f(2)), "hole 0");
+}
+
+/// R-WP2R4-4: the samples are fetched only when recovery writes something.
+#[test]
+fn samples_are_not_fetched_when_nothing_is_recovered() {
+    let t = Tl::new(&[12.0, 2_100.0, 2_100.0]);
+    let entries = t.entries(2, &[0, 1], &BTreeMap::new());
+    let mut asked = 0;
+    let p = plan_sweep_recovering_lazy(DIR, &manifest(), &entries, &opts(), |_| {
+        asked += 1;
+        Vec::new()
+    });
+    assert!(p.writes.is_empty());
+    assert_eq!(asked, 0);
+    let entries = t.entries(2, &[0], &BTreeMap::new());
+    let mut k = None;
+    plan_sweep_recovering_lazy(DIR, &manifest(), &entries, &opts(), |seq| {
+        k = Some(seq);
+        Vec::new()
+    });
+    assert_eq!(k, Some(1.0), "asked once, with the first recovered seq");
 }
 
 /// A pts sample with a missing or odd birthtime (or startTs) is skipped;
@@ -224,16 +289,19 @@ fn unusable_pts_samples_are_skipped() {
         PtsSample {
             seq: 1.0,
             start_ts: t.f(1),
+            duration_ms: f64::NAN,
             birthtime_ms: 0.0,
         },
         PtsSample {
             seq: 2.0,
             start_ts: t.f(2),
+            duration_ms: f64::NAN,
             birthtime_ms: f64::NAN,
         },
         PtsSample {
             seq: 2.0,
             start_ts: f64::NAN,
+            duration_ms: SEG,
             birthtime_ms: t.cb(2) + 1.0,
         },
     ];
@@ -246,6 +314,7 @@ fn unusable_pts_samples_are_skipped() {
     some.push(PtsSample {
         seq: 1.0,
         start_ts: t.f(1),
+        duration_ms: f64::NAN, // not the end anchor (and not P anyway)
         birthtime_ms: t.cb(1) + 1.0 + 400.0, // a usable sample: 2501
     });
     let p = plan_sweep_recovering(DIR, &manifest(), &entries, &opts(), &some);

@@ -546,7 +546,9 @@ async fn agent_exit_then_recovery_shifts_the_unswept_newest() {
         .birthtime_ms;
     if birth > 1e12 {
         // A filesystem with btime: fstat, shifted by the core's L_rec.
-        let lag = xorgate_core::sidecar::recovery_shift_lag(&samples).expect("usable samples");
+        let lag = xorgate_core::sidecar::recovery_end_anchor_lag(&samples, 2.0, birth)
+            .or_else(|| xorgate_core::sidecar::recovery_shift_lag(&samples))
+            .expect("usable samples");
         assert_eq!(sc["anchor"], "fstat");
         assert_eq!(sc["startTs"].as_f64().unwrap(), birth.round() - lag);
     } else {
@@ -554,6 +556,72 @@ async fn agent_exit_then_recovery_shifts_the_unswept_newest() {
         assert_eq!(sc["anchor"], "computed");
         assert_eq!(xorgate_core::sidecar::recovery_shift_lag(&samples), None);
     }
+}
+
+/// R-WP2R4-4: recovery's extra I/O. A session with nothing to recover reads
+/// no sidecar; a LEGACY session (no pts sidecar) with a fragment to recover
+/// reads exactly one (the sidecar before it, an unshifted legacy row, which
+/// proves no exact fragment lies below); an exact session reads one too
+/// (its pts predecessor is the end anchor).
+#[tokio::test(start_paused = true)]
+async fn recovery_reads_no_sidecar_unless_it_writes_and_then_one() {
+    async fn session(timing: SidecarTiming, exit_unswept: bool) -> (Home, PathBuf) {
+        let home = Home::new("rec-io");
+        let be = Arc::new(FakeHost::default());
+        let s = sup(&home, be.clone(), timing);
+        s.start();
+        let d = dir(&home, &s);
+        let c = be.last();
+        for k in 0..3 {
+            c.line(start_line(k, LAG));
+        }
+        settle().await;
+        for k in 0..3 {
+            frag(&d, k, cb(k + 1));
+        }
+        ms(POLL + 1).await;
+        if exit_unswept {
+            let killed = s.exit_kill();
+            settle().await;
+            let _ = s.exit_finish(&killed);
+        } else {
+            s.stop(); // clean: the final sweep writes the newest
+            settle().await;
+        }
+        (home, d)
+    }
+    let clock = AgentClock::following_tokio(T0 as i64);
+    let ids = std::collections::HashSet::new();
+    let reads = |home: &Home| {
+        let mut n = 0usize;
+        let res = xorgate_agent::recording::capture::recover::recover_orphan_video_sessions_with(
+            &home.0.join("video"),
+            &RecoverOpts {
+                active_session_ids: &ids,
+                clock: &clock,
+            },
+            &mut |p: &Path| {
+                n += 1;
+                std::fs::read(p).ok()
+            },
+        );
+        (res.recovered, n)
+    };
+    let (h, _) = session(SidecarTiming::Legacy, false).await;
+    assert_eq!(reads(&h), (0, 0), "nothing to recover: no read");
+    let (h, d) = session(SidecarTiming::Legacy, true).await;
+    assert_eq!(
+        reads(&h),
+        (1, 1),
+        "legacy session: one read (its predecessor)"
+    );
+    assert_ne!(sidecar(&d, 2).unwrap()["anchor"], "pts");
+    let (h, _) = session(SidecarTiming::Exact, true).await;
+    assert_eq!(
+        reads(&h),
+        (1, 1),
+        "exact session: one read (the pts end anchor)"
+    );
 }
 
 /// `exact` with a child that never prints a timing line (the host's clock

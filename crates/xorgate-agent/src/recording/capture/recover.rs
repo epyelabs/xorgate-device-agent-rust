@@ -15,14 +15,22 @@
 //! The manager (WP1) emits `recording: backfilled N video sidecar(s) from
 //! previous run` from the returned count (`manager.ts:304-307`).
 //!
-//! Phase 7a R-WP2R3-2 (R7 amended for ONE field): a session that an
-//! `exact` run left behind holds `anchor:"pts"` sidecars. Their `startTs`
-//! and their mp4's birthtime are read here ([`pts_samples`]) and the core
-//! shifts the recovered `fstat` rows after them earlier by the session's
-//! measured lag (`plan_sweep_recovering`), so the agent-exit / power-loss
+//! Phase 7a R-WP2R3-2 / R-WP2R4-1 (R7 amended for ONE field): a session
+//! that an `exact` run left behind holds `anchor:"pts"` sidecars. The core
+//! shifts the recovered `fstat` rows so the first one starts exactly where
+//! the pts sidecar before it ends (end anchor), else by the session's
+//! median lag (`plan_sweep_recovering_lazy`): the agent-exit / power-loss
 //! seam stays contiguous. No `pts` sidecar (legacy mode, untimed runs,
-//! every JS-era session) = today's recovery, byte for byte; the extra I/O is
-//! reading the session's existing sidecars.
+//! every JS-era session) = today's recovery, byte for byte.
+//!
+//! I/O (R-WP2R4-4, [`recovery_samples`]): nothing extra unless the recovery
+//! plan writes a sidecar. Then ONE read: the sidecar of the fragment just
+//! before the first recovered one (P). P `pts` → the end anchor needs
+//! nothing else. P an unshifted legacy row (`fstat` with `startTs` =
+//! birthtime, `boundary`, `computed`) → the session has no exact fragment
+//! below it, stop. Only P missing, unparsable, or a SHIFTED `fstat` (a live
+//! fallback inside an exact session) costs a scan of the session's
+//! sidecars for the median fallback.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -73,36 +81,110 @@ fn is_dir(p: &Path) -> bool {
     std::fs::metadata(p).map(|m| m.is_dir()).unwrap_or(false)
 }
 
-/// The session's `anchor:"pts"` sidecars as recovery samples: the seq from
-/// the `NNNNN.json` name, `startTs` from its body, the birthtime of its
-/// `NNNNN.mp4`. Unreadable, unparsable, non-`pts` sidecars and a missing
-/// mp4 contribute nothing (the core also skips a bogus birthtime).
-pub fn pts_samples(dir: &Path, names: &[String]) -> Vec<PtsSample> {
+/// A sidecar file's bytes (`std::fs::read`; injected so tests count reads).
+pub type SidecarReader<'a> = dyn FnMut(&Path) -> Option<Vec<u8>> + 'a;
+
+/// One sidecar as recovery reads it: its parsed body (None = unreadable or
+/// unparsable) and its mp4's birthtime (`NaN` when the stat fails).
+fn read_sidecar(
+    dir: &Path,
+    json: &str,
+    read: &mut SidecarReader<'_>,
+) -> (Option<serde_json::Value>, f64) {
+    let body = read(&dir.join(json)).and_then(|b| serde_json::from_slice(&b).ok());
+    let mp4 = format!("{}.mp4", json.strip_suffix(".json").unwrap_or(json));
+    let birth = stat_fragment(&dir.join(mp4)).map_or(f64::NAN, |s| s.birthtime_ms);
+    (body, birth)
+}
+
+/// A parsed `anchor:"pts"` sidecar as a sample.
+fn as_pts_sample(json: &str, body: &serde_json::Value, birthtime_ms: f64) -> Option<PtsSample> {
     let pts = serde_json::to_value(EXACT_ANCHOR).ok();
+    if body.get("anchor") != pts.as_ref() {
+        return None;
+    }
+    let seq = segment_seq(&format!("{}.mp4", json.strip_suffix(".json")?))?;
+    Some(PtsSample {
+        seq,
+        start_ts: body.get("startTs")?.as_f64()?,
+        duration_ms: body
+            .get("durationMs")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(f64::NAN),
+        birthtime_ms,
+    })
+}
+
+/// Every `anchor:"pts"` sidecar of the session (the median fallback's scan).
+pub fn pts_samples(dir: &Path, names: &[String]) -> Vec<PtsSample> {
+    scan_pts(dir, names, &mut |p: &Path| std::fs::read(p).ok())
+}
+
+fn scan_pts(dir: &Path, names: &[String], read: &mut SidecarReader<'_>) -> Vec<PtsSample> {
     names
         .iter()
+        .filter(|n| n.ends_with(".json") && segment_seq(&n.replace(".json", ".mp4")).is_some())
         .filter_map(|n| {
-            let stem = n.strip_suffix(".json")?;
-            let mp4 = format!("{stem}.mp4");
-            let seq = segment_seq(&mp4)?;
-            let body: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(dir.join(n)).ok()?).ok()?;
-            if body.get("anchor") != pts.as_ref() {
-                return None;
-            }
-            let start_ts = body.get("startTs")?.as_f64()?;
-            let birthtime_ms = stat_fragment(&dir.join(&mp4)).ok()?.birthtime_ms;
-            Some(PtsSample {
-                seq,
-                start_ts,
-                birthtime_ms,
-            })
+            let (body, birth) = read_sidecar(dir, n, read);
+            as_pts_sample(n, &body?, birth)
         })
         .collect()
 }
 
+/// R-WP2R4-4: the samples the core needs for first recovered seq `k`,
+/// reading as little as possible (see the module doc): P = `k − 1`'s
+/// sidecar first; a scan only when P is missing, unparsable, or a shifted
+/// `fstat` row.
+pub fn recovery_samples(
+    dir: &Path,
+    names: &[String],
+    k: f64,
+    read: &mut SidecarReader<'_>,
+) -> Vec<PtsSample> {
+    if k < 1.0 {
+        return Vec::new(); // fragment 0: nothing below it
+    }
+    let p = format!("{:05}.json", (k - 1.0) as u64);
+    if !names.contains(&p) {
+        return scan_pts(dir, names, read);
+    }
+    let (body, birth) = read_sidecar(dir, &p, read);
+    let Some(body) = body else {
+        return scan_pts(dir, names, read);
+    };
+    if let Some(sample) = as_pts_sample(&p, &body, birth) {
+        if sample.duration_ms.is_finite() {
+            return vec![sample];
+        }
+        return scan_pts(dir, names, read); // P's numbers unusable: median fallback
+    }
+    // P is a legacy row. Shifted (fstat with startTs < birthtime) means a
+    // live fallback inside an exact session: scan. Otherwise no exact
+    // fragment exists below it in this session.
+    let shifted = body.get("anchor").and_then(|a| a.as_str()) == Some("fstat")
+        && body
+            .get("startTs")
+            .and_then(|v| v.as_f64())
+            .is_some_and(|st| birth.is_finite() && st < xorgate_core::round::js_math_round(birth));
+    if shifted {
+        scan_pts(dir, names, read)
+    } else {
+        Vec::new()
+    }
+}
+
 /// `recoverOrphanVideoSessions(videoRoot, activeSessionIds)`.
 pub fn recover_orphan_video_sessions(video_root: &Path, opts: &RecoverOpts<'_>) -> RecoverResult {
+    recover_orphan_video_sessions_with(video_root, opts, &mut |p: &Path| std::fs::read(p).ok())
+}
+
+/// [`recover_orphan_video_sessions`] with the sidecar reader injected
+/// (tests count the reads, R-WP2R4-4).
+pub fn recover_orphan_video_sessions_with(
+    video_root: &Path,
+    opts: &RecoverOpts<'_>,
+    read: &mut SidecarReader<'_>,
+) -> RecoverResult {
     let mut out = RecoverResult::default();
     let Some(stream_keys) = names(video_root) else {
         return out; // no video tree yet
@@ -129,10 +211,13 @@ pub fn recover_orphan_video_sessions(video_root: &Path, opts: &RecoverOpts<'_>) 
             else {
                 continue;
             };
-            // R-WP2R3-2: the pts sidecars an exact run left (none = today's sweep).
-            let samples = names(&dir)
-                .map(|n| pts_samples(&dir, &n))
-                .unwrap_or_default();
+            // R-WP2R3-2 / R-WP2R4-4: the pts sidecars an exact run left, read
+            // only when recovery writes something (none = today's sweep).
+            let samples = |k: f64| {
+                names(&dir)
+                    .map(|n| recovery_samples(&dir, &n, k, &mut *read))
+                    .unwrap_or_default()
+            };
             // Each sweepSessionDir call defaults its own pair (`:263`).
             let res = sweep_session_dir_recovering(
                 &dir,
@@ -146,7 +231,7 @@ pub fn recover_orphan_video_sessions(video_root: &Path, opts: &RecoverOpts<'_>) 
                         mono_ms: monotonic_ms() as f64,
                     },
                 },
-                &samples,
+                samples,
             );
             out.recovered += res.closed.len();
             out.closed.extend(res.closed);

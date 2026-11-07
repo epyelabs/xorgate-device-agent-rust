@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{error, warn};
 use xorgate_core::sidecar::{
-    dropped_empty_fragment_warning, plan_sweep_recovering, plan_sweep_timed, segment_seq,
+    dropped_empty_fragment_warning, plan_sweep_recovering_lazy, plan_sweep_timed, segment_seq,
     sidecar_path_for, sidecar_write_failed_error, ClockPair, DirEntry, ExactSweep, PtsSample,
     SessionManifest, SweepOpts, SweepPlan, VideoSessionManifest, SESSION_MANIFEST_NAME,
 };
@@ -87,17 +87,19 @@ pub fn sweep_session_dir_timed(
     })
 }
 
-/// Crash recovery's sweep with the R-WP2R3-2 shift (core
-/// `plan_sweep_recovering`): `samples` are the session's `anchor:"pts"`
-/// sidecars found on disk; none = [`sweep_session_dir`], byte for byte.
+/// Crash recovery's sweep with the R-WP2R3-2 / R-WP2R4-1 shift (core
+/// `plan_sweep_recovering_lazy`): `samples(K)` (the session's
+/// `anchor:"pts"` sidecars, K = the first recovered seq) is called ONLY when
+/// the recovery plan writes at least one sidecar (R-WP2R4-4); no usable
+/// sample = [`sweep_session_dir`], byte for byte.
 pub fn sweep_session_dir_recovering(
     dir: &Path,
     manifest: &SessionManifest,
     opts: &SweepIo,
-    samples: &[PtsSample],
+    samples: impl FnOnce(f64) -> Vec<PtsSample>,
 ) -> SweepOutcome {
     sweep_with(dir, opts, |d, entries, o| {
-        plan_sweep_recovering(d, manifest, entries, o, samples)
+        plan_sweep_recovering_lazy(d, manifest, entries, o, samples)
     })
 }
 

@@ -1236,13 +1236,34 @@ pub fn median_ms(v: &mut [f64]) -> Option<f64> {
 }
 
 /// One `anchor:"pts"` sidecar found in a session dir at crash recovery
-/// (R-WP2R3-2): its fragment seq, its `startTs`, and its mp4's birthtime.
+/// (R-WP2R3-2): its fragment seq, its `startTs` and `durationMs`, and its
+/// mp4's birthtime (`NaN` when not statted).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtsSample {
     pub seq: f64,
     pub start_ts: f64,
+    pub duration_ms: f64,
     pub birthtime_ms: f64,
+}
+
+/// R-WP2R4-1 (end anchor): the shift that makes the first recovered fragment
+/// K start exactly where its immediately preceding pts sidecar P (seq K − 1)
+/// ends: `clamp(round(birth(K)) − (startTs(P) + durationMs(P)), 0,
+/// LAG_GUARD_MAX_MS)`. `None` when P is not among `samples`, P's numbers are
+/// unusable, or K has no sane birthtime.
+pub fn recovery_end_anchor_lag(samples: &[PtsSample], k_seq: f64, k_birth_ms: f64) -> Option<f64> {
+    if !(k_birth_ms.is_finite() && k_birth_ms > SANE_EPOCH_MS) {
+        return None;
+    }
+    let p = samples.iter().find(|s| {
+        s.seq == k_seq - 1.0
+            && s.start_ts.is_finite()
+            && s.start_ts > SANE_EPOCH_MS
+            && s.duration_ms.is_finite()
+            && s.duration_ms >= 0.0
+    })?;
+    Some((js_math_round(k_birth_ms) - (p.start_ts + p.duration_ms)).clamp(0.0, LAG_GUARD_MAX_MS))
 }
 
 /// R-WP2R3-2 (R7 amended for this one field): the recovery shift `L_rec` =
@@ -1299,12 +1320,49 @@ pub fn plan_sweep_recovering(
     opts: &SweepOpts,
     samples: &[PtsSample],
 ) -> SweepPlan {
-    let Some(lag) = recovery_shift_lag(samples) else {
-        return plan_sweep(dir, manifest, entries, opts);
+    plan_sweep_recovering_lazy(dir, manifest, entries, opts, |_| samples.to_vec())
+}
+
+/// [`plan_sweep_recovering`] with the samples fetched ONLY when the legacy
+/// recovery plan writes at least one sidecar (R-WP2R4-4): `samples(K)` is
+/// called with the first recovered seq K. Shift L_rec: the end anchor on
+/// the pts sidecar at K − 1 ([`recovery_end_anchor_lag`]) — so the recovered
+/// tail starts exactly where the in-run timeline ends — else the median
+/// rule ([`recovery_shift_lag`]). Rows with a usable pts sample below them
+/// are shifted; with none, this is [`plan_sweep`].
+pub fn plan_sweep_recovering_lazy(
+    dir: &str,
+    manifest: &SessionManifest,
+    entries: &[DirEntry],
+    opts: &SweepOpts,
+    samples: impl FnOnce(f64) -> Vec<PtsSample>,
+) -> SweepPlan {
+    let legacy = plan_sweep(dir, manifest, entries, opts);
+    let Some(k_seq) = legacy
+        .writes
+        .first()
+        .and_then(|w| segment_seq(w.mp4_path.rsplit('/').next().unwrap_or("")))
+    else {
+        return legacy;
+    };
+    let samples = samples(k_seq);
+    let k_birth = entries
+        .iter()
+        .find(|e| segment_seq(&e.name) == Some(k_seq))
+        .and_then(|e| e.stat)
+        .map_or(f64::NAN, |st| st.birthtime_ms);
+    let Some(lag) =
+        recovery_end_anchor_lag(&samples, k_seq, k_birth).or_else(|| recovery_shift_lag(&samples))
+    else {
+        return legacy;
     };
     let usable_seqs: Vec<f64> = samples
         .iter()
-        .filter(|s| recovery_shift_lag(std::slice::from_ref(*s)).is_some())
+        .filter(|s| {
+            recovery_shift_lag(std::slice::from_ref(*s)).is_some()
+                || recovery_end_anchor_lag(std::slice::from_ref(*s), s.seq + 1.0, f64::MAX)
+                    .is_some()
+        })
         .map(|s| s.seq)
         .collect();
     plan_sweep_with(dir, manifest, entries, opts, &mut |seq, _, _| {
@@ -2134,6 +2192,7 @@ mod tests {
         let s = |seq: f64, start: f64, birth: f64| PtsSample {
             seq,
             start_ts: start,
+            duration_ms: f64::NAN,
             birthtime_ms: birth,
         };
         assert_eq!(recovery_shift_lag(&[]), None);
