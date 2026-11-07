@@ -4467,6 +4467,86 @@ fn d30_js_spawn_tick(a: &MediaCapture, b: &MediaCapture, rep: &Report) -> BTreeS
 mod tests {
     use super::*;
 
+    /// P3a R1 (rig rule, NOT a tolerance): a child alive when the rig's
+    /// handoff stop signalled it ends `handoff:<sig>` (the RIG did it, like
+    /// `external`); one that ended before keeps its own class. NEGATIVE: a
+    /// real difference in how a child ended, or in how many were spawned,
+    /// still FAILS through it.
+    #[test]
+    fn p3a_r1_handoff_class_only_for_children_the_rig_signalled() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-r1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            concat!(
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":9147,"argv":["videotestsrc"],"w":500}"#,
+                "\n",
+                r#"{"k":"line","pid":9147,"fd":1,"line":"Got EOS from element \"pipeline0\".","w":1400}"#,
+                "\n",
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":9146,"argv":["videotestsrc"],"w":1000}"#,
+                "\n",
+                r#"{"k":"line","pid":9146,"fd":1,"line":"Got EOS from element \"pipeline0\".","w":4950}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            concat!(
+                "{\"k\":\"gone\",\"pid\":9147,\"w\":1500}\n",
+                "{\"w\":4900,\"pid\":9146,\"k\":\"handoff\",\"sig\":\"term\"}\n",
+                "{\"k\":\"gone\",\"pid\":9146,\"w\":5000}\n",
+            ),
+        )
+        .unwrap();
+        let m = MediaCapture::load(&dir, &[]);
+        let end = |pid: u32| m.spawns.iter().find(|s| s.pid == pid).and_then(|s| s.end.clone());
+        // Signalled while alive → the rig's class, even though gst printed EOS.
+        assert_eq!(end(9146).as_deref(), Some("handoff:term"));
+        // Ended before the handoff (no record) → its own class.
+        assert_eq!(end(9147).as_deref(), Some("eos"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let cap = |w: i64, end: &str| Spawn {
+            w,
+            role: "capture".into(),
+            key: "cam0".into(),
+            pid: w as u32,
+            argv: vec!["gst-launch-1.0".into()],
+            env: BTreeMap::new(),
+            playing: None,
+            end: Some(end.into()),
+            end_w: None,
+            sid: None,
+        };
+        let side = |spawns: Vec<Spawn>| MediaCapture {
+            kind: "js".into(),
+            spawns,
+            present: true,
+            ..Default::default()
+        };
+        let unt = |a: &MediaCapture, b: &MediaCapture, path: &str| {
+            let mut rep = Report::default();
+            diff_media(a, b, &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .iter()
+                .filter(|x| x.stream == "children" && x.path == path && x.tol == UNTOLERATED)
+                .count()
+        };
+        let same = side(vec![cap(1_000, "handoff:kill")]);
+        assert_eq!(unt(&same, &same.clone(), "(ended)"), 0);
+        // NEGATIVE: A's child was killed by the rig, B's ended by itself.
+        assert_eq!(unt(&same, &side(vec![cap(1_000, "eos")]), "(ended)"), 1);
+        // NEGATIVE: a spawn-count difference is not touched by R1.
+        let two = side(vec![cap(1_000, "handoff:kill"), cap(20_000, "int")]);
+        assert_eq!(unt(&same, &two, "(spawn count)"), 1);
+    }
+
     /// T10 flash: a kvs master stopped by the capture-spawn bounce in the
     /// same instant on one side only is tolerated — only next to a capture
     /// spawn of the SAME camera on that side, one flash per capture spawn;

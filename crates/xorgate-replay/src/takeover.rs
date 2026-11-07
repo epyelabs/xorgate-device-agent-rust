@@ -12,6 +12,16 @@
 //! | `fate` | per inherited file, its end fate (`put×N`, `disk`, `gone`), A vs B; per side N ≤ 1 (no double upload) and no non-empty file `gone` (no lost segment) |
 //! | `recovery-lines` | the post-handoff stdout/stderr lines in the TS recovery vocabulary ([`VOCAB`]), multiset A vs B |
 //! | `disk-end` | the final on-disk files of the inherited (X-era) sessions, A vs B; with `expect.reaped` none may be left |
+//! | `inflight` | (`expect.inflight`) the mp4 PUTs the fake S3 held mid-transfer and saw aborted at the cut (`aws.rs` `Hold`), per side = the expected count and A vs B the same keys — else **INVALID** |
+//! | `bucket-orphans` | sidecars of the inherited sessions whose mp4 never had a successful PUT at the end, A vs B |
+//!
+//! One documented re-PUT is not a double upload: a sidecar PUT twice with a
+//! FAILED attempt of its own mp4 in between (`takeover/sidecar-reput`,
+//! [`sidecar_reput_explained`]): the TS uploads sidecar then mp4 as one unit
+//! and "a failure between the two PUTs re-PUTs the sidecar on retry — S3 PUTs
+//! are idempotent" (ts:src/recording/uploader.ts:24-28, :168-176 @09da38d).
+//! Any other double (an mp4, a telemetry segment, a sidecar whose mp4 had
+//! not failed in between, a third PUT) stays UNTOLERATED.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -281,6 +291,81 @@ pub fn end_rel_of(rel: &str) -> String {
     }
 }
 
+/// The row id citing the TS sidecar re-PUT (module doc).
+pub const SIDECAR_REPUT: &str = "takeover/sidecar-reput";
+
+/// One PUT attempt as the fake S3 saw it, normalised key.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attempt {
+    /// Arrival wall ms (`s3.ndjson` `w`; a held PUT: its `s3-held` record).
+    pub w: i64,
+    pub key: String,
+    pub ok: bool,
+}
+
+/// Is a sidecar's second successful PUT the TS re-PUT after a failed unit?
+/// Exactly two successes, and an attempt of ITS mp4 that did not succeed
+/// strictly between them.
+pub fn sidecar_reput_explained(attempts: &[Attempt], sidecar_key: &str) -> bool {
+    let Some(stem) = sidecar_key.strip_suffix(".json") else {
+        return false;
+    };
+    let mp4 = format!("{stem}.mp4");
+    let mut ok_w: Vec<i64> = attempts
+        .iter()
+        .filter(|a| a.key == sidecar_key && a.ok)
+        .map(|a| a.w)
+        .collect();
+    ok_w.sort();
+    let [first, second] = ok_w.as_slice() else {
+        return false;
+    };
+    attempts
+        .iter()
+        .any(|a| a.key == mp4 && !a.ok && a.w > *first && a.w < *second)
+}
+
+/// `(attempts, aborted keys)` of one side: `<side>/s3.ndjson` (every
+/// answered PUT) + the run's `aws.ndjson` held-then-aborted PUTs of this
+/// side's label (never answered, never stored).
+pub fn load_attempts(run: &Path, label: &str, m: &MediaCapture) -> (Vec<Attempt>, Vec<String>) {
+    let lines = |p: &Path| -> Vec<Value> {
+        std::fs::read_to_string(p)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    };
+    let mut out: Vec<Attempt> = lines(&run.join(label).join("s3.ndjson"))
+        .iter()
+        .filter_map(|v| {
+            Some(Attempt {
+                w: v["w"].as_i64()?,
+                key: m.norm_path(v["key"].as_str()?),
+                ok: v["status"].as_u64() == Some(200),
+            })
+        })
+        .collect();
+    let aws = lines(&run.join("aws.ndjson"));
+    let mine = |v: &&Value| v["agent"] == label;
+    let aborted: Vec<String> = aws
+        .iter()
+        .filter(|v| v["k"] == "s3-aborted")
+        .filter(mine)
+        .filter_map(|v| v["key"].as_str().map(|k| m.norm_path(k)))
+        .collect();
+    for v in aws.iter().filter(|v| v["k"] == "s3-held").filter(mine) {
+        if let (Some(w), Some(k)) = (v["w"].as_i64(), v["key"].as_str()) {
+            let key = m.norm_path(k);
+            if aborted.contains(&key) {
+                out.push(Attempt { w, key, ok: false });
+            }
+        }
+    }
+    out.sort_by_key(|a| a.w);
+    (out, aborted)
+}
+
 /// `put×N[+disk]` / `disk` / `gone`.
 pub fn fate(rel: &str, puts: &BTreeMap<String, usize>, end: &BTreeSet<String>) -> String {
     let n = s3_key_of(rel).and_then(|k| puts.get(&k).copied()).unwrap_or(0);
@@ -333,13 +418,17 @@ pub fn recovery_lines(text: &str, norm: &dyn Fn(&str) -> String) -> Vec<String> 
 }
 
 fn mm(at: &str, path: &str, a: String, b: String) -> Mismatch {
+    mm_tol(at, path, a, b, UNTOLERATED)
+}
+
+fn mm_tol(at: &str, path: &str, a: String, b: String, tol: &str) -> Mismatch {
     Mismatch {
         stream: STREAM.into(),
         at: at.into(),
         path: path.into(),
         a,
         b,
-        tol: UNTOLERATED.into(),
+        tol: tol.into(),
     }
 }
 
@@ -428,6 +517,11 @@ pub fn diff_takeover(
     }
 
     // (iii) fate
+    let attempts: Vec<(Vec<Attempt>, Vec<String>)> = ["a", "b"]
+        .iter()
+        .zip(&sides)
+        .map(|(l, (_, m))| load_attempts(run, l, m))
+        .collect();
     let mut fates: [BTreeMap<String, String>; 2] = [BTreeMap::new(), BTreeMap::new()];
     for (i, (_, m)) in sides.iter().enumerate() {
         let puts = m.successful_puts();
@@ -435,16 +529,46 @@ pub fn diff_takeover(
         for (rel, f) in inh[i].iter() {
             let ft = fate(rel, &puts, &end);
             if let Some(v) = fate_violations(rel, f, &ft) {
-                rep.push(mm(
+                let explained = ft.starts_with("put×2")
+                    && rel.ends_with(".json")
+                    && s3_key_of(rel).is_some_and(|k| sidecar_reput_explained(&attempts[i].0, &k));
+                rep.push(mm_tol(
                     &format!("fate {}", ["A", "B"][i]),
                     rel,
                     if i == 0 { v.clone() } else { String::new() },
                     if i == 1 { v } else { String::new() },
+                    if explained { SIDECAR_REPUT } else { UNTOLERATED },
                 ));
             }
             fates[i].insert(rel.clone(), ft);
         }
     }
+    // (iii-b) in flight at the cut (`expect.inflight`, aws.rs `Hold`).
+    let aborted: Vec<BTreeSet<&String>> = attempts.iter().map(|(_, ab)| ab.iter().collect()).collect();
+    if let Some(want) = expect["inflight"].as_u64() {
+        for (i, ab) in aborted.iter().enumerate() {
+            if ab.len() as u64 != want {
+                rep.push(mm(
+                    &format!("{INVALID} inflight {}", ["A", "B"][i]),
+                    "(PUTs aborted at the cut)",
+                    ab.len().to_string(),
+                    want.to_string(),
+                ));
+            }
+        }
+        for k in aborted[0].symmetric_difference(&aborted[1]) {
+            rep.push(mm(
+                &format!("{INVALID} inflight"),
+                k,
+                aborted[0].contains(*k).to_string(),
+                aborted[1].contains(*k).to_string(),
+            ));
+        }
+    }
+    rep.inputs.insert(
+        "takeover in-flight PUTs aborted at the cut".into(),
+        format!("A {:?}, B {:?}", aborted[0], aborted[1]),
+    );
     let rels: BTreeSet<&String> = fates[0].keys().chain(fates[1].keys()).collect();
     for rel in &rels {
         let (x, y) = (fates[0].get(*rel), fates[1].get(*rel));
@@ -516,6 +640,36 @@ pub fn diff_takeover(
             ends[1].contains(r).to_string(),
         ));
     }
+    // (vi) bucket orphans: an inherited session's sidecar in the bucket
+    // whose mp4 never landed.
+    let orphans: Vec<BTreeSet<String>> = sides
+        .iter()
+        .map(|(_, m)| {
+            let puts = m.successful_puts();
+            puts.keys()
+                .filter(|k| k.starts_with("media-sessions/") && k.ends_with(".json"))
+                .filter(|k| {
+                    let seg: Vec<&str> = k.split('/').collect();
+                    // media-sessions/v1/{id}/<key>/<sid>/<n>.json
+                    seg.len() == 6 && x_sessions.contains(&format!("video/{}/{}", seg[3], seg[4]))
+                })
+                .filter(|k| !puts.contains_key(&format!("{}.mp4", k.trim_end_matches(".json"))))
+                .cloned()
+                .collect()
+        })
+        .collect();
+    for k in orphans[0].symmetric_difference(&orphans[1]) {
+        rep.push(mm(
+            "bucket-orphans",
+            k,
+            orphans[0].contains(k).to_string(),
+            orphans[1].contains(k).to_string(),
+        ));
+    }
+    rep.inputs.insert(
+        "takeover bucket orphan sidecars (A | B)".into(),
+        format!("{} | {}", orphans[0].len(), orphans[1].len()),
+    );
     if expect["reaped"] == true {
         for (i, e) in ends.iter().enumerate() {
             for r in e.iter().filter(|r| r.starts_with("video/")) {
@@ -654,6 +808,32 @@ mod tests {
         );
         // Without a marker (no handoff) nothing is collected.
         assert!(recovery_lines("[agent] recording: finalized 1 orphan segment(s) from previous run", &|s| s.into()).is_empty());
+    }
+
+    #[test]
+    fn only_the_ts_sidecar_reput_is_not_a_double_upload() {
+        let at = |w: i64, key: &str, ok: bool| Attempt {
+            w,
+            key: key.into(),
+            ok,
+        };
+        let sc = "media-sessions/v1/{id}/cam1/<sid:video:cam1#0>/00008.json";
+        let mp4 = "media-sessions/v1/{id}/cam1/<sid:video:cam1#0>/00008.mp4";
+        // X: sidecar 200, mp4 held + aborted at the cut; Y: sidecar 200, mp4 200.
+        let ok = vec![at(1, sc, true), at(2, mp4, false), at(10, sc, true), at(11, mp4, true)];
+        assert!(sidecar_reput_explained(&ok, sc));
+        // NEGATIVE: the mp4 had succeeded before the second sidecar PUT.
+        let after_ok = vec![at(1, sc, true), at(2, mp4, true), at(10, sc, true)];
+        assert!(!sidecar_reput_explained(&after_ok, sc));
+        // NEGATIVE: the failed mp4 attempt is not BETWEEN the two.
+        let outside = vec![at(1, mp4, false), at(2, sc, true), at(10, sc, true), at(11, mp4, true)];
+        assert!(!sidecar_reput_explained(&outside, sc));
+        // NEGATIVE: a third success; another fragment's failure; an mp4 key.
+        let three = vec![at(1, sc, true), at(2, mp4, false), at(5, sc, true), at(6, mp4, false), at(10, sc, true)];
+        assert!(!sidecar_reput_explained(&three, sc));
+        let other = vec![at(1, sc, true), at(2, &mp4.replace("00008", "00009"), false), at(10, sc, true)];
+        assert!(!sidecar_reput_explained(&other, sc));
+        assert!(!sidecar_reput_explained(&ok, mp4));
     }
 
     #[test]

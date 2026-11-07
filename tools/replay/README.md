@@ -598,5 +598,9 @@ Plan: `plans/device-agent-js-to-rust/phase-6/evidence/P3a-takeover.md` §Design.
   - The `takeover` stream: `state` / `edge` (an INVALID lane, not a verdict), `fate` (put×N / disk / gone per inherited file; no double upload, no lost segment), `recovery-lines`, `disk-end`.
   - Kind-directional rules use the kind of the incarnation that produced each item (R2). Each item is a session, a tick, a report, or the events of each era.
   - A child the handoff signalled ends as `handoff:<sig>` (R1).
-- **Tapes:** `synth p6-takeover-open | -vbacklog | -tbacklog | -reap`.
+- **Tapes:** `synth p6-takeover-open | -vbacklog | -tbacklog | -reap | -inflight`.
+- **In-flight PUT** (`meta.rig.s3Holds [{fromMs, toMs, holdMs, suffix}]`, `aws.rs` `Hold`): a PUT whose key ends `suffix` and whose headers arrive in the window is held `holdMs` before its body is read.
+  - If the client died during the hold (the body read fails, or the post-body probe sees EOF), the PUT is ABORTED: never stored, never answered, logged `s3-held` / `s3-aborted` in `aws.ndjson`.
+  - A live client is answered normally.
+  - The sidecar re-PUT that follows is the TS's documented idempotent retry (`takeover/sidecar-reput`).
 - **Lanes:** `p3a-lanes.sh synth | matrix | run <id>:<tape>:<jr|rj|jj|rr>:<term|kill> | run-matrix`. Lanes run serially; before each one, a quiet-host preflight checks that no other `xorgate.agent` container runs and that the 1-min load is ≤ 8. The runner holds the Mac awake with `caffeinate -dims`.

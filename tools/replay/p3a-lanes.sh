@@ -3,12 +3,12 @@
 # (plans/device-agent-js-to-rust/phase-6/evidence/P3a-takeover.md §2).
 #
 #   tools/replay/p3a-lanes.sh synth              # the four p6-takeover-* tapes → .cache/tapes
-#   tools/replay/p3a-lanes.sh matrix             # print the planned lanes L1–L14
+#   tools/replay/p3a-lanes.sh matrix             # print the planned lanes L1–L16
 #   tools/replay/p3a-lanes.sh run <lane>...      # run lanes SERIALLY
-#   tools/replay/p3a-lanes.sh run-matrix         # run L1–L14 serially
+#   tools/replay/p3a-lanes.sh run-matrix         # run L1–L16 serially
 #
 # <lane> = <id>:<tape>:<dir>:<sig>
-#   tape  p6-takeover-open | -vbacklog | -tbacklog | -reap  (without the .ndjson.gz)
+#   tape  p6-takeover-open | -vbacklog | -tbacklog | -reap | -inflight  (no .ndjson.gz)
 #   dir   jr = side A JS→Rust, side B JS→JS (the control)
 #         rj = side A Rust→JS, side B Rust→Rust
 #         jj / rr = the same-agent calibration of a lane (on demand only)
@@ -22,7 +22,9 @@
 #   2. run-rig.sh --no-build with the handoff flags; the full run goes to
 #      $P3A_WORK/runs/<id>.
 #   3. One TSV line to $P3A_OUT/q.tsv: lane, tape, dir, sig, start, secs, rc,
-#      verdict, load (start / max / end).
+#      verdict (PASS / FAIL / INVALID), load (start / max / end). An INVALID
+#      lane (inherited state not as designed, or a cut near a rotation) is a
+#      tape fix + re-run, never a lane's final word.
 #   4. The small artifacts are copied to $P3A_OUT/<id>/: diff.md/json,
 #      play.json, handoff.json, per side meta.json, handoff-state.json and
 #      the stderr tail. No mp4, no full logs.
@@ -42,7 +44,7 @@ export XORGATE_AGENT_LABEL="${XORGATE_AGENT_LABEL:-p6-takeover}"
 export RIG_IMAGE="${RIG_IMAGE:-xorgate-replay-rig:p6-takeover}"
 export JS_REF="${JS_REF:-09da38d}"
 LOAD_MAX="${P3A_LOAD_MAX:-8}"
-TAPES="p6-takeover-open p6-takeover-vbacklog p6-takeover-tbacklog p6-takeover-reap"
+TAPES="p6-takeover-open p6-takeover-vbacklog p6-takeover-tbacklog p6-takeover-reap p6-takeover-inflight"
 
 matrix() {
   local n=1 t d s
@@ -51,6 +53,8 @@ matrix() {
   done
   echo "L13:p6-takeover-reap:jr:kill"
   echo "L14:p6-takeover-reap:rj:kill"
+  echo "L15:p6-takeover-inflight:jr:kill"
+  echo "L16:p6-takeover-inflight:rj:kill"
 }
 
 load1() { sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' || awk '{print $1}' /proc/loadavg; }

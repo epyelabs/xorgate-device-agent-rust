@@ -3020,17 +3020,7 @@ pub fn diff_with(
     }
 
     // ---- recentEvents msg multiset
-    match play.handoff.as_ref() {
-        None => diff_events(a, b, play, facts, table, &mut rep),
-        // P3a (R2): the events of each incarnation pair are compared on their
-        // own — before the restart X vs X, after it Y vs X — so a
-        // one-directional events row applies to the kinds that emitted them.
-        Some(h) => {
-            for (lo, hi) in [(i64::MIN, h.restart_w), (h.restart_w, i64::MAX)] {
-                diff_events(&a.era(lo, hi), &b.era(lo, hi), play, facts, table, &mut rep);
-            }
-        }
-    }
+    diff_events_eras(a, b, play, facts, table, &mut rep);
 
     // ---- sudo argv sequence
     diff_sudo(a, b, table, &mut rep);
@@ -4080,6 +4070,29 @@ fn sms_event_norm(msg: &str, o4: bool) -> Option<(String, bool, String, u64)> {
         id.to_string(),
         n,
     ))
+}
+
+/// [`diff_events`], per incarnation era of a P3a handoff run (R2): the events
+/// of each pair of incarnations are compared on their own — before the
+/// restart X vs X, after it Y vs X — so a one-directional events row (e.g.
+/// `rust-only-events`, D40, O4) applies to the kinds that emitted them, never
+/// to the side's final kind. Without a handoff: one era, unchanged.
+fn diff_events_eras(
+    a: &Capture,
+    b: &Capture,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
+    match play.handoff.as_ref() {
+        None => diff_events(a, b, play, facts, table, rep),
+        Some(h) => {
+            for (lo, hi) in [(i64::MIN, h.restart_w), (h.restart_w, i64::MAX)] {
+                diff_events(&a.era(lo, hi), &b.era(lo, hi), play, facts, table, rep);
+            }
+        }
+    }
 }
 
 fn diff_events(
@@ -7959,6 +7972,65 @@ mod tests {
 
     /// T7/D40: only the Rust-first-by-exactly-one-check-tick stepper race,
     /// with the exact trust-event pair, is the row.
+    /// P3a R2 (rig rule, NOT a tolerance): a handoff run's events are judged
+    /// per incarnation era. NEGATIVE: a Rust-vs-Rust difference from BEFORE
+    /// the restart still FAILS, although the sides' FINAL kinds (js, rust)
+    /// would have let `rust-only-events` cover it.
+    #[test]
+    fn p3a_r2_events_are_judged_per_incarnation_era() {
+        let t = table();
+        let side = |last: &str, kinds: [&str; 2], evs: Vec<(i64, &str)>| Capture {
+            meta: AgentMeta {
+                label: "x".into(),
+                kind: last.into(),
+                device_id: String::new(),
+                incarnations: vec![
+                    Incarnation {
+                        from_w: 0,
+                        kind: kinds[0].into(),
+                    },
+                    Incarnation {
+                        from_w: 100_000,
+                        kind: kinds[1].into(),
+                    },
+                ],
+            },
+            events: evs
+                .into_iter()
+                .map(|(t, m)| (t, "warn".to_string(), m.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let rf = "config report failed: publish queue full";
+        let handoff = PlayInfo {
+            handoff: Some(crate::takeover::HandoffInfo {
+                restart_w: 100_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let plain = PlayInfo::default();
+        let unt = |a: &Capture, b: &Capture, play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_events_eras(a, b, play, &InputFacts::for_play(play), &t, &mut rep);
+            rep.mismatches
+                .iter()
+                .filter(|m| m.stream == "events" && m.tol == UNTOLERATED)
+                .count()
+        };
+        // RJ lane: A rust→js, B rust→rust (the control).
+        let a = side("js", ["rust", "js"], vec![]);
+        // After the restart the event is on B (Rust) only, A is JS: the
+        // row applies, as in any JS-vs-Rust run.
+        let post = side("rust", ["rust", "rust"], vec![(150_000, rf)]);
+        assert_eq!(unt(&a, &post, &handoff), 0);
+        // NEGATIVE: before the restart both sides were Rust: one-sided = FAIL.
+        let pre = side("rust", ["rust", "rust"], vec![(50_000, rf)]);
+        assert_eq!(unt(&a, &pre, &handoff), 1);
+        // ... which the final kinds alone (no era split) would have hidden.
+        assert_eq!(unt(&a, &pre, &plain), 0);
+    }
+
     #[test]
     fn d40_holdoff_expiry_tick_only_the_documented_race() {
         let ev = |kind: &str, evs: Vec<(i64, &str, String)>| Capture {

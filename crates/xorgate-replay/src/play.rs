@@ -1988,6 +1988,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             .map(|a| (a.device_id.to_string(), a.label.to_string(), a.dir.clone()))
             .collect(),
         aws::faults_of(tape.meta.rig.as_ref()),
+        aws::holds_of(tape.meta.rig.as_ref()),
         &args.out,
     )?;
     if plan.full_manifest {
@@ -3225,6 +3226,62 @@ mod tests {
         assert!(!g.is_open(2_310, false)); // guard after
         assert!(g.is_open(2_330, false));
         assert_eq!(g.pairs, vec![json!({"a": 2_000, "b": 2_300})]);
+    }
+
+    /// P3a R3 (rig rule, NOT a tolerance): at a handoff the gate forgets the
+    /// stopped incarnations' tick phases and behaves exactly like a fresh
+    /// gate for the restarted ones, keeping the pairs so far + a seam marker.
+    /// NEGATIVE: it is not left open — the new pair is held like a boot's.
+    /// The gate only ever DELAYS inputs; the diff compares every observed
+    /// payload pair and lists every unpaired tick, so R3 cannot hide a
+    /// payload difference.
+    #[test]
+    fn p3a_r3_handoff_restarts_the_gate_like_a_boot() {
+        let mut g = Gate::new(60);
+        g.on_tick(0, 1_000, 1_005);
+        g.on_tick(1, 1_300, 1_305);
+        assert!(!g.is_open(1_941, false));
+        g.on_tick(0, 2_000, 2_004);
+        g.on_tick(1, 2_300, 2_306);
+        assert_eq!(g.pairs, vec![json!({"a": 2_000, "b": 2_300})]);
+        g.on_handoff(10_000);
+        let mut fresh = Gate::new(60);
+        // The restarted agents tick on NEW phases (A 20 500, B 20 800).
+        for x in [&mut g, &mut fresh] {
+            x.on_tick(0, 20_500, 20_505);
+            x.on_tick(1, 20_800, 20_805);
+        }
+        for now in [20_900, 21_000, 21_200, 21_439, 21_441, 21_600] {
+            assert_eq!(g.is_open(now, false), fresh.is_open(now, false), "{now}");
+        }
+        // NEGATIVE: held from the NEW lead tick − guard (21 500 − 60) …
+        let mut g2 = Gate::new(60);
+        g2.on_tick(0, 1_000, 1_005);
+        g2.on_tick(1, 1_300, 1_305);
+        g2.on_handoff(10_000);
+        g2.on_tick(0, 20_500, 20_505);
+        g2.on_tick(1, 20_800, 20_805);
+        assert!(g2.is_open(21_400, false));
+        assert!(!g2.is_open(21_441, false));
+        // … the old phase (… 21 000 − 60) is forgotten: open there.
+        let mut g3 = Gate::new(60);
+        g3.on_tick(0, 1_000, 1_005);
+        g3.on_tick(1, 1_300, 1_305);
+        g3.on_handoff(10_000);
+        g3.on_tick(0, 20_500, 20_505);
+        g3.on_tick(1, 20_800, 20_805);
+        assert!(g3.is_open(20_950, false));
+        // Pairs: the pre-handoff one, the seam marker, then the new pairs.
+        g.on_tick(0, 21_500, 21_504);
+        g.on_tick(1, 21_800, 21_806);
+        assert_eq!(
+            g.pairs,
+            vec![
+                json!({"a": 2_000, "b": 2_300}),
+                json!({"handoff": 10_000}),
+                json!({"a": 21_500, "b": 21_800}),
+            ]
+        );
     }
 
     #[test]
