@@ -4087,21 +4087,39 @@ pub fn d52_sequence_ok(lines: &[(u8, String)]) -> Result<usize, String> {
     //   timing rejected …` on: the guard / wall refusal, and the host logs
     //   only the run's FIRST refusal (`capture_host/timing.rs` reject_line,
     //   D52 row), so later refused ids are silent;
-    // - anywhere after a contained callback panic (`panicked at`, D52 row:
-    //   that fragment keeps the legacy anchors, `capture_host::contain`).
+    //   ONLY a START refusal counts (round-2 N3): the same text for a
+    //   rotation-close END refusal names a fragment whose start line exists;
+    // - after a contained callback panic (`panicked at`, D52 row: that
+    //   fragment keeps the legacy anchors, `capture_host::contain`): ONE
+    //   missing id per panic line, and only for gaps AFTER that line in this
+    //   child's line order (round-2 N3).
     // (A pre-roll skip without a clock, R-WP1-1, needs a non-live head; no
     // capture argv has one, so it is not a gap rule.)
-    let refused_from: Option<u32> = lines.iter().filter(|(fd, _)| *fd == 2).find_map(|(_, l)| {
-        l.strip_prefix("xorgate-capture: fragment ")?
-            .split_once(": exact timing rejected")?
-            .0
-            .parse()
-            .ok()
-    });
-    let panicked = lines
+    let start_ids: BTreeSet<u32> = lines
         .iter()
-        .any(|(fd, l)| *fd == 2 && l.contains("panicked at"));
+        .filter(|(fd, _)| *fd == 1)
+        .filter_map(|(_, l)| match xorgate_core::capture_timing::parse_line(l) {
+            Some(Ok(TimingLine::Start(st))) => Some(st.id),
+            _ => None,
+        })
+        .collect();
+    let refused_from: Option<u32> = lines
+        .iter()
+        .filter(|(fd, _)| *fd == 2)
+        .filter_map(|(_, l)| {
+            l.strip_prefix("xorgate-capture: fragment ")?
+                .split_once(": exact timing rejected")?
+                .0
+                .parse::<u32>()
+                .ok()
+        })
+        .find(|id| !start_ids.contains(id));
+    let mut panic_credits: u32 = 0;
     for (fd, l) in lines {
+        if *fd == 2 && l.contains("panicked at") {
+            panic_credits += 1;
+            continue;
+        }
         let Some(parsed) = xorgate_core::capture_timing::parse_line(l) else {
             continue;
         };
@@ -4115,8 +4133,13 @@ pub fn d52_sequence_ok(lines: &[(u8, String)]) -> Result<usize, String> {
         }
         if let TimingLine::Start(st) = &t {
             let want = starts.last().map_or(0, |p| p + 1);
-            let gap_ok = panicked || refused_from.is_some_and(|r| want >= r);
-            if st.id > want && !gap_ok {
+            let missing = st.id.saturating_sub(want);
+            let refused = refused_from.is_some_and(|r| want >= r);
+            let gap_ok = missing == 0 || refused || panic_credits >= missing;
+            if missing > 0 && !refused && gap_ok {
+                panic_credits -= missing;
+            }
+            if !gap_ok {
                 return Err(format!(
                     "start id {} after {:?}: ids {}..{} missing with no refusal / panic line",
                     st.id,
@@ -8736,9 +8759,27 @@ kind = "decisions"
         let mut v = s(&[0, 2]);
         v.push(refusal(3));
         assert!(d52_sequence_ok(&v).is_err(), "a gap BEFORE the named id");
+        let panic = || (2u8, "thread '<unnamed>' panicked at src/host.rs:1:1:".to_string());
+        let mut v = s(&[0, 2]);
+        v.insert(1, panic());
+        assert!(d52_sequence_ok(&v).is_ok(), "a contained panic: one id after it");
+        // Round-2 N3: the panic allowance is bounded — one id per panic line,
+        // only for a gap AFTER the line ...
         let mut v = s(&[0, 3]);
-        v.push((2, "thread '<unnamed>' panicked at src/host.rs:1:1:".into()));
-        assert!(d52_sequence_ok(&v).is_ok(), "a contained panic");
+        v.insert(1, panic());
+        assert!(d52_sequence_ok(&v).is_err(), "two ids missing, one panic line");
+        let mut v = s(&[0, 2]);
+        v.push(panic());
+        assert!(d52_sequence_ok(&v).is_err(), "the panic line comes after the gap");
+        let mut v = s(&[0, 3]);
+        v.insert(1, panic());
+        v.insert(1, panic());
+        assert!(d52_sequence_ok(&v).is_ok(), "two panic lines cover two ids");
+        // ... and a rotation-close END refusal (it names a fragment whose
+        // start line exists) opens no start-refusal allowance.
+        let mut v = s(&[0, 2]);
+        v.insert(1, refusal(0));
+        assert!(d52_sequence_ok(&v).is_err(), "an END refusal names a started fragment");
         // (c) an UNPAIRED host child (only this side spawned it) is checked.
         let mut host = lines_cap("rust", "xorgate-capture", &host_lines(&[]), "int");
         let mut extra = host.spawns[0].clone();
