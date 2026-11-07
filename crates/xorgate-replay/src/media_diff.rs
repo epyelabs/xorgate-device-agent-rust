@@ -8278,7 +8278,13 @@ kind = "decisions"
             v["startTs"] = (v["startTs"].as_i64().unwrap() + LAG_R[2] + 1).into();
             v["durationMs"] = j2["durationMs"].clone();
         });
-        assert_eq!(unt(&js, &r), vec![row(2, "(accepted stamp not used)")]);
+        // (Its session-relative startMono now also differs from JS: the
+        // exact fragment 0 below it keeps its stamp.)
+        assert!(
+            unt(&js, &r).contains(&row(2, "(accepted stamp not used)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // Fragment 0 as the TS's `boundary` row.
         let mut r = rs.clone();
         set_sc(&mut r, 0, |v| {
@@ -8291,19 +8297,30 @@ kind = "decisions"
             "{:#?}",
             unt(&js, &r)
         );
-        // The whole session legacy while every stamp is accepted.
+        // The reviewer's whole-session form: EVERY sidecar is the TS's bytes
+        // (birthtime starts, fragment 0 walked back from birth(1)) while every
+        // stamp is accepted — T12 alone passes all of it; only F1 fails it.
         let mut r = rs.clone();
-        for q in 0..4 {
+        let fr = |k: i64| P_R + 10 + k * SEG;
+        for q in 0..4u64 {
             let jq = sc(&js, q);
+            let legacy_st = if q == 0 {
+                fr(1) + LAG_R[1] + 1 - SEG
+            } else {
+                fr(q as i64) + LAG_R[q as usize] + 1
+            };
             set_sc(&mut r, q, |v| {
                 v["anchor"] = jq["anchor"].clone();
+                v["startTs"] = legacy_st.into();
                 v["durationMs"] = jq["durationMs"].clone();
             });
         }
-        let u = unt(&js, &r);
-        for q in 0..4 {
-            assert!(u.contains(&row(q, "(accepted stamp not used)")), "{u:#?}");
-        }
+        assert_eq!(
+            unt(&js, &r),
+            (0..4)
+                .map(|q| row(q, "(accepted stamp not used)"))
+                .collect::<Vec<_>>()
+        );
         // Either column order.
         assert!(unt(&r, &js).contains(&row(2, "(accepted stamp not used)")));
     }
@@ -8367,7 +8384,13 @@ kind = "decisions"
         set_sc(&mut r, 3, |v| {
             v["durationMs"] = (v["durationMs"].as_i64().unwrap() - 40).into()
         });
-        assert_eq!(unt(&js, &r), vec![row(3, "(END stamp not used)")]);
+        // (The pairwise D51 clean-final arm refuses it too: it only applies
+        // to a duration that IS endTs − startTs.)
+        assert!(
+            unt(&js, &r).contains(&row(3, "(END stamp not used)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // ... also when the other side lacks the fragment (exact-only tail).
         let mut j = js.clone();
         j.finals
@@ -8627,11 +8650,7 @@ kind = "decisions"
         v.push(refusal(3));
         assert!(d52_sequence_ok(&v).is_err(), "a gap BEFORE the named id");
         let mut v = s(&[0, 3]);
-        v.push((
-            2,
-            "thread '<unnamed>' panicked at crates/xorgate-agent/src/capture_host/timing.rs:1:1:"
-                .into(),
-        ));
+        v.push((2, "thread '<unnamed>' panicked at src/host.rs:1:1:".into()));
         assert!(d52_sequence_ok(&v).is_ok(), "a contained panic");
         // (c) an UNPAIRED host child (only this side spawned it) is checked.
         let mut host = lines_cap("rust", "xorgate-capture", &host_lines(&[]), "int");
