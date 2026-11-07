@@ -704,6 +704,7 @@ mod tests {
     /// Runs `name` (this test binary's own test) in a child process with
     /// `XG_SYS_CHILD=1` and returns its exit status: a test whose failure
     /// mode is "the process dies by a signal" then FAILS BY ASSERTION here.
+    #[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
     fn in_child(name: &str) -> (std::process::ExitStatus, String) {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([name, "--exact", "--test-threads=1", "--nocapture"])

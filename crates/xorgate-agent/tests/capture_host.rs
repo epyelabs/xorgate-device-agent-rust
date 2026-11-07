@@ -409,6 +409,7 @@ async fn dot_dumps_use_show_all_without_full_params() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
 fn unknown_option_is_an_initialisation_error() {
     let out = std::process::Command::new(BIN)
         .args(["__capture-host", "-v", "fakesrc", "!", "fakesink"])
