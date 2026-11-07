@@ -364,7 +364,7 @@ L = [line(0, b1, 100, 5.10, "0x0", "connected", 1, rs(10, 60000, 5.0), g(30000, 
 open(out, "w").write("\n".join(L) + "\n")
 PY
 SUM=$(python3 -I "$PY" summary "$SF"); rc=$?
-sed 's/^/    | /' <<<"$SUM"
+while IFS= read -r l; do echo "    | $l"; done <<<"$SUM"
 expect "$rc" "summary exits 0"
 for want in '6 line(s) in 1 file(s), 0 malformed' 'boots: 2' 'rail_v min 4.71' 'max 5.12' 'under-voltage NOW in 1 line(s)' \
             'throttled transitions: 1' 'set=uv,thr,uv_since,thr_since' 'rs nrestarts 0 -> 1' 'rs mainpid 10 -> 11' 'new boot (previous boot 11111111' \
