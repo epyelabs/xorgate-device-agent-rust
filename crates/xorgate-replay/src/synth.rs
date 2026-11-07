@@ -267,6 +267,12 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         "P3a (b): video only; fake-S3 503 from 30 s to handoff + 10 s; handoff at 100 s (closed fragments never uploaded + the active one)",
     ),
     (
+        "p6-takeover-vbacklog-503tail",
+        200,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a INFORMATIONAL (orchestrator 2026-11-07): p6-takeover-vbacklog with the 503 window lasting 60 s past the restart, so the next agent retries the inherited backlog through its own backoff; only the per-file fate is judged",
+    ),
+    (
         "p6-takeover-tbacklog",
         230,
         &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
@@ -736,7 +742,7 @@ pub fn rec_namespace(scenario: &str) -> Value {
             rec["upload"] = json!({"mode": "off"});
             rec["retention"] = json!({"maxBytes": 536_870_912u64, "minFreeBytes": 0});
         }
-        "p6-takeover-vbacklog" => {
+        "p6-takeover-vbacklog" | "p6-takeover-vbacklog-503tail" => {
             rec["telemetry"]["enabled"] = json!(false);
         }
         "p6-takeover-tbacklog" => {
@@ -776,6 +782,10 @@ pub const TAKEOVER_INFLIGHT_HOLD_MS: u64 = 20_000;
 /// The cost: the next agent never meets 503s on the inherited backlog (an
 /// Unverified item of P3a-takeover.md).
 pub const TAKEOVER_OUTAGE_TAIL_MS: u64 = 0;
+/// The informational `p6-takeover-vbacklog-503tail` lane's post-restart 503
+/// tail: the next agent retries through its backoff (2, 4, 8, 16, 32 s,
+/// `uploader.ts:71-72`) and drains at ~62 s, inside the tape's 100 s tail.
+pub const TAKEOVER_INFO_TAIL_MS: u64 = 60_000;
 
 /// `meta.rig` of a P3a tape: `handoff {atMs, segMs, expect}` + the fake-S3
 /// outage. `expect` names `takeover::classes` aggregates (signal-independent:
@@ -800,6 +810,16 @@ pub fn takeover_rig(name: &str) -> Value {
         "p6-takeover-vbacklog" => (
             TAKEOVER_VBACKLOG_AT_MS,
             Some(outage(30_000, TAKEOVER_VBACKLOG_AT_MS)),
+            json!({
+                "min": {"video/cam0: mp4": 5, "video/cam1: mp4": 5},
+                "max": {"telemetry: segment": 0},
+            }),
+        ),
+        "p6-takeover-vbacklog-503tail" => (
+            TAKEOVER_VBACKLOG_AT_MS,
+            Some(
+                json!([{"fromMs": 30_000, "toMs": TAKEOVER_VBACKLOG_AT_MS + TAKEOVER_INFO_TAIL_MS, "status": 503}]),
+            ),
             json!({
                 "min": {"video/cam0: mp4": 5, "video/cam1: mp4": 5},
                 "max": {"telemetry: segment": 0},
@@ -1644,8 +1664,8 @@ mod tests {
             .map(|s| s.0)
             .filter(|n| is_phase3(n))
             .collect();
-        // 8 Phase 3 scenarios + the 5 Phase 6 P3a takeover tapes.
-        assert_eq!(p3.len(), 13, "{p3:?}");
+        // 8 Phase 3 scenarios + the 6 Phase 6 P3a takeover tapes.
+        assert_eq!(p3.len(), 14, "{p3:?}");
         for name in p3 {
             let tape = build(name, None, &fixtures()).unwrap();
             assert_eq!(tape.meta.hardware, media_hardware_block(), "{name}");

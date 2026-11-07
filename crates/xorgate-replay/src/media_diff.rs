@@ -1603,52 +1603,82 @@ const D59_LEAVES: &[&str] = &[
     "metrics.system.led_state.value",
 ];
 
-/// P3a D59 (accepted-divergences.md): `Some(steps to drop, per side)` when
-/// the two value sequences of an LED/health leaf differ ONLY by one-sample
-/// states the RUST side recorded where the JS sample nearest it (≤ 500 ms)
-/// carried no `system` (D30, `d30_js_system_less_value`: its neighbours do),
-/// AND both sides' live telemetry carried that exact value text within
-/// ±1 000 ms of the Rust sample (`led_state_both_held`'s window: the JS LED
-/// held it too). Never Rust-lacking, never JS-vs-JS / Rust-vs-Rust, never
-/// another leaf, never a state held two samples.
-fn d59_hidden_led_states(
+/// P3a D59: how long after a boot (the run's start or a handoff restart,
+/// `PlayInfo::boot_wall`) a recorded LED/health blip counts as the boot
+/// transient — the startup window of the diff's boot rules (5 s).
+const D59_BOOT_MS: i64 = 5_000;
+/// `led_state_both_held`'s window: one LED heartbeat.
+const D59_LIVE_MS: i64 = 1_000;
+
+/// P3a D59 (P3a-takeover.md, D-row text there): a BOOT-STARTED recording
+/// session (recording on in settings.json at boot — every handoff, and a
+/// fielded cold boot) samples before the agent's first LED evaluation, so
+/// its first sample is the pre-LED `(health_flags 0, led_state starting)`,
+/// and the one-sample LED states of the boot transient that follow land
+/// MID-sequence (a split run), where `led_state_both_held` (the edge-only
+/// `fix_edge` arm) cannot reach them. `Some(drops)` when the two value
+/// sequences of an LED/health leaf differ ONLY by such blips: a single
+/// sample of value v between two samples of the same value u, at most
+/// [`D59_BOOT_MS`] after its boot, in a session whose first sample is too on
+/// BOTH sides, and that BOTH sides' live telemetry carried within
+/// ±[`D59_LIVE_MS`] (both LEDs held v; which recorder caught it is each
+/// one's own 1 s phase). Any kind pair (a timing race, not a kind
+/// difference). Anything else: None.
+fn d59_boot_led_blips(
     p: &str,
-    kinds: (&str, &str),
-    (sa, sb): (&[Step], &[Step]),
+    play: &PlayInfo,
     (la, lb): (&[LeafSample], &[LeafSample]),
     (live_a, live_b): (LiveSeries, LiveSeries),
 ) -> Option<Vec<(bool, Step)>> {
     if !D59_LEAVES.contains(&p) {
         return None;
     }
-    // (holder steps, lacker samples, holder is A)
-    let (hold, lack, a_holds) = match kinds {
-        ("rust", "js") => (sa, lb, true),
-        ("js", "rust") => (sb, la, false),
-        _ => return None,
+    let vals = |l: &[LeafSample]| -> Vec<(i64, String)> {
+        l.iter()
+            .filter_map(|(ts, o)| o.get(p).map(|v| (*ts, v.clone())))
+            .collect()
     };
-    let near = |l: &[(i64, String)], ts: i64, v: &str| {
-        l.iter().any(|(t, x)| (t - ts).abs() <= 1_000 && x == v)
-    };
-    let drop: Vec<usize> = system_less_transients(p, hold, lack)
-        .into_iter()
-        .filter(|&i| near(live_a, hold[i].2, &hold[i].0) && near(live_b, hold[i].2, &hold[i].0))
-        .collect();
-    if drop.is_empty() {
+    let (va, vb) = (vals(la), vals(lb));
+    let after_boot = |ts: i64| ts - play.boot_wall(ts) <= D59_BOOT_MS;
+    let boot_started = |v: &[(i64, String)]| v.first().is_some_and(|(ts, _)| after_boot(*ts));
+    if !boot_started(&va) || !boot_started(&vb) {
         return None;
     }
-    let keep = |st: &[Step], d: &[usize]| -> Vec<String> {
-        let mut v: Vec<String> = Vec::new();
-        for (i, s) in st.iter().enumerate() {
-            if !d.contains(&i) && v.last() != Some(&s.0) {
-                v.push(s.0.clone());
+    let near = |l: LiveSeries, ts: i64, v: &str| {
+        l.iter()
+            .any(|(t, x)| (t - ts).abs() <= D59_LIVE_MS && x == v)
+    };
+    let blips = |v: &[(i64, String)]| -> Vec<usize> {
+        (1..v.len().saturating_sub(1))
+            .filter(|&i| {
+                let (ts, x) = (v[i].0, &v[i].1);
+                v[i - 1].1 != *x
+                    && v[i - 1].1 == v[i + 1].1
+                    && after_boot(ts)
+                    && near(live_a, ts, x)
+                    && near(live_b, ts, x)
+            })
+            .collect()
+    };
+    let (da, db) = (blips(&va), blips(&vb));
+    if da.is_empty() && db.is_empty() {
+        return None;
+    }
+    let dedup = |v: &[(i64, String)], d: &[usize]| -> Vec<String> {
+        let mut o: Vec<String> = Vec::new();
+        for (i, (_, x)) in v.iter().enumerate() {
+            if !d.contains(&i) && o.last() != Some(x) {
+                o.push(x.clone());
             }
         }
-        v
+        o
     };
-    let other = if a_holds { sb } else { sa };
-    (keep(hold, &drop) == keep(other, &[]))
-        .then(|| drop.iter().map(|&i| (a_holds, hold[i].clone())).collect())
+    (dedup(&va, &da) == dedup(&vb, &db)).then(|| {
+        da.iter()
+            .map(|&i| (true, (va[i].1.clone(), 1, va[i].0)))
+            .chain(db.iter().map(|&i| (false, (vb[i].1.clone(), 1, vb[i].0))))
+            .collect()
+    })
 }
 
 fn d30_js_system_less_value(p: &str, lack: &[LeafSample], step: &Step) -> bool {
@@ -1748,11 +1778,10 @@ fn rec_values_m(
         .matcher_rows("d30_js_system_less_value", "rec-telemetry")
         .first()
         .cloned();
-    // P3a D59 (inert until its row exists in tolerances.toml): a one-sample
-    // LED/health state the RUST recorder wrote where the JS sample nearest it
-    // was a D30 system-less one, and both agents' LIVE telemetry carried it.
+    // P3a D59 (inert until its row exists in tolerances.toml): the boot
+    // transient's one-sample LED/health states of a boot-started session.
     let d59_row = table
-        .matcher_rows("d59_js_system_less_led", "rec-telemetry")
+        .matcher_rows("d59_boot_led_blip", "rec-telemetry")
         .first()
         .cloned();
     let collision = row_tol(table, id, "collisionMs", 0.0) as i64;
@@ -1935,19 +1964,17 @@ fn rec_values_m(
                     continue;
                 }
             }
-            // P3a D59: JS (lacking) vs Rust (holding) only, the LED/health
-            // leaves only: a Rust one-sample state hidden on the JS side by a
-            // D30 system-less sample (`d30_js_system_less_value`), which BOTH
-            // sides' live telemetry carried within ±1 s (`led_state_both_held`
-            // window). Every such transient removed, the sequences must be
-            // EQUAL; anything else stays judged below.
+            // P3a D59 (`d59_boot_led_blips`): the LED/health leaves only, a
+            // boot-started session's mid-sequence one-sample boot states that
+            // BOTH sides' live telemetry carried. Every such blip removed,
+            // the sequences must be EQUAL; anything else stays judged below.
             if let Some(rid) = d59_row.as_ref() {
                 let lv = if p.ends_with("led_state.value") {
                     live_led
                 } else {
                     live
                 };
-                if let Some(drops) = d59_hidden_led_states(p, kinds, (&sa, &sb), (&la, &lb), lv) {
+                if let Some(drops) = d59_boot_led_blips(p, play, (&la, &lb), lv) {
                     for (side_a, st) in drops {
                         let f = format!("{}×{}@{}", st.0, st.1, st.2);
                         let (x, y) = if side_a {
@@ -4567,15 +4594,15 @@ fn d30_js_spawn_tick(a: &MediaCapture, b: &MediaCapture, rep: &Report) -> BTreeS
 mod tests {
     use super::*;
 
-    /// P3a D59: the L1 2026-11-07 shape (a JR handoff, the Rust incarnation
-    /// after the restart): Rust records hf 16 for ONE sample while its LED
-    /// held no-fix; the JS sample nearest it carried no `system` (D30) and
-    /// both live series carried 16 within 1 s. NEGATIVES: JS holding / Rust
-    /// lacking, JS-vs-JS, another leaf, a two-sample state, a JS sample that
-    /// HAS system, a value the JS live telemetry never carried, and any
-    /// other remaining difference all stay judged (None).
+    /// P3a D59, the two shapes seen (restart at 0 here; ms since it):
+    /// L9 2026-11-07 — Rust records hf 16 for ONE sample (2 070) just before
+    /// its LED went healthy, the JS sample 200 ms later already 0; L1.r2 —
+    /// the JS sample there carried no `system` (D30). Both live series held
+    /// 16 within 1 s. NEGATIVES: a blip > 5 s after the boot, a session that
+    /// did not start at a boot, one live series without the value, a
+    /// two-sample state, another leaf, a remaining difference: all None.
     #[test]
-    fn d59_only_a_rust_one_sample_led_state_hidden_by_a_js_system_less_sample() {
+    fn d59_only_boot_transient_one_sample_led_states_both_lives_held() {
         let hf = "metrics.system.health_flags.value";
         let smp = |ts: i64, v: Option<&str>| -> LeafSample {
             let mut o = BTreeMap::from([("metrics.gps.fix.value".to_string(), "3".to_string())]);
@@ -4584,91 +4611,104 @@ mod tests {
             }
             (ts, o)
         };
-        let steps = |l: &[LeafSample]| -> Vec<Step> {
-            let mut v: Vec<Step> = Vec::new();
-            for (ts, o) in l {
-                if let Some(t) = o.get(hf) {
-                    match v.last_mut() {
-                        Some(s) if s.0 == *t => s.1 += 1,
-                        _ => v.push((t.clone(), 1, *ts)),
-                    }
-                }
-            }
-            v
+        let play = PlayInfo {
+            start_wall: -200_000,
+            end_wall: 400_000,
+            handoff: Some(crate::takeover::HandoffInfo {
+                stop_w: -100_000,
+                restart_w: 0,
+                ..Default::default()
+            }),
+            ..Default::default()
         };
-        let rust = vec![
-            smp(814, Some("0")),
-            smp(1_817, Some("16")),
-            smp(2_812, Some("0")),
-            smp(3_817, Some("0")),
+        let a = vec![
+            smp(1_067, Some("0")),
+            smp(2_070, Some("16")),
+            smp(3_067, Some("0")),
+            smp(4_070, Some("0")),
         ];
-        let js = vec![
-            smp(1_133, Some("0")),
-            smp(2_130, None),
-            smp(3_125, Some("0")),
-            smp(4_127, Some("0")),
+        let b = vec![
+            smp(1_267, Some("0")),
+            smp(2_272, Some("0")),
+            smp(3_262, Some("0")),
+            smp(4_273, Some("0")),
         ];
-        let live_r = vec![(915, "16".to_string()), (1_919, "0".to_string())];
-        let live_j = vec![(1_282, "16".to_string()), (2_287, "0".to_string())];
-        let run = |kinds: (&str, &str),
-                   p: &str,
+        let live_a = vec![(1_158, "16".to_string()), (2_163, "0".to_string())];
+        let live_b = vec![(1_380, "16".to_string()), (2_383, "0".to_string())];
+        let run = |p: &str,
                    a: &[LeafSample],
                    b: &[LeafSample],
                    la: &[(i64, String)],
-                   lb: &[(i64, String)]| {
-            d59_hidden_led_states(p, kinds, (&steps(a), &steps(b)), (a, b), (la, lb))
+                   lb: &[(i64, String)],
+                   play: &PlayInfo| d59_boot_led_blips(p, play, (a, b), (la, lb));
+        assert_eq!(
+            run(hf, &a, &b, &live_a, &live_b, &play).unwrap(),
+            vec![(true, ("16".to_string(), 1, 2_070))]
+        );
+        // L1.r2: the other side's sample there had no system (no hf leaf).
+        let b_nosys = vec![
+            smp(1_267, Some("0")),
+            smp(2_272, None),
+            smp(3_262, Some("0")),
+        ];
+        assert!(run(hf, &a, &b_nosys, &live_a, &live_b, &play).is_some());
+        // Either side may hold it.
+        assert!(run(hf, &b, &a, &live_b, &live_a, &play).is_some());
+        // NEGATIVE: the same blip 6 s after the boot.
+        let late_a = [
+            smp(1_067, Some("0")),
+            smp(5_067, Some("0")),
+            smp(6_070, Some("16")),
+            smp(7_067, Some("0")),
+        ];
+        let late_b = [
+            smp(1_267, Some("0")),
+            smp(5_262, Some("0")),
+            smp(6_272, Some("0")),
+            smp(7_273, Some("0")),
+        ];
+        let late_live = vec![(6_158, "16".to_string())];
+        assert!(run(hf, &late_a, &late_b, &late_live, &late_live, &play).is_none());
+        // NEGATIVE: a session that did not start at a boot (60 s after it).
+        let mid = PlayInfo {
+            handoff: Some(crate::takeover::HandoffInfo {
+                stop_w: -100_000,
+                restart_w: -60_000,
+                ..Default::default()
+            }),
+            ..play.clone()
         };
-        let ok = run(("rust", "js"), hf, &rust, &js, &live_r, &live_j).unwrap();
-        assert_eq!(ok, vec![(true, ("16".to_string(), 1, 1_817))]);
-        // Either column order.
-        assert!(run(("js", "rust"), hf, &js, &rust, &live_j, &live_r).is_some());
-        // NEGATIVE: JS holding, Rust lacking (Rust never drops `system`).
-        assert!(run(("js", "rust"), hf, &rust, &js, &live_r, &live_j).is_none());
-        // NEGATIVE: JS-vs-JS / Rust-vs-Rust; another leaf.
-        assert!(run(("js", "js"), hf, &rust, &js, &live_r, &live_j).is_none());
-        assert!(run(("rust", "rust"), hf, &rust, &js, &live_r, &live_j).is_none());
+        assert!(run(hf, &a, &b, &live_a, &live_b, &mid).is_none());
+        // NEGATIVE: B's live telemetry never carried 16 near it.
+        let live_b0 = vec![(1_380, "0".to_string())];
+        assert!(run(hf, &a, &b, &live_a, &live_b0, &play).is_none());
+        // NEGATIVE: a two-sample state.
+        let two = vec![
+            smp(1_067, Some("0")),
+            smp(2_070, Some("16")),
+            smp(3_067, Some("16")),
+            smp(4_070, Some("0")),
+        ];
+        assert!(run(hf, &two, &b, &live_a, &live_b, &play).is_none());
+        // NEGATIVE: another leaf; a remaining difference after the drop.
         assert!(run(
-            ("rust", "js"),
             "metrics.system.rail_5v.value",
-            &rust,
-            &js,
-            &live_r,
-            &live_j
+            &a,
+            &b,
+            &live_a,
+            &live_b,
+            &play
         )
         .is_none());
-        // NEGATIVE: the state held two Rust samples.
-        let two = vec![
-            smp(814, Some("0")),
-            smp(1_817, Some("16")),
-            smp(2_812, Some("16")),
-            smp(3_817, Some("0")),
+        let more = vec![
+            smp(1_067, Some("0")),
+            smp(2_070, Some("16")),
+            smp(3_067, Some("0")),
+            smp(4_070, Some("64")),
         ];
-        assert!(run(("rust", "js"), hf, &two, &js, &live_r, &live_j).is_none());
-        // NEGATIVE: the nearest JS sample HAS system (it recorded 0, not 16).
-        let js_sys = vec![
-            smp(1_133, Some("0")),
-            smp(2_130, Some("0")),
-            smp(3_125, Some("0")),
-        ];
-        assert!(run(("rust", "js"), hf, &rust, &js_sys, &live_r, &live_j).is_none());
-        // NEGATIVE: the JS live telemetry never carried 16 near it.
-        let live_j0 = vec![(1_282, "0".to_string())];
-        assert!(run(("rust", "js"), hf, &rust, &js, &live_r, &live_j0).is_none());
-        // NEGATIVE: another difference remains after the drop.
-        let rust_more = vec![
-            smp(814, Some("0")),
-            smp(1_817, Some("16")),
-            smp(2_812, Some("0")),
-            smp(3_817, Some("64")),
-        ];
-        assert!(run(("rust", "js"), hf, &rust_more, &js, &live_r, &live_j).is_none());
+        assert!(run(hf, &more, &b, &live_a, &live_b, &play).is_none());
     }
 
-    /// P3a R1 (rig rule, NOT a tolerance): a child alive when the rig's
-    /// handoff stop signalled it ends `handoff:<sig>` (the RIG did it, like
-    /// `external`); one that ended before keeps its own class. NEGATIVE: a
-    /// real difference in how a child ended, or in how many were spawned,
-    /// still FAILS through it.
     #[test]
     fn p3a_r1_handoff_class_only_for_children_the_rig_signalled() {
         let dir = std::env::temp_dir().join(format!("xorgate-replay-r1-{}", std::process::id()));
