@@ -210,13 +210,36 @@ class T(unittest.TestCase):
         r = self.run_check(s, source="lines", min_fragments=5)
         self.assertEqual(r["verdict"], "PASS", r)
 
+    def test_expect_pins_the_mode_and_is_required(self):
+        # WP3 review F1: the run's configured mode, never inferred: an exact
+        # run whose sidecars are all legacy (an agent that ignored its stamps)
+        # FAILS under --expect exact, and an exact session under --expect legacy.
+        s = Side(self.tmp, tool="xorgate-capture")
+        for k in range(5):
+            frame = P + 9 + k * SEG * 1000
+            s.car(k, (P + 9 + 2_050) if k == 0 else frame + 2_050, "boundary" if k == 0 else "fstat")
+        s.write()
+        res = tt.check(self.tmp, "sidecars", 1, "exact")
+        self.assertEqual(res[0]["verdict"], "FAIL", res)
+        self.assertTrue(any("--expect exact" in e for e in res[0]["errors"]), res[0]["errors"])
+        self.assertEqual(tt.check(self.tmp, "sidecars", 1, "legacy")[0]["verdict"], "PASS")
+        shutil.rmtree(self.tmp)
+        os.makedirs(self.tmp)
+        exact_side(self.tmp).write()
+        self.assertEqual(tt.check(self.tmp, "sidecars", 1, "legacy")[0]["verdict"], "FAIL")
+        self.assertEqual(tt.check(self.tmp, "sidecars", 1, "exact")[0]["verdict"], "PASS")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as e:
+                tt.main([self.tmp])  # no --expect with --source sidecars
+        self.assertEqual(e.exception.code, 2)
+
     def test_exit_codes(self):
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(tt.main([self.tmp]), 2)  # nothing to check
+            self.assertEqual(tt.main([self.tmp, "--expect", "exact"]), 2)  # nothing to check
             exact_side(self.tmp).write()
-            self.assertEqual(tt.main([self.tmp]), 0)
+            self.assertEqual(tt.main([self.tmp, "--expect", "exact"]), 0)
             exact_side(self.tmp, off={1: 500}).write()
-            self.assertEqual(tt.main([self.tmp]), 1)
+            self.assertEqual(tt.main([self.tmp, "--expect", "exact"]), 1)
 
 
 if __name__ == "__main__":

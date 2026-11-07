@@ -32,7 +32,7 @@ K5 bounds (per session, every fragment N >= 0, fragment 0 included):
   is `boundary`.
 
 Usage:
-  timing_truth.py <side dir> [--source sidecars|lines] [--json OUT] [--min-fragments N]
+  timing_truth.py <side dir> --expect exact|legacy [--source sidecars|lines] [--json OUT] [--min-fragments N]
 <side dir> is a rig run's `<run>/<label>/` (shim.ndjson, final/recordings/**,
 s3/**) or a capture-host harness dir holding only `shim.ndjson` (use
 `--source lines`). Exit 0 = every checked session PASSES, 1 = a FAIL, 2 = no
@@ -146,8 +146,11 @@ def sidecars_of(side_dir):
     return found
 
 
-def check_session(s, starts, anchors, min_fragments):
-    """One session: `starts` {seq: startTs}, `anchors` {seq: anchor or None}."""
+def check_session(s, starts, anchors, min_fragments, expect=None):
+    """One session: `starts` {seq: startTs}, `anchors` {seq: anchor or None}.
+    `expect` ("exact" | "legacy"): the mode the RUN was configured for (WP3
+    review F1); every fragment must then be of that kind. `None` infers it
+    from the data (only the `--source lines` harness, which is exact)."""
     rows = []
     errors = []
     fps = s["fps"]
@@ -164,7 +167,9 @@ def check_session(s, starts, anchors, min_fragments):
     kinds = {("pts" if anchors.get(q) in (None, "pts") else "legacy") for q in seqs}
     if len(kinds) != 1:
         errors.append("mixed exact and legacy fragments in one session: %s" % sorted(anchors.items()))
-    exact = kinds == {"pts"}
+    exact = kinds == {"pts"} if expect is None else expect == "exact"
+    if expect is not None and kinds != {"pts" if exact else "legacy"}:
+        errors.append("--expect %s but the session holds %s fragments: %s" % (expect, "/".join(sorted(kinds)), sorted(anchors.items())))
     bound = frame_ms + SLACK_MS
     for q in seqs:
         st = starts[q]
@@ -211,7 +216,7 @@ def check_session(s, starts, anchors, min_fragments):
     }
 
 
-def check(side_dir, source="sidecars", min_fragments=1):
+def check(side_dir, source="sidecars", min_fragments=1, expect=None):
     shim = read_ndjson(os.path.join(side_dir, "shim.ndjson"))
     sess = sessions_of(shim)
     cars = sidecars_of(side_dir) if source == "sidecars" else {}
@@ -228,7 +233,7 @@ def check(side_dir, source="sidecars", min_fragments=1):
         if not starts:
             out.append({"pid": pid, "sid": s["sid"], "tool": s["tool"], "verdict": "SKIP", "why": "no fragments", "rows": []})
             continue
-        r = check_session(s, starts, anchors, min_fragments)
+        r = check_session(s, starts, anchors, min_fragments, expect)
         r.update({"pid": pid, "sid": s["sid"], "tool": s["tool"], "seg_s": s["seg_s"]})
         out.append(r)
     return out
@@ -240,8 +245,12 @@ def main(argv=None):
     ap.add_argument("--source", choices=("sidecars", "lines"), default="sidecars")
     ap.add_argument("--json")
     ap.add_argument("--min-fragments", type=int, default=1)
+    ap.add_argument("--expect", choices=("exact", "legacy"),
+                    help="the sidecar mode the run was configured for (required with --source sidecars)")
     a = ap.parse_args(argv)
-    res = check(a.side_dir, a.source, a.min_fragments)
+    if a.source == "sidecars" and a.expect is None:
+        ap.error("--expect exact|legacy is required with --source sidecars (the mode is never inferred)")
+    res = check(a.side_dir, a.source, a.min_fragments, a.expect if a.source == "sidecars" else "exact")
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump(res, f, indent=1)
