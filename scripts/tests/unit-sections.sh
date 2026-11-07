@@ -43,6 +43,43 @@ out=$(misplaced "${units[@]}")
 grep -q '^StartLimitIntervalSec=60$' "$REPO/systemd/xorgate-agent-rs.service" && grep -q '^StartLimitBurst=10$' "$REPO/systemd/xorgate-agent-rs.service"
 [ $? = 0 ] && ok "xorgate-agent-rs.service keeps 10 starts / 60 s" || bad "xorgate-agent-rs.service lost its StartLimit values"
 
+# O-P6-1 (Phase 6 window 1): Conflicts= without an ordering let a convert start
+# the Rust agent in parallel with the JS agent's stop. The unit must carry
+# After=xorgate-agent.service in [Unit] next to its Conflicts=.
+# unit_has <file> <section> <key> <value>: the key=value line (one of possibly
+# several space-separated values) is present, uncommented, in that section.
+unit_has() {
+  awk -v want_sec="$2" -v key="$3" -v val="$4" '
+    /^[[:space:]]*\[/ { sec = $0; gsub(/[[:space:]]|\[|\]/, "", sec); next }
+    /^[[:space:]]*(#|;)/ { next }
+    {
+      line = $0; sub(/^[[:space:]]*/, "", line)
+      k = line; sub(/[[:space:]]*=.*/, "", k)
+      if (k != key || sec != want_sec) next
+      v = line; sub(/^[^=]*=[[:space:]]*/, "", v)
+      n = split(v, vs, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) if (vs[i] == val) found = 1
+    }
+    END { exit found ? 0 : 1 }' "$1"
+}
+echo "== static: O-P6-1 ordering against the JS agent"
+RS_UNIT="$REPO/systemd/xorgate-agent-rs.service"
+printf '[Unit]\nConflicts=xorgate-agent.service\n[Service]\nExecStart=/bin/true\n' > "$T/noafter.service"
+printf '[Unit]\nConflicts=xorgate-agent.service\n# After=xorgate-agent.service\n[Service]\nAfter=xorgate-agent.service\nExecStart=/bin/true\n' > "$T/wrongsec.service"
+printf '[Unit]\nAfter=network-online.target xorgate-agent.service\n[Service]\nExecStart=/bin/true\n' > "$T/multi.service"
+! unit_has "$T/noafter.service" Unit After xorgate-agent.service && ok "self-test: a unit without After=xorgate-agent.service is flagged" || bad "self-test: missing After= not flagged"
+! unit_has "$T/wrongsec.service" Unit After xorgate-agent.service && ok "self-test: a commented or [Service] After= is flagged" || bad "self-test: commented/[Service] After= accepted"
+unit_has "$T/multi.service" Unit After xorgate-agent.service && ok "self-test: a multi-value After= line counts" || bad "self-test: multi-value After= not recognised"
+unit_has "$RS_UNIT" Unit After xorgate-agent.service && ok "xorgate-agent-rs.service: After=xorgate-agent.service in [Unit]" || bad "xorgate-agent-rs.service: no After=xorgate-agent.service in [Unit] (O-P6-1)"
+unit_has "$RS_UNIT" Unit Conflicts xorgate-agent.service && ok "xorgate-agent-rs.service: Conflicts=xorgate-agent.service in [Unit]" || bad "xorgate-agent-rs.service: lost Conflicts=xorgate-agent.service"
+# The bench's installed copy (scripts/bench/install.sh strips the Conflicts=
+# line with this exact sed) keeps the ordering and loses only the conflict.
+BENCH_SED='s|^Conflicts=xorgate-agent.service$|# BENCH (scripts/bench/install.sh): Conflicts=xorgate-agent.service stripped — both agents coexist on the bench|'
+grep -qF "$BENCH_SED" "$REPO/scripts/bench/install.sh" && ok "bench install.sh still strips Conflicts= with the modelled sed" || bad "bench install.sh strip changed: update this model"
+sed -e "$BENCH_SED" "$RS_UNIT" > "$T/bench-xorgate-agent-rs.service"
+{ ! grep -q '^Conflicts=' "$T/bench-xorgate-agent-rs.service" && unit_has "$T/bench-xorgate-agent-rs.service" Unit After xorgate-agent.service; } \
+  && ok "bench shape: Conflicts= stripped, After=xorgate-agent.service kept" || bad "bench shape wrong"
+
 echo "== systemd-analyze verify (systemd 252)"
 if ! command -v systemd-analyze >/dev/null; then
   apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq systemd >/dev/null 2>&1
@@ -70,6 +107,22 @@ if command -v systemd-analyze >/dev/null; then
     o=$(unknown "$REPO/systemd/xorgate-agent-rs.service" "$c")
     [ -z "$o" ] && ok "xorgate-agent-rs.service + bench/$(basename "$c"): no 'Unknown key'" || bad "bench/$(basename "$c"): $o"
   done
+  # O-P6-1: the whole verify output must be EMPTY (not only free of "Unknown
+  # key"), next to the JS unit the Conflicts=/After= name (its shape on a
+  # device: device/xorgate-device-agent systemd/xorgate-agent.service @ 09da38d).
+  for f in /usr/local/bin/xorgate; do [ -e "$f" ] || { printf '#!/bin/sh\n' > "$f"; chmod 0755 "$f"; }; done
+  JS_STUB='[Unit]\nDescription=Xorgate device agent (IoT MQTT telemetry)\nAfter=network-online.target\nWants=network-online.target\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/etc/xorgate/agent.env\nStateDirectory=xorgate\nExecStartPre=-/usr/local/bin/xorgate led boot\nExecStart=/usr/bin/env node /opt/xorgate/dist/worker.js\nExecStopPost=-/usr/local/bin/xorgate led exit-state\nRestart=always\n[Install]\nWantedBy=multi-user.target\n'
+  verify_all() { # <unit file> [drop-in] -> every line systemd-analyze verify prints
+    local d u; d=$(mktemp -d); cp "$1" "$d/"; u=$(basename "$1")
+    printf "$JS_STUB" > "$d/xorgate-agent.service"
+    if [ -n "${2:-}" ]; then mkdir -p "$d/$u.d"; cp "$2" "$d/$u.d/"; fi
+    SYSTEMD_UNIT_PATH="$d:" systemd-analyze verify "$d/$u" "$d/xorgate-agent.service" 2>&1
+    rm -rf "$d"
+  }
+  o=$(verify_all "$RS_UNIT"); [ -z "$o" ] && ok "xorgate-agent-rs.service (+ the JS unit): systemd-analyze verify prints nothing" || bad "xorgate-agent-rs.service verify: $o"
+  o=$(verify_all "$T/bench-xorgate-agent-rs.service" "$REPO/systemd/bench/90-bench-dev.conf")
+  [ -z "$o" ] && ok "bench shape + 90-bench-dev.conf (+ the JS unit): systemd-analyze verify prints nothing" || bad "bench shape verify: $o"
+  o=$(verify_all "$REPO/systemd/xorgate-updater-rs.service"); [ -z "$o" ] && ok "xorgate-updater-rs.service: systemd-analyze verify prints nothing" || bad "xorgate-updater-rs.service verify: $o"
 else
   bad "systemd-analyze unavailable (apt-get install systemd failed)"
 fi
