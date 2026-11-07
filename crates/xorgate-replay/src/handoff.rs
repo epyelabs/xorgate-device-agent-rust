@@ -114,7 +114,9 @@ impl Plan {
         let spec = tape_spec(tape).cloned().unwrap_or(Value::Null);
         let at_ms = match at_override.or_else(|| spec.get("atMs").and_then(Value::as_u64)) {
             Some(t) => t,
-            None => bail!("--handoff-signal needs meta.rig.handoff.atMs on the tape or --handoff-at-ms"),
+            None => {
+                bail!("--handoff-signal needs meta.rig.handoff.atMs on the tape or --handoff-at-ms")
+            }
         };
         if at_ms == 0 || at_ms >= tape.duration_ms() {
             bail!(
@@ -172,7 +174,12 @@ pub fn scan_proc() -> Vec<ProcEntry> {
         return Vec::new();
     };
     rd.flatten()
-        .filter(|e| e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+        })
         .filter_map(|e| fs::read_to_string(e.path().join("stat")).ok())
         .filter_map(|t| parse_stat(&t))
         .collect()
@@ -354,7 +361,10 @@ mod tests {
     fn stat_parses_comm_with_spaces_and_parens() {
         let t = "4242 (gst-launch-1.0 (x)) S 4200 4242 4200 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 987654 1000 10";
         let e = parse_stat(t).unwrap();
-        assert_eq!((e.pid, e.ppid, e.pgrp, e.start, e.dead), (4242, 4200, 4242, 987654, false));
+        assert_eq!(
+            (e.pid, e.ppid, e.pgrp, e.start, e.dead),
+            (4242, 4200, 4242, 987654, false)
+        );
         let z = "7 (node) Z 1 7 7 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 55 0 0";
         assert!(parse_stat(z).unwrap().dead);
         assert!(parse_stat("garbage").is_none());
@@ -403,14 +413,27 @@ mod tests {
 
     #[test]
     fn plan_needs_a_signal_an_instant_inside_the_tape_and_a_supported_tape() {
-        let mut tape = crate::synth::build("p6-takeover-open", None, &crate::synth::test_fixtures()).unwrap();
+        let mut tape =
+            crate::synth::build("p6-takeover-open", None, &crate::synth::test_fixtures()).unwrap();
         let first = [AgentKind::Js, AgentKind::Js];
         // No signal: an ordinary run.
-        assert!(Plan::of(&tape, None, None, first, [None, None], 2000, 90_000, None)
-            .unwrap()
-            .is_none());
+        assert!(
+            Plan::of(&tape, None, None, first, [None, None], 2000, 90_000, None)
+                .unwrap()
+                .is_none()
+        );
         // --then-* without a signal is a usage error.
-        assert!(Plan::of(&tape, None, None, first, [Some(AgentKind::Rust), None], 2000, 90_000, None).is_err());
+        assert!(Plan::of(
+            &tape,
+            None,
+            None,
+            first,
+            [Some(AgentKind::Rust), None],
+            2000,
+            90_000,
+            None
+        )
+        .is_err());
         let p = Plan::of(
             &tape,
             Some(StopSignal::Kill),
@@ -426,13 +449,52 @@ mod tests {
         assert_eq!(p.then, [AgentKind::Rust, AgentKind::Js]);
         assert_eq!(p.at_ms, crate::synth::TAKEOVER_OPEN_AT_MS);
         // Unsupported tracks and an instant past the tape are refused.
-        assert!(Plan::of(&tape, Some(StopSignal::Term), None, first, [None, None], 2000, 90_000, Some("obd")).is_err());
-        assert!(Plan::of(&tape, Some(StopSignal::Term), Some(10_000_000), first, [None, None], 2000, 90_000, None).is_err());
+        assert!(Plan::of(
+            &tape,
+            Some(StopSignal::Term),
+            None,
+            first,
+            [None, None],
+            2000,
+            90_000,
+            Some("obd")
+        )
+        .is_err());
+        assert!(Plan::of(
+            &tape,
+            Some(StopSignal::Term),
+            Some(10_000_000),
+            first,
+            [None, None],
+            2000,
+            90_000,
+            None
+        )
+        .is_err());
         // A tape without meta.rig.handoff needs the override.
         tape.meta.rig = None;
-        assert!(Plan::of(&tape, Some(StopSignal::Term), None, first, [None, None], 2000, 90_000, None).is_err());
-        assert!(Plan::of(&tape, Some(StopSignal::Term), Some(5_000), first, [None, None], 2000, 90_000, None)
-            .unwrap()
-            .is_some());
+        assert!(Plan::of(
+            &tape,
+            Some(StopSignal::Term),
+            None,
+            first,
+            [None, None],
+            2000,
+            90_000,
+            None
+        )
+        .is_err());
+        assert!(Plan::of(
+            &tape,
+            Some(StopSignal::Term),
+            Some(5_000),
+            first,
+            [None, None],
+            2000,
+            90_000,
+            None
+        )
+        .unwrap()
+        .is_some());
     }
 }

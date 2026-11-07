@@ -654,7 +654,11 @@ pub async fn serve(fake: Arc<AwsFake>, listen: String, certs: PathBuf) -> Result
                     _ => break,
                 };
                 // P3a: an in-flight PUT held across a handoff ([`Hold`]).
-                let held = if creds_host { None } else { fake.hold_of(&head) };
+                let held = if creds_host {
+                    None
+                } else {
+                    fake.hold_of(&head)
+                };
                 if let Some((ms, key, agent)) = &held {
                     fake.note(json!({"w": wall_now_ms(), "k": "s3-held", "key": key, "agent": agent, "holdMs": ms}));
                     tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
@@ -865,11 +869,15 @@ mod tests {
         let (ms, key, agent) = fake.hold_of(&head(mp4)).unwrap();
         assert_eq!((ms, key.as_str(), agent.as_str()), (20_000, &mp4[1..], "a"));
         // NEGATIVE: its sidecar, a GET, another device, outside the window.
-        assert!(fake.hold_of(&head("/media-sessions/v1/dev-a/cam0/s/00007.json")).is_none());
+        assert!(fake
+            .hold_of(&head("/media-sessions/v1/dev-a/cam0/s/00007.json"))
+            .is_none());
         let mut get = head(mp4);
         get.method = "GET".into();
         assert!(fake.hold_of(&get).is_none());
-        assert!(fake.hold_of(&head("/media-sessions/v1/dev-z/cam0/s/00007.mp4")).is_none());
+        assert!(fake
+            .hold_of(&head("/media-sessions/v1/dev-z/cam0/s/00007.mp4"))
+            .is_none());
         *fake.start_wall.lock().unwrap() = wall_now_ms() - 96_000;
         assert!(fake.hold_of(&head(mp4)).is_none());
         let _ = std::fs::remove_dir_all(&dir);

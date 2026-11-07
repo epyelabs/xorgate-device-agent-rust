@@ -1503,7 +1503,10 @@ async fn run_handoff(
             ));
         }
         if now >= deadline.max(stop_w) + handoff::KILL_WAIT_MS as i64 {
-            bail!("handoff: members still alive {} ms after the SIGKILL", handoff::KILL_WAIT_MS);
+            bail!(
+                "handoff: members still alive {} ms after the SIGKILL",
+                handoff::KILL_WAIT_MS
+            );
         }
         tokio::time::sleep(Duration::from_millis(handoff::POLL_MS)).await;
     }
@@ -1517,7 +1520,10 @@ async fn run_handoff(
         a.child = None;
         agent_exit[i] = handoff::exit_text(exit[i]);
     }
-    let stopped = [stopped_w[0].unwrap_or(stop_w), stopped_w[1].unwrap_or(stop_w)];
+    let stopped = [
+        stopped_w[0].unwrap_or(stop_w),
+        stopped_w[1].unwrap_or(stop_w),
+    ];
     for (i, a) in agents.iter().enumerate() {
         if let Ok(mut f) = OpenOptions::new()
             .create(true)

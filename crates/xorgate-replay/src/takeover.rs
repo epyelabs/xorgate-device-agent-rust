@@ -114,7 +114,8 @@ pub fn seg_name_ms(name: &str) -> Option<i64> {
 /// `<side>/handoff-state.json` → `(snapshot wall, files)`, normalised with the
 /// side's own session labels (`MediaCapture::norm_path`).
 pub fn load_inherited(dir: &Path, m: &MediaCapture) -> Option<(i64, Inherited)> {
-    let v: Value = serde_json::from_slice(&std::fs::read(dir.join("handoff-state.json")).ok()?).ok()?;
+    let v: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("handoff-state.json")).ok()?).ok()?;
     let w = v["w"].as_i64()?;
     let mut out = Inherited::new();
     for (rel, f) in v["files"].as_object()? {
@@ -139,7 +140,8 @@ pub fn classes(files: &Inherited) -> BTreeMap<String, usize> {
     let mut out: BTreeMap<String, usize> = BTreeMap::new();
     let mut bump = |k: String| *out.entry(k).or_default() += 1;
     // video/<key>/<sid>/<name>: per session dir, the mp4 seqs + sidecars.
-    let mut dirs: BTreeMap<(String, String), (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
+    let mut dirs: BTreeMap<(String, String), (BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
     for rel in files.keys() {
         let seg: Vec<&str> = rel.split('/').collect();
         match seg.as_slice() {
@@ -225,7 +227,11 @@ pub fn edge_misses(
             _ => None,
         }
     };
-    let dir_of = |rel: &str| rel.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+    let dir_of = |rel: &str| {
+        rel.rsplit_once('/')
+            .map(|(d, _)| d.to_string())
+            .unwrap_or_default()
+    };
     // newest per dir (names sort chronologically: zero-padded seqs)
     let mut newest: BTreeMap<String, &String> = BTreeMap::new();
     for rel in files.keys() {
@@ -389,7 +395,9 @@ pub fn load_attempts(run: &Path, label: &str, m: &MediaCapture) -> (Vec<Attempt>
 
 /// `put×N[+disk]` / `disk` / `gone`.
 pub fn fate(rel: &str, puts: &BTreeMap<String, usize>, end: &BTreeSet<String>) -> String {
-    let n = s3_key_of(rel).and_then(|k| puts.get(&k).copied()).unwrap_or(0);
+    let n = s3_key_of(rel)
+        .and_then(|k| puts.get(&k).copied())
+        .unwrap_or(0);
     let on_disk = end.contains(&end_rel_of(rel)) || end.contains(rel);
     match (n, on_disk) {
         (0, true) => "disk".into(),
@@ -509,9 +517,17 @@ pub fn diff_takeover(
     let cb = classes(ib);
     let keys: BTreeSet<&String> = ca.keys().chain(cb.keys()).collect();
     for k in &keys {
-        let (x, y) = (ca.get(*k).copied().unwrap_or(0), cb.get(*k).copied().unwrap_or(0));
+        let (x, y) = (
+            ca.get(*k).copied().unwrap_or(0),
+            cb.get(*k).copied().unwrap_or(0),
+        );
         if x != y {
-            rep.push(mm(&format!("{INVALID} state"), k, x.to_string(), y.to_string()));
+            rep.push(mm(
+                &format!("{INVALID} state"),
+                k,
+                x.to_string(),
+                y.to_string(),
+            ));
         }
     }
     for (side, cls) in [("A", &ca), ("B", &cb)] {
@@ -526,14 +542,22 @@ pub fn diff_takeover(
     }
     rep.inputs.insert(
         "takeover state (A)".into(),
-        ca.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", "),
+        ca.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
     );
 
     // (ii) edge
     for (i, (side, (_, m))) in ["A", "B"].iter().zip(&sides).enumerate() {
         let first = |rel: &str| m.first_seen(rel);
         for miss in edge_misses(inh[i], h.stop_w, seg_ms, &first) {
-            rep.push(mm(&format!("{INVALID} edge {side}"), &miss, String::new(), String::new()));
+            rep.push(mm(
+                &format!("{INVALID} edge {side}"),
+                &miss,
+                String::new(),
+                String::new(),
+            ));
         }
     }
 
@@ -572,7 +596,8 @@ pub fn diff_takeover(
         }
     }
     // (iii-b) in flight at the cut (`expect.inflight`, aws.rs `Hold`).
-    let aborted: Vec<BTreeSet<&String>> = attempts.iter().map(|(_, ab)| ab.iter().collect()).collect();
+    let aborted: Vec<BTreeSet<&String>> =
+        attempts.iter().map(|(_, ab)| ab.iter().collect()).collect();
     if let Some(want) = expect["inflight"].as_u64() {
         for (i, ab) in aborted.iter().enumerate() {
             if ab.len() as u64 != want {
@@ -642,7 +667,11 @@ pub fn diff_takeover(
     }
     rep.inputs.insert(
         "takeover recovery lines (A)".into(),
-        lines[0].iter().map(|(k, v)| format!("{v}× {k}")).collect::<Vec<_>>().join(" | "),
+        lines[0]
+            .iter()
+            .map(|(k, v)| format!("{v}× {k}"))
+            .collect::<Vec<_>>()
+            .join(" | "),
     );
 
     // (v) disk-end: the X-era sessions' final files.
@@ -656,7 +685,10 @@ pub fn diff_takeover(
         .map(|(_, m)| {
             m.end_files()
                 .into_iter()
-                .filter(|r| r.rsplit_once('/').is_some_and(|(d, _)| x_sessions.contains(d)))
+                .filter(|r| {
+                    r.rsplit_once('/')
+                        .is_some_and(|(d, _)| x_sessions.contains(d))
+                })
                 .collect()
         })
         .collect();
@@ -738,8 +770,14 @@ mod tests {
         s.insert(format!("{v}/00000.json"), f(400, Some(12_000), None));
         s.insert(format!("{v}/00001.mp4"), f(500_000, Some(12_000), None));
         let t = "telemetry/<sid:telemetry#0>";
-        s.insert(format!("{t}/seg-<ms>-00000.jsonl.gz"), f(9_000, Some(61_500), Some(1_500)));
-        s.insert(format!("{t}/seg-<ms>-00001.jsonl"), f(20_000, Some(61_500), Some(61_500)));
+        s.insert(
+            format!("{t}/seg-<ms>-00000.jsonl.gz"),
+            f(9_000, Some(61_500), Some(1_500)),
+        );
+        s.insert(
+            format!("{t}/seg-<ms>-00001.jsonl"),
+            f(20_000, Some(61_500), Some(61_500)),
+        );
         s
     }
 
@@ -766,7 +804,10 @@ mod tests {
         let m = expect_misses(&c, &bad);
         assert_eq!(m.len(), 2, "{m:?}");
         // An unknown class counts 0.
-        assert_eq!(expect_misses(&c, &json!({"min": {"video/cam1: mp4": 1}})).len(), 1);
+        assert_eq!(
+            expect_misses(&c, &json!({"min": {"video/cam1: mp4": 1}})).len(),
+            1
+        );
     }
 
     #[test]
@@ -775,7 +816,9 @@ mod tests {
         // Stop at 95 s: cam0's active 00001 born at 90 s → 5 s old; the open
         // telemetry segment 1 opened at 61.5 s → 33.5 s old.
         let mut s = state();
-        s.get_mut("video/cam0/<sid:video:cam0#0>/00001.mp4").unwrap().birth_ms = Some(90_000);
+        s.get_mut("video/cam0/<sid:video:cam0#0>/00001.mp4")
+            .unwrap()
+            .birth_ms = Some(90_000);
         assert!(edge_misses(&s, 95_000, 10_000, &none).is_empty());
         // Negative: the fragment is 1 s old (just rotated) → flagged.
         assert_eq!(edge_misses(&s, 91_000, 10_000, &none).len(), 1);
@@ -783,7 +826,9 @@ mod tests {
         let m = edge_misses(&s, 61_500 + 59_000, 100_000, &none);
         assert!(m.iter().any(|x| x.contains("telemetry")), "{m:?}");
         // No birth: the observer's first sighting is the fallback.
-        s.get_mut("video/cam0/<sid:video:cam0#0>/00001.mp4").unwrap().birth_ms = None;
+        s.get_mut("video/cam0/<sid:video:cam0#0>/00001.mp4")
+            .unwrap()
+            .birth_ms = None;
         assert_eq!(edge_misses(&s, 95_000, 10_000, &none).len(), 1);
         assert!(edge_misses(&s, 95_000, 10_000, &|_| Some(90_000)).is_empty());
     }
@@ -794,27 +839,51 @@ mod tests {
             s3_key_of("video/cam0/<sid:video:cam0#0>/00001.mp4").unwrap(),
             "media-sessions/v1/{id}/cam0/<sid:video:cam0#0>/00001.mp4"
         );
-        assert_eq!(s3_key_of("video/cam0/<sid:video:cam0#0>/session.json"), None);
+        assert_eq!(
+            s3_key_of("video/cam0/<sid:video:cam0#0>/session.json"),
+            None
+        );
         assert_eq!(
             s3_key_of("telemetry/<sid:telemetry#0>/seg-<ms>-00001.jsonl").unwrap(),
             "telemetry/v1/{id}/<sid:telemetry#0>/<ms>-00001.jsonl.gz"
         );
         let puts = BTreeMap::from([
-            ("telemetry/v1/{id}/<sid:telemetry#0>/<ms>-00001.jsonl.gz".to_string(), 1),
-            ("media-sessions/v1/{id}/cam0/<sid:video:cam0#0>/00001.mp4".to_string(), 2),
+            (
+                "telemetry/v1/{id}/<sid:telemetry#0>/<ms>-00001.jsonl.gz".to_string(),
+                1,
+            ),
+            (
+                "media-sessions/v1/{id}/cam0/<sid:video:cam0#0>/00001.mp4".to_string(),
+                2,
+            ),
         ]);
         let end = BTreeSet::from(["video/cam0/<sid:video:cam0#0>/session.json".to_string()]);
         let open = "telemetry/<sid:telemetry#0>/seg-<ms>-00001.jsonl";
         assert_eq!(fate(open, &puts, &end), "put×1");
         let mp4 = "video/cam0/<sid:video:cam0#0>/00001.mp4";
         assert_eq!(fate(mp4, &puts, &end), "put×2");
-        assert_eq!(fate("video/cam0/<sid:video:cam0#0>/session.json", &puts, &end), "disk");
-        assert_eq!(fate("video/cam0/<sid:video:cam0#0>/00000.json", &puts, &end), "gone");
+        assert_eq!(
+            fate("video/cam0/<sid:video:cam0#0>/session.json", &puts, &end),
+            "disk"
+        );
+        assert_eq!(
+            fate("video/cam0/<sid:video:cam0#0>/00000.json", &puts, &end),
+            "gone"
+        );
         // Negatives: a double upload; a lost non-empty segment. A reaped
         // manifest and a dropped 0-byte fragment are not violations.
-        assert!(fate_violations(mp4, &f(1, None, None), "put×2").unwrap().contains("double"));
-        assert!(fate_violations(open, &f(10, None, None), "gone").unwrap().contains("lost"));
-        assert!(fate_violations("video/cam0/<sid:video:cam0#0>/session.json", &f(300, None, None), "gone").is_none());
+        assert!(fate_violations(mp4, &f(1, None, None), "put×2")
+            .unwrap()
+            .contains("double"));
+        assert!(fate_violations(open, &f(10, None, None), "gone")
+            .unwrap()
+            .contains("lost"));
+        assert!(fate_violations(
+            "video/cam0/<sid:video:cam0#0>/session.json",
+            &f(300, None, None),
+            "gone"
+        )
+        .is_none());
         assert!(fate_violations(mp4, &f(0, None, None), "gone").is_none());
         assert!(fate_violations(mp4, &f(1, None, None), "put×1").is_none());
     }
@@ -835,7 +904,11 @@ mod tests {
             ]
         );
         // Without a marker (no handoff) nothing is collected.
-        assert!(recovery_lines("[agent] recording: finalized 1 orphan segment(s) from previous run", &|s| s.into()).is_empty());
+        assert!(recovery_lines(
+            "[agent] recording: finalized 1 orphan segment(s) from previous run",
+            &|s| s.into()
+        )
+        .is_empty());
     }
 
     #[test]
@@ -848,18 +921,38 @@ mod tests {
         let sc = "media-sessions/v1/{id}/cam1/<sid:video:cam1#0>/00008.json";
         let mp4 = "media-sessions/v1/{id}/cam1/<sid:video:cam1#0>/00008.mp4";
         // X: sidecar 200, mp4 held + aborted at the cut; Y: sidecar 200, mp4 200.
-        let ok = vec![at(1, sc, true), at(2, mp4, false), at(10, sc, true), at(11, mp4, true)];
+        let ok = vec![
+            at(1, sc, true),
+            at(2, mp4, false),
+            at(10, sc, true),
+            at(11, mp4, true),
+        ];
         assert!(sidecar_reput_explained(&ok, sc));
         // NEGATIVE: the mp4 had succeeded before the second sidecar PUT.
         let after_ok = vec![at(1, sc, true), at(2, mp4, true), at(10, sc, true)];
         assert!(!sidecar_reput_explained(&after_ok, sc));
         // NEGATIVE: the failed mp4 attempt is not BETWEEN the two.
-        let outside = vec![at(1, mp4, false), at(2, sc, true), at(10, sc, true), at(11, mp4, true)];
+        let outside = vec![
+            at(1, mp4, false),
+            at(2, sc, true),
+            at(10, sc, true),
+            at(11, mp4, true),
+        ];
         assert!(!sidecar_reput_explained(&outside, sc));
         // NEGATIVE: a third success; another fragment's failure; an mp4 key.
-        let three = vec![at(1, sc, true), at(2, mp4, false), at(5, sc, true), at(6, mp4, false), at(10, sc, true)];
+        let three = vec![
+            at(1, sc, true),
+            at(2, mp4, false),
+            at(5, sc, true),
+            at(6, mp4, false),
+            at(10, sc, true),
+        ];
         assert!(!sidecar_reput_explained(&three, sc));
-        let other = vec![at(1, sc, true), at(2, &mp4.replace("00008", "00009"), false), at(10, sc, true)];
+        let other = vec![
+            at(1, sc, true),
+            at(2, &mp4.replace("00008", "00009"), false),
+            at(10, sc, true),
+        ];
         assert!(!sidecar_reput_explained(&other, sc));
         assert!(!sidecar_reput_explained(&ok, mp4));
     }
@@ -867,7 +960,10 @@ mod tests {
     #[test]
     fn the_sidecar_reput_is_cited_only_when_both_sides_show_it() {
         let rel = "video/cam1/<sid:video:cam1#0>/00008.json";
-        let both = [BTreeSet::from([rel.to_string()]), BTreeSet::from([rel.to_string()])];
+        let both = [
+            BTreeSet::from([rel.to_string()]),
+            BTreeSet::from([rel.to_string()]),
+        ];
         assert_eq!(reput_tol(rel, &both), SIDECAR_REPUT);
         // NEGATIVE: only the handoff side (A) re-PUT it; only the control.
         let a_only = [BTreeSet::from([rel.to_string()]), BTreeSet::new()];
@@ -875,18 +971,39 @@ mod tests {
         let b_only = [BTreeSet::new(), BTreeSet::from([rel.to_string()])];
         assert_eq!(reput_tol(rel, &b_only), UNTOLERATED);
         // NEGATIVE: an mp4 or a manifest is never a sidecar re-PUT.
-        let at = |w: i64, key: &str, ok: bool| Attempt { w, key: key.into(), ok };
+        let at = |w: i64, key: &str, ok: bool| Attempt {
+            w,
+            key: key.into(),
+            ok,
+        };
         let k = "media-sessions/v1/{id}/cam1/<sid:video:cam1#0>/00008";
-        let att = vec![at(1, &format!("{k}.json"), true), at(2, &format!("{k}.mp4"), false), at(3, &format!("{k}.json"), true)];
+        let att = vec![
+            at(1, &format!("{k}.json"), true),
+            at(2, &format!("{k}.mp4"), false),
+            at(3, &format!("{k}.json"), true),
+        ];
         assert!(is_sidecar_reput(rel, "put×2", &att));
-        assert!(!is_sidecar_reput(&rel.replace(".json", ".mp4"), "put×2", &att));
-        assert!(!is_sidecar_reput("video/cam1/<sid:video:cam1#0>/session.json", "put×2", &att));
+        assert!(!is_sidecar_reput(
+            &rel.replace(".json", ".mp4"),
+            "put×2",
+            &att
+        ));
+        assert!(!is_sidecar_reput(
+            "video/cam1/<sid:video:cam1#0>/session.json",
+            "put×2",
+            &att
+        ));
         assert!(!is_sidecar_reput(rel, "put×1", &att));
     }
 
     #[test]
     fn invalid_rows_are_recognised() {
-        assert!(is_invalid(&mm(&format!("{INVALID} edge A"), "x", String::new(), String::new())));
+        assert!(is_invalid(&mm(
+            &format!("{INVALID} edge A"),
+            "x",
+            String::new(),
+            String::new()
+        )));
         assert!(!is_invalid(&mm("fate", "x", String::new(), String::new())));
     }
 }

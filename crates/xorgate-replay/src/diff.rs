@@ -7979,7 +7979,7 @@ mod tests {
     #[test]
     fn p3a_r2_events_are_judged_per_incarnation_era() {
         let t = table();
-        let side = |last: &str, kinds: [&str; 2], evs: Vec<(i64, &str)>| Capture {
+        let side_of = |last: &str, kinds: [&str; 2], evs: Vec<(i64, &str)>| Capture {
             meta: AgentMeta {
                 label: "x".into(),
                 kind: last.into(),
@@ -7997,9 +7997,25 @@ mod tests {
             },
             events: evs
                 .into_iter()
-                .map(|(t, m)| (t, "warn".to_string(), m.to_string()))
+                .map(|(t, m)| {
+                    let level = if m.starts_with("connected to ") {
+                        "info"
+                    } else {
+                        "warn"
+                    };
+                    (t, level.to_string(), m.to_string())
+                })
                 .collect(),
             ..Default::default()
+        };
+        // Every incarnation connects once (the `connected to` = spans + 1
+        // contract, judged per era).
+        let side = |last: &str, kinds: [&str; 2], mut evs: Vec<(i64, &str)>| {
+            evs.extend([
+                (1_000, "connected to broker:8883"),
+                (101_000, "connected to broker:8883"),
+            ]);
+            side_of(last, kinds, evs)
         };
         let rf = "config report failed: publish queue full";
         let handoff = PlayInfo {
@@ -8024,11 +8040,87 @@ mod tests {
         // row applies, as in any JS-vs-Rust run.
         let post = side("rust", ["rust", "rust"], vec![(150_000, rf)]);
         assert_eq!(unt(&a, &post, &handoff), 0);
-        // NEGATIVE: before the restart both sides were Rust: one-sided = FAIL.
-        let pre = side("rust", ["rust", "rust"], vec![(50_000, rf)]);
-        assert_eq!(unt(&a, &pre, &handoff), 1);
-        // ... which the final kinds alone (no era split) would have hidden.
-        assert_eq!(unt(&a, &pre, &plain), 0);
+        // NEGATIVE (a kind-PAIR matcher, T7/D40: a JS-vs-Rust clock-step
+        // race). A JR lane: A js→rust, B js→js; restart at 1 000 s. The D40
+        // event pattern BEFORE the restart, where both sides were JS, must
+        // FAIL — the sides' final kinds (rust, js) alone would cite D40.
+        let imp = "[clock] ignoring implausible nitz time 1980-03-31T21:10:10.441Z";
+        let step =
+            "[clock] stepped system clock +597.1s from gps (NTP unsynced; step 1/1 this boot)";
+        let js_trust = "[clock] gps synchronized 330 s after boot — clock trusted (published 30 s on an untrusted clock)";
+        let js_wait = "[clock] no NTP/GPS/NITZ sync 300 s after start — publishing on an UNTRUSTED clock (299 sample(s) held); timestamps may be early until a sync lands";
+        let rs_trust =
+            "[clock] gps synchronized — clock trusted (telemetry held 300 s, 299 sample(s))";
+        let ev = |last: &str, kinds: [&str; 2], evs: Vec<(i64, &str, &str)>| Capture {
+            meta: AgentMeta {
+                label: "x".into(),
+                kind: last.into(),
+                device_id: String::new(),
+                incarnations: vec![
+                    Incarnation {
+                        from_w: 0,
+                        kind: kinds[0].into(),
+                    },
+                    Incarnation {
+                        from_w: 1_000_000,
+                        kind: kinds[1].into(),
+                    },
+                ],
+            },
+            events: evs
+                .into_iter()
+                .chain([
+                    (1_000, "info", "connected to broker:8883"),
+                    (1_001_000, "info", "connected to broker:8883"),
+                ])
+                .map(|(t, l, m)| (t, l.to_string(), m.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let jr_a = ev(
+            "rust",
+            ["js", "rust"],
+            vec![
+                (200, "warn", imp),
+                (300_300, "info", step),
+                (300_304, "info", rs_trust),
+            ],
+        );
+        let jr_b = ev(
+            "js",
+            ["js", "js"],
+            vec![
+                (400, "warn", imp),
+                (300_600, "warn", js_wait),
+                (330_400, "info", step),
+                (330_500, "info", js_trust),
+            ],
+        );
+        let handoff2 = PlayInfo {
+            handoff: Some(crate::takeover::HandoffInfo {
+                restart_w: 1_000_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Without eras each side's two connects break the one-run
+        // `connected` contract: count the other rows only.
+        let others = |a: &Capture, b: &Capture, play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_events_eras(a, b, play, &InputFacts::for_play(play), &t, &mut rep);
+            rep.mismatches
+                .iter()
+                .filter(|m| {
+                    m.stream == "events" && m.tol == UNTOLERATED && !m.path.contains("connected to")
+                })
+                .count()
+        };
+        assert_eq!(others(&jr_a, &jr_b, &handoff2), 3);
+        assert_eq!(
+            others(&jr_a, &jr_b, &plain),
+            0,
+            "the final kinds alone would have cited D40"
+        );
     }
 
     #[test]

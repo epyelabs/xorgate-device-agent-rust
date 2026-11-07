@@ -772,9 +772,7 @@ pub const TAKEOVER_OUTAGE_TAIL_MS: u64 = 10_000;
 /// a SIGTERM lets X finalize what a SIGKILL leaves open): `min` / `max`
 /// counts per side, and `reaped` (no X-era video file may be left at the end).
 pub fn takeover_rig(name: &str) -> Value {
-    let outage = |from: u64, at: u64| {
-        json!([{"fromMs": from, "toMs": at + TAKEOVER_OUTAGE_TAIL_MS, "status": 503}])
-    };
+    let outage = |from: u64, at: u64| json!([{"fromMs": from, "toMs": at + TAKEOVER_OUTAGE_TAIL_MS, "status": 503}]);
     let (at, faults, expect) = match name {
         "p6-takeover-open" => (
             TAKEOVER_OPEN_AT_MS,
@@ -1939,16 +1937,43 @@ mod tests {
     fn takeover_tapes_carry_their_handoff_state_and_outage() {
         for (name, at, outage, video, telemetry) in [
             ("p6-takeover-open", TAKEOVER_OPEN_AT_MS, None, true, true),
-            ("p6-takeover-vbacklog", TAKEOVER_VBACKLOG_AT_MS, Some(30_000), true, false),
-            ("p6-takeover-tbacklog", TAKEOVER_TBACKLOG_AT_MS, Some(20_000), false, true),
-            ("p6-takeover-reap", TAKEOVER_REAP_AT_MS, Some(30_000), true, true),
-            ("p6-takeover-inflight", TAKEOVER_INFLIGHT_AT_MS, None, true, true),
+            (
+                "p6-takeover-vbacklog",
+                TAKEOVER_VBACKLOG_AT_MS,
+                Some(30_000),
+                true,
+                false,
+            ),
+            (
+                "p6-takeover-tbacklog",
+                TAKEOVER_TBACKLOG_AT_MS,
+                Some(20_000),
+                false,
+                true,
+            ),
+            (
+                "p6-takeover-reap",
+                TAKEOVER_REAP_AT_MS,
+                Some(30_000),
+                true,
+                true,
+            ),
+            (
+                "p6-takeover-inflight",
+                TAKEOVER_INFLIGHT_AT_MS,
+                None,
+                true,
+                true,
+            ),
         ] {
             let tape = build(name, None, &fixtures()).unwrap();
             let rig = tape.meta.rig.as_ref().unwrap();
             assert_eq!(rig["handoff"]["atMs"], at, "{name}");
             assert!(rig["handoff"]["expect"]["min"].is_object(), "{name}");
-            assert!(at < tape.duration_ms(), "{name}: the handoff is inside the tape");
+            assert!(
+                at < tape.duration_ms(),
+                "{name}: the handoff is inside the tape"
+            );
             let faults = crate::aws::faults_of(Some(rig));
             match outage {
                 None => assert!(faults.is_empty(), "{name}"),
@@ -1956,7 +1981,11 @@ mod tests {
                     assert_eq!(faults.len(), 1, "{name}");
                     assert_eq!(faults[0].from_ms, from, "{name}");
                     // The outage spans the handoff and ends 10 s (tape) after it.
-                    assert_eq!(faults[0].to_ms, (at + TAKEOVER_OUTAGE_TAIL_MS) as i64, "{name}");
+                    assert_eq!(
+                        faults[0].to_ms,
+                        (at + TAKEOVER_OUTAGE_TAIL_MS) as i64,
+                        "{name}"
+                    );
                     assert_eq!(faults[0].status, 503);
                 }
             }
@@ -1970,7 +1999,10 @@ mod tests {
             // Determinism.
             let (mut x, mut y) = (Vec::new(), Vec::new());
             tape.write_to(&mut x).unwrap();
-            build(name, None, &fixtures()).unwrap().write_to(&mut y).unwrap();
+            build(name, None, &fixtures())
+                .unwrap()
+                .write_to(&mut y)
+                .unwrap();
             assert_eq!(x, y, "{name}");
         }
         // The in-flight tape holds mp4 PUTs only, in the 8 s before the
@@ -1980,13 +2012,22 @@ mod tests {
         assert_eq!(holds.len(), 1);
         assert_eq!(holds[0].suffix, ".mp4");
         assert_eq!(holds[0].to_ms, TAKEOVER_INFLIGHT_AT_MS as i64);
-        assert_eq!(holds[0].from_ms, (TAKEOVER_INFLIGHT_AT_MS - TAKEOVER_INFLIGHT_LEAD_MS) as i64);
+        assert_eq!(
+            holds[0].from_ms,
+            (TAKEOVER_INFLIGHT_AT_MS - TAKEOVER_INFLIGHT_LEAD_MS) as i64
+        );
         assert!(holds[0].hold_ms > TAKEOVER_INFLIGHT_LEAD_MS + 5_000);
-        assert_eq!(inf.meta.rig.as_ref().unwrap()["handoff"]["expect"]["inflight"], 1);
+        assert_eq!(
+            inf.meta.rig.as_ref().unwrap()["handoff"]["expect"]["inflight"],
+            1
+        );
         // The reap tape's tail outlives REAP_MIN_AGE_MS (video-source.ts:35).
         let reap = build("p6-takeover-reap", None, &fixtures()).unwrap();
         assert!(reap.duration_ms() >= 600_000 + 60_000);
-        assert_eq!(reap.meta.rig.as_ref().unwrap()["handoff"]["expect"]["reaped"], true);
+        assert_eq!(
+            reap.meta.rig.as_ref().unwrap()["handoff"]["expect"]["reaped"],
+            true
+        );
     }
 
     #[test]

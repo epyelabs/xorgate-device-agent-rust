@@ -4501,7 +4501,12 @@ mod tests {
         )
         .unwrap();
         let m = MediaCapture::load(&dir, &[]);
-        let end = |pid: u32| m.spawns.iter().find(|s| s.pid == pid).and_then(|s| s.end.clone());
+        let end = |pid: u32| {
+            m.spawns
+                .iter()
+                .find(|s| s.pid == pid)
+                .and_then(|s| s.end.clone())
+        };
         // Signalled while alive → the rig's class, even though gst printed EOS.
         assert_eq!(end(9146).as_deref(), Some("handoff:term"));
         // Ended before the handoff (no record) → its own class.
@@ -4509,7 +4514,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         let table = Table::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/replay/tolerances.toml"),
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
         )
         .unwrap();
         let cap = |w: i64, end: &str| Spawn {
