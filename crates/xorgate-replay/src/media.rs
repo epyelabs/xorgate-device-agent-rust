@@ -626,6 +626,16 @@ struct Seen {
     last: i64,
     size: u64,
     gone: Option<i64>,
+    /// Phase 7a (WP3): an mp4's birthtime (statx btime, epoch ms), read when
+    /// the file is first seen — the D51 matcher feeds it to WP2's recovery
+    /// shift (`recovery_end_anchor_lag` / `recovery_shift_lag`).
+    birth: Option<i64>,
+}
+
+/// Phase 7a (WP3): a file's birthtime in epoch ms (`None` = no btime).
+fn birth_ms(p: &Path) -> Option<i64> {
+    let t = fs::metadata(p).ok()?.created().ok()?;
+    Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64)
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<String, u64>) {
@@ -672,8 +682,9 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
                 let root = a.home.join("recordings");
                 walk(&root, &root, &mut cur);
                 for (rel, size) in &cur {
-                    let s = seen[i].entry(rel.clone()).or_insert(Seen {
+                    let s = seen[i].entry(rel.clone()).or_insert_with(|| Seen {
                         first: now,
+                        birth: rel.ends_with(".mp4").then(|| birth_ms(&root.join(rel))).flatten(),
                         ..Default::default()
                     });
                     s.last = now;
@@ -713,7 +724,13 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
             .map(|(rel, s)| {
                 (
                     rel.clone(),
-                    json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone}),
+                {
+                    let mut v = json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone});
+                    if let Some(b) = s.birth {
+                        v["birth"] = json!(b);
+                    }
+                    v
+                },
                 )
             })
             .collect();

@@ -40,6 +40,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 
 use xorgate_core::capture_timing::TimingLine;
+use xorgate_core::sidecar::{recovery_end_anchor_lag, recovery_shift_lag, PtsSample, TimingTable};
 use xorgate_hal::tape::CAPTURE_LINE_MARKERS;
 
 use crate::diff::{Mismatch, PlayInfo, Report, UNTOLERATED};
@@ -73,6 +74,8 @@ pub struct Spawn {
 pub struct Seen {
     pub size: u64,
     pub gone: Option<i64>,
+    /// Phase 7a: an mp4's birthtime as the player saw it (`recordings.json`).
+    pub birth: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +143,11 @@ pub struct MediaCapture {
     pub child_tools: BTreeMap<u32, String>,
     /// Per child pid: every line the shim's tee logged, `(fd, line)`, in order.
     pub child_lines: BTreeMap<u32, Vec<(u8, String)>>,
+    /// Phase 7a: the sessions (normalised sid) whose capture child THIS
+    /// side's agent spawned (its tape's `child_spawn` `location=`). A
+    /// session it holds sidecars of but never spawned was swept by crash
+    /// recovery (a previous boot's session).
+    pub live_sids: BTreeSet<String>,
 }
 
 /// Phase 7a (WP3): one tape `capture_timing` record (xorgate-hal
@@ -573,6 +581,7 @@ impl MediaCapture {
                     Seen {
                         size: s["size"].as_u64().unwrap_or(0),
                         gone: s["gone"].as_i64(),
+                        birth: s["birth"].as_i64(),
                     },
                 )
             })
@@ -753,10 +762,25 @@ impl MediaCapture {
                 })
             })
             .collect();
+        let live_sids: BTreeSet<String> = tape
+            .iter()
+            .filter(|v| v["k"] == "child_spawn" && v["role"] == "capture")
+            .flat_map(|v| {
+                v["argv"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|a| a.as_str())
+                    .filter(|a| a.starts_with("location="))
+                    .filter_map(|a| uuids_in(a).first().map(|u| n.s(u)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         Self {
             kind,
             exact_timing,
             timing,
+            live_sids,
             child_tools,
             child_lines,
             spawns,
@@ -4121,79 +4145,142 @@ pub struct D51Expect {
     pub dur: i64,
 }
 
+/// The exact side's timing table for one session, rebuilt from ITS OWN tape
+/// `capture_timing` records in tape order through WP2's
+/// [`TimingTable`] (`record_start` / `record_end`): the table the agent
+/// held, so [`TimingTable::exact`] and [`TimingTable::shift_lag_below`] give
+/// the agent's own answers (D51 never restates WP2's rules). A record the
+/// agent refused is fed with a NaN `cbWallMs`, so the table refuses it too.
+pub fn d51_table(m: &MediaCapture, sid: &str) -> TimingTable {
+    let mut t = TimingTable::default();
+    for r in m.timing.iter().filter(|r| r.sid == sid) {
+        match (r.start_ts, r.lag_ms, r.end_ts) {
+            (Some(st), Some(lag), _) => {
+                let (st, lag) = (st as f64, lag as f64);
+                let cb = if r.accepted { st + lag } else { f64::NAN };
+                let _ = t.record_start(r.id, st, lag, cb);
+            }
+            (_, _, Some(end)) if r.accepted => {
+                let _ = t.record_end(r.id, end as f64);
+            }
+            _ => {}
+        }
+    }
+    t
+}
+
+/// The exact side's `anchor:"pts"` sidecars of one session as WP2's crash
+/// recovery reads them ([`PtsSample`]: seq, `startTs`, `durationMs`, the
+/// mp4's birthtime from the player's `recordings.json`, `NaN` if unknown).
+pub fn d51_pts_samples(m: &MediaCapture, sid: &str) -> Vec<PtsSample> {
+    let births: BTreeMap<u64, i64> = m
+        .rec
+        .iter()
+        .filter_map(|(path, s)| match (frag_of(path), s.birth) {
+            (Some((q_sid, q, "mp4")), Some(b)) if q_sid == sid => Some((q, b)),
+            _ => None,
+        })
+        .collect();
+    sidecars(m)
+        .into_iter()
+        .filter(|((q_sid, _), v)| q_sid == sid && v["anchor"] == "pts")
+        .filter_map(|((_, q), v)| {
+            Some(PtsSample {
+                seq: q as f64,
+                start_ts: v["startTs"].as_f64()?,
+                duration_ms: v["durationMs"].as_f64().unwrap_or(f64::NAN),
+                birthtime_ms: births.get(&q).map_or(f64::NAN, |b| *b as f64),
+            })
+        })
+        .collect()
+}
+
 /// D51 eligibility + expectation for the exact side's sidecar `e` of
 /// `(sid, seq)` against the other side's `o` — `None` = D51 does not apply
 /// (the fragment is compared under T12 as before). Applies ONLY when the
-/// exact side ran `host` + `exact` (`exact_timing`) and:
-/// - `anchor:"pts"` AND that session has an ACCEPTED `capture_timing` start
-///   record for `seq` whose `startTs` equals the sidecar's: Δstart =
-///   lag(seq), except fragment 0 against a JS `boundary` anchor (JS walks
-///   back from birth(1)): lag(1), which needs record 1; Δdur = −lag(seq)
-///   when the sidecar's duration is exactly its accepted END record's
-///   `endTs − startTs`, else 0;
-/// - `anchor:"fstat"` with NO accepted start record of its own and an
-///   accepted one at a LOWER id in the same session (the D56 shift):
-///   Δstart = L, the lag of the highest such id; Δdur = 0.
+/// exact side ran `host` + `exact` (`exact_timing`), and every expected
+/// shift is WP2's own function on the exact side's own records/sidecars:
+/// - `anchor:"pts"` whose session's table ([`d51_table`]) holds an ACCEPTED
+///   stamp for `seq` with the sidecar's `startTs`: Δstart = lag(seq), except
+///   fragment 0 against a JS `boundary` anchor (JS walks back from
+///   birth(1)): lag(1), which needs stamp 1; Δdur = −lag(seq) when the
+///   sidecar's duration is exactly its END stamp's `endTs − startTs`, else 0;
+/// - a LIVE D56 fallback (`fstat` on both sides, a session this side's agent
+///   spawned, no accepted stamp of its own): Δstart =
+///   `TimingTable::shift_lag_below(seq)` (None = no shift = not D51);
+/// - a RECOVERED fallback (`fstat` on both sides, a session this side's
+///   agent never spawned — swept by crash recovery — with a usable pts
+///   sample below `seq`, WP2's own usability test): Δstart = WP2's
+///   `recovery_end_anchor_lag(samples, K, birth(K))`, else
+///   `recovery_shift_lag(samples)`, K = the session's first such fallback.
 ///
 /// Never an untimed or plain legacy sidecar, never another session's record.
-pub fn d51_expect(
-    m: &MediaCapture,
-    sid: &str,
-    seq: u64,
-    e: &Value,
-    o: &Value,
-) -> Option<D51Expect> {
+pub fn d51_expect(m: &MediaCapture, sid: &str, seq: u64, e: &Value, o: &Value) -> Option<D51Expect> {
     if !m.exact_timing {
         return None;
     }
-    let start_rec = |id: u64| {
-        m.timing.iter().find(|r| {
-            r.sid == sid && r.id == id && r.accepted && r.start_ts.is_some() && r.lag_ms.is_some()
-        })
-    };
     match e["anchor"].as_str()? {
         "pts" => {
-            let r = start_rec(seq)?;
-            if e["startTs"].as_i64()? != r.start_ts? {
+            let t = d51_table(m, sid);
+            let own = t.exact(seq)?;
+            if e["startTs"].as_f64()? != own.start_ts {
                 return None;
             }
             let start = match (seq, o["anchor"].as_str()) {
-                (0, Some("boundary")) => start_rec(1)?.lag_ms?,
-                (_, Some("fstat")) => r.lag_ms?,
+                (0, Some("boundary")) => t.exact(1)?.lag_ms,
+                (_, Some("fstat")) => own.lag_ms,
                 _ => return None,
             };
-            let clean_end = m
-                .timing
-                .iter()
-                .find(|x| x.sid == sid && x.id == seq && x.accepted && x.end_ts.is_some());
-            let dur = match clean_end {
-                Some(x) if e["durationMs"].as_i64() == Some(x.end_ts? - r.start_ts?) => -r.lag_ms?,
-                _ => 0,
+            let dur = match own.end_ts {
+                Some(end) if e["durationMs"].as_f64() == Some(end - own.start_ts) => -own.lag_ms,
+                _ => 0.0,
             };
             Some(D51Expect {
                 own_stamp: true,
-                start,
-                dur,
+                start: start as i64,
+                dur: dur as i64,
             })
         }
-        "fstat" => {
-            if start_rec(seq).is_some() || o["anchor"].as_str() != Some("fstat") {
-                return None;
-            }
-            let below = m
-                .timing
-                .iter()
-                .filter(|r| {
-                    r.sid == sid
-                        && r.id < seq
-                        && r.accepted
-                        && r.start_ts.is_some()
-                        && r.lag_ms.is_some()
-                })
-                .max_by_key(|r| r.id)?;
+        "fstat" if o["anchor"].as_str() == Some("fstat") => {
+            let l = if m.live_sids.contains(sid) {
+                let t = d51_table(m, sid);
+                if t.exact(seq).is_some() {
+                    return None;
+                }
+                t.shift_lag_below(seq)?
+            } else {
+                let samples = d51_pts_samples(m, sid);
+                // WP2's usability test (plan_sweep_recovering_lazy).
+                let usable = |s: &PtsSample| {
+                    recovery_shift_lag(std::slice::from_ref(s)).is_some()
+                        || recovery_end_anchor_lag(std::slice::from_ref(s), s.seq + 1.0, f64::MAX)
+                            .is_some()
+                };
+                let below = |q: f64| samples.iter().any(|s| s.seq < q && usable(s));
+                if !below(seq as f64) {
+                    return None;
+                }
+                // K: the session's first fstat row with a usable pts sample below.
+                let cars = sidecars(m);
+                let k = cars
+                    .iter()
+                    .filter(|((q_sid, q), v)| q_sid == sid && v["anchor"] == "fstat" && below(*q as f64))
+                    .map(|((_, q), _)| *q)
+                    .min()?;
+                let k_birth = m
+                    .rec
+                    .iter()
+                    .find_map(|(path, s)| match frag_of(path) {
+                        Some((q_sid, q, "mp4")) if q_sid == sid && q == k => s.birth,
+                        _ => None,
+                    })
+                    .map_or(f64::NAN, |b| b as f64);
+                recovery_end_anchor_lag(&samples, k as f64, k_birth)
+                    .or_else(|| recovery_shift_lag(&samples))?
+            };
             Some(D51Expect {
                 own_stamp: false,
-                start: below.lag_ms?,
+                start: l as i64,
                 dur: 0,
             })
         }
@@ -7576,16 +7663,28 @@ kind = "decisions"
     const LAG_R: [i64; 4] = [12, 2_012, 2_004, 2_020];
     const P_J: i64 = 1_762_400_000_000;
     const P_R: i64 = 1_762_400_000_640; // the Rust agent started 640 ms later
-    const END_REL: i64 = 10 + 3 * SEG + 6_000; // last fragment cut 6 s in
+    /// The last fragment is cut 6 s in (n fragments).
+    fn end_rel(n: usize) -> i64 {
+        10 + (n as i64 - 1) * SEG + 6_000
+    }
+    const END_REL: i64 = 10 + 3 * SEG + 6_000;
 
     fn fixture() -> Fixture {
+        fixture_with(&LAG_J, &LAG_R)
+    }
+
+    /// The fixture for any per-fragment lags (JS physical / Rust reported);
+    /// every mp4 is listed with its birthtime (= its file-creation callback
+    /// + 1 ms) in `rec`, as the player's `recordings.json` reports it.
+    fn fixture_with(lag_j: &[i64], lag_r: &[i64]) -> Fixture {
+        let n = lag_r.len();
         let fj = |k: usize| P_J + 10 + k as i64 * SEG;
         let fr = |k: usize| P_R + 10 + k as i64 * SEG;
-        let birth = |k: usize| fj(k) + LAG_J[k];
+        let birth = |k: usize| fj(k) + lag_j[k];
         let mut js = Vec::new();
-        for k in 0..4 {
+        for k in 0..n {
             let st = if k == 0 { birth(1) - SEG } else { birth(k) };
-            let end = if k == 3 { P_J + END_REL } else { birth(k + 1) };
+            let end = if k == n - 1 { P_J + end_rel(n) } else { birth(k + 1) };
             js.push(Frag {
                 st,
                 dur: end - st,
@@ -7593,8 +7692,8 @@ kind = "decisions"
             });
         }
         let mut rs = Vec::new();
-        for k in 0..4 {
-            let end = if k == 3 { P_R + END_REL } else { fr(k + 1) };
+        for k in 0..n {
+            let end = if k == n - 1 { P_R + end_rel(n) } else { fr(k + 1) };
             rs.push(Frag {
                 st: fr(k),
                 dur: end - fr(k),
@@ -7602,8 +7701,10 @@ kind = "decisions"
             });
         }
         let mut r = sidecar_side("rust", P_R, &rs);
+        let mut j = sidecar_side("js", P_J, &js);
         r.exact_timing = true;
-        for (k, lag) in LAG_R.iter().enumerate() {
+        r.live_sids.insert(P7_SID.into());
+        for (k, lag) in lag_r.iter().enumerate() {
             r.timing.push(TimingRec {
                 sid: P7_SID.into(),
                 key: "cam0".into(),
@@ -7614,20 +7715,25 @@ kind = "decisions"
                 end_ts: None,
                 accepted: true,
             });
+            let mp4 = format!("video/cam0/{P7_SID}/{k:05}.mp4");
+            let seen = |b: i64| Seen {
+                size: 100,
+                gone: None,
+                birth: Some(b),
+            };
+            r.rec.insert(mp4.clone(), seen(fr(k) + lag + 1));
+            j.rec.insert(mp4, seen(birth(k)));
         }
         r.timing.push(TimingRec {
             sid: P7_SID.into(),
             key: "cam0".into(),
             pid: 7,
-            id: 3,
-            end_ts: Some(P_R + END_REL),
+            id: n as u64 - 1,
+            end_ts: Some(P_R + end_rel(n)),
             accepted: true,
             ..Default::default()
         });
-        Fixture {
-            js: sidecar_side("js", P_J, &js),
-            rs: r,
-        }
+        Fixture { js: j, rs: r }
     }
 
     fn sc(m: &MediaCapture, seq: u64) -> Value {
@@ -7919,6 +8025,98 @@ kind = "decisions"
             "{:#?}",
             unt(&js, &r1)
         );
+    }
+
+    /// T7/D51, WP2 round 4 (R-WP2R4-2): the live shift L is WP2's own
+    /// `TimingTable::shift_lag_below` on the side's records — here the
+    /// midpoint of an exact predecessor's spike (2600) and the median below
+    /// it (2000) = 2300 — NOT "the lag of the highest accepted id below".
+    #[test]
+    fn d51_live_shift_is_wp2s_own_rule() {
+        let table = committed_table();
+        let lag_j = [14, 2_001, 2_604, 2_010, 2_018];
+        let lag_r = [12, 2_000, 2_600, 2_008, 2_020];
+        let Fixture { js, rs } = fixture_with(&lag_j, &lag_r);
+        let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
+        let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
+        let fr = |k: i64| P_R + 10 + k * SEG;
+        let shifted = |l: i64| {
+            let mut r = rs.clone();
+            r.timing.retain(|t| t.id != 3);
+            let birth3 = fr(3) + lag_r[3];
+            set_sc(&mut r, 2, |v| v["durationMs"] = (birth3 - lag_r[2] - fr(2)).into());
+            set_sc(&mut r, 3, |v| {
+                v["anchor"] = "fstat".into();
+                v["startTs"] = (birth3 - l).into();
+                v["durationMs"] = (fr(4) + lag_r[4] - birth3).into();
+            });
+            r
+        };
+        assert_eq!(d51_table(&shifted(0), P7_SID).shift_lag_below(3), Some(2_300.0));
+        let ok = shifted(2_300);
+        let all = sidecar_rows(&js, &ok, &table, false);
+        assert!(unt(&js, &ok).is_empty(), "{all:#?}");
+        assert!(all.contains(&format!("{P7_SID}/00003 startTs T7/D51")), "{all:#?}");
+        // The superseded rule (the highest accepted lag below, 2600) FAILS.
+        assert!(unt(&js, &shifted(2_600)).contains(&row(3, "startTs")));
+    }
+
+    /// T7/D51, WP2 round 4 (R-WP2R4-1): a RECOVERED shifted row — a session
+    /// this side's agent never spawned (crash recovery of a previous boot)
+    /// whose fragment 3 was swept as `fstat` and shifted by WP2's
+    /// `recovery_end_anchor_lag` (it starts exactly where the pts sidecar 2
+    /// ends), computed from the side's own pts sidecars + the mp4 births.
+    #[test]
+    fn d51_matches_a_recovered_shift_by_wp2s_end_anchor() {
+        let table = committed_table();
+        let Fixture { js, rs } = fixture();
+        let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
+        let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
+        let fr = |k: i64| P_R + 10 + k * SEG;
+        let recovered = |st3: i64| {
+            let mut r = rs.clone();
+            r.live_sids.clear();
+            r.timing.retain(|t| t.id < 3);
+            let birth3 = fr(3) + LAG_R[3] + 1;
+            set_sc(&mut r, 3, |v| {
+                v["anchor"] = "fstat".into();
+                v["startTs"] = st3.into();
+                v["durationMs"] = (P_R + END_REL - birth3).into();
+            });
+            r
+        };
+        // WP2's end anchor: birth(3) − (startTs(2) + durationMs(2)) = lag(3) + 1.
+        let r = recovered(fr(3));
+        let samples = d51_pts_samples(&r, P7_SID);
+        assert_eq!(samples.len(), 3, "{samples:?}");
+        assert_eq!(
+            recovery_end_anchor_lag(&samples, 3.0, (fr(3) + LAG_R[3] + 1) as f64),
+            Some((LAG_R[3] + 1) as f64)
+        );
+        let all = sidecar_rows(&js, &r, &table, false);
+        assert!(unt(&js, &r).is_empty(), "{all:#?}");
+        assert!(all.contains(&format!("{P7_SID}/00003 startTs T7/D51")), "{all:#?}");
+        // Not shifted (recovery's plain legacy start = birth(3)): FAILS.
+        assert!(unt(&js, &recovered(fr(3) + LAG_R[3] + 1)).contains(&row(3, "startTs")));
+        // Shifted by a wrong amount (+100 ms): FAILS.
+        assert!(unt(&js, &recovered(fr(3) - 100)).contains(&row(3, "startTs")));
+        // No births known: WP2's functions give no shift → not D51 → FAILS.
+        let mut nb = recovered(fr(3));
+        for s in nb.rec.values_mut() {
+            s.birth = None;
+        }
+        assert!(unt(&js, &nb).contains(&row(3, "startTs")));
+        // The same row in a LIVE session follows WP2's live rule instead
+        // (shift_lag_below(3), not the end anchor lag(3) + 1): the two are
+        // within the ±50 band here, so pin the routing on the expectation.
+        let mut live = recovered(fr(3));
+        live.live_sids.insert(P7_SID.into());
+        let e = sc(&live, 3);
+        let o = sc(&js, 3);
+        let live_l = d51_table(&live, P7_SID).shift_lag_below(3).unwrap() as i64;
+        assert_ne!(live_l, LAG_R[3] + 1);
+        assert_eq!(d51_expect(&live, P7_SID, 3, &e, &o).map(|d| d.start), Some(live_l));
+        assert_eq!(d51_expect(&r, P7_SID, 3, &e, &o).map(|d| d.start), Some(LAG_R[3] + 1));
     }
 
     fn lines_cap(kind: &str, tool: &str, lines: &[(u8, &str)], end: &str) -> MediaCapture {
