@@ -168,6 +168,26 @@ class T(unittest.TestCase):
         self.assertEqual(r["verdict"], "FAIL", r)
         self.assertTrue(any("anchor" in e for e in r["errors"]), r["errors"])
 
+    def test_a_legacy_last_fragment_cut_inside_a_gop_is_a_cut_not_a_fail(self):
+        # The stop's EOS < 1 GOP after fragment 4's rotation: its file opens
+        # at the EOS flush, +700 ms after its frame. Last fragment only;
+        # never later than the band; a middle fragment at +700 still FAILS.
+        def side(seq_off):
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            os.makedirs(self.tmp)
+            s = Side(self.tmp, tool="gst-launch-1.0")
+            for k in range(5):
+                frame = P + 9 + k * SEG * 1000
+                d = seq_off.get(k, 2_050)
+                s.car(k, (frame + d) if k else (P + 9 + 2_050), "boundary" if k == 0 else "fstat")
+            return s
+        r = self.run_check(side({4: 700}))
+        self.assertEqual(r["verdict"], "PASS", r)
+        self.assertTrue(r["rows"][-1].get("cut"), r["rows"][-1])
+        self.assertEqual(self.run_check(side({2: 700}))["verdict"], "FAIL")
+        self.assertEqual(self.run_check(side({4: 2_600}))["verdict"], "FAIL")
+        self.assertEqual(self.run_check(side({4: -20}))["verdict"], "FAIL")
+
     def test_gaps_mixed_sessions_and_min_fragments_fail(self):
         s = exact_side(self.tmp)
         del s.cars[2]

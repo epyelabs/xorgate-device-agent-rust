@@ -183,7 +183,15 @@ def check_session(s, starts, anchors, min_fragments):
             if abs(d_shim) > bound:
                 errors.append("fragment %d: %.1f ms off the shim reference (> %.1f)" % (q, d_shim, bound))
         else:
-            if abs(d_shim - LEGACY_LAG_MS) > LEGACY_BAND_MS:
+            # The session's LAST fragment, cut by the stop's EOS less than one
+            # GOP after its rotation keyframe, is created when splitmuxsink
+            # flushes that partial GOP at EOS, i.e. EARLIER than one GOP after
+            # its first frame (K6(a): +404 / +702 ms on Rust, +1879 on JS).
+            # Its first frame is still at N x step; only the file opened early.
+            cut = q == max(starts) and 0 <= d_shim < LEGACY_LAG_MS - LEGACY_BAND_MS
+            if cut:
+                row["cut"] = True
+            elif abs(d_shim - LEGACY_LAG_MS) > LEGACY_BAND_MS:
                 errors.append("legacy fragment %d: %.1f ms after its frame (want %d +/- %d)" % (q, d_shim, LEGACY_LAG_MS, LEGACY_BAND_MS))
             if q == 0 and anchors.get(0) != "boundary":
                 errors.append("legacy fragment 0 anchor %r (want boundary)" % anchors.get(0))
