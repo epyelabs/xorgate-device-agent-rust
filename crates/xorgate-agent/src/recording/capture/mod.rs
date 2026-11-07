@@ -1272,7 +1272,7 @@ fn on_timing_line(s: &Arc<Shared>, key: &str, child_id: u64, line: &str) {
     let Some(parsed) = parse_timing_line(line) else {
         return;
     };
-    let (warning, target) = {
+    let (warning, target, rec) = {
         let mut g = s.lock();
         let Some(run) = g.runs.get_mut(key) else {
             return;
@@ -1290,21 +1290,26 @@ fn on_timing_line(s: &Arc<Shared>, key: &str, child_id: u64, line: &str) {
             )),
         };
         // Phase 7a WP3 (Rig form): the rig-only `capture_timing` record of
-        // a parsed line, with this table's verdict (never on the wire).
-        if let Ok(l) = &parsed {
-            s.opts.tape.capture_timing(&capture_timing_rec(
+        // a parsed line, with this table's verdict (never on the wire). Built
+        // under the lock, WRITTEN after it (review-wp3 F9: a FileTape write
+        // is gz I/O), before the sweep it may trigger.
+        let rec = parsed.as_ref().ok().map(|l| {
+            capture_timing_rec(
                 key,
                 run.child.as_ref().and_then(|c| c.pid).unwrap_or(0),
                 run.session_id.as_deref().unwrap_or(""),
                 l,
                 res.is_ok(),
-            ));
-        }
+            )
+        });
         let warning = res
             .err()
             .filter(|_| !std::mem::replace(&mut run.timing.warned, true));
-        (warning, run.watch_gen.map(|gen| (run.id, gen)))
+        (warning, run.watch_gen.map(|gen| (run.id, gen)), rec)
     };
+    if let Some(r) = rec {
+        s.opts.tape.capture_timing(&r);
+    }
     if let Some(w) = warning {
         warn!("{w}");
     }
