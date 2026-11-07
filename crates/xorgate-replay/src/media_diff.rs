@@ -8302,6 +8302,19 @@ kind = "decisions"
         assert!(unt(&j, &r).contains(&row(3, "(END stamp not used)")));
     }
 
+    /// WP3 review F8: `d51_expect`'s own gate (unreachable through the call
+    /// site, which mutant D51-13 pins): a side that did not run host + exact
+    /// is never matched, whatever its records and anchors say.
+    #[test]
+    fn d51_expect_refuses_a_side_that_is_not_host_exact() {
+        let Fixture { js, rs } = fixture();
+        let (e, o) = (sc(&rs, 2), sc(&js, 2));
+        assert!(d51_expect(&rs, P7_SID, 2, &e, &o).is_some());
+        let mut not = rs.clone();
+        not.exact_timing = false;
+        assert!(d51_expect(&not, P7_SID, 2, &e, &o).is_none());
+    }
+
     fn lines_cap(kind: &str, tool: &str, lines: &[(u8, &str)], end: &str) -> MediaCapture {
         let mut m = MediaCapture {
             kind: kind.into(),
