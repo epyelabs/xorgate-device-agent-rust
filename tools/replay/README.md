@@ -581,3 +581,22 @@ capture's `ended` (int vs kill) is the agent's doing, not a race with the rig.
   obd-crank, obd-badproto, obd-config (cloud `obd: null` rejection), obd-cmds, obd-cmds-noperiph.
 - **Bench overlay** (`scripts/bench/p5b-overlay.sh apply|revert|status`): OBD emulator + FakeModem
   under the shared profile only; CF76 keeps `peripherals.obd` and `XORGATE_OBD_*` out of the env.
+
+## Phase 6 P3a: cross-agent takeover (handoff mode)
+
+Plan: `plans/device-agent-js-to-rust/phase-6/evidence/P3a-takeover.md` §Design.
+
+- **Flags** (`xorgate-replay play`, after `--` in `run-rig.sh`):
+  - `--handoff-signal term|kill --then-a <kind> --then-b <kind>`: at the tape's `meta.rig.handoff.atMs`, the player stops BOTH agents the way systemd stops a unit (`handoff.rs`). Both units keep the default `KillMode=control-group` and the 90 s `TimeoutStopSec`. The signal goes to the whole cgroup-equivalent member set: the `/proc` descendants plus their process groups.
+    - `term`: SIGTERM to every member, then SIGKILL after 90 s.
+    - `kill`: SIGKILL at once.
+  - After the stop, the player snapshots each side's `recordings/` (`<side>/handoff-state.json`, small files in `<side>/handoff/recordings/`). It then restarts side A as `--then-a` and side B as `--then-b` on the SAME homes, 2 s after the slower stop. Defaults: `--handoff-at-ms`, `--handoff-gap-ms 2000`, `--handoff-stop-timeout-ms 90000`.
+- **Tape time is frozen across the pause:** `t0` and the fake S3's fault origin move by it. Both the hold gate and the watch gate restart as at a boot.
+- **Logs:** later incarnations append to `stdout.log`/`stderr.log` after a `[rig] handoff: incarnation N (<kind>)` marker. A Rust incarnation N ≥ 1 writes `agent-tape.N.ndjson.gz`. `meta.json` carries `incarnations [{fromW, kind}]`; its `kind` is the last incarnation's.
+- **Refused combinations:** a tape with per-attempt external exits, a Pi namespace or OBD.
+- **Diff** (`takeover.rs`; exact, no tolerance rows):
+  - The `takeover` stream: `state` / `edge` (an INVALID lane, not a verdict), `fate` (put×N / disk / gone per inherited file; no double upload, no lost segment), `recovery-lines`, `disk-end`.
+  - Kind-directional rules use the kind of the incarnation that produced each item (R2). Each item is a session, a tick, a report, or the events of each era.
+  - A child the handoff signalled ends as `handoff:<sig>` (R1).
+- **Tapes:** `synth p6-takeover-open | -vbacklog | -tbacklog | -reap`.
+- **Lanes:** `p3a-lanes.sh synth | matrix | run <id>:<tape>:<jr|rj|jj|rr>:<term|kill> | run-matrix`. Lanes run serially; before each one, a quiet-host preflight checks that no other `xorgate.agent` container runs and that the 1-min load is ≤ 8. The runner holds the Mac awake with `caffeinate -dims`.

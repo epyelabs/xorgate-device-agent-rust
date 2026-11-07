@@ -47,6 +47,10 @@ pub const FILES: &[&str] = &[
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayInfo {
+    /// Phase 6 P3a: the player's handoff (`handoff.rs`, `takeover.rs`);
+    /// absent in every other run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<crate::takeover::HandoffInfo>,
     #[serde(default)]
     pub tape: String,
     #[serde(default)]
@@ -681,8 +685,34 @@ fn gps_field(path: &str) -> Option<&str> {
 #[serde(rename_all = "camelCase")]
 pub struct AgentMeta {
     pub label: String,
+    /// The kind of the LAST incarnation (the only one without a handoff).
     pub kind: String,
     pub device_id: String,
+    /// Phase 6 P3a: every incarnation on this home with its spawn wall
+    /// (`play.rs` `write_meta`); empty in a pre-P3a run.
+    #[serde(default)]
+    pub incarnations: Vec<Incarnation>,
+}
+
+/// One agent process started on a side's home (P3a).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Incarnation {
+    pub from_w: i64,
+    pub kind: String,
+}
+
+impl AgentMeta {
+    /// P3a (R2): the kind of the incarnation alive at wall `w` (before the
+    /// first spawn: the first one; no incarnation list: `kind`).
+    pub fn kind_at(&self, w: i64) -> &str {
+        self.incarnations
+            .iter()
+            .rev()
+            .find(|i| i.from_w <= w)
+            .or(self.incarnations.first())
+            .map_or(self.kind.as_str(), |i| i.kind.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -905,6 +935,15 @@ fn json_style(text: &str) -> String {
 }
 
 impl Capture {
+    /// P3a: this side restricted to the events stamped in `[lo, hi)`, with
+    /// the kind of the incarnation alive at the era's start.
+    pub fn era(&self, lo: i64, hi: i64) -> Self {
+        let mut c = self.clone();
+        c.events.retain(|(at, _, _)| *at >= lo && *at < hi);
+        c.meta.kind = self.meta.kind_at(lo).to_string();
+        c
+    }
+
     pub fn load(dir: &Path) -> Result<Self> {
         let meta: AgentMeta = serde_json::from_slice(
             &std::fs::read(dir.join("meta.json"))
@@ -2391,6 +2430,32 @@ fn lookup<'v>(v: &'v Value, path: &str) -> Option<&'v Value> {
     })
 }
 
+/// `PASS` / `FAIL`, or (P3a) `INVALID` when a `takeover` row says the
+/// lane's inherited state was not the designed one (a tape problem, not a
+/// verdict on the agents; `takeover::is_invalid`).
+pub fn verdict(rep: &Report) -> &'static str {
+    if rep.mismatches.iter().any(crate::takeover::is_invalid) {
+        "INVALID"
+    } else if rep.untolerated() == 0 {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+/// P3a (R2): [`js_a_of`] for the incarnations alive at wall `w` (`None`:
+/// the final ones). Without a handoff it is `js_a_of` for every `w`.
+fn js_a_at(a: &Capture, b: &Capture, w: Option<i64>) -> Option<bool> {
+    let Some(w) = w else {
+        return js_a_of(a, b);
+    };
+    match (a.meta.kind_at(w), b.meta.kind_at(w)) {
+        ("js", "rust") => Some(true),
+        ("rust", "js") => Some(false),
+        _ => None,
+    }
+}
+
 /// Which side is the js agent when the other is rust (one-directional rows).
 fn js_a_of(a: &Capture, b: &Capture) -> Option<bool> {
     match (a.meta.kind.as_str(), b.meta.kind.as_str()) {
@@ -2653,7 +2718,7 @@ pub fn diff_with(
             neighbors: [nb(prev, 0), nb(next, 0), nb(prev, 1), nb(next, 1)],
             d23: js_ts.and_then(|t| d23_at.get(&t)),
             facts,
-            js_a,
+            js_a: js_a_at(a, b, w),
             ack_rate_limit: false,
         };
         flags_pair(&cx, x, y, &mut rep);
@@ -2694,7 +2759,7 @@ pub fn diff_with(
                 neighbors: [None; 4],
                 d23: None,
                 facts,
-                js_a,
+                js_a: js_a_at(a, b, w.or(Some(m.w))),
                 ack_rate_limit: false,
             };
             let wv = w.unwrap_or(m.w);
@@ -2793,7 +2858,7 @@ pub fn diff_with(
                 neighbors: [None; 4],
                 d23: None,
                 facts,
-                js_a,
+                js_a: js_a_at(a, b, x.or(y).map(|m| m.w)),
                 ack_rate_limit: stream == "ack"
                     && refresh(x)
                     && refresh(y)
@@ -2955,7 +3020,17 @@ pub fn diff_with(
     }
 
     // ---- recentEvents msg multiset
-    diff_events(a, b, play, facts, table, &mut rep);
+    match play.handoff.as_ref() {
+        None => diff_events(a, b, play, facts, table, &mut rep),
+        // P3a (R2): the events of each incarnation pair are compared on their
+        // own — before the restart X vs X, after it Y vs X — so a
+        // one-directional events row applies to the kinds that emitted them.
+        Some(h) => {
+            for (lo, hi) in [(i64::MIN, h.restart_w), (h.restart_w, i64::MAX)] {
+                diff_events(&a.era(lo, hi), &b.era(lo, hi), play, facts, table, &mut rep);
+            }
+        }
+    }
 
     // ---- sudo argv sequence
     diff_sudo(a, b, table, &mut rep);
@@ -3351,7 +3426,6 @@ fn diff_reports(
     table: &Table,
     rep: &mut Report,
 ) {
-    let js_a = js_a_of(a, b);
     let ra = a.stream("config/reported");
     let rb = b.stream("config/reported");
     let r5 = table.of_kind("report_count", "report").next();
@@ -3384,7 +3458,7 @@ fn diff_reports(
             neighbors: [None; 4],
             d23: None,
             facts,
-            js_a,
+            js_a: js_a_at(a, b, Some(s)),
             ack_rate_limit: false,
         };
         if pa.len() != pb.len() {
@@ -3535,7 +3609,7 @@ fn diff_reports(
                     neighbors: [None; 4],
                     d23: None,
                     facts,
-                    js_a,
+                    js_a: js_a_at(a, b, Some(x.w)),
                     ack_rate_limit: false,
                 };
                 flags_pair(&cx, x, y, rep);
@@ -4648,7 +4722,7 @@ pub fn render(
     let _ = writeln!(
         o,
         "- verdict: **{}** ({} untolerated, {} tolerated)\n",
-        if unt == 0 { "PASS" } else { "FAIL" },
+        verdict(rep),
         unt,
         rep.mismatches.len() - unt
     );
@@ -5088,6 +5162,7 @@ mod tests {
                 label: kind.into(),
                 kind: kind.into(),
                 device_id: "x".into(),
+                ..Default::default()
             },
             msgs,
             finals: BTreeMap::new(),
@@ -7891,6 +7966,7 @@ mod tests {
                 label: "x".into(),
                 kind: kind.into(),
                 device_id: String::new(),
+                ..Default::default()
             },
             events: evs
                 .into_iter()

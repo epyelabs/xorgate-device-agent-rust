@@ -250,6 +250,34 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
         "cam0 capture SIGKILLed (external) at 35 s, cam1 master exits 1 at 45 s, preset → 1080p15 at 70 s",
     ),
+    // ---- Phase 6 P3a: cross-agent takeover (P3a-takeover.md §2). Each
+    // carries `meta.rig.handoff` (the instant + the inherited state it must
+    // leave, `takeover_rig`); the player hands off only with
+    // `--handoff-signal`, otherwise the tape plays as an ordinary media run.
+    (
+        "p6-takeover-open",
+        170,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (a): both recorders + healthy uploads; handoff at 95 s mid-fragment / mid-segment (open sessions, no backlog)",
+    ),
+    (
+        "p6-takeover-vbacklog",
+        170,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (b): video only; fake-S3 503 from 30 s to handoff + 10 s; handoff at 95 s (closed fragments never uploaded + the active one)",
+    ),
+    (
+        "p6-takeover-tbacklog",
+        230,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (c): telemetry only; fake-S3 503 from 20 s to handoff + 10 s; handoff at 150 s (2 closed segments never uploaded + the open one)",
+    ),
+    (
+        "p6-takeover-reap",
+        800,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (a)+(b)+(c) with a 650 s tail: the drained X-era session dirs pass REAP_MIN_AGE_MS (10 min) under the next agent",
+    ),
     // ---- Phase 4 (WP6, phase-4-operations.md §8): every one carries `p4`
     // (records by scenario name, synth_p4.rs); the rig side is play.rs/p4.rs.
     (
@@ -702,9 +730,81 @@ pub fn rec_namespace(scenario: &str) -> Value {
             rec["upload"] = json!({"mode": "off"});
             rec["retention"] = json!({"maxBytes": 536_870_912u64, "minFreeBytes": 0});
         }
+        "p6-takeover-vbacklog" => {
+            rec["telemetry"]["enabled"] = json!(false);
+        }
+        "p6-takeover-tbacklog" => {
+            rec["video"]["enabled"] = json!(false);
+        }
         _ => {}
     }
     rec
+}
+
+/// P3a handoff instants (tape ms), off every rotation: cam0's 10 s fragments,
+/// cam1's (staggered 4 s), the 60 s telemetry rotation (`segments.ts:45`)
+/// and the fault-window edges. `takeover.rs` `edge` re-checks on each run.
+pub const TAKEOVER_OPEN_AT_MS: u64 = 95_000;
+pub const TAKEOVER_VBACKLOG_AT_MS: u64 = 95_000;
+pub const TAKEOVER_TBACKLOG_AT_MS: u64 = 150_000;
+pub const TAKEOVER_REAP_AT_MS: u64 = 150_000;
+/// After the restart the next agent meets this much more outage (tape time
+/// is frozen across the handoff), then a healthy bucket.
+pub const TAKEOVER_OUTAGE_TAIL_MS: u64 = 10_000;
+
+/// `meta.rig` of a P3a tape: `handoff {atMs, segMs, expect}` + the fake-S3
+/// outage. `expect` names `takeover::classes` aggregates (signal-independent:
+/// a SIGTERM lets X finalize what a SIGKILL leaves open): `min` / `max`
+/// counts per side, and `reaped` (no X-era video file may be left at the end).
+pub fn takeover_rig(name: &str) -> Value {
+    let outage = |from: u64, at: u64| {
+        json!([{"fromMs": from, "toMs": at + TAKEOVER_OUTAGE_TAIL_MS, "status": 503}])
+    };
+    let (at, faults, expect) = match name {
+        "p6-takeover-open" => (
+            TAKEOVER_OPEN_AT_MS,
+            None,
+            json!({
+                "min": {"video/cam0: mp4": 1, "video/cam1: mp4": 1, "telemetry: segment": 1},
+                "max": {"video/cam0: mp4": 1, "video/cam1: mp4": 1, "telemetry: segment": 1},
+            }),
+        ),
+        "p6-takeover-vbacklog" => (
+            TAKEOVER_VBACKLOG_AT_MS,
+            Some(outage(30_000, TAKEOVER_VBACKLOG_AT_MS)),
+            json!({
+                "min": {"video/cam0: mp4": 5, "video/cam1: mp4": 5},
+                "max": {"telemetry: segment": 0},
+            }),
+        ),
+        "p6-takeover-tbacklog" => (
+            TAKEOVER_TBACKLOG_AT_MS,
+            Some(outage(20_000, TAKEOVER_TBACKLOG_AT_MS)),
+            json!({
+                "min": {"telemetry: segment": 3},
+                "max": {"video/cam0: mp4": 0, "video/cam1: mp4": 0},
+            }),
+        ),
+        _ => (
+            TAKEOVER_REAP_AT_MS,
+            Some(outage(30_000, TAKEOVER_REAP_AT_MS)),
+            json!({
+                "min": {"video/cam0: mp4": 10, "video/cam1: mp4": 10, "telemetry: segment": 3},
+                "reaped": true,
+            }),
+        ),
+    };
+    let mut rig = json!({"handoff": {"atMs": at, "segMs": 10_000, "expect": expect}});
+    if let Some(f) = faults {
+        rig["s3Faults"] = f;
+    }
+    rig
+}
+
+/// The repo fixtures (tests of other modules build synth tapes too).
+#[cfg(test)]
+pub fn test_fixtures() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
 }
 
 fn rec_doc(rev: i64, rec: &Value) -> String {
@@ -1273,6 +1373,9 @@ fn build_inner(
                     json!({"s3Faults": [{"fromMs": 100_000, "toMs": 130_000, "status": 503}]}),
                 );
             }
+            n if n.starts_with("p6-takeover-") => {
+                rig = Some(takeover_rig(n));
+            }
             _ => {}
         }
     }
@@ -1497,7 +1600,8 @@ mod tests {
             .map(|s| s.0)
             .filter(|n| is_phase3(n))
             .collect();
-        assert_eq!(p3.len(), 8, "{p3:?}");
+        // 8 Phase 3 scenarios + the 4 Phase 6 P3a takeover tapes.
+        assert_eq!(p3.len(), 12, "{p3:?}");
         for name in p3 {
             let tape = build(name, None, &fixtures()).unwrap();
             assert_eq!(tape.meta.hardware, media_hardware_block(), "{name}");
@@ -1798,6 +1902,49 @@ mod tests {
             let mode = tape.meta.env.get("MODE").and_then(Value::as_str);
             assert_eq!(mode, Some(if name == "sms-sim" { "sim" } else { "real" }));
         }
+    }
+
+    #[test]
+    fn takeover_tapes_carry_their_handoff_state_and_outage() {
+        for (name, at, outage, video, telemetry) in [
+            ("p6-takeover-open", TAKEOVER_OPEN_AT_MS, None, true, true),
+            ("p6-takeover-vbacklog", TAKEOVER_VBACKLOG_AT_MS, Some(30_000), true, false),
+            ("p6-takeover-tbacklog", TAKEOVER_TBACKLOG_AT_MS, Some(20_000), false, true),
+            ("p6-takeover-reap", TAKEOVER_REAP_AT_MS, Some(30_000), true, true),
+        ] {
+            let tape = build(name, None, &fixtures()).unwrap();
+            let rig = tape.meta.rig.as_ref().unwrap();
+            assert_eq!(rig["handoff"]["atMs"], at, "{name}");
+            assert!(rig["handoff"]["expect"]["min"].is_object(), "{name}");
+            assert!(at < tape.duration_ms(), "{name}: the handoff is inside the tape");
+            let faults = crate::aws::faults_of(Some(rig));
+            match outage {
+                None => assert!(faults.is_empty(), "{name}"),
+                Some(from) => {
+                    assert_eq!(faults.len(), 1, "{name}");
+                    assert_eq!(faults[0].from_ms, from, "{name}");
+                    // The outage spans the handoff and ends 10 s (tape) after it.
+                    assert_eq!(faults[0].to_ms, (at + TAKEOVER_OUTAGE_TAIL_MS) as i64, "{name}");
+                    assert_eq!(faults[0].status, 503);
+                }
+            }
+            let rec = rec_namespace(name);
+            assert_eq!(rec["video"]["enabled"], video, "{name}");
+            assert_eq!(rec["telemetry"]["enabled"], telemetry, "{name}");
+            assert_eq!(rec["upload"]["mode"], "auto", "{name}");
+            // Off the 60 s telemetry rotation by ≥ 10 s (recorder start ≈ 1-2 s).
+            let ph = at % 60_000;
+            assert!((10_000..=50_000).contains(&ph), "{name}: {ph}");
+            // Determinism.
+            let (mut x, mut y) = (Vec::new(), Vec::new());
+            tape.write_to(&mut x).unwrap();
+            build(name, None, &fixtures()).unwrap().write_to(&mut y).unwrap();
+            assert_eq!(x, y, "{name}");
+        }
+        // The reap tape's tail outlives REAP_MIN_AGE_MS (video-source.ts:35).
+        let reap = build("p6-takeover-reap", None, &fixtures()).unwrap();
+        assert!(reap.duration_ms() >= 600_000 + 60_000);
+        assert_eq!(reap.meta.rig.as_ref().unwrap()["handoff"]["expect"]["reaped"], true);
     }
 
     #[test]

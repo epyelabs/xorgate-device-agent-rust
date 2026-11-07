@@ -120,6 +120,64 @@ pub struct MediaCapture {
     pub imu_mount: Option<xorgate_core::orientation::ImuMount>,
     /// Anything media-related captured at all.
     pub present: bool,
+    /// Phase 6 P3a: `(spawn wall, kind)` per incarnation (`meta.json`
+    /// `incarnations`; empty before P3a = one incarnation of `kind`).
+    pub incarnations: Vec<(i64, String)>,
+    /// P3a: each session label's first appearance (wall ms).
+    pub session_first: BTreeMap<String, i64>,
+    /// P3a: each normalised `recordings/` path's first sighting (wall ms).
+    pub rec_first: BTreeMap<String, i64>,
+    /// The normaliser of this side (P3a `takeover.rs` normalises with it).
+    norm: Norm,
+}
+
+impl MediaCapture {
+    /// P3a (R2): the kind of the incarnation alive at wall `w`.
+    pub fn kind_at(&self, w: i64) -> &str {
+        self.incarnations
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= w)
+            .or(self.incarnations.first())
+            .map_or(self.kind.as_str(), |(_, k)| k.as_str())
+    }
+
+    /// P3a (R2): the kind of the incarnation that started session `label`.
+    pub fn kind_of_session(&self, label: &str) -> &str {
+        match self.session_first.get(label) {
+            Some(w) => self.kind_at(*w),
+            None => self.kind.as_str(),
+        }
+    }
+
+    /// This side's path normalisation (work dir, deviceId, session labels,
+    /// telemetry ms stamps).
+    pub fn norm_path(&self, p: &str) -> String {
+        self.norm.path(p)
+    }
+
+    /// When the observer first saw a normalised `recordings/` path.
+    pub fn first_seen(&self, rel: &str) -> Option<i64> {
+        self.rec_first.get(rel).copied()
+    }
+
+    /// Normalised S3 key → number of successful (200) PUTs.
+    pub fn successful_puts(&self) -> BTreeMap<String, usize> {
+        let mut m = BTreeMap::new();
+        for o in self.s3.iter().filter(|o| o.status == 200) {
+            *m.entry(o.key.clone()).or_default() += 1;
+        }
+        m
+    }
+
+    /// Every normalised `recordings/` file present at the end.
+    pub fn end_files(&self) -> BTreeSet<String> {
+        self.finals
+            .keys()
+            .chain(self.mp4_final.keys())
+            .cloned()
+            .collect()
+    }
 }
 
 fn is_uuid(s: &str) -> bool {
@@ -184,6 +242,7 @@ fn mask_ms(s: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Default)]
 struct Norm {
     work: String,
     id: String,
@@ -271,7 +330,10 @@ impl MediaCapture {
         // player's `gone`); and the agent never reaped that child
         // (`child_exit`): it died with its agent, the A3 race. Anything else
         // falls back to gst's own `handling interrupt.` line.
-        let tape = tape_recs(&dir.join("agent-tape.ndjson.gz"));
+        // P3a: one tape per Rust incarnation (`play::agent_tape_name`).
+        let tape: Vec<Value> = (0..16)
+            .flat_map(|n| tape_recs(&dir.join(crate::play::agent_tape_name(n))))
+            .collect();
         let death: BTreeMap<u32, i64> = shim
             .iter()
             .filter(|v| v["k"] == "eof")
@@ -360,11 +422,14 @@ impl MediaCapture {
             per_dir.entry(d).or_default().push((w, u));
         }
         let mut sids = BTreeMap::new();
+        let mut session_first = BTreeMap::new();
         for (d, mut v) in per_dir {
             v.sort();
-            for (i, (_, u)) in v.into_iter().enumerate() {
+            for (i, (w, u)) in v.into_iter().enumerate() {
                 // No `/` inside the label: it sits in paths.
-                sids.insert(u, format!("<sid:{}#{i}>", d.replace('/', ":")));
+                let label = format!("<sid:{}#{i}>", d.replace('/', ":"));
+                session_first.insert(label.clone(), w);
+                sids.insert(u, label);
             }
         }
         let files = vec![
@@ -475,7 +540,22 @@ impl MediaCapture {
             .filter(|v| v["k"] == "external" && v["role"] == "capture" && v["ok"] != false)
             .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
             .collect();
+        // P3a (R1): a child the rig's handoff stop signalled while it was
+        // alive ended by the RIG's doing (`handoff.rs`), like `external`.
+        let handoff_sig: BTreeMap<u32, String> = procs
+            .iter()
+            .filter(|v| v["k"] == "handoff")
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["sig"].as_str()?.to_string())))
+            .fold(BTreeMap::new(), |mut m, (p, s)| {
+                m.entry(p).or_insert(s);
+                m
+            });
         for s in spawns.iter_mut() {
+            if let Some(sig) = handoff_sig.get(&s.pid) {
+                s.end_w = exit_w.get(&s.pid).copied();
+                s.end = Some(format!("handoff:{sig}"));
+                continue;
+            }
             if s.role == "kvs" {
                 s.end_w = exit_w.get(&s.pid).copied();
                 s.end = kvs_end
@@ -510,6 +590,12 @@ impl MediaCapture {
             }
         }
 
+        let rec_first: BTreeMap<String, i64> = rec_json["files"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(rel, s)| Some((n.path(rel), s["first"].as_i64()?)))
+            .collect();
         let rec: BTreeMap<String, Seen> = rec_json["files"]
             .as_object()
             .into_iter()
@@ -707,6 +793,15 @@ impl MediaCapture {
                 })
                 .and_then(|st| xorgate_core::orientation::parse_imu_mount(&st["imuMount"])),
             present,
+            incarnations: meta["incarnations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| Some((v["fromW"].as_i64()?, v["kind"].as_str()?.to_string())))
+                .collect(),
+            session_first,
+            rec_first,
+            norm: n,
         }
     }
 }
@@ -2483,7 +2578,7 @@ fn d30_session_end(
     let (Some(s0a), Some(s0b)) = (f64_at(ca, 0, "startTs"), f64_at(cb, 0, "startTs")) else {
         return false;
     };
-    let delta = match (a.kind.as_str(), b.kind.as_str()) {
+    let delta = match (a.kind_of_session(sid), b.kind_of_session(sid)) {
         ("js", "rust") => s0a - s0b,
         ("rust", "js") => s0b - s0a,
         ("js", "js") => (s0a - s0b).abs(),
@@ -3294,7 +3389,10 @@ pub fn diff_media(
         // rule: an unsigned Rust drop still counts (and fails).
         let rs_adj =
             |kind: &str, lack: usize, st: usize| if kind == "rust" { lack - st } else { lack };
-        for (side, kind, st) in [("A", &a.kind, starved.0), ("B", &b.kind, starved.1)] {
+        // P3a (R2): judged by the kind of the incarnation that RECORDED the
+        // session (no handoff: the side's kind).
+        let (ka, kb) = (a.kind_of_session(sid), b.kind_of_session(sid));
+        for (side, kind, st) in [("A", ka, starved.0), ("B", kb, starved.1)] {
             if kind == "rust" && st > 0 {
                 let id = table
                     .matcher_rows("d30_system_presence", "rec-telemetry")
@@ -3319,11 +3417,8 @@ pub fn diff_media(
                 ));
             }
         }
-        let (la, lb) = (
-            rs_adj(&a.kind, lack.0, starved.0),
-            rs_adj(&b.kind, lack.1, starved.1),
-        );
-        if let Some(tol) = system_presence_tol(table, &a.kind, &b.kind, la, lb) {
+        let (la, lb) = (rs_adj(ka, lack.0, starved.0), rs_adj(kb, lack.1, starved.1));
+        if let Some(tol) = system_presence_tol(table, ka, kb, la, lb) {
             rep.push(mm(
                 "rec-telemetry",
                 sid,
@@ -3387,7 +3482,7 @@ pub fn diff_media(
             &ep,
             play,
             &facts,
-            (a.kind.as_str(), b.kind.as_str()),
+            (a.kind_of_session(sid), b.kind_of_session(sid)),
             &pmic,
             table,
             rep,
