@@ -7789,8 +7789,16 @@ kind = "decisions"
         let mut j = js.clone();
         j.kind = "rust".into();
         j.exact_timing = true;
-        assert!(unt(&j, &rs).contains(&row(1, "startTs")), "{:#?}", unt(&j, &rs));
-        assert!(unt(&rs, &j).contains(&row(1, "startTs")), "{:#?}", unt(&rs, &j));
+        assert!(
+            unt(&j, &rs).contains(&row(1, "startTs")),
+            "{:#?}",
+            unt(&j, &rs)
+        );
+        assert!(
+            unt(&rs, &j).contains(&row(1, "startTs")),
+            "{:#?}",
+            unt(&rs, &j)
+        );
         // ... and a table without the D51 row.
         let no_row = Table::parse(
             &std::fs::read_to_string(
