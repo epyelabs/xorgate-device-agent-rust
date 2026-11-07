@@ -51,7 +51,13 @@ LOCK=/run/xorgate-rs-install.lock
 REQUIRED_MEMBERS=(bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service systemd/xorgate-updater-rs.service install-rs.sh)
 # update_plan::SMOKE_PREFIX.
 SMOKE_PREFIX="xorgate-rs "
-VERIFY_SECS=90
+# O-P6-1: the unit's After=xorgate-agent.service makes step 8's start wait for
+# the JS agent's WHOLE stop: SIGTERM, up to its TimeoutStopSec (systemd default
+# 90 s; the JS unit sets none) before the SIGKILL, then its ExecStopPost. That
+# call gets START_SECS (every other systemctl call keeps sctl's 100 s), and
+# step 9 the same window, so a JS agent that ignores SIGTERM still converts.
+START_SECS=150
+VERIFY_SECS=$START_SECS
 # I3 roots (one line per path) and tree roots (one `t <digest>` line each).
 MANIFEST_ROOTS=(/etc/xorgate /usr/local/bin /etc/systemd/system /etc/sudoers.d /etc/cron.d /etc/udev/rules.d
   /etc/NetworkManager/conf.d /etc/systemd/logind.conf.d /var/lib/xorgate-rs-install)
@@ -116,8 +122,9 @@ install-rs.sh: convert a JS-provisioned xorgate device to the Rust agent, and ba
 
 Exit codes: 0 done / no-op; 1 failed, device back at its pre-run state;
 2 usage; 3 refused by a precondition (not root, not JS-provisioned, purge of a
-pre-existing install; nothing changed); 4 started but not healthy within 90 s,
-automatically reverted (JS restored).
+pre-existing install; nothing changed); 4 not healthy after step 8's start
+(<= 150 s) plus step 9's verify (<= 150 s), so <= 300 s, then automatically
+reverted (JS restored).
 
 Record: /var/lib/xorgate-rs-install/{record,pre.manifest} (root 0700).
 Logs: journalctl -u xorgate-agent-rs, journalctl -u xorgate-updater-rs.
@@ -158,9 +165,16 @@ detail() { # <stderr file> <rc>
 SCTL_ERR=""
 sctl() {
   local o rc=0
-  o=$(timeout 100 systemctl "$@" 2>&1) || rc=$?
+  o=$(timeout "${SCTL_SECS:-100}" systemctl "$@" 2>&1) || rc=$?
   o=$(printf '%s' "$o" | tr -s '\n\t' '  '); SCTL_ERR=${o%" "}
   return "$rc"
+}
+# Why a failed sctl call failed: its timeout (rc 124 from `timeout`, which
+# leaves SCTL_ERR empty), else systemctl's own message, else the exit code.
+sctl_why() { # <rc> <secs>
+  if [ "$1" = 124 ]; then printf 'timed out after %ss' "$2"
+  elif [ -n "$SCTL_ERR" ]; then printf '%s' "$SCTL_ERR"
+  else printf 'exit %s' "$1"; fi
 }
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | first_line; }
 
@@ -826,16 +840,16 @@ convert_main() {
   fi
   if [ "$(unit_active "$RS_SVC")" = active ]; then
     if [ "$NEED_RESTART" = 1 ]; then
-      sctl restart "$RS_SVC" || abort_convert "systemctl restart $RS_SVC failed: $SCTL_ERR"
+      SCTL_SECS=$START_SECS sctl restart "$RS_SVC" || abort_convert "systemctl restart $RS_SVC failed: $SCTL_ERR"
       note "$RS_SVC restarted (new build or unit)"
     fi
   else
-    sctl start "$RS_SVC" || abort_convert "systemctl start $RS_SVC failed: $SCTL_ERR"
+    SCTL_SECS=$START_SECS sctl start "$RS_SVC" || abort_convert "systemctl start $RS_SVC failed: $SCTL_ERR"
     note "$RS_SVC started"
   fi
   maybe_fail_at 8
 
-  # ---- step 9: ≤ 90 s for rs active + JS inactive, else auto-revert (§5.5) ----
+  # ---- step 9: ≤ VERIFY_SECS for rs active + JS inactive, else auto-revert (§5.5) ----
   say "== 9. verify"
   deadline=$((SECONDS + VERIFY_SECS))
   while :; do
@@ -868,7 +882,7 @@ convert_main() {
 # Revert (§4 "--revert" / "--revert --purge"; §5.8: no network, no Rust binary).
 PURGE=0; FORCE=0; REVERT_FINAL=1
 revert_main() {
-  local recf pref already=0 ts dest p d en mode=keep files=kept rest ok=yes
+  local recf pref already=0 ts dest p d en mode=keep files=kept rest ok=yes src
   local cands=() dirs=() kept=()
   if [ -f "$REC" ]; then recf=$REC; pref=$PRE
   else
@@ -913,15 +927,20 @@ revert_main() {
   fi
   case $(unit_active "$RS_SVC") in
     inactive | failed | unknown | "") ;;
-    *) sctl stop "$RS_SVC" || say "  ! systemctl stop $RS_SVC failed: $SCTL_ERR"; note "$RS_SVC stopped" ;;
+    *) # R-P6F-2: the Rust stop can take its TimeoutStopSec + SIGKILL + ExecStopPost.
+      src=0; SCTL_SECS=$START_SECS sctl stop "$RS_SVC" || src=$?
+      if [ "$src" = 0 ]; then note "$RS_SVC stopped"
+      else say "  ! systemctl stop $RS_SVC failed: $(sctl_why "$src" "$START_SECS") ($RS_SVC is $(unit_active "$RS_SVC"))"; fi ;;
   esac
   if [ -e "$STAGING" ]; then rm -rf "$STAGING"; note "$STAGING (an incomplete staging) removed"; fi
   if [ "$already" = 0 ]; then
     # 3. JS started iff it was enabled OR active (§4: an enabled JS agent is meant to run).
     if [ "${R[jsEnabled]}" = enabled ] || [ "${R[jsActive]}" = active ]; then
       if [ "$(unit_active "$JS_SVC")" != active ]; then
-        sctl start "$JS_SVC" || say "  ! systemctl start $JS_SVC failed: $SCTL_ERR"
-        note "$JS_SVC started"
+        # After= makes this start wait for a Rust stop still in flight (R-P6F-2).
+        src=0; SCTL_SECS=$START_SECS sctl start "$JS_SVC" || src=$?
+        if [ "$src" = 0 ]; then note "$JS_SVC started"
+        else say "  ! systemctl start $JS_SVC failed: $(sctl_why "$src" "$START_SECS") ($JS_SVC is $(unit_active "$JS_SVC"))"; fi
       fi
     fi
   fi

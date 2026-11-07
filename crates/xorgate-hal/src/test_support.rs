@@ -22,6 +22,8 @@ use std::process::{Command, Stdio};
 
 /// Write `body` to `path` as a 0755 executable without this process ever
 /// holding a writable fd to it (see the module doc). Overwrites atomically.
+/// A test/rig helper (`#[doc(hidden)]` module), not an agent spawn site.
+#[allow(clippy::disallowed_methods)]
 pub fn write_executable(path: &Path, body: &str) -> io::Result<()> {
     let out = Command::new("/bin/sh")
         .arg("-c")
@@ -48,6 +50,7 @@ pub fn write_executable(path: &Path, body: &str) -> io::Result<()> {
     }
 }
 
+#[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
 #[cfg(test)]
 mod tests {
     use super::*;

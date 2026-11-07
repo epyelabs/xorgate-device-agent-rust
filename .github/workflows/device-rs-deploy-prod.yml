@@ -196,6 +196,9 @@ jobs:
       # alias between two puts can see a mismatched sidecar: it fails closed
       # and succeeds on retry (accepted posture, §6).
       - name: Upload to S3 (versioned + latest + install-rs.sh, -rs keys only)
+        # bash: the job runs in `container: debian:bookworm`, where GitHub's
+        # default run shell is `sh -e` (dash) -- no pipefail, no <<<.
+        shell: bash
         env:
           BUCKET: ${{ steps.bucket.outputs.name }}
           TARBALL: ${{ steps.pack.outputs.tarball }}

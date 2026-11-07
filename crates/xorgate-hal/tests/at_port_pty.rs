@@ -22,6 +22,7 @@
 //! a fixed `now` (`finishedAt = now`, `durationMs = 0`) and prints
 //! `JSON.stringify(buildSmsPayload(…, {deviceId:"local", requestId:"cli",
 //! limit}), null, 2)`.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 #[path = "support/fake_modem.rs"]
 mod fake_modem;

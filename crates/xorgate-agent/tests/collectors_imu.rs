@@ -20,6 +20,7 @@
 //! ONE test function: PATH is process-global, so this binary holds nothing else.
 
 mod common;
+mod log_capture;
 
 use std::io::Write;
 use std::path::Path;
@@ -30,7 +31,7 @@ use common::*;
 use serde_json::Value;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing_subscriber::layer::{Context, Layer};
 use xorgate_agent::collectors::imu::{ImuCollector, RealImuIo};
 use xorgate_agent::collectors::Collector;
 use xorgate_agent::ctx::NoopHooks;
@@ -158,9 +159,7 @@ async fn imu_scenarios_match_the_ts_collector() {
     let cases = fx["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 7);
     let logs: Logs = Arc::default();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(Capture(logs.clone())),
-    );
+    let _guard = log_capture::install(Capture(logs.clone()));
     let saved_path = std::env::var_os("PATH");
 
     for (ci, case) in cases.iter().enumerate() {

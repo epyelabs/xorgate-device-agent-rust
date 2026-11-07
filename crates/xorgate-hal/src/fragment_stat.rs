@@ -85,6 +85,7 @@ pub fn monotonic_ms() -> u64 {
     (hrtime_ns() / 1_000_000) as u64
 }
 
+#[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
 #[cfg(test)]
 mod tests {
     use super::*;

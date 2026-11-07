@@ -1,0 +1,30 @@
+# F-P6-ENV (Phase 6): every child process goes through
+# `xorgate_hal::child::{command, std_command}`, which keeps the agent's
+# systemd notify/watchdog variables out of the child's environment. Test
+# harnesses, build scripts and the replay rig (not the agent) opt out with an
+# explicit `#[allow(clippy::disallowed_methods)]`.
+# R-P6F-3 (review): the raw fork/exec family is banned too: a child started
+# with it inherits `environ`, notify keys included. Proven flagged, line by
+# line, by scripts/tests/clippy-ban-probe.sh (probe: crates/xorgate-hal/probes/).
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "use xorgate_hal::child::std_command (strips NOTIFY_SOCKET/WATCHDOG_PID/WATCHDOG_USEC, F-P6-ENV)" },
+  { path = "tokio::process::Command::new", reason = "use xorgate_hal::child::command (strips NOTIFY_SOCKET/WATCHDOG_PID/WATCHDOG_USEC, F-P6-ENV)" },
+  { path = "libc::fork", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::vfork", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::execv", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::execve", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::execvp", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::execvpe", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::fexecve", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::posix_spawn", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::posix_spawnp", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::system", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "libc::popen", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "nix::unistd::fork", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "nix::unistd::execv", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "nix::unistd::execve", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "nix::unistd::execvp", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "nix::unistd::execvpe", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "nix::unistd::fexecve", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+  { path = "nix::unistd::execveat", reason = "spawn through xorgate_hal::child (F-P6-ENV)" },
+]

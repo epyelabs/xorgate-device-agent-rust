@@ -10,6 +10,7 @@
 //! - a silent `127.0.0.1:8883` listener that accepts and never answers — the
 //!   TLS handshake hangs for the whole 30 s connection timeout, proving the
 //!   heartbeat is not starved by a stuck connect attempt.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::io::ErrorKind;
 use std::net::TcpListener;

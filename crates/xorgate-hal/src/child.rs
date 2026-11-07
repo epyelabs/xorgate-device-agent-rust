@@ -27,6 +27,7 @@
 //! own "python3 not found" line; this module still reports the truth and the
 //! caller decides (see `xorgate-agent::collectors::imu`).
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -168,12 +169,57 @@ impl Drop for ChildHandle {
     }
 }
 
+/// The variables systemd puts into the environment of a `Type=notify` unit
+/// with `WatchdogSec=` (`systemd.exec(5)`, "Environment Variables in Spawned
+/// Processes"). They are the AGENT's: only the main pid may notify
+/// (`NotifyAccess=main`), and `WATCHDOG_PID` names it. Phase 6 finding
+/// F-P6-ENV: a child that inherited them sent `sd_notify` on every OBD
+/// reconnect ("Got notification message from PID …, but reception only
+/// permitted for main PID", 56× in 33 min on PROD), and the KVS master's env
+/// was JS's 35 keys + these 3 (the JS unit is `Type=simple`: no notify env).
+pub const NOTIFY_ENV_KEYS: [&str; 3] = ["NOTIFY_SOCKET", "WATCHDOG_PID", "WATCHDOG_USEC"];
+
+/// THE constructor for every child process the agent (daemon or CLI) starts:
+/// `std::process::Command::new(program)` minus [`NOTIFY_ENV_KEYS`]
+/// (F-P6-ENV). Raw `Command::new` is a clippy `disallowed-methods` error
+/// everywhere else (`clippy.toml`), so no spawn site can forget it.
+///
+/// - Only the CHILD's environment changes: the agent's own keeps the three
+///   keys and goes on notifying the watchdog (`worker.rs` `sd_notify`).
+/// - A key is removed only when this process actually has it. With none of
+///   them set (no systemd: CLI from a shell, tests, the replay rig) the
+///   command is left untouched, so the child inherits `environ` verbatim, as
+///   before. When one is set, std materialises the child env with the key
+///   removed; std builds such an env from a sorted map, so the child's keys
+///   come out in byte order (a [`ChildSpec`] with `env` was already sorted
+///   for the same reason).
+#[allow(clippy::disallowed_methods)] // the one sanctioned `Command::new`
+pub fn std_command(program: impl AsRef<OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    strip_notify_env(&mut cmd, |k| std::env::var_os(k).is_some());
+    cmd
+}
+
+/// [`std_command`] as a tokio command (`kill_on_drop` etc. still apply).
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    Command::from(std_command(program))
+}
+
+/// Remove each [`NOTIFY_ENV_KEYS`] entry `present` says the parent has.
+fn strip_notify_env(cmd: &mut std::process::Command, present: impl Fn(&str) -> bool) {
+    for key in NOTIFY_ENV_KEYS {
+        if present(key) {
+            cmd.env_remove(key);
+        }
+    }
+}
+
 /// `runStream(cmd, args, {onStdout, onStderr})`: spawn and stream. Never
 /// fails synchronously — a spawn failure is a lone `Done` event.
 #[allow(unsafe_code)]
 pub fn spawn(spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEvent>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let mut cmd = Command::new(&spec.program);
+    let mut cmd = command(&spec.program);
     cmd.args(&spec.args)
         .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
@@ -463,5 +509,46 @@ mod tests {
             }
         }
         panic!("child {pid} survived the handle drop");
+    }
+
+    /// F-P6-ENV, pure part (no process-env mutation in this multi-threaded
+    /// test binary; the env-set cases run in `tests/child_env.rs`): every
+    /// key the parent has is removed, and nothing else is touched.
+    #[test]
+    fn strip_removes_exactly_the_present_notify_keys() {
+        #[allow(clippy::disallowed_methods)]
+        let mut cmd = std::process::Command::new("true");
+        strip_notify_env(&mut cmd, |_| true);
+        let got: Vec<_> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_str().unwrap().to_string(), v.is_none()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("NOTIFY_SOCKET".to_string(), true),
+                ("WATCHDOG_PID".to_string(), true),
+                ("WATCHDOG_USEC".to_string(), true),
+            ],
+            "three removals, no other env change"
+        );
+    }
+
+    /// With none of the keys set (no systemd) the command is untouched, so
+    /// the child inherits `environ` verbatim (order included).
+    #[test]
+    fn strip_is_a_no_op_without_the_keys() {
+        #[allow(clippy::disallowed_methods)]
+        let mut cmd = std::process::Command::new("true");
+        strip_notify_env(&mut cmd, |_| false);
+        assert_eq!(cmd.get_envs().count(), 0);
+        let mut only_socket = command("true");
+        strip_notify_env(only_socket.as_std_mut(), |k| k == "NOTIFY_SOCKET");
+        let keys: Vec<_> = only_socket
+            .as_std()
+            .get_envs()
+            .map(|(k, _)| k.to_owned())
+            .collect();
+        assert!(keys.iter().all(|k| k == "NOTIFY_SOCKET"), "{keys:?}");
     }
 }

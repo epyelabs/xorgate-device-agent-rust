@@ -367,7 +367,7 @@ struct SttyResult {
 /// `failed` with an EMPTY `stderr` (nothing was captured), so it lands on
 /// `stty failed: ` — not on the busy / vanished branches.
 async fn run_stty(argv: &[String]) -> SttyResult {
-    let mut cmd = tokio::process::Command::new(&argv[0]);
+    let mut cmd = crate::child::command(&argv[0]);
     cmd.args(&argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

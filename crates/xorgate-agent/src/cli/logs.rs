@@ -132,7 +132,7 @@ pub(crate) fn write_lines(lines: impl IntoIterator<Item = String>) -> std::io::R
 /// O9 fallback: replace this process with `journalctl` (found on `PATH`).
 fn exec_journal(n: f64, follow: bool) -> i32 {
     use std::os::unix::process::CommandExt;
-    let err = std::process::Command::new("journalctl")
+    let err = xorgate_hal::child::std_command("journalctl")
         .args(journal_args(n, follow))
         .exec();
     eprintln!("✗ journalctl: {err}");

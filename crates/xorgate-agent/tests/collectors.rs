@@ -20,6 +20,7 @@
 //! empty groups omitted, idle media, `sampleGroups`, the hardware-block gates.
 
 mod common;
+mod log_capture;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -31,7 +32,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing_subscriber::layer::{Context, Layer};
 use xorgate_agent::collectors::gps::{GpsCollector, GpsOptions};
 use xorgate_agent::collectors::imu::{ImuCollector, ImuIo};
 use xorgate_agent::collectors::lte::LteCollector;
@@ -83,10 +84,9 @@ impl<S: Subscriber> Layer<S> for Capture {
     }
 }
 
-fn capture() -> (Logs, tracing::subscriber::DefaultGuard) {
+fn capture() -> (Logs, log_capture::CaptureGuard) {
     let logs: Logs = Arc::default();
-    let sub = tracing_subscriber::registry().with(Capture(logs.clone()));
-    (logs, tracing::subscriber::set_default(sub))
+    (logs.clone(), log_capture::install(Capture(logs)))
 }
 
 fn warns_since(logs: &Logs, from: usize) -> Vec<String> {
