@@ -766,9 +766,16 @@ pub const TAKEOVER_INFLIGHT_LEAD_MS: u64 = 8_000;
 /// Held far past the handoff (the SIGKILL lands inside it; both agents' PUT
 /// timeouts are 60 s, `s3-put.ts:23-24,115`).
 pub const TAKEOVER_INFLIGHT_HOLD_MS: u64 = 20_000;
-/// After the restart the next agent meets this much more outage (tape time
-/// is frozen across the handoff), then a healthy bucket.
-pub const TAKEOVER_OUTAGE_TAIL_MS: u64 = 10_000;
+/// How far past the handoff (tape time is frozen across it) the outage
+/// lasts. 0 (L5 2026-11-07): the bucket is healthy again by the time the next
+/// agent boots, so its first drain of the inherited backlog lands inside the
+/// boot's startup window. With a 10 s tail each side drained ~12 s after the
+/// restart on its OWN retry timer and its 1 Hz tick sampled the ~100 ms drain
+/// at a different point (`recording.backlogSegments` 12 vs 9, both ticks
+/// `uploading: true`) — a timing race no row covers, so the tape avoids it.
+/// The cost: the next agent never meets 503s on the inherited backlog (an
+/// Unverified item of P3a-takeover.md).
+pub const TAKEOVER_OUTAGE_TAIL_MS: u64 = 0;
 
 /// `meta.rig` of a P3a tape: `handoff {atMs, segMs, expect}` + the fake-S3
 /// outage. `expect` names `takeover::classes` aggregates (signal-independent:

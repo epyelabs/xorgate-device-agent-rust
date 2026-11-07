@@ -107,6 +107,8 @@ pub struct MediaCapture {
     /// Phase 5b WP4: every live telemetry tick's `metrics.system.health_flags`
     /// value TEXT `(ts, value)` (the agent's own LED state over time).
     pub live_flags: Vec<(i64, String)>,
+    /// P3a D59: the same for `metrics.system.led_state` (value TEXT).
+    pub live_led: Vec<(i64, String)>,
     /// `(ts, "<level>: <msg>")` of every `power shed →` event seen in the
     /// state.json snapshots (`files.ndjson`; T8/d30-js-reference).
     pub shed_events: Vec<(i64, String)>,
@@ -731,6 +733,7 @@ impl MediaCapture {
         }
         let mut last_tick_backlog = None;
         let mut live_flags = Vec::new();
+        let mut live_led = Vec::new();
         let end_backlog = std::fs::read(dir.join("final/state.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -760,6 +763,12 @@ impl MediaCapture {
             ) {
                 live_flags.push((ts, f.to_string()));
             }
+            if let (Some(ts), Some(f)) = (
+                p["ts"].as_i64(),
+                p.pointer("/metrics/system/led_state/value"),
+            ) {
+                live_led.push((ts, f.to_string()));
+            }
             if prev.as_ref().is_some_and(|q| *q != cur) {
                 shed_changes.push(v["w"].as_i64().unwrap_or(0));
             }
@@ -780,6 +789,7 @@ impl MediaCapture {
             shed_changes,
             last_tick_backlog,
             live_flags,
+            live_led,
             end_backlog,
             shed_events,
             nmea_reads: nmea_lines(&tape, None),
@@ -1586,6 +1596,61 @@ fn system_less_transients(p: &str, steps: &[Step], other: &[LeafSample]) -> Vec<
         .collect()
 }
 
+/// The LED/health leaves D59 may apply to (agent-computed on the LED
+/// heartbeat, ts:src/worker.ts:703-705, ts:src/lib/led-state.ts:223-253).
+const D59_LEAVES: &[&str] = &[
+    "metrics.system.health_flags.value",
+    "metrics.system.led_state.value",
+];
+
+/// P3a D59 (accepted-divergences.md): `Some(steps to drop, per side)` when
+/// the two value sequences of an LED/health leaf differ ONLY by one-sample
+/// states the RUST side recorded where the JS sample nearest it (≤ 500 ms)
+/// carried no `system` (D30, `d30_js_system_less_value`: its neighbours do),
+/// AND both sides' live telemetry carried that exact value text within
+/// ±1 000 ms of the Rust sample (`led_state_both_held`'s window: the JS LED
+/// held it too). Never Rust-lacking, never JS-vs-JS / Rust-vs-Rust, never
+/// another leaf, never a state held two samples.
+fn d59_hidden_led_states(
+    p: &str,
+    kinds: (&str, &str),
+    (sa, sb): (&[Step], &[Step]),
+    (la, lb): (&[LeafSample], &[LeafSample]),
+    (live_a, live_b): (LiveSeries, LiveSeries),
+) -> Option<Vec<(bool, Step)>> {
+    if !D59_LEAVES.contains(&p) {
+        return None;
+    }
+    // (holder steps, lacker samples, holder is A)
+    let (hold, lack, a_holds) = match kinds {
+        ("rust", "js") => (sa, lb, true),
+        ("js", "rust") => (sb, la, false),
+        _ => return None,
+    };
+    let near = |l: &[(i64, String)], ts: i64, v: &str| {
+        l.iter().any(|(t, x)| (t - ts).abs() <= 1_000 && x == v)
+    };
+    let drop: Vec<usize> = system_less_transients(p, hold, lack)
+        .into_iter()
+        .filter(|&i| near(live_a, hold[i].2, &hold[i].0) && near(live_b, hold[i].2, &hold[i].0))
+        .collect();
+    if drop.is_empty() {
+        return None;
+    }
+    let keep = |st: &[Step], d: &[usize]| -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for (i, s) in st.iter().enumerate() {
+            if !d.contains(&i) && v.last() != Some(&s.0) {
+                v.push(s.0.clone());
+            }
+        }
+        v
+    };
+    let other = if a_holds { sb } else { sa };
+    (keep(hold, &drop) == keep(other, &[]))
+        .then(|| drop.iter().map(|&i| (a_holds, hold[i].clone())).collect())
+}
+
 fn d30_js_system_less_value(p: &str, lack: &[LeafSample], step: &Step) -> bool {
     if !p.starts_with("metrics.system.") {
         return false;
@@ -1645,6 +1710,7 @@ fn rec_values(
         rep,
         (None, None),
         (&[], &[]),
+        (&[], &[]),
     )
 }
 
@@ -1664,6 +1730,7 @@ fn rec_values_m(
         Option<&xorgate_core::orientation::ImuMount>,
     ),
     live: (LiveSeries, LiveSeries),
+    live_led: (LiveSeries, LiveSeries),
 ) {
     let id = "T4/rec-sample";
     let d30_gap_row = table
@@ -1679,6 +1746,13 @@ fn rec_values_m(
         .cloned();
     let d30_js_nosys_row = table
         .matcher_rows("d30_js_system_less_value", "rec-telemetry")
+        .first()
+        .cloned();
+    // P3a D59 (inert until its row exists in tolerances.toml): a one-sample
+    // LED/health state the RUST recorder wrote where the JS sample nearest it
+    // was a D30 system-less one, and both agents' LIVE telemetry carried it.
+    let d59_row = table
+        .matcher_rows("d59_js_system_less_led", "rec-telemetry")
         .first()
         .cloned();
     let collision = row_tol(table, id, "collisionMs", 0.0) as i64;
@@ -1857,6 +1931,31 @@ fn rec_values_m(
                             };
                             rep.push(mm("rec-telemetry", &at, &format!("{p}(values)"), x, y, rid));
                         }
+                    }
+                    continue;
+                }
+            }
+            // P3a D59: JS (lacking) vs Rust (holding) only, the LED/health
+            // leaves only: a Rust one-sample state hidden on the JS side by a
+            // D30 system-less sample (`d30_js_system_less_value`), which BOTH
+            // sides' live telemetry carried within ±1 s (`led_state_both_held`
+            // window). Every such transient removed, the sequences must be
+            // EQUAL; anything else stays judged below.
+            if let Some(rid) = d59_row.as_ref() {
+                let lv = if p.ends_with("led_state.value") {
+                    live_led
+                } else {
+                    live
+                };
+                if let Some(drops) = d59_hidden_led_states(p, kinds, (&sa, &sb), (&la, &lb), lv) {
+                    for (side_a, st) in drops {
+                        let f = format!("{}×{}@{}", st.0, st.1, st.2);
+                        let (x, y) = if side_a {
+                            (f, String::new())
+                        } else {
+                            (String::new(), f)
+                        };
+                        rep.push(mm("rec-telemetry", &at, &format!("{p}(values)"), x, y, rid));
                     }
                     continue;
                 }
@@ -3488,6 +3587,7 @@ pub fn diff_media(
             rep,
             (a.imu_mount.as_ref(), b.imu_mount.as_ref()),
             (&a.live_flags, &b.live_flags),
+            (&a.live_led, &b.live_led),
         );
     }
 
@@ -4466,6 +4566,103 @@ fn d30_js_spawn_tick(a: &MediaCapture, b: &MediaCapture, rep: &Report) -> BTreeS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P3a D59: the L1 2026-11-07 shape (a JR handoff, the Rust incarnation
+    /// after the restart): Rust records hf 16 for ONE sample while its LED
+    /// held no-fix; the JS sample nearest it carried no `system` (D30) and
+    /// both live series carried 16 within 1 s. NEGATIVES: JS holding / Rust
+    /// lacking, JS-vs-JS, another leaf, a two-sample state, a JS sample that
+    /// HAS system, a value the JS live telemetry never carried, and any
+    /// other remaining difference all stay judged (None).
+    #[test]
+    fn d59_only_a_rust_one_sample_led_state_hidden_by_a_js_system_less_sample() {
+        let hf = "metrics.system.health_flags.value";
+        let smp = |ts: i64, v: Option<&str>| -> LeafSample {
+            let mut o = BTreeMap::from([("metrics.gps.fix.value".to_string(), "3".to_string())]);
+            if let Some(v) = v {
+                o.insert(hf.to_string(), v.to_string());
+            }
+            (ts, o)
+        };
+        let steps = |l: &[LeafSample]| -> Vec<Step> {
+            let mut v: Vec<Step> = Vec::new();
+            for (ts, o) in l {
+                if let Some(t) = o.get(hf) {
+                    match v.last_mut() {
+                        Some(s) if s.0 == *t => s.1 += 1,
+                        _ => v.push((t.clone(), 1, *ts)),
+                    }
+                }
+            }
+            v
+        };
+        let rust = vec![
+            smp(814, Some("0")),
+            smp(1_817, Some("16")),
+            smp(2_812, Some("0")),
+            smp(3_817, Some("0")),
+        ];
+        let js = vec![
+            smp(1_133, Some("0")),
+            smp(2_130, None),
+            smp(3_125, Some("0")),
+            smp(4_127, Some("0")),
+        ];
+        let live_r = vec![(915, "16".to_string()), (1_919, "0".to_string())];
+        let live_j = vec![(1_282, "16".to_string()), (2_287, "0".to_string())];
+        let run = |kinds: (&str, &str),
+                   p: &str,
+                   a: &[LeafSample],
+                   b: &[LeafSample],
+                   la: &[(i64, String)],
+                   lb: &[(i64, String)]| {
+            d59_hidden_led_states(p, kinds, (&steps(a), &steps(b)), (a, b), (la, lb))
+        };
+        let ok = run(("rust", "js"), hf, &rust, &js, &live_r, &live_j).unwrap();
+        assert_eq!(ok, vec![(true, ("16".to_string(), 1, 1_817))]);
+        // Either column order.
+        assert!(run(("js", "rust"), hf, &js, &rust, &live_j, &live_r).is_some());
+        // NEGATIVE: JS holding, Rust lacking (Rust never drops `system`).
+        assert!(run(("js", "rust"), hf, &rust, &js, &live_r, &live_j).is_none());
+        // NEGATIVE: JS-vs-JS / Rust-vs-Rust; another leaf.
+        assert!(run(("js", "js"), hf, &rust, &js, &live_r, &live_j).is_none());
+        assert!(run(("rust", "rust"), hf, &rust, &js, &live_r, &live_j).is_none());
+        assert!(run(
+            ("rust", "js"),
+            "metrics.system.rail_5v.value",
+            &rust,
+            &js,
+            &live_r,
+            &live_j
+        )
+        .is_none());
+        // NEGATIVE: the state held two Rust samples.
+        let two = vec![
+            smp(814, Some("0")),
+            smp(1_817, Some("16")),
+            smp(2_812, Some("16")),
+            smp(3_817, Some("0")),
+        ];
+        assert!(run(("rust", "js"), hf, &two, &js, &live_r, &live_j).is_none());
+        // NEGATIVE: the nearest JS sample HAS system (it recorded 0, not 16).
+        let js_sys = vec![
+            smp(1_133, Some("0")),
+            smp(2_130, Some("0")),
+            smp(3_125, Some("0")),
+        ];
+        assert!(run(("rust", "js"), hf, &rust, &js_sys, &live_r, &live_j).is_none());
+        // NEGATIVE: the JS live telemetry never carried 16 near it.
+        let live_j0 = vec![(1_282, "0".to_string())];
+        assert!(run(("rust", "js"), hf, &rust, &js, &live_r, &live_j0).is_none());
+        // NEGATIVE: another difference remains after the drop.
+        let rust_more = vec![
+            smp(814, Some("0")),
+            smp(1_817, Some("16")),
+            smp(2_812, Some("0")),
+            smp(3_817, Some("64")),
+        ];
+        assert!(run(("rust", "js"), hf, &rust_more, &js, &live_r, &live_j).is_none());
+    }
 
     /// P3a R1 (rig rule, NOT a tolerance): a child alive when the rig's
     /// handoff stop signalled it ends `handoff:<sig>` (the RIG did it, like
