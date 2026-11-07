@@ -46,6 +46,10 @@ class Side:
             {"k": "line", "pid": 77, "fd": 1, "line": "New clock: GstSystemClock", "w": playing},
         ]
         self.cars = {}
+        self.mp4s = None  # None = one non-empty mp4 per sidecar
+
+    def eos(self, w):
+        self.shim.append({"k": "line", "pid": 77, "fd": 1, "line": "handling interrupt.", "w": w})
 
     def host_line(self, n, frame_wall, lag, f0_mono=5_000_000_000, mono_off_ms=0):
         """The host's XG-FRAGMENT for fragment n whose first frame is at
@@ -64,6 +68,10 @@ class Side:
         with open(os.path.join(self.dir, "shim.ndjson"), "w") as f:
             for v in self.shim:
                 f.write(json.dumps(v) + "\n")
+        seqs = sorted(self.cars) if self.mp4s is None else self.mp4s
+        files = {"video/cam0/%s/%05d.mp4" % (SID, q): {"size": 100} for q in seqs}
+        with open(os.path.join(self.dir, "recordings.json"), "w") as f:
+            json.dump({"files": files}, f)
         for n, (st, anchor, where) in self.cars.items():
             d = os.path.join(self.dir, where, SID)
             os.makedirs(d, exist_ok=True)
@@ -172,7 +180,7 @@ class T(unittest.TestCase):
         # The stop's EOS < 1 GOP after fragment 4's rotation: its file opens
         # at the EOS flush, +700 ms after its frame. Last fragment only;
         # never later than the band; a middle fragment at +700 still FAILS.
-        def side(seq_off):
+        def side(seq_off, eos=709, mp4s=None):
             shutil.rmtree(self.tmp, ignore_errors=True)
             os.makedirs(self.tmp)
             s = Side(self.tmp, tool="gst-launch-1.0")
@@ -180,6 +188,9 @@ class T(unittest.TestCase):
                 frame = P + 9 + k * SEG * 1000
                 d = seq_off.get(k, 2_050)
                 s.car(k, (frame + d) if k else (P + 9 + 2_050), "boundary" if k == 0 else "fstat")
+            if eos is not None:
+                s.eos(P + 4 * SEG * 1000 + eos)
+            s.mp4s = mp4s
             return s
         r = self.run_check(side({4: 700}))
         self.assertEqual(r["verdict"], "PASS", r)
@@ -187,6 +198,15 @@ class T(unittest.TestCase):
         self.assertEqual(self.run_check(side({2: 700}))["verdict"], "FAIL")
         self.assertEqual(self.run_check(side({4: 2_600}))["verdict"], "FAIL")
         self.assertEqual(self.run_check(side({4: -20}))["verdict"], "FAIL")
+        # WP3 review F4: the last SIDECAR is not the last mp4 (a later mp4
+        # lost its sidecar) -> not a cut -> FAILS.
+        self.assertEqual(self.run_check(side({4: 700}, mp4s=[0, 1, 2, 3, 4, 5]))["verdict"], "FAIL")
+        # The stop came one GOP or more after the rotation keyframe -> FAILS.
+        self.assertEqual(self.run_check(side({4: 700}, eos=2_100))["verdict"], "FAIL")
+        # The file did not open at the stop (|d - e| > slack) -> FAILS.
+        self.assertEqual(self.run_check(side({4: 700}, eos=400))["verdict"], "FAIL")
+        # No stop line at all -> FAILS.
+        self.assertEqual(self.run_check(side({4: 700}, eos=None))["verdict"], "FAIL")
 
     def test_gaps_mixed_sessions_and_min_fragments_fail(self):
         s = exact_side(self.tmp)

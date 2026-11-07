@@ -108,6 +108,7 @@ def sessions_of(shim):
             "seg_s": int(mst) / 1e9,
             "fps": fps_of(argv),
             "playing_shim": None,
+            "eos_shim": None,
             "lines": [],
         }
     for v in shim:
@@ -117,6 +118,10 @@ def sessions_of(shim):
         line = v.get("line", "")
         if "New clock:" in line and s["playing_shim"] is None:
             s["playing_shim"] = v.get("w")
+        # The stop's instant as the shim's tee saw it (SIGINT handled, or the
+        # EOS itself): bounds the legacy `cut` class (WP3 review F4).
+        if ("handling interrupt" in line or "Got EOS" in line) and s["eos_shim"] is None:
+            s["eos_shim"] = v.get("w")
         if v.get("fd") == 1 and line.startswith(FRAG_PREFIX):
             try:
                 s["lines"].append(json.loads(line[len(FRAG_PREFIX):]))
@@ -146,7 +151,22 @@ def sidecars_of(side_dir):
     return found
 
 
-def check_session(s, starts, anchors, min_fragments, expect=None):
+def last_mp4s(side_dir):
+    """{sid: the highest seq of a NON-EMPTY mp4 the player ever saw} from the
+    side's recordings.json (empty when absent: then no fragment is a `cut`)."""
+    out = {}
+    try:
+        files = json.load(open(os.path.join(side_dir, "recordings.json"), encoding="utf-8"))["files"]
+    except (OSError, ValueError, KeyError):
+        return out
+    for rel, st in files.items():
+        m = re.search(r"/([^/]+)/(\d{5})\.mp4$", rel)
+        if m and (st or {}).get("size", 0) > 0:
+            out[m.group(1)] = max(out.get(m.group(1), -1), int(m.group(2)))
+    return out
+
+
+def check_session(s, starts, anchors, min_fragments, expect=None, last_mp4=None):
     """One session: `starts` {seq: startTs}, `anchors` {seq: anchor or None}.
     `expect` ("exact" | "legacy"): the mode the RUN was configured for (WP3
     review F1); every fragment must then be of that kind. `None` infers it
@@ -191,9 +211,20 @@ def check_session(s, starts, anchors, min_fragments, expect=None):
             # The session's LAST fragment, cut by the stop's EOS less than one
             # GOP after its rotation keyframe, is created when splitmuxsink
             # flushes that partial GOP at EOS, i.e. EARLIER than one GOP after
-            # its first frame (K6(a): +404 / +702 ms on Rust, +1879 on JS).
-            # Its first frame is still at N x step; only the file opened early.
-            cut = q == max(starts) and 0 <= d_shim < LEGACY_LAG_MS - LEGACY_BAND_MS
+            # its first frame (K6(a): +404 / +702 ms on Rust). Its first frame
+            # is still at N x step; only the file opened early. WP3 review F4:
+            # "last" is the session's last NON-EMPTY mp4 (recordings.json, not
+            # the last sidecar), the shim's stop instant e = eos − expected(N)
+            # lies in [0, one GOP), and the file opened at it (|d − e| ≤ slack).
+            e = None if s.get("eos_shim") is None else s["eos_shim"] - (p_shim + q * step_ms)
+            cut = (
+                last_mp4 is not None
+                and q == last_mp4
+                and 0 <= d_shim < LEGACY_LAG_MS - LEGACY_BAND_MS
+                and e is not None
+                and 0 <= e < GOP_S * 1000
+                and abs(d_shim - e) <= SLACK_MS
+            )
             if cut:
                 row["cut"] = True
             elif abs(d_shim - LEGACY_LAG_MS) > LEGACY_BAND_MS:
@@ -220,6 +251,7 @@ def check(side_dir, source="sidecars", min_fragments=1, expect=None):
     shim = read_ndjson(os.path.join(side_dir, "shim.ndjson"))
     sess = sessions_of(shim)
     cars = sidecars_of(side_dir) if source == "sidecars" else {}
+    last_mp4 = last_mp4s(side_dir)
     out = []
     for pid in sorted(sess):
         s = sess[pid]
@@ -233,7 +265,7 @@ def check(side_dir, source="sidecars", min_fragments=1, expect=None):
         if not starts:
             out.append({"pid": pid, "sid": s["sid"], "tool": s["tool"], "verdict": "SKIP", "why": "no fragments", "rows": []})
             continue
-        r = check_session(s, starts, anchors, min_fragments, expect)
+        r = check_session(s, starts, anchors, min_fragments, expect, last_mp4.get(s["sid"]))
         r.update({"pid": pid, "sid": s["sid"], "tool": s["tool"], "seg_s": s["seg_s"]})
         out.append(r)
     return out
