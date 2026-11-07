@@ -269,7 +269,7 @@ fn install_sync_handler(
     let weak = pipeline.downgrade();
     let sh = shared.clone();
     bus.set_sync_handler(move |_bus, msg| {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contain((), || {
             let Some(p) = weak.upgrade() else { return };
             match msg.view() {
                 gst::MessageView::StateChanged(sc) if is_from(msg, &p) => {
@@ -312,9 +312,21 @@ fn install_sync_handler(
                 }
                 _ => {}
             }
-        }));
+        });
         gst::BusSyncReply::Pass
     });
+}
+
+/// R-WP1-2: every closure the host hands to GStreamer (the bus sync handler,
+/// `format-location-full`, the diag pad probes) runs its body through this.
+/// A panic there would otherwise unwind into C ("panic in a function that
+/// cannot unwind": SIGABRT, the pipeline dead, the last fragment lost). Here
+/// it is caught and `fallback` returned; the callback's fixed return value
+/// (`Pass`, NULL, `Ok`) then keeps the pipeline running, and a timing
+/// callback's fragment keeps the legacy anchors. Rust's default panic hook
+/// still prints its `thread '…' panicked at …` lines on stderr (D52).
+pub(crate) fn contain<R>(fallback: R, f: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
 }
 
 struct Launch {
@@ -611,9 +623,12 @@ impl Launch {
     /// build the rig transcripts 1 (`SigCgt@after_intr`) and 2b (death by the
     /// second SIGINT) PASS with this order (2 × 15/15). The window is the
     /// same mechanism as gst-launch's but narrower (the host's print → post →
-    /// removal is a few µs; GLib's return-and-remove ~50-75 µs: a second
-    /// SIGINT 15-43 µs after the line was swallowed 4/10 by gst-launch, 0/10
-    /// by the host): timing only, not an ordering difference.
+    /// removal is a few µs; GLib's return-and-remove takes ~0.05-0.4 ms,
+    /// load-dependent: at load ~9 gst-launch swallowed a second SIGINT sent
+    /// 15-43 µs after the line 4/10 times (WP1) and up to ~431 µs after it
+    /// 6/8 times (review-wp1), the host 0/18): timing only, not an ordering
+    /// difference, and consumer-invisible (the agent sends ONE SIGINT, then
+    /// SIGKILL after its 10 s grace).
     fn intr_handler(&mut self) {
         print("handling interrupt.\n");
         let s = gst::Structure::builder("GstLaunchInterrupt")

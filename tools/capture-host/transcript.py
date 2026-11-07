@@ -95,8 +95,9 @@ def scenarios():
             # ~1 ms after the line: both programs remove the watch only after
             # printing `handling interrupt.` and posting the interrupt (the
             # host since WP1, mutation MH), so a second SIGINT inside that
-            # window is SWALLOWED (gst-launch's window ~50-75 µs, the host's a
-            # few µs; d50probe.py). How many tail lines print before death is
+            # window is SWALLOWED (gst-launch's window ~0.05-0.4 ms, load-
+            # dependent, up to ~431 µs seen at load ~9; the host's a few µs;
+            # d50probe.py). How many tail lines print before death is
             # timing-only in both, so only the stdout AFTER the line is
             # waived (R-WP0-8); everything through it is compared exactly.
             racy_tail={"1": r"^handling interrupt\.$"},

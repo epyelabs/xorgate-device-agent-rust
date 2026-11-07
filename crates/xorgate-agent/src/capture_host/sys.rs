@@ -177,17 +177,22 @@ fn wait_loop() {
     loop {
         // sigwait on signals this thread (and every other) blocks.
         if let Ok(sig) = set.wait() {
-            let sig = sig as i32;
-            let bit = if sig == libc::SIGINT { 1 } else { 2 };
-            if FWD.fetch_and(!bit, Ordering::SeqCst) & bit != 0 {
-                // Forwarded by `watched_handler`: a signal GLib's handler
-                // would have caught. (A genuine one coalesced with it is
-                // handled the same way: a µs-wide double race.)
-                deliver_late(sig);
-            } else {
-                deliver(sig);
-            }
+            on_waited(sig as i32);
         }
+    }
+}
+
+/// One signal `sigwait` returned on the wait thread (R-WP1-3: the unit the
+/// tests drive). Forwarded by `watched_handler` (its [`FWD`] bit set): a
+/// signal GLib's handler would have caught, so never fatal
+/// ([`deliver_late`]). (A genuine one coalesced with it is handled the same
+/// way: a µs-wide double race.) Otherwise a genuine signal ([`deliver`]).
+fn on_waited(sig: i32) {
+    let bit = if sig == libc::SIGINT { 1 } else { 2 };
+    if FWD.fetch_and(!bit, Ordering::SeqCst) & bit != 0 {
+        deliver_late(sig);
+    } else {
+        deliver(sig);
     }
 }
 
@@ -693,6 +698,82 @@ mod tests {
         assert_eq!(got, Ok(libc::SIGHUP), "the signal was not forwarded");
         assert_eq!(FWD.swap(0, Ordering::SeqCst), 2);
         assert_eq!(take_late(), Vec::<i32>::new());
+        testing::reset();
+    }
+
+    /// Runs `name` (this test binary's own test) in a child process with
+    /// `XG_SYS_CHILD=1` and returns its exit status: a test whose failure
+    /// mode is "the process dies by a signal" then FAILS BY ASSERTION here.
+    fn in_child(name: &str) -> (std::process::ExitStatus, String) {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--test-threads=1", "--nocapture"])
+            .env("XG_SYS_CHILD", "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        (out.status, text)
+    }
+
+    /// R-WP1-3: the wait thread's FORWARDED branch. A SIGINT that
+    /// `watched_handler` caught on another thread and forwarded (FWD set)
+    /// after the watch is gone (OFF) is SWALLOWED — never the default action
+    /// — and one forwarded while ARMED is dispatched. Run in a child so a
+    /// regression (treating it as genuine → death by SIGINT) fails by
+    /// assertion.
+    #[test]
+    fn a_forwarded_signal_is_never_fatal() {
+        const NAME: &str = "capture_host::sys::tests::a_forwarded_signal_is_never_fatal";
+        if std::env::var_os("XG_SYS_CHILD").is_none() {
+            let (st, out) = in_child(NAME);
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                st.signal(),
+                None,
+                "the child died by a signal: {st:?}\n{out}"
+            );
+            assert!(st.success(), "{st:?}\n{out}");
+            assert!(out.contains("1 passed"), "{out}");
+            return;
+        }
+        let _g = testing::lock();
+        testing::reset();
+        let bus = test_bus();
+        *POST.lock().unwrap() = Some(bus.clone());
+        // Watch gone + forwarded: swallowed.
+        FWD.store(1, Ordering::SeqCst);
+        on_waited(libc::SIGINT);
+        assert_eq!(signal_messages(&bus), Vec::<i32>::new());
+        assert_eq!(
+            FWD.load(Ordering::SeqCst),
+            0,
+            "the FWD bit was not consumed"
+        );
+        // Watch armed + forwarded: dispatched once.
+        INTR.store(ARMED, Ordering::SeqCst);
+        FWD.store(1, Ordering::SeqCst);
+        on_waited(libc::SIGINT);
+        assert_eq!(signal_messages(&bus), vec![libc::SIGINT]);
+        testing::reset();
+    }
+
+    /// D47 pinned: a SIGHUP that arrives while its dispatch is pending (i.e.
+    /// during `hup_handler`, before `dispatched`) COALESCES (no second post);
+    /// after `dispatched` the watch is armed again and the next one posts.
+    /// (GLib clears its pending flag before the callback and re-dispatches.)
+    #[test]
+    fn d47_a_sighup_during_its_dispatch_coalesces() {
+        let _g = testing::lock();
+        testing::reset();
+        let bus = test_bus();
+        *POST.lock().unwrap() = Some(bus.clone());
+        HUP.store(ARMED, Ordering::SeqCst);
+        deliver(libc::SIGHUP);
+        deliver(libc::SIGHUP); // "during hup_handler"
+        assert_eq!(signal_messages(&bus), vec![libc::SIGHUP]);
+        dispatched(libc::SIGHUP);
+        deliver(libc::SIGHUP);
+        assert_eq!(signal_messages(&bus), vec![libc::SIGHUP]);
         testing::reset();
     }
 

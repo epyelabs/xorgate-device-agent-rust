@@ -77,10 +77,10 @@ impl Diag {
                     pad.add_probe(
                         gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
                         move |_, _| {
-                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            super::contain((), || {
                                 let ns = u64::try_from(epoch.elapsed().as_nanos()).unwrap_or(1);
                                 bb.last_ns.store(ns.max(1), Ordering::Relaxed);
-                            }));
+                            });
                             gst::PadProbeReturn::Ok
                         },
                     );

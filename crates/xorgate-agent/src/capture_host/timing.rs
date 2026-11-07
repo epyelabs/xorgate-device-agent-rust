@@ -12,20 +12,30 @@
 //!   (clean EOS), for the last opened id.
 //! - Both callbacks run on streaming threads, under splitmuxsink's own lock:
 //!   they never block, never call into splitmuxsink, take no lock the bus
-//!   loop holds, do no I/O and are `catch_unwind`ed. They hand the formatted
-//!   line to the bus loop as an application message ([`TIMING_MESSAGE`]); the
-//!   loop (main thread) is the only writer of stdout.
+//!   loop holds and do no I/O. Their bodies run inside [`super::contain`]
+//!   (`catch_unwind`): a panic is a legacy fallback for that fragment, never
+//!   an abort of the host. They hand the formatted line to the bus loop as
+//!   an application message ([`TIMING_MESSAGE`]); the loop (main thread) is
+//!   the only writer of the TIMING lines. (Stdout has one other writer: the
+//!   WP0 sync handler prints gst-launch's `An error happened while waiting
+//!   for EOS` from the posting thread, as gst-launch does. Every print is one
+//!   locked `write_all` + `flush` of a whole line, so lines never interleave.)
 //! - Clock precondition (R5), checked ONCE per run, at PLAYING: the pipeline
 //!   clock is a `GstSystemClock` with `clock-type=monotonic` (CLOCK_MONOTONIC,
 //!   the agent's `hrtime_ns` frame). Otherwise no timing line is emitted and
 //!   one stderr line says why. "At PLAYING" is whichever comes first: the
 //!   pipeline's PLAYING state-change message (bus sync handler), or the first
-//!   `format-location-full`. Measured on the rig (WP1): fragment 0 is opened
-//!   at its FIRST frame, ~10-20 ms after the source starts, i.e. DURING the
-//!   PAUSED→PLAYING transition and before the pipeline posts its PLAYING
-//!   message; the clock and `base_time` are already distributed then
-//!   (GstPipeline sets both before its children go to PLAYING). Fragments
-//!   N ≥ 1 open one GOP late (lag ≈ 2.0 s at 720p15).
+//!   `format-location-full` that finds a pipeline clock. Measured on the rig
+//!   (WP1): with a LIVE (or sync-held, e.g. `identity sync=true`) head,
+//!   fragment 0 is opened at its FIRST frame, ~10-20 ms after the source
+//!   starts, i.e. DURING the PAUSED→PLAYING transition and before the
+//!   pipeline posts its PLAYING message; the clock and `base_time` are
+//!   already distributed then (GstPipeline sets both before its children go
+//!   to PLAYING). A NON-live head that pre-rolls into splitmuxsink opens
+//!   fragment 0 in PAUSED, while the pipeline has NO clock yet: that
+//!   fragment gets no stamp (legacy anchors), nothing is decided, and the
+//!   check runs at the PLAYING message or the next callback (R-WP1-1).
+//!   Fragments N ≥ 1 open one GOP late (lag ≈ 2.0 s at 720p15).
 //! - Guard (§Design 8.2): [`capture_timing::lag_in_guard`]. A rejected stamp
 //!   is not emitted (that fragment keeps the legacy anchors); the first
 //!   rejection of a run prints one stderr line.
@@ -109,19 +119,30 @@ impl Timing {
         let me = self.clone();
         let weak = pipeline.downgrade();
         splitmux.connect("format-location-full", false, move |args| {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let id = args.get(1).and_then(|v| v.get::<u32>().ok());
-                let sample = args
-                    .get(2)
-                    .and_then(|v| v.get::<Option<gst::Sample>>().ok());
-                if let (Some(id), Some(Some(sample)), Some(p)) = (id, sample, weak.upgrade()) {
-                    if let Some(ev) = me.on_fragment_opened(id, &sample, &p) {
-                        post(&p, ev);
-                    }
-                }
-            }));
-            Some(None::<String>.to_value())
+            me.location_handler(&weak, args)
         });
+    }
+
+    /// The `format-location-full` handler body: stamp (contained), then
+    /// ALWAYS return a NULL string, so splitmuxsink falls back to its
+    /// `location` (`%05d.mp4`) whatever happened inside.
+    pub fn location_handler(
+        &self,
+        weak: &gst::glib::WeakRef<gst::Element>,
+        args: &[gst::glib::Value],
+    ) -> Option<gst::glib::Value> {
+        super::contain((), || {
+            let id = args.get(1).and_then(|v| v.get::<u32>().ok());
+            let sample = args
+                .get(2)
+                .and_then(|v| v.get::<Option<gst::Sample>>().ok());
+            if let (Some(id), Some(Some(sample)), Some(p)) = (id, sample, weak.upgrade()) {
+                if let Some(ev) = self.on_fragment_opened(id, &sample, &p) {
+                    post(&p, ev);
+                }
+            }
+        });
+        Some(None::<String>.to_value())
     }
 
     /// The PLAYING check (R5), once per run: the bus SYNC handler calls it on
@@ -160,6 +181,16 @@ impl Timing {
         self.last_open.store(i64::from(id), Ordering::SeqCst);
         if let Some(p) = sample.caps().and_then(frame_period_ns) {
             self.frame_period_ns.store(p, Ordering::SeqCst);
+        }
+        #[cfg(test)]
+        if id == tests::PANIC_ID {
+            panic!("injected format-location-full panic (test)");
+        }
+        // R-WP1-1: a non-live head pre-rolling into splitmuxsink opens
+        // fragment 0 in PAUSED, before the pipeline has a clock. Skip THAT
+        // fragment's stamp without deciding the run's precondition.
+        if self.clock.load(Ordering::SeqCst) == CLOCK_UNKNOWN && pipeline.clock().is_none() {
+            return None;
         }
         if let Some(line) = self.on_playing(pipeline) {
             return Some(Event::ClockOff(line));
@@ -342,6 +373,109 @@ pub fn decode(s: &gst::StructureRef) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fragment id that makes `on_fragment_opened` panic (tests only).
+    pub(super) const PANIC_ID: u32 = 0x00de_ad00;
+
+    fn playing(desc: &str) -> gst::Element {
+        let p: gst::Element = gst::parse::launch(desc).unwrap();
+        p.set_state(gst::State::Playing).unwrap();
+        let _ = p.state(gst::ClockTime::from_seconds(5));
+        p
+    }
+
+    fn sample_at(pts: gst::ClockTime) -> gst::Sample {
+        let mut buf = gst::Buffer::new();
+        buf.get_mut().unwrap().set_pts(pts);
+        gst::Sample::builder()
+            .buffer(&buf)
+            .segment(&gst::FormattedSegment::<gst::ClockTime>::new())
+            .build()
+    }
+
+    /// R-WP1-2: `contain` turns a panic into its fallback (no unwind
+    /// escapes); a normal body returns its own value.
+    #[test]
+    fn contain_turns_a_panic_into_the_fallback() {
+        let r = std::panic::catch_unwind(|| super::super::contain(7, || -> i32 { panic!("boom") }));
+        assert!(matches!(r, Ok(7)), "contain let the panic escape");
+        assert_eq!(super::super::contain(1, || 2), 2);
+    }
+
+    /// R-WP1-2: a panic inside the `format-location-full` body is contained:
+    /// the handler still returns a NULL string (splitmuxsink keeps
+    /// `%05d.mp4`), and that fragment simply has no stamp (legacy anchors).
+    /// The normal path returns NULL too (R-WP1-9's CI half: the file-name
+    /// rule is the NULL return; the names themselves are rig-pinned).
+    #[test]
+    fn a_panic_in_the_location_handler_is_a_legacy_fallback_not_an_abort() {
+        init();
+        let p = playing("fakesrc is-live=true ! fakesink");
+        let bus = p.bus().unwrap();
+        let t = Arc::new(Timing::default());
+        let weak = p.downgrade();
+        let s = sample_at(gst::ClockTime::ZERO);
+        let null = |v: Option<gst::glib::Value>| {
+            v.expect("a return value").get::<Option<String>>().unwrap()
+        };
+        let args = [
+            0u32.to_value(),
+            PANIC_ID.to_value(),
+            Some(s.clone()).to_value(),
+        ];
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.location_handler(&weak, &args)
+        }));
+        assert!(
+            r.is_ok(),
+            "the panic escaped the handler (an abort under GStreamer)"
+        );
+        assert_eq!(null(r.unwrap()), None);
+        let args = [0u32.to_value(), 0u32.to_value(), Some(s).to_value()];
+        assert_eq!(null(t.location_handler(&weak, &args)), None);
+        // Only the healthy fragment 0 was stamped.
+        let mut starts = Vec::new();
+        while let Some(m) = bus.pop_filtered(&[gst::MessageType::Application]) {
+            if let gst::MessageView::Application(a) = m.view() {
+                if let Some(Event::Start(l)) = a.structure().and_then(decode) {
+                    starts.push(l);
+                }
+            }
+        }
+        assert_eq!(starts.len(), 1, "{starts:?}");
+        assert!(starts[0].contains("\"id\":0,"), "{starts:?}");
+        p.set_state(gst::State::Null).unwrap();
+    }
+
+    /// R-WP1-1: a NON-live head pre-rolls into splitmuxsink, so fragment 0's
+    /// callback can run in PAUSED, while the pipeline has NO clock. That
+    /// fragment is skipped and the run's precondition is NOT decided; once
+    /// the pipeline plays, the next fragment is stamped. (Latching on the
+    /// missing clock turned timing off for the whole run.)
+    #[test]
+    fn a_preroll_callback_without_a_clock_skips_its_fragment_and_latches_nothing() {
+        init();
+        let p: gst::Element = gst::parse::launch("fakesrc ! fakesink").unwrap();
+        p.set_state(gst::State::Paused).unwrap();
+        let _ = p.state(gst::ClockTime::from_seconds(5));
+        assert_eq!(p.current_state(), gst::State::Paused);
+        assert!(
+            p.clock().is_none(),
+            "a pre-rolled PAUSED pipeline has no clock"
+        );
+        let t = Timing::default();
+        let s = sample_at(gst::ClockTime::ZERO);
+        assert_eq!(t.on_fragment_opened(0, &s, &p), None);
+        assert_eq!(t.clock.load(Ordering::SeqCst), CLOCK_UNKNOWN, "latched");
+        p.set_state(gst::State::Playing).unwrap();
+        let _ = p.state(gst::ClockTime::from_seconds(5));
+        let ev = t.on_fragment_opened(1, &s, &p).expect("fragment 1 stamped");
+        assert!(
+            matches!(&ev, Event::Start(l) if l.contains("\"id\":1,")),
+            "{ev:?}"
+        );
+        p.set_state(gst::State::Null).unwrap();
+    }
 
     fn init() {
         gst::init().unwrap();

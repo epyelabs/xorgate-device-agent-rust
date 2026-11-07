@@ -536,19 +536,36 @@ async fn diag_probes_are_off_by_default_and_name_a_starved_branch_when_on() {
 }
 
 /// WP1: nothing of the host is reachable from the agent's default path. The
-/// agent names the host only to DISPATCH `__capture-host` (`main.rs`) and to
-/// build the `HostBackend` spec (`backend.rs`, selected only by
-/// `XORGATE_CAPTURE_BACKEND=host`; its default is pinned by
-/// `backend::tests::backend_from_env_is_gst_launch_when_the_switch_is_unset`).
+/// agent names the host only to DECLARE it (`lib.rs`), to DISPATCH
+/// `__capture-host` (`main.rs`) and to build the `HostBackend` spec
+/// (`backend.rs`, selected only by `XORGATE_CAPTURE_BACKEND=host`; its default
+/// is pinned by `backend::tests::backend_from_env_is_gst_launch_when_the_switch_is_unset`).
 /// The timing callbacks, the nice sync and the diag probes live in
 /// `capture_host/` and run only inside that child; the diag switch is named
 /// nowhere else.
+///
+/// R-WP1-5: the check is on the IDENTIFIER `capture_host` (word-bounded, in
+/// every non-comment line of every crate's `src/` outside `capture_host/`),
+/// not on the text `capture_host::`, so any way of reaching the module —
+/// a path, `use … as alias`, `use crate::{capture_host, …}`, a glob of the
+/// crate root followed by `capture_host::…` — has to name it and shows up
+/// with whatever follows it. What it cannot see: a reference built by a
+/// macro from pieces (`concat_idents!`-style); no such macro exists in the
+/// workspace, and Rust has no other way to name a module without its ident.
 #[test]
 fn the_host_is_reachable_only_through_its_dispatch_and_backend() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let mut refs = Vec::new();
     let mut diag_env = Vec::new();
-    let mut stack = vec![src.clone()];
+    let mut stack: Vec<std::path::PathBuf> = std::fs::read_dir(&crates)
+        .unwrap()
+        .map(|e| e.unwrap().path().join("src"))
+        .filter(|p| p.is_dir())
+        .collect();
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).unwrap() {
             let p = e.unwrap().path();
@@ -556,22 +573,33 @@ fn the_host_is_reachable_only_through_its_dispatch_and_backend() {
                 stack.push(p);
                 continue;
             }
-            let rel = p.strip_prefix(&src).unwrap().display().to_string();
+            if p.extension().and_then(|x| x.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p.strip_prefix(&crates).unwrap().display().to_string();
             let text = std::fs::read_to_string(&p).unwrap_or_default();
             if text.contains("XORGATE_CAPTURE_HOST_DIAG") {
                 diag_env.push(rel.clone());
             }
-            if rel.starts_with("capture_host/") {
+            if rel.starts_with("xorgate-agent/src/capture_host/") {
                 continue;
             }
-            for l in text.lines() {
-                if l.contains("capture_host::") {
-                    let item = l.split("capture_host::").nth(1).unwrap_or("");
-                    let item: String = item
-                        .chars()
-                        .take_while(|c| c.is_alphanumeric() || *c == '_')
-                        .collect();
-                    refs.push(format!("{rel} {item}"));
+            for l in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                let b = l.as_bytes();
+                for (at, _) in l.match_indices("capture_host") {
+                    let end = at + "capture_host".len();
+                    if (at > 0 && ident(b[at - 1])) || (end < b.len() && ident(b[end])) {
+                        continue; // another identifier (capture_host_or_continue)
+                    }
+                    let rest = &l[end..];
+                    let what: String = match rest.strip_prefix("::") {
+                        Some(r) => r
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect(),
+                        None => rest.trim().chars().take(24).collect(),
+                    };
+                    refs.push(format!("{rel} {what}"));
                 }
             }
         }
@@ -581,15 +609,18 @@ fn the_host_is_reachable_only_through_its_dispatch_and_backend() {
     assert_eq!(
         refs,
         [
-            "main.rs SUBCOMMAND",
-            "main.rs main",
-            "recording/capture/backend.rs PROCESS_NAME",
-            "recording/capture/backend.rs SUBCOMMAND",
+            "xorgate-agent/src/lib.rs ;",
+            "xorgate-agent/src/main.rs SUBCOMMAND",
+            "xorgate-agent/src/main.rs main",
+            "xorgate-agent/src/recording/capture/backend.rs PROCESS_NAME",
+            "xorgate-agent/src/recording/capture/backend.rs SUBCOMMAND",
         ]
     );
     assert!(
-        diag_env.contains(&"capture_host/diag.rs".to_string())
-            && diag_env.iter().all(|f| f.starts_with("capture_host/")),
+        diag_env.contains(&"xorgate-agent/src/capture_host/diag.rs".to_string())
+            && diag_env
+                .iter()
+                .all(|f| f.starts_with("xorgate-agent/src/capture_host/")),
         "{diag_env:?}"
     );
 }
