@@ -684,7 +684,10 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
                 for (rel, size) in &cur {
                     let s = seen[i].entry(rel.clone()).or_insert_with(|| Seen {
                         first: now,
-                        birth: rel.ends_with(".mp4").then(|| birth_ms(&root.join(rel))).flatten(),
+                        birth: rel
+                            .ends_with(".mp4")
+                            .then(|| birth_ms(&root.join(rel)))
+                            .flatten(),
                         ..Default::default()
                     });
                     s.last = now;
@@ -722,16 +725,14 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
         let files: Map<String, Value> = seen[i]
             .iter()
             .map(|(rel, s)| {
-                (
-                    rel.clone(),
-                {
-                    let mut v = json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone});
+                (rel.clone(), {
+                    let mut v =
+                        json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone});
                     if let Some(b) = s.birth {
                         v["birth"] = json!(b);
                     }
                     v
-                },
-                )
+                })
             })
             .collect();
         let _ = fs::write(

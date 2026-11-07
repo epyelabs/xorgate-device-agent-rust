@@ -4204,7 +4204,9 @@ pub fn d51_pts_samples(m: &MediaCapture, sid: &str) -> Vec<PtsSample> {
 ///   stamp for `seq` with the sidecar's `startTs`: Δstart = lag(seq), except
 ///   fragment 0 against a JS `boundary` anchor (JS walks back from
 ///   birth(1)): lag(1), which needs stamp 1; Δdur = −lag(seq) when the
-///   sidecar's duration is exactly its END stamp's `endTs − startTs`, else 0;
+///   sidecar's duration is exactly its END stamp's `endTs − startTs`,
+///   lag(seq+1) − lag(seq) when it is exactly the successor stamp delta,
+///   else 0 (each judged with T12's `durationMs` band);
 /// - a LIVE D56 fallback (`fstat` on both sides, a session this side's agent
 ///   spawned, no accepted stamp of its own): Δstart =
 ///   `TimingTable::shift_lag_below(seq)` (None = no shift = not D51);
@@ -4215,7 +4217,13 @@ pub fn d51_pts_samples(m: &MediaCapture, sid: &str) -> Vec<PtsSample> {
 ///   `recovery_shift_lag(samples)`, K = the session's first such fallback.
 ///
 /// Never an untimed or plain legacy sidecar, never another session's record.
-pub fn d51_expect(m: &MediaCapture, sid: &str, seq: u64, e: &Value, o: &Value) -> Option<D51Expect> {
+pub fn d51_expect(
+    m: &MediaCapture,
+    sid: &str,
+    seq: u64,
+    e: &Value,
+    o: &Value,
+) -> Option<D51Expect> {
     if !m.exact_timing {
         return None;
     }
@@ -4231,8 +4239,12 @@ pub fn d51_expect(m: &MediaCapture, sid: &str, seq: u64, e: &Value, o: &Value) -
                 (_, Some("fstat")) => own.lag_ms,
                 _ => return None,
             };
-            let dur = match own.end_ts {
-                Some(end) if e["durationMs"].as_f64() == Some(end - own.start_ts) => -own.lag_ms,
+            let dur_is = |d: f64| e["durationMs"].as_f64() == Some(d);
+            let dur = match (own.end_ts, t.exact(seq + 1)) {
+                // A clean final (END stamp): the end instants agree, the start moved.
+                (Some(end), _) if dur_is(end - own.start_ts) => -own.lag_ms,
+                // An interior fragment (successor stamped): lag(N+1) − lag(N).
+                (_, Some(next)) if dur_is(next.start_ts - own.start_ts) => next.lag_ms - own.lag_ms,
                 _ => 0.0,
             };
             Some(D51Expect {
@@ -4264,7 +4276,9 @@ pub fn d51_expect(m: &MediaCapture, sid: &str, seq: u64, e: &Value, o: &Value) -
                 let cars = sidecars(m);
                 let k = cars
                     .iter()
-                    .filter(|((q_sid, q), v)| q_sid == sid && v["anchor"] == "fstat" && below(*q as f64))
+                    .filter(|((q_sid, q), v)| {
+                        q_sid == sid && v["anchor"] == "fstat" && below(*q as f64)
+                    })
                     .map(|((_, q), _)| *q)
                     .min()?;
                 let k_birth = m
@@ -7684,7 +7698,11 @@ kind = "decisions"
         let mut js = Vec::new();
         for k in 0..n {
             let st = if k == 0 { birth(1) - SEG } else { birth(k) };
-            let end = if k == n - 1 { P_J + end_rel(n) } else { birth(k + 1) };
+            let end = if k == n - 1 {
+                P_J + end_rel(n)
+            } else {
+                birth(k + 1)
+            };
             js.push(Frag {
                 st,
                 dur: end - st,
@@ -7693,7 +7711,11 @@ kind = "decisions"
         }
         let mut rs = Vec::new();
         for k in 0..n {
-            let end = if k == n - 1 { P_R + end_rel(n) } else { fr(k + 1) };
+            let end = if k == n - 1 {
+                P_R + end_rel(n)
+            } else {
+                fr(k + 1)
+            };
             rs.push(Frag {
                 st: fr(k),
                 dur: end - fr(k),
@@ -7741,10 +7763,17 @@ kind = "decisions"
             .unwrap()
     }
 
+    /// Edit one sidecar; `startMono` follows a changed `startTs` (it is
+    /// derived from it, `sidecar.rs` `startMono`), as both agents write it.
     fn set_sc(m: &mut MediaCapture, seq: u64, f: impl Fn(&mut Value)) {
         let k = format!("recordings/video/cam0/{P7_SID}/{seq:05}.json");
         let mut v: Value = serde_json::from_slice(&m.finals[&k]).unwrap();
+        let st = v["startTs"].as_i64();
         f(&mut v);
+        if let (Some(a), Some(b), Some(mono)) = (st, v["startTs"].as_i64(), v["startMono"].as_i64())
+        {
+            v["startMono"] = (mono + b - a).into();
+        }
         m.finals.insert(k, serde_json::to_vec(&v).unwrap());
     }
 
@@ -8044,7 +8073,9 @@ kind = "decisions"
             let mut r = rs.clone();
             r.timing.retain(|t| t.id != 3);
             let birth3 = fr(3) + lag_r[3];
-            set_sc(&mut r, 2, |v| v["durationMs"] = (birth3 - lag_r[2] - fr(2)).into());
+            set_sc(&mut r, 2, |v| {
+                v["durationMs"] = (birth3 - lag_r[2] - fr(2)).into()
+            });
             set_sc(&mut r, 3, |v| {
                 v["anchor"] = "fstat".into();
                 v["startTs"] = (birth3 - l).into();
@@ -8052,11 +8083,17 @@ kind = "decisions"
             });
             r
         };
-        assert_eq!(d51_table(&shifted(0), P7_SID).shift_lag_below(3), Some(2_300.0));
+        assert_eq!(
+            d51_table(&shifted(0), P7_SID).shift_lag_below(3),
+            Some(2_300.0)
+        );
         let ok = shifted(2_300);
         let all = sidecar_rows(&js, &ok, &table, false);
         assert!(unt(&js, &ok).is_empty(), "{all:#?}");
-        assert!(all.contains(&format!("{P7_SID}/00003 startTs T7/D51")), "{all:#?}");
+        assert!(
+            all.contains(&format!("{P7_SID}/00003 startTs T7/D51")),
+            "{all:#?}"
+        );
         // The superseded rule (the highest accepted lag below, 2600) FAILS.
         assert!(unt(&js, &shifted(2_600)).contains(&row(3, "startTs")));
     }
@@ -8095,7 +8132,10 @@ kind = "decisions"
         );
         let all = sidecar_rows(&js, &r, &table, false);
         assert!(unt(&js, &r).is_empty(), "{all:#?}");
-        assert!(all.contains(&format!("{P7_SID}/00003 startTs T7/D51")), "{all:#?}");
+        assert!(
+            all.contains(&format!("{P7_SID}/00003 startTs T7/D51")),
+            "{all:#?}"
+        );
         // Not shifted (recovery's plain legacy start = birth(3)): FAILS.
         assert!(unt(&js, &recovered(fr(3) + LAG_R[3] + 1)).contains(&row(3, "startTs")));
         // Shifted by a wrong amount (+100 ms): FAILS.
@@ -8115,8 +8155,14 @@ kind = "decisions"
         let o = sc(&js, 3);
         let live_l = d51_table(&live, P7_SID).shift_lag_below(3).unwrap() as i64;
         assert_ne!(live_l, LAG_R[3] + 1);
-        assert_eq!(d51_expect(&live, P7_SID, 3, &e, &o).map(|d| d.start), Some(live_l));
-        assert_eq!(d51_expect(&r, P7_SID, 3, &e, &o).map(|d| d.start), Some(LAG_R[3] + 1));
+        assert_eq!(
+            d51_expect(&live, P7_SID, 3, &e, &o).map(|d| d.start),
+            Some(live_l)
+        );
+        assert_eq!(
+            d51_expect(&r, P7_SID, 3, &e, &o).map(|d| d.start),
+            Some(LAG_R[3] + 1)
+        );
     }
 
     fn lines_cap(kind: &str, tool: &str, lines: &[(u8, &str)], end: &str) -> MediaCapture {

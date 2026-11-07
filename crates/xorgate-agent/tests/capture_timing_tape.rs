@@ -54,7 +54,10 @@ impl CaptureBackend for FakeHost {
     fn program(&self) -> &str {
         "xorgate-capture"
     }
-    fn spawn(&self, _args: &[String]) -> (Box<dyn CaptureChild>, mpsc::UnboundedReceiver<ChildEvent>) {
+    fn spawn(
+        &self,
+        _args: &[String],
+    ) -> (Box<dyn CaptureChild>, mpsc::UnboundedReceiver<ChildEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let e = Arc::new(Entry {
             tx,
@@ -155,15 +158,17 @@ async fn run(timing: SidecarTiming, tag: &str) -> (Vec<CaptureTimingRec>, String
 #[tokio::test(start_paused = true)]
 async fn exact_tapes_every_parsed_timing_line_with_the_tables_verdict() {
     let (recs, sid) = run(SidecarTiming::Exact, "exact").await;
-    let rec = |id: u32, lag: Option<u64>, start: Option<u64>, end: Option<u64>, accepted: bool| CaptureTimingRec {
-        key: "cam0".into(),
-        pid: 0,
-        sid: sid.clone(),
-        id,
-        lag_ms: lag,
-        start_ts: start,
-        end_ts: end,
-        accepted,
+    let rec = |id: u32, lag: Option<u64>, start: Option<u64>, end: Option<u64>, accepted: bool| {
+        CaptureTimingRec {
+            key: "cam0".into(),
+            pid: 0,
+            sid: sid.clone(),
+            id,
+            lag_ms: lag,
+            start_ts: start,
+            end_ts: end,
+            accepted,
+        }
     };
     assert_eq!(
         recs,
