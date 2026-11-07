@@ -2956,6 +2956,26 @@ pub fn diff_media(
             }
         }
     }
+    // WP3 review F5c: EVERY capture-host child's timing lines (paired or
+    // not: a child only one side spawned is not in the pairs above).
+    for (label, m) in [("A", a), ("B", b)] {
+        for s in m.spawns.iter().filter(|s| s.role == "capture") {
+            if m.child_tools.get(&s.pid).map(String::as_str) != Some("xorgate-capture") {
+                continue;
+            }
+            let all = m.child_lines.get(&s.pid).cloned().unwrap_or_default();
+            if let Err(e) = d52_sequence_ok(&all) {
+                rep.push(mm(
+                    "children",
+                    &format!("{label}: capture/{} pid {}", s.key, s.pid),
+                    "(timing lines)",
+                    if label == "A" { e.clone() } else { "-".into() },
+                    if label == "B" { e } else { "-".into() },
+                    UNTOLERATED,
+                ));
+            }
+        }
+    }
     for (label, m) in [("A", a), ("B", b)] {
         let firsts: Vec<i64> = ["cam0", "cam1"]
             .iter()
@@ -3970,23 +3990,8 @@ fn children_lines(
         };
         (tool, all, kept, aside)
     };
-    let (ta, all_a, ka, xa) = side(a, sa);
-    let (tb, all_b, kb, xb) = side(b, sb);
-    for (label, tool, all) in [("A", &ta, &all_a), ("B", &tb, &all_b)] {
-        if tool != "xorgate-capture" {
-            continue;
-        }
-        if let Err(e) = d52_sequence_ok(all) {
-            rep.push(mm(
-                "children",
-                at,
-                "(timing lines)",
-                if label == "A" { e.clone() } else { "-".into() },
-                if label == "B" { e } else { "-".into() },
-                UNTOLERATED,
-            ));
-        }
-    }
+    let (_, _, ka, xa) = side(a, sa);
+    let (_, _, kb, xb) = side(b, sb);
     if let Some(row) = d52 {
         if !xa.is_empty() || !xb.is_empty() {
             rep.push(mm(
@@ -4047,11 +4052,22 @@ pub fn d52_set_aside(tool: &str, lines: Vec<(u8, String)>) -> (Vec<(u8, String)>
     let mut aside = Vec::new();
     for (fd, l) in lines {
         match (fd, xorgate_core::capture_timing::parse_line(&l)) {
-            (1, Some(Ok(t))) => aside.push(t),
+            // Only the byte-exact canonical v1 line (WP3 review F5a): an extra
+            // field or another key order would otherwise ride along hidden.
+            (1, Some(Ok(t))) if timing_canonical(&t) == l => aside.push(t),
             _ => kept.push((fd, l)),
         }
     }
     (kept, aside)
+}
+
+/// The canonical text of a parsed v1 timing line (`capture_timing` keeps
+/// the key order frozen; `to_line` is what the host prints).
+pub fn timing_canonical(t: &TimingLine) -> String {
+    match t {
+        TimingLine::Start(s) => s.to_line(),
+        TimingLine::End(e) => e.to_line(),
+    }
 }
 
 /// D52's own check on a host child's timing lines (ALL its lines, the
@@ -4062,6 +4078,25 @@ pub fn d52_sequence_ok(lines: &[(u8, String)]) -> Result<usize, String> {
     let mut starts: Vec<u32> = Vec::new();
     let mut end: Option<u32> = None;
     let mut n = 0;
+    // Where the host may legitimately print no start line (WP3 review F5b):
+    // - from the id its stderr names in `xorgate-capture: fragment N: exact
+    //   timing rejected …` on: the guard / wall refusal, and the host logs
+    //   only the run's FIRST refusal (`capture_host/timing.rs` reject_line,
+    //   D52 row), so later refused ids are silent;
+    // - anywhere after a contained callback panic (`panicked at`, D52 row:
+    //   that fragment keeps the legacy anchors, `capture_host::contain`).
+    // (A pre-roll skip without a clock, R-WP1-1, needs a non-live head; no
+    // capture argv has one, so it is not a gap rule.)
+    let refused_from: Option<u32> = lines.iter().filter(|(fd, _)| *fd == 2).find_map(|(_, l)| {
+        l.strip_prefix("xorgate-capture: fragment ")?
+            .split_once(": exact timing rejected")?
+            .0
+            .parse()
+            .ok()
+    });
+    let panicked = lines
+        .iter()
+        .any(|(fd, l)| *fd == 2 && l.contains("panicked at"));
     for (fd, l) in lines {
         let Some(parsed) = xorgate_core::capture_timing::parse_line(l) else {
             continue;
@@ -4070,6 +4105,22 @@ pub fn d52_sequence_ok(lines: &[(u8, String)]) -> Result<usize, String> {
         let t = parsed.map_err(|e| format!("unusable timing line {l:?}: {e:?}"))?;
         if *fd != 1 {
             return Err(format!("timing line on fd {fd}: {l:?}"));
+        }
+        if timing_canonical(&t) != *l {
+            return Err(format!("not the canonical v1 line: {l:?}"));
+        }
+        if let TimingLine::Start(st) = &t {
+            let want = starts.last().map_or(0, |p| p + 1);
+            let gap_ok = panicked || refused_from.is_some_and(|r| want >= r);
+            if st.id > want && !gap_ok {
+                return Err(format!(
+                    "start id {} after {:?}: ids {}..{} missing with no refusal / panic line",
+                    st.id,
+                    starts.last(),
+                    want,
+                    st.id - 1
+                ));
+            }
         }
         if let Some(e) = end {
             return Err(format!("timing line after the END of {e}: {l:?}"));
@@ -8490,6 +8541,72 @@ kind = "decisions"
         assert!(
             children_rows(&js, &host, &table).contains(&format!("(timing lines) {UNTOLERATED}"))
         );
+    }
+
+    fn start_line(id: u32) -> String {
+        xorgate_core::capture_timing::FragmentStart {
+            v: 1,
+            id,
+            frame_mono_ns: 1_000 + u64::from(id) * 4_000_000_000,
+            cb_mono_ns: 13_001_000 + u64::from(id) * 4_000_000_000,
+            cb_wall_ms: 1_762_400_000_013 + u64::from(id) * 4_000,
+            lag_ms: 13,
+            start_ts: 1_762_400_000_000 + u64::from(id) * 4_000,
+        }
+        .to_line()
+    }
+
+    /// WP3 review F5: only the canonical v1 line is set aside (an extra field
+    /// or another key order stays in and differs); start ids are 0..k
+    /// contiguous unless the host's stderr names a refusal (from that id on)
+    /// or a contained panic; EVERY host child is checked, paired or not.
+    #[test]
+    fn d52_is_strict_about_shape_ids_and_unpaired_children() {
+        let table = committed_table();
+        let js = lines_cap("js", "gst-launch-1.0", &gst_lines(), "int");
+        let lines_unt = format!("(lines) {UNTOLERATED}");
+        let seq_unt = format!("(timing lines) {UNTOLERATED}");
+        assert_eq!(start_line(0), FRAG0, "the fixture line is canonical");
+        // (a) extra field / reordered keys: kept, so they differ, and the
+        // sequence check refuses them.
+        let extra = FRAG1.replace("}", ",\"err\":\"x\"}");
+        let reorder = FRAG1.replace("\"v\":1,\"id\":1", "\"id\":1,\"v\":1");
+        for bad in [extra, reorder] {
+            let b: &'static str = Box::leak(bad.into_boxed_str());
+            let mut v = gst_lines();
+            v.insert(3, (1, FRAG0));
+            v.insert(4, (1, b));
+            let host = lines_cap("rust", "xorgate-capture", &v, "int");
+            let rows = children_rows(&js, &host, &table);
+            assert!(rows.contains(&lines_unt) && rows.contains(&seq_unt), "{b}: {rows:?}");
+        }
+        // (b) id gaps.
+        let s = |ids: &[u32]| ids.iter().map(|i| (1u8, start_line(*i))).collect::<Vec<_>>();
+        assert!(d52_sequence_ok(&s(&[0, 1, 2])).is_ok());
+        assert!(d52_sequence_ok(&s(&[0, 2])).is_err(), "a silent gap");
+        assert!(d52_sequence_ok(&s(&[1, 2])).is_err(), "no fragment 0 line");
+        let refusal = |id: u32| {
+            (2u8, format!("xorgate-capture: fragment {id}: exact timing rejected (lag 9000000000 ns outside 0..=7000000000 ns); legacy anchors for the refused fragments of this run"))
+        };
+        let mut v = s(&[0, 2, 4]);
+        v.insert(1, refusal(1));
+        assert!(d52_sequence_ok(&v).is_ok(), "gaps from the named refusal on");
+        let mut v = s(&[0, 2]);
+        v.push(refusal(3));
+        assert!(d52_sequence_ok(&v).is_err(), "a gap BEFORE the named id");
+        let mut v = s(&[0, 3]);
+        v.push((2, "thread '<unnamed>' panicked at crates/xorgate-agent/src/capture_host/timing.rs:1:1:".into()));
+        assert!(d52_sequence_ok(&v).is_ok(), "a contained panic");
+        // (c) an UNPAIRED host child (only this side spawned it) is checked.
+        let mut host = lines_cap("rust", "xorgate-capture", &host_lines(&[]), "int");
+        let mut extra = host.spawns[0].clone();
+        extra.pid = 10;
+        extra.w += 50_000;
+        host.spawns.push(extra);
+        host.child_tools.insert(10, "xorgate-capture".into());
+        host.child_lines.insert(10, vec![(1, FRAG1.to_string())]); // starts at 1, no refusal
+        let rows = children_rows(&js, &host, &table);
+        assert!(rows.contains(&seq_unt), "{rows:?}");
     }
 
     /// Phase 7a: a capture host spawn loads as a capture child whose argv is
