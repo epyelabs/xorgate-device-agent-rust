@@ -76,7 +76,10 @@ class Side:
             d = os.path.join(self.dir, where, SID)
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, "%05d.json" % n), "w") as f:
-                json.dump({"seq": n, "startTs": st, "durationMs": self.seg * 1000, "anchor": anchor}, f)
+                body = {"seq": n, "startTs": st, "durationMs": self.seg * 1000, "anchor": anchor}
+                if anchor is None:
+                    del body["anchor"]
+                json.dump(body, f)
         return self.dir
 
 
@@ -252,6 +255,17 @@ class T(unittest.TestCase):
             with self.assertRaises(SystemExit) as e:
                 tt.main([self.tmp])  # no --expect with --source sidecars
         self.assertEqual(e.exception.code, 2)
+
+    def test_a_sidecar_without_an_anchor_is_never_pts(self):
+        # Round-2 N5b: a missing anchor key does not pass as an exact row.
+        s = exact_side(self.tmp)
+        st, _, w = s.cars[2]
+        s.cars[2] = (st, None, w)
+        s.write()
+        for mode in ("exact", "legacy"):
+            r = tt.check(self.tmp, "sidecars", 1, mode)[0]
+            self.assertEqual(r["verdict"], "FAIL", (mode, r))
+            self.assertTrue(any("without an anchor" in e for e in r["errors"]), r["errors"])
 
     def test_exit_codes(self):
         with contextlib.redirect_stdout(io.StringIO()):

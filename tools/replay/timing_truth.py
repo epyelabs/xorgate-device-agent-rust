@@ -51,6 +51,7 @@ LEGACY_LAG_MS = 2100
 LEGACY_BAND_MS = 300
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 FRAG_PREFIX = "XG-FRAGMENT "
+MISSING_ANCHOR = "<missing>"
 
 
 def read_ndjson(path):
@@ -187,6 +188,9 @@ def check_session(s, starts, anchors, min_fragments, expect=None, last_mp4=None)
     kinds = {("pts" if anchors.get(q) in (None, "pts") else "legacy") for q in seqs}
     if len(kinds) != 1:
         errors.append("mixed exact and legacy fragments in one session: %s" % sorted(anchors.items()))
+    missing = [q for q in seqs if anchors.get(q) == MISSING_ANCHOR]
+    if missing:
+        errors.append("sidecar(s) without an anchor: %s" % missing)
     exact = kinds == {"pts"} if expect is None else expect == "exact"
     if expect is not None and kinds != {"pts" if exact else "legacy"}:
         errors.append("--expect %s but the session holds %s fragments: %s" % (expect, "/".join(sorted(kinds)), sorted(anchors.items())))
@@ -261,7 +265,8 @@ def check(side_dir, source="sidecars", min_fragments=1, expect=None):
         else:
             c = cars.get(s["sid"], {})
             starts = {q: v.get("startTs") for q, v in c.items() if isinstance(v.get("startTs"), (int, float))}
-            anchors = {q: c[q].get("anchor") for q in starts}
+            # Round-2 N5b: a sidecar WITHOUT an anchor is never `pts`.
+            anchors = {q: c[q].get("anchor", MISSING_ANCHOR) for q in starts}
         if not starts:
             out.append({"pid": pid, "sid": s["sid"], "tool": s["tool"], "verdict": "SKIP", "why": "no fragments", "rows": []})
             continue
