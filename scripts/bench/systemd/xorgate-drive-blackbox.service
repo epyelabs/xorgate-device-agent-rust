@@ -7,12 +7,25 @@
 # xorgate-blackbox.service (USER 2026-11-07; the ctl disables that one and
 # keeps its files).
 #
-# Read-only toward the agent, enforced here too: the whole filesystem is
-# read-only to it (ProtectSystem=strict) except its own data dir.
+# Ordering (review F2): NO ordering against xorgate-agent-rs. The agent waits
+# for network-online + READY=1, and a short brownout boot must still be
+# recorded, so this starts right after the local filesystems (default
+# dependencies kept). The recorder copes with an agent that is not up yet.
+#
+# What the unit enforces (review F6), even if the code changed:
+#   - the filesystem is read-only except its own state dir
+#     (ProtectSystem=strict + StateDirectory=), /home is hidden;
+#   - /proc/sys, /sys and the cgroup tree are read-only, no module loading;
+#   - devices: only /dev/vcio and /dev/vchiq (vcgencmd's firmware mailbox
+#     paths) plus systemd's pseudo devices (/dev/null, …); no tty, no modem;
+#   - sockets: AF_UNIX only (systemctl/D-Bus), so no network at all.
+# What it does NOT enforce: it runs as root (to read the agent's
+# /proc/<pid>/environ and the journal), so signals are not blocked by the
+# unit; the code sends none.
 
 [Unit]
 Description=xorgate drive blackbox (5 s NDJSON recorder, bench only)
-After=xorgate-agent-rs.service
+After=local-fs.target
 # Restart=always forever: never hit the start rate limit on a flaky drive.
 StartLimitIntervalSec=0
 
@@ -23,14 +36,25 @@ Restart=always
 RestartSec=5s
 TimeoutStopSec=10s
 Nice=10
-IOSchedulingClass=idle
+# best-effort 7, not idle (review F5): idle writeback inside the per-line
+# fdatasync could hold an ext4 journal commit the agent's own fsyncs wait on.
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 CPUQuota=10%
 MemoryMax=64M
+StateDirectory=xorgate-rs/drive-blackbox
+StateDirectoryMode=0755
 ProtectSystem=strict
-ReadWritePaths=-/var/lib/xorgate-rs/drive-blackbox
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+DevicePolicy=closed
+DeviceAllow=/dev/vcio rw
+DeviceAllow=/dev/vchiq rw
+RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

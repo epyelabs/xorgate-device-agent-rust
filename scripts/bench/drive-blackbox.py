@@ -8,27 +8,33 @@ Installed on the bench by scripts/bench/drive-blackbox-ctl.sh as
   xorgate-drive-blackbox run [--out-dir DIR] [--interval S] [--ticks N]
                              [--max-file-mb MB] [--keep N] [--total-mb MB]
                              [--min-free-mb MB] [--journal-every-ticks N]
+                             [--cmd-timeout S] [--journal-timeout S]
   xorgate-drive-blackbox summary PATH...     (files and/or directories)
 
 run: every --interval seconds (5) appends ONE compact JSON line to
-  DIR/<boot-start-utc>_<boot_id[:8]>[.<part>].ndjson (DIR defaults to
-  /var/lib/xorgate-rs/drive-blackbox). The boot-id suffix keeps two boots
-  apart when the wall clock was not yet synced at boot. A file rotates at
-  --max-file-mb (50); the oldest files go while there are more than --keep (8)
-  or more than --total-mb (300) in all; the file being written is never
-  deleted. Below --min-free-mb (200) free on DIR's filesystem a line is
-  skipped (counted in the next line's "skipped"). Each line is fdatasync'ed
-  so a power cut loses at most the line being written; a torn last line is
-  newline-terminated before the next append.
+  DIR/b<bseq>_<boot-start-utc>_<boot_id[:8]>[.<part>].ndjson (DIR defaults
+  to /var/lib/xorgate-rs/drive-blackbox). bseq is a persistent boot sequence
+  number (DIR/.boot-seq, +1 per boot): files, pruning, restart continuity and
+  summary are ordered by (bseq, part), NEVER by mtime or wall clock, which is
+  behind after a power cut until NTP. A recorder restart resumes THIS boot's
+  own file (matched by boot_id). A file rotates at --max-file-mb (50); the
+  oldest files go only while the total exceeds --total-mb (300) (--keep, a
+  file-count cap, defaults to 2000 so boots are never pruned by count); the
+  file being written is never deleted. Below --min-free-mb (200) free on
+  DIR's filesystem a line is skipped (counted in the next line's
+  "skipped"), as is a line whose write fails (ENOSPC, EROFS). Each line is
+  fdatasync'ed so a power cut loses at most the line being written; a torn
+  last line is newline-terminated before the next append. Every exec has a
+  timeout (--cmd-timeout 5 s, --journal-timeout 15 s for the journal count).
 
   Line keys (any section degrades to null or {"err": ...}, never a crash):
-    v, ts (UTC ms), boot (boot_id), up (uptime s), n (line no. in this
+    v, ts (UTC ms), boot (boot_id), bseq, up (uptime s), n (line no. in this
     process), dt (s since the previous tick of this process), ntp (timesyncd
     synced flag), skipped;
     pwr   rail_v (EXT5V_V), core_a (VDD_CORE_A), thr (raw get_throttled hex),
           thr_now / thr_since (decoded bit names: uv, cap, thr, temp), temp_c;
     load  avg [1, 5, 15], mem_avail_kb, mem_total_kb;
-    disk  root_free_mb, xorgate_free_mb (/var/lib/xorgate), out_free_mb;
+    disk  root_free_mb, xorgate_free_mb (the agent's XORGATE_HOME), out_free_mb;
     net   usb0 / wlan0 {present, up, oper}, def (default-route ifaces by
           metric), usb0_default;
     svc   rs {active, sub, pid, nrestarts, rss_kb, ticks, cpu},
@@ -45,11 +51,16 @@ run: every --interval seconds (5) appends ONE compact JSON line to
           act, sim_reg, sim_state, cell, uplink, age_s;
     ev    change markers vs the previous line (also across a recorder restart
           in the same boot): start, boot, nrestarts, mainpid, js_active,
-          throttled, mqtt;
+          throttled, mqtt. A failed read (None) never makes a marker: the
+          last good value is carried forward and the key is listed in
+    read_miss (e.g. ["thr", "rs_nr"]) on that line;
     jr    every --journal-every-ticks (12 = 60 s): {cursor, warn, err, from}
-          ({"fail": ...} without journalctl; "err" is always the error count)
           = the journal's last cursor and the count of xorgate-agent-rs
-          warning (4) / error (<= 3) entries since the previous snapshot;
+          warning (4) / error (<= 3) entries since the previous snapshot,
+          also across a boot change (from "prev_boot_cursor"; the journal is
+          persistent). A timed-out or failed count is {"timeout": true} or
+          {"fail": ...} with warn/err null and the cursor NOT advanced, so the
+          next window covers it; never a zero;
     recfs with jr: files and bytes under $XORGATE_HOME/recordings per subdir.
 
 READ-ONLY toward the agent: it only reads /proc, /sys, state.json and the
@@ -123,16 +134,26 @@ def read_json(path):
         return None, "unparseable"
 
 
-def run_cmd(argv, timeout=5):
-    """stdout of argv, or None (missing binary, timeout, non-zero exit)."""
+TIMEOUTS = {"cmd": 5.0, "journal": 15.0}  # set from --cmd-timeout / --journal-timeout
+
+
+def run_cmd_st(argv, timeout=None):
+    """(stdout or None, status): ok | fail (non-zero exit) | timeout | missing."""
     try:
         r = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+                           stderr=subprocess.DEVNULL, check=False,
+                           timeout=TIMEOUTS["cmd"] if timeout is None else timeout)
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, "missing"
     if r.returncode != 0:
-        return None
-    return r.stdout.decode("utf-8", "replace")
+        return None, "fail"
+    return r.stdout.decode("utf-8", "replace"), "ok"
+
+
+def run_cmd(argv, timeout=None):
+    return run_cmd_st(argv, timeout)[0]
 
 
 def num(v):
@@ -255,8 +276,50 @@ def to_int(v):
         return None
 
 
+NAME_RE = re.compile(r"^b(\d+)_(\d{8}T\d{6}Z)_([0-9a-f]{8})(?:\.(\d+))?\.ndjson$")
+BSEQ_FILE = ".boot-seq"
+
+
+def scan_files(d):
+    """[(bseq, part, name, boot8)] of d's .ndjson files, oldest first by
+    (bseq, part); a foreign name sorts first (bseq -1)."""
+    out = []
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for f in names:
+        m = NAME_RE.match(f)
+        if m:
+            out.append((int(m.group(1)), int(m.group(4) or 0), f, m.group(3)))
+        elif f.endswith(".ndjson"):
+            out.append((-1, 0, f, None))
+    out.sort()
+    return out
+
+
+def tail_lines(path, limit=262144):
+    """The parsed JSON lines in the last `limit` bytes of path (oldest first)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - limit))
+            raw = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in raw:
+        try:
+            d = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and "ts" in d:
+            out.append(d)
+    return out
+
+
 class Out:
-    """The NDJSON files: naming, append, rotation, caps."""
+    """The NDJSON files: naming (bseq), append, rotation, caps."""
 
     def __init__(self, out_dir, boot, up, max_file, keep, total, min_free_mb):
         self.dir, self.max_file, self.keep, self.total = out_dir, max_file, keep, total
@@ -265,18 +328,32 @@ class Out:
         self.fd = None
         self.skipped = 0
         os.makedirs(out_dir, mode=0o755, exist_ok=True)
-        pat = re.compile(r"^(.+_%s)(?:\.(\d+))?\.ndjson$" % re.escape(self.boot8))
-        best = None
-        for f in os.listdir(out_dir):
-            m = pat.match(f)
-            if m and (best is None or int(m.group(2) or 0) > best[1]):
-                best = (m.group(1), int(m.group(2) or 0))
-        if best:  # a recorder restart in the same boot: keep its file
-            self.base, self.part = best
+        files = scan_files(out_dir)
+        own = [x for x in files if x[3] == self.boot8]
+        if own:  # a recorder restart in the same boot: THIS boot's file, whatever the mtimes say
+            self.bseq, self.part, name, _b = own[-1]
+            self.base = name.split(".")[0]
+            self.resumed = True
         else:
+            self.bseq = max([x[0] for x in files] + [self._read_bseq(), 0]) + 1
             start = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time() - up))
-            self.base, self.part = "%s_%s" % (start, self.boot8), 0
+            self.base, self.part, self.resumed = "b%06d_%s_%s" % (self.bseq, start, self.boot8), 0, False
+            self._write_bseq()
+        prev = [x for x in files if x[3] != self.boot8 and x[0] < self.bseq]
+        self.prev_file = os.path.join(out_dir, prev[-1][2]) if prev else None
         self.prune()
+
+    def _read_bseq(self):
+        return to_int((read_text(os.path.join(self.dir, BSEQ_FILE)) or "").strip()) or 0
+
+    def _write_bseq(self):
+        try:
+            tmp = os.path.join(self.dir, BSEQ_FILE + ".tmp")
+            with open(tmp, "w") as f:
+                f.write("%d\n" % self.bseq)
+            os.replace(tmp, os.path.join(self.dir, BSEQ_FILE))
+        except OSError:
+            pass
 
     def path(self):
         return os.path.join(self.dir, self.base + ("" if self.part == 0 else ".%d" % self.part) + ".ndjson")
@@ -317,20 +394,19 @@ class Out:
             self.fd = None
 
     def prune(self):
+        """Oldest (bseq, part) first, never the current file, while the total
+        is over --total-mb (or the count over --keep, 2000 by default)."""
         cur = os.path.basename(self.path())
         files = []
-        for f in os.listdir(self.dir):
-            if f.endswith(".ndjson"):
-                try:
-                    st = os.stat(os.path.join(self.dir, f))
-                except OSError:
-                    continue
-                files.append((st.st_mtime, f, st.st_size))
-        files.sort()
+        for _bseq, _part, f, _b in scan_files(self.dir):
+            try:
+                files.append((f, os.stat(os.path.join(self.dir, f)).st_size))
+            except OSError:
+                continue
         # the current file counts even before its first line (right after a rotation)
-        count = len(files) + (0 if any(f == cur for _m, f, _s in files) else 1)
-        total = sum(s for _m, _f, s in files)
-        for _m, f, s in files:  # oldest first; never the file being written
+        count = len(files) + (0 if any(f == cur for f, _s in files) else 1)
+        total = sum(sz for _f, sz in files)
+        for f, sz in files:
             if count <= self.keep and total <= self.total:
                 break
             if f == cur:
@@ -339,37 +415,7 @@ class Out:
                 os.unlink(os.path.join(self.dir, f))
             except OSError:
                 continue
-            count, total = count - 1, total - s
-
-
-def last_line(out_dir):
-    """The newest complete JSON line of the newest file in out_dir, or None."""
-    try:
-        files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.endswith(".ndjson")]
-    except OSError:
-        return None
-    def mtime(p):
-        try:
-            return os.stat(p).st_mtime
-        except OSError:
-            return 0
-    for path in sorted(files, key=mtime, reverse=True):
-        try:
-            with open(path, "rb") as f:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 262144))
-                lines = f.read().decode("utf-8", "replace").splitlines()
-        except OSError:
-            continue
-        for ln in reversed(lines):
-            try:
-                d = json.loads(ln)
-            except ValueError:
-                continue
-            if isinstance(d, dict) and "ts" in d:
-                return d
-    return None
+            count, total = count - 1, total - sz
 
 
 class Recorder:
@@ -389,27 +435,37 @@ class Recorder:
         self.env = {}
         self.jcursor, self.jrt = self._load_cursor()
         self.start_ev = [{"k": "start", "pid": os.getpid(), "v": SCHEMA}]
-        self._restore(last_line(args.out_dir))
+        self._restore()
 
     # -- restart continuity -------------------------------------------------
-    def _restore(self, ln):
-        if not ln:
-            self.start_ev[0]["first"] = True
+    def _restore(self):
+        if self.out.resumed:  # same boot: continuity from THIS boot's own file only
+            own = [ln for ln in tail_lines(self.out.path()) if ln.get("boot") == self.boot]
+            if not own:
+                return
+            ln = own[-1]
+            up = num(ln.get("up"))
+            rs = dget(ln, "svc", "rs") or {}
+            if up is not None:
+                if num(rs.get("pid")) and num(rs.get("ticks")) is not None:
+                    self.prev_ticks[rs["pid"]] = (rs["ticks"], up, None)
+                for k in ln.get("kids") or []:
+                    if isinstance(k, dict) and num(k.get("pid")) and num(k.get("ticks")) is not None:
+                        self.prev_ticks[k["pid"]] = (k["ticks"], up, None)
+            # each marker key: its newest non-null value (a miss line carries nothing)
+            for old in own:
+                for key, v in self._marker_state(old).items():
+                    if v is not None:
+                        self.prev[key] = v
             return
-        if ln.get("boot") != self.boot:
-            self.start_ev.append(compact({"k": "boot", "prev_boot": ln.get("boot"),
-                                          "prev_ts": ln.get("ts"),
-                                          "prev_up": ln.get("up")}))
+        prev = tail_lines(self.out.prev_file)[-1:] if self.out.prev_file else []
+        if not prev:
+            if not self.out.prev_file:
+                self.start_ev[0]["first"] = True
             return
-        up = num(ln.get("up"))
-        rs = dget(ln, "svc", "rs") or {}
-        if up is not None:
-            if num(rs.get("pid")) and num(rs.get("ticks")) is not None:
-                self.prev_ticks[rs["pid"]] = (rs["ticks"], up)
-            for k in ln.get("kids") or []:
-                if isinstance(k, dict) and num(k.get("pid")) and num(k.get("ticks")) is not None:
-                    self.prev_ticks[k["pid"]] = (k["ticks"], up)
-        self.prev = self._marker_state(ln)
+        ln = prev[0]
+        self.start_ev.append(compact({"k": "boot", "prev_boot": ln.get("boot"), "prev_bseq": ln.get("bseq"),
+                                      "prev_ts": ln.get("ts"), "prev_up": ln.get("up")}))
 
     @staticmethod
     def _marker_state(ln):
@@ -429,10 +485,10 @@ class Recorder:
         return d.get("cursor"), d.get("rt")
 
     # -- sections -----------------------------------------------------------
-    def cpu(self, pid, ticks, up):
+    def cpu(self, pid, ticks, up, start=None):
         p = self.prev_ticks.get(pid)
-        self.cur_ticks[pid] = (ticks, up)
-        if not p or up <= p[1] or ticks < p[0]:
+        self.cur_ticks[pid] = (ticks, up, start)
+        if not p or up <= p[1] or ticks < p[0] or (p[2] is not None and start is not None and p[2] != start):
             return None
         return round((ticks - p[0]) / HZ / (up - p[1]) * 100.0, 1)
 
@@ -471,7 +527,7 @@ class Recorder:
 
     def disk(self):
         return {"root_free_mb": statvfs_free_mb(P("/")),
-                "xorgate_free_mb": statvfs_free_mb(P("/var/lib/xorgate")),
+                "xorgate_free_mb": statvfs_free_mb(P(self.env.get("XORGATE_HOME") or DEFAULT_HOME)),
                 "out_free_mb": statvfs_free_mb(self.args.out_dir)}
 
     @staticmethod
@@ -494,7 +550,7 @@ class Recorder:
         out["usb0_default"] = "usb0" in out["def"]
         return out
 
-    def services(self, up):
+    def services(self):
         units = parse_systemctl_show(run_cmd(
             ["systemctl", "show", "--no-pager", "-p", "Id,ActiveState,SubState,MainPID,NRestarts",
              RS_UNIT, JS_UNIT, LTE_UNIT]))
@@ -507,11 +563,13 @@ class Recorder:
                     "nrestarts": to_int(s.get("NRestarts"))}
         rs, js, lte = base(RS_UNIT), base(JS_UNIT), base(LTE_UNIT)
         js.pop("nrestarts", None)
+        if not units:  # systemctl show failed: no MainPID, so no cgroup guess either
+            return {"rs": rs, "js": js, "lte": lte}, []
         pid = rs.get("pid") or 0
         if pid:
             st = proc_stat(pid)
             if st:
-                rs.update(rss_kb=st[2], ticks=st[1], cpu=self.cpu(pid, st[1], up))
+                rs.update(rss_kb=st[2], ticks=st[1], cpu=self.cpu(pid, st[1], uptime(), st[3]))
         kids = []
         for kp in cgroup_pids(pid):
             if kp == pid:
@@ -519,7 +577,7 @@ class Recorder:
             st = proc_stat(kp)
             if st:
                 kids.append({"comm": st[0], "pid": kp, "rss_kb": st[2], "ticks": st[1],
-                             "cpu": self.cpu(kp, st[1], up)})
+                             "cpu": self.cpu(kp, st[1], uptime(), st[3])})
         return {"rs": rs, "js": js, "lte": lte}, kids
 
     def agent(self, now_ms, rs_pid):
@@ -583,32 +641,42 @@ class Recorder:
                         "cell": dget(t, "cellular", "state"), "uplink": dget(t, "uplink", "primary"), "age_s": age})
 
     def journal(self):
-        cur = run_cmd(["journalctl", "-q", "-n", "1", "-o", "json", "--output-fields=__CURSOR", "--no-pager"])
-        if cur is None:
-            return {"fail": "journalctl unavailable"}  # "err" is the error COUNT
-        cursor, rt = None, None
+        cur, st = run_cmd_st(["journalctl", "-q", "-n", "1", "-o", "json", "--output-fields=__CURSOR", "--no-pager"])
+        if cur is None:  # "err" is the error COUNT, so failures use their own keys
+            return {"timeout": True} if st == "timeout" else {"fail": "journalctl " + st}
+        cursor = rt = mono = jboot = None
         for line in cur.splitlines():
             try:
                 e = json.loads(line)
             except ValueError:
                 continue
             cursor, rt = e.get("__CURSOR"), to_int(e.get("__REALTIME_TIMESTAMP"))
+            mono, jboot = to_int(e.get("__MONOTONIC_TIMESTAMP")), e.get("_BOOT_ID")
         argv = ["journalctl", "-q", "-u", RS_UNIT, "-p", "warning", "-o", "json",
                 "--output-fields=PRIORITY", "--no-pager"]
-        same_boot = isinstance(self.jcursor, str) and ("b=" + self.boot.replace("-", "")) in self.jcursor
-        frm = "cursor" if same_boot else "boot"
-        out = run_cmd(argv + (["--after-cursor=" + self.jcursor] if same_boot else ["-b"]), timeout=15)
-        if out is None and same_boot and self.jrt:  # cursor vacuumed away
-            frm = "since"
-            out = run_cmd(argv + ["--since=@%d" % (self.jrt // 1000000)], timeout=15)
+        tmo = TIMEOUTS["journal"]
+        if isinstance(self.jcursor, str):  # also across a boot change: the journal is persistent
+            frm = "cursor" if ("b=" + self.boot.replace("-", "")) in self.jcursor else "prev_boot_cursor"
+            out, st = run_cmd_st(argv + ["--after-cursor=" + self.jcursor], timeout=tmo)
+            if out is None and st == "fail" and self.jrt:  # the cursor was vacuumed away
+                frm = "since"
+                out, st = run_cmd_st(argv + ["--since=@%d" % (self.jrt // 1000000)], timeout=tmo)
+        else:
+            frm = "boot"
+            out, st = run_cmd_st(argv + ["-b"], timeout=tmo)
+        if out is None:  # never a zero window: the cursor stays, the next snapshot covers it
+            r = {"cursor": self.jcursor, "warn": None, "err": None, "from": frm}
+            r.update({"timeout": True} if st == "timeout" else {"fail": st})
+            return r
         warn = err = 0
-        for line in (out or "").splitlines():
+        for line in out.splitlines():
             try:
                 e = json.loads(line)
             except ValueError:
                 continue
-            if rt is not None and (to_int(e.get("__REALTIME_TIMESTAMP")) or 0) > rt:
-                continue  # after this snapshot's cursor: the next window counts it
+            em = to_int(e.get("__MONOTONIC_TIMESTAMP"))
+            if jboot and mono is not None and e.get("_BOOT_ID") == jboot and em is not None and em > mono:
+                continue  # after this snapshot's cursor (boot + monotonic, not the wall clock): next window
             pr = to_int(e.get("PRIORITY"))
             if pr is not None and pr <= 3:
                 err += 1
@@ -623,7 +691,7 @@ class Recorder:
                 os.replace(tmp, os.path.join(self.args.out_dir, CURSOR_FILE))
             except OSError:
                 pass
-        return {"cursor": cursor, "warn": warn, "err": err, "from": frm if out is not None else "error"}
+        return {"cursor": cursor, "warn": warn, "err": err, "from": frm}
 
     def recfs(self):
         root = P((self.env.get("XORGATE_HOME") or DEFAULT_HOME).rstrip("/") + "/recordings")
@@ -644,14 +712,19 @@ class Recorder:
 
     # -- one tick -------------------------------------------------------------
     def events(self, line):
-        cur = self._marker_state(line)
-        ev, p = [], self.prev
+        """(markers, read_miss). A key that reads None keeps its last good
+        value (carried forward) and is listed as a miss: no phantom marker on
+        the miss tick or on the recovery tick."""
+        raw, p = self._marker_state(line), self.prev
+        miss = sorted(k for k, v in raw.items() if v is None and p.get(k) is not None)
+        cur = {k: (v if v is not None else p.get(k)) for k, v in raw.items()}
+        ev = []
         if p:
             for key, unit, kind in (("rs_nr", "rs", "nrestarts"), ("rs_pid", "rs", "mainpid"),
                                     ("lte_nr", "lte", "nrestarts"), ("lte_pid", "lte", "mainpid")):
                 if p.get(key) != cur[key] and cur[key] is not None:
                     ev.append({"k": kind, "u": unit, "from": p.get(key), "to": cur[key]})
-            if p.get("js") != cur["js"]:
+            if p.get("js") != cur["js"] and cur["js"] is not None:
                 ev.append({"k": "js_active", "from": p.get("js"), "to": cur["js"]})
             if p.get("thr") != cur["thr"] and cur["thr"] is not None:
                 a, b = to_int_hex(p.get("thr")) or 0, to_int_hex(cur["thr"]) or 0
@@ -659,17 +732,17 @@ class Recorder:
                 ev.append({"k": "throttled", "from": p.get("thr"), "to": cur["thr"],
                            "set": [n for bb, n in bits if b >> bb & 1 and not a >> bb & 1],
                            "clr": [n for bb, n in bits if a >> bb & 1 and not b >> bb & 1]})
-            if p.get("mqtt") != cur["mqtt"]:
+            if p.get("mqtt") != cur["mqtt"] and cur["mqtt"] is not None:
                 ev.append({"k": "mqtt", "from": p.get("mqtt"), "to": cur["mqtt"]})
         self.prev = cur
-        return ev
+        return ev, miss
 
     def tick(self):
         mono = time.monotonic()
         now_ms = int(time.time() * 1000)
         up = uptime()
         self.cur_ticks = {}
-        line = {"v": SCHEMA, "ts": now_ms, "boot": self.boot, "up": round(up, 2), "n": self.n + 1,
+        line = {"v": SCHEMA, "ts": now_ms, "boot": self.boot, "bseq": self.out.bseq, "up": round(up, 2), "n": self.n + 1,
                 "dt": None if self.last_mono is None else round(mono - self.last_mono, 2),
                 "ntp": os.path.exists(P("/run/systemd/timesync/synchronized"))}
         if self.out.skipped:
@@ -686,16 +759,19 @@ class Recorder:
         section("disk", self.disk)
         section("net", self.net)
         try:
-            line["svc"], line["kids"] = self.services(up)
+            line["svc"], line["kids"] = self.services()
             rs_pid = line["svc"]["rs"].get("pid")
         except Exception as e:  # noqa: BLE001
             line["svc"], line["kids"] = {"err": "%s: %s" % (type(e).__name__, str(e)[:120])}, []
         section("ag", self.agent, now_ms, rs_pid)
         section("lte", self.modem, now_ms)
-        ev = list(self.start_ev) + self.events(line)
+        marks, miss = self.events(line)
+        ev = list(self.start_ev) + marks
         self.start_ev = []
         if ev:
             line["ev"] = ev
+        if miss:
+            line["read_miss"] = miss
         if self.n % max(1, self.args.journal_every_ticks) == 0:
             section("jr", self.journal)
             section("recfs", self.recfs)
@@ -784,9 +860,13 @@ def load_lines(paths):
                     rs.append(d)
                 else:
                     bad += 1
-        per_file.append((rs[0]["ts"] if rs else 0, f, rs))
-    per_file.sort()
-    for _t, _f, rs in per_file:
+        m = NAME_RE.match(os.path.basename(f))
+        bseq = int(m.group(1)) if m else (num(rs[0].get("bseq")) if rs and num(rs[0].get("bseq")) is not None else -1)
+        part = int(m.group(4) or 0) if m else 0
+        # boot sequence, then part: never the wall clock (behind after a power cut)
+        per_file.append(((bseq, part, rs[0]["ts"] if rs else 0, f), rs))
+    per_file.sort(key=lambda x: x[0])
+    for _k, rs in per_file:
         recs += rs
     return recs, bad, len(files)
 
@@ -906,9 +986,20 @@ def cmd_summary(args):
                 peak(str(k.get("comm")), k.get("rss_kb"), k.get("cpu"))
     for name, (rss, cpu, n) in sorted(peaks.items()):
         w("  %-28s peak rss %d kB  peak cpu %.1f %%  (%d sample(s))\n" % (name, rss, cpu, n))
-    jr = [r["jr"] for r in recs if isinstance(r.get("jr"), dict) and "cursor" in r["jr"]]
-    w("journal (xorgate-agent-rs): %d warning(s), %d error(s) over %d snapshot(s)\n"
-      % (sum(j.get("warn") or 0 for j in jr), sum(j.get("err") or 0 for j in jr), len(jr)))
+    jrs = [r["jr"] for r in recs if isinstance(r.get("jr"), dict)]
+    jr = [j for j in jrs if num(j.get("warn")) is not None]
+    w("journal (xorgate-agent-rs): %d warning(s), %d error(s) over %d snapshot(s); %d timed out, %d failed"
+      " (not counted; the next window covers them)\n"
+      % (sum(j.get("warn") or 0 for j in jr), sum(j.get("err") or 0 for j in jr), len(jr),
+         sum(1 for j in jrs if j.get("timeout")), sum(1 for j in jrs if j.get("fail") and not j.get("timeout"))))
+    w("  note: the journal tail before a power cut may be lost (journald syncs every 5 min by default);"
+      " these 5 s lines are the reliable pre-cut record\n")
+    misses = {}
+    for r in recs:
+        for k in r.get("read_miss") or []:
+            misses[k] = misses.get(k, 0) + 1
+    w("read misses (value carried forward, no marker): %s\n"
+      % (", ".join("%s %d" % kv for kv in sorted(misses.items())) or "none"))
     bl = series(("ag", "rec", "backlog_b"))
     if bl:
         w("upload backlog: max %d bytes, last %d bytes\n" % (max(bl)[0], bl[-1][0]))
@@ -923,20 +1014,31 @@ def main(argv):
     r.add_argument("--interval", type=float, default=5.0)
     r.add_argument("--ticks", type=int, default=0, help="stop after N lines (tests); 0 = forever")
     r.add_argument("--max-file-mb", type=float, default=50.0)
-    r.add_argument("--keep", type=int, default=8)
+    r.add_argument("--keep", type=int, default=2000, help="file-count cap (bytes are the real cap)")
     r.add_argument("--total-mb", type=float, default=300.0)
     r.add_argument("--min-free-mb", type=int, default=200)
     r.add_argument("--journal-every-ticks", type=int, default=12)
+    r.add_argument("--cmd-timeout", type=float, default=5.0)
+    r.add_argument("--journal-timeout", type=float, default=15.0)
     s = sub.add_parser("summary")
     s.add_argument("paths", nargs="+")
+    lt = sub.add_parser("latest", help="print the file being written: the highest (boot seq, part)")
+    lt.add_argument("dir")
     args = ap.parse_args(argv)
     if args.cmd == "summary":
         return cmd_summary(args)
+    if args.cmd == "latest":
+        files = scan_files(args.dir)
+        if not files:
+            return 1
+        print(os.path.join(args.dir, files[-1][2]))
+        return 0
     if args.cmd in (None, "run"):
         if args.cmd is None:
             args = ap.parse_args(["run"] + argv)
-        if args.interval <= 0 or args.keep < 1:
-            ap.error("--interval must be > 0 and --keep >= 1")
+        if args.interval <= 0 or args.keep < 1 or args.cmd_timeout <= 0 or args.journal_timeout <= 0:
+            ap.error("--interval and the timeouts must be > 0, --keep >= 1")
+        TIMEOUTS.update(cmd=args.cmd_timeout, journal=args.journal_timeout)
         return cmd_run(args)
     return 2
 

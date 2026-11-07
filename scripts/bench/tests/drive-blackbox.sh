@@ -25,9 +25,16 @@ BOOT1=11111111-2222-4333-8444-555555555555
 BOOT2=99999999-8888-4777-8666-555555555555
 
 # --- fakes -------------------------------------------------------------------
+# Controls: hang_<tool> (the tool itself becomes `sleep 30`: the timeout must
+# kill it); fail_<tool>_at = N (only the Nth call of that tool exits 1).
 cat > "$FB/vcgencmd" <<'S'
 #!/usr/bin/env bash
 echo "vcgencmd $*" >> "$FAKE_CTL/exec.log"
+[ -f "$FAKE_CTL/hang_vcgencmd" ] && exec sleep 30
+if [ "${1:-}" = get_throttled ] && [ -f "$FAKE_CTL/fail_vcgencmd_at" ]; then
+  n=$(( $(cat "$FAKE_CTL/count_vcgencmd" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_CTL/count_vcgencmd"
+  [ "$n" = "$(cat "$FAKE_CTL/fail_vcgencmd_at")" ] && exit 1
+fi
 case "${1:-}" in
   get_throttled) echo "throttled=$(cat "$FAKE_CTL/throttled")" ;;
   pmic_read_adc) cat "$FAKE_CTL/adc" ;;
@@ -38,6 +45,11 @@ cat > "$FB/systemctl" <<'S'
 #!/usr/bin/env bash
 echo "systemctl $*" >> "$FAKE_CTL/exec.log"
 [ "${1:-}" = show ] || exit 0
+[ -f "$FAKE_CTL/hang_systemctl" ] && exec sleep 30
+if [ -f "$FAKE_CTL/fail_systemctl_at" ]; then
+  n=$(( $(cat "$FAKE_CTL/count_systemctl" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_CTL/count_systemctl"
+  [ "$n" = "$(cat "$FAKE_CTL/fail_systemctl_at")" ] && exit 1
+fi
 first=1
 for a in "$@"; do
   case "$a" in
@@ -50,7 +62,12 @@ S
 cat > "$FB/journalctl" <<'S'
 #!/usr/bin/env bash
 echo "journalctl $*" >> "$FAKE_CTL/exec.log"
-case " $* " in *" -n 1 "*) cat "$FAKE_CTL/jcursor" ;; *) cat "$FAKE_CTL/jlines" ;; esac
+case " $* " in
+  *" -n 1 "*) cat "$FAKE_CTL/jcursor" ;;
+  *) [ -f "$FAKE_CTL/hang_jcount" ] && exec sleep 30
+     [ -f "$FAKE_CTL/fail_jcount" ] && exit 1
+     cat "$FAKE_CTL/jlines" ;;
+esac
 S
 chmod +x "$FB"/*
 cp "$FB/systemctl" "$FB/journalctl" "$FB2/"   # FB2: no vcgencmd at all
@@ -129,11 +146,13 @@ fixture() {
   unit_props xorgate-agent.service inactive dead 0 0
   unit_props sim7600-lte.service active running 777 2
   local b=${BOOT1//-/}
-  echo "{\"__CURSOR\":\"s=abc;i=10;b=$b;m=1;t=5f0;x=1\",\"__REALTIME_TIMESTAMP\":\"1762500000000000\",\"__MONOTONIC_TIMESTAMP\":\"1\",\"_BOOT_ID\":\"$b\"}" > "$CTLD/jcursor"
-  { echo '{"PRIORITY":"4","__REALTIME_TIMESTAMP":"1762499999000000"}'
-    echo '{"PRIORITY":"4","__REALTIME_TIMESTAMP":"1762499999500000"}'
-    echo '{"PRIORITY":"3","__REALTIME_TIMESTAMP":"1762499999900000"}'
-    echo '{"PRIORITY":"4","__REALTIME_TIMESTAMP":"1762500000500000"}'; } > "$CTLD/jlines"
+  echo "{\"__CURSOR\":\"s=abc;i=10;b=$b;m=1;t=5f0;x=1\",\"__REALTIME_TIMESTAMP\":\"1762500000000000\",\"__MONOTONIC_TIMESTAMP\":\"5000000\",\"_BOOT_ID\":\"$b\"}" > "$CTLD/jcursor"
+  # the last entry is AFTER the cursor (same boot, larger monotonic) although
+  # its wall clock is earlier: the next window counts it, not this one.
+  { echo "{\"PRIORITY\":\"4\",\"__REALTIME_TIMESTAMP\":\"1762499999000000\",\"__MONOTONIC_TIMESTAMP\":\"1000000\",\"_BOOT_ID\":\"$b\"}"
+    echo "{\"PRIORITY\":\"4\",\"__REALTIME_TIMESTAMP\":\"1762499999500000\",\"__MONOTONIC_TIMESTAMP\":\"2000000\",\"_BOOT_ID\":\"$b\"}"
+    echo "{\"PRIORITY\":\"3\",\"__REALTIME_TIMESTAMP\":\"1762499999900000\",\"__MONOTONIC_TIMESTAMP\":\"3000000\",\"_BOOT_ID\":\"$b\"}"
+    echo "{\"PRIORITY\":\"4\",\"__REALTIME_TIMESTAMP\":\"1762499990000000\",\"__MONOTONIC_TIMESTAMP\":\"6000000\",\"_BOOT_ID\":\"$b\"}"; } > "$CTLD/jlines"
   : > "$CTLD/exec.log"
 }
 tree_sum() { (cd "$FAKE" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1); }
@@ -146,11 +165,11 @@ rec() { # <out dir> [args…] : one recorder run, also checking it changed NOTHI
   return $rc
 }
 newest() { ls -1t "$1"/*.ndjson 2>/dev/null | head -n1; }
-# check <label> <python body> : runs the body with L = the JSON lines of the
-# newest file in $OUT (L[-1] = last), prints PASS/FAIL lines.
+# check <label> <python body> : runs the body with L = the JSON lines of
+# $CHECKF, else the newest file in $OUT (L[-1] = last), prints PASS/FAIL lines.
 check() {
   local label=$1 body=$2 out
-  out=$(OUTF="$(newest "$OUT")" python3 - <<PY 2>&1
+  out=$(OUTF="${CHECKF:-$(newest "$OUT")}" python3 - <<PY 2>&1
 import json, os
 L = [json.loads(x) for x in open(os.environ["OUTF"]) if x.strip()]
 last = L[-1]
@@ -171,9 +190,10 @@ echo "== schema (one line, every section)"
 fixture; OUT=$W/a
 rec "$OUT" --ticks 1; expect $? "recorder exits 0 after --ticks 1"
 [ "$(ls "$OUT"/*.ndjson | wc -l)" = 1 ] && [ "$(wc -l < "$(newest "$OUT")")" = 1 ]; expect $? "exactly one file with one line"
-case "$(basename "$(newest "$OUT")")" in [0-9]*T[0-9]*Z_11111111.ndjson) pass "file name <boot-start-utc>_<boot8>.ndjson ($(basename "$(newest "$OUT")"))" ;; *) failc "file name $(basename "$(newest "$OUT")")" ;; esac
+case "$(basename "$(newest "$OUT")")" in b000001_[0-9]*T[0-9]*Z_11111111.ndjson) pass "file name b<bseq>_<boot-start-utc>_<boot8>.ndjson ($(basename "$(newest "$OUT")"))" ;; *) failc "file name $(basename "$(newest "$OUT")")" ;; esac
 check schema '
 ck(last["v"] == 1 and isinstance(last["ts"], int) and last["ts"] > 1.7e12, "v=1, ts is UTC ms")
+ck("read_miss" not in last and last["bseq"] == 1, "bseq 1, no read_miss on a clean first line")
 ck(last["boot"] == "'"$BOOT1"'" and last["up"] == 1000.0 and last["n"] == 1 and last["dt"] is None and last["ntp"] is True, "boot/up/n/dt/ntp")
 p = last["pwr"]
 ck(p["rail_v"] == 5.08 and p["core_a"] == 1.235 and p["thr"] == "0x0" and p["thr_now"] == [] and p["thr_since"] == [] and p["temp_c"] == 55.2, "pwr %r" % p)
@@ -260,8 +280,11 @@ check boot '
 b = evk(last, "boot")
 ck(b and b[0]["prev_boot"] == "'"$BOOT1"'" and b[0]["prev_up"] == 1015.0 and isinstance(b[0]["prev_ts"], int), "boot marker with the previous boot %r" % b)
 ck(sorted(e["k"] for e in last["ev"]) == ["boot", "start"], "no stale-state markers across a boot %r" % last["ev"])
-ck(last["jr"]["from"] == "boot", "journal: the saved cursor is from another boot -> -b")
+ck(last["jr"]["from"] == "prev_boot_cursor" and last["jr"]["warn"] == 2, "journal: the window carries across the boot (previous boot cursor) %r" % last["jr"])
+ck(last["bseq"] == 2 and b[0]["prev_bseq"] == 1, "boot seq 2, previous 1")
 '
+grep -- '-p warning' "$CTLD/exec.log" | tail -n1 | grep -q -- "--after-cursor=s=abc;i=10;b=${BOOT1//-/}"
+expect $? "after the boot change the count still uses --after-cursor (no -b once a cursor exists)"
 
 echo "== missing keys degrade"
 fixture; OUT=$W/b
@@ -302,6 +325,131 @@ ck(all(l["dt"] is not None and l["dt"] < 1 for l in L[1:]), "dt set after the fi
 ck(L[12]["jr"]["warn"] == 2 and L[12]["jr"]["from"] == "cursor", "second snapshot counts from the cursor")
 '
 SAMPLE=$(head -n 3 "$(newest "$OUT")")
+
+echo "== F3: a one-tick read miss makes no phantom markers"
+fixture; OUT=$W/m
+echo 0x50005 > "$CTLD/throttled"
+echo 2 > "$CTLD/fail_systemctl_at"; echo 2 > "$CTLD/fail_vcgencmd_at"
+rec "$OUT" --ticks 3; expect $? "3 ticks, systemctl + get_throttled failing on tick 2 only"
+check miss '
+ck(len(L) == 3, "3 lines")
+ck(L[1].get("read_miss") == ["js", "lte_nr", "lte_pid", "rs_nr", "rs_pid", "thr"], "tick 2 lists its misses %r" % L[1].get("read_miss"))
+ck(L[1]["pwr"]["thr"] is None and L[1]["svc"]["rs"]["active"] is None, "the raw fields stay null on the miss tick")
+ck(not [e for l in L[1:] for e in l.get("ev", [])], "no markers on the miss tick or the recovery tick %r" % [l.get("ev") for l in L])
+ck("read_miss" not in L[2] and L[2]["pwr"]["thr"] == "0x50005", "recovery tick: no miss, real value back")
+'
+rm -f "$CTLD/fail_vcgencmd_at" "$CTLD/count_systemctl"; echo 1 > "$CTLD/fail_systemctl_at"
+mv "$FAKE/var/lib/xorgate/state.json" "$W/state.bak"
+rec "$OUT" --ticks 1   # a restart whose only tick misses systemctl and state.json
+mv "$W/state.bak" "$FAKE/var/lib/xorgate/state.json"; rm -f "$CTLD/fail_systemctl_at"
+rec "$OUT" --ticks 1   # a restart right after it: the carried values come from older lines of this boot
+check miss-restart '
+ck(L[3].get("read_miss") == ["js", "lte_nr", "lte_pid", "mqtt", "rs_nr", "rs_pid"], "miss line after a restart %r" % L[3].get("read_miss"))
+ck([e["k"] for e in L[3]["ev"]] == ["start"] and [e["k"] for e in L[4]["ev"]] == ["start"], "no phantom markers across restarts %r / %r" % (L[3]["ev"], L[4]["ev"]))
+'
+python3 -I "$PY" summary "$OUT" | grep -q 'read misses (value carried forward, no marker): js 2, lte_nr 2, lte_pid 2, mqtt 1, rs_nr 2, rs_pid 2, thr 1'
+expect $? "summary counts the read misses"
+
+echo "== F2: records while the agent is not up yet"
+fixture; OUT=$W/n
+unit_props xorgate-agent-rs.service activating start 0 0
+rm -f "$FAKE/var/lib/xorgate/state.json" "$FAKE/run/sim7600-lte/telemetry.json"
+rm -rf "$FAKE/sys/fs/cgroup/system.slice/xorgate-agent-rs.service"
+rec "$OUT" --ticks 2; expect $? "2 ticks with the agent still activating (no state, no cgroup, no modem file)"
+check agent-not-up '
+ck(len(L) == 2 and L[0]["svc"]["rs"]["active"] == "activating" and L[0]["svc"]["rs"]["pid"] == 0 and L[0]["kids"] == [], "lines written: rs activating, pid 0, no kids")
+ck(L[0]["pwr"]["rail_v"] == 5.08 and L[0]["ag"]["err"] == "missing" and L[0]["lte"] == {"err": "missing"}, "power recorded; agent + modem state missing")
+'
+
+echo "== F1: many boots under the byte cap all survive"
+fixture; OUT=$W/k
+for i in $(seq 1 12); do
+  printf 'a%07x-0000-4000-8000-%012d\n' "$i" "$i" > "$FAKE/proc/sys/kernel/random/boot_id"
+  rec "$OUT" --ticks 1 || failc "boot $i run"
+done
+[ "$(ls "$OUT"/*.ndjson | wc -l)" = 12 ] && [ "$(cat "$OUT/.boot-seq")" = 12 ]; expect $? "12 boots -> 12 files kept with the default caps; .boot-seq = 12"
+ls "$OUT"/b000001_*_a0000001.ndjson "$OUT"/b000012_*_a000000c.ndjson >/dev/null 2>&1; expect $? "b000001 (boot 1) .. b000012 (boot 12) by name"
+python3 - "$OUT" <<'PY'; expect $? "each boot's first line names the previous boot seq"
+import glob, json, sys
+for f in sorted(glob.glob(sys.argv[1] + "/b*.ndjson")):
+    l = json.loads(open(f).readline())
+    b = [e for e in l.get("ev", []) if e["k"] == "boot"]
+    if l["bseq"] > 1 and not (b and b[0]["prev_bseq"] == l["bseq"] - 1):
+        sys.exit(1)
+PY
+
+echo "== F4: order by boot seq, never by mtime or wall clock"
+fixture; OUT=$W/o
+rec "$OUT" --ticks 1
+echo "$BOOT2" > "$FAKE/proc/sys/kernel/random/boot_id"; set_uptime 20.00
+rec "$OUT" --ticks 1
+f1=$(ls "$OUT"/b000001_*.ndjson); touch -d '+1 day' "$f1"   # boot 1's file now looks NEWEST
+set_uptime 25.00; rec "$OUT" --ticks 1                       # a boot-2 recorder restart (clock behind)
+CHECKF=$(ls "$OUT"/b000002_*.ndjson) check restart-own-file '
+ck(len(L) == 2 and last["boot"] == "'"$BOOT2"'" and last["bseq"] == 2 and [e["k"] for e in last["ev"]] == ["start"], "restart resumes boot 2 own file, no boot marker %r" % last.get("ev"))
+'
+echo cccccccc-0000-4000-8000-000000000003 > "$FAKE/proc/sys/kernel/random/boot_id"; set_uptime 10.00
+rec "$OUT" --ticks 1
+CHECKF=$(ls "$OUT"/b000003_*.ndjson) check next-boot '
+b = evk(last, "boot")
+ck(last["bseq"] == 3 and b and b[0]["prev_boot"] == "'"$BOOT2"'" and b[0]["prev_bseq"] == 2, "boot 3 follows boot 2, not the newer-mtime boot 1 %r" % b)
+'
+echo dddddddd-0000-4000-8000-000000000004 > "$FAKE/proc/sys/kernel/random/boot_id"
+rec "$OUT" --ticks 1 --keep 2
+[ -z "$(ls "$OUT"/b000001_*.ndjson "$OUT"/b000002_*.ndjson 2>/dev/null)" ] && ls "$OUT"/b000003_*.ndjson "$OUT"/b000004_*.ndjson >/dev/null 2>&1
+expect $? "pruning goes by boot seq: b000001 (newest mtime) and b000002 go first"
+Q=$W/q; mkdir -p "$Q"
+python3 - "$Q" <<'PY'
+import json, os, sys
+q = sys.argv[1]; T = 1762500000000
+def f(name, boot, bseq, ts0):
+    with open(os.path.join(q, name), "w") as fh:
+        for i in range(3):
+            fh.write(json.dumps({"v": 1, "ts": ts0 + i * 5000, "boot": boot, "bseq": bseq, "up": 10 + i * 5}) + "\n")
+f("b000001_20261107T100000Z_aaaaaaaa.ndjson", "aaaaaaaa-0000-4000-8000-000000000001", 1, T + 3600000)  # clock ahead
+f("b000002_20261107T090000Z_bbbbbbbb.ndjson", "bbbbbbbb-0000-4000-8000-000000000002", 2, T)            # then behind
+os.utime(os.path.join(q, "b000001_20261107T100000Z_aaaaaaaa.ndjson"), (0, 0))
+PY
+SQ=$(python3 -I "$PY" summary "$Q")
+grep -A2 '^boots: 2' <<<"$SQ" | sed -n 2p | grep -q '^  aaaaaaaa' && grep -A2 '^boots: 2' <<<"$SQ" | sed -n 3p | grep -q '^  bbbbbbbb'
+expect $? "summary orders boots by boot seq although boot 2's wall clock is an hour behind"
+
+echo "== F8: timeouts bound every exec (hanging fakes)"
+fixture; OUT=$W/t
+touch "$CTLD/hang_vcgencmd" "$CTLD/hang_systemctl"
+t0=$(date +%s%N); rec "$OUT" --ticks 2 --cmd-timeout 0.3 --journal-timeout 0.3; rc=$?; t1=$(date +%s%N)
+ms=$(( (t1 - t0) / 1000000 ))
+[ "$rc" = 0 ] && [ "$ms" -lt 8000 ]; expect $? "2 ticks with vcgencmd + systemctl hanging finish (${ms} ms; 0.3 s per hung exec)"
+check hang 'ck(len(L) == 2 and L[0]["pwr"]["thr"] is None and L[0]["svc"]["rs"]["active"] is None, "hung reads recorded as null")'
+rm -f "$CTLD/hang_vcgencmd" "$CTLD/hang_systemctl"
+touch "$CTLD/hang_jcount"; c0=$(cat "$OUT/.journal-cursor")
+rec "$OUT" --ticks 1 --journal-timeout 0.3
+check jr-timeout 'ck(last["jr"].get("timeout") is True and last["jr"]["warn"] is None and last["jr"]["err"] is None, "a timed-out journal count is flagged, never zero %r" % last["jr"])'
+[ "$(cat "$OUT/.journal-cursor")" = "$c0" ]; expect $? "a timed-out window does not advance the cursor"
+rm -f "$CTLD/hang_jcount"; touch "$CTLD/fail_jcount"
+rec "$OUT" --ticks 1
+check jr-fail 'ck(last["jr"]["warn"] is None and last["jr"].get("fail") == "fail" and last["jr"]["from"] == "since", "a failed count (after the --since fallback) is flagged %r" % last["jr"])'
+grep -q -- '--since=@1762500000' "$CTLD/exec.log"; expect $? "a failed --after-cursor falls back to --since=@<cursor time>"
+python3 -I "$PY" summary "$OUT" | grep -q 'over 1 snapshot(s); 1 timed out, 1 failed (not counted'; expect $? "summary reports the timed-out and failed windows apart"
+python3 -I "$PY" summary "$OUT" | grep -q 'journal tail before a power cut may be lost'; expect $? "summary notes the journal tail before a cut may be lost"
+
+echo "== F8: pmic_read_adc stops after 3 misses in a row (a Pi 4)"
+fixture; OUT=$W/p
+echo 'error=2 error_msg="Command not registered"' > "$CTLD/adc"
+rec "$OUT" --ticks 5
+[ "$(grep -c 'vcgencmd pmic_read_adc' "$CTLD/exec.log")" = 3 ] && [ "$(grep -c 'vcgencmd get_throttled' "$CTLD/exec.log")" = 5 ]
+expect $? "5 ticks: get_throttled 5 times, pmic_read_adc only 3"
+check pi4 'ck(all(l["pwr"]["rail_v"] is None and l["pwr"]["thr"] == "0x0" for l in L), "rail null, throttled still read")'
+
+echo "== F8: a failing write (EISDIR stands in for ENOSPC/EROFS) is skipped and counted"
+fixture; OUT=$W/w; BAD="$OUT/b000001_20000101T000000Z_11111111.ndjson"; mkdir -p "$BAD"
+( rec "$OUT" --ticks 6 --interval 0.6 ) & RP=$!
+sleep 1.5; rmdir "$BAD"; wait "$RP"; expect $? "the recorder survives failing writes (exit 0)"
+python3 - "$BAD" <<'PY'; expect $? "lines resume after the failure; the first carries skipped >= 1; n reaches 6"
+import json, sys
+L = [json.loads(x) for x in open(sys.argv[1]) if x.strip()]
+sys.exit(0 if L and L[0].get("skipped", 0) >= 1 and L[-1]["n"] == 6 else 1)
+PY
 
 echo "== rotation + caps"
 fixture; OUT=$W/d; mkdir -p "$OUT"
@@ -383,19 +531,28 @@ echo "== read-only toward the agent"
 for pat in 'ttyUSB' 'AT+' 'os.kill' 'signal.SIGKILL' 'import socket' 'urllib' 'http' 'serial'; do
   ! grep -qF -- "$pat" "$PY"; expect $? "recorder source has no '$pat'"
 done
-grep -qE '^ExecStart=/usr/bin/python3 -I /usr/local/bin/xorgate-drive-blackbox run' "$UNIT_SRC" && grep -qx 'ProtectSystem=strict' "$UNIT_SRC" \
-  && grep -qx 'ReadWritePaths=-/var/lib/xorgate-rs/drive-blackbox' "$UNIT_SRC"; expect $? "unit: read-only filesystem except its own data dir"
+grep -qE '^ExecStart=/usr/bin/python3 -I /usr/local/bin/xorgate-drive-blackbox run --out-dir /var/lib/xorgate-rs/drive-blackbox$' "$UNIT_SRC" && grep -qx 'ProtectSystem=strict' "$UNIT_SRC" \
+  && grep -qx 'StateDirectory=xorgate-rs/drive-blackbox' "$UNIT_SRC" && ! grep -q '^ReadWritePaths=' "$UNIT_SRC"; expect $? "unit: read-only filesystem except its own StateDirectory (= --out-dir)"
 
 echo "== unit"
-for k in 'Restart=always' 'Nice=10' 'IOSchedulingClass=idle' 'After=xorgate-agent-rs.service' 'WantedBy=multi-user.target' 'StartLimitIntervalSec=0'; do
+for k in 'Restart=always' 'Nice=10' 'IOSchedulingClass=best-effort' 'IOSchedulingPriority=7' 'After=local-fs.target' 'WantedBy=multi-user.target' \
+         'StartLimitIntervalSec=0' 'ProtectKernelTunables=yes' 'ProtectKernelModules=yes' 'ProtectControlGroups=yes' 'DevicePolicy=closed' \
+         'DeviceAllow=/dev/vcio rw' 'RestrictAddressFamilies=AF_UNIX' 'NoNewPrivileges=yes'; do
   grep -qx -- "$k" "$UNIT_SRC"; expect $? "unit has $k"
 done
+# review F2: never ordered after (or bound to) the agent — a short brownout boot must still be recorded
+! grep -E '^(After|Before|Requires|Wants|BindsTo|PartOf|Requisite)=' "$UNIT_SRC" | grep -q 'xorgate-agent'; expect $? "unit has no ordering/dependency on the agents (F2)"
+! grep -qE '^(IOSchedulingClass=idle|DefaultDependencies=no)' "$UNIT_SRC"; expect $? "no idle IO class (F5); default dependencies kept"
 awk '/^\[/{s=$0} /^StartLimit/{if (s!="[Unit]") exit 1}' "$UNIT_SRC"; expect $? "StartLimit* in [Unit] (O-P5G-1)"
 command -v systemd-analyze >/dev/null || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq systemd >/dev/null 2>&1; }
 if command -v systemd-analyze >/dev/null; then
   d=$(mktemp -d); cp "$UNIT_SRC" "$d/"
   o=$(SYSTEMD_UNIT_PATH="$d:" systemd-analyze verify "$d/xorgate-drive-blackbox.service" 2>&1)
   [ -z "$o" ]; expect $? "systemd-analyze verify prints nothing (${o:-ok})"
+  if o=$(SYSTEMD_UNIT_PATH="$d:" systemd-analyze security --offline=true "$d/xorgate-drive-blackbox.service" 2>&1); then
+    pass "systemd-analyze security --offline: $(grep -o 'Overall exposure level.*' <<<"$o" | head -n1)"
+    grep -E 'DeviceAllow|PrivateDevices|RestrictAddressFamilies|ProtectKernelTunables|ProtectControlGroups' <<<"$o" | sed 's/^/    | /'
+  else echo "NOTE: systemd-analyze security --offline unavailable: $(head -n1 <<<"$o")"; fi
 else failc "systemd-analyze unavailable"; fi
 if command -v pyflakes3 >/dev/null || { apt-get install -y -qq python3-pyflakes >/dev/null 2>&1 && command -v pyflakes3 >/dev/null; }; then
   pyflakes3 "$PY"; expect $? "pyflakes3 drive-blackbox.py"
@@ -443,7 +600,7 @@ for u in xorgate-agent xorgate-agent-rs sim7600-lte; do [ "$(cat "$STATE/$u")" =
 ! grep -qE 'systemctl (start|stop|restart|enable|disable)( --now)? (xorgate-agent|xorgate-agent-rs|sim7600-lte)(\.service)?$' "$STATE/systemctl.log"; expect $? "ctl never starts/stops/enables the agents or the modem unit"
 : > "$STATE/systemctl.log"
 BB_WAIT_S=0 bash "$CTL" install > "$LOGS/inst2" 2>&1; expect $? "second install exits 0"
-grep -q 'already enabled + active' "$LOGS/inst2" && grep -q 'already stopped + disabled' "$LOGS/inst2" && ! grep -q 'enable --now\|restart' "$STATE/systemctl.log"; expect $? "second install is a no-op"
+grep -q 'already enabled + active' "$LOGS/inst2" && grep -q 'already stopped + disabled' "$LOGS/inst2" && ! grep -q 'enable --now\|restart\|daemon-reload' "$STATE/systemctl.log"; expect $? "second install is a no-op (no daemon-reload either)"
 bash "$CTL" status > "$LOGS/status" 2>&1; rc=$?
 [ "$rc" != 0 ] && grep -q 'STALE: no files' "$LOGS/status"; expect $? "status fails with no line yet (rc=$rc)"
 grep -q 'xorgate-drive-blackbox.service *active / enabled' "$LOGS/status" && grep -q 'retired' "$LOGS/status"; expect $? "status shows both units"
@@ -451,13 +608,14 @@ cp "$SF" /var/lib/xorgate-rs/drive-blackbox/
 bash "$CTL" summary all > "$LOGS/sum" 2>&1; expect $? "summary all (on the bench) exits 0"
 grep -q 'boots: 2' "$LOGS/sum"; expect $? "bench summary over the data dir"
 DD=/var/lib/xorgate-rs/drive-blackbox
-python3 -c 'import json,time; print(json.dumps({"v":1,"ts":int(time.time()*1000)-3000,"boot":"x"}))' > "$DD/20261107T000000Z_fresh000.ndjson"
+python3 -c 'import json,time; print(json.dumps({"v":1,"ts":int(time.time()*1000)-3000,"boot":"x"}))' > "$DD/b000001_20261107T000000Z_aaaaaaaa.ndjson"
 bash "$CTL" status > "$LOGS/status2" 2>&1; rc=$?
 [ "$rc" = 0 ] && grep -qE 'ok: last line [0-9]+ s old' "$LOGS/status2"; expect $? "status exits 0 on a 3 s old last line (rc=$rc): $(grep -o 'ok: last line.*' "$LOGS/status2")"
-sleep 1.1; python3 -c 'import json,time; print(json.dumps({"v":1,"ts":int(time.time()*1000)-60000,"boot":"x"}))' > "$DD/20261107T000001Z_stale000.ndjson"
+python3 -c 'import json,time; print(json.dumps({"v":1,"ts":int(time.time()*1000)-60000,"boot":"y"}))' > "$DD/b000002_20261107T000001Z_bbbbbbbb.ndjson"
+touch -d '1 hour ago' "$DD/b000002_20261107T000001Z_bbbbbbbb.ndjson"   # older mtime, higher boot seq: still the one status reads
 bash "$CTL" status > "$LOGS/status3" 2>&1; rc=$?
 [ "$rc" != 0 ] && grep -qE 'STALE: last line (59|60|61) s old' "$LOGS/status3"; expect $? "status fails on a 60 s old last line (rc=$rc): $(grep -o 'STALE.*' "$LOGS/status3")"
-rm -f "$DD/20261107T000000Z_fresh000.ndjson" "$DD/20261107T000001Z_stale000.ndjson"
+rm -f "$DD/b000001_20261107T000000Z_aaaaaaaa.ndjson" "$DD/b000002_20261107T000001Z_bbbbbbbb.ndjson"
 bash "$CTL" summary "$SF" | grep -q 'rail_v min 4.71'; expect $? "summary of a local file runs locally"
 if bash "$CTL" summary /nonexistent/x >/dev/null 2>&1; then failc "summary of a missing path succeeded"; else pass "summary of a missing path fails"; fi
 bash "$CTL" uninstall > "$LOGS/un" 2>&1; expect $? "uninstall exits 0"

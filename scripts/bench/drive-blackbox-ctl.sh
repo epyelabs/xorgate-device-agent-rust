@@ -16,8 +16,10 @@
 #   and scripts/bench/systemd/xorgate-drive-blackbox.service to /etc/systemd/system/,
 #   creates /var/lib/xorgate-rs/drive-blackbox (root 0755), stops + disables the
 #   OLD xorgate-blackbox.service (its unit file and /usr/local/bin/xorgate-blackbox.sh
-#   are KEPT), daemon-reload, enable --now (restart when the script or unit
-#   changed), then waits up to BB_WAIT_S (12) s for a fresh line. Idempotent.
+#   are KEPT), daemon-reload (only when a file changed), enable --now (restart
+#   when the script or unit changed), then waits up to BB_WAIT_S (30) s for a
+#   fresh line and prints its pwr/svc/mqtt fields: a null thr/rail_v there
+#   means vcgencmd is blocked (e.g. by the unit's DevicePolicy). Idempotent.
 # status: both units, the newest file (lines, size), the data dir size, the
 #   last line and its AGE; exits 1 when there is no line or the last line is
 #   older than 30 s (the recorder writes every 5 s).
@@ -66,7 +68,7 @@ b64() { base64 < "$1" | tr -d '\n'; }
 
 log "drive-blackbox $VERB on $BENCH$([ $DRY = 1 ] && echo ' (DRY RUN)')"
 {
-  printf 'DRY=%q\nVERB=%q\nBB_WAIT_S=%q\n' "$DRY" "$VERB" "${BB_WAIT_S:-12}"
+  printf 'DRY=%q\nVERB=%q\nBB_WAIT_S=%q\n' "$DRY" "$VERB" "${BB_WAIT_S:-30}"
   # every verb's body gets every variable (empty when unused: one shape to lint)
   if [ "$VERB" = install ]; then printf 'BB_PY_B64=%q\nBB_UNIT_B64=%q\n' "$(b64 "$PY_SRC")" "$(b64 "$UNIT_SRC")"
   else printf 'BB_PY_B64=\nBB_UNIT_B64=\n'; fi
@@ -82,7 +84,12 @@ BB_UNIT_FILE=/etc/systemd/system/$BB_UNIT
 BB_DATA=/var/lib/xorgate-rs/drive-blackbox
 OLD_UNIT=xorgate-blackbox.service
 STATUS_RC=0
-newest() { ls -1t "$BB_DATA"/*.ndjson 2>/dev/null | head -n1 || true; }
+# the file being written = the highest (boot seq, part), never by mtime (the
+# clock is behind after a power cut); ls -t only before the recorder exists.
+newest() {
+  if [ -x "$BB_BIN" ]; then python3 -I "$BB_BIN" latest "$BB_DATA" 2>/dev/null || true
+  else ls -1t "$BB_DATA"/*.ndjson 2>/dev/null | head -n1 || true; fi
+}
 unit_state() { printf '%s / %s' "$(systemctl is-active "$1" 2>/dev/null || true)" "$(systemctl is-enabled "$1" 2>/dev/null || true)"; }
 case "$VERB" in
 install)
@@ -122,7 +129,7 @@ except Exception: print("")' "$home/state.json" 2>/dev/null || true)
     else echo "  = already stopped + disabled"; fi
   else echo "  = $OLD_UNIT not installed"; fi
   echo "== enable"
-  act systemctl daemon-reload
+  if [ "$CHANGED_FILES" = 1 ]; then act systemctl daemon-reload; else echo "  = unit + script unchanged: no daemon-reload"; fi
   T0=$(date +%s)
   st=$(systemctl is-active "$BB_UNIT" 2>/dev/null || true)
   if [ "$(systemctl is-enabled "$BB_UNIT" 2>/dev/null || true)" != enabled ] || [ "$st" != active ]; then
@@ -133,10 +140,22 @@ except Exception: print("")' "$home/state.json" 2>/dev/null || true)
   if [ "$DRY" != 1 ]; then
     f=""; i=0
     while [ "$i" -lt "$BB_WAIT_S" ]; do
-      f=$(newest); if [ -n "$f" ] && [ "$(stat -c %Y "$f")" -ge "$T0" ]; then break; fi
+      f=$(newest); if [ -n "$f" ] && [ "$(stat -c %Y "$f" 2>/dev/null || echo 0)" -ge "$T0" ]; then break; fi
       f=""; sleep 1; i=$((i + 1))
     done
-    if [ -n "$f" ]; then echo "  ok: recording to $f"; tail -n1 "$f" | cut -c1-400 | sed 's/^/    /'
+    if [ -n "$f" ]; then
+      echo "  ok: recording to $f"
+      tail -n1 "$f" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+def g(*keys):
+    v = d
+    for k in keys:
+        v = v.get(k) if isinstance(v, dict) else None
+    return v
+print("    pwr thr=%s rail_v=%s temp_c=%s | svc rs=%s pid=%s | mqtt=%s | read_miss=%s" % (
+    g("pwr", "thr"), g("pwr", "rail_v"), g("pwr", "temp_c"), g("svc", "rs", "active"), g("svc", "rs", "pid"), g("ag", "mqtt"), d.get("read_miss")))
+if g("pwr", "thr") is None: print("  WARN: no get_throttled value: vcgencmd blocked or missing (DevicePolicy?)")
+if g("svc", "rs", "active") is None: print("  WARN: no systemctl show value")' 2>/dev/null || echo "  WARN: could not parse the fresh line"
     else echo "  WARN: no fresh line within ${BB_WAIT_S} s (check: drive-blackbox-ctl.sh status; journalctl -u $BB_UNIT)"; fi
   fi
   ;;
