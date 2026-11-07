@@ -51,7 +51,13 @@ LOCK=/run/xorgate-rs-install.lock
 REQUIRED_MEMBERS=(bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service systemd/xorgate-updater-rs.service install-rs.sh)
 # update_plan::SMOKE_PREFIX.
 SMOKE_PREFIX="xorgate-rs "
-VERIFY_SECS=90
+# O-P6-1: the unit's After=xorgate-agent.service makes step 8's start wait for
+# the JS agent's WHOLE stop: SIGTERM, up to its TimeoutStopSec (systemd default
+# 90 s; the JS unit sets none) before the SIGKILL, then its ExecStopPost. That
+# call gets START_SECS (every other systemctl call keeps sctl's 100 s), and
+# step 9 the same window, so a JS agent that ignores SIGTERM still converts.
+START_SECS=150
+VERIFY_SECS=$START_SECS
 # I3 roots (one line per path) and tree roots (one `t <digest>` line each).
 MANIFEST_ROOTS=(/etc/xorgate /usr/local/bin /etc/systemd/system /etc/sudoers.d /etc/cron.d /etc/udev/rules.d
   /etc/NetworkManager/conf.d /etc/systemd/logind.conf.d /var/lib/xorgate-rs-install)
@@ -116,7 +122,7 @@ install-rs.sh: convert a JS-provisioned xorgate device to the Rust agent, and ba
 
 Exit codes: 0 done / no-op; 1 failed, device back at its pre-run state;
 2 usage; 3 refused by a precondition (not root, not JS-provisioned, purge of a
-pre-existing install; nothing changed); 4 started but not healthy within 90 s,
+pre-existing install; nothing changed); 4 started but not healthy within 150 s,
 automatically reverted (JS restored).
 
 Record: /var/lib/xorgate-rs-install/{record,pre.manifest} (root 0700).
@@ -158,7 +164,7 @@ detail() { # <stderr file> <rc>
 SCTL_ERR=""
 sctl() {
   local o rc=0
-  o=$(timeout 100 systemctl "$@" 2>&1) || rc=$?
+  o=$(timeout "${SCTL_SECS:-100}" systemctl "$@" 2>&1) || rc=$?
   o=$(printf '%s' "$o" | tr -s '\n\t' '  '); SCTL_ERR=${o%" "}
   return "$rc"
 }
@@ -826,16 +832,16 @@ convert_main() {
   fi
   if [ "$(unit_active "$RS_SVC")" = active ]; then
     if [ "$NEED_RESTART" = 1 ]; then
-      sctl restart "$RS_SVC" || abort_convert "systemctl restart $RS_SVC failed: $SCTL_ERR"
+      SCTL_SECS=$START_SECS sctl restart "$RS_SVC" || abort_convert "systemctl restart $RS_SVC failed: $SCTL_ERR"
       note "$RS_SVC restarted (new build or unit)"
     fi
   else
-    sctl start "$RS_SVC" || abort_convert "systemctl start $RS_SVC failed: $SCTL_ERR"
+    SCTL_SECS=$START_SECS sctl start "$RS_SVC" || abort_convert "systemctl start $RS_SVC failed: $SCTL_ERR"
     note "$RS_SVC started"
   fi
   maybe_fail_at 8
 
-  # ---- step 9: ≤ 90 s for rs active + JS inactive, else auto-revert (§5.5) ----
+  # ---- step 9: ≤ VERIFY_SECS for rs active + JS inactive, else auto-revert (§5.5) ----
   say "== 9. verify"
   deadline=$((SECONDS + VERIFY_SECS))
   while :; do
