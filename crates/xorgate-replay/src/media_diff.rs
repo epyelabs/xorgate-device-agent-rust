@@ -3140,48 +3140,19 @@ pub fn diff_media(
             b.timing.len()
         ),
     );
+    // Phase 7a (WP3 review F1-F3): the exact side's OWN sidecars, whatever
+    // the other side holds — D51 never hides a fragment that did not get
+    // the exact treatment its own accepted records demand.
+    if let (Some(exact_a), Some(_)) = (d51_side, &d51_row) {
+        let (m, ce) = if exact_a { (a, &ca) } else { (b, &cb) };
+        for (at, path, got, want) in exact_side_violations(m, ce) {
+            let (va, vb) = if exact_a { (got, want) } else { (want, got) };
+            rep.push(mm("sidecar", &at, &path, va, vb, UNTOLERATED));
+        }
+    }
     for key in ca.keys().chain(cb.keys()).collect::<BTreeSet<_>>() {
         let at = format!("{}/{:05}", key.0, key.1);
         let (Some(x), Some(y)) = (ca.get(key), cb.get(key)) else {
-            // D51 never hides a missing sidecar: on an exact-timing run, a
-            // fragment the exact side holds an ACCEPTED stamp for, whose
-            // sidecar only the OTHER side wrote, is UNTOLERATED unless it is
-            // that session's last fragment on the other side (the run's cut,
-            // which the mp4/s3 streams judge ±1 as before).
-            if let (Some(exact_a), Some(_)) = (d51_side, &d51_row) {
-                let (m, ce, co) = if exact_a {
-                    (a, &ca, &cb)
-                } else {
-                    (b, &cb, &ca)
-                };
-                let stamped = m
-                    .timing
-                    .iter()
-                    .any(|r| r.sid == key.0 && r.id == key.1 && r.accepted && r.start_ts.is_some());
-                let last_other = co.keys().filter(|k| k.0 == key.0).map(|k| k.1).max();
-                if stamped
-                    && !ce.contains_key(key)
-                    && co.contains_key(key)
-                    && last_other != Some(key.1)
-                {
-                    rep.push(mm(
-                        "sidecar",
-                        &at,
-                        "(missing on the exact side)",
-                        if exact_a {
-                            "∅".into()
-                        } else {
-                            "present".into()
-                        },
-                        if exact_a {
-                            "present".into()
-                        } else {
-                            "∅".into()
-                        },
-                        UNTOLERATED,
-                    ));
-                }
-            }
             continue; // presence: the mp4/s3 streams judge it (±1 at the cut)
         };
         // D51: what the exact side's fragment must differ by (None = T12).
@@ -4143,6 +4114,79 @@ pub struct D51Expect {
     /// final whose duration is `endTs − startTs`, else 0), judged with
     /// T12's `durationMs` band.
     pub dur: i64,
+}
+
+/// Phase 7a (WP3 review F1-F3): what the exact side's OWN sidecars break,
+/// as `(at, path, got, want)` rows (each UNTOLERATED), independent of the
+/// other side, for every session this side's agent spawned (`live_sids`):
+/// - `(missing on the exact side)` (F2): a non-empty mp4 with a LATER
+///   non-empty mp4 of the same session but no sidecar (final tree or S3).
+///   Only the session's own last fragment may lack one (the D41 agent-exit
+///   SIGKILL leaves the fragment being written to the next boot's recovery);
+///   which side holds what never matters;
+/// - `(accepted stamp not used)` (F1): a sidecar whose seq holds an ACCEPTED
+///   stamp in the side's own table but whose anchor is not `pts` (the agent
+///   wrote legacy bytes over its own stamp; a timing line later than the
+///   D57 deferral would also land here, and K6 expects none);
+/// - `(END stamp not used)` (F3): a `pts` sidecar with an accepted END stamp
+///   and no accepted successor stamp whose `durationMs` is not exactly
+///   `endTs − startTs` (`exact_times`, §8.4).
+pub fn exact_side_violations(
+    m: &MediaCapture,
+    ce: &BTreeMap<(String, u64), Value>,
+) -> Vec<(String, String, String, String)> {
+    let mut out = Vec::new();
+    for sid in &m.live_sids {
+        let mp4s: BTreeSet<u64> = m
+            .rec
+            .iter()
+            .filter(|(_, s)| s.size > 0)
+            .filter_map(|(path, _)| match frag_of(path) {
+                Some((q_sid, q, "mp4")) if &q_sid == sid => Some(q),
+                _ => None,
+            })
+            .collect();
+        let last = mp4s.iter().next_back().copied();
+        for q in &mp4s {
+            if Some(*q) != last && !ce.contains_key(&(sid.clone(), *q)) {
+                out.push((
+                    format!("{sid}/{q:05}"),
+                    "(missing on the exact side)".into(),
+                    "∅".into(),
+                    "a sidecar (a later fragment exists)".into(),
+                ));
+            }
+        }
+        let t = d51_table(m, sid);
+        for ((q_sid, q), v) in ce.range((sid.clone(), 0)..=(sid.clone(), u64::MAX)) {
+            debug_assert_eq!(q_sid, sid);
+            let Some(own) = t.exact(*q) else {
+                continue;
+            };
+            let at = format!("{sid}/{q:05}");
+            if v["anchor"] != "pts" {
+                out.push((
+                    at,
+                    "(accepted stamp not used)".into(),
+                    format!("anchor {} startTs {}", v["anchor"], v["startTs"]),
+                    format!("anchor \"pts\" startTs {}", own.start_ts),
+                ));
+                continue;
+            }
+            if let (Some(end), None) = (own.end_ts, t.exact(q + 1)) {
+                let want = end - own.start_ts;
+                if v["durationMs"].as_f64() != Some(want) {
+                    out.push((
+                        at,
+                        "(END stamp not used)".into(),
+                        format!("durationMs {}", v["durationMs"]),
+                        format!("durationMs {want} (endTs − startTs)"),
+                    ));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The exact side's timing table for one session, rebuilt from ITS OWN tape
@@ -8163,6 +8207,99 @@ kind = "decisions"
             d51_expect(&r, P7_SID, 3, &e, &o).map(|d| d.start),
             Some(LAG_R[3] + 1)
         );
+    }
+
+    /// WP3 review F1: an exact side that IGNORES its own accepted stamp —
+    /// legacy bytes (`fstat`, birthtime start; fragment 0 `boundary`) for a
+    /// seq whose table holds an accepted stamp — FAILS, although T12 alone
+    /// would pass every field of it.
+    #[test]
+    fn d51_an_accepted_stamp_that_was_not_used_fails() {
+        let table = committed_table();
+        let Fixture { js, rs } = fixture();
+        let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
+        let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
+        // Fragment 2 written as the TS writes it, the stamp kept on the tape.
+        let mut r = rs.clone();
+        let (j2, j0) = (sc(&js, 2), sc(&js, 0));
+        set_sc(&mut r, 2, |v| {
+            v["anchor"] = "fstat".into();
+            v["startTs"] = (v["startTs"].as_i64().unwrap() + LAG_R[2] + 1).into();
+            v["durationMs"] = j2["durationMs"].clone();
+        });
+        assert_eq!(unt(&js, &r), vec![row(2, "(accepted stamp not used)")]);
+        // Fragment 0 as the TS's `boundary` row.
+        let mut r = rs.clone();
+        set_sc(&mut r, 0, |v| {
+            v["anchor"] = "boundary".into();
+            v["startTs"] = (v["startTs"].as_i64().unwrap() + LAG_R[1]).into();
+            v["durationMs"] = j0["durationMs"].clone();
+        });
+        assert!(unt(&js, &r).contains(&row(0, "(accepted stamp not used)")), "{:#?}", unt(&js, &r));
+        // The whole session legacy while every stamp is accepted.
+        let mut r = rs.clone();
+        for q in 0..4 {
+            let jq = sc(&js, q);
+            set_sc(&mut r, q, |v| {
+                v["anchor"] = jq["anchor"].clone();
+                v["durationMs"] = jq["durationMs"].clone();
+            });
+        }
+        let u = unt(&js, &r);
+        for q in 0..4 {
+            assert!(u.contains(&row(q, "(accepted stamp not used)")), "{u:#?}");
+        }
+        // Either column order.
+        assert!(unt(&r, &js).contains(&row(2, "(accepted stamp not used)")));
+    }
+
+    /// WP3 review F2: the exemption keys on the EXACT side's own last
+    /// fragment. The b-media shape: the exact side holds one fragment more
+    /// than JS and loses its second-to-last sidecar (= JS's last) — FAILS.
+    #[test]
+    fn d51_a_hole_inside_the_exact_sides_own_session_fails() {
+        let table = committed_table();
+        let Fixture { mut js, rs } = fixture();
+        let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
+        let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
+        js.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
+        js.rec.remove(&format!("video/cam0/{P7_SID}/00003.mp4"));
+        let mut r = rs.clone();
+        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00002.json"));
+        assert!(unt(&js, &r).contains(&row(2, "(missing on the exact side)")), "{:#?}", unt(&js, &r));
+        assert!(unt(&r, &js).contains(&row(2, "(missing on the exact side)")));
+        // ... also a hole the exact side holds NO stamp for (coverage, not D51).
+        let mut r = rs.clone();
+        r.timing.retain(|t| t.id != 1);
+        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00001.json"));
+        assert!(unt(&js, &r).contains(&row(1, "(missing on the exact side)")));
+        // The exact side's OWN last fragment may lack one (D41 exit kill).
+        let mut r = rs.clone();
+        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
+        assert!(!unt(&js, &r).iter().any(|x| x.contains("missing")), "{:#?}", unt(&js, &r));
+        // A session this side never spawned (seeded filler, recovery) is not checked.
+        let mut r = rs.clone();
+        r.live_sids.clear();
+        r.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00001.json"));
+        assert!(!unt(&js, &r).iter().any(|x| x.contains("missing on the exact side")));
+    }
+
+    /// WP3 review F3: a clean final with an accepted END stamp and no
+    /// successor stamp must be exactly `endTs − startTs`; 40 ms off FAILS
+    /// although the old D51 band (−lag ± 150) would have passed it.
+    #[test]
+    fn d51_a_clean_final_that_ignores_its_end_stamp_fails() {
+        let table = committed_table();
+        let Fixture { js, rs } = fixture();
+        let unt = |a: &MediaCapture, b: &MediaCapture| sidecar_rows(a, b, &table, true);
+        let row = |seq: u64, path: &str| format!("{P7_SID}/{seq:05} {path} {UNTOLERATED}");
+        let mut r = rs.clone();
+        set_sc(&mut r, 3, |v| v["durationMs"] = (v["durationMs"].as_i64().unwrap() - 40).into());
+        assert_eq!(unt(&js, &r), vec![row(3, "(END stamp not used)")]);
+        // ... also when the other side lacks the fragment (exact-only tail).
+        let mut j = js.clone();
+        j.finals.remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
+        assert!(unt(&j, &r).contains(&row(3, "(END stamp not used)")));
     }
 
     fn lines_cap(kind: &str, tool: &str, lines: &[(u8, &str)], end: &str) -> MediaCapture {
