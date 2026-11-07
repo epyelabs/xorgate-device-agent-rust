@@ -16,6 +16,7 @@
 //!   request, the failure catch;
 //! - invariant 4: no reboot / power-off / systemctl identifier in
 //!   `ops/camera_mount.rs`; `system/SHA256SUMS` matches the vendored files.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

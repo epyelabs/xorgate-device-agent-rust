@@ -1,5 +1,6 @@
 //! End to end: `xorgate-replay diff <run>` on a hand-built run dir (JS and
 //! Rust captures + the tape the run names), checked through `diff.json`.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

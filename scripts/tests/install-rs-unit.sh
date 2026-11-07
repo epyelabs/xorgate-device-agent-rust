@@ -213,8 +213,9 @@ has "$O" "[install-rs] converted: xorgate-agent-rs good (test) active; xorgate-a
 has "$O" "WARNING: /etc/xorgate/agent.env pins DEVICE_DIST_VERSION=v0.1.2 (the JS agent's build)" "JS-pin warning (Q11)"
 [ "$(systemctl is-enabled xorgate-agent-rs)/$(systemctl is-active xorgate-agent-rs)/$(systemctl is-enabled xorgate-agent)/$(systemctl is-active xorgate-agent)" = enabled/active/disabled/inactive ]
 expect $? 0 "rs enabled+active, JS disabled+inactive"
-cmp -s /etc/systemd/system/xorgate-agent-rs.service "$SRC/systemd/xorgate-agent-rs.service" && grep -qx 'Conflicts=xorgate-agent.service' /etc/systemd/system/xorgate-agent-rs.service
-expect $? 0 "shipped unit byte-equal, with Conflicts="
+cmp -s /etc/systemd/system/xorgate-agent-rs.service "$SRC/systemd/xorgate-agent-rs.service" && grep -qx 'Conflicts=xorgate-agent.service' /etc/systemd/system/xorgate-agent-rs.service \
+  && grep -qx 'After=xorgate-agent.service' /etc/systemd/system/xorgate-agent-rs.service
+expect $? 0 "shipped unit byte-equal, with Conflicts= and After= (O-P6-1)"
 cmp -s /etc/systemd/system/xorgate-agent-rs.service.d/10-user.conf /etc/systemd/system/xorgate-agent.service.d/10-user.conf; expect $? 0 "10-user.conf byte copy"
 [ ! -e /etc/systemd/system/xorgate-agent-rs.service.d/90-bench-dev.conf ]; expect $? 0 "CF67: bench drop-in never installed"
 cmp -s <(bash -c "source '$INSTALL_RS'; rs_dist_dropin_body") /etc/systemd/system/xorgate-updater-rs.service.d/10-dist.conf \

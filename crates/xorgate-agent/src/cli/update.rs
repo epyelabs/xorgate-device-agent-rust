@@ -549,6 +549,7 @@ async fn install_sudoers(
     res
 }
 
+#[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
 #[cfg(test)]
 mod tests {
     use super::*;

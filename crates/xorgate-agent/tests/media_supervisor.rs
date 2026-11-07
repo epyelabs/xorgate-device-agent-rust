@@ -21,7 +21,8 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+mod log_capture;
+use tracing_subscriber::layer::{Context, Layer};
 use xorgate_agent::media::{
     GuardFn, MasterBackend, MasterProc, MediaConfig, MediaSupervisor, StreamGuard,
 };
@@ -230,10 +231,10 @@ async fn supervisor_follows_the_ts_scripts_under_paused_time() {
         let inp = &c["input"];
         let origin = tokio::time::Instant::now();
         let trace: Trace = Arc::default();
-        let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(Capture {
+        let _g = log_capture::install(Capture {
             trace: trace.clone(),
             origin,
-        }));
+        });
 
         // The driver's world, at the driver's own paths.
         let pipeline_dir = inp["pipelineDir"].as_str().unwrap().to_string();

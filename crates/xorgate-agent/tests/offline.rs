@@ -2,6 +2,7 @@
 //! refactor): the offline stub "connects" at once, the first payload is
 //! printed at +interval, one JSON line per tick; SIGTERM shuts down in the
 //! TS order with exit 0, the pidfile removed and state.json closed.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};

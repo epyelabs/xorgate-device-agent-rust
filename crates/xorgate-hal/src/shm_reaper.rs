@@ -102,6 +102,7 @@ pub fn shm_pipe_names(dir: &Path) -> Vec<String> {
     v
 }
 
+#[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
 #[cfg(test)]
 mod tests {
     use super::*;
