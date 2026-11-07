@@ -110,6 +110,25 @@ pub struct Release {
 }
 
 impl PlayInfo {
+    /// P3a R4 ("a restart is a boot"): the boot a wall instant belongs to —
+    /// the handoff's restart for anything at/after it, else the run's start.
+    /// Without a handoff it is `start_wall` for every `w`.
+    pub fn boot_wall(&self, w: i64) -> i64 {
+        match &self.handoff {
+            Some(h) if w >= h.restart_w => h.restart_w,
+            _ => self.start_wall,
+        }
+    }
+
+    /// P3a R4: the end of the stretch a wall instant belongs to — the
+    /// handoff's stop signal for the stopped incarnations, else the run's end.
+    pub fn stretch_end(&self, w: i64) -> i64 {
+        match &self.handoff {
+            Some(h) if w < h.restart_w => h.stop_w,
+            _ => self.end_wall,
+        }
+    }
+
     /// Host CPU busy % over `[to − window, to]` from the player's `/proc/stat`
     /// samples (`cpu_busy`/`cpu_total` jiffies), nearest samples at both ends.
     pub fn host_cpu(&self, to: i64, window: i64) -> Option<f64> {
@@ -1163,7 +1182,8 @@ impl Cx<'_> {
         let r = self.table.of_kind("presence_window", &self.stream).next()?;
         let window = r.window_ms.unwrap_or(1500) as i64;
         let startup = r.startup_ms.unwrap_or(5000) as i64;
-        if w - self.first_wall <= startup {
+        // P3a R4: a restarted incarnation's boot has the same startup window.
+        if w - self.first_wall.max(self.play.boot_wall(w)) <= startup {
             return Some(r.id.clone());
         }
         // Only the transitions of the group the path belongs to
@@ -2788,8 +2808,10 @@ pub fn diff_with(
                     cadence_used.insert((side, k)).then_some(id)
                 })
                 .or_else(|| {
-                    // The first/last tick of a run may have no partner.
-                    (wv - first_wall <= 5_000 || play.end_wall - wv <= 3_000)
+                    // The first/last tick of a run may have no partner (P3a
+                    // R4: also of each stretch around a handoff restart).
+                    (wv - first_wall.max(play.boot_wall(wv)) <= 5_000
+                        || play.stretch_end(wv) - wv <= 3_000)
                         .then(|| "T4".to_string())
                 })
                 .or_else(|| {
@@ -3278,6 +3300,16 @@ fn seq_increments(
     for w in v.windows(2) {
         let ((t0, s0), (t1, s1)) = (w[0], w[1]);
         if s1 - s0 == 1 {
+            continue;
+        }
+        // P3a R4: a restarted process counts again from 0 (a boot). Only the
+        // one pair that straddles the handoff restart AND lands on 0.
+        if s1 == 0
+            && play
+                .handoff
+                .as_ref()
+                .is_some_and(|h| t0 < h.restart_w && t1 >= h.restart_w)
+        {
             continue;
         }
         let cx = Cx {
@@ -5368,6 +5400,81 @@ mod tests {
             vec!["T8/offline-queue-bound".to_string()]
         );
         assert_eq!(long.untolerated(), 0, "{:?}", long.mismatches);
+    }
+
+    /// P3a R4 (rig rule, NOT a tolerance): the handoff restart is a boot —
+    /// seq restarts at 0 and the first ticks of the new stretch may lack a
+    /// partner, exactly as at the run's start. NEGATIVE: a seq jump inside a
+    /// stretch, a straddling jump that does not land on 0, and an unpaired
+    /// tick well inside a stretch still FAIL.
+    #[test]
+    fn p3a_r4_a_restart_is_a_boot_for_seq_and_unpaired_ticks() {
+        let t = table();
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 400_000,
+            handoff: Some(crate::takeover::HandoffInfo {
+                stop_w: 100_000,
+                restart_w: 190_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            (play.boot_wall(50_000), play.boot_wall(190_500)),
+            (0, 190_000)
+        );
+        assert_eq!(
+            (play.stretch_end(99_000), play.stretch_end(200_000)),
+            (100_000, 400_000)
+        );
+        let none = PlayInfo::default();
+        assert_eq!((none.boot_wall(5), none.stretch_end(5)), (0, 0));
+        let seq = |pts: &[(i64, i64)]| {
+            let ms: Vec<Msg> = pts
+                .iter()
+                .map(|(ts, s)| msg(*ts, "telemetry", serde_json::json!({"ts": ts, "seq": s})))
+                .collect();
+            let refs: Vec<&Msg> = ms.iter().collect();
+            let mut rep = Report::default();
+            seq_increments(
+                &refs,
+                "A",
+                &play,
+                &InputFacts::for_play(&play),
+                &t,
+                &mut rep,
+            );
+            rep.mismatches
+                .iter()
+                .filter(|m| m.tol == UNTOLERATED)
+                .count()
+        };
+        // 93 → restart → 0: the boot.
+        assert_eq!(
+            seq(&[(98_000, 92), (99_000, 93), (191_000, 0), (192_000, 1)]),
+            0
+        );
+        // NEGATIVE: a jump inside a stretch; a straddle that lands on 5.
+        assert_eq!(seq(&[(98_000, 92), (99_000, 94)]), 1);
+        assert_eq!(seq(&[(99_000, 93), (191_000, 5)]), 1);
+        assert_eq!(seq(&[(191_000, 0), (192_000, 0)]), 1);
+        // Without a handoff the same 93 → 0 is a FAIL.
+        let mut rep = Report::default();
+        let ms: Vec<Msg> = [(99_000, 93), (191_000, 0)]
+            .iter()
+            .map(|(ts, s)| msg(*ts, "telemetry", serde_json::json!({"ts": ts, "seq": s})))
+            .collect();
+        let refs: Vec<&Msg> = ms.iter().collect();
+        seq_increments(
+            &refs,
+            "A",
+            &none,
+            &InputFacts::for_play(&none),
+            &t,
+            &mut rep,
+        );
+        assert_eq!(rep.untolerated(), 1);
     }
 
     #[test]

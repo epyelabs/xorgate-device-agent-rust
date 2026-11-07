@@ -258,13 +258,13 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         "p6-takeover-open",
         170,
         &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
-        "P3a (a): both recorders + healthy uploads; handoff at 95 s mid-fragment / mid-segment (open sessions, no backlog)",
+        "P3a (a): both recorders + healthy uploads; handoff at 100 s mid-fragment / mid-segment (open sessions, no backlog)",
     ),
     (
         "p6-takeover-vbacklog",
         170,
         &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
-        "P3a (b): video only; fake-S3 503 from 30 s to handoff + 10 s; handoff at 95 s (closed fragments never uploaded + the active one)",
+        "P3a (b): video only; fake-S3 503 from 30 s to handoff + 10 s; handoff at 100 s (closed fragments never uploaded + the active one)",
     ),
     (
         "p6-takeover-tbacklog",
@@ -276,7 +276,7 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         "p6-takeover-inflight",
         170,
         &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
-        "P3a in-flight: both recorders; an mp4 PUT arriving in [87 s, 95 s) is held mid-transfer (its sidecar already PUT); SIGKILL handoff at 95 s aborts it",
+        "P3a in-flight: both recorders; an mp4 PUT arriving in [92 s, 100 s) is held mid-transfer (its sidecar already PUT); SIGKILL handoff at 100 s aborts it",
     ),
     (
         "p6-takeover-reap",
@@ -748,13 +748,16 @@ pub fn rec_namespace(scenario: &str) -> Value {
 }
 
 /// P3a handoff instants (tape ms), off every rotation: cam0's 10 s fragments,
+/// measured on the rig at ≈ 3.2 s + 10k (tape), cam1's at ≈ 6.7 s + 10k (L1
+/// 2026-11-07: 95 s cut cam0 1.8 s into a fragment → INVALID; a multiple of
+/// 10 s is ≈ 6.8 s / 3.3 s into them),
 /// cam1's (staggered 4 s), the 60 s telemetry rotation (`segments.ts:45`)
 /// and the fault-window edges. `takeover.rs` `edge` re-checks on each run.
-pub const TAKEOVER_OPEN_AT_MS: u64 = 95_000;
-pub const TAKEOVER_VBACKLOG_AT_MS: u64 = 95_000;
+pub const TAKEOVER_OPEN_AT_MS: u64 = 100_000;
+pub const TAKEOVER_VBACKLOG_AT_MS: u64 = 100_000;
 pub const TAKEOVER_TBACKLOG_AT_MS: u64 = 150_000;
 pub const TAKEOVER_REAP_AT_MS: u64 = 150_000;
-pub const TAKEOVER_INFLIGHT_AT_MS: u64 = 95_000;
+pub const TAKEOVER_INFLIGHT_AT_MS: u64 = 100_000;
 /// The in-flight tape's hold window opens this long before the handoff: two
 /// cameras close a fragment every ≤ 6 s (10 s fragments, 4 s stagger), so at
 /// least one mp4 PUT starts inside it, and the single-flight uploader sends
