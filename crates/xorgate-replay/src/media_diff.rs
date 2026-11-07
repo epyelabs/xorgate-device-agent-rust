@@ -8422,24 +8422,38 @@ kind = "decisions"
         r.timing.retain(|t| t.end_ts.is_none());
         r.finals
             .remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
-        assert!(!unt(&js, &r).iter().any(|x| x.contains("missing")), "{:#?}", unt(&js, &r));
+        assert!(
+            !unt(&js, &r).iter().any(|x| x.contains("missing")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // ... round-2 N2: a cleanly ended session (accepted END) whose final
         // sidecar is missing FAILS.
         let mut r = rs.clone();
         r.finals
             .remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
-        assert!(unt(&js, &r).contains(&row(3, "(missing on the exact side)")), "{:#?}", unt(&js, &r));
+        assert!(
+            unt(&js, &r).contains(&row(3, "(missing on the exact side)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // N5a: the merged mp4 set — an mp4 only the S3 copy proves (the
         // player never saw it locally) still counts.
         let mut r = rs.clone();
         let mp4 = format!("video/cam0/{P7_SID}/00004.mp4");
-        r.s3_bodies
-            .insert(format!("media-sessions/v1/dev/cam0/{P7_SID}/00004.mp4"), vec![1; 10]);
+        r.s3_bodies.insert(
+            format!("media-sessions/v1/dev/cam0/{P7_SID}/00004.mp4"),
+            vec![1; 10],
+        );
         r.finals
             .remove(&format!("recordings/video/cam0/{P7_SID}/00003.json"));
         r.timing.retain(|t| t.end_ts.is_none());
         assert!(!r.rec.contains_key(&mp4));
-        assert!(unt(&js, &r).contains(&row(3, "(missing on the exact side)")), "{:#?}", unt(&js, &r));
+        assert!(
+            unt(&js, &r).contains(&row(3, "(missing on the exact side)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // A session this side never spawned (seeded filler, recovery) is not checked.
         let mut r = rs.clone();
         r.live_sids.clear();
@@ -8491,11 +8505,21 @@ kind = "decisions"
         js.rec.remove(&format!("video/cam0/{P7_SID}/00003.mp4"));
         assert!(unt(&js, &rs).is_empty(), "{:#?}", unt(&js, &rs));
         let mut r = rs.clone();
-        set_sc(&mut r, 3, |v| v["startTs"] = (v["startTs"].as_i64().unwrap() + 5).into());
-        assert!(unt(&js, &r).contains(&row(3, "(pts startTs is not its stamp)")), "{:#?}", unt(&js, &r));
+        set_sc(&mut r, 3, |v| {
+            v["startTs"] = (v["startTs"].as_i64().unwrap() + 5).into()
+        });
+        assert!(
+            unt(&js, &r).contains(&row(3, "(pts startTs is not its stamp)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         let mut r = rs.clone();
         r.timing.retain(|t| t.id != 3);
-        assert!(unt(&js, &r).contains(&row(3, "(pts without an accepted stamp)")), "{:#?}", unt(&js, &r));
+        assert!(
+            unt(&js, &r).contains(&row(3, "(pts without an accepted stamp)")),
+            "{:#?}",
+            unt(&js, &r)
+        );
         // A refused stamp is no stamp.
         let mut r = rs.clone();
         for t in r.timing.iter_mut().filter(|t| t.id == 3) {
@@ -8504,8 +8528,12 @@ kind = "decisions"
         assert!(unt(&js, &r).contains(&row(3, "(pts without an accepted stamp)")));
         // On a fragment both sides hold, the pairwise D51 judges it (no N1 row).
         let mut r = rs.clone();
-        set_sc(&mut r, 2, |v| v["startTs"] = (v["startTs"].as_i64().unwrap() + 5).into());
-        assert!(!unt(&js, &r).iter().any(|x| x.contains("(pts startTs is not its stamp)")));
+        set_sc(&mut r, 2, |v| {
+            v["startTs"] = (v["startTs"].as_i64().unwrap() + 5).into()
+        });
+        assert!(!unt(&js, &r)
+            .iter()
+            .any(|x| x.contains("(pts startTs is not its stamp)")));
     }
 
     /// WP3 review F8: `d51_expect`'s own gate (unreachable through the call
@@ -8759,18 +8787,32 @@ kind = "decisions"
         let mut v = s(&[0, 2]);
         v.push(refusal(3));
         assert!(d52_sequence_ok(&v).is_err(), "a gap BEFORE the named id");
-        let panic = || (2u8, "thread '<unnamed>' panicked at src/host.rs:1:1:".to_string());
+        let panic = || {
+            (
+                2u8,
+                "thread '<unnamed>' panicked at src/host.rs:1:1:".to_string(),
+            )
+        };
         let mut v = s(&[0, 2]);
         v.insert(1, panic());
-        assert!(d52_sequence_ok(&v).is_ok(), "a contained panic: one id after it");
+        assert!(
+            d52_sequence_ok(&v).is_ok(),
+            "a contained panic: one id after it"
+        );
         // Round-2 N3: the panic allowance is bounded — one id per panic line,
         // only for a gap AFTER the line ...
         let mut v = s(&[0, 3]);
         v.insert(1, panic());
-        assert!(d52_sequence_ok(&v).is_err(), "two ids missing, one panic line");
+        assert!(
+            d52_sequence_ok(&v).is_err(),
+            "two ids missing, one panic line"
+        );
         let mut v = s(&[0, 2]);
         v.push(panic());
-        assert!(d52_sequence_ok(&v).is_err(), "the panic line comes after the gap");
+        assert!(
+            d52_sequence_ok(&v).is_err(),
+            "the panic line comes after the gap"
+        );
         let mut v = s(&[0, 3]);
         v.insert(1, panic());
         v.insert(1, panic());
@@ -8779,7 +8821,10 @@ kind = "decisions"
         // start line exists) opens no start-refusal allowance.
         let mut v = s(&[0, 2]);
         v.insert(1, refusal(0));
-        assert!(d52_sequence_ok(&v).is_err(), "an END refusal names a started fragment");
+        assert!(
+            d52_sequence_ok(&v).is_err(),
+            "an END refusal names a started fragment"
+        );
         // (c) an UNPAIRED host child (only this side spawned it) is checked.
         let mut host = lines_cap("rust", "xorgate-capture", &host_lines(&[]), "int");
         let mut extra = host.spawns[0].clone();
