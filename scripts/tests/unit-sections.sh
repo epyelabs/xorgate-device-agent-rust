@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015,SC2181  # test assertions: `a && pass || fail`, `cmd; [ $? = 0 ]`
 # O-P5G-1 (user-approved 2026-11-06): the crash-loop keys StartLimitIntervalSec=
 # and StartLimitBurst= belong to [Unit]. Under [Service], systemd 252 (Debian
 # bookworm, the bench and the fleet) logs
@@ -110,11 +111,11 @@ if command -v systemd-analyze >/dev/null; then
   # O-P6-1: the whole verify output must be EMPTY (not only free of "Unknown
   # key"), next to the JS unit the Conflicts=/After= name (its shape on a
   # device: device/xorgate-device-agent systemd/xorgate-agent.service @ 09da38d).
-  for f in /usr/local/bin/xorgate; do [ -e "$f" ] || { printf '#!/bin/sh\n' > "$f"; chmod 0755 "$f"; }; done
+  [ -e /usr/local/bin/xorgate ] || { printf '#!/bin/sh\n' > /usr/local/bin/xorgate; chmod 0755 /usr/local/bin/xorgate; }
   JS_STUB='[Unit]\nDescription=Xorgate device agent (IoT MQTT telemetry)\nAfter=network-online.target\nWants=network-online.target\n[Service]\nType=simple\nUser=root\nEnvironmentFile=/etc/xorgate/agent.env\nStateDirectory=xorgate\nExecStartPre=-/usr/local/bin/xorgate led boot\nExecStart=/usr/bin/env node /opt/xorgate/dist/worker.js\nExecStopPost=-/usr/local/bin/xorgate led exit-state\nRestart=always\n[Install]\nWantedBy=multi-user.target\n'
   verify_all() { # <unit file> [drop-in] -> every line systemd-analyze verify prints
     local d u; d=$(mktemp -d); cp "$1" "$d/"; u=$(basename "$1")
-    printf "$JS_STUB" > "$d/xorgate-agent.service"
+    printf '%b' "$JS_STUB" > "$d/xorgate-agent.service"
     if [ -n "${2:-}" ]; then mkdir -p "$d/$u.d"; cp "$2" "$d/$u.d/"; fi
     SYSTEMD_UNIT_PATH="$d:" systemd-analyze verify "$d/$u" "$d/xorgate-agent.service" 2>&1
     rm -rf "$d"

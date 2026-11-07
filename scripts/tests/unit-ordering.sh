@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015  # test assertions: `a && ok || bad`
 # O-P6-1 (Phase 6 window 1): with Conflicts= alone, `systemctl start
 # xorgate-agent-rs` ran in PARALLEL with the JS agent's stop. This suite runs
 # the REAL shipped unit under a REAL systemd 252 (PID 1 in a privileged
