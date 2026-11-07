@@ -16,6 +16,7 @@
 //! XORGATE_SMS_PTY_CLEAR_JS='cd /js && npx --no-install tsx .rig-drivers/sms-pty-clear.mts 10 1760000000000' \
 //! XORGATE_SMS_PTY_CLEAR_OUT=/src/fixtures/sms_reader/pty-clear-e2e.json  <this test binary>
 //! ```
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 #[path = "../../xorgate-hal/tests/support/fake_modem.rs"]
 mod fake_modem;

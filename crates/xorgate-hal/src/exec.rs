@@ -5,8 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::process::Command;
-
 #[derive(Debug, Clone, Default)]
 pub struct RunResult {
     pub stdout: String,
@@ -23,7 +21,7 @@ pub struct RunResult {
 
 /// Run `cmd args…` to completion with an optional timeout. Never errors.
 pub async fn run(cmd: &str, args: &[&str], timeout: Option<Duration>) -> RunResult {
-    let mut command = Command::new(cmd);
+    let mut command = crate::child::command(cmd);
     command
         .args(args)
         .stdin(Stdio::null())

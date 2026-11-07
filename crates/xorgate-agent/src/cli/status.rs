@@ -484,6 +484,7 @@ pub fn main(_args: &[String]) -> i32 {
     }
 }
 
+#[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
 #[cfg(test)]
 mod tests {
     //! `test/manager.test.ts` `inspect()` (5 it()s) + the formatters.

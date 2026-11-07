@@ -1,6 +1,7 @@
 //! `xorgate-rs logs -f` against a closed stdout pipe (review-wp6 row 2): the
 //! follow loop must end on the first write error (EPIPE) the way the TS
 //! process dies on `process.stdout.write` (`logs.ts:54`), not poll forever.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::io::Write;
 use std::process::{Command, Stdio};

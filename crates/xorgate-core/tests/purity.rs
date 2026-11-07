@@ -2,6 +2,7 @@
 //! greps the crate's own sources and manifest so a stray `std::fs`, process
 //! spawn, wall-clock read or tokio dependency fails CI instead of slipping
 //! into a "pure" decider.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::path::{Path, PathBuf};
 

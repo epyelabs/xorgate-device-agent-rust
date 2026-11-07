@@ -8,6 +8,7 @@
 //! `#[ignore]`d control (`cargo test --test exec_script_etxtbsy -- --ignored`)
 //! demonstrates the hazard of the in-process `fs::write` + `chmod` pattern
 //! the tests used before.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

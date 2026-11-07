@@ -303,7 +303,7 @@ impl ObdIo for RealObdIo {
         }
         // Spawned NOW (review-wp2 S2): `bluetoothctl` runs before the
         // command's accepted ack, as in the TS.
-        let child = tokio::process::Command::new(&self.bluetoothctl)
+        let child = child::command(&self.bluetoothctl)
             .args(["remove", &mac])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())

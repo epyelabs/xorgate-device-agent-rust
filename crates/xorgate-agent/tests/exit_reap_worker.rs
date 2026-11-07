@@ -12,6 +12,7 @@
 //! existed and as the TS). The second test cuts the config first (a preset
 //! change via the settings poll), so the old supervisor sits inside a pending
 //! video transition (its `stop_and_wait`) when SIGTERM arrives (R-WP5R-3).
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

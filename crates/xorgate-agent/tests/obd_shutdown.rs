@@ -8,6 +8,7 @@
 //!   agent has exited.
 //! - D38: `sim` mode with a boot block that declares `peripherals.obd` emits
 //!   no `obd` group and writes no state.json `obd`.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
