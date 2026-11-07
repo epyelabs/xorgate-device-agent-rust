@@ -3,6 +3,7 @@
 //! from (`{"version":"<sha>","channel":"dev-local"}`). CI/`scripts/
 //! build-info.sh` write the real manifest at runtime location
 //! `<exe dir>/../build-info.json`, which wins when present.
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 use std::process::Command;
 

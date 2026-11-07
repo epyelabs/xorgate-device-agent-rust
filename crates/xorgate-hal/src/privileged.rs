@@ -195,7 +195,7 @@ async fn run_argv_timeout_grace(
     grace: Duration,
 ) -> RunResult {
     use tokio::io::AsyncReadExt;
-    let spawned = tokio::process::Command::new(program)
+    let spawned = crate::child::command(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -263,7 +263,7 @@ async fn run_argv_timeout_grace(
 /// The child is NOT killed if the caller goes away (a `systemctl reboot` in
 /// flight when shutdown starts must finish).
 async fn run_argv(program: &str, args: &[&str]) -> RunResult {
-    let out = tokio::process::Command::new(program)
+    let out = crate::child::command(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -12,7 +12,7 @@
 //! `/opt/xorgate/dist/worker.js` (in the `node …/worker.js` command line), the
 //! Rust one's is the binary path (`/opt/xorgate-rs/bin/xorgate-rs run`) — C10.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::pidfile::ParsedPidRecord;
 
@@ -36,7 +36,7 @@ pub struct SystemRunner;
 
 impl ProcRunner for SystemRunner {
     fn run(&self, cmd: &str, args: &[&str]) -> ProcRun {
-        match Command::new(cmd)
+        match xorgate_hal::child::std_command(cmd)
             .args(args)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
@@ -212,6 +212,7 @@ pub fn classify_identity(
     Identity::Verified
 }
 
+#[allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: test harness spawns, not the agent
 #[cfg(test)]
 mod tests {
     //! `test/process.test.ts` (11 it()s).
@@ -241,7 +242,9 @@ mod tests {
 
     /// A pid that just exited and was reaped (`helpers.ts deadPid`).
     pub(crate) fn dead_pid() -> u32 {
-        let mut c = Command::new("true").spawn().expect("spawn true");
+        let mut c = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
         let pid = c.id();
         c.wait().unwrap();
         pid

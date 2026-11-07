@@ -18,10 +18,12 @@
 # clientId = DEVICE_ID, and AWS IoT kicks the older session when a second one
 # connects, so two agents on the same identity would fight forever. The
 # `Conflicts=` below makes systemd stop xorgate-agent when this unit starts
-# (and vice versa) — it is the belt to install-rs.sh's braces. The bench-only
-# drop-in systemd/bench/90-bench-dev.conf resets it (and points this unit at a
-# SEPARATE dev identity + state dir) so Phase 0-5 can soak both agents on one
-# CM5; that drop-in is never shipped.
+# (and vice versa) — it is the belt to install-rs.sh's braces; `After=` below
+# orders the two jobs. On the bench, scripts/bench/install.sh comments the
+# `Conflicts=` line out of the INSTALLED copy (a drop-in cannot reset it: an
+# empty `Conflicts=` is ignored on systemd 252), and the bench-only drop-in
+# systemd/bench/90-bench-dev.conf points this unit at a SEPARATE dev identity +
+# state dir, so Phase 0-5 can soak both agents on one CM5. Neither is shipped.
 #
 # Prerequisites on the host (all handled by install-rs.sh / the converter):
 #   - The agent binary at /opt/xorgate-rs/bin/xorgate-rs (+ build-info.json).
@@ -68,8 +70,23 @@ Description=Xorgate device agent (Rust) (IoT MQTT telemetry)
 After=network-online.target
 Wants=network-online.target
 # One identity, one agent: starting this unit stops the JS agent and vice
-# versa (see header). Reset to empty by the bench-only drop-in.
+# versa (see header). Stripped from the bench's installed copy by
+# scripts/bench/install.sh.
 Conflicts=xorgate-agent.service
+# O-P6-1 (Phase 6 window 1): Conflicts= alone puts no order between the two
+# jobs, so a convert with JS ACTIVE started this unit IN PARALLEL with JS's
+# stop (both alive ~0.47 s, the two MQTT sessions 61 ms from overlapping,
+# JS's ExecStopPost LED blank skipped because we already held the GPIO lines).
+# With any ordering dependency, systemd orders a stop job before a start job
+# of the other unit (systemd.unit(5), Before=/After=: "if one unit is shut
+# down and the other is started up, the shutdown is ordered before the
+# start-up ... It doesn't matter if the ordering dependency is After= or
+# Before="), in BOTH directions: JS (incl. its ExecStopPost) is fully stopped
+# before we start, and a JS start that conflicts us out waits for our stop.
+# At boot it is a no-op (only one of the two is enabled); on the bench, where
+# both run, it only makes this unit start after JS's start job (Type=simple:
+# immediate). Pinned by scripts/tests/unit-sections.sh.
+After=xorgate-agent.service
 # Break crash-loops: 10 failures in 60s and systemd holds off until the operator
 # runs `systemctl reset-failed xorgate-agent-rs`. Both are [Unit] keys (O-P5G-1,
 # user-approved 2026-11-06). Under [Service], systemd 252 (bookworm) logs

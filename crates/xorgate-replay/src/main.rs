@@ -8,6 +8,7 @@
 //! xorgate-replay play  --tape T --out RUN --a js|rust --b js|rust [rig flags]   (inside the rig)
 //! xorgate-replay diff  RUN [--tolerances tools/replay/tolerances.toml] [-o RUN/diff.md]
 //! ```
+#![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
 mod aws;
 mod diff;
