@@ -20,7 +20,8 @@
 //! [`sidecar_reput_explained`]): the TS uploads sidecar then mp4 as one unit
 //! and "a failure between the two PUTs re-PUTs the sidecar on retry — S3 PUTs
 //! are idempotent" (ts:src/recording/uploader.ts:24-28, :168-176 @09da38d).
-//! Any other double (an mp4, a telemetry segment, a sidecar whose mp4 had
+//! It is cited only when BOTH sides show it (`reput_tol`: the control X→X
+//! does it too). Any other double (an mp4, a telemetry segment, a sidecar whose mp4 had
 //! not failed in between, a third PUT) stays UNTOLERATED.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -325,6 +326,26 @@ pub fn sidecar_reput_explained(attempts: &[Attempt], sidecar_key: &str) -> bool 
         .any(|a| a.key == mp4 && !a.ok && a.w > *first && a.w < *second)
 }
 
+/// Is this inherited rel's `put×2` the TS sidecar re-PUT on its side?
+pub fn is_sidecar_reput(rel: &str, fate: &str, attempts: &[Attempt]) -> bool {
+    fate.starts_with("put×2")
+        && rel.ends_with(".json")
+        && !rel.ends_with("/session.json")
+        && s3_key_of(rel).is_some_and(|k| sidecar_reput_explained(attempts, &k))
+}
+
+/// The row id of a double upload of `rel`: [`SIDECAR_REPUT`] ONLY when BOTH
+/// sides show the same TS re-PUT of that sidecar — the control (X→X) does it
+/// too, so it is X's own TS-documented behaviour carried over, not something
+/// the takeover added. A re-PUT on one side only stays UNTOLERATED.
+pub fn reput_tol(rel: &str, explained: &[BTreeSet<String>; 2]) -> &'static str {
+    if explained.iter().all(|e| e.contains(rel)) {
+        SIDECAR_REPUT
+    } else {
+        UNTOLERATED
+    }
+}
+
 /// `(attempts, aborted keys)` of one side: `<side>/s3.ndjson` (every
 /// answered PUT) + the run's `aws.ndjson` held-then-aborted PUTs of this
 /// side's label (never answered, never stored).
@@ -523,24 +544,31 @@ pub fn diff_takeover(
         .map(|(l, (_, m))| load_attempts(run, l, m))
         .collect();
     let mut fates: [BTreeMap<String, String>; 2] = [BTreeMap::new(), BTreeMap::new()];
+    let mut violations: [BTreeMap<String, String>; 2] = [BTreeMap::new(), BTreeMap::new()];
+    let mut explained: [BTreeSet<String>; 2] = [BTreeSet::new(), BTreeSet::new()];
     for (i, (_, m)) in sides.iter().enumerate() {
         let puts = m.successful_puts();
         let end = m.end_files();
         for (rel, f) in inh[i].iter() {
             let ft = fate(rel, &puts, &end);
             if let Some(v) = fate_violations(rel, f, &ft) {
-                let explained = ft.starts_with("put×2")
-                    && rel.ends_with(".json")
-                    && s3_key_of(rel).is_some_and(|k| sidecar_reput_explained(&attempts[i].0, &k));
-                rep.push(mm_tol(
-                    &format!("fate {}", ["A", "B"][i]),
-                    rel,
-                    if i == 0 { v.clone() } else { String::new() },
-                    if i == 1 { v } else { String::new() },
-                    if explained { SIDECAR_REPUT } else { UNTOLERATED },
-                ));
+                if is_sidecar_reput(rel, &ft, &attempts[i].0) {
+                    explained[i].insert(rel.clone());
+                }
+                violations[i].insert(rel.clone(), v);
             }
             fates[i].insert(rel.clone(), ft);
+        }
+    }
+    for (i, viol) in violations.iter().enumerate() {
+        for (rel, v) in viol {
+            rep.push(mm_tol(
+                &format!("fate {}", ["A", "B"][i]),
+                rel,
+                if i == 0 { v.clone() } else { String::new() },
+                if i == 1 { v.clone() } else { String::new() },
+                reput_tol(rel, &explained),
+            ));
         }
     }
     // (iii-b) in flight at the cut (`expect.inflight`, aws.rs `Hold`).
@@ -834,6 +862,26 @@ mod tests {
         let other = vec![at(1, sc, true), at(2, &mp4.replace("00008", "00009"), false), at(10, sc, true)];
         assert!(!sidecar_reput_explained(&other, sc));
         assert!(!sidecar_reput_explained(&ok, mp4));
+    }
+
+    #[test]
+    fn the_sidecar_reput_is_cited_only_when_both_sides_show_it() {
+        let rel = "video/cam1/<sid:video:cam1#0>/00008.json";
+        let both = [BTreeSet::from([rel.to_string()]), BTreeSet::from([rel.to_string()])];
+        assert_eq!(reput_tol(rel, &both), SIDECAR_REPUT);
+        // NEGATIVE: only the handoff side (A) re-PUT it; only the control.
+        let a_only = [BTreeSet::from([rel.to_string()]), BTreeSet::new()];
+        assert_eq!(reput_tol(rel, &a_only), UNTOLERATED);
+        let b_only = [BTreeSet::new(), BTreeSet::from([rel.to_string()])];
+        assert_eq!(reput_tol(rel, &b_only), UNTOLERATED);
+        // NEGATIVE: an mp4 or a manifest is never a sidecar re-PUT.
+        let at = |w: i64, key: &str, ok: bool| Attempt { w, key: key.into(), ok };
+        let k = "media-sessions/v1/{id}/cam1/<sid:video:cam1#0>/00008";
+        let att = vec![at(1, &format!("{k}.json"), true), at(2, &format!("{k}.mp4"), false), at(3, &format!("{k}.json"), true)];
+        assert!(is_sidecar_reput(rel, "put×2", &att));
+        assert!(!is_sidecar_reput(&rel.replace(".json", ".mp4"), "put×2", &att));
+        assert!(!is_sidecar_reput("video/cam1/<sid:video:cam1#0>/session.json", "put×2", &att));
+        assert!(!is_sidecar_reput(rel, "put×1", &att));
     }
 
     #[test]
