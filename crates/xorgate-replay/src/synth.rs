@@ -780,8 +780,13 @@ pub fn takeover_rig(name: &str) -> Value {
         "p6-takeover-open" => (
             TAKEOVER_OPEN_AT_MS,
             None,
+            // An open session per camera (its manifest) + cam0's active mp4
+            // (≈ 6.8 s old at the cut, non-empty). cam1's (≈ 3.3 s) may still
+            // be 0 bytes — gst holds it — and then the drop-empty path of the
+            // agent that sweeps it (X at a SIGTERM, the next one after a
+            // SIGKILL) removes it: legitimate either way (L1 2026-11-07).
             json!({
-                "min": {"video/cam0: mp4": 1, "video/cam1: mp4": 1, "telemetry: segment": 1},
+                "min": {"video/cam0: mp4": 1, "video/cam0: session.json": 1, "video/cam1: session.json": 1, "telemetry: segment": 1},
                 "max": {"video/cam0: mp4": 1, "video/cam1: mp4": 1, "telemetry: segment": 1},
             }),
         ),
@@ -805,7 +810,7 @@ pub fn takeover_rig(name: &str) -> Value {
             TAKEOVER_INFLIGHT_AT_MS,
             None,
             json!({
-                "min": {"video/cam0: mp4": 1, "video/cam1: mp4": 1, "telemetry: segment": 1},
+                "min": {"video/cam0: mp4": 1, "video/cam0: session.json": 1, "video/cam1: session.json": 1, "telemetry: segment": 1},
                 "inflight": 1,
             }),
         ),
