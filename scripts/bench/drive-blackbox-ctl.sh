@@ -47,8 +47,9 @@ case "$VERB" in
     while [ $# -gt 0 ]; do
       case "$1" in
         --dry-run) DRY=1; shift ;;
-        --expect) [ "$VERB" = install ] && [ -n "${2:-}" ] || { echo "--expect <prod|dev|id prefix> is an install option" >&2; exit 2; }
-                  EXPECT=$2; shift 2 ;;
+        --expect)
+          if [ "$VERB" != install ] || [ -z "${2:-}" ]; then echo "--expect <prod|dev|id prefix> is an install option" >&2; exit 2; fi
+          EXPECT=$2; shift 2 ;;
         *) echo "unknown arg $1" >&2; exit 2 ;;
       esac
     done ;;

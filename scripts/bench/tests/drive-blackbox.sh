@@ -98,7 +98,7 @@ modem_json() {
 J
 }
 fixture() {
-  rm -rf "${FAKE:?}"/* "$CTLD"/*
+  rm -rf "${FAKE:?}"/* "${CTLD:?}"/*
   mkdir -p "$FAKE/proc/sys/kernel/random" "$FAKE/proc/net" "$FAKE/sys/class/thermal/thermal_zone0" \
     "$FAKE/sys/class/net/usb0" "$FAKE/sys/class/net/wlan0" "$FAKE/sys/fs/cgroup/system.slice/xorgate-agent-rs.service" \
     "$FAKE/var/lib/xorgate/recordings/video/s1/cam0" "$FAKE/var/lib/xorgate/recordings/telemetry/s1" \
@@ -107,10 +107,10 @@ fixture() {
   set_uptime 1000.00
   echo "0.52 0.48 0.40 2/300 12345" > "$FAKE/proc/loadavg"
   printf 'MemTotal:        4045000 kB\nMemFree:          100000 kB\nMemAvailable:    2500000 kB\n' > "$FAKE/proc/meminfo"
-  printf 'Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n' > "$FAKE/proc/net/route"
-  printf 'wlan0\t00000000\t0108A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n' >> "$FAKE/proc/net/route"
-  printf 'usb0\t00000000\t0100000A\t0003\t0\t0\t100\t00000000\t0\t0\t0\n' >> "$FAKE/proc/net/route"
-  printf 'usb0\t0000400A\t00000000\t0001\t0\t0\t100\t00C0FFFF\t0\t0\t0\n' >> "$FAKE/proc/net/route"
+  { printf 'Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n'
+    printf 'wlan0\t00000000\t0108A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n'
+    printf 'usb0\t00000000\t0100000A\t0003\t0\t0\t100\t00000000\t0\t0\t0\n'
+    printf 'usb0\t0000400A\t00000000\t0001\t0\t0\t100\t00C0FFFF\t0\t0\t0\n'; } > "$FAKE/proc/net/route"
   echo 55200 > "$FAKE/sys/class/thermal/thermal_zone0/temp"
   echo 0x1003 > "$FAKE/sys/class/net/usb0/flags"; echo unknown > "$FAKE/sys/class/net/usb0/operstate"
   echo 0x1003 > "$FAKE/sys/class/net/wlan0/flags"; echo up > "$FAKE/sys/class/net/wlan0/operstate"
@@ -255,7 +255,7 @@ ck(not [e for e in last["ev"] if e["k"] in ("nrestarts", "mainpid", "mqtt", "js_
 '
 echo "$BOOT2" > "$FAKE/proc/sys/kernel/random/boot_id"; set_uptime 30.00
 rec "$OUT" --ticks 1
-[ "$(ls "$OUT"/*.ndjson | wc -l)" = 2 ] && ls "$OUT" | grep -q '_99999999\.ndjson$'; expect $? "new boot: a new file _99999999.ndjson"
+[ "$(ls "$OUT"/*.ndjson | wc -l)" = 2 ] && ls "$OUT"/*_99999999.ndjson >/dev/null 2>&1; expect $? "new boot: a new file _99999999.ndjson"
 check boot '
 b = evk(last, "boot")
 ck(b and b[0]["prev_boot"] == "'"$BOOT1"'" and b[0]["prev_up"] == 1015.0 and isinstance(b[0]["prev_ts"], int), "boot marker with the previous boot %r" % b)
@@ -364,7 +364,7 @@ L = [line(0, b1, 100, 5.10, "0x0", "connected", 1, rs(10, 60000, 5.0), g(30000, 
 open(out, "w").write("\n".join(L) + "\n")
 PY
 SUM=$(python3 -I "$PY" summary "$SF"); rc=$?
-echo "$SUM" | sed 's/^/    | /'
+sed 's/^/    | /' <<<"$SUM"
 expect "$rc" "summary exits 0"
 for want in '6 line(s) in 1 file(s), 0 malformed' 'boots: 2' 'rail_v min 4.71' 'max 5.12' 'under-voltage NOW in 1 line(s)' \
             'throttled transitions: 1' 'set=uv,thr,uv_since,thr_since' 'rs nrestarts 0 -> 1' 'rs mainpid 10 -> 11' 'new boot (previous boot 11111111' \
@@ -459,11 +459,11 @@ bash "$CTL" status > "$LOGS/status3" 2>&1; rc=$?
 [ "$rc" != 0 ] && grep -qE 'STALE: last line (59|60|61) s old' "$LOGS/status3"; expect $? "status fails on a 60 s old last line (rc=$rc): $(grep -o 'STALE.*' "$LOGS/status3")"
 rm -f "$DD/20261107T000000Z_fresh000.ndjson" "$DD/20261107T000001Z_stale000.ndjson"
 bash "$CTL" summary "$SF" | grep -q 'rail_v min 4.71'; expect $? "summary of a local file runs locally"
-bash "$CTL" summary /nonexistent/x >/dev/null 2>&1; [ $? != 0 ]; expect $? "summary of a missing path fails"
+if bash "$CTL" summary /nonexistent/x >/dev/null 2>&1; then failc "summary of a missing path succeeded"; else pass "summary of a missing path fails"; fi
 bash "$CTL" uninstall > "$LOGS/un" 2>&1; expect $? "uninstall exits 0"
 [ ! -e /etc/systemd/system/xorgate-drive-blackbox.service ] && [ ! -e /usr/local/bin/xorgate-drive-blackbox ]; expect $? "unit + recorder removed"
 [ -f "/var/lib/xorgate-rs/drive-blackbox/$(basename "$SF")" ]; expect $? "data kept"
-[ "$(cat "$STATE/xorgate-blackbox.service")" = inactive ] && [ "$(cat "$STATE/xorgate-blackbox.service.enabled")" = disabled ] && ! grep -q 'enable.*xorgate-blackbox.service' "$STATE/systemctl.log"; expect $? "old unit NOT re-enabled"
+[ "$(cat "$STATE/xorgate-blackbox.service")" = inactive ] && [ "$(cat "$STATE/xorgate-blackbox.service.enabled")" = disabled ] && ! grep -qE 'systemctl (enable|start|restart)( --now)? xorgate-blackbox\.service' "$STATE/systemctl.log"; expect $? "old unit NOT re-enabled"
 [ "$(cat "$STATE/xorgate-drive-blackbox.service")" = inactive ]; expect $? "new unit stopped"
 
 kill "$AGP" 2>/dev/null

@@ -47,6 +47,7 @@ run: every --interval seconds (5) appends ONE compact JSON line to
           in the same boot): start, boot, nrestarts, mainpid, js_active,
           throttled, mqtt;
     jr    every --journal-every-ticks (12 = 60 s): {cursor, warn, err, from}
+          ({"fail": ...} without journalctl; "err" is always the error count)
           = the journal's last cursor and the count of xorgate-agent-rs
           warning (4) / error (<= 3) entries since the previous snapshot;
     recfs with jr: files and bytes under $XORGATE_HOME/recordings per subdir.
@@ -584,7 +585,7 @@ class Recorder:
     def journal(self):
         cur = run_cmd(["journalctl", "-q", "-n", "1", "-o", "json", "--output-fields=__CURSOR", "--no-pager"])
         if cur is None:
-            return {"err": "journalctl unavailable"}
+            return {"fail": "journalctl unavailable"}  # "err" is the error COUNT
         cursor, rt = None, None
         for line in cur.splitlines():
             try:
@@ -886,7 +887,7 @@ def cmd_summary(args):
     show_windows("mqtt disconnect windows", windows(have_ag, lambda r: r["ag"].get("mqtt") != "connected"))
     show_windows("gps fix-loss windows", windows(
         have_ag, lambda r: not (isinstance(r["ag"].get("gps"), dict) and (num(r["ag"]["gps"].get("fix")) or 0) > 0)))
-    w("peak per process (rss kB / cpu %% of one core):\n")
+    w("peak per process (rss kB / cpu % of one core):\n")
     peaks = {}
 
     def peak(name, rss, cpu):
@@ -905,7 +906,7 @@ def cmd_summary(args):
                 peak(str(k.get("comm")), k.get("rss_kb"), k.get("cpu"))
     for name, (rss, cpu, n) in sorted(peaks.items()):
         w("  %-28s peak rss %d kB  peak cpu %.1f %%  (%d sample(s))\n" % (name, rss, cpu, n))
-    jr = [r["jr"] for r in recs if isinstance(r.get("jr"), dict) and "err" not in r["jr"]]
+    jr = [r["jr"] for r in recs if isinstance(r.get("jr"), dict) and "cursor" in r["jr"]]
     w("journal (xorgate-agent-rs): %d warning(s), %d error(s) over %d snapshot(s)\n"
       % (sum(j.get("warn") or 0 for j in jr), sum(j.get("err") or 0 for j in jr), len(jr)))
     bl = series(("ag", "rec", "backlog_b"))
