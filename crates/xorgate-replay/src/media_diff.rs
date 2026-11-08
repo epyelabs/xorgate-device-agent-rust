@@ -1666,8 +1666,16 @@ fn d59_boot_led_blips(
     // ms after the recorder, :597 vs :703; Rust arms its heartbeat after the
     // connect, worker.rs:828, so it reads the previous tick deterministically
     // and never lacks one). A Rust side lacking a blip stays judged.
-    let da = if kinds.1 == "js" { blips(&va) } else { Vec::new() };
-    let db = if kinds.0 == "js" { blips(&vb) } else { Vec::new() };
+    let da = if kinds.1 == "js" {
+        blips(&va)
+    } else {
+        Vec::new()
+    };
+    let db = if kinds.0 == "js" {
+        blips(&vb)
+    } else {
+        Vec::new()
+    };
     if da.is_empty() && db.is_empty() {
         return None;
     }
@@ -4647,8 +4655,14 @@ mod tests {
                    b: &[LeafSample],
                    la: &[(i64, String)],
                    lb: &[(i64, String)],
-                   play: &PlayInfo| d59_boot_led_blips(p, play, ("rust", "js"), (a, b), (la, lb));
-        let run_k = |k: (&str, &str), a: &[LeafSample], b: &[LeafSample], la: &[(i64, String)], lb: &[(i64, String)]| {
+                   play: &PlayInfo| {
+            d59_boot_led_blips(p, play, ("rust", "js"), (a, b), (la, lb))
+        };
+        let run_k = |k: (&str, &str),
+                     a: &[LeafSample],
+                     b: &[LeafSample],
+                     la: &[(i64, String)],
+                     lb: &[(i64, String)]| {
             d59_boot_led_blips(hf, &play, k, (a, b), (la, lb))
         };
         assert_eq!(

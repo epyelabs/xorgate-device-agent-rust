@@ -5486,7 +5486,11 @@ mod tests {
         assert!(!stretch_edge_tick(&play, 0, 300_000));
         assert!(stretch_edge_tick(&play, 0, 398_000));
         // Without a handoff: the pre-P3a rule, unchanged.
-        let plain = PlayInfo { start_wall: 0, end_wall: 400_000, ..Default::default() };
+        let plain = PlayInfo {
+            start_wall: 0,
+            end_wall: 400_000,
+            ..Default::default()
+        };
         assert!(stretch_edge_tick(&plain, 0, 4_000) && stretch_edge_tick(&plain, 0, 398_000));
         assert!(!stretch_edge_tick(&plain, 0, 100_000));
         // Without a handoff the same 93 → 0 is a FAIL.

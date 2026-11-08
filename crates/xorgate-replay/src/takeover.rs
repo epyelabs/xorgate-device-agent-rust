@@ -1035,7 +1035,8 @@ mod tests {
             let home = format!("/w/{label}/home");
             write(
                 &dir.join("meta.json"),
-                &json!({"label": label, "kind": "rust", "deviceId": dev, "home": home, "env": {}}).to_string(),
+                &json!({"label": label, "kind": "rust", "deviceId": dev, "home": home, "env": {}})
+                    .to_string(),
             );
             let v = format!("video/cam0/{VSID}");
             let t = format!("telemetry/{TSID}");
@@ -1048,20 +1049,35 @@ mod tests {
             ];
             let files: serde_json::Map<String, Value> = inherited
                 .iter()
-                .map(|(r, size, birth)| (r.clone(), json!({"size": size, "birthMs": W + birth, "mtimeMs": W + 99_000})))
+                .map(|(r, size, birth)| {
+                    (
+                        r.clone(),
+                        json!({"size": size, "birthMs": W + birth, "mtimeMs": W + 99_000}),
+                    )
+                })
                 .collect();
-            write(&dir.join("handoff-state.json"), &json!({"w": W + 100_000, "files": files}).to_string());
+            write(
+                &dir.join("handoff-state.json"),
+                &json!({"w": W + 100_000, "files": files}).to_string(),
+            );
             let rec: serde_json::Map<String, Value> = inherited
                 .iter()
                 .enumerate()
                 .map(|(i, (r, size, _))| (r.clone(), json!({"first": W + 1_000 + i as i64, "last": W + 99_000, "size": size, "gone": null})))
                 .collect();
-            write(&dir.join("recordings.json"), &json!({"files": rec}).to_string());
+            write(
+                &dir.join("recordings.json"),
+                &json!({"files": rec}).to_string(),
+            );
             // The bucket: everything inherited uploaded once by the next agent
             // (the active fragment with the sidecar its recovery backfilled).
             let vk = format!("media-sessions/v1/{dev}/cam0/{VSID}");
             let mut puts: Vec<(i64, String, u64)> = vec![
-                (101_000, format!("telemetry/v1/{dev}/{TSID}/{MS}-00000.jsonl.gz"), 200),
+                (
+                    101_000,
+                    format!("telemetry/v1/{dev}/{TSID}/{MS}-00000.jsonl.gz"),
+                    200,
+                ),
                 (101_100, format!("{vk}/00000.json"), 200),
                 (101_200, format!("{vk}/00000.mp4"), 200),
                 (101_300, format!("{vk}/00001.json"), 200),
@@ -1084,7 +1100,12 @@ mod tests {
             puts.sort();
             let s3: String = puts
                 .iter()
-                .map(|(w, k, st)| format!("{}\n", json!({"w": W + w, "key": k, "status": st, "sig": "ok", "contentType": "x"})))
+                .map(|(w, k, st)| {
+                    format!(
+                        "{}\n",
+                        json!({"w": W + w, "key": k, "status": st, "sig": "ok", "contentType": "x"})
+                    )
+                })
                 .collect();
             write(&dir.join("s3.ndjson"), &s3);
             // End of run: every X-era file uploaded + removed and the
@@ -1092,17 +1113,27 @@ mod tests {
             // (A lost mp4 is simply gone: never PUT, not on disk.)
             std::fs::create_dir_all(dir.join("final/recordings")).unwrap();
             if plant.stranded {
-                write(&dir.join(format!("final/recordings/{v}/session.json")), "{}");
+                write(
+                    &dir.join(format!("final/recordings/{v}/session.json")),
+                    "{}",
+                );
             }
             write(&dir.join("final/recordings.mp4.json"), "{}");
-            let mut out = String::from("[agent] recording: finalized 7 orphan segment(s) from previous run\n");
+            let mut out = String::from(
+                "[agent] recording: finalized 7 orphan segment(s) from previous run\n",
+            );
             out.push_str("[rig] handoff: incarnation 1 (rust) starts at 1\n");
             if !plant.no_recovery_line {
-                out.push_str("[agent] recording: finalized 1 orphan segment(s) from previous run\n");
+                out.push_str(
+                    "[agent] recording: finalized 1 orphan segment(s) from previous run\n",
+                );
             }
             out.push_str("[agent] recording: backfilled 1 video sidecar(s) from previous run\n");
             write(&dir.join("stdout.log"), &out);
-            write(&dir.join("stderr.log"), "[rig] handoff: incarnation 1 (rust) starts at 1\n");
+            write(
+                &dir.join("stderr.log"),
+                "[rig] handoff: incarnation 1 (rust) starts at 1\n",
+            );
         }
 
         fn run_with(name: &str, plant_a: Plant, reaped: bool) -> Report {
@@ -1131,8 +1162,11 @@ mod tests {
             rep
         }
 
-        fn rows<'r>(rep: &'r Report) -> Vec<&'r Mismatch> {
-            rep.mismatches.iter().filter(|m| m.tol == UNTOLERATED).collect()
+        fn rows(rep: &Report) -> Vec<&Mismatch> {
+            rep.mismatches
+                .iter()
+                .filter(|m| m.tol == UNTOLERATED)
+                .collect()
         }
 
         #[test]
@@ -1145,42 +1179,78 @@ mod tests {
                 let rep = run_with(name, p, reaped);
                 let r = rows(&rep);
                 assert!(r.iter().any(|m| want(m)), "{name}: {:?}", rep.mismatches);
-                assert_eq!(crate::diff::verdict(&rep), "FAIL", "{name}: {:?}", rep.mismatches);
-                assert!(!rep.mismatches.iter().any(is_invalid), "{name}: not an INVALID");
+                assert_eq!(
+                    crate::diff::verdict(&rep),
+                    "FAIL",
+                    "{name}: {:?}",
+                    rep.mismatches
+                );
+                assert!(
+                    !rep.mismatches.iter().any(is_invalid),
+                    "{name}: not an INVALID"
+                );
             };
             fails(
                 "lost",
-                Plant { lost: true, ..Default::default() },
+                Plant {
+                    lost: true,
+                    ..Default::default()
+                },
                 false,
                 &|m| m.at == "fate A" && m.a.contains("lost") && m.path.ends_with("00000.mp4"),
             );
             fails(
                 "mp4-twice",
-                Plant { mp4_twice: true, ..Default::default() },
+                Plant {
+                    mp4_twice: true,
+                    ..Default::default()
+                },
                 false,
-                &|m| m.at == "fate A" && m.a.contains("double upload") && m.path.ends_with("00000.mp4"),
+                &|m| {
+                    m.at == "fate A"
+                        && m.a.contains("double upload")
+                        && m.path.ends_with("00000.mp4")
+                },
             );
             fails(
                 "reput-one-side",
-                Plant { reput_one_side: true, ..Default::default() },
+                Plant {
+                    reput_one_side: true,
+                    ..Default::default()
+                },
                 false,
-                &|m| m.at == "fate A" && m.a.contains("double upload") && m.path.ends_with("00000.json"),
+                &|m| {
+                    m.at == "fate A"
+                        && m.a.contains("double upload")
+                        && m.path.ends_with("00000.json")
+                },
             );
             fails(
                 "stranded",
-                Plant { stranded: true, ..Default::default() },
+                Plant {
+                    stranded: true,
+                    ..Default::default()
+                },
                 true,
                 &|m| m.at == "disk-end A stranded",
             );
             fails(
                 "no-recovery-line",
-                Plant { no_recovery_line: true, ..Default::default() },
+                Plant {
+                    no_recovery_line: true,
+                    ..Default::default()
+                },
                 false,
-                &|m| m.at == "recovery-lines" && m.path.starts_with("recording: finalized 1 orphan"),
+                &|m| {
+                    m.at == "recovery-lines" && m.path.starts_with("recording: finalized 1 orphan")
+                },
             );
             fails(
                 "bucket-orphan",
-                Plant { bucket_orphan: true, ..Default::default() },
+                Plant {
+                    bucket_orphan: true,
+                    ..Default::default()
+                },
                 false,
                 &|m| m.at == "bucket-orphans" && m.path.ends_with("00002.json"),
             );
@@ -1188,11 +1258,17 @@ mod tests {
             // UNTOLERATED row (`reput_tol`).
             let run = std::env::temp_dir().join(format!("p3a-e2e-both-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&run);
-            let p = Plant { reput_one_side: true, ..Default::default() };
+            let p = Plant {
+                reput_one_side: true,
+                ..Default::default()
+            };
             side(&run, "a", p);
             side(&run, "b", p);
             write(&run.join("aws.ndjson"), "");
-            let (ma, mb) = (MediaCapture::load(&run.join("a"), &[]), MediaCapture::load(&run.join("b"), &[]));
+            let (ma, mb) = (
+                MediaCapture::load(&run.join("a"), &[]),
+                MediaCapture::load(&run.join("b"), &[]),
+            );
             let h = HandoffInfo {
                 stop_w: W + 100_000,
                 restart_w: W + 102_000,
@@ -1203,7 +1279,13 @@ mod tests {
             diff_takeover(&run, &h, &ma, &mb, &mut rep);
             let _ = std::fs::remove_dir_all(&run);
             assert!(rows(&rep).is_empty(), "{:?}", rep.mismatches);
-            assert_eq!(rep.mismatches.iter().filter(|m| m.tol == SIDECAR_REPUT).count(), 2);
+            assert_eq!(
+                rep.mismatches
+                    .iter()
+                    .filter(|m| m.tol == SIDECAR_REPUT)
+                    .count(),
+                2
+            );
         }
     }
 
