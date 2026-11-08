@@ -10,7 +10,10 @@
 //!   `tools/replay/media/`) when the tape has channels, else a missing path
 //!   (Phase 2 behaviour: media self-gates);
 //! - `gst-launch-1.0` on PATH = the shim (`tools/replay/shims/`), which execs
-//!   the real binary with `videotestsrc` for `libcamerasrc`;
+//!   the real binary with `videotestsrc` for `libcamerasrc`; Phase 7a: a
+//!   Rust side run with `XORGATE_CAPTURE_BACKEND=host` reaches the
+//!   `xorgate-capture` shim through `XORGATE_CAPTURE_HOST_BIN` (play.rs
+//!   `rig_side_env`), which does the same swap and execs the real host;
 //! - `rpicam-hello` on PATH when the tape carries its `exec` answer;
 //! - `NODE_EXTRA_CA_CERTS` = the rig CA (Node; the Rust agent reads the
 //!   system store the player updated, P5);
@@ -315,6 +318,18 @@ pub fn shim_children(work: &Path) -> Vec<ShimChild> {
         .collect()
 }
 
+/// The capture programs the rig's shims log (`tool`): the JS / default Rust
+/// `gst-launch-1.0`, and the Phase 7a capture host `xorgate-capture`
+/// (`tools/replay/shims/xorgate-capture`, a Rust side with
+/// `XORGATE_CAPTURE_BACKEND=host`). Both are capture children to the rig:
+/// the same per-attempt exits, the same `eof` wait, the same key.
+pub const CAPTURE_TOOLS: &[&str] = &["gst-launch-1.0", "xorgate-capture"];
+
+/// Whether a shim `tool` is a capture child ([`CAPTURE_TOOLS`]).
+pub fn is_capture_tool(tool: &str) -> bool {
+    CAPTURE_TOOLS.contains(&tool)
+}
+
 /// The stream key a capture argv belongs to: its shmsink socket
 /// `<home>/shm/<key>.sock`.
 pub fn capture_key(argv: &[String]) -> Option<String> {
@@ -416,7 +431,7 @@ pub struct ShimSpawn {
 /// `(role, key)` of a shim spawn: a capture by its shmsink socket, a KVS
 /// master by its OWN channel (`<deviceId>-<key>`, never the tape's name).
 pub fn spawn_role_key(s: &ShimSpawn, plan: &MediaPlan) -> Option<(String, String)> {
-    if s.tool == "gst-launch-1.0" {
+    if is_capture_tool(&s.tool) {
         return capture_key(&s.argv).map(|k| (ROLE_CAPTURE.to_string(), k));
     }
     if s.tool == "xorgate-kvs-webrtc" {
@@ -586,7 +601,7 @@ pub fn external_exit(a: &ObsAgent, plan: &MediaPlan, r: &ChildExitRec) -> Value 
             .into_iter()
             .rev()
             .find(|c| {
-                c.tool == "gst-launch-1.0"
+                is_capture_tool(&c.tool)
                     && capture_key(&c.argv).as_deref() == Some(r.key.as_str())
                     && alive(c.pid)
             })
@@ -611,6 +626,16 @@ struct Seen {
     last: i64,
     size: u64,
     gone: Option<i64>,
+    /// Phase 7a (WP3): an mp4's birthtime (statx btime, epoch ms), read when
+    /// the file is first seen — the D51 matcher feeds it to WP2's recovery
+    /// shift (`recovery_end_anchor_lag` / `recovery_shift_lag`).
+    birth: Option<i64>,
+}
+
+/// Phase 7a (WP3): a file's birthtime in epoch ms (`None` = no btime).
+fn birth_ms(p: &Path) -> Option<i64> {
+    let t = fs::metadata(p).ok()?.created().ok()?;
+    Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64)
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<String, u64>) {
@@ -657,8 +682,12 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
                 let root = a.home.join("recordings");
                 walk(&root, &root, &mut cur);
                 for (rel, size) in &cur {
-                    let s = seen[i].entry(rel.clone()).or_insert(Seen {
+                    let s = seen[i].entry(rel.clone()).or_insert_with(|| Seen {
                         first: now,
+                        birth: rel
+                            .ends_with(".mp4")
+                            .then(|| birth_ms(&root.join(rel)))
+                            .flatten(),
                         ..Default::default()
                     });
                     s.last = now;
@@ -696,10 +725,14 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
         let files: Map<String, Value> = seen[i]
             .iter()
             .map(|(rel, s)| {
-                (
-                    rel.clone(),
-                    json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone}),
-                )
+                (rel.clone(), {
+                    let mut v =
+                        json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone});
+                    if let Some(b) = s.birth {
+                        v["birth"] = json!(b);
+                    }
+                    v
+                })
             })
             .collect();
         let _ = fs::write(
@@ -741,7 +774,7 @@ pub fn finish(a: &ObsAgent) -> Result<()> {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         {
             match (v["k"].as_str(), v["tool"].as_str()) {
-                (Some("spawn"), Some("gst-launch-1.0")) => {
+                (Some("spawn"), Some(t)) if is_capture_tool(t) => {
                     spawned.insert(v["pid"].as_u64());
                 }
                 (Some("eof"), _) => {

@@ -1241,13 +1241,38 @@ async fn consume(
 /// or rejected one warns once per session and leaves its fragment on the
 /// legacy anchors — and then triggers a sweep (§8.5: the line may be what a
 /// deferred fragment is waiting for).
+/// Phase 7a WP3: the tape's `capture_timing` record of one parsed host
+/// timing line (`XG-FRAGMENT` → lagMs + startTs, `XG-FRAGMENT-END` →
+/// endTs) and whether the run's table accepted it.
+fn capture_timing_rec(
+    key: &str,
+    pid: u32,
+    sid: &str,
+    l: &xorgate_core::capture_timing::TimingLine,
+    accepted: bool,
+) -> xorgate_hal::tape::CaptureTimingRec {
+    use xorgate_core::capture_timing::TimingLine;
+    let (lag_ms, start_ts, end_ts) = match l {
+        TimingLine::Start(f) => (Some(f.lag_ms), Some(f.start_ts), None),
+        TimingLine::End(e) => (None, None, Some(e.end_ts)),
+    };
+    xorgate_hal::tape::CaptureTimingRec {
+        key: key.to_string(),
+        pid,
+        sid: sid.to_string(),
+        id: l.id(),
+        lag_ms,
+        start_ts,
+        end_ts,
+        accepted,
+    }
+}
+
 fn on_timing_line(s: &Arc<Shared>, key: &str, child_id: u64, line: &str) {
     let Some(parsed) = parse_timing_line(line) else {
         return;
     };
-    // WP3 seam: the tape's `capture_timing {key, id, lagMs, startTs, endTs?}`
-    // record (rig-only) is written HERE from `parsed` (tape.rs is WP3's).
-    let (warning, target) = {
+    let (warning, target, rec) = {
         let mut g = s.lock();
         let Some(run) = g.runs.get_mut(key) else {
             return;
@@ -1264,11 +1289,27 @@ fn on_timing_line(s: &Arc<Shared>, key: &str, child_id: u64, line: &str) {
                 "[video-capture {key}] unusable timing line ({e:?}); legacy anchors for its fragment"
             )),
         };
+        // Phase 7a WP3 (Rig form): the rig-only `capture_timing` record of
+        // a parsed line, with this table's verdict (never on the wire). Built
+        // under the lock, WRITTEN after it (review-wp3 F9: a FileTape write
+        // is gz I/O), before the sweep it may trigger.
+        let rec = parsed.as_ref().ok().map(|l| {
+            capture_timing_rec(
+                key,
+                run.child.as_ref().and_then(|c| c.pid).unwrap_or(0),
+                run.session_id.as_deref().unwrap_or(""),
+                l,
+                res.is_ok(),
+            )
+        });
         let warning = res
             .err()
             .filter(|_| !std::mem::replace(&mut run.timing.warned, true));
-        (warning, run.watch_gen.map(|gen| (run.id, gen)))
+        (warning, run.watch_gen.map(|gen| (run.id, gen)), rec)
     };
+    if let Some(r) = rec {
+        s.opts.tape.capture_timing(&r);
+    }
     if let Some(w) = warning {
         warn!("{w}");
     }

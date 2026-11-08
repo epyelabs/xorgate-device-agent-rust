@@ -9,6 +9,7 @@
 #   tools/capture-host/run-rig.sh reference            # re-record the gst-launch fixtures
 #   tools/capture-host/run-rig.sh transcripts [OUTDIR] # host transcripts + compare vs fixtures
 #   tools/capture-host/run-rig.sh dot [OUTDIR] [dot_equiv.py run args...]
+#   tools/capture-host/run-rig.sh timing [OUTDIR] [timing_harness.py args...]   # Phase 7a WP3 (K5, host half)
 #
 # Env: XORGATE_AGENT_LABEL (container label, default capture-host),
 #      RIG_TARGET_DIR (cargo target dir in the xorgate-rs-target volume,
@@ -61,8 +62,14 @@ case "$cmd" in
     rig python3 tools/capture-host/dot_equiv.py run \
       --host /repo/tools/capture-host/.cache/bin/xorgate-rs --outdir "/repo/${out#"$REPO"/}" "$@"
     ;;
+  timing)
+    out="${1:-$CACHE/timing}"
+    shift || true
+    rig python3 -I tools/capture-host/timing_harness.py \
+      --host /repo/tools/capture-host/.cache/bin/xorgate-rs --out "/repo/${out#"$REPO"/}" "$@"
+    ;;
   *)
-    sed -n '2,16p' "$0" >&2
+    sed -n '2,17p' "$0" >&2
     exit 2
     ;;
 esac
