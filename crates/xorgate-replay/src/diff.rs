@@ -2810,9 +2810,7 @@ pub fn diff_with(
                 .or_else(|| {
                     // The first/last tick of a run may have no partner (P3a
                     // R4: also of each stretch around a handoff restart).
-                    (wv - first_wall.max(play.boot_wall(wv)) <= 5_000
-                        || play.stretch_end(wv) - wv <= 3_000)
-                        .then(|| "T4".to_string())
+                    stretch_edge_tick(play, first_wall, wv).then(|| "T4".to_string())
                 })
                 .or_else(|| {
                     // A lead tick the hold gate skipped at a drift flip.
@@ -4926,6 +4924,24 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
     Ok((ca, cb, play, pairs))
 }
 
+/// "The first/last tick of a run may have no partner" (T4), per stretch (P3a
+/// R4): ≤ 5 s after its boot, or ≤ 3 s before its end. Without a handoff
+/// exactly the pre-P3a rule (`end_wall − wv ≤ 3 000`). Around a handoff the
+/// stopped incarnations' end is `stop_w` and the bound is two-sided
+/// (review-P3a F6): a tick INSIDE the stop window (after `stop_w`, before
+/// `restart_w`) is never a stretch-edge tick.
+fn stretch_edge_tick(play: &PlayInfo, first_wall: i64, wv: i64) -> bool {
+    if wv - first_wall.max(play.boot_wall(wv)) <= 5_000 {
+        return true;
+    }
+    let left = play.stretch_end(wv) - wv;
+    if play.handoff.as_ref().is_some_and(|h| wv < h.restart_w) {
+        (0..=3_000).contains(&left)
+    } else {
+        left <= 3_000
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5459,6 +5475,20 @@ mod tests {
         assert_eq!(seq(&[(98_000, 92), (99_000, 94)]), 1);
         assert_eq!(seq(&[(99_000, 93), (191_000, 5)]), 1);
         assert_eq!(seq(&[(191_000, 0), (192_000, 0)]), 1);
+        // Stretch-edge ticks (review-P3a F6): ≤ 3 s before the stop and
+        // ≤ 5 s after the restart; NEGATIVE: a tick INSIDE the stop window
+        // (after stop_w, before restart_w) is never one.
+        assert!(stretch_edge_tick(&play, 0, 98_000));
+        assert!(stretch_edge_tick(&play, 0, 193_000));
+        assert!(!stretch_edge_tick(&play, 0, 96_000));
+        assert!(!stretch_edge_tick(&play, 0, 100_500));
+        assert!(!stretch_edge_tick(&play, 0, 150_000));
+        assert!(!stretch_edge_tick(&play, 0, 300_000));
+        assert!(stretch_edge_tick(&play, 0, 398_000));
+        // Without a handoff: the pre-P3a rule, unchanged.
+        let plain = PlayInfo { start_wall: 0, end_wall: 400_000, ..Default::default() };
+        assert!(stretch_edge_tick(&plain, 0, 4_000) && stretch_edge_tick(&plain, 0, 398_000));
+        assert!(!stretch_edge_tick(&plain, 0, 100_000));
         // Without a handoff the same 93 → 0 is a FAIL.
         let mut rep = Report::default();
         let ms: Vec<Msg> = [(99_000, 93), (191_000, 0)]

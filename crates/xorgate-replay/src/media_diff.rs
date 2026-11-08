@@ -1627,6 +1627,7 @@ const D59_LIVE_MS: i64 = 1_000;
 fn d59_boot_led_blips(
     p: &str,
     play: &PlayInfo,
+    kinds: (&str, &str),
     (la, lb): (&[LeafSample], &[LeafSample]),
     (live_a, live_b): (LiveSeries, LiveSeries),
 ) -> Option<Vec<(bool, Step)>> {
@@ -1660,7 +1661,13 @@ fn d59_boot_led_blips(
             })
             .collect()
     };
-    let (da, db) = (blips(&va), blips(&vb));
+    // review-P3a F2: the side LACKING a blip must be a JS incarnation (the
+    // TS post-await LED read, worker.ts:544, races the heartbeat armed a few
+    // ms after the recorder, :597 vs :703; Rust arms its heartbeat after the
+    // connect, worker.rs:828, so it reads the previous tick deterministically
+    // and never lacks one). A Rust side lacking a blip stays judged.
+    let da = if kinds.1 == "js" { blips(&va) } else { Vec::new() };
+    let db = if kinds.0 == "js" { blips(&vb) } else { Vec::new() };
     if da.is_empty() && db.is_empty() {
         return None;
     }
@@ -1974,7 +1981,7 @@ fn rec_values_m(
                 } else {
                     live
                 };
-                if let Some(drops) = d59_boot_led_blips(p, play, (&la, &lb), lv) {
+                if let Some(drops) = d59_boot_led_blips(p, play, kinds, (&la, &lb), lv) {
                     for (side_a, st) in drops {
                         let f = format!("{}×{}@{}", st.0, st.1, st.2);
                         let (x, y) = if side_a {
@@ -4640,7 +4647,10 @@ mod tests {
                    b: &[LeafSample],
                    la: &[(i64, String)],
                    lb: &[(i64, String)],
-                   play: &PlayInfo| d59_boot_led_blips(p, play, (a, b), (la, lb));
+                   play: &PlayInfo| d59_boot_led_blips(p, play, ("rust", "js"), (a, b), (la, lb));
+        let run_k = |k: (&str, &str), a: &[LeafSample], b: &[LeafSample], la: &[(i64, String)], lb: &[(i64, String)]| {
+            d59_boot_led_blips(hf, &play, k, (a, b), (la, lb))
+        };
         assert_eq!(
             run(hf, &a, &b, &live_a, &live_b, &play).unwrap(),
             vec![(true, ("16".to_string(), 1, 2_070))]
@@ -4652,8 +4662,15 @@ mod tests {
             smp(3_262, Some("0")),
         ];
         assert!(run(hf, &a, &b_nosys, &live_a, &live_b, &play).is_some());
-        // Either side may hold it.
-        assert!(run(hf, &b, &a, &live_b, &live_a, &play).is_some());
+        // Either column order (the Rust holder as B, the JS lacker as A).
+        assert!(run_k(("js", "rust"), &b, &a, &live_b, &live_a).is_some());
+        // JS-vs-JS: the lacking side is JS, the TS race (allowed).
+        assert!(run_k(("js", "js"), &a, &b, &live_a, &live_b).is_some());
+        // NEGATIVE (review-P3a F2): the side LACKING the blip is Rust — JS
+        // holding it, or Rust-vs-Rust — stays judged.
+        assert!(run_k(("js", "rust"), &a, &b, &live_a, &live_b).is_none());
+        assert!(run_k(("rust", "rust"), &a, &b, &live_a, &live_b).is_none());
+        assert!(run_k(("rust", "js"), &b, &a, &live_b, &live_a).is_none());
         // NEGATIVE: the same blip 6 s after the boot.
         let late_a = [
             smp(1_067, Some("0")),

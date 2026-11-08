@@ -44,7 +44,7 @@ export XORGATE_AGENT_LABEL="${XORGATE_AGENT_LABEL:-p6-takeover}"
 export RIG_IMAGE="${RIG_IMAGE:-xorgate-replay-rig:p6-takeover}"
 export JS_REF="${JS_REF:-09da38d}"
 LOAD_MAX="${P3A_LOAD_MAX:-8}"
-TAPES="p6-takeover-open p6-takeover-vbacklog p6-takeover-tbacklog p6-takeover-reap p6-takeover-inflight"
+TAPES="p6-takeover-open p6-takeover-vbacklog p6-takeover-tbacklog p6-takeover-reap p6-takeover-inflight p6-takeover-vbacklog-503tail"
 
 matrix() {
   local n=1 t d s
