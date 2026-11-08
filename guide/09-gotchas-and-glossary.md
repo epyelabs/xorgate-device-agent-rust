@@ -66,9 +66,9 @@ symbols fail at start, not at first use). Related rules:
 - Workspace path dependencies also carry a `version` (`Cargo.toml:20-25`), because `deny.toml`
   forbids wildcard requirements and treats a bare path dependency as one. Keep the two in step with
   `[workspace.package].version`.
-- The MQTT library (`rumqttc` 0.25) brings an old `rustls-webpki` that has advisories. The agent
-  never uses that code path (it builds its own rustls config), so `deny.toml` ignores those advisory
-  IDs with reasons. Revisit them when `rumqttc` updates; do not add unexplained ignores.
+- The MQTT library (`rumqttc` 0.25.1) brings an old `rustls-webpki` 0.102 (five advisories) and the
+  unmaintained `rustls-pemfile` (one advisory). The agent never uses that code path (it builds its
+  own rustls config), so `deny.toml` ignores those six advisory IDs, each with a reason. Revisit them when `rumqttc` updates; do not add unexplained ignores.
 
 ### The device shares one power supply
 
@@ -132,9 +132,9 @@ showed up as stale power data and missing samples.
 ### One identity, one agent
 
 Two processes connecting with the same device identity disconnect each other forever and fire each
-other's Last-Will. That is why the Rust unit `Conflicts=` the reference agent's unit. The bench runs
-both agents only because the Rust one uses a separate development identity there, and the bench's
-installed unit has `Conflicts=` removed by `scripts/bench/install.sh`.
+other's Last-Will. That is why the Rust unit `Conflicts=` the reference agent's unit. The bench
+scripts can run both agents side by side only because the Rust one then uses a separate development
+identity, and `scripts/bench/install.sh` removes `Conflicts=` from the bench's installed unit.
 
 ### The pinned update version
 
@@ -156,7 +156,7 @@ drop-in: pass `--tag latest`.
 
 Some behaviour of the reference is kept on purpose even though it is not ideal, because the cloud
 was built against it. The best-known one: a video fragment's sidecar `startTs` is about 2.1 s late
-(the encoder buffers one GOP before the fragment file appears), so replays show video about 2 s
+(the encoder buffers one GOP, a group of pictures or one keyframe interval, before the fragment file appears), so replays show video about 2 s
 behind telemetry. Fixing it is a planned change of its own, coordinated with the cloud, not a
 drive-by fix.
 
@@ -177,7 +177,7 @@ drive-by fix.
 |---|---|
 | **Accepted divergence** | A deliberate, approved difference from the reference agent, numbered `D1`, `D2`, … in a register kept with the migration plan, pinned by a test and covered by a tolerance row. |
 | **Apply class** | How a config namespace reaches the hardware: `agent-poll` (the agent applies it), `modem-poll` (the modem daemon applies it on its ~30 s poll), `agent-restart` (unused). |
-| **Bench** | The maintainers' test device, on which the Rust agent runs next to a reference agent under a separate development identity. |
+| **Bench** | The maintainers' test device. The bench scripts can run the Rust agent next to a reference agent there, under a separate development identity. |
 | **Boot defer / GPS gate** | The one-shot policy that holds video encoders back after boot on a weak supply (stage 1), optionally until GPS or LTE is up (stage 2). |
 | **Bridge (shm bridge)** | The shared-memory video feed from a capture child to its KVS master (`shm/<stream-key>.sock`, fixed `I420 1280x720 15/1`). "Bridge-only" mode feeds live video without recording. |
 | **Build channel** | Where a build came from: `dev`, `prod`, `bench`, `ci`, or `dev-local` for a binary without `build-info.json`. |
@@ -203,12 +203,12 @@ drive-by fix.
 | **LWT (Last-Will)** | A message the broker publishes for a client that disappears without disconnecting: here `…/status {online:false}` with the connect-time timestamp. |
 | **Namespace** | A top-level key of the config document and of `settings.json` (`recording`, `timeSync`, …). |
 | **Offline mode** | `xorgate-rs run --offline`: no AWS, payloads printed to stdout. |
-| **Parity reference** | The previous agent (TypeScript, the `xorgate-device-agent` repo) at a pinned commit. Code comments like `worker.ts:1245` point into it. |
+| **Parity reference** | The earlier agent (TypeScript, the `xorgate-device-agent` repo) at a pinned commit. It is still the production default on fielded devices until cutover. Code comments like `worker.ts:1245` point into it. |
 | **Pipelines** | Files in `/etc/xorgate/pipelines/` describing each camera's GStreamer pipeline, rendered from the hardware block. |
 | **Plane** | The agent's side of one MQTT conversation: the MQTT plane (connect, publish), the config plane, the command plane. |
 | **Real mode, sim mode** | `MODE=real` reads hardware; `MODE=sim` publishes empty metrics (hardware-free). Replay mode is not supported by the Rust agent. |
 | **Retained message** | An MQTT message the broker stores and delivers to every new subscriber; the desired config is one. |
-| **Rev guard** | The rule that a config revision already applied is not applied again on redelivery. |
+| **Rev guard** | The rule that a config revision already applied is not applied again on redelivery, except for namespaces the device has never stored, which are adopted once. |
 | **Rig** | The Docker set-up that runs the reference and the Rust agent on the same tape and diffs them. |
 | **Scope** | The tenant (organisation, workspace) the cloud assigns; it moves telemetry to the scoped topic. |
 | **Seq** | The telemetry sequence number: 0 at process start, +1 per tick. |

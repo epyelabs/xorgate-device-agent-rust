@@ -81,13 +81,16 @@ same reason the local build uses Docker: native aarch64, glibc 2.36, GStreamer 1
 | Workflow | Trigger | Does |
 |---|---|---|
 | `ci.yml` | **manual only** (`workflow_dispatch`) | fmt, clippy `-D warnings`, tests, the Rust-vs-Rust replay smoke and media smoke, release build, `pack.sh --channel ci` (artifact only), and a separate `cargo deny` job |
-| `device-rs-deploy-dev.yml` | push to `main` touching shipped paths (`crates/`, `Cargo.*`, `systemd/`, `scripts/` except `scripts/bench/`, `python/`, `modem/`, `media/`, `system/`; Markdown never triggers it) | fmt, clippy, tests, release build, `build-info.sh dev`, pack, upload to the **dev** dist bucket, then an anonymous check of what a device will see |
-| `device-rs-deploy-prod.yml` | a **published GitHub Release** | the same checks at the tag, `build-info.sh prod --version <tag>`, pack, verify the AWS account, upload to the **prod** dist bucket |
+| `device-rs-deploy-dev.yml` | push to `main` touching shipped paths (`crates/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `systemd/`, `scripts/` except `scripts/bench/`, `python/`, `modem/`, `media/`, `system/`, or the workflow file itself; Markdown never triggers it). Also has a manual `workflow_dispatch`. | fmt, clippy, tests, release build, `build-info.sh dev`, pack, upload to the **dev** dist bucket, then an anonymous check of what a device will see |
+| `device-rs-deploy-prod.yml` | a **published GitHub Release** (also a manual `workflow_dispatch` with a `tag` input) | the same checks at the tag, `build-info.sh prod --version <tag>`, pack, verify the AWS account, upload to the **prod** dist bucket |
 
 `ci.yml` is manual to save CI minutes: branches are verified locally in Docker before merge, and
 `main` is covered by the deploy workflow, which runs the same checks before it publishes anything.
 So **a merge to `main` that touches shipped code is a deploy to dev.** Releases and production
-deploys are done by the maintainers; contributors do not dispatch workflows or create releases.
+deploys are done by the maintainers. **Never dispatch `device-rs-deploy-dev.yml` or
+`device-rs-deploy-prod.yml` by hand**, and do not create releases. Dispatching `ci.yml` on a branch
+(`gh workflow run ci.yml --ref <branch>`) is harmless, since it uses no secrets and publishes
+nothing, but it costs CI minutes: ask first.
 
 What gets uploaded, and the guard rails:
 
@@ -172,9 +175,10 @@ Test it with `tools/update-e2e/run.sh`, which uses a local fake bucket.
 
 ## The bench scripts (`scripts/bench/`)
 
-The maintainers keep one bench device on which the Rust agent runs next to a reference agent, on a
-**separate development identity** and its own state directory (the `systemd/bench/90-bench-dev.conf`
-drop-in). The scripts run from your machine over SSH (`BENCH=pi@<bench-host>`) and are idempotent:
+The maintainers keep a bench device. The bench scripts can run the Rust agent next to a reference
+agent there, on a **separate development identity** and its own state directory (the
+`systemd/bench/90-bench-dev.conf` drop-in), or on a converted bench. Check the bench's current
+state with `status.sh` before assuming either. The scripts run from your machine over SSH (`BENCH=pi@<bench-host>`) and are idempotent:
 
 | Script | Does |
 |---|---|
@@ -186,6 +190,6 @@ drop-in). The scripts run from your machine over SSH (`BENCH=pi@<bench-host>`) a
 | `soak.sh`, `evidence.sh`, `shm-audit.sh`, `filler.sh`, `gate-seam.sh`, `ntp-unsync.sh`, `drive-blackbox-ctl.sh`, … | gate and soak tooling; each explains itself in its header |
 
 Bench access, exclusive windows and soaks are the maintainers' call. Two rules to remember even if
-you never touch it: **never build on the bench** (use a tarball; the `--from-bench-build` mode is
-retired, see chapter 1), and keep soaks short unless agreed otherwise. Bench tooling is never
+you never touch it: **never build on the bench** (use a tarball; `install.sh --from-bench-build` now
+refuses, see chapter 1), and keep soaks short unless agreed otherwise. Bench tooling is never
 packed or shipped (`scripts/bench/` is excluded from the deploy trigger).

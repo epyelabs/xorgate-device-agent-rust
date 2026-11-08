@@ -42,10 +42,17 @@ Example: a new numeric field in the `lte` group that the modem daemon already wr
 4. **Assemble it.** Map it in `lte_group` (`crates/xorgate-core/src/modem.rs:124-146`): filter
    non-finite values, attach the unit, round with `xorgate_core::round::round` if the reference
    rounds.
-5. **Fixtures.** Re-dump the LTE fixtures from the reference with
-   `tools/replay/js/run-tsx.sh tools/replay/js/dump-lte-scenarios.mts …` (the driver's header gives
-   its arguments) and update `fixtures/telemetry/payload-shapes.json` if the full-payload case
-   changes. Do not hand-edit expected values.
+5. **Fixtures.** Three fixtures cover this path, with different provenance (check each file's
+   `generatedBy`):
+   - `fixtures/collectors/lte-scenarios.json`, the agent-side collector scenarios: re-dump it with
+     its committed driver, `tools/replay/js/run-tsx.sh tools/replay/js/dump-lte-scenarios.mts …`
+     (the driver's header gives its arguments);
+   - `fixtures/modem/modem.json` and `fixtures/modem/telemetry-tolerance.json`, which pin
+     `lte_group` itself, and `fixtures/telemetry/payload-shapes.json`, the full payload: their
+     dump scripts were never committed, so write a driver in `tools/replay/js/` first and add it to
+     `redump-all.sh`.
+
+   Do not hand-edit expected values.
 6. **The agent side** usually needs no change: `collectors/lte.rs` converts the typed group with
    `to_group`.
 
@@ -90,8 +97,9 @@ I/O, and a `run` that takes everything it touches as arguments, so a test can ca
    behaviour, an integration test in `crates/xorgate-agent/tests/cli_<name>.rs` that runs the real
    binary (`env!("CARGO_BIN_EXE_xorgate-rs")`).
 
-**Checks:** the three gates; `tools/replay/cli-matrix.sh` if the subcommand exists in the reference
-CLI (its output, exit code and any `settings.json` change must match). A verb that exists only in
+**Checks:** the three gates; the CLI matrix
+([chapter 5](05-hardware-abstraction-and-testing.md#the-cli-matrix), runs in the rig container) if
+the subcommand exists in the reference CLI (its output, exit code and any `settings.json` change must match). A verb that exists only in
 the Rust agent is a divergence: agree on it first.
 
 ## Add a config setting with clamping
@@ -137,7 +145,8 @@ that with the maintainers.
 
 **Checks:** `scripts/docker-build.sh test -p xorgate-core --test config_contract`,
 `--test settings_fixtures`, `--test cloud_config_fixtures`, `scripts/docker-build.sh test -p
-xorgate-agent --test cli_set --test config_message --test config_sync`, `tools/replay/cli-matrix.sh`,
+xorgate-agent --test cli_set --test config_message --test config_sync`, the CLI matrix
+([chapter 5](05-hardware-abstraction-and-testing.md#the-cli-matrix)),
 and a replay run with a `config` track, which compares `settings.json` byte for byte and every
 report.
 
@@ -160,8 +169,11 @@ report.
    only come from `commands::plan` (`commands.rs:510`), by design.
 6. **Capabilities.** If the console should offer it only to agents that support it, add it to
    `AGENT_CAPABILITIES` (`crates/xorgate-core/src/config_report.rs:879`).
-7. **Fixtures.** Re-dump `fixtures/commands/` and `fixtures/command_flow/` with
-   `tools/replay/js/dump-command-flow.mts`.
+7. **Fixtures.** Each file has its own driver:
+   - `fixtures/command_flow/handle-command.json`: `tools/replay/js/dump-command-flow.mts`;
+   - `fixtures/commands/p5b-commands.json`: `tools/replay/js/dump-p5b-spine.mts`;
+   - `fixtures/commands/commands.json`: dumped by a script that was never committed, so extending it
+     needs a new driver in `tools/replay/js/` first.
 
 **Checks:** `scripts/docker-build.sh test -p xorgate-core --test commands_fixtures --test
 command_flow_fixtures`, `scripts/docker-build.sh test -p xorgate-agent --test commands`, and a replay

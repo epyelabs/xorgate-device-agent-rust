@@ -28,9 +28,12 @@ The same binary is also the operator CLI: `xorgate-rs status`, `xorgate-rs set â
 
 ## One idea to keep in mind: parity
 
-The Rust agent is a rewrite. It replaced an earlier agent written in TypeScript (the
-`device/xorgate-device-agent` repository), and it keeps **byte-for-byte parity** with that agent at a
-pinned commit. That earlier agent is the **parity reference**. In practice this means:
+The Rust agent is a rewrite and the successor to an earlier agent written in TypeScript (the
+`device/xorgate-device-agent` repository). It keeps **byte-for-byte parity** with that agent at a
+pinned commit, and that earlier agent is the **parity reference**. The previous agent is still the
+production default on fielded devices; this agent runs alongside it until cutover. The two are
+interchangeable on a device: a device can be converted to the Rust agent and back with no cloud
+change (chapter 7). In practice parity means:
 
 - every MQTT topic, JSON payload, file format and log line that something else reads must come out
   exactly as the reference produced it, down to key order and how numbers are printed;
@@ -61,8 +64,8 @@ Read chapters 1 to 4 in order the first time. After that, use chapters 5 to 9 as
 
 ## Conventions in this guide
 
-- `path:line` references are to this repository at the commit the guide was written against. Lines
-  drift as code changes; if a reference looks off, search for the quoted name.
+- `path:line` references are to this repository at commit `c2377b1` (`main` when the guide was
+  written). Lines drift as code changes; if a reference looks off, search for the quoted name.
 - Excerpts are short and sometimes trimmed. A trimmed excerpt says so. Open the file for the rest.
 - Placeholders look like `<device-id>`, `<bench-host>` or `<bucket-url>`. The guide contains no real
   device identifiers, addresses or credentials, and neither should anything you add to the repo.

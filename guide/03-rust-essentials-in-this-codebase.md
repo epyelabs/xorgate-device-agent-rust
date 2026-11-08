@@ -8,6 +8,7 @@ lifetimes) and 16 (concurrency) match the sections below.
 Contents:
 
 - [Reading Rust syntax quickly](#reading-rust-syntax-quickly)
+- [Strings, vectors, slices and other everyday syntax](#strings-vectors-slices-and-other-everyday-syntax)
 - [Ownership, borrowing, `Clone` and `Arc`](#ownership-borrowing-clone-and-arc)
 - [`Result`, `?` and the error types](#result--and-the-error-types)
 - [`Option`](#option)
@@ -37,6 +38,88 @@ Contents:
 | `name!(…)` | A macro call, for example `format!`, `info!`, `tokio::select!`. |
 | `\|x\| x + 1`, `move \|\| …` | A closure (an anonymous function). `move` makes it take ownership of what it uses. |
 | `///` and `//!` | Doc comments for the next item, and for the enclosing module. They are rendered by `cargo doc`. |
+
+## Strings, vectors, slices and other everyday syntax
+
+A few basics appear on almost every page of this repo.
+
+**`String` and `&str`.** `String` is an owned, growable piece of text. `&str` is a borrowed view of
+text that someone else owns, for example a string literal or part of a `String`. Functions usually
+take `&str` (they only need to read) and return `String` (the caller gets to keep it):
+
+```rust
+// crates/xorgate-agent/src/cli.rs:65
+pub fn usage(version: &str) -> String {
+```
+
+`.to_string()` (or `.to_owned()`, `String::from`) copies a `&str` into a new `String`, as in
+`request_id: request_id.to_string()` (`crates/xorgate-core/src/commands.rs:262`). `.as_str()` goes
+the other way. Struct fields that must outlive their input hold `String`.
+
+**`Vec<T>` and slices.** `Vec<T>` is an owned, growable array. `&[T]` is a borrowed **slice**: a
+view of some elements of a `Vec`, an array or another slice. A function that only reads a list takes
+a slice, so it works with any of them. `&[u8]` is a slice of raw bytes, which is how MQTT payloads
+arrive (`parse_command(payload: &[u8])`, `commands.rs:247`). Ranges cut slices out of slices:
+
+```rust
+// crates/xorgate-agent/src/cli.rs:41-55 (trimmed)
+pub fn split_command(av: &[String]) -> (Option<String>, Vec<String>) {
+    // …
+        let mut rest = av[..i].to_vec();
+        rest.extend_from_slice(&av[i + 1..]);
+        return (Some(a.to_string()), rest);
+```
+
+`av[..i]` is "elements before `i`", `av[i + 1..]` "everything after `i`", and `.to_vec()` copies a
+slice into a new `Vec`. Indexing out of range panics, so the code checks lengths first. The function
+also returns a **tuple**, `(Option<String>, Vec<String>)`, which the caller unpacks with
+`let (cmd, rest) = split_command(argv);`.
+
+**`impl Trait` in argument position** means "any type that implements this trait". It saves the
+caller a conversion:
+
+```rust
+// crates/xorgate-agent/src/state.rs:143
+    pub fn note(&self, level: ActivityLevel, msg: impl Into<String>, now: i64) {
+```
+
+`note` accepts a `&str` literal or a `String` from `format!`, and calls `msg.into()` once inside.
+`std_command(program: impl AsRef<OsStr>)` (`crates/xorgate-hal/src/child.rs:194`) accepts anything
+that can be viewed as an OS string: a `&str`, a `String`, a `Path`.
+
+**`as` casts** convert between number types explicitly. Rust never converts numbers implicitly.
+
+```rust
+// crates/xorgate-agent/src/lib.rs:35
+        .map(|d| d.as_millis() as i64)
+```
+
+`as` never fails: converting to a smaller integer cuts off the high bits, and converting a float
+to an integer drops the fraction and saturates at the type's limits. The code uses it only where the
+value is known to fit (`m.qos as u8` in `mqtt_plane.rs:299`, `clamp_round(…) as u32` in
+`crates/xorgate-core/src/settings.rs:515` after clamping). Where a value might not fit, use
+`u32::try_from(x)`, which returns a `Result`.
+
+**`..` in patterns** means "the rest, which I do not need": `MqttEvent::Connected { .. }`
+(`mqtt_plane.rs:302`) matches the variant whatever its fields hold. In a struct literal,
+`..other` fills the remaining fields from another value (see
+[Structs and `impl`](#structs-and-impl)), and in a range (`..i`, `i..`) it is one open end.
+
+**The turbofish `::<T>`** names a generic type when the compiler cannot infer it from context:
+
+```rust
+// crates/xorgate-core/tests/cameras_fixtures.rs:22
+    let f = common::fixture::<Case>("cameras/enumeration.json");
+```
+
+Other examples: `.collect::<Vec<_>>()` (`crates/xorgate-agent/src/worker.rs:156`; `_` lets the
+compiler fill in the element type) and `mpsc::unbounded_channel::<Vec<u8>>()`
+(`crates/xorgate-agent/src/config_plane/mod.rs:194`).
+
+**Raw and byte strings.** `r#"…"#` is a raw string: backslashes and double quotes inside are taken
+literally, which is why the tests write JSON this way (`worker.rs:1050`). `b"…"` is a byte string, a
+`&[u8; N]` instead of a `&str`, and `br#"…"#` combines both, used to fake raw MQTT or HTTP bodies
+in tests (`br#"{}"#` in `crates/xorgate-cloud/src/iot_creds.rs:476`).
 
 ## Ownership, borrowing, `Clone` and `Arc`
 
@@ -150,7 +233,7 @@ The repo uses three styles of error, each for a reason:
   gets its message from an attribute:
 
   ```rust
-  // crates/xorgate-cloud/src/tls.rs:23-31 (trimmed)
+  // crates/xorgate-cloud/src/tls.rs:23-32 (trimmed)
   #[derive(Debug, thiserror::Error)]
   pub enum TlsError {
       #[error("no certificate found in CA PEM")]
@@ -159,7 +242,9 @@ The repo uses three styles of error, each for a reason:
       EmptyClientCert,
       #[error("client key PEM: {0}")]
       ClientKey(rustls_pki_types::pem::Error),
-      // …
+      #[error("CA PEM: {0}")]
+      CaPem(rustls_pki_types::pem::Error),
+      // … ClientCertPem, RootStore, Rustls
   }
   ```
 

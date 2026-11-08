@@ -116,7 +116,7 @@ A golden fixture is a recorded input together with the output the reference agen
 {
   "jsSourceFile": "test/power.test.ts",
   "jsCommit": "89b5c6407ef88e20f7168bd767d22a7be04ebcb6",
-  "generatedBy": "node script run in the JS repo working tree via npx tsx (…)",
+  "generatedBy": "…",
   "cases": [
     { "name": "splits current and sticky nibbles", "op": "parseThrottled",
       "input": "throttled=0x50005\n", "expected": { "current": 5, "sticky": 5 } }
@@ -156,11 +156,19 @@ payload in `fixtures/telemetry/payload-shapes.json` and requires that re-seriali
 **identical string**.
 
 **Where fixtures come from.** Fixtures are dumped from the reference agent, never written by hand.
-The drivers are in `tools/replay/js/`. `run-tsx.sh <driver>` runs one driver against a scratch copy
+Most drivers are in `tools/replay/js/`. `run-tsx.sh <driver>` runs one driver against a scratch copy
 of the reference at the pinned commit (made with `git archive`, so the reference repository is never
-modified), and `redump-all.sh` re-runs all of them, with `redump-compare.py` to compare against the
-committed files. If a fixture test fails, the Rust code is wrong, not the fixture. Editing a fixture
-to make a test pass defeats its purpose.
+modified), and `redump-all.sh` re-runs every committed driver, with `redump-compare.py` to compare
+against the committed files.
+
+Not every fixture has a committed driver. Some early ones were dumped by scripts that are not in
+this repo, for example `fixtures/telemetry/payload-shapes.json`, `fixtures/modem/modem.json`,
+`fixtures/modem/telemetry-tolerance.json` and `fixtures/commands/commands.json`. **Check the file's
+`generatedBy` field:** if it names a `tools/replay/js/` driver, re-run that driver; if it says the
+script was not committed, changing that fixture means writing a new driver here first.
+
+If a fixture test fails, the Rust code is wrong, not the fixture. Editing a fixture to make a test
+pass defeats its purpose.
 
 Two special fixtures:
 
@@ -283,14 +291,45 @@ Read `<dir>/diff.md`. The exit code is the diff's. Things to know:
 - Without `--out`, `run-rig.sh` copies the run into the migration plan's evidence folder if that
   exists next to the repo, else into `tools/replay/.cache/evidence`.
 
-Cheaper checks that need no reference build:
+### Cheaper checks that need no reference build
 
-- `cargo test -p xorgate-replay` tests the tape format, synthesis, the gating logic and the diff
-  and tolerance engine.
-- `tools/replay/ci-smoke.sh` replays the committed smoke tape Rust-vs-Rust with a local broker. CI
-  runs it; it needs `mosquitto` and `openssl` installed in the container.
-- `tools/replay/cli-matrix.sh` runs both agents' CLIs over a list of cases and diffs their output
-  and the resulting `settings.json` (see the "CLI matrix" section of `tools/replay/README.md`).
+- `scripts/docker-build.sh test -p xorgate-replay` tests the tape format, synthesis, the gating
+  logic and the diff and tolerance engine.
+- **The CI smoke replay**, `tools/replay/ci-smoke.sh <xorgate-rs> <xorgate-replay> [out dir]
+  [smoke|media]`, replays the committed smoke tape Rust-vs-Rust through a local TLS broker, with no
+  Docker inside. CI runs it as a step of `ci.yml`, inside its Bookworm container. It must run as
+  root in a **throwaway container only**, because it edits `/etc/hosts`. The build container of
+  `scripts/docker-build.sh` is one (it is removed when the shell exits):
+
+  ```sh
+  scripts/docker-build.sh shell
+  apt-get update && apt-get install -y --no-install-recommends mosquitto openssl python3 procps
+  cargo build -p xorgate-agent -p xorgate-replay
+  tools/replay/ci-smoke.sh "$CARGO_TARGET_DIR/debug/xorgate-rs" "$CARGO_TARGET_DIR/debug/xorgate-replay" /tmp/smoke
+  ```
+
+  Inside that container `CARGO_TARGET_DIR` is `/target/<checkout dir name>`, so the debug binaries
+  are under `$CARGO_TARGET_DIR/debug/`. The 60 s tape plays in real time, and the script exits
+  non-zero on any untolerated difference. The `media` mode also needs the GStreamer tools and plugins and a
+  `/dev/shm` larger than that container gets by default; leave it to CI.
+
+### The CLI matrix
+
+`tools/replay/cli-matrix.sh` runs the same list of CLI invocations through both agents' CLIs and
+diffs stdout, stderr, the exit code and the resulting `settings.json` after every step. It needs the
+reference build, so do the three set-up steps of [Running a replay](#running-a-replay) first. It runs
+**inside the rig container**, and the compose project must be torn down with `down -v` afterwards,
+or the broker's volumes leak:
+
+```sh
+docker compose -p cli-matrix -f tools/replay/docker-compose.yml run --rm -T --entrypoint bash rig \
+  /rig/tools/cli-matrix.sh --out /rig/out/cli-matrix-<ts>
+docker compose -p cli-matrix -f tools/replay/docker-compose.yml down -v --remove-orphans
+```
+
+The results land in `tools/replay/.cache/runs/cli-matrix-<ts>/`. `--a` and `--b` choose the sides
+(default: reference vs Rust), and `--fresh` runs the per-case list in `tools/replay/cli/cases.txt`
+instead of the cumulative one. The "CLI matrix" section of `tools/replay/README.md` has the rest.
 
 ## Other end-to-end rigs
 

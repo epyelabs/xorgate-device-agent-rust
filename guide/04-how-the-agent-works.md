@@ -155,7 +155,8 @@ unbounded queue and one task handles them strictly in arrival order (`config_pla
 2. handles three envelope facts **outside** the revision guard: `uploadBucket` (persisted into
    `kvs.json`), `scope` (the tenant telemetry topic), `hardware` (persisted to `hardware.json`,
    pipelines re-rendered);
-3. applies the **rev guard**: a revision already applied is not applied again. Otherwise
+3. applies the **rev guard**: a revision already applied is not applied again, except for
+   namespaces this device has never stored, which are adopted once (`message.rs:185-193`). Otherwise
    `apply_cloud_config` re-reads `settings.json`, merges the namespaces
    (`xorgate_core::cloud_config::merge`) and writes the file atomically, but only if something
    changed;
@@ -289,8 +290,8 @@ actually happened.
 
 The **status LED** is a renderer, not a policy. `xorgate_core::led_state::resolve_led_state` ranks
 facts other modules already published (connection, recording, GNSS, LTE, power) into a colour and
-pattern. `crates/xorgate-agent/src/ops/led.rs` ticks it from the 1 s heartbeat and adds the 2 s
-"config applied" flash. `crates/xorgate-hal/src/led_driver.rs` drives the pins through the GPIO
+pattern. `crates/xorgate-agent/src/ops/led.rs` ticks it from the 1 s heartbeat and adds the two white
+"config applied" flashes. `crates/xorgate-hal/src/led_driver.rs` drives the pins through the GPIO
 character device. The systemd unit's `ExecStartPre` and `ExecStopPost` hooks (`xorgate-rs led boot`,
 `led exit-state`) set the LED before the agent starts and after it stops; a crash leaves it solid
 red. The resolved state is also published as `system.led_state` and `system.health_flags`.

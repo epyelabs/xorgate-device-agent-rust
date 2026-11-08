@@ -4,6 +4,11 @@ This chapter gets you from a fresh clone to a green test run. Everything builds 
 do not need Rust installed on your machine unless you want editor support (see the end of this
 chapter).
 
+```sh
+git clone https://github.com/epyelabs/xorgate-device-agent-rust.git
+cd xorgate-device-agent-rust
+```
+
 ## What you need
 
 - **Docker.** On an Apple Silicon Mac, Docker Desktop runs the `linux/arm64` build container
@@ -55,14 +60,15 @@ Two consequences:
 
 **Never build on a device.** It is tempting, because the device is aarch64 Bookworm. Do not. The Pi
 and its LTE modem share one power supply, and a full `cargo build` on the CPU once browned out the
-bench device. A device also has only 4 GB of RAM and is running real work. The top-level `README.md`
-and `scripts/bench/install.sh --from-bench-build` still describe an older on-device build path.
-Treat that path as retired. Build in Docker and copy the result.
+bench device. The bench CM5 also has only 4 GB of RAM, and a device is running real work. On-device
+builds are retired: `scripts/bench/install.sh --from-bench-build` now refuses. Build in Docker and
+install the resulting tarball.
 
 ## Build and test commands
 
 All of these go through `scripts/docker-build.sh`, which builds the image the first time (a few
-minutes), then runs `cargo` in the container with your checkout mounted at `/src`:
+minutes), then runs `cargo` in the container with your checkout mounted at `/src`. `clippy`, used
+below, is Rust's linter, and `rustfmt` (`cargo fmt`) its formatter:
 
 ```sh
 scripts/docker-build.sh                      # cargo build --release → target/docker/release/xorgate-rs
@@ -90,8 +96,7 @@ scripts/docker-build.sh clippy --workspace --all-targets -- -D warnings
 scripts/docker-build.sh test
 ```
 
-`-D warnings` turns every clippy warning into an error. clippy is Rust's linter. Besides its normal
-lints, this repo configures one project rule in `clippy.toml`: raw process spawning is banned
+`-D warnings` turns every clippy warning into an error. Besides its normal lints, this repo configures one project rule in `clippy.toml`: raw process spawning is banned
 (chapter 5 explains why).
 
 ### cargo deny
@@ -105,9 +110,9 @@ scripts/docker-build.sh shell
 cargo install --locked cargo-deny && cargo deny check
 ```
 
-or install it on your host if you have rustup there. `deny.toml` ignores six advisories by ID, all
-from an old `rustls-webpki` that only the MQTT library pulls in through a code path the agent never
-uses. Each ignore has a written reason. Do not add an ignore without one.
+or install it on your host if you have rustup there. `deny.toml` ignores six advisories by ID: five in an
+old `rustls-webpki` and one for the unmaintained `rustls-pemfile`. The MQTT library (`rumqttc`) is
+the only thing that pulls them in, through a code path the agent never uses. Each ignore has a written reason. Do not add an ignore without one.
 
 ### Script test suites
 
@@ -133,6 +138,9 @@ scripts/docker-build.sh shell
 XORGATE_HOME=/tmp/xg HARDWARE_MANIFEST=/nonexistent \
   cargo run -p xorgate-agent --bin xorgate-rs -- run --offline
 ```
+
+`MODE` defaults to `sim`, so `metrics` is empty in every line: sim mode starts no collectors. The
+clock-trust hold applies only in real mode, so the first line appears after about a second.
 
 Stop it with Ctrl-C. Look at `/tmp/xg/state.json` while it runs. `XORGATE_LOG=debug` raises the log
 level (the default filter is `info` with the MQTT library at `warn`). `xorgate-rs --help` lists the

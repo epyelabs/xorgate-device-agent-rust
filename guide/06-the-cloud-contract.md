@@ -39,7 +39,7 @@ impl Topics {
 | `telemetry` | device → cloud | 0 | the telemetry payload, once per second |
 | `status` | device → cloud | 0, not retained | `{v, deviceId, ts, online}`; also the Last-Will |
 | `config` | cloud → device | 1, **retained** | the desired configuration, with a `rev` |
-| `config/reported` | device → cloud | 1 | `{v, deviceId, ts, rev, origin, effective, status, changed?}`, at most 32 KB |
+| `config/reported` | device → cloud | 1 | `{v, deviceId, ts, rev, origin, effective, status, changed?}`; the backend caps it at 32 KB, and the agent never drops an oversize report |
 | `command` | cloud → device | 1, not retained | `{v, requestId, command, ts, expiresAt, args?}` |
 | `command/response` | device → cloud | 1 | the ack: the command fields plus `status` (`accepted`, `rejected`, `failed`) and `reason?` |
 | `sms` | device → cloud | 1 | `read_sms` / `clear_sms` results |
@@ -193,8 +193,9 @@ Unless a path is given, the tests are in `crates/xorgate-core/tests/`.
 2. **When you change what goes on the wire or into a shared file:** run the replay rig, reference vs
    Rust, on a scenario that exercises it (chapter 5). The rig compares key order and number text, not
    only values.
-3. **When you change the CLI:** `tools/replay/cli-matrix.sh`, which diffs both agents' CLI output and
-   the resulting `settings.json`.
+3. **When you change the CLI:** the CLI matrix, which diffs both agents' CLI output and the
+   resulting `settings.json`. It runs inside the rig container; the invocation is in
+   [chapter 5](05-hardware-abstraction-and-testing.md#the-cli-matrix).
 4. **When you change packaging or install:** `scripts/tests/dist.sh` (the `latest-rs.json` bytes) and
    `scripts/tests/install-rs-bodies.sh`.
 
