@@ -4,6 +4,8 @@ The Rust rewrite of the xorgate device agent (`device/xorgate-device-agent`, Typ
 Plan, research and phase gates: `plans/device-agent-js-to-rust/` in the `xorgate` monorepo
 (`README.md` = the plan, `PROGRESS.md` = where we are, `phase-0-toolchain-spike.md` = this phase).
 
+New to the codebase or to Rust? Start with the [guide](guide/README.md).
+
 Ships one aarch64 binary, `xorgate-rs`, that speaks the **identical** cloud contract (MQTT topics,
 payload shapes, settings namespaces, reports, S3 layouts) and reuses the **same on-device files**
 (`/etc/xorgate`, `/var/lib/xorgate`, pipelines, settings.json, config-sync.json), so a device can be

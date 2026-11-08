@@ -1,0 +1,191 @@
+# 7. Build, package, deploy
+
+How a commit becomes a running agent on a device.
+
+```mermaid
+flowchart LR
+  pr["branch, verified locally<br/>in Docker"] --> main["merge to main"]
+  main -->|push, path filter| dev["device-rs-deploy-dev.yml<br/>checks, build, pack"]
+  dev --> devb[("dev dist bucket")]
+  rel["GitHub Release<br/>(maintainers)"] --> prod["device-rs-deploy-prod.yml"]
+  prod --> prodb[("prod dist bucket")]
+  devb --> upd["device: xorgate-updater-rs.service<br/>→ xorgate-rs update"]
+  prodb --> upd
+  cloudcmd["cloud 'update' command"] --> upd
+```
+
+## The release binary
+
+`cargo build --release` uses the profile in the workspace `Cargo.toml`:
+
+| Setting | Why |
+|---|---|
+| `lto = "fat"`, `codegen-units = 1` | whole-program optimisation: a smaller, faster binary, at the cost of slow release builds |
+| `strip = true`, `debug = "line-tables-only"` | small binary, but panics and backtraces still name files and lines |
+| no `panic = "abort"` | a panic unwinds, so a panicking task is caught and reported (`AgentCtx::spawn`) instead of killing the whole process |
+
+The binary links GStreamer and glibc dynamically (chapter 1). CI prints the relevant
+`ldd target/release/xorgate-rs` lines after every release build so this stays visible.
+
+## Build identity: `build-info.json`
+
+`scripts/build-info.sh <channel> [--version <v>] [--out <path>]` writes
+`{"version", "channel", "builtAt", "packageVersion"}`. The agent reads it from `../build-info.json`
+next to its executable, reports it in the config report as `effective.agent.build`, and prints it
+with `xorgate-rs -v`. The console compares `version` as a plain string with the latest published
+build.
+
+| Channel | Made by | `version` |
+|---|---|---|
+| `dev` | the deploy-dev workflow, for `main` | short commit sha |
+| `prod` | the deploy-prod workflow, for a release | the release tag |
+| `bench` | `scripts/docker-build.sh pack`, by hand | short sha, `-dirty` if the tree has changes |
+| `ci` | `ci.yml` artifacts | never published |
+
+Without a `build-info.json` the binary falls back to the commit baked in by `build.rs` and channel
+`dev-local` (`crates/xorgate-agent/src/build_info.rs`).
+
+## `scripts/pack.sh` and the tarball
+
+```sh
+scripts/docker-build.sh pack       # build in Docker, then pack with channel bench
+# or, with an existing binary:
+scripts/pack.sh --channel bench --bin target/docker/release/xorgate-rs
+```
+
+Output: `target/dist/xorgate-agent-rs-<version>.tar.gz` and a `.sha256` sidecar in
+`sha256sum -c` format. The tarball is laid out exactly as `/opt/xorgate-rs` on the device:
+
+```text
+bin/xorgate-rs           the stripped release binary
+build-info.json
+systemd/                 xorgate-agent-rs.service, xorgate-updater-rs.service (+ bench/, never installed)
+install-rs.sh            the converter, so --revert works offline
+python/                  the IMU and OBD helpers
+modem/                   the modem daemon and its udev/NetworkManager files
+media/                   the KVS WebRTC runtime and its libraries
+system/                  the sudo helpers and a cron file
+```
+
+`pack.sh` refuses to produce a tarball that misses a required member (the binary, the unit, the
+Python helpers, `install-rs.sh`), and it verifies the vendored `media/`, `modem/` and `system/` trees
+against their `SHA256SUMS` files. A corrupted binary blob then fails the pack, not the first live
+view on a device.
+
+## CI workflows (`.github/workflows/`)
+
+Every build job runs on an `ubuntu-24.04-arm` runner inside `container: debian:bookworm`, for the
+same reason the local build uses Docker: native aarch64, glibc 2.36, GStreamer 1.22. (Only the
+`cargo deny` job runs on a plain x86 runner: it just reads `Cargo.lock`.)
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `ci.yml` | **manual only** (`workflow_dispatch`) | fmt, clippy `-D warnings`, tests, the Rust-vs-Rust replay smoke and media smoke, release build, `pack.sh --channel ci` (artifact only), and a separate `cargo deny` job |
+| `device-rs-deploy-dev.yml` | push to `main` touching shipped paths (`crates/`, `Cargo.*`, `systemd/`, `scripts/` except `scripts/bench/`, `python/`, `modem/`, `media/`, `system/`; Markdown never triggers it) | fmt, clippy, tests, release build, `build-info.sh dev`, pack, upload to the **dev** dist bucket, then an anonymous check of what a device will see |
+| `device-rs-deploy-prod.yml` | a **published GitHub Release** | the same checks at the tag, `build-info.sh prod --version <tag>`, pack, verify the AWS account, upload to the **prod** dist bucket |
+
+`ci.yml` is manual to save CI minutes: branches are verified locally in Docker before merge, and
+`main` is covered by the deploy workflow, which runs the same checks before it publishes anything.
+So **a merge to `main` that touches shipped code is a deploy to dev.** Releases and production
+deploys are done by the maintainers; contributors do not dispatch workflows or create releases.
+
+What gets uploaded, and the guard rails:
+
+- The versioned tarball and its sidecar (cached forever), the `xorgate-agent-rs-latest.tar.gz`
+  alias and sidecar, `install-rs.sh` and its sidecar, and `latest-rs.json` last.
+- Every key goes through `scripts/dist-guard.sh`, an allow-list of the Rust agent's keys only. The
+  same buckets hold the reference agent's builds (`latest.json`, `xorgate-agent-*.tar.gz`), and the
+  guard makes it impossible for this repo to overwrite them.
+- `latest-rs.json` is produced by `scripts/dist-manifest.sh`, whose output bytes are frozen and
+  tested (`scripts/tests/dist.sh`).
+- `scripts/dist-check.sh` then fetches everything anonymously, as a device would, checks every
+  sidecar, and confirms the reference agent's `latest.json` did not change.
+
+## On the device
+
+| Path | What |
+|---|---|
+| `/opt/xorgate-rs/` | the unpacked tarball |
+| `/usr/local/bin/xorgate-rs` | a two-line wrapper: sets `XORGATE_HOME=/var/lib/xorgate` by default and execs the binary, so the CLI reads the running service's state |
+| `/etc/systemd/system/xorgate-agent-rs.service` (+ `.d/10-user.conf`) | the agent unit, run as the provisioning user |
+| `/etc/systemd/system/xorgate-updater-rs.service` (+ `.d/10-dist.conf`) | the one-shot updater |
+| `/etc/sudoers.d/024_xorgate-update-rs` | lets the agent start exactly the updater unit, nothing else |
+| `/etc/xorgate/` | identity, `agent.env`, manifests: shared with the reference agent, read-only for the converter |
+| `/var/lib/xorgate/` | settings and state: shared with the reference agent |
+
+## Converting a device: `scripts/install-rs.sh`
+
+Devices are provisioned with the reference agent and then **converted**. `install-rs.sh` ships at
+the root of every tarball and as a key in the dist bucket. The operator runbook is
+[`docs/convert.md`](../docs/convert.md). The essentials:
+
+```sh
+sudo bash install-rs.sh [--from <bucket-url>] [--tag <ver>] [--tarball <file>] [--reinstall] [-y]
+sudo /opt/xorgate-rs/install-rs.sh --status            # converted | converting | reverted | not-converted
+sudo /opt/xorgate-rs/install-rs.sh --revert            # back to the reference agent; Rust files kept
+sudo /opt/xorgate-rs/install-rs.sh --revert --purge    # … and delete what the conversion installed
+```
+
+- **Convert** downloads and verifies the tarball (or takes `--tarball` offline), smoke-runs the
+  staged binary, installs only Rust-owned paths, records the previous state in
+  `/var/lib/xorgate-rs-install`, then disables the reference agent's unit and starts the Rust one.
+  If the Rust agent is not healthy after its start and a verification window (up to 150 s each),
+  the script reverts by itself and exits 4.
+- **Revert** needs no network and no working Rust binary. It restores the reference agent's
+  enablement from the record, starts it, and compares the reference agent's files with the
+  pre-conversion manifest.
+- **Rollback is always possible** because the reference agent is stopped and disabled, never
+  removed.
+- It never touches `/etc/xorgate`, the reference agent's install and units, the modem daemon, or
+  any file it did not install. It is plain bash with only the tools a Bookworm device already has.
+
+Exit codes: 0 done, 1 failed (device back where it was), 2 usage, 3 refused (precondition), 4 the
+Rust agent was unhealthy and the script reverted. `docs/convert.md` has the troubleshooting table.
+
+Test it with `scripts/tests/install-rs-unit.sh` (fast, in a throwaway container),
+`scripts/tests/install-rs-systemd.sh` (real systemd) and `tools/convert-e2e/` (the full matrix).
+
+## The updater
+
+The cloud's `update` command (or the console's update button) makes the agent run
+`sudo -n systemctl start --no-block xorgate-updater-rs.service`. That one-shot unit runs
+`xorgate-rs update` (`crates/xorgate-agent/src/cli/update.rs`), which:
+
+1. downloads `xorgate-agent-rs-latest.tar.gz` and its `.sha256` (or `--tag <version>`, or
+   `--from <bucket-url>`), and verifies the checksum;
+2. unpacks it to `/opt/xorgate-rs.new` and smoke-runs the staged binary;
+3. swaps it into `/opt/xorgate-rs`, keeping `/opt/xorgate-rs.old`, which is **restored
+   automatically** if any later step fails;
+4. reinstalls the units, the wrapper, the updater unit and the sudoers grant (and the shared modem
+   and system assets only on a device that no longer has the reference agent);
+5. reloads systemd and restarts the agent, only if it was running.
+
+All the decisions and every file body are in `xorgate_core::update_plan`; `update.rs` is only the
+I/O, with a timeout on every tool it runs. It requires root. By hand:
+`sudo systemctl start xorgate-updater-rs && sudo journalctl -u xorgate-updater-rs -n 50`.
+
+One caveat from the runbook: `agent.env` may pin `DEVICE_DIST_VERSION` to a reference-agent build.
+The updater unit's drop-in `10-dist.conf` overrides it to `latest`. A hand-run
+`sudo xorgate-rs update` does not see that drop-in, so pass `--tag latest`.
+
+Test it with `tools/update-e2e/run.sh`, which uses a local fake bucket.
+
+## The bench scripts (`scripts/bench/`)
+
+The maintainers keep one bench device on which the Rust agent runs next to a reference agent, on a
+**separate development identity** and its own state directory (the `systemd/bench/90-bench-dev.conf`
+drop-in). The scripts run from your machine over SSH (`BENCH=pi@<bench-host>`) and are idempotent:
+
+| Script | Does |
+|---|---|
+| `install.sh <tarball>` | install or update the Rust agent on the bench from a packed tarball |
+| `start.sh`, `stop.sh`, `status.sh`, `logs.sh` | control and inspect the Rust unit; the reference agent is left alone |
+| `profile.sh shared\|exclusive` | which inputs the Rust agent may use: "shared" ones only, or all hardware during an exclusive window |
+| `exclusive.sh begin\|end` | an exclusive window: the reference agent is stopped so the Rust agent owns the GNSS port, IMU and cameras |
+| `tape-pull.sh` | copy recorded tapes from the bench (they hold location and SIM data: never commit them) |
+| `soak.sh`, `evidence.sh`, `shm-audit.sh`, `filler.sh`, `gate-seam.sh`, `ntp-unsync.sh`, `drive-blackbox-ctl.sh`, … | gate and soak tooling; each explains itself in its header |
+
+Bench access, exclusive windows and soaks are the maintainers' call. Two rules to remember even if
+you never touch it: **never build on the bench** (use a tarball; the `--from-bench-build` mode is
+retired, see chapter 1), and keep soaks short unless agreed otherwise. Bench tooling is never
+packed or shipped (`scripts/bench/` is excluded from the deploy trigger).
