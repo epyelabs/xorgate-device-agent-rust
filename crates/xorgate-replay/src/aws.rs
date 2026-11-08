@@ -87,10 +87,52 @@ pub fn faults_of(rig: Option<&Value>) -> Vec<Fault> {
         .collect()
 }
 
+/// Phase 6 P3a: a HOLD window (`meta.rig.s3Holds: [{fromMs, toMs, holdMs,
+/// suffix}]`, relative to the agents' start like the fault windows). A PUT
+/// whose key ends `suffix` and whose HEADERS arrive inside the window is held
+/// `holdMs` BEFORE its body is read: the body sits in the socket buffers, so
+/// the PUT is mid-transfer — the sidecar of an mp4 was already PUT (sidecar
+/// first, `uploader.ts:168-176` @09da38d) and the mp4 is in flight. After the
+/// hold the fake reads the body and probes the connection: if the client is
+/// gone (killed at a handoff) the PUT is ABORTED — never stored, never a
+/// status — and logged `s3-aborted` in `aws.ndjson` (with the `s3-held`
+/// record at the arrival), so the in-flight object deterministically never
+/// lands. A live client gets the normal answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hold {
+    pub from_ms: i64,
+    pub to_ms: i64,
+    pub hold_ms: u64,
+    pub suffix: String,
+}
+
+/// `meta.rig.s3Holds` of a tape.
+pub fn holds_of(rig: Option<&Value>) -> Vec<Hold> {
+    rig.and_then(|r| r.get("s3Holds"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|h| {
+            Some(Hold {
+                from_ms: h.get("fromMs")?.as_i64()?,
+                to_ms: h.get("toMs")?.as_i64()?,
+                hold_ms: h.get("holdMs")?.as_u64()?,
+                suffix: h.get("suffix")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// How long the post-hold probe waits for a sign of life: a dead client
+/// shows EOF / an unclean TLS close at once.
+const HOLD_PROBE_MS: u64 = 300;
+
 /// Who the fake serves: `(deviceId, label, capture dir)` per agent.
 pub struct AwsFake {
     pub agents: Vec<(String, String, PathBuf)>,
     pub faults: Vec<Fault>,
+    /// P3a hold windows ([`Hold`]).
+    pub holds: Vec<Hold>,
     /// Wall ms the agents were started (fault windows are relative to it);
     /// 0 until set.
     pub start_wall: Arc<Mutex<i64>>,
@@ -102,6 +144,7 @@ impl AwsFake {
     pub fn new(
         agents: Vec<(String, String, PathBuf)>,
         faults: Vec<Fault>,
+        holds: Vec<Hold>,
         out: &Path,
     ) -> Result<Arc<Self>> {
         let mut s3_logs = Vec::new();
@@ -116,6 +159,7 @@ impl AwsFake {
         Ok(Arc::new(Self {
             agents,
             faults,
+            holds,
             start_wall: Arc::new(Mutex::new(0)),
             log: Arc::new(Mutex::new(File::create(out.join("aws.ndjson"))?)),
             s3_logs,
@@ -126,6 +170,25 @@ impl AwsFake {
         if let Ok(mut f) = self.log.lock() {
             let _ = writeln!(f, "{v}");
         }
+    }
+
+    /// P3a: `(hold ms, key, agent label)` when a PUT with this head must be
+    /// held ([`Hold`]).
+    fn hold_of(&self, head: &Head) -> Option<(u64, String, String)> {
+        if head.method != "PUT" || self.holds.is_empty() {
+            return None;
+        }
+        let key = decode_path(head.path.trim_start_matches('/'));
+        let started = self.start_wall.lock().map(|g| *g).unwrap_or(0);
+        let w = wall_now_ms();
+        let h = self.holds.iter().find(|h| {
+            started > 0
+                && w - started >= h.from_ms
+                && w - started < h.to_ms
+                && key.ends_with(h.suffix.as_str())
+        })?;
+        let label = self.agents.get(self.agent_of(&key)?)?.1.clone();
+        Some((h.hold_ms, key, label))
     }
 
     /// The agent a key belongs to: S3 keys embed the deviceId
@@ -267,11 +330,19 @@ pub fn verify_sigv4(req: &Req, secret: &str, access_key: &str, token: &str) -> R
     Ok(())
 }
 
-/// Read one HTTP/1.1 request (Content-Length or chunked body). `Ok(None)` on
-/// a clean EOF before the request line.
-async fn read_request<R: tokio::io::AsyncRead + Unpin>(
+/// A request line + headers (the body not read yet).
+#[derive(Debug, Default)]
+pub struct Head {
+    pub method: String,
+    pub path: String,
+    pub query: String,
+    pub headers: BTreeMap<String, String>,
+}
+
+/// The request line + headers of one request; `Ok(None)` on a clean EOF.
+async fn read_head<R: tokio::io::AsyncRead + Unpin>(
     r: &mut BufReader<R>,
-) -> std::io::Result<Option<Req>> {
+) -> std::io::Result<Option<Head>> {
     let mut line = String::new();
     if r.read_line(&mut line).await? == 0 {
         return Ok(None);
@@ -305,6 +376,19 @@ async fn read_request<R: tokio::io::AsyncRead + Unpin>(
                 .or_insert(v);
         }
     }
+    Ok(Some(Head {
+        method,
+        path,
+        query,
+        headers,
+    }))
+}
+
+/// The body of a request whose head was read (Content-Length or chunked).
+async fn read_body<R: tokio::io::AsyncRead + Unpin>(
+    r: &mut BufReader<R>,
+    headers: &BTreeMap<String, String>,
+) -> std::io::Result<Vec<u8>> {
     let mut body = Vec::new();
     if let Some(len) = headers
         .get("content-length")
@@ -333,13 +417,23 @@ async fn read_request<R: tokio::io::AsyncRead + Unpin>(
             r.read_line(&mut crlf).await?;
         }
     }
-    Ok(Some(Req {
-        method,
-        path,
-        query,
-        headers,
-        body,
-    }))
+    Ok(body)
+}
+
+/// After a hold: is the client gone? EOF or a read error (a killed peer
+/// sends no TLS close_notify) within [`HOLD_PROBE_MS`] = gone; a timeout
+/// (it waits for our answer) or pipelined bytes = alive.
+async fn client_gone<R: tokio::io::AsyncRead + Unpin>(r: &mut BufReader<R>) -> bool {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(HOLD_PROBE_MS),
+        r.fill_buf(),
+    )
+    .await
+    {
+        Ok(Ok(buf)) => buf.is_empty(),
+        Ok(Err(_)) => true,
+        Err(_) => false,
+    }
 }
 
 fn response(status: u16, reason: &str, ctype: &str, body: &[u8]) -> Vec<u8> {
@@ -554,7 +648,44 @@ pub async fn serve(fake: Arc<AwsFake>, listen: String, certs: PathBuf) -> Result
                 .is_some_and(|c| !c.is_empty());
             let (rd, mut wr) = tokio::io::split(tls);
             let mut rd = BufReader::new(rd);
-            while let Ok(Some(req)) = read_request(&mut rd).await {
+            loop {
+                let head = match read_head(&mut rd).await {
+                    Ok(Some(h)) => h,
+                    _ => break,
+                };
+                // P3a: an in-flight PUT held across a handoff ([`Hold`]).
+                let held = if creds_host {
+                    None
+                } else {
+                    fake.hold_of(&head)
+                };
+                if let Some((ms, key, agent)) = &held {
+                    fake.note(json!({"w": wall_now_ms(), "k": "s3-held", "key": key, "agent": agent, "holdMs": ms}));
+                    tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+                }
+                let body = match read_body(&mut rd, &head.headers).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        if let Some((_, key, agent)) = &held {
+                            fake.note(json!({"w": wall_now_ms(), "k": "s3-aborted", "key": key, "agent": agent, "why": format!("body: {e}")}));
+                        }
+                        break;
+                    }
+                };
+                if let Some((_, key, agent)) = &held {
+                    if client_gone(&mut rd).await {
+                        fake.note(json!({"w": wall_now_ms(), "k": "s3-aborted", "key": key, "agent": agent, "why": "client gone after the body"}));
+                        break;
+                    }
+                    fake.note(json!({"w": wall_now_ms(), "k": "s3-held-released", "key": key, "agent": agent}));
+                }
+                let req = Req {
+                    method: head.method,
+                    path: head.path,
+                    query: head.query,
+                    headers: head.headers,
+                    body,
+                };
                 let resp = if creds_host {
                     fake.creds(&req, peer_cert)
                 } else {
@@ -701,6 +832,91 @@ mod tests {
         assert!(verify_sigv4(&r2, RIG_SECRET, RIG_ACCESS_KEY, RIG_TOKEN)
             .unwrap_err()
             .contains("not signed"));
+    }
+
+    #[test]
+    fn holds_parse_and_match_only_their_suffix_and_window() {
+        let rig = json!({"s3Holds": [{"fromMs": 87_000, "toMs": 95_000, "holdMs": 20_000, "suffix": ".mp4"}]});
+        let holds = holds_of(Some(&rig));
+        assert_eq!(
+            holds,
+            vec![Hold {
+                from_ms: 87_000,
+                to_ms: 95_000,
+                hold_ms: 20_000,
+                suffix: ".mp4".into()
+            }]
+        );
+        assert!(holds_of(None).is_empty());
+        let dir = std::env::temp_dir().join(format!("aws-hold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = AwsFake::new(
+            vec![("dev-a".into(), "a".into(), dir.clone())],
+            vec![],
+            holds,
+            &dir,
+        )
+        .unwrap();
+        let head = |path: &str| Head {
+            method: "PUT".into(),
+            path: path.into(),
+            ..Default::default()
+        };
+        let mp4 = "/media-sessions/v1/dev-a/cam0/s/00007.mp4";
+        // Not started yet → never held.
+        assert!(fake.hold_of(&head(mp4)).is_none());
+        *fake.start_wall.lock().unwrap() = wall_now_ms() - 90_000;
+        let (ms, key, agent) = fake.hold_of(&head(mp4)).unwrap();
+        assert_eq!((ms, key.as_str(), agent.as_str()), (20_000, &mp4[1..], "a"));
+        // NEGATIVE: its sidecar, a GET, another device, outside the window.
+        assert!(fake
+            .hold_of(&head("/media-sessions/v1/dev-a/cam0/s/00007.json"))
+            .is_none());
+        let mut get = head(mp4);
+        get.method = "GET".into();
+        assert!(fake.hold_of(&get).is_none());
+        assert!(fake
+            .hold_of(&head("/media-sessions/v1/dev-z/cam0/s/00007.mp4"))
+            .is_none());
+        *fake.start_wall.lock().unwrap() = wall_now_ms() - 96_000;
+        assert!(fake.hold_of(&head(mp4)).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hold's outcome is decided by the client: killed during the hold →
+    /// aborted (mid-body: the body read fails; after the whole body: the
+    /// probe sees the close); alive → answered normally.
+    #[tokio::test]
+    async fn a_held_put_is_aborted_exactly_when_its_client_is_gone() {
+        use tokio::io::AsyncWriteExt as _;
+        let req = b"PUT /k HTTP/1.1\r\ncontent-length: 3\r\n\r\n";
+        // Whole body sent, then the client dies.
+        let (mut c, srv) = tokio::io::duplex(1 << 16);
+        c.write_all(req).await.unwrap();
+        c.write_all(b"abc").await.unwrap();
+        drop(c);
+        let mut r = BufReader::new(srv);
+        let h = read_head(&mut r).await.unwrap().unwrap();
+        assert_eq!((h.method.as_str(), h.path.as_str()), ("PUT", "/k"));
+        assert_eq!(read_body(&mut r, &h.headers).await.unwrap(), b"abc");
+        assert!(client_gone(&mut r).await);
+        // Mid-body: the client dies after 1 of 3 bytes.
+        let (mut c, srv) = tokio::io::duplex(1 << 16);
+        c.write_all(req).await.unwrap();
+        c.write_all(b"a").await.unwrap();
+        drop(c);
+        let mut r = BufReader::new(srv);
+        let h = read_head(&mut r).await.unwrap().unwrap();
+        assert!(read_body(&mut r, &h.headers).await.is_err());
+        // NEGATIVE: a live client waiting for the answer is NOT aborted.
+        let (mut c, srv) = tokio::io::duplex(1 << 16);
+        c.write_all(req).await.unwrap();
+        c.write_all(b"abc").await.unwrap();
+        let mut r = BufReader::new(srv);
+        let h = read_head(&mut r).await.unwrap().unwrap();
+        read_body(&mut r, &h.headers).await.unwrap();
+        assert!(!client_gone(&mut r).await);
+        drop(c);
     }
 
     #[test]

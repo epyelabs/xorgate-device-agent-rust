@@ -29,3 +29,8 @@ docker run --rm --label "xorgate.agent=${XORGATE_AGENT_LABEL:-rig}" --platform l
 # (Phase 5b WP5 item 4: rig-statvfs.so = the deterministic root filesystem both
 # agents' disk_usage reads, preloaded by the player; statvfs-shim/test.sh.)
 ls -l "$HERE/.cache/bin"
+# F-P2-BUILDREV (review-P2): the binary reports `unknown` as its build, so the
+# log records the tree it was built from next to the binaries' sha256.
+dirty=""; git -C "$REPO" diff --quiet HEAD -- 2>/dev/null || dirty=" (+ uncommitted changes)"
+echo "built from git $(git -C "$REPO" rev-parse HEAD)$dirty"
+( cd "$HERE/.cache/bin" && { shasum -a 256 xorgate-rs xorgate-replay rig-statvfs.so 2>/dev/null || sha256sum xorgate-rs xorgate-replay rig-statvfs.so; } )

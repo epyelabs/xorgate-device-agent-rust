@@ -62,7 +62,7 @@ use xorgate_hal::tape::{wall_now_ms, ConnState, Tape, TapeEvent};
 use crate::diff::PlayInfo;
 use crate::media::{self, MediaPlan, ObsAgent};
 use crate::watch::{self, WatchGate};
-use crate::{aws, p4, p5b, rewrite};
+use crate::{aws, handoff, p4, p5b, rewrite};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AgentKind {
@@ -71,7 +71,7 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             AgentKind::Js => "js",
             AgentKind::Rust => "rust",
@@ -192,6 +192,27 @@ pub struct PlayArgs {
     /// `/rig/system/xorgate-camrotate`, else the JS build's byte-identical copy).
     #[arg(long)]
     pub camrotate: Option<PathBuf>,
+    /// Phase 6 P3a (`handoff.rs`): at the tape's `meta.rig.handoff.atMs`,
+    /// stop BOTH agents the way systemd stops a unit (`term`: SIGTERM to every
+    /// process of the unit, SIGKILL after 90 s; `kill`: SIGKILL to all) and
+    /// restart each side on the SAME home as `--then-a` / `--then-b`.
+    #[arg(long, value_enum)]
+    pub handoff_signal: Option<handoff::StopSignal>,
+    /// The handoff instant (tape ms) instead of the tape's `atMs`.
+    #[arg(long)]
+    pub handoff_at_ms: Option<u64>,
+    /// What side A runs after the handoff (default: `--a` again).
+    #[arg(long, value_enum)]
+    pub then_a: Option<AgentKind>,
+    /// What side B runs after the handoff (default: `--b` again).
+    #[arg(long, value_enum)]
+    pub then_b: Option<AgentKind>,
+    /// Stop → start gap after the slower side's whole stop.
+    #[arg(long, default_value_t = handoff::RESTART_GAP_MS)]
+    pub handoff_gap_ms: u64,
+    /// The stop's SIGTERM → SIGKILL timeout (systemd's default 90 s).
+    #[arg(long, default_value_t = handoff::STOP_TIMEOUT_MS)]
+    pub handoff_stop_timeout_ms: u64,
 }
 
 impl PlayArgs {
@@ -264,6 +285,8 @@ const PREFILL_MS: u64 = 1000;
 const CROSSING_CLEAR_MS: i64 = 300;
 /// The power-read fence never holds a `vcgencmd` answer longer than this.
 const EXEC_FENCE_CAP_MS: i64 = 1_500;
+/// P3a: the release loop's pick that means "do the handoff now".
+const HANDOFF_PICK: usize = usize::MAX;
 
 // ------------------------------------------------------------------ gate
 
@@ -401,6 +424,19 @@ impl Gate {
     /// 2 s retry phase, counted from its own close).
     pub fn on_restore(&mut self, now: i64) {
         self.restored_at = Some(now);
+    }
+
+    /// Phase 6 P3a: both agents were restarted at a handoff. Everything the
+    /// gate learned about their ticks belongs to the stopped incarnations, so
+    /// it starts over as at a boot (fresh tracks, no hold, no resume); the
+    /// pairs so far are kept and a `{"handoff": now}` line marks the seam in
+    /// `pairs.ndjson` (`load_run` reads only `a`/`b` and `skip` lines).
+    pub fn on_handoff(&mut self, now: i64) {
+        let mut fresh = Gate::new(self.guard_before).with_flip_gap(self.flip_gap);
+        fresh.guard_after = self.guard_after;
+        fresh.pairs = std::mem::take(&mut self.pairs);
+        fresh.pairs.push(json!({ "handoff": now }));
+        *self = fresh;
     }
 
     /// Is an agent still unobserved since the last restore?
@@ -709,6 +745,19 @@ struct Agent {
     js_dir: PathBuf,
     /// Phase 5b: this side's ELM327 emulator (OBD tapes), stopped on drop.
     _obd_emu: Option<p5b::Emu>,
+    /// Phase 6 P3a: `(spawn wall ms, kind)` of every incarnation started on
+    /// this home (one without a handoff).
+    incarnations: Vec<(i64, AgentKind)>,
+}
+
+/// The Rust agent's own re-recorded tape of incarnation `n` (P3a: a Rust
+/// incarnation after a handoff gets `agent-tape.<n>.ndjson.gz`).
+pub fn agent_tape_name(n: usize) -> String {
+    if n == 0 {
+        "agent-tape.ndjson.gz".into()
+    } else {
+        format!("agent-tape.{n}.ndjson.gz")
+    }
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -973,7 +1022,7 @@ impl Agent {
             (kind == AgentKind::Rust).then(|| {
                 (
                     "XORGATE_RS_TAPE".to_string(),
-                    dir.join("agent-tape.ndjson.gz").display().to_string(),
+                    dir.join(agent_tape_name(0)).display().to_string(),
                 )
             }),
         )
@@ -1066,15 +1115,7 @@ impl Agent {
                 env.push((k, v));
             }
         }
-        fs::write(
-            dir.join("meta.json"),
-            serde_json::to_vec_pretty(&json!({
-                "label": label, "kind": kind.as_str(), "deviceId": device_id,
-                "jsDir": (kind == AgentKind::Js).then(|| args.js_dir_for(label).display().to_string()),
-                "home": home, "ptyPath": pty_path, "env": env.iter().cloned().collect::<BTreeMap<_, _>>(),
-            }))?,
-        )?;
-        Ok(Self {
+        let agent = Self {
             label,
             kind,
             device_id,
@@ -1095,7 +1136,44 @@ impl Agent {
             p4: p4_state,
             js_dir: args.js_dir_for(label).to_path_buf(),
             _obd_emu: obd_emu,
-        })
+            incarnations: Vec::new(),
+        };
+        agent.write_meta()?;
+        Ok(agent)
+    }
+
+    /// `<label>/meta.json`. After a handoff (P3a) `kind` is the CURRENT
+    /// incarnation's and `incarnations` lists every one with its spawn wall
+    /// (`diff`: per-item kinds, R2 of the P3a design).
+    fn write_meta(&self) -> Result<()> {
+        fs::write(
+            self.dir.join("meta.json"),
+            serde_json::to_vec_pretty(&json!({
+                "label": self.label, "kind": self.kind.as_str(), "deviceId": self.device_id,
+                "jsDir": (self.kind == AgentKind::Js).then(|| self.js_dir.display().to_string()),
+                "home": self.home, "ptyPath": self.pty_path,
+                "env": self.env.iter().cloned().collect::<BTreeMap<_, _>>(),
+                "incarnations": handoff::incarnations_json(&self.incarnations),
+            }))?,
+        )?;
+        Ok(())
+    }
+
+    /// P3a: the next incarnation runs `kind` on the same home. Only the
+    /// agent's own tape path depends on the kind (`media::prepare_agent`'s
+    /// env does not; the OBD helper source and the Pi helper do, and a
+    /// handoff refuses those tapes, `handoff::Plan::of`).
+    fn switch_kind(&mut self, kind: AgentKind) {
+        let n = self.incarnations.len();
+        self.kind = kind;
+        self.env.retain(|(k, _)| k != "XORGATE_RS_TAPE");
+        if kind == AgentKind::Rust {
+            self.env.push((
+                "XORGATE_RS_TAPE".into(),
+                self.dir.join(agent_tape_name(n)).display().to_string(),
+            ));
+        }
+        self.pty_open_cache = None;
     }
 
     fn obs(&self) -> ObsAgent {
@@ -1144,9 +1222,30 @@ impl Agent {
     }
 
     fn start(&mut self, args: &PlayArgs) -> Result<()> {
+        // P3a: a later incarnation APPENDS to the side's logs after a marker
+        // line (`takeover.rs` reads the recovery lines after it).
+        let n = self.incarnations.len();
+        let w = wall_now_ms();
+        let open = |name: &str| -> Result<File> {
+            let p = self.dir.join(name);
+            if n == 0 {
+                return Ok(File::create(p)?);
+            }
+            let mut f = OpenOptions::new().create(true).append(true).open(p)?;
+            writeln!(
+                f,
+                "{} incarnation {n} ({}) starts at {w}",
+                crate::takeover::MARKER,
+                self.kind.as_str()
+            )?;
+            Ok(f)
+        };
+        let (out, err) = (open("stdout.log")?, open("stderr.log")?);
+        self.incarnations.push((w, self.kind));
+        self.write_meta()?;
         let mut cmd = self.command(args, &[], true);
-        cmd.stdout(Stdio::from(File::create(self.dir.join("stdout.log"))?));
-        cmd.stderr(Stdio::from(File::create(self.dir.join("stderr.log"))?));
+        cmd.stdout(Stdio::from(out));
+        cmd.stderr(Stdio::from(err));
         cmd.stdin(Stdio::null());
         cmd.process_group(0);
         cmd.kill_on_drop(true);
@@ -1320,6 +1419,154 @@ impl Agent {
             );
         }
     }
+}
+
+/// Phase 6 P3a: the handoff itself (`handoff.rs` module doc): signal every
+/// member of both agents' cgroup-equivalent sets at once, wait for the whole
+/// stop (SIGKILL at the timeout), snapshot each side's inherited state, wait
+/// the restart gap, then start each side as `plan.then[i]` on its own home.
+/// The caller freezes tape time across it.
+async fn run_handoff(
+    agents: &mut [Agent],
+    plan: &handoff::Plan,
+    args: &PlayArgs,
+    plog: &dyn Fn(String),
+) -> Result<crate::takeover::HandoffInfo> {
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+    let me = nix::unistd::getpgrp().as_raw();
+    let before: Vec<AgentKind> = agents.iter().map(|a| a.kind).collect();
+    let procs = handoff::scan_proc();
+    let mut members: Vec<handoff::Members> = agents
+        .iter()
+        .map(|a| {
+            let root = a
+                .child
+                .as_ref()
+                .and_then(|c| c.id())
+                .map_or(-1, |p| p as i32);
+            handoff::Members::new(root, &procs, me)
+        })
+        .collect();
+    let stop_w = wall_now_ms();
+    let first = plan.signal.first();
+    let mut signalled = [0usize; 2];
+    for (i, (a, m)) in agents.iter().zip(&members).enumerate() {
+        for pid in m.live(&procs) {
+            let _ = kill(Pid::from_raw(pid), first);
+            signalled[i] += 1;
+            handoff::append_line(
+                &a.dir.join("procs.ndjson"),
+                &json!({"w": stop_w, "pid": pid, "k": "handoff", "sig": plan.signal.as_str()}),
+            );
+        }
+    }
+    let deadline = stop_w + plan.stop_timeout_ms as i64;
+    let mut sigkilled = plan.signal == handoff::StopSignal::Kill;
+    let mut killed_after = [0usize; 2];
+    let mut stopped_w: [Option<i64>; 2] = [None, None];
+    let mut exit: [Option<std::process::ExitStatus>; 2] = [None, None];
+    loop {
+        let now = wall_now_ms();
+        for (i, a) in agents.iter_mut().enumerate() {
+            if exit[i].is_none() {
+                if let Some(Ok(Some(st))) = a.child.as_mut().map(|c| c.try_wait()) {
+                    exit[i] = Some(st);
+                }
+            }
+        }
+        let procs = handoff::scan_proc();
+        for (i, m) in members.iter_mut().enumerate() {
+            m.refresh(&procs);
+            if stopped_w[i].is_none() && m.live(&procs).is_empty() {
+                stopped_w[i] = Some(now);
+            }
+        }
+        if stopped_w.iter().all(Option::is_some) {
+            break;
+        }
+        if !sigkilled && now >= deadline {
+            sigkilled = true;
+            for (i, (a, m)) in agents.iter().zip(&members).enumerate() {
+                for pid in m.live(&procs) {
+                    let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+                    killed_after[i] += 1;
+                    handoff::append_line(
+                        &a.dir.join("procs.ndjson"),
+                        &json!({"w": now, "pid": pid, "k": "handoff", "sig": "kill-at-timeout"}),
+                    );
+                }
+            }
+            plog(format!(
+                "handoff: SIGKILL at the {} ms stop timeout (A {}, B {} members left)",
+                plan.stop_timeout_ms, killed_after[0], killed_after[1]
+            ));
+        }
+        if now >= deadline.max(stop_w) + handoff::KILL_WAIT_MS as i64 {
+            bail!(
+                "handoff: members still alive {} ms after the SIGKILL",
+                handoff::KILL_WAIT_MS
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(handoff::POLL_MS)).await;
+    }
+    let mut agent_exit = [String::new(), String::new()];
+    for (i, a) in agents.iter_mut().enumerate() {
+        if exit[i].is_none() {
+            if let Some(c) = a.child.as_mut() {
+                exit[i] = c.wait().await.ok();
+            }
+        }
+        a.child = None;
+        agent_exit[i] = handoff::exit_text(exit[i]);
+    }
+    let stopped = [
+        stopped_w[0].unwrap_or(stop_w),
+        stopped_w[1].unwrap_or(stop_w),
+    ];
+    for (i, a) in agents.iter().enumerate() {
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(a.dir.join("stderr.log"))
+        {
+            let _ = writeln!(
+                f,
+                "[rig] handoff stop ({}): agent {} {} ; {} member(s) signalled, all gone {} ms after the signal, {} SIGKILLed at the timeout",
+                plan.signal.as_str(),
+                a.label,
+                agent_exit[i],
+                signalled[i],
+                stopped[i] - stop_w,
+                killed_after[i]
+            );
+        }
+        handoff::snapshot(&a.home, &a.dir, stopped[0].max(stopped[1]))?;
+    }
+    let restart_at = stopped[0].max(stopped[1]) + plan.gap_ms as i64;
+    let left = restart_at - wall_now_ms();
+    if left > 0 {
+        tokio::time::sleep(Duration::from_millis(left as u64)).await;
+    }
+    let restart_w = wall_now_ms();
+    for (i, a) in agents.iter_mut().enumerate() {
+        a.switch_kind(plan.then[i]);
+        a.start(args)?;
+    }
+    Ok(crate::takeover::HandoffInfo {
+        at_ms: plan.at_ms,
+        signal: plan.signal.as_str().into(),
+        stop_w,
+        stopped_w: stopped,
+        restart_w,
+        pause_ms: 0,
+        before: [before[0].as_str().into(), before[1].as_str().into()],
+        after: [plan.then[0].as_str().into(), plan.then[1].as_str().into()],
+        signalled,
+        killed_after_timeout: killed_after,
+        agent_exit,
+        spec: plan.spec.clone(),
+    })
 }
 
 async fn imu_acceptor(
@@ -1622,7 +1869,6 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let tape =
         Tape::read(&args.tape).with_context(|| format!("reading {}", args.tape.display()))?;
     fs::create_dir_all(&args.out)?;
-    let calibration = args.a == args.b;
     let first_i2c_absent = tape.records.iter().find_map(|r| match &r.ev {
         TapeEvent::I2cdetect { not_found, .. } => Some(*not_found),
         _ => None,
@@ -1634,6 +1880,28 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let (exit_plan, unattributed_exits) = media::exit_plan(&tape);
     let unattributed_exits: BTreeSet<u64> = unattributed_exits.into_iter().collect();
     let p4plan = p4::P4Plan::of(&tape);
+    // Phase 6 P3a: the handoff (if any) and what it cannot freeze.
+    let handoff_plan = handoff::Plan::of(
+        &tape,
+        args.handoff_signal,
+        args.handoff_at_ms,
+        [args.a, args.b],
+        [args.then_a, args.then_b],
+        args.handoff_gap_ms,
+        args.handoff_stop_timeout_ms,
+        if !exit_plan.is_empty() {
+            Some("per-attempt external child exits (media exit_plan)")
+        } else if p4plan.pi.is_some() {
+            Some("a Pi namespace (its DT writes run on the unfrozen t0)")
+        } else if p4plan.obd.is_some() {
+            Some("OBD (the helper source depends on the kind)")
+        } else {
+            None
+        },
+    )?;
+    // A calibration = the same kind sequence on both sides.
+    let calibration =
+        args.a == args.b && handoff_plan.as_ref().is_none_or(|h| h.then[0] == h.then[1]);
     if p4plan.pi.is_some() {
         // The bind-mount target of each agent's namespace (pi-ns.sh).
         fs::create_dir_all("/boot/firmware").context("mkdir /boot/firmware (rig container)")?;
@@ -1726,6 +1994,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             .map(|a| (a.device_id.to_string(), a.label.to_string(), a.dir.clone()))
             .collect(),
         aws::faults_of(tape.meta.rig.as_ref()),
+        aws::holds_of(tape.meta.rig.as_ref()),
         &args.out,
     )?;
     if plan.full_manifest {
@@ -1843,7 +2112,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     .context("inotify on the agents' settings/LTE dirs")?;
 
     // Start both agents together.
-    let t0 = tokio::time::Instant::now();
+    let mut t0 = tokio::time::Instant::now();
     let play_start_wall = wall_now_ms();
     let mut spawn_wall = [0i64; 2];
     for (i, a) in agents.iter_mut().enumerate() {
@@ -1860,7 +2129,7 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     // fallback (spawn + 300 s) and each agent's own clock step (the sudo
     // shim's `xorgate-setclock` line in `<work>/sudo.log`).
     let sudo_logs: Vec<PathBuf> = agents.iter().map(|a| a.work.join("sudo.log")).collect();
-    let mut resume_watch = ResumeWatch::new(spawn_wall, sudo_logs);
+    let mut resume_watch = ResumeWatch::new(spawn_wall, sudo_logs.clone());
     plog(format!(
         "agents started (B staggered {} ms); prefilled {idx} records",
         args.stagger_ms
@@ -2004,11 +2273,20 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     let mut pending: std::collections::VecDeque<(usize, i64)> = Default::default();
     let mut next = 0usize;
     let n_rec = tape.records.len();
+    let mut handoff_info: Option<crate::takeover::HandoffInfo> = None;
     loop {
         // (record index, wall ms it fell due, released by a hold timeout)
         let picked: Option<(usize, i64, bool)> = loop {
             if !args.no_gate {
                 resume_watch.poll(&caps.gate, wall_now_ms(), &plog);
+            }
+            // P3a: the handoff falls due at its tape instant (before any
+            // record due at or after it is released).
+            if let Some(h) = handoff_plan.as_ref().filter(|_| handoff_info.is_none()) {
+                let at = t0 + Duration::from_millis((h.at_ms as f64 / args.speed) as u64);
+                if tokio::time::Instant::now() >= at {
+                    break Some((HANDOFF_PICK, 0, false));
+                }
             }
             while next < n_rec && prefilled[next] {
                 next += 1;
@@ -2129,6 +2407,51 @@ pub async fn run(args: PlayArgs) -> Result<()> {
         let Some((i, due_w, timeout)) = picked else {
             break;
         };
+        if let (true, Some(h)) = (i == HANDOFF_PICK, handoff_plan.as_ref()) {
+            // P3a: stop like systemd, snapshot, restart; then FREEZE tape
+            // time across the pause: t0 and the fake S3's fault origin move
+            // by it, so tape[h..] keeps its designed timing relative to the
+            // restart. The hold gate and the watch gate restart as at a boot.
+            let due_at = t0 + Duration::from_millis((h.at_ms as f64 / args.speed) as u64);
+            plog(format!(
+                "handoff ({}) at t={}: A {} → {}, B {} → {}",
+                h.signal.as_str(),
+                h.at_ms,
+                args.a.as_str(),
+                h.then[0].as_str(),
+                args.b.as_str(),
+                h.then[1].as_str()
+            ));
+            let mut info = run_handoff(&mut agents, h, &args, &plog).await?;
+            let pause = tokio::time::Instant::now().saturating_duration_since(due_at);
+            t0 += pause;
+            info.pause_ms = pause.as_millis() as i64;
+            if let Ok(mut g) = aws_fake.start_wall.lock() {
+                *g += info.pause_ms;
+            }
+            if let Ok(mut g) = caps.gate.lock() {
+                g.on_handoff(wall_now_ms());
+            }
+            if let Ok(mut w) = caps.watch.lock() {
+                for k in 0..agents.len() {
+                    w.on_restart(k, info.restart_w);
+                }
+            }
+            resume_watch = ResumeWatch::new([info.restart_w; 2], sudo_logs.clone());
+            fs::write(
+                args.out.join("handoff.json"),
+                serde_json::to_vec_pretty(&info)?,
+            )?;
+            plog(format!(
+                "handoff done: stopped A {} B {} ms after the signal, restart {}, tape paused {} ms",
+                info.stopped_w[0] - info.stop_w,
+                info.stopped_w[1] - info.stop_w,
+                info.restart_w,
+                info.pause_ms
+            ));
+            handoff_info = Some(info);
+            continue;
+        }
         let r = &tape.records[i];
         if timeout {
             plog(format!("watch gate: hold timeout at t={}", r.t));
@@ -2491,7 +2814,11 @@ pub async fn run(args: PlayArgs) -> Result<()> {
     }
     transitions.sort();
     transitions.dedup();
+    if handoff_plan.is_some() && handoff_info.is_none() {
+        bail!("the handoff never fell due (--max-s cut the tape before atMs?)");
+    }
     let info = PlayInfo {
+        handoff: handoff_info,
         tape: args.tape.display().to_string(),
         start_wall: play_start_wall,
         end_wall,
@@ -2905,6 +3232,62 @@ mod tests {
         assert!(!g.is_open(2_310, false)); // guard after
         assert!(g.is_open(2_330, false));
         assert_eq!(g.pairs, vec![json!({"a": 2_000, "b": 2_300})]);
+    }
+
+    /// P3a R3 (rig rule, NOT a tolerance): at a handoff the gate forgets the
+    /// stopped incarnations' tick phases and behaves exactly like a fresh
+    /// gate for the restarted ones, keeping the pairs so far + a seam marker.
+    /// NEGATIVE: it is not left open — the new pair is held like a boot's.
+    /// The gate only ever DELAYS inputs; the diff compares every observed
+    /// payload pair and lists every unpaired tick, so R3 cannot hide a
+    /// payload difference.
+    #[test]
+    fn p3a_r3_handoff_restarts_the_gate_like_a_boot() {
+        let mut g = Gate::new(60);
+        g.on_tick(0, 1_000, 1_005);
+        g.on_tick(1, 1_300, 1_305);
+        assert!(!g.is_open(1_941, false));
+        g.on_tick(0, 2_000, 2_004);
+        g.on_tick(1, 2_300, 2_306);
+        assert_eq!(g.pairs, vec![json!({"a": 2_000, "b": 2_300})]);
+        g.on_handoff(10_000);
+        let mut fresh = Gate::new(60);
+        // The restarted agents tick on NEW phases (A 20 500, B 20 800).
+        for x in [&mut g, &mut fresh] {
+            x.on_tick(0, 20_500, 20_505);
+            x.on_tick(1, 20_800, 20_805);
+        }
+        for now in [20_900, 21_000, 21_200, 21_439, 21_441, 21_600] {
+            assert_eq!(g.is_open(now, false), fresh.is_open(now, false), "{now}");
+        }
+        // NEGATIVE: held from the NEW lead tick − guard (21 500 − 60) …
+        let mut g2 = Gate::new(60);
+        g2.on_tick(0, 1_000, 1_005);
+        g2.on_tick(1, 1_300, 1_305);
+        g2.on_handoff(10_000);
+        g2.on_tick(0, 20_500, 20_505);
+        g2.on_tick(1, 20_800, 20_805);
+        assert!(g2.is_open(21_400, false));
+        assert!(!g2.is_open(21_441, false));
+        // … the old phase (… 21 000 − 60) is forgotten: open there.
+        let mut g3 = Gate::new(60);
+        g3.on_tick(0, 1_000, 1_005);
+        g3.on_tick(1, 1_300, 1_305);
+        g3.on_handoff(10_000);
+        g3.on_tick(0, 20_500, 20_505);
+        g3.on_tick(1, 20_800, 20_805);
+        assert!(g3.is_open(20_950, false));
+        // Pairs: the pre-handoff one, the seam marker, then the new pairs.
+        g.on_tick(0, 21_500, 21_504);
+        g.on_tick(1, 21_800, 21_806);
+        assert_eq!(
+            g.pairs,
+            vec![
+                json!({"a": 2_000, "b": 2_300}),
+                json!({"handoff": 10_000}),
+                json!({"a": 21_500, "b": 21_800}),
+            ]
+        );
     }
 
     #[test]

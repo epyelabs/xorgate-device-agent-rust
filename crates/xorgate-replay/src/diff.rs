@@ -47,6 +47,10 @@ pub const FILES: &[&str] = &[
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayInfo {
+    /// Phase 6 P3a: the player's handoff (`handoff.rs`, `takeover.rs`);
+    /// absent in every other run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<crate::takeover::HandoffInfo>,
     #[serde(default)]
     pub tape: String,
     #[serde(default)]
@@ -106,6 +110,25 @@ pub struct Release {
 }
 
 impl PlayInfo {
+    /// P3a R4 ("a restart is a boot"): the boot a wall instant belongs to —
+    /// the handoff's restart for anything at/after it, else the run's start.
+    /// Without a handoff it is `start_wall` for every `w`.
+    pub fn boot_wall(&self, w: i64) -> i64 {
+        match &self.handoff {
+            Some(h) if w >= h.restart_w => h.restart_w,
+            _ => self.start_wall,
+        }
+    }
+
+    /// P3a R4: the end of the stretch a wall instant belongs to — the
+    /// handoff's stop signal for the stopped incarnations, else the run's end.
+    pub fn stretch_end(&self, w: i64) -> i64 {
+        match &self.handoff {
+            Some(h) if w < h.restart_w => h.stop_w,
+            _ => self.end_wall,
+        }
+    }
+
     /// Host CPU busy % over `[to − window, to]` from the player's `/proc/stat`
     /// samples (`cpu_busy`/`cpu_total` jiffies), nearest samples at both ends.
     pub fn host_cpu(&self, to: i64, window: i64) -> Option<f64> {
@@ -681,8 +704,34 @@ fn gps_field(path: &str) -> Option<&str> {
 #[serde(rename_all = "camelCase")]
 pub struct AgentMeta {
     pub label: String,
+    /// The kind of the LAST incarnation (the only one without a handoff).
     pub kind: String,
     pub device_id: String,
+    /// Phase 6 P3a: every incarnation on this home with its spawn wall
+    /// (`play.rs` `write_meta`); empty in a pre-P3a run.
+    #[serde(default)]
+    pub incarnations: Vec<Incarnation>,
+}
+
+/// One agent process started on a side's home (P3a).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Incarnation {
+    pub from_w: i64,
+    pub kind: String,
+}
+
+impl AgentMeta {
+    /// P3a (R2): the kind of the incarnation alive at wall `w` (before the
+    /// first spawn: the first one; no incarnation list: `kind`).
+    pub fn kind_at(&self, w: i64) -> &str {
+        self.incarnations
+            .iter()
+            .rev()
+            .find(|i| i.from_w <= w)
+            .or(self.incarnations.first())
+            .map_or(self.kind.as_str(), |i| i.kind.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -905,6 +954,15 @@ fn json_style(text: &str) -> String {
 }
 
 impl Capture {
+    /// P3a: this side restricted to the events stamped in `[lo, hi)`, with
+    /// the kind of the incarnation alive at the era's start.
+    pub fn era(&self, lo: i64, hi: i64) -> Self {
+        let mut c = self.clone();
+        c.events.retain(|(at, _, _)| *at >= lo && *at < hi);
+        c.meta.kind = self.meta.kind_at(lo).to_string();
+        c
+    }
+
     pub fn load(dir: &Path) -> Result<Self> {
         let meta: AgentMeta = serde_json::from_slice(
             &std::fs::read(dir.join("meta.json"))
@@ -1124,7 +1182,8 @@ impl Cx<'_> {
         let r = self.table.of_kind("presence_window", &self.stream).next()?;
         let window = r.window_ms.unwrap_or(1500) as i64;
         let startup = r.startup_ms.unwrap_or(5000) as i64;
-        if w - self.first_wall <= startup {
+        // P3a R4: a restarted incarnation's boot has the same startup window.
+        if w - self.first_wall.max(self.play.boot_wall(w)) <= startup {
             return Some(r.id.clone());
         }
         // Only the transitions of the group the path belongs to
@@ -2391,6 +2450,32 @@ fn lookup<'v>(v: &'v Value, path: &str) -> Option<&'v Value> {
     })
 }
 
+/// `PASS` / `FAIL`, or (P3a) `INVALID` when a `takeover` row says the
+/// lane's inherited state was not the designed one (a tape problem, not a
+/// verdict on the agents; `takeover::is_invalid`).
+pub fn verdict(rep: &Report) -> &'static str {
+    if rep.mismatches.iter().any(crate::takeover::is_invalid) {
+        "INVALID"
+    } else if rep.untolerated() == 0 {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+/// P3a (R2): [`js_a_of`] for the incarnations alive at wall `w` (`None`:
+/// the final ones). Without a handoff it is `js_a_of` for every `w`.
+fn js_a_at(a: &Capture, b: &Capture, w: Option<i64>) -> Option<bool> {
+    let Some(w) = w else {
+        return js_a_of(a, b);
+    };
+    match (a.meta.kind_at(w), b.meta.kind_at(w)) {
+        ("js", "rust") => Some(true),
+        ("rust", "js") => Some(false),
+        _ => None,
+    }
+}
+
 /// Which side is the js agent when the other is rust (one-directional rows).
 fn js_a_of(a: &Capture, b: &Capture) -> Option<bool> {
     match (a.meta.kind.as_str(), b.meta.kind.as_str()) {
@@ -2653,7 +2738,7 @@ pub fn diff_with(
             neighbors: [nb(prev, 0), nb(next, 0), nb(prev, 1), nb(next, 1)],
             d23: js_ts.and_then(|t| d23_at.get(&t)),
             facts,
-            js_a,
+            js_a: js_a_at(a, b, w),
             ack_rate_limit: false,
         };
         flags_pair(&cx, x, y, &mut rep);
@@ -2694,7 +2779,7 @@ pub fn diff_with(
                 neighbors: [None; 4],
                 d23: None,
                 facts,
-                js_a,
+                js_a: js_a_at(a, b, w.or(Some(m.w))),
                 ack_rate_limit: false,
             };
             let wv = w.unwrap_or(m.w);
@@ -2723,9 +2808,9 @@ pub fn diff_with(
                     cadence_used.insert((side, k)).then_some(id)
                 })
                 .or_else(|| {
-                    // The first/last tick of a run may have no partner.
-                    (wv - first_wall <= 5_000 || play.end_wall - wv <= 3_000)
-                        .then(|| "T4".to_string())
+                    // The first/last tick of a run may have no partner (P3a
+                    // R4: also of each stretch around a handoff restart).
+                    stretch_edge_tick(play, first_wall, wv).then(|| "T4".to_string())
                 })
                 .or_else(|| {
                     // A lead tick the hold gate skipped at a drift flip.
@@ -2793,7 +2878,7 @@ pub fn diff_with(
                 neighbors: [None; 4],
                 d23: None,
                 facts,
-                js_a,
+                js_a: js_a_at(a, b, x.or(y).map(|m| m.w)),
                 ack_rate_limit: stream == "ack"
                     && refresh(x)
                     && refresh(y)
@@ -2955,7 +3040,7 @@ pub fn diff_with(
     }
 
     // ---- recentEvents msg multiset
-    diff_events(a, b, play, facts, table, &mut rep);
+    diff_events_eras(a, b, play, facts, table, &mut rep);
 
     // ---- sudo argv sequence
     diff_sudo(a, b, table, &mut rep);
@@ -3215,6 +3300,16 @@ fn seq_increments(
         if s1 - s0 == 1 {
             continue;
         }
+        // P3a R4: a restarted process counts again from 0 (a boot). Only the
+        // one pair that straddles the handoff restart AND lands on 0.
+        if s1 == 0
+            && play
+                .handoff
+                .as_ref()
+                .is_some_and(|h| t0 < h.restart_w && t1 >= h.restart_w)
+        {
+            continue;
+        }
         let cx = Cx {
             table,
             play,
@@ -3351,7 +3446,6 @@ fn diff_reports(
     table: &Table,
     rep: &mut Report,
 ) {
-    let js_a = js_a_of(a, b);
     let ra = a.stream("config/reported");
     let rb = b.stream("config/reported");
     let r5 = table.of_kind("report_count", "report").next();
@@ -3384,7 +3478,7 @@ fn diff_reports(
             neighbors: [None; 4],
             d23: None,
             facts,
-            js_a,
+            js_a: js_a_at(a, b, Some(s)),
             ack_rate_limit: false,
         };
         if pa.len() != pb.len() {
@@ -3535,7 +3629,7 @@ fn diff_reports(
                     neighbors: [None; 4],
                     d23: None,
                     facts,
-                    js_a,
+                    js_a: js_a_at(a, b, Some(x.w)),
                     ack_rate_limit: false,
                 };
                 flags_pair(&cx, x, y, rep);
@@ -4006,6 +4100,29 @@ fn sms_event_norm(msg: &str, o4: bool) -> Option<(String, bool, String, u64)> {
         id.to_string(),
         n,
     ))
+}
+
+/// [`diff_events`], per incarnation era of a P3a handoff run (R2): the events
+/// of each pair of incarnations are compared on their own — before the
+/// restart X vs X, after it Y vs X — so a one-directional events row (e.g.
+/// `rust-only-events`, D40, O4) applies to the kinds that emitted them, never
+/// to the side's final kind. Without a handoff: one era, unchanged.
+fn diff_events_eras(
+    a: &Capture,
+    b: &Capture,
+    play: &PlayInfo,
+    facts: &InputFacts,
+    table: &Table,
+    rep: &mut Report,
+) {
+    match play.handoff.as_ref() {
+        None => diff_events(a, b, play, facts, table, rep),
+        Some(h) => {
+            for (lo, hi) in [(i64::MIN, h.restart_w), (h.restart_w, i64::MAX)] {
+                diff_events(&a.era(lo, hi), &b.era(lo, hi), play, facts, table, rep);
+            }
+        }
+    }
 }
 
 fn diff_events(
@@ -4648,7 +4765,7 @@ pub fn render(
     let _ = writeln!(
         o,
         "- verdict: **{}** ({} untolerated, {} tolerated)\n",
-        if unt == 0 { "PASS" } else { "FAIL" },
+        verdict(rep),
         unt,
         rep.mismatches.len() - unt
     );
@@ -4805,6 +4922,24 @@ pub fn load_run(run: &Path, a: Option<PathBuf>, b: Option<PathBuf>) -> Result<Ru
     let ca = Capture::load(&a.unwrap_or_else(|| run.join("a")))?;
     let cb = Capture::load(&b.unwrap_or_else(|| run.join("b")))?;
     Ok((ca, cb, play, pairs))
+}
+
+/// "The first/last tick of a run may have no partner" (T4), per stretch (P3a
+/// R4): ≤ 5 s after its boot, or ≤ 3 s before its end. Without a handoff
+/// exactly the pre-P3a rule (`end_wall − wv ≤ 3 000`). Around a handoff the
+/// stopped incarnations' end is `stop_w` and the bound is two-sided
+/// (review-P3a F6): a tick INSIDE the stop window (after `stop_w`, before
+/// `restart_w`) is never a stretch-edge tick.
+fn stretch_edge_tick(play: &PlayInfo, first_wall: i64, wv: i64) -> bool {
+    if wv - first_wall.max(play.boot_wall(wv)) <= 5_000 {
+        return true;
+    }
+    let left = play.stretch_end(wv) - wv;
+    if play.handoff.as_ref().is_some_and(|h| wv < h.restart_w) {
+        (0..=3_000).contains(&left)
+    } else {
+        left <= 3_000
+    }
 }
 
 #[cfg(test)]
@@ -5088,6 +5223,7 @@ mod tests {
                 label: kind.into(),
                 kind: kind.into(),
                 device_id: "x".into(),
+                ..Default::default()
             },
             msgs,
             finals: BTreeMap::new(),
@@ -5280,6 +5416,99 @@ mod tests {
             vec!["T8/offline-queue-bound".to_string()]
         );
         assert_eq!(long.untolerated(), 0, "{:?}", long.mismatches);
+    }
+
+    /// P3a R4 (rig rule, NOT a tolerance): the handoff restart is a boot —
+    /// seq restarts at 0 and the first ticks of the new stretch may lack a
+    /// partner, exactly as at the run's start. NEGATIVE: a seq jump inside a
+    /// stretch, a straddling jump that does not land on 0, and an unpaired
+    /// tick well inside a stretch still FAIL.
+    #[test]
+    fn p3a_r4_a_restart_is_a_boot_for_seq_and_unpaired_ticks() {
+        let t = table();
+        let play = PlayInfo {
+            start_wall: 0,
+            end_wall: 400_000,
+            handoff: Some(crate::takeover::HandoffInfo {
+                stop_w: 100_000,
+                restart_w: 190_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            (play.boot_wall(50_000), play.boot_wall(190_500)),
+            (0, 190_000)
+        );
+        assert_eq!(
+            (play.stretch_end(99_000), play.stretch_end(200_000)),
+            (100_000, 400_000)
+        );
+        let none = PlayInfo::default();
+        assert_eq!((none.boot_wall(5), none.stretch_end(5)), (0, 0));
+        let seq = |pts: &[(i64, i64)]| {
+            let ms: Vec<Msg> = pts
+                .iter()
+                .map(|(ts, s)| msg(*ts, "telemetry", serde_json::json!({"ts": ts, "seq": s})))
+                .collect();
+            let refs: Vec<&Msg> = ms.iter().collect();
+            let mut rep = Report::default();
+            seq_increments(
+                &refs,
+                "A",
+                &play,
+                &InputFacts::for_play(&play),
+                &t,
+                &mut rep,
+            );
+            rep.mismatches
+                .iter()
+                .filter(|m| m.tol == UNTOLERATED)
+                .count()
+        };
+        // 93 → restart → 0: the boot.
+        assert_eq!(
+            seq(&[(98_000, 92), (99_000, 93), (191_000, 0), (192_000, 1)]),
+            0
+        );
+        // NEGATIVE: a jump inside a stretch; a straddle that lands on 5.
+        assert_eq!(seq(&[(98_000, 92), (99_000, 94)]), 1);
+        assert_eq!(seq(&[(99_000, 93), (191_000, 5)]), 1);
+        assert_eq!(seq(&[(191_000, 0), (192_000, 0)]), 1);
+        // Stretch-edge ticks (review-P3a F6): ≤ 3 s before the stop and
+        // ≤ 5 s after the restart; NEGATIVE: a tick INSIDE the stop window
+        // (after stop_w, before restart_w) is never one.
+        assert!(stretch_edge_tick(&play, 0, 98_000));
+        assert!(stretch_edge_tick(&play, 0, 193_000));
+        assert!(!stretch_edge_tick(&play, 0, 96_000));
+        assert!(!stretch_edge_tick(&play, 0, 100_500));
+        assert!(!stretch_edge_tick(&play, 0, 150_000));
+        assert!(!stretch_edge_tick(&play, 0, 300_000));
+        assert!(stretch_edge_tick(&play, 0, 398_000));
+        // Without a handoff: the pre-P3a rule, unchanged.
+        let plain = PlayInfo {
+            start_wall: 0,
+            end_wall: 400_000,
+            ..Default::default()
+        };
+        assert!(stretch_edge_tick(&plain, 0, 4_000) && stretch_edge_tick(&plain, 0, 398_000));
+        assert!(!stretch_edge_tick(&plain, 0, 100_000));
+        // Without a handoff the same 93 → 0 is a FAIL.
+        let mut rep = Report::default();
+        let ms: Vec<Msg> = [(99_000, 93), (191_000, 0)]
+            .iter()
+            .map(|(ts, s)| msg(*ts, "telemetry", serde_json::json!({"ts": ts, "seq": s})))
+            .collect();
+        let refs: Vec<&Msg> = ms.iter().collect();
+        seq_increments(
+            &refs,
+            "A",
+            &none,
+            &InputFacts::for_play(&none),
+            &t,
+            &mut rep,
+        );
+        assert_eq!(rep.untolerated(), 1);
     }
 
     #[test]
@@ -7884,6 +8113,157 @@ mod tests {
 
     /// T7/D40: only the Rust-first-by-exactly-one-check-tick stepper race,
     /// with the exact trust-event pair, is the row.
+    /// P3a R2 (rig rule, NOT a tolerance): a handoff run's events are judged
+    /// per incarnation era. NEGATIVE: a Rust-vs-Rust difference from BEFORE
+    /// the restart still FAILS, although the sides' FINAL kinds (js, rust)
+    /// would have let `rust-only-events` cover it.
+    #[test]
+    fn p3a_r2_events_are_judged_per_incarnation_era() {
+        let t = table();
+        let side_of = |last: &str, kinds: [&str; 2], evs: Vec<(i64, &str)>| Capture {
+            meta: AgentMeta {
+                label: "x".into(),
+                kind: last.into(),
+                device_id: String::new(),
+                incarnations: vec![
+                    Incarnation {
+                        from_w: 0,
+                        kind: kinds[0].into(),
+                    },
+                    Incarnation {
+                        from_w: 100_000,
+                        kind: kinds[1].into(),
+                    },
+                ],
+            },
+            events: evs
+                .into_iter()
+                .map(|(t, m)| {
+                    let level = if m.starts_with("connected to ") {
+                        "info"
+                    } else {
+                        "warn"
+                    };
+                    (t, level.to_string(), m.to_string())
+                })
+                .collect(),
+            ..Default::default()
+        };
+        // Every incarnation connects once (the `connected to` = spans + 1
+        // contract, judged per era).
+        let side = |last: &str, kinds: [&str; 2], mut evs: Vec<(i64, &str)>| {
+            evs.extend([
+                (1_000, "connected to broker:8883"),
+                (101_000, "connected to broker:8883"),
+            ]);
+            side_of(last, kinds, evs)
+        };
+        let rf = "config report failed: publish queue full";
+        let handoff = PlayInfo {
+            handoff: Some(crate::takeover::HandoffInfo {
+                restart_w: 100_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let plain = PlayInfo::default();
+        let unt = |a: &Capture, b: &Capture, play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_events_eras(a, b, play, &InputFacts::for_play(play), &t, &mut rep);
+            rep.mismatches
+                .iter()
+                .filter(|m| m.stream == "events" && m.tol == UNTOLERATED)
+                .count()
+        };
+        // RJ lane: A rust→js, B rust→rust (the control).
+        let a = side("js", ["rust", "js"], vec![]);
+        // After the restart the event is on B (Rust) only, A is JS: the
+        // row applies, as in any JS-vs-Rust run.
+        let post = side("rust", ["rust", "rust"], vec![(150_000, rf)]);
+        assert_eq!(unt(&a, &post, &handoff), 0);
+        // NEGATIVE (a kind-PAIR matcher, T7/D40: a JS-vs-Rust clock-step
+        // race). A JR lane: A js→rust, B js→js; restart at 1 000 s. The D40
+        // event pattern BEFORE the restart, where both sides were JS, must
+        // FAIL — the sides' final kinds (rust, js) alone would cite D40.
+        let imp = "[clock] ignoring implausible nitz time 1980-03-31T21:10:10.441Z";
+        let step =
+            "[clock] stepped system clock +597.1s from gps (NTP unsynced; step 1/1 this boot)";
+        let js_trust = "[clock] gps synchronized 330 s after boot — clock trusted (published 30 s on an untrusted clock)";
+        let js_wait = "[clock] no NTP/GPS/NITZ sync 300 s after start — publishing on an UNTRUSTED clock (299 sample(s) held); timestamps may be early until a sync lands";
+        let rs_trust =
+            "[clock] gps synchronized — clock trusted (telemetry held 300 s, 299 sample(s))";
+        let ev = |last: &str, kinds: [&str; 2], evs: Vec<(i64, &str, &str)>| Capture {
+            meta: AgentMeta {
+                label: "x".into(),
+                kind: last.into(),
+                device_id: String::new(),
+                incarnations: vec![
+                    Incarnation {
+                        from_w: 0,
+                        kind: kinds[0].into(),
+                    },
+                    Incarnation {
+                        from_w: 1_000_000,
+                        kind: kinds[1].into(),
+                    },
+                ],
+            },
+            events: evs
+                .into_iter()
+                .chain([
+                    (1_000, "info", "connected to broker:8883"),
+                    (1_001_000, "info", "connected to broker:8883"),
+                ])
+                .map(|(t, l, m)| (t, l.to_string(), m.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let jr_a = ev(
+            "rust",
+            ["js", "rust"],
+            vec![
+                (200, "warn", imp),
+                (300_300, "info", step),
+                (300_304, "info", rs_trust),
+            ],
+        );
+        let jr_b = ev(
+            "js",
+            ["js", "js"],
+            vec![
+                (400, "warn", imp),
+                (300_600, "warn", js_wait),
+                (330_400, "info", step),
+                (330_500, "info", js_trust),
+            ],
+        );
+        let handoff2 = PlayInfo {
+            handoff: Some(crate::takeover::HandoffInfo {
+                restart_w: 1_000_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Without eras each side's two connects break the one-run
+        // `connected` contract: count the other rows only.
+        let others = |a: &Capture, b: &Capture, play: &PlayInfo| {
+            let mut rep = Report::default();
+            diff_events_eras(a, b, play, &InputFacts::for_play(play), &t, &mut rep);
+            rep.mismatches
+                .iter()
+                .filter(|m| {
+                    m.stream == "events" && m.tol == UNTOLERATED && !m.path.contains("connected to")
+                })
+                .count()
+        };
+        assert_eq!(others(&jr_a, &jr_b, &handoff2), 3);
+        assert_eq!(
+            others(&jr_a, &jr_b, &plain),
+            0,
+            "the final kinds alone would have cited D40"
+        );
+    }
+
     #[test]
     fn d40_holdoff_expiry_tick_only_the_documented_race() {
         let ev = |kind: &str, evs: Vec<(i64, &str, String)>| Capture {
@@ -7891,6 +8271,7 @@ mod tests {
                 label: "x".into(),
                 kind: kind.into(),
                 device_id: String::new(),
+                ..Default::default()
             },
             events: evs
                 .into_iter()

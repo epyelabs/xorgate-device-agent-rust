@@ -316,6 +316,21 @@ impl WatchGate {
         self.agents[idx].spawn.get_or_insert(now);
     }
 
+    /// Phase 6 P3a: agent `idx` was restarted at a handoff (a new process on
+    /// the same home): its standing watches start over as at a boot (the
+    /// boot tracks open on its next first publish). The logs (`opens`,
+    /// `writes`) are kept for `watch.json`.
+    pub fn on_restart(&mut self, idx: usize, now: i64) {
+        let a = &mut self.agents[idx];
+        a.spawn = Some(now);
+        a.first_msg = None;
+        a.modem_seen = false;
+        a.tracks.clear();
+        a.hz = Default::default();
+        self.unmatched[idx].clear();
+        self.exec_read[idx] = None;
+    }
+
     /// Agent `idx` published for the first time (any topic) at `now`: its
     /// standing watches started in `[spawn, now]`.
     pub fn on_publish(&mut self, idx: usize, now: i64) {
