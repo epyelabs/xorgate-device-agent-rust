@@ -110,7 +110,9 @@ pub fn write_seed_session(
     let mono_ms = xorgate_hal::fragment_stat::monotonic_ms() as f64;
     let mut names: Vec<String> = std::fs::read_dir(&seg_dir)?
         .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
-        .filter(|n| n.len() == 10 && n.ends_with(".json") && n[..5].bytes().all(|b| b.is_ascii_digit()))
+        .filter(|n| {
+            n.len() == 10 && n.ends_with(".json") && n[..5].bytes().all(|b| b.is_ascii_digit())
+        })
         .collect();
     names.sort();
     for name in names {
@@ -123,7 +125,8 @@ pub fn write_seed_session(
         let Value::Object(mut obj) = orig else {
             continue;
         };
-        let start_ts = obj.get("startTs").and_then(Value::as_f64).unwrap_or(0.0) + plan.delta_ms as f64;
+        let start_ts =
+            obj.get("startTs").and_then(Value::as_f64).unwrap_or(0.0) + plan.delta_ms as f64;
         obj.insert("deviceId".into(), json!(device_id));
         obj.insert("sessionId".into(), json!(session.media_session_id));
         obj.insert("startTs".into(), json!(start_ts as i64));
@@ -147,7 +150,7 @@ pub fn write_seed_session(
         "sessionId": session.telemetry_session_id,
         "bootId": boot_id,
         "timeSource": "ntp",
-        "rateHz": sc.manifest.telemetry.rate_hz,
+        "rateHz": xorgate_core::telemetry::JsNumber(sc.manifest.telemetry.rate_hz),
         "startedAt": started_at,
     });
     for (seg, chunk) in sc.samples.chunks(SEED_SEGMENT_SAMPLES).enumerate() {
@@ -160,7 +163,9 @@ pub fn write_seed_session(
             line.insert("seq".into(), s.seq.clone());
             line.insert("metrics".into(), s.raw_metrics.clone());
             text.push('\n');
-            text.push_str(&serde_json::to_string(&Value::Object(line)).map_err(std::io::Error::other)?);
+            text.push_str(
+                &serde_json::to_string(&Value::Object(line)).map_err(std::io::Error::other)?,
+            );
         }
         text.push('\n');
         let name = format!("seg-{first_ts}-{seg:05}.jsonl.gz");
@@ -173,6 +178,7 @@ pub fn write_seed_session(
 
 /// `seedOnce`. Returns the plan when it seeded, `None` when already seeded
 /// (or the seed set was empty). `Err` = a filesystem failure.
+#[allow(clippy::too_many_arguments)]
 pub fn seed_once(
     catalog: &ReplayCatalog,
     assets_dir: &Path,

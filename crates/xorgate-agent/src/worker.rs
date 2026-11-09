@@ -626,23 +626,22 @@ async fn run(args: &[String]) -> Result<i32> {
     let replay_cell: Arc<std::sync::OnceLock<Arc<crate::replay::ReplaySource>>> =
         Arc::new(std::sync::OnceLock::new());
     let media_on = matches!(cfg.mode, RunMode::Real | RunMode::Replay) && media_cfg.enabled;
-    let media: Option<Arc<dyn MediaControl>> = media_on
-        .then(|| {
-            let guard: crate::media::GuardFn = if cfg.mode == RunMode::Replay {
-                let cell = replay_cell.clone();
-                Arc::new(move |key: &str| match cell.get() {
-                    Some(r) => r.stream_guard(key),
-                    None => crate::media::StreamGuard::NoPipeline,
-                })
-            } else {
-                stream_guard_fn(ctx.hardware.clone(), stream_hw.clone(), &media_cfg)
-            };
-            Arc::new(crate::media::MediaSupervisor::new(
-                media_cfg.clone(),
-                guard,
-                ctx.tape.clone(),
-            )) as Arc<dyn MediaControl>
-        });
+    let media: Option<Arc<dyn MediaControl>> = media_on.then(|| {
+        let guard: crate::media::GuardFn = if cfg.mode == RunMode::Replay {
+            let cell = replay_cell.clone();
+            Arc::new(move |key: &str| match cell.get() {
+                Some(r) => r.stream_guard(key),
+                None => crate::media::StreamGuard::NoPipeline,
+            })
+        } else {
+            stream_guard_fn(ctx.hardware.clone(), stream_hw.clone(), &media_cfg)
+        };
+        Arc::new(crate::media::MediaSupervisor::new(
+            media_cfg.clone(),
+            guard,
+            ctx.tape.clone(),
+        )) as Arc<dyn MediaControl>
+    });
 
     // The Phase 3 hooks, installed before any subsystem clones the ctx. The
     // manager itself is built after the boot reconciles (`worker.ts:439`).
@@ -741,10 +740,7 @@ async fn run(args: &[String]) -> Result<i32> {
             ctx.clock.clone(),
         )
     } else {
-        crate::recording::time_source::TimeSourceHandle::system(
-            ctx.clock.clone(),
-            ctx.tape.clone(),
-        )
+        crate::recording::time_source::TimeSourceHandle::system(ctx.clock.clone(), ctx.tape.clone())
     };
     // Clock trust gate (`worker.ts:471-487` @ 09da38d): until NTP (or a
     // GPS/NITZ step) lands, the live publish and the telemetry recorder are
@@ -1009,11 +1005,7 @@ async fn after_tracker_wait<F: std::future::Future<Output = ()>>(
 
 /// Replay (Phase 7e): the bridged KVS `.gst` and a `replay:<key>` camera
 /// identity per scenario stream, written only when absent (`worker.ts:259-272`).
-fn write_replay_pipelines(
-    pipeline_dir: &str,
-    home: &Path,
-    sc: &crate::replay::LoadedScenario,
-) {
+fn write_replay_pipelines(pipeline_dir: &str, home: &Path, sc: &crate::replay::LoadedScenario) {
     use xorgate_core::video_capture::{bridged_kvs_pipeline, camera_file_for, pipeline_file_for};
     let _ = std::fs::create_dir_all(pipeline_dir);
     for st in &sc.manifest.streams {

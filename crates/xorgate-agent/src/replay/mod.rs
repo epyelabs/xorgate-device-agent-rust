@@ -149,7 +149,9 @@ pub fn load_scenario(assets_dir: &Path, scenario_id: &str) -> Result<LoadedScena
     let text = std::fs::read_to_string(&mp)
         .map_err(|_| format!("scenario {scenario_id}: {} missing", mp.display()))?;
     let manifest: ScenarioManifest = serde_json::from_str(&text).map_err(|e| {
-        format!("scenario {scenario_id}: scenario.json is not a v1 manifest for {scenario_id} ({e})")
+        format!(
+            "scenario {scenario_id}: scenario.json is not a v1 manifest for {scenario_id} ({e})"
+        )
     })?;
     if manifest.v != 1 || manifest.id != scenario_id || manifest.streams.is_empty() {
         return Err(format!(
@@ -712,7 +714,7 @@ impl ReplaySource {
                 return;
             }
             st.ticks += 1;
-            st.ticks % SETTINGS_POLL_TICKS == 0
+            st.ticks.is_multiple_of(SETTINGS_POLL_TICKS)
         };
         if poll {
             self.reapply();
@@ -794,10 +796,7 @@ impl ReplayCaptureHooks for ReplaySource {
         if st.player.phase() != ReplayPhase::Lap {
             return;
         }
-        self.finish_lap(
-            &mut st,
-            if clean { "video EOS" } else { "capture exited" },
-        );
+        self.finish_lap(&mut st, if clean { "video EOS" } else { "capture exited" });
     }
 
     fn respawn_hold_ms(&self, key: &str) -> Option<u64> {
@@ -824,9 +823,7 @@ impl TelemetrySource for ReplaySource {
     fn sample_groups(&self) -> BoxFut<'_, IndexMap<String, GroupSample>> {
         Box::pin(async move { self.lock().player.sample_groups() })
     }
-    fn sample_power(
-        &self,
-    ) -> BoxFut<'_, Option<xorgate_core::types::PowerSampleReading>> {
+    fn sample_power(&self) -> BoxFut<'_, Option<xorgate_core::types::PowerSampleReading>> {
         Box::pin(async { None })
     }
     fn gps_clock(&self) -> Option<xorgate_core::types::GpsClockReading> {
@@ -863,5 +860,55 @@ pub mod exit {
     pub fn request(reason: &str, code: i32) -> bool {
         TX.get()
             .is_some_and(|tx| tx.send((reason.to_string(), code)).is_ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(t: f64, speed: f64) -> TraceSample {
+        let raw = serde_json::json!({"gps": {"lat": {"value": 43.6}, "speed": {"value": speed, "unit": "km/h"}}});
+        TraceSample {
+            t,
+            seq: Value::from(0),
+            metrics: metrics_of(&raw),
+            raw_metrics: raw,
+        }
+    }
+
+    /// `sampleAt`: null before the first sample, nearest ≤ offset after.
+    #[test]
+    fn sample_at_is_nearest_at_or_before() {
+        let s = vec![
+            sample(-2328.0, 1.0),
+            sample(1000.0, 2.0),
+            sample(2000.0, 3.0),
+        ];
+        assert_eq!(sample_at(&s, -3000.0), None);
+        assert_eq!(sample_at(&s, 0.0), Some(0));
+        assert_eq!(sample_at(&s, 1000.0), Some(1));
+        assert_eq!(sample_at(&s, 1999.0), Some(1));
+        assert_eq!(sample_at(&s, 1e9), Some(2));
+    }
+
+    /// `parkedMetrics`: position kept, speed 0 with its unit.
+    #[test]
+    fn parked_metrics_zero_speed_keeps_unit() {
+        let m = parked_metrics(&sample(0.0, 42.0).metrics);
+        let sp = &m["gps"]["speed"];
+        assert_eq!(sp.value.0, 0.0);
+        assert_eq!(sp.unit.as_deref(), Some("km/h"));
+        assert_eq!(m["gps"]["lat"].value.0, 43.6);
+    }
+
+    /// `replayCaptureHead`: the Phase 0 recipe, token for token.
+    #[test]
+    fn capture_head_tokens() {
+        let h = replay_capture_head(Path::new("/a/s/cam0/lap.h264"), 15.0);
+        assert_eq!(
+            h.join(" "),
+            "filesrc location=/a/s/cam0/lap.h264 ! h264parse ! video/x-h264,framerate=15/1 ! avdec_h264 ! identity sync=true ! videoconvert ! videorate"
+        );
     }
 }
