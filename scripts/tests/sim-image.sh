@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015,SC2034,SC1003,SC2020  # `a && b || c` asserts; vars read inside check's eval; tr char sets
 # Phase 7e WP2: the Rust simulator image's recipe, checked without building it.
 #   - sim/Dockerfile: built from source (no JS image), SDK + fork pinned, the
 #     agent stage's apt list = Dockerfile.build's;
@@ -43,7 +44,7 @@ apt_list() { # the package tokens of the first `apt-get install` after $2 in $1
 }
 a=$(apt_list "$SRC/Dockerfile.build" "FROM ")
 b=$(apt_list "$DF" "AS agent-build")
-check "agent-build apt list = Dockerfile.build's ($(echo $a | wc -w) packages)" "[ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ]"
+check "agent-build apt list = Dockerfile.build's ($(echo "$a" | wc -w) packages)" "[ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ]"
 tc=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$SRC/rust-toolchain.toml")
 check "RUST_TOOLCHAIN default = rust-toolchain.toml ($tc)" "grep -q '^ARG RUST_TOOLCHAIN=$tc\$' '$DF'"
 check "the dockerignore keeps .git and the aarch64 media out" "grep -qx '\*\*/.git' '$SRC/sim/Dockerfile.dockerignore' && grep -qx 'media/lib' '$SRC/sim/Dockerfile.dockerignore' && grep -qx 'media/xorgate-kvs-webrtc' '$SRC/sim/Dockerfile.dockerignore'"

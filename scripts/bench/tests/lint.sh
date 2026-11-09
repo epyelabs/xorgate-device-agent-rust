@@ -34,7 +34,14 @@ for f in tools/convert-e2e/*.sh tools/convert-e2e/shims/*; do bash -n "$f" && pa
 if command -v shellcheck >/dev/null; then D5=$(mktemp -d); for c in status apply revert; do XORGATE_TEST_DUMP="$D5/p5b_$c.sh" P5B_NO_COPY=1 bash scripts/bench/p5b-overlay.sh $c >/dev/null 2>&1 || true; done; shellcheck -s bash -S warning -e SC2034 "$D5"/*.sh >"$LOGS/sc-p5b.log" 2>&1 && pass "shellcheck -S warning (p5b-overlay remote bodies: $(ls "$D5" | wc -l))" || { failc "shellcheck p5b-overlay remote bodies:"; cat "$LOGS/sc-p5b.log"; }; fi  # Phase 5b WP4
 f=tools/replay/shims/bluetoothctl; sh -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -s sh "$f"; } >"$LOGS/sc-p5b-shim.log" 2>&1 && pass "sh -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p5b-shim.log"; }  # Phase 5b WP4
 # Phase 7e WP2: the simulator image's scripts (bash -n + shellcheck -x).
-for f in sim/entrypoint.sh sim/build-image.sh scripts/docker-build.sh scripts/tests/sim-image.sh; do bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "$f"; } >"$LOGS/sc-p7e.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p7e.log"; }; done
+# sim/entrypoint.sh keeps the JS entrypoint's lines byte for byte (its diff vs
+# the JS file is the three [7e] changes only), so the findings that shape
+# carries are waived for it alone: SC2155 (`export X="$(…)"`), SC2015 + SC2317
+# (the `forward` trap handler).
+for f in sim/entrypoint.sh sim/build-image.sh scripts/docker-build.sh scripts/tests/sim-image.sh; do
+  ex=(); [ "$f" != sim/entrypoint.sh ] || ex=(-e SC2155,SC2015,SC2317)
+  bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "${ex[@]}" "$f"; } >"$LOGS/sc-p7e.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p7e.log"; }
+done
 # Phase 6 drive blackbox: the python bench tools parse (ast only: py_compile
 # would write __pycache__ into the mounted repo).
 for f in scripts/bench/*.py; do python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$f" && pass "python3 ast.parse $f" || failc "python3 ast.parse $f"; done
