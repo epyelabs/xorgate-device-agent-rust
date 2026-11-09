@@ -1331,6 +1331,8 @@ struct TestHooks {
     watch: Mutex<Option<PathBuf>>,
     hold: Mutex<Option<u64>>,
     eos_clean: bool,
+    /// `on_ended` / `respawn_hold_ms` call order (review-wp1 F5).
+    calls: Mutex<Vec<&'static str>>,
 }
 
 impl TestHooks {
@@ -1343,6 +1345,7 @@ impl TestHooks {
             watch: Mutex::default(),
             hold: Mutex::new(hold),
             eos_clean,
+            calls: Mutex::default(),
         })
     }
     fn ended(&self) -> Vec<bool> {
@@ -1373,6 +1376,7 @@ impl ReplayCaptureHooks for TestHooks {
             .push((key.to_string(), wall_ms));
     }
     fn on_ended(&self, _key: &str, clean: bool) {
+        self.calls.lock().unwrap().push("ended");
         self.ended.lock().unwrap().push(clean);
         if let Some(d) = self.watch.lock().unwrap().as_ref() {
             self.sidecar_at_end
@@ -1382,6 +1386,7 @@ impl ReplayCaptureHooks for TestHooks {
         }
     }
     fn respawn_hold_ms(&self, _key: &str) -> Option<u64> {
+        self.calls.lock().unwrap().push("hold");
         *self.hold.lock().unwrap()
     }
     fn eos_is_clean(&self) -> bool {
@@ -1487,6 +1492,11 @@ async fn replay_playing_once_per_child_clean_eos_end_and_respawn_after_the_hold(
         *h.sidecar_at_end.lock().unwrap(),
         [true],
         "on_ended runs after the final sweep"
+    );
+    assert_eq!(
+        *h.calls.lock().unwrap(),
+        ["ended", "hold"],
+        "the TS order: onEnded, then respawnHoldMs (review-wp1 F5)"
     );
     assert_eq!(read_json(&dir.join("00000.json"))["finalized"], true);
     assert_eq!(sup.status()[0].state, CaptureState::Retrying);
@@ -1632,10 +1642,13 @@ async fn replay_cycle_uses_the_hold_and_on_ended_fires_on_stop() {
     );
 }
 
-/// D72: PLAYING/EOS are keyed to the CURRENT child. A line from the
-/// previous child that arrives after the respawn changes nothing.
+/// D72 (structural bound): `consume` ends at the child's `Done`, which the
+/// child module delivers LAST, so a previous child's "late" line is dropped
+/// with its channel and never reaches the successor. The child-id keying of
+/// `note_stdout` itself is pinned directly by the in-module test
+/// `recording::capture::tests::d72_note_stdout_ignores_a_stale_child_id`.
 #[tokio::test(start_paused = true)]
-async fn d72_a_previous_childs_late_stdout_cannot_touch_its_successor() {
+async fn a_previous_childs_late_stdout_is_dropped_with_its_channel() {
     let home = Home::new("rp-stale");
     let be = Arc::new(FakeBackend {
         eos_on_signal: true,
@@ -1686,20 +1699,14 @@ async fn real_mode_ignores_gst_stdout_and_an_eof_exit_is_a_crash() {
     delay(10).await;
     assert_eq!(read_json(&dir.join("00000.json"))["finalized"], false);
     assert_eq!(sup.status()[0].state, CaptureState::Retrying);
-    assert!(
-        has_event(
-            &ev,
-            &format!(
-                "video capture cam0 crashed quickly (code 1, session {}…)",
-                &sid[..8]
-            )
-        ) || ev
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(l, m)| *l == ActivityLevel::Warn && m.contains("cam0")),
-        "{:?}",
-        ev.lock().unwrap()
+    // The crash ladder's quick-failure line, exactly (review-wp1 F11).
+    let last = ev.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        last,
+        (
+            ActivityLevel::Warn,
+            "video capture cam0 exited (code 1); retry 1/3 in 2000ms".to_string()
+        )
     );
     sup.stop();
 }

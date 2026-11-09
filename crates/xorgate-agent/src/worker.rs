@@ -1064,19 +1064,21 @@ fn write_replay_pipelines(
     let dir = Path::new(pipeline_dir);
     std::fs::create_dir_all(dir).map_err(|e| node_fs_message(&e, "mkdir", dir))?;
     for st in &sc.manifest.streams {
-        let gst = pipeline_file_for(pipeline_dir, &st.stream_key);
+        // `${streamKey}` (an absent key prints `undefined`, as the TS).
+        let key = st.key_text();
+        let gst = pipeline_file_for(pipeline_dir, key);
         if !Path::new(&gst).exists() {
             // `shmSocketPathFor(streamKey)` = `<home>/shm/<key>.sock`.
-            let sock = home.join("shm").join(format!("{}.sock", st.stream_key));
+            let sock = home.join("shm").join(format!("{key}.sock"));
             std::fs::write(
                 &gst,
                 format!("{}\n", bridged_kvs_pipeline(&sock.to_string_lossy(), None)),
             )
             .map_err(|e| node_fs_message(&e, "open", Path::new(&gst)))?;
         }
-        let cam = camera_file_for(pipeline_dir, &st.stream_key);
+        let cam = camera_file_for(pipeline_dir, key);
         if !Path::new(&cam).exists() {
-            std::fs::write(&cam, format!("replay:{}\n", st.stream_key))
+            std::fs::write(&cam, format!("replay:{key}\n"))
                 .map_err(|e| node_fs_message(&e, "open", Path::new(&cam)))?;
         }
     }
@@ -1165,6 +1167,63 @@ fn seed_replay(ctx: &AgentCtx, r: &crate::replay::ReplaySource) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `["1", "true"].includes(process.env.XORGATE_SIM_MEDIA ?? "")`: an
+    /// exact match (review-wp1 F9).
+    #[test]
+    fn sim_media_opt_in_is_an_exact_match() {
+        for on in ["1", "true"] {
+            assert!(sim_media_opt_in(Some(on)), "{on:?}");
+        }
+        for off in ["", "0", "TRUE", "True", " 1", "1 ", "yes", "on", "false"] {
+            assert!(!sim_media_opt_in(Some(off)), "{off:?}");
+        }
+        assert!(!sim_media_opt_in(None), "unset");
+    }
+
+    #[derive(Default)]
+    struct FakeMedia {
+        reads: std::sync::atomic::AtomicUsize,
+        stops: std::sync::atomic::AtomicUsize,
+    }
+    impl MediaControl for FakeMedia {
+        fn read(&self) -> TelemetryMedia {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut m = TelemetryMedia::idle();
+            m.kvs.value = true;
+            m
+        }
+        fn stop(&self) {
+            self.stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn restart_channel(&self, _key: &str) {}
+        fn set_shed(&self, _shed: bool) {}
+        fn set_disabled_streams(&self, _keys: &[String]) {}
+    }
+
+    /// The sim source with `XORGATE_SIM_MEDIA` masters (`worker.ts:337-363`
+    /// @ 09da38d): `read()` overlays their media block (still no metrics,
+    /// O7), `stop()` stops them; without them, the idle block and a no-op.
+    #[tokio::test]
+    async fn sim_source_overlays_and_stops_the_sim_media_masters() {
+        let media = Arc::new(FakeMedia::default());
+        let src = SimSource {
+            media: Some(media.clone() as Arc<dyn MediaControl>),
+        };
+        let r = src.read().await.unwrap();
+        assert!(r.metrics.is_empty());
+        assert!(r.media.kvs.value, "the masters' block, not the idle one");
+        assert_eq!(media.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        src.stop();
+        assert_eq!(media.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let plain = SimSource { media: None };
+        let r = plain.read().await.unwrap();
+        assert_eq!(
+            serde_json::to_string(&r.media).unwrap(),
+            serde_json::to_string(&TelemetryMedia::idle()).unwrap()
+        );
+        plain.stop();
+    }
 
     /// R-WP5R-2: the exit cleanup runs only after the tracker wait (a task
     /// still finishing delays it), and the wait stays bounded.

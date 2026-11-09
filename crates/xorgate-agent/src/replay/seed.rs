@@ -30,11 +30,13 @@ pub struct SeedSession {
     pub scenario_id: String,
     pub media_session_id: String,
     pub telemetry_session_id: String,
-    pub stream_key: String,
+    /// `None` = absent in the pack (F6): `writeSeedSession` then throws.
+    pub stream_key: Option<String>,
     /// Shifted wall window of the video.
     pub start_ts: f64,
     pub end_ts: f64,
-    pub fragments: f64,
+    /// `fragmentCount` (`None` = absent: omitted from the marker).
+    pub fragments: Option<f64>,
     pub samples: usize,
 }
 
@@ -69,28 +71,45 @@ fn session_json(s: &SeedSession) -> Value {
         "telemetrySessionId".into(),
         Value::from(s.telemetry_session_id.clone()),
     );
-    m.insert("streamKey".into(), Value::from(s.stream_key.clone()));
+    if let Some(k) = &s.stream_key {
+        m.insert("streamKey".into(), Value::from(k.clone()));
+    }
     m.insert("startTs".into(), num(s.start_ts));
     m.insert("endTs".into(), num(s.end_ts));
-    m.insert("fragments".into(), num(s.fragments));
+    if let Some(f) = s.fragments {
+        m.insert("fragments".into(), num(f));
+    }
     m.insert("samples".into(), Value::from(s.samples));
     Value::Object(m)
 }
 
-/// `mintSessionId(ms)`: UUIDv7 of `Math.max(0, Math.floor(ms))`.
-pub fn mint_session_id(ms: f64) -> String {
+/// `mintSessionId(ms)`: UUIDv7 of `Math.max(0, Math.floor(ms))`. A NaN or
+/// +Infinity is V8's `BigInt(…)` RangeError (F6: the seed then fails and
+/// writes no marker, so the next boot retries, as the TS).
+pub fn mint_session_id(ms: f64) -> Result<String, String> {
+    let v = ms.floor();
+    let v = if v.is_nan() { v } else { v.max(0.0) };
+    if !v.is_finite() {
+        return Err(format!(
+            "The number {} cannot be converted to a BigInt because it is not an integer",
+            number_to_string(v)
+        ));
+    }
     let mut b = [0u8; 16];
     if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
         use std::io::Read;
         let _ = f.read_exact(&mut b);
     }
-    let floored = ms.floor();
-    let ms = if floored.is_finite() && floored > 0.0 {
-        floored as i64
-    } else {
-        0
-    };
-    xorgate_core::session::mint_session_id(ms, b)
+    Ok(xorgate_core::session::mint_session_id(v as i64, b))
+}
+
+/// `new Date(ms).toISOString()`: RangeError `Invalid time value` outside the
+/// Date range (`|ms| > 8.64e15`) or for NaN.
+fn iso(ms: f64) -> Result<String, String> {
+    if !ms.is_finite() || ms.abs() > 8.64e15 {
+        return Err("Invalid time value".into());
+    }
+    Ok(to_iso_string(ms))
 }
 
 /// `Math.max(...xs)`: NaN if any is NaN.
@@ -117,31 +136,32 @@ pub fn plan_seed(
     scenarios: &[LoadedScenario],
     now: f64,
     end_before_ms: f64,
-    mint: &dyn Fn(f64) -> String,
-) -> SeedPlan {
+    mint: MintFn<'_>,
+) -> Result<SeedPlan, String> {
     let newest_end = js_max(scenarios.iter().map(|s| s.manifest.original_end_ts));
     let delta_ms = js_math_round(now - end_before_ms - newest_end);
-    let sessions = scenarios
-        .iter()
-        .map(|sc| {
-            let start_ts = sc.manifest.original_start_ts + delta_ms;
-            let end_ts = sc.manifest.original_end_ts + delta_ms;
-            let stream = &sc.manifest.streams[0];
-            SeedSession {
-                scenario_id: sc.manifest.id.clone(),
-                media_session_id: mint(start_ts),
-                // The telemetry session starts at its first (possibly pre-video) sample.
-                telemetry_session_id: mint(start_ts + sc.samples[0].t),
-                stream_key: stream.stream_key.clone(),
-                start_ts,
-                end_ts,
-                fragments: stream.fragment_count,
-                samples: sc.samples.len(),
-            }
-        })
-        .collect();
-    SeedPlan { delta_ms, sessions }
+    let mut sessions = Vec::with_capacity(scenarios.len());
+    for sc in scenarios {
+        let start_ts = sc.manifest.original_start_ts + delta_ms;
+        let end_ts = sc.manifest.original_end_ts + delta_ms;
+        let stream = &sc.manifest.streams[0];
+        sessions.push(SeedSession {
+            scenario_id: sc.manifest.id.clone(),
+            media_session_id: mint(start_ts)?,
+            // The telemetry session starts at its first (possibly pre-video) sample.
+            telemetry_session_id: mint(start_ts + sc.samples[0].t)?,
+            stream_key: stream.stream_key.clone(),
+            start_ts,
+            end_ts,
+            fragments: stream.fragment_count,
+            samples: sc.samples.len(),
+        });
+    }
+    Ok(SeedPlan { delta_ms, sessions })
 }
+
+/// The session-id minter seam (`mint?: (ms) => string`); `Err` = its throw.
+pub type MintFn<'a> = &'a dyn Fn(f64) -> Result<String, String>;
 
 /// `atomicWriteJson(path, value)` with Node's error text.
 fn write_json_atomic(path: &Path, v: &Value) -> Result<(), String> {
@@ -190,11 +210,13 @@ pub fn write_seed_session(
     t: &SeedTarget<'_>,
 ) -> Result<(), String> {
     let stream = &sc.manifest.streams[0];
-    let seg_dir = sc.dir.join(&stream.fragments);
+    // `join(sc.dir, stream.fragments)` then `join(…, session.streamKey, …)`:
+    // an absent one is Node's `path` TypeError (F6).
+    let seg_dir = sc.dir.join(super::path_arg(stream.fragments.as_ref())?);
     let video_dir = t
         .recordings_root
         .join("video")
-        .join(&session.stream_key)
+        .join(super::path_arg(session.stream_key.as_ref())?)
         .join(&session.media_session_id);
     mkdir_p(&video_dir)?;
     // One wall/mono pair for the whole session, as buildSidecar derives it.
@@ -251,7 +273,10 @@ pub fn write_seed_session(
     );
     header.insert("bootId".into(), Value::from(t.boot_id));
     header.insert("timeSource".into(), Value::from("ntp"));
-    header.insert("rateHz".into(), num(sc.manifest.telemetry.rate_hz));
+    // `rateHz: undefined` is dropped by `JSON.stringify` (F6).
+    if let Some(r) = sc.manifest.telemetry.rate_hz {
+        header.insert("rateHz".into(), num(r));
+    }
     header.insert("startedAt".into(), num(started_at));
     let header = to_json_string(&Value::Object(header));
     for (seg, chunk) in sc.samples.chunks(SEED_SEGMENT_SAMPLES).enumerate() {
@@ -298,7 +323,7 @@ pub struct SeedOptions<'a> {
     /// `Date.now()` by default.
     pub now: Option<&'a dyn Fn() -> f64>,
     /// Session-id minter (UUIDv7 of the shifted start by default).
-    pub mint: Option<&'a dyn Fn(f64) -> String>,
+    pub mint: Option<MintFn<'a>>,
     pub on_event: Option<SeedEventFn<'a>>,
 }
 
@@ -345,7 +370,7 @@ pub fn seed_once(opts: &SeedOptions<'_>) -> Result<SeedResult, String> {
         now(),
         opts.end_before_ms.unwrap_or(SEED_END_BEFORE_MS),
         opts.mint.unwrap_or(&default_mint),
-    );
+    )?;
     let target = SeedTarget {
         recordings_root: &opts.recordings_root,
         device_id: opts.device_id,
@@ -357,16 +382,18 @@ pub fn seed_once(opts: &SeedOptions<'_>) -> Result<SeedResult, String> {
             .find(|s| s.manifest.id == session.scenario_id)
             .expect("planned from this list");
         write_seed_session(sc, session, &plan, &target)?;
+        let at = iso(session.start_ts)?;
         event(
             ActivityLevel::Info,
             &format!(
-                "replay seed: {} → media {}… ({} fragments) + telemetry {}… ({} samples) at {}",
+                "replay seed: {} → media {}… ({} fragments) + telemetry {}… ({} samples) at {at}",
                 session.scenario_id,
                 head8(&session.media_session_id),
-                number_to_string(session.fragments),
+                session
+                    .fragments
+                    .map_or_else(|| "undefined".to_string(), number_to_string),
                 head8(&session.telemetry_session_id),
                 session.samples,
-                to_iso_string(session.start_ts),
             ),
         );
     }

@@ -16,15 +16,21 @@
 //! # Threads and locks (P1)
 //! The TS is single-threaded; here the self-timer, the capture supervisor's
 //! stdout reader and exit handler, the config path and the publish loop can
-//! call in at once. One `std::sync::Mutex` guards the player state. It is
-//! never held across a call into the recording manager or the capture
-//! supervisor: those calls are queued as [`After`] items and run after the
-//! guard is dropped. The capture supervisor calls [`ReplayCaptureHooks`]
-//! `source_head` / `respawn_hold_ms` WITH its own lock held, so the order is
-//! always capture → replay, never the reverse. Settings are read (a file
-//! read) and scenarios are loaded (a file read + gunzip) without the guard;
-//! `reapply` re-checks the scenario id after re-taking it, so two racing
-//! reapplies switch once.
+//! call in at once. Two locks:
+//! - `st` (the player state) is held only for in-memory work. Settings are
+//!   read (a file read) BEFORE it is taken; scenarios are loaded (a file
+//!   read and a gunzip) without it; the `replay:` log lines (a flushed
+//!   `state.json` write) and every call into the recording manager are
+//!   queued as [`After`] items and run, in order, after it is released.
+//! - `reapply_gate` serialises whole `reapply` calls (read → load → switch →
+//!   queued calls), so a slow, stale load can never land after a newer one
+//!   (review-wp1 F1). It is taken before `st` and never by anything a
+//!   manager call reaches.
+//!
+//! The capture supervisor calls `source_head` with ITS lock held (capture →
+//! `st`, never the reverse; shown by code reading: `st` is never held across
+//! a call out). It calls `on_ended` and then `respawn_hold_ms` with no lock
+//! held, in the TS order (review-wp1 F5).
 //!
 //! # Errors the TS leaves uncaught
 //! `host.rotateTelemetrySession` → `stopRecorder` → `recorder.stop()` can
@@ -37,8 +43,9 @@
 //! # Rust-only (accepted divergences, `phase-1/evidence/accepted-divergences.md`)
 //! - D70: a trace leaf that is not `{value: number, unit?: string}` (or a
 //!   group that is not an object) is left out of the live view and the
-//!   recorder, with ONE warn per scenario load naming the paths. Seeding
-//!   writes the raw JSON, as the TS does.
+//!   recorder, with ONE warn per scenario load naming the paths; a unit-first
+//!   leaf is re-serialised value-first. Seeding writes the raw JSON, as the
+//!   TS does.
 //! - D73: a malformed pack (not `build-scenario.mjs` output) fails with Rust
 //!   text where the TS message is V8/zlib's (JSON syntax, gzip, type errors).
 
@@ -116,36 +123,40 @@ pub struct ScenarioManifest {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioStream {
+    /// `None` = absent (a JS `undefined`; F6).
     #[serde(default)]
-    pub stream_key: String,
+    pub stream_key: Option<String>,
     #[serde(default)]
     pub lap: Option<String>,
     #[serde(default = "nan")]
     pub fps: f64,
     #[serde(default)]
-    pub fragments: String,
-    #[serde(default = "nan")]
-    pub fragment_count: f64,
+    pub fragments: Option<String>,
+    #[serde(default)]
+    pub fragment_count: Option<f64>,
     #[serde(default)]
     pub media_duration_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+impl ScenarioStream {
+    /// `streamKey` (`None` when absent: it then equals no camera's key).
+    pub fn key(&self) -> Option<&str> {
+        self.stream_key.as_deref()
+    }
+    /// `streamKey` as a template string prints it.
+    pub fn key_text(&self) -> &str {
+        self.key().unwrap_or("undefined")
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioTelemetry {
     #[serde(default)]
     pub trace: Option<String>,
-    #[serde(default = "nan")]
-    pub rate_hz: f64,
-}
-
-impl Default for ScenarioTelemetry {
-    fn default() -> Self {
-        Self {
-            trace: None,
-            rate_hz: f64::NAN,
-        }
-    }
+    /// `None` = absent: the seeded header omits the key (F6).
+    #[serde(default)]
+    pub rate_hz: Option<f64>,
 }
 
 /// One normalized trace sample: `t` = ms since the lap's first frame.
@@ -217,7 +228,8 @@ pub fn load_catalog(assets_dir: &Path) -> Result<ReplayCatalog, String> {
 }
 
 /// A leaf the live payload may carry: exactly `{value: number}` or
-/// `{value: number, unit: string}` (agent-anatomy §10.11).
+/// `{value: number, unit: string}` (agent-anatomy §10.11). D70: a unit-first
+/// leaf passes and is re-serialised value-first (`MetricLeaf`'s order).
 fn wire_leaf(leaf: &Value) -> Option<MetricLeaf> {
     let o = leaf.as_object()?;
     if o.keys().any(|k| k != "value" && k != "unit") {
@@ -641,10 +653,19 @@ struct St {
     stopped: bool,
 }
 
-/// Work queued under the state lock, run after it is released.
+/// Work queued under the state lock, run in order after it is released:
+/// the `replay:` log lines (a `state.json` write) and the manager calls.
 enum After {
+    Log(ActivityLevel, String),
     Rotate(String),
     Cycle,
+}
+
+/// `loop()` / `gapMs()` from one read of the `simulation` settings.
+#[derive(Clone, Copy)]
+struct Sim {
+    loop_: bool,
+    gap_ms: f64,
 }
 
 pub struct ReplaySource {
@@ -656,6 +677,11 @@ pub struct ReplaySource {
     on_event: Option<ReplayEventFn>,
     now: WallFn,
     st: Mutex<St>,
+    /// F1 (review-wp1): serialises whole `reapply` calls (settings read →
+    /// load → switch → its manager calls), so a slow, stale load can never
+    /// land after a newer one (the single-threaded TS order). Taken before
+    /// `st`, never by anything a manager call can reach.
+    reapply_gate: Mutex<()>,
     host: OnceLock<Arc<dyn ReplayHost>>,
 }
 
@@ -691,6 +717,7 @@ impl ReplaySource {
                 ticks: 0,
                 stopped: false,
             }),
+            reapply_gate: Mutex::new(()),
             host: OnceLock::new(),
         };
         let id = me.resolve_scenario_id();
@@ -741,8 +768,17 @@ impl ReplaySource {
 
     /// D70: one warn per scenario load naming the left-out trace paths.
     fn warn_dropped(&self, sc: &LoadedScenario) {
+        if let Some(m) = dropped_msg(sc) {
+            self.log(ActivityLevel::Warn, &m);
+        }
+    }
+}
+
+/// D70: the one warn per scenario load naming the left-out trace paths.
+fn dropped_msg(sc: &LoadedScenario) -> Option<String> {
+    {
         if sc.dropped_leaves.is_empty() {
-            return;
+            return None;
         }
         let shown: Vec<&str> = sc
             .dropped_leaves
@@ -751,24 +787,25 @@ impl ReplaySource {
             .map(String::as_str)
             .collect();
         let more = sc.dropped_leaves.len() - shown.len();
-        self.log(
-            ActivityLevel::Warn,
-            &format!(
-                "scenario {}: {} trace path(s) are not {{value:number, unit?:string}} and are left out of the live view: {}{}",
-                sc.manifest.id,
-                sc.dropped_leaves.len(),
-                shown.join(", "),
-                if more > 0 { format!(" (+{more} more)") } else { String::new() }
-            ),
-        );
+        Some(format!(
+            "scenario {}: {} trace path(s) are not {{value:number, unit?:string}} and are left out of the live view: {}{}",
+            sc.manifest.id,
+            sc.dropped_leaves.len(),
+            shown.join(", "),
+            if more > 0 { format!(" (+{more} more)") } else { String::new() }
+        ))
     }
+}
 
-    fn loop_(&self) -> bool {
-        (self.settings)().and_then(|s| s.loop_).unwrap_or(true)
-    }
-
-    fn gap_ms(&self) -> f64 {
-        f64::from((self.settings)().and_then(|s| s.gap_seconds).unwrap_or(30)) * 1000.0
+impl ReplaySource {
+    /// One read of `simulation` (`loop() ?? true`, `(gapSeconds ?? 30) * 1000`).
+    /// Read BEFORE the state lock is taken (F4): it is a file read.
+    fn sim(&self) -> Sim {
+        let s = (self.settings)();
+        Sim {
+            loop_: s.as_ref().and_then(|s| s.loop_).unwrap_or(true),
+            gap_ms: f64::from(s.and_then(|s| s.gap_seconds).unwrap_or(30)) * 1000.0,
+        }
     }
 
     /// `resolveScenarioId()` (`replay.ts:369-374`): `settings.scenarioId ??
@@ -809,7 +846,8 @@ impl ReplaySource {
         self.lock().player.current().clone()
     }
 
-    fn clock_stream(st: &St) -> String {
+    /// `clockStream()`: the scenario's first stream drives the lap clock.
+    fn clock_stream(st: &St) -> Option<String> {
         st.player.current().manifest.streams[0].stream_key.clone()
     }
 
@@ -822,7 +860,7 @@ impl ReplaySource {
             .manifest
             .streams
             .iter()
-            .any(|s| s.stream_key == key)
+            .any(|s| s.key() == Some(key))
         {
             StreamGuard::Ok
         } else {
@@ -834,43 +872,52 @@ impl ReplaySource {
         st.player.start_lap(wall_ms);
         st.switch_pending = false;
         let idx = st.player.lap_index();
-        let msg = format!(
-            "lap {idx} of {} started ({how})",
-            st.player.current().manifest.id
-        );
-        self.log(ActivityLevel::Info, &msg);
+        after.push(After::Log(
+            ActivityLevel::Info,
+            format!(
+                "lap {idx} of {} started ({how})",
+                st.player.current().manifest.id
+            ),
+        ));
         after.push(After::Rotate(format!("replay lap {idx}")));
     }
 
-    fn finish_lap(&self, st: &mut St, how: &str) {
-        let will_loop = self.loop_();
-        st.player.end_lap(will_loop);
+    fn finish_lap(&self, st: &mut St, how: &str, sim: Sim, after: &mut Vec<After>) {
+        st.player.end_lap(sim.loop_);
         let msg = if st.switch_pending {
             format!(
                 "lap ended ({how}); switching to {}",
                 st.player.current().manifest.id
             )
-        } else if will_loop {
+        } else if sim.loop_ {
             format!(
                 "lap ended ({how}); parked for {} s",
-                js_round(self.gap_ms() / 1000.0)
+                js_round(sim.gap_ms / 1000.0)
             )
         } else {
             format!("lap ended ({how}); parked — loop is off")
         };
-        self.log(ActivityLevel::Info, &msg);
+        after.push(After::Log(ActivityLevel::Info, msg));
     }
 
-    /// Runs the queued calls into the manager, lock released. The first
-    /// error stops the rest (the TS throw).
+    /// Runs the queued work, state lock released, in order. The first
+    /// manager error stops the rest (the TS throw). Log lines always run
+    /// (`host?.` only guards the manager calls).
     fn run_after(&self, after: Vec<After>) -> Result<(), String> {
-        let Some(host) = self.host.get() else {
-            return Ok(());
-        };
+        let host = self.host.get();
         for a in after {
             match a {
-                After::Rotate(why) => host.rotate_telemetry_session(&why)?,
-                After::Cycle => host.cycle_video(),
+                After::Log(level, msg) => self.log(level, &msg),
+                After::Rotate(why) => {
+                    if let Some(h) = host {
+                        h.rotate_telemetry_session(&why)?;
+                    }
+                }
+                After::Cycle => {
+                    if let Some(h) = host {
+                        h.cycle_video();
+                    }
+                }
             }
         }
         Ok(())
@@ -884,8 +931,13 @@ impl ReplaySource {
     }
 
     /// `reapply()`: re-read `simulation`; a changed scenario ends the lap in
-    /// place. `Err` = a throw out of the telemetry rotation.
+    /// place. `Err` = a throw out of the telemetry rotation. Whole calls are
+    /// serialised by `reapply_gate` (F1), so the read → load → switch
+    /// sequence is atomic against every other `reapply`, as in the TS. The
+    /// gate is held across the queued manager calls too: nothing a
+    /// `cycle_video` / `rotate_telemetry_session` reaches calls `reapply`.
     pub fn reapply(&self) -> Result<(), String> {
+        let _gate = self.reapply_gate.lock().unwrap_or_else(|e| e.into_inner());
         if self.lock().stopped {
             return Ok(());
         }
@@ -904,33 +956,35 @@ impl ReplaySource {
                 return Ok(());
             }
         };
+        let sim = self.sim();
+        let now = (self.now)();
         let mut after = Vec::new();
         {
             let mut st = self.lock();
-            // P1: another caller switched while the lock was released.
-            if st.stopped || st.scenario_id == next {
+            if st.stopped {
                 return Ok(());
             }
             st.scenario_id = next.clone();
             st.player.set_scenario(loaded.clone());
             st.switch_pending = true;
-            self.log(
+            after.push(After::Log(
                 ActivityLevel::Info,
-                &format!("scenario switched to {next} — ending the current lap"),
-            );
+                format!("scenario switched to {next} — ending the current lap"),
+            ));
+            if let Some(m) = dropped_msg(&loaded) {
+                after.push(After::Log(ActivityLevel::Warn, m));
+            }
             if st.video_driven && self.host.get().is_some() {
                 // → on_ended → respawn_hold_ms() = 0 → new child → on_playing
                 after.push(After::Cycle);
             } else {
                 // Telemetry-only: no child to cycle, restart the lap clock now.
                 if st.player.phase() == ReplayPhase::Lap {
-                    self.finish_lap(&mut st, "scenario switch");
+                    self.finish_lap(&mut st, "scenario switch", sim, &mut after);
                 }
-                let now = (self.now)();
                 self.begin_lap(&mut st, now, "scenario switch", &mut after);
             }
         }
-        self.warn_dropped(&loaded);
         self.run_after(after)
     }
 
@@ -950,6 +1004,8 @@ impl ReplaySource {
                 return;
             }
         }
+        let sim = self.sim();
+        let now = (self.now)();
         let mut after = Vec::new();
         {
             let mut st = self.lock();
@@ -958,27 +1014,24 @@ impl ReplaySource {
                 // The capture child owns the lap clock. The timer only steps
                 // in when a respawn is overdue (gap + grace, no PLAYING).
                 if phase == ReplayPhase::Gap
-                    && st.player.phase_age_ms() > self.gap_ms() + VIDEO_GRACE_MS
+                    && st.player.phase_age_ms() > sim.gap_ms + VIDEO_GRACE_MS
                 {
-                    self.log(
+                    after.push(After::Log(
                         ActivityLevel::Warn,
-                        "no capture child came back after the gap — running the lap clock without video",
-                    );
+                        "no capture child came back after the gap — running the lap clock without video".into(),
+                    ));
                     st.video_driven = false;
-                    let now = (self.now)();
                     self.begin_lap(&mut st, now, "timer fallback", &mut after);
                 }
             } else if phase == ReplayPhase::Idle && st.player.phase_age_ms() > VIDEO_GRACE_MS {
-                self.log(
+                after.push(After::Log(
                     ActivityLevel::Info,
-                    "no capture child reported PLAYING — telemetry-only replay",
-                );
-                let now = (self.now)();
+                    "no capture child reported PLAYING — telemetry-only replay".into(),
+                ));
                 self.begin_lap(&mut st, now, "timer, no video", &mut after);
             } else if phase == ReplayPhase::Lap && st.player.lap_elapsed() {
-                self.finish_lap(&mut st, "lap time elapsed");
-            } else if phase == ReplayPhase::Gap && st.player.phase_age_ms() >= self.gap_ms() {
-                let now = (self.now)();
+                self.finish_lap(&mut st, "lap time elapsed", sim, &mut after);
+            } else if phase == ReplayPhase::Gap && st.player.phase_age_ms() >= sim.gap_ms {
                 self.begin_lap(&mut st, now, "timer", &mut after);
             }
         }
@@ -1009,7 +1062,7 @@ impl ReplayCaptureHooks for ReplaySource {
             .manifest
             .streams
             .iter()
-            .find(|s| s.stream_key == cam.stream_key)
+            .find(|s| s.key() == Some(cam.stream_key.as_str()))
             .unwrap_or(&sc.manifest.streams[0]);
         replay_capture_head(
             &sc.dir.join(stream.lap.as_deref().unwrap_or("")),
@@ -1021,7 +1074,7 @@ impl ReplayCaptureHooks for ReplaySource {
         let mut after = Vec::new();
         {
             let mut st = self.lock();
-            if st.stopped || key != Self::clock_stream(&st) {
+            if st.stopped || Some(key) != Self::clock_stream(&st).as_deref() {
                 return;
             }
             st.video_driven = true;
@@ -1033,24 +1086,31 @@ impl ReplayCaptureHooks for ReplaySource {
     }
 
     fn on_ended(&self, key: &str, clean: bool) {
-        let mut st = self.lock();
-        if st.stopped || key != Self::clock_stream(&st) {
-            return;
+        let sim = self.sim();
+        let mut after = Vec::new();
+        {
+            let mut st = self.lock();
+            if st.stopped || Some(key) != Self::clock_stream(&st).as_deref() {
+                return;
+            }
+            if st.player.phase() != ReplayPhase::Lap {
+                return;
+            }
+            let how = if clean { "video EOS" } else { "capture exited" };
+            self.finish_lap(&mut st, how, sim, &mut after);
         }
-        if st.player.phase() != ReplayPhase::Lap {
-            return;
-        }
-        self.finish_lap(&mut st, if clean { "video EOS" } else { "capture exited" });
+        let _ = self.run_after(after); // log lines only
     }
 
     fn respawn_hold_ms(&self, key: &str) -> Option<u64> {
         {
             let st = self.lock();
-            if key != Self::clock_stream(&st) || st.switch_pending {
+            if Some(key) != Self::clock_stream(&st).as_deref() || st.switch_pending {
                 return Some(0);
             }
         }
-        self.loop_().then(|| self.gap_ms() as u64)
+        let sim = self.sim();
+        sim.loop_.then_some(sim.gap_ms as u64)
     }
 }
 
@@ -1086,8 +1146,9 @@ impl TelemetrySource for ReplaySource {
 }
 
 /// JS `Math.round` (ties toward +∞) as an integer for log text.
-pub(crate) fn js_round(x: f64) -> i64 {
-    js_math_round(x) as i64
+/// JS `Math.round(x)` as a template string prints it (`NaN` stays `NaN`).
+pub(crate) fn js_round(x: f64) -> String {
+    xorgate_core::js::number_to_string(js_math_round(x))
 }
 
 /// JS `Math.round`: ties toward +∞, NaN stays NaN.

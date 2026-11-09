@@ -121,11 +121,12 @@ pub const GST_EOS_MARK: &str = "Got EOS from element";
 /// `None` on [`VideoCaptureOpts::replay`] = a real device: none of the TS
 /// hooks is set and every path is the pre-7e behaviour.
 ///
-/// Locking: `source_head` and `respawn_hold_ms` are called WITH the
-/// supervisor lock held, so they must not call back into the supervisor
-/// (the replay source only takes its own lock and reads settings).
-/// `on_playing` and `on_ended` are called with no supervisor lock held,
-/// `on_ended` after the child's final sweep (its last sidecar is written).
+/// Locking: `source_head` is called WITH the supervisor lock held (it is
+/// part of the spawn), so it must not call back into the supervisor (the
+/// replay source only takes its own lock). `on_playing`, `on_ended` and
+/// `respawn_hold_ms` are called with no supervisor lock held: `on_ended`
+/// after the child's final sweep (its last sidecar is written), then
+/// `respawn_hold_ms`, in the TS order.
 pub trait ReplayCaptureHooks: Send + Sync {
     /// `sourceHead(cam)`: the pipeline HEAD, re-evaluated on EVERY spawn.
     fn source_head(&self, cam: &CaptureCamera) -> Vec<String>;
@@ -1275,6 +1276,8 @@ async fn consume(
 fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
     let o = &s.opts;
     let mut out = Out::default();
+    // Replay lap boundary: the hold is decided AFTER `on_ended` (F5).
+    let mut hold_after: Option<(u64, Option<String>)> = None;
     {
         let mut g = s.lock();
         let stopped = g.stopped;
@@ -1345,36 +1348,16 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
         } else if stopped {
             run.state = CaptureState::Stopped;
             out.fx.push(Fx::Status);
-        } else if let (true, Some(h)) = (cycled || eos_end, o.replay.as_ref()) {
+        } else if (cycled || eos_end) && o.replay.is_some() {
             // Replay lap boundary (`video-capture.ts:768-787`): a clean end
-            // is not a failure. Respawn after the gap, or park.
+            // is not a failure. The TS calls `onEnded` and THEN
+            // `respawnHoldMs` in one turn; here `on_ended` runs in the flush
+            // below and the hold right after it ([`replay_hold`]), both
+            // without this lock. `retrying` until the hold is known.
             run.counters.quick_failures = 0;
             run.counters.backoff_ms = BASE_BACKOFF_MS;
-            let tail = ended
-                .as_deref()
-                .map(|sid| format!(" (session {}…)", &sid[..sid.len().min(8)]))
-                .unwrap_or_default();
-            match h.respawn_hold_ms(key) {
-                None => {
-                    run.state = CaptureState::Stopped;
-                    out.fx.push(Fx::Event(
-                        ActivityLevel::Info,
-                        format!("video capture {key} ended cleanly; parked (no loop)"),
-                    ));
-                }
-                Some(hold) => {
-                    run.state = CaptureState::Retrying;
-                    out.fx.push(Fx::Event(
-                        ActivityLevel::Info,
-                        format!(
-                            "video capture {key} ended cleanly{tail}; next lap in {}s",
-                            (hold as f64 / 1000.0).round() as u64
-                        ),
-                    ));
-                    run.restart_timer = Some(arm(s, counter, hold, key, run.id, Slot::Restart));
-                }
-            }
-            out.fx.push(Fx::Status);
+            run.state = CaptureState::Retrying;
+            hold_after = Some((run.id, ended.clone()));
         } else {
             let ran_ms = o.clock.mono_ms().saturating_sub(run.started_at);
             let v = exit_verdict(&ExitInput {
@@ -1398,6 +1381,60 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
             run.restart_timer = Some(arm(s, counter, v.restart_ms, key, run.id, Slot::Restart));
             out.fx.push(Fx::Status);
         }
+    }
+    s.flush(out);
+    if let Some((run_id, ended)) = hold_after {
+        replay_hold(s, key, run_id, ended.as_deref());
+    }
+}
+
+/// The replay lap boundary's second half (`video-capture.ts:771-786` @
+/// 09da38d), after `on_ended` has run: `respawnHoldMs(streamKey)` (no
+/// supervisor lock held), then park or schedule the next lap. A `cycle()`,
+/// `setCameras` or `stop()` that got in between already decided this run's
+/// fate (TS: they cannot interleave), so it is left alone.
+fn replay_hold(s: &Arc<Shared>, key: &str, run_id: u64, ended: Option<&str>) {
+    let Some(h) = s.opts.replay.as_ref() else {
+        return;
+    };
+    let hold = h.respawn_hold_ms(key);
+    let mut out = Out::default();
+    {
+        let mut g = s.lock();
+        if g.stopped {
+            return;
+        }
+        let Inner { runs, counter, .. } = &mut *g;
+        let Some(run) = runs.get_mut(key) else {
+            return;
+        };
+        if run.id != run_id || run.child.is_some() || run.retiring || run.restart_timer.is_some() {
+            return;
+        }
+        match hold {
+            None => {
+                run.state = CaptureState::Stopped;
+                out.fx.push(Fx::Event(
+                    ActivityLevel::Info,
+                    format!("video capture {key} ended cleanly; parked (no loop)"),
+                ));
+            }
+            Some(hold) => {
+                run.state = CaptureState::Retrying;
+                let tail = ended
+                    .map(|sid| format!(" (session {}…)", &sid[..sid.len().min(8)]))
+                    .unwrap_or_default();
+                out.fx.push(Fx::Event(
+                    ActivityLevel::Info,
+                    format!(
+                        "video capture {key} ended cleanly{tail}; next lap in {}s",
+                        (hold as f64 / 1000.0).round() as u64
+                    ),
+                ));
+                run.restart_timer = Some(arm(s, counter, hold, key, run.id, Slot::Restart));
+            }
+        }
+        out.fx.push(Fx::Status);
     }
     s.flush(out);
 }
@@ -1716,6 +1753,88 @@ mod tests {
             assert!(shm.join(format!("{k}.sock")).exists(), "{k}.sock deleted");
         }
         assert_eq!(be.spawns.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    struct NullHooks;
+    impl ReplayCaptureHooks for NullHooks {
+        fn source_head(&self, _c: &CaptureCamera) -> Vec<String> {
+            vec!["filesrc".into()]
+        }
+        fn on_playing(&self, _k: &str, _w: i64) {}
+        fn on_ended(&self, _k: &str, _c: bool) {}
+        fn respawn_hold_ms(&self, _k: &str) -> Option<u64> {
+            Some(0)
+        }
+    }
+
+    /// D72 (review-wp1 F3): `note_stdout` counts a line only for the run's
+    /// CURRENT child. A stale child id changes neither `playing_reported`
+    /// nor `eos_seen`; the current child's first `New clock:` fires once.
+    #[tokio::test(start_paused = true)]
+    async fn d72_note_stdout_ignores_a_stale_child_id() {
+        let home = std::env::temp_dir().join(format!(
+            "xg-capture-d72-{}-{}",
+            std::process::id(),
+            hrtime_ns()
+        ));
+        let mut o = VideoCaptureOpts::new(
+            "dev-1",
+            vec![CaptureCamera {
+                stream_key: "cam0".into(),
+                camera_name: "replay".into(),
+            }],
+            false,
+            resolve_video_preset("1080p15-2mbps").clone(),
+            60,
+            home.join("video"),
+            home.join("shm"),
+            "boot-1",
+            Arc::new(|| TimeSource::Ntp),
+            Arc::new(AgentClock::following_tokio(1_760_000_000_000)),
+        );
+        o.backend = Arc::new(SlowBackend::default());
+        o.fs_watch = false;
+        o.shm_segment_dir = home.join("devshm");
+        o.replay = Some(Arc::new(NullHooks));
+        let sup = VideoCaptureSupervisor::new(o);
+        sup.start();
+        let s = &sup.shared;
+        let cur = s.lock().runs["cam0"].child.as_ref().expect("spawned").id;
+        let flags = || {
+            let g = s.lock();
+            let r = &g.runs["cam0"];
+            (r.playing_reported, r.eos_seen)
+        };
+        for stale in [cur.wrapping_sub(1), cur + 1] {
+            assert_eq!(
+                s.note_stdout("cam0", stale, "New clock: GstSystemClock"),
+                None
+            );
+            assert_eq!(
+                s.note_stdout("cam0", stale, "Got EOS from element \"pipeline0\"."),
+                None
+            );
+            assert_eq!(
+                flags(),
+                (false, false),
+                "a stale child's lines count for nothing"
+            );
+        }
+        assert!(s
+            .note_stdout("cam0", cur, "New clock: GstSystemClock")
+            .is_some());
+        assert_eq!(
+            s.note_stdout("cam0", cur, "New clock: GstSystemClock"),
+            None,
+            "once per child"
+        );
+        assert_eq!(
+            s.note_stdout("cam0", cur, "Got EOS from element \"pipeline0\"."),
+            None
+        );
+        assert_eq!(flags(), (true, true));
+        sup.stop();
         let _ = std::fs::remove_dir_all(&home);
     }
 }

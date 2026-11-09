@@ -1618,11 +1618,31 @@ async fn rotate_telemetry_session_stops_and_starts_once() {
     assert!(m.rotate_telemetry_session("replay lap 2").is_err());
     assert_eq!(rig.events().len(), n);
     assert_eq!(m.status().session_id.as_deref(), Some(second.as_str()));
-    // D71: after stop() nothing re-opens a recorder.
+    // D71 (review-wp1 F2): the shutdown finalize THROWS (D29), so the
+    // recorder stays set; a lap start during the rest of the shutdown must
+    // neither retry the finalize nor open a fresh recorder (the TS has
+    // exited by then). Fails without the `stop_requested` guard.
+    rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
     m.stop();
     let recs = rig.log.recorders.lock().unwrap().len();
+    let stops = rig.log.recorder_stops.load(Ordering::SeqCst);
+    let n = rig.events().len();
     m.rotate_telemetry_session("replay lap 3").unwrap();
-    assert_eq!(rig.log.recorders.lock().unwrap().len(), recs);
+    assert_eq!(
+        rig.log.recorders.lock().unwrap().len(),
+        recs,
+        "no new recorder"
+    );
+    assert_eq!(
+        rig.log.recorder_stops.load(Ordering::SeqCst),
+        stops,
+        "no finalize retry"
+    );
+    assert_eq!(
+        rig.events().len(),
+        n,
+        "no telemetry recording started/stopped event"
+    );
 
     let mut off = Rig::new("rotate-off");
     off.video = false;

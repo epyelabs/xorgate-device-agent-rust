@@ -841,10 +841,12 @@ impl RecordingManager {
     /// caller to route as its TS call site does (`replay/mod.rs` header).
     ///
     /// D71 (Rust-only guard): also a no-op once `stop()` has begun
-    /// (`stop_requested`). In the single-threaded TS `stop()` clears the
-    /// recorder before anything else can run, so a rotation after it is
-    /// unreachable; here a lap start on another thread could otherwise
-    /// re-open a recorder mid-shutdown.
+    /// (`stop_requested`). After a SUCCESSFUL stop the recorder is already
+    /// `None` (both are set under one hold of `state`). The guard matters
+    /// only after a FAILED shutdown finalize (D29): the recorder then stays
+    /// set, and a lap start during the rest of the shutdown would retry the
+    /// finalize and open a fresh recorder (an orphan `.jsonl` at exit). The
+    /// TS process has already died of that uncaught throw.
     pub fn rotate_telemetry_session(&self, why: &str) -> Result<(), String> {
         let inner = &self.inner;
         let mut st = lock(&inner.state);

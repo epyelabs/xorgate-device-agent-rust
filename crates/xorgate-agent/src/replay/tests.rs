@@ -483,8 +483,8 @@ fn ts_seed_plans_one_delta() {
         .map(|id| load_scenario(&home.assets(), id).unwrap())
         .collect();
     let now = 1_800_000_000_000.0;
-    let mint = |ms: f64| format!("id-{}", xorgate_core::js::number_to_string(ms));
-    let plan = plan_seed(&scs, now, 3_600_000.0, &mint);
+    let mint = |ms: f64| Ok(format!("id-{}", xorgate_core::js::number_to_string(ms)));
+    let plan = plan_seed(&scs, now, 3_600_000.0, &mint).unwrap();
     let newest = scs[1].manifest.original_end_ts;
     assert_eq!(plan.delta_ms, now - 3_600_000.0 - newest);
     assert_eq!(plan.sessions[1].end_ts, now - 3_600_000.0);
@@ -494,11 +494,11 @@ fn ts_seed_plans_one_delta() {
     );
     assert_eq!(
         plan.sessions[0].media_session_id,
-        mint(1_700_000_000_000.0 + plan.delta_ms)
+        mint(1_700_000_000_000.0 + plan.delta_ms).unwrap()
     );
     assert_eq!(
         plan.sessions[0].telemetry_session_id,
-        mint(1_700_000_000_000.0 + plan.delta_ms - 2000.0)
+        mint(1_700_000_000_000.0 + plan.delta_ms - 2000.0).unwrap()
     );
 }
 
@@ -507,7 +507,7 @@ fn seed_opts<'a>(
     cat: &'a ReplayCatalog,
     load: &'a dyn Fn(&str) -> Result<LoadedScenario, String>,
     now: &'a dyn Fn() -> f64,
-    mint: &'a dyn Fn(f64) -> String,
+    mint: MintFn<'a>,
 ) -> SeedOptions<'a> {
     SeedOptions {
         catalog: cat,
@@ -560,7 +560,7 @@ fn ts_seed_writes_once_then_never_again() {
             .into_iter()
             .rev()
             .collect();
-        format!("{}{tail}", "a".repeat(36 - tail.len()))
+        Ok(format!("{}{tail}", "a".repeat(36 - tail.len())))
     };
     let opts = seed_opts(&home, &cat, &load, &now, &mint);
     let first = seed_once(&opts).unwrap();
@@ -734,7 +734,7 @@ fn seed_with_every_scenario_missing_writes_the_empty_marker() {
     let warns: Mutex<Vec<String>> = Mutex::default();
     let on = |_: ActivityLevel, m: &str| warns.lock().unwrap().push(m.to_string());
     let now = || 5.0;
-    let mint = |_: f64| "x".to_string();
+    let mint = |_: f64| Ok("x".to_string());
     let mut opts = seed_opts(&home, &cat, &load, &now, &mint);
     opts.on_event = Some(&on);
     assert_eq!(seed_once(&opts).unwrap(), SeedResult::EmptySeedSet);
@@ -778,7 +778,7 @@ fn p3_seed_numbers_are_js_numbers() {
     let assets = home.assets();
     let load = move |id: &str| load_scenario(&assets, id);
     let now = || 1_800_000_000_000.0;
-    let mint = |ms: f64| format!("m{}", xorgate_core::js::number_to_string(ms));
+    let mint = |ms: f64| Ok(format!("m{}", xorgate_core::js::number_to_string(ms)));
     let opts = seed_opts(&home, &cat, &load, &now, &mint);
     let SeedResult::Seeded(plan) = seed_once(&opts).unwrap() else {
         panic!()
@@ -847,8 +847,9 @@ fn seed_fs_errors_carry_nodes_message() {
     let cat = load_catalog(&home.assets()).unwrap();
     let scs = vec![load_scenario(&home.assets(), "city-a").unwrap()];
     let plan = plan_seed(&scs, 1_800_000_000_000.0, SEED_END_BEFORE_MS, &|_| {
-        "fixed".to_string()
-    });
+        Ok("fixed".to_string())
+    })
+    .unwrap();
     let root = home.0.join("recordings");
     let t = SeedTarget {
         recordings_root: &root,
@@ -967,7 +968,7 @@ async fn d70_fixture_pack_shapes_pass_through_byte_identical() {
             to_json_string(&s.raw_metrics)
         );
     }
-    m.src.on_playing(&sc.manifest.streams[0].stream_key, 1);
+    m.src.on_playing(sc.manifest.streams[0].key().unwrap(), 1);
     let live = m.src.read().await.unwrap().metrics;
     let at0 = sample_at(&sc.samples, 0.0).unwrap(); // t=0 (t=-500 precedes the first frame)
     assert_eq!(
@@ -1235,5 +1236,383 @@ fn load_errors_carry_the_ts_text() {
     assert!(
         l.lap_ms.is_nan(),
         "no mediaDurationMs and no durationMs → NaN, as the TS"
+    );
+}
+
+// ------------------------------------------------- review-wp1 fix pins ----
+
+fn three_pack(assets: &Path) {
+    write_pack(
+        assets,
+        &[
+            Sc {
+                id: "city-a",
+                lap_ms: 3000.0,
+                samples: trace(3, 0.0),
+                start_ts: 1_700_000_000_000.0,
+                fragments: 1,
+            },
+            Sc {
+                id: "hwy-b",
+                lap_ms: 2000.0,
+                samples: trace(2, -1000.0),
+                start_ts: 1_700_500_000_000.0,
+                fragments: 1,
+            },
+            Sc {
+                id: "park-c",
+                lap_ms: 2000.0,
+                samples: trace(2, 0.0),
+                start_ts: 1_700_600_000_000.0,
+                fragments: 1,
+            },
+        ],
+    );
+}
+
+/// Rewrite `<assets>/<id>/scenario.json` through `f`.
+fn edit_manifest(assets: &Path, id: &str, f: impl FnOnce(&mut Value)) {
+    let p = assets.join(id).join("scenario.json");
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    f(&mut v);
+    std::fs::write(&p, to_json_string(&v)).unwrap();
+}
+
+/// F1: whole `reapply` calls are serialised. The interleaving the review
+/// describes: the 5-tick poll reads X and is slow to finish; meanwhile the
+/// config path applies Y. The poll must never land X after Y: the final
+/// scenario is Y, with exactly one cycle per switch (W→X, X→Y).
+/// (Without `reapply_gate` the second reapply switches to Y first and the
+/// stale one then switches BACK to X: final X.)
+#[test]
+fn f1_a_stale_slow_reapply_never_switches_back() {
+    let home = Home::new("f1");
+    three_pack(&home.assets());
+    let cur: Settings = Arc::new(Mutex::new(sim(Some("city-a"), None, None)));
+    let gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>> = Arc::default();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let events: Arc<Mutex<Vec<(ActivityLevel, String)>>> = Arc::default();
+    let (c2, g2, e2) = (cur.clone(), gate.clone(), events.clone());
+    let src = ReplaySource::create(ReplayOptions {
+        assets_dir: home.assets(),
+        default_scenario_id: None,
+        settings: Arc::new(move || {
+            let v = c2.lock().unwrap().clone();
+            let rx = g2.lock().unwrap().take();
+            if let Some(rx) = rx {
+                // "reads X, then is slow": park until the test releases it.
+                entered_tx.lock().unwrap().send(()).unwrap();
+                rx.recv().unwrap();
+            }
+            v
+        }),
+        media: None,
+        on_event: Some(Arc::new(move |l, m: &str| {
+            e2.lock().unwrap().push((l, m.to_string()))
+        })),
+        now: Arc::new(|| 1_800_000_000_000),
+        tick_ms: 0,
+    })
+    .unwrap();
+    let host = Arc::new(FakeHost::default());
+    src.attach_host(host.clone());
+    src.on_playing("cam0", 1); // video-driven: a switch is one cycle
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    *gate.lock().unwrap() = Some(release_rx);
+    *cur.lock().unwrap() = sim(Some("hwy-b"), None, None); // X
+    std::thread::scope(|s| {
+        let a = s.spawn(|| src.reapply().unwrap()); // the poll: reads X, parks
+        entered_rx.recv().unwrap();
+        *cur.lock().unwrap() = sim(Some("park-c"), None, None); // Y
+        let b = s.spawn(|| src.reapply().unwrap()); // the config path
+        std::thread::sleep(Duration::from_millis(150));
+        release_tx.send(()).unwrap();
+        a.join().unwrap();
+        b.join().unwrap();
+    });
+    assert_eq!(src.status().scenario_id, "park-c");
+    assert_eq!(*host.cycles.lock().unwrap(), 2);
+    let switches: Vec<String> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, m)| m.starts_with("replay: scenario switched to "))
+        .map(|(_, m)| m.clone())
+        .collect();
+    assert_eq!(
+        switches,
+        [
+            "replay: scenario switched to hwy-b — ending the current lap",
+            "replay: scenario switched to park-c — ending the current lap"
+        ]
+    );
+}
+
+/// F4: no settings read and no log line (a `state.json` write) runs under
+/// the replay state lock. Both callbacks here take that lock themselves
+/// (`status()`), so any call made under it would deadlock; the whole run
+/// must finish within 10 s.
+#[test]
+fn f4_settings_reads_and_log_lines_run_outside_the_state_lock() {
+    let home = Home::new("f4");
+    three_pack(&home.assets());
+    let cell: Arc<OnceLock<Weak<ReplaySource>>> = Arc::default();
+    let cur: Settings = Arc::new(Mutex::new(sim(Some("city-a"), None, Some(0))));
+    let (c1, c2, s2) = (cell.clone(), cell.clone(), cur.clone());
+    let probe = |c: &OnceLock<Weak<ReplaySource>>| {
+        if let Some(src) = c.get().and_then(Weak::upgrade) {
+            let _ = src.status();
+        }
+    };
+    let src = ReplaySource::create(ReplayOptions {
+        assets_dir: home.assets(),
+        default_scenario_id: None,
+        settings: Arc::new(move || {
+            probe(&c1);
+            s2.lock().unwrap().clone()
+        }),
+        media: None,
+        on_event: Some(Arc::new(move |_l, _m: &str| probe(&c2))),
+        now: Arc::new(|| 1_800_000_000_000),
+        tick_ms: 0,
+    })
+    .unwrap();
+    let _ = cell.set(Arc::downgrade(&src));
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let s3 = src.clone();
+    let cur2 = cur.clone();
+    std::thread::spawn(move || {
+        s3.tick(); // idle tick (telemetry-only path)
+        *cur2.lock().unwrap() = sim(Some("hwy-b"), None, Some(0));
+        s3.reapply().unwrap(); // telemetry-only switch: finish + begin under the lock
+        s3.on_ended("cam0", true); // finish_lap (reads loop/gap)
+        let _ = s3.respawn_hold_ms("cam0");
+        s3.on_playing("cam0", 2);
+        *cur2.lock().unwrap() = sim(Some("park-c"), Some(false), Some(0));
+        s3.attach_host(Arc::new(FakeHost::default()));
+        s3.reapply().unwrap(); // video-driven switch
+        s3.on_ended("cam0", false);
+        for _ in 0..5 {
+            s3.tick(); // the 5th polls reapply
+        }
+        done_tx.send(()).unwrap();
+    });
+    done_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a callback ran under the replay state lock (deadlock)");
+    assert_eq!(src.status().scenario_id, "park-c");
+}
+
+/// F6: a pack whose `originalStartTs` is absent (NaN) fails the seed the
+/// way the TS does (`BigInt(NaN)`), and writes NO marker, so the next boot
+/// retries.
+#[test]
+fn f6_a_nan_timestamp_fails_the_seed_without_a_marker() {
+    let home = Home::new("f6-nan");
+    write_pack(
+        &home.assets(),
+        &[Sc {
+            id: "city-a",
+            lap_ms: 60_000.0,
+            samples: trace(2, 0.0),
+            start_ts: 1_700_000_000_000.0,
+            fragments: 1,
+        }],
+    );
+    edit_manifest(&home.assets(), "city-a", |v| {
+        v.as_object_mut().unwrap().remove("originalStartTs");
+    });
+    let cat = load_catalog(&home.assets()).unwrap();
+    let assets = home.assets();
+    let load = move |id: &str| load_scenario(&assets, id);
+    let now = || 1_800_000_000_000.0;
+    let mut opts = seed_opts(&home, &cat, &load, &now, &|_| Ok("unused".into()));
+    opts.mint = None; // the real minter
+    assert_eq!(
+        seed_once(&opts).unwrap_err(),
+        "The number NaN cannot be converted to a BigInt because it is not an integer"
+    );
+    assert!(!home.0.join(SEED_MARKER).exists());
+    assert!(
+        !home.0.join("recordings").exists(),
+        "planSeed throws before any write"
+    );
+    assert_eq!(
+        mint_session_id(f64::INFINITY).unwrap_err(),
+        "The number Infinity cannot be converted to a BigInt because it is not an integer"
+    );
+    assert!(
+        mint_session_id(f64::NEG_INFINITY).is_ok(),
+        "Math.max(0, -Infinity) = 0"
+    );
+}
+
+/// F6: an absent `streams[0].fragments` or `streamKey` is Node's `path`
+/// TypeError out of `writeSeedSession` (no marker); an absent `rateHz` is
+/// omitted from the header and an absent `fragmentCount` from the marker
+/// (`undefined fragments` in the event); an absent lap duration logs `lap NaN s`.
+#[test]
+fn f6_absent_pack_fields_behave_like_undefined() {
+    for field in ["fragments", "streamKey"] {
+        let home = Home::new("f6-path");
+        write_pack(
+            &home.assets(),
+            &[Sc {
+                id: "city-a",
+                lap_ms: 60_000.0,
+                samples: trace(2, 0.0),
+                start_ts: 1_700_000_000_000.0,
+                fragments: 1,
+            }],
+        );
+        edit_manifest(&home.assets(), "city-a", |v| {
+            v["streams"][0].as_object_mut().unwrap().remove(field);
+        });
+        let cat = load_catalog(&home.assets()).unwrap();
+        let assets = home.assets();
+        let load = move |id: &str| load_scenario(&assets, id);
+        let now = || 1_800_000_000_000.0;
+        let opts = seed_opts(&home, &cat, &load, &now, &|ms| Ok(format!("m{ms}")));
+        assert_eq!(
+            seed_once(&opts).unwrap_err(),
+            "The \"path\" argument must be of type string. Received undefined",
+            "{field}"
+        );
+        assert!(!home.0.join(SEED_MARKER).exists(), "{field}");
+    }
+    let home = Home::new("f6-undef");
+    write_pack(
+        &home.assets(),
+        &[Sc {
+            id: "city-a",
+            lap_ms: 60_000.0,
+            samples: trace(2, 0.0),
+            start_ts: 1_700_000_000_000.0,
+            fragments: 1,
+        }],
+    );
+    edit_manifest(&home.assets(), "city-a", |v| {
+        v["telemetry"].as_object_mut().unwrap().remove("rateHz");
+        v["streams"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("fragmentCount");
+        v["streams"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("mediaDurationMs");
+        v.as_object_mut().unwrap().remove("durationMs");
+    });
+    let cat = load_catalog(&home.assets()).unwrap();
+    let assets = home.assets();
+    let load = move |id: &str| load_scenario(&assets, id);
+    let now = || 1_800_000_000_000.0;
+    let infos: Mutex<Vec<String>> = Mutex::default();
+    let on = |_: ActivityLevel, m: &str| infos.lock().unwrap().push(m.to_string());
+    let mut opts = seed_opts(&home, &cat, &load, &now, &|ms| {
+        Ok(format!("m{}", xorgate_core::js::number_to_string(ms)))
+    });
+    opts.on_event = Some(&on);
+    let SeedResult::Seeded(plan) = seed_once(&opts).unwrap() else {
+        panic!()
+    };
+    let s = &plan.sessions[0];
+    assert!(
+        infos.lock().unwrap()[0].contains("(undefined fragments)"),
+        "{:?}",
+        infos.lock().unwrap()
+    );
+    let tel = home
+        .0
+        .join("recordings/telemetry")
+        .join(&s.telemetry_session_id);
+    let seg = std::fs::read_dir(&tel)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let header = gunzip(&seg).split('\n').next().unwrap().to_string();
+    assert!(!header.contains("rateHz"), "{header}");
+    let marker: Value =
+        serde_json::from_slice(&std::fs::read(home.0.join(SEED_MARKER)).unwrap()).unwrap();
+    assert!(marker["sessions"][0].get("fragments").is_none());
+    let m = make(&home.assets(), None, None).unwrap();
+    assert_eq!(
+        m.events.lock().unwrap()[0].1,
+        "replay: scenario city-a loaded (2 samples, lap NaN s)"
+    );
+}
+
+/// F7 (D70): a unit-first wire leaf passes the filter (it is not dropped)
+/// and is re-serialised value-first.
+#[tokio::test(start_paused = true)]
+async fn d70_a_unit_first_leaf_is_sent_value_first() {
+    let home = Home::new("f7");
+    let s = vec![
+        json!({"t": 0, "seq": 0, "metrics": {"gps": {"speed": {"unit": "km/h", "value": 3}}}}),
+    ];
+    write_pack(
+        &home.assets(),
+        &[Sc {
+            id: "uf",
+            lap_ms: 2000.0,
+            samples: s,
+            start_ts: 1_700_000_000_000.0,
+            fragments: 1,
+        }],
+    );
+    let m = make(&home.assets(), None, None).unwrap();
+    assert!(m.src.scenario().dropped_leaves.is_empty());
+    m.src.on_playing("cam0", 1);
+    let live = m.src.read().await.unwrap().metrics;
+    assert_eq!(
+        serde_json::to_string(&live).unwrap(),
+        r#"{"gps":{"speed":{"value":3,"unit":"km/h"}}}"#
+    );
+}
+
+/// D70: the warn also comes once with a `reapply` switch into such a
+/// scenario, right after its `scenario switched to` line.
+#[test]
+fn d70_a_switch_into_an_odd_scenario_warns_once() {
+    let home = Home::new("d70-switch");
+    let odd = vec![json!({"t": 0, "seq": 0, "metrics": {"gps": {"fix": {"value": "3d"}}}})];
+    write_pack(
+        &home.assets(),
+        &[
+            Sc {
+                id: "ok",
+                lap_ms: 2000.0,
+                samples: trace(2, 0.0),
+                start_ts: 1_700_000_000_000.0,
+                fragments: 1,
+            },
+            Sc {
+                id: "odd",
+                lap_ms: 2000.0,
+                samples: odd,
+                start_ts: 1_700_000_100_000.0,
+                fragments: 1,
+            },
+        ],
+    );
+    let m = make(&home.assets(), None, sim(Some("ok"), None, None)).unwrap();
+    *m.settings.lock().unwrap() = sim(Some("odd"), None, None);
+    m.src.reapply().unwrap();
+    m.src.reapply().unwrap(); // unchanged: no second warn
+    let ev = m.events.lock().unwrap();
+    let i = ev
+        .iter()
+        .position(|(_, e)| e == "replay: scenario switched to odd — ending the current lap")
+        .unwrap();
+    assert_eq!(ev[i + 1].0, ActivityLevel::Warn);
+    assert!(ev[i + 1]
+        .1
+        .starts_with("replay: scenario odd: 1 trace path(s)"));
+    assert_eq!(
+        ev.iter().filter(|(l, _)| *l == ActivityLevel::Warn).count(),
+        1
     );
 }

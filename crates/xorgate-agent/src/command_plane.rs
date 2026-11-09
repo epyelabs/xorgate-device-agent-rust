@@ -347,8 +347,9 @@ impl Effects {
                 Effect::ContainerExit { reason, code } => {
                     // Replay mode (Phase 7e): `shutdown(reason, code)` — the
                     // worker's main loop runs the normal shutdown and exits.
-                    // No listener = the shutdown is already under way (a
-                    // second TS `shutdown()` returns at `if (shuttingDown)`).
+                    // A request after the main loop already broke is queued
+                    // and never read (a second TS `shutdown()` returns at
+                    // `if (shuttingDown)`).
                     let _ = self.ctx.exit_requests.request(&reason, code);
                 }
                 Effect::PersistLedger(_) => {
