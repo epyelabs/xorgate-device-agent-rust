@@ -56,7 +56,7 @@
 //! TIME (P8): one `&dyn Clock` (the agent's `AgentClock`) for both policies;
 //! the wall clock only stamps `liveBlock.since` and session ids.
 //!
-//! Replay mode (Phase 7e SPIKE): `cycleVideo`, `rotateTelemetrySession`,
+//! Replay mode (Phase 7e): `cycleVideo`, `rotateTelemetrySession`,
 //! `forceBootPolicyOff` (implied by [`VideoOpts::replay`]) and the replay-mode
 //! video hooks (`manager.ts:126-132, 184-189, 396-414` @ 09da38d).
 
@@ -836,19 +836,32 @@ impl RecordingManager {
     }
 
     /// `rotateTelemetrySession(why)` (replay, `manager.ts:406-414` @ 09da38d):
-    /// no-op while telemetry recording is off.
-    pub fn rotate_telemetry_session(&self, why: &str) {
+    /// no-op while telemetry recording is off. A throwing finalize is
+    /// returned (the TS throw; review-wp2 N5: the recorder stays set) for the
+    /// caller to route as its TS call site does (`replay/mod.rs` header).
+    ///
+    /// D71 (Rust-only guard): also a no-op once `stop()` has begun
+    /// (`stop_requested`). In the single-threaded TS `stop()` clears the
+    /// recorder before anything else can run, so a rotation after it is
+    /// unreachable; here a lap start on another thread could otherwise
+    /// re-open a recorder mid-shutdown.
+    pub fn rotate_telemetry_session(&self, why: &str) -> Result<(), String> {
         let inner = &self.inner;
         let mut st = lock(&inner.state);
         if st.recorder.is_none() || st.stop_requested {
-            return;
+            return Ok(());
         }
-        if let Err(e) = inner.stop_recorder(&mut st, why) {
-            tracing::error!("[agent] replay telemetry rotation failed: {e}");
-            return;
-        }
+        inner.stop_recorder(&mut st, why)?;
         inner.start_recorder(&mut st);
         inner.notify_status(&st);
+        Ok(())
+    }
+
+    /// An error the TS leaves uncaught outside the manager's own poll (the
+    /// replay lap clock's rotation from a timer or a stdout callback): the
+    /// same fatal route as the poll (`[agent] fatal: <msg>`, exit 1, X1).
+    pub fn report_fatal(&self, msg: String) {
+        let _ = self.inner.fatal_tx.send(msg);
     }
 
     /// `videoStatus()` (`manager.ts:390-395`).

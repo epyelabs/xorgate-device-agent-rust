@@ -1,141 +1,264 @@
-//! Replay mode — Phase 7e SPIKE port of `src/agent/replay.ts` @ 09da38d
-//! (the device simulator's third run mode). Sensors come from a recorded
-//! trace and the camera from a recorded clip (the scenario asset pack,
-//! `demo-assets/v1/<scenarioId>/`); everything else — MQTT, config,
-//! commands, recording, sidecars, uploads, the KVS masters — is the
-//! unchanged agent.
+//! Replay mode (Phase 7e): the port of `src/agent/replay.ts` @ 09da38d, the
+//! device simulator's third run mode. Sensors come from a recorded trace and
+//! the camera from a recorded clip (the scenario asset pack,
+//! `demo-assets/v1/<scenarioId>/`). Everything else is the unchanged agent:
+//! MQTT, config, commands, recording, sidecars, uploads and the KVS masters.
 //!
-//! One LAP = one pass over the scenario: the capture supervisor plays
+//! One LAP = one pass over the scenario. The capture supervisor plays
 //! `cam0/lap.h264` at real time through the normal capture pipeline (a file
-//! head in front of the unchanged tee), and this source answers `read()` /
+//! head in front of the unchanged tee). This source answers `read()` /
 //! `sample_groups()` from the trace at the same offset. The lap clock starts
-//! at gst-launch's PLAYING line (`New clock:`), ends at its EOS; then a
-//! parked GAP (`simulation.gapSeconds`), then the next lap (or parked for
-//! good when `simulation.loop` is false). Without a capture child the lap
-//! clock runs on a 1 s self-timer (telemetry-only replay).
+//! at gst-launch's PLAYING line (`New clock:`) and ends at its EOS. Then comes
+//! a parked GAP (`simulation.gapSeconds`), then the next lap, or parked for
+//! good when `simulation.loop` is false. Without a capture child the lap clock
+//! runs on a 1 s self-timer (telemetry-only replay).
 //!
-//! SPIKE status: functionally complete for the sim image's contract; not
-//! reviewed line-by-line against the TS, no rig tapes. Known gaps are listed
-//! in `plans/device-agent-js-to-rust/phase-7e-sim-replay.md`.
+//! # Threads and locks (P1)
+//! The TS is single-threaded; here the self-timer, the capture supervisor's
+//! stdout reader and exit handler, the config path and the publish loop can
+//! call in at once. One `std::sync::Mutex` guards the player state. It is
+//! never held across a call into the recording manager or the capture
+//! supervisor: those calls are queued as [`After`] items and run after the
+//! guard is dropped. The capture supervisor calls [`ReplayCaptureHooks`]
+//! `source_head` / `respawn_hold_ms` WITH its own lock held, so the order is
+//! always capture → replay, never the reverse. Settings are read (a file
+//! read) and scenarios are loaded (a file read + gunzip) without the guard;
+//! `reapply` re-checks the scenario id after re-taking it, so two racing
+//! reapplies switch once.
+//!
+//! # Errors the TS leaves uncaught
+//! `host.rotateTelemetrySession` → `stopRecorder` → `recorder.stop()` can
+//! throw (`manager.ts:811-818`). From the 1 s timer or gst's stdout callback
+//! the throw is uncaught and Node exits 1; from the config path it lands in
+//! `cloud config apply failed`. [`ReplaySource::reapply`] returns the error
+//! to its caller (the config path); the timer and `on_playing` hand it to
+//! [`ReplayHost::fatal`] (the manager's fatal route, exit 1).
+//!
+//! # Rust-only (accepted divergences, `phase-1/evidence/accepted-divergences.md`)
+//! - D70: a trace leaf that is not `{value: number, unit?: string}` (or a
+//!   group that is not an object) is left out of the live view and the
+//!   recorder, with ONE warn per scenario load naming the paths. Seeding
+//!   writes the raw JSON, as the TS does.
+//! - D73: a malformed pack (not `build-scenario.mjs` output) fails with Rust
+//!   text where the TS message is V8/zlib's (JSON syntax, gzip, type errors).
 
 pub mod seed;
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use indexmap::IndexMap;
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::Instant;
-use tracing::{info, warn};
+use xorgate_core::settings::SimulationSettings;
 use xorgate_core::stream_guard::StreamGuard;
 use xorgate_core::telemetry::{
-    ActivityLevel, MetricGroup, MetricLeaf, Metrics, TelemetryMedia, TelemetryReading,
+    ActivityLevel, JsNumber, MetricGroup, MetricLeaf, Metrics, TelemetryMedia, TelemetryReading,
 };
 use xorgate_core::video_capture::CaptureCamera;
 
 use crate::ctx::{BoxFut, GroupSample, MediaControl, TelemetrySource};
 use crate::recording::capture::ReplayCaptureHooks;
-use crate::state::StateHandle;
 
 // ---------------------------------------------------------------- assets ----
 
-/// `catalog.json` at the root of the asset pack (the fields replay reads).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// `catalog.json` at the root of the asset pack (`replay.ts:38-44`): the
+/// fields replay reads.
+#[derive(Debug, Clone, Default)]
 pub struct ReplayCatalog {
-    pub v: u32,
-    #[serde(default)]
+    /// `seedSet` (an array of ids, else `[]`, `replay.ts:89`).
     pub seed_set: Vec<String>,
-    pub scenarios: Vec<CatalogEntry>,
+    /// `scenarios[].id`, in catalog order (`None` = not a string).
+    pub scenarios: Vec<Option<String>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CatalogEntry {
-    pub id: String,
+impl ReplayCatalog {
+    fn has(&self, id: &str) -> bool {
+        self.scenarios.iter().any(|s| s.as_deref() == Some(id))
+    }
+    /// `catalog.scenarios[0].id` as a template string prints it.
+    fn first_id(&self) -> String {
+        self.scenarios
+            .first()
+            .cloned()
+            .flatten()
+            .unwrap_or_else(|| "undefined".into())
+    }
 }
 
-/// `<scenarioId>/scenario.json` (the fields replay reads).
-#[derive(Debug, Clone, Deserialize)]
+fn nan() -> f64 {
+    f64::NAN
+}
+
+/// `<scenarioId>/scenario.json` (`replay.ts:47-65`): the fields replay
+/// reads. Fields `loadScenario` itself never touches default the way an
+/// absent JS property reads (`NaN` for numbers) instead of failing the load.
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioManifest {
-    pub v: u32,
+    #[serde(default)]
     pub id: String,
+    #[serde(default = "nan")]
     pub duration_ms: f64,
+    #[serde(default = "nan")]
     pub original_start_ts: f64,
+    #[serde(default = "nan")]
     pub original_end_ts: f64,
+    #[serde(default)]
     pub streams: Vec<ScenarioStream>,
+    #[serde(default)]
     pub telemetry: ScenarioTelemetry,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioStream {
+    #[serde(default)]
     pub stream_key: String,
-    pub lap: String,
+    #[serde(default)]
+    pub lap: Option<String>,
+    #[serde(default = "nan")]
     pub fps: f64,
+    #[serde(default)]
     pub fragments: String,
-    pub fragment_count: u64,
+    #[serde(default = "nan")]
+    pub fragment_count: f64,
     #[serde(default)]
     pub media_duration_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioTelemetry {
-    pub trace: String,
+    #[serde(default)]
+    pub trace: Option<String>,
+    #[serde(default = "nan")]
     pub rate_hz: f64,
+}
+
+impl Default for ScenarioTelemetry {
+    fn default() -> Self {
+        Self {
+            trace: None,
+            rate_hz: f64::NAN,
+        }
+    }
 }
 
 /// One normalized trace sample: `t` = ms since the lap's first frame.
 #[derive(Debug, Clone)]
 pub struct TraceSample {
     pub t: f64,
-    /// The raw line's `seq` and `metrics`, key order kept (seeding writes them).
-    pub seq: Value,
+    /// The raw line's `seq` (`None` = absent: `JSON.stringify` omits it).
+    pub seq: Option<Value>,
+    /// The raw line's `metrics`, in V8 key order (seeding writes it as is).
     pub raw_metrics: Value,
-    /// The live view of `metrics` (wire leaves only).
+    /// The live view of `metrics` (D70: wire leaves only).
     pub metrics: Metrics,
 }
 
 #[derive(Debug)]
 pub struct LoadedScenario {
     pub manifest: ScenarioManifest,
+    /// The scenario directory (`resolve(assetsDir, scenarioId)`).
     pub dir: PathBuf,
-    /// Sorted by `t`.
+    /// Sorted by `t` (stable).
     pub samples: Vec<TraceSample>,
-    /// One lap of video (frames / fps when known, else the sidecar window).
+    /// One lap of video (`mediaDurationMs` when > 0, else `durationMs`).
     pub lap_ms: f64,
+    /// D70: the trace paths (`group` or `group.field`) left out of the live view.
+    pub dropped_leaves: BTreeSet<String>,
 }
 
+/// `JSON.parse` + V8 own-key order. The error text is serde's (D73).
+fn parse_json(text: &str) -> Result<Value, String> {
+    serde_json::from_str::<Value>(text)
+        .map(xorgate_core::js::parsed_key_order)
+        .map_err(|e| e.to_string())
+}
+
+/// `readFileSync(path, "utf8")` with Node's error message.
+fn read_text(path: &Path) -> Result<String, String> {
+    std::fs::read(path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map_err(|e| xorgate_hal::io::node_fs_message(&e, "open", path))
+}
+
+/// `loadCatalog(assetsDir)` (`replay.ts:84-90`).
 pub fn load_catalog(assets_dir: &Path) -> Result<ReplayCatalog, String> {
     let p = assets_dir.join("catalog.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    let c: ReplayCatalog =
-        serde_json::from_str(&text).map_err(|_| format!("{}: not a v1 catalog", p.display()))?;
-    if c.v != 1 {
-        return Err(format!("{}: not a v1 catalog", p.display()));
+    let raw = parse_json(&read_text(&p)?)?;
+    let not_v1 = || format!("{}: not a v1 catalog", p.display());
+    if raw.get("v").and_then(Value::as_f64) != Some(1.0) {
+        return Err(not_v1());
     }
-    Ok(c)
+    let Some(scenarios) = raw.get("scenarios").and_then(Value::as_array) else {
+        return Err(not_v1());
+    };
+    let seed_set = raw
+        .get("seedSet")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ReplayCatalog {
+        seed_set,
+        scenarios: scenarios
+            .iter()
+            .map(|s| s.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect(),
+    })
 }
 
-/// The JS leaf shapes the live payload carries: `{value:number, unit?}`.
-fn metrics_of(v: &Value) -> Metrics {
+/// A leaf the live payload may carry: exactly `{value: number}` or
+/// `{value: number, unit: string}` (agent-anatomy §10.11).
+fn wire_leaf(leaf: &Value) -> Option<MetricLeaf> {
+    let o = leaf.as_object()?;
+    if o.keys().any(|k| k != "value" && k != "unit") {
+        return None;
+    }
+    let value = o.get("value")?.as_f64()?;
+    let unit = match o.get("unit") {
+        None => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => return None,
+    };
+    Some(MetricLeaf {
+        value: JsNumber(value),
+        unit,
+    })
+}
+
+/// The live view of one sample's `metrics` (D70), plus the dropped paths.
+fn metrics_of(v: &Value, dropped: &mut BTreeSet<String>) -> Metrics {
     let mut out = Metrics::new();
     let Some(groups) = v.as_object() else {
+        // An array `metrics` (JS `typeof [] === "object"` lets it in).
+        if v.as_array().is_some_and(|a| !a.is_empty()) {
+            dropped.insert("metrics".into());
+        }
         return out;
     };
     for (g, fields) in groups {
         let Some(fields) = fields.as_object() else {
+            dropped.insert(g.clone());
             continue;
         };
         let mut grp = MetricGroup::new();
         for (f, leaf) in fields {
-            if let Ok(l) = serde_json::from_value::<MetricLeaf>(leaf.clone()) {
-                grp.insert(f.clone(), l);
+            match wire_leaf(leaf) {
+                Some(l) => {
+                    grp.insert(f.clone(), l);
+                }
+                None => {
+                    dropped.insert(format!("{g}.{f}"));
+                }
             }
         }
         out.insert(g.clone(), grp);
@@ -143,51 +266,72 @@ fn metrics_of(v: &Value) -> Metrics {
     out
 }
 
+/// `path.join(dir, x)` when `x` is undefined: Node's TypeError text.
+fn path_arg(x: Option<&String>) -> Result<&str, String> {
+    x.map(String::as_str).ok_or_else(|| {
+        "The \"path\" argument must be of type string. Received undefined".to_string()
+    })
+}
+
+/// `loadScenario(assetsDir, scenarioId)` (`replay.ts:92-117`).
 pub fn load_scenario(assets_dir: &Path, scenario_id: &str) -> Result<LoadedScenario, String> {
-    let dir = assets_dir.join(scenario_id);
+    let dir = std::path::absolute(assets_dir.join(scenario_id))
+        .unwrap_or_else(|_| assets_dir.join(scenario_id));
     let mp = dir.join("scenario.json");
-    let text = std::fs::read_to_string(&mp)
-        .map_err(|_| format!("scenario {scenario_id}: {} missing", mp.display()))?;
-    let manifest: ScenarioManifest = serde_json::from_str(&text).map_err(|e| {
-        format!(
-            "scenario {scenario_id}: scenario.json is not a v1 manifest for {scenario_id} ({e})"
-        )
-    })?;
-    if manifest.v != 1 || manifest.id != scenario_id || manifest.streams.is_empty() {
-        return Err(format!(
-            "scenario {scenario_id}: scenario.json is not a v1 manifest for {scenario_id}"
-        ));
+    if !mp.exists() {
+        return Err(format!("scenario {scenario_id}: {} missing", mp.display()));
     }
+    let raw = parse_json(&read_text(&mp)?)?;
+    let not_v1 =
+        || format!("scenario {scenario_id}: scenario.json is not a v1 manifest for {scenario_id}");
+    let v1 = raw.get("v").and_then(Value::as_f64) == Some(1.0)
+        && raw.get("id").and_then(Value::as_str) == Some(scenario_id)
+        && raw
+            .get("streams")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty());
+    if !v1 {
+        return Err(not_v1());
+    }
+    let manifest: ScenarioManifest = serde_json::from_value(raw).map_err(|e| e.to_string())?;
     for st in &manifest.streams {
-        if !dir.join(&st.lap).exists() {
-            return Err(format!("scenario {scenario_id}: {} missing", st.lap));
+        let lap = path_arg(st.lap.as_ref())?;
+        if !dir.join(lap).exists() {
+            return Err(format!("scenario {scenario_id}: {lap} missing"));
         }
     }
-    let gz = std::fs::File::open(dir.join(&manifest.telemetry.trace))
-        .map_err(|e| format!("scenario {scenario_id}: trace: {e}"))?;
-    let mut body = String::new();
-    flate2::read::GzDecoder::new(gz)
-        .read_to_string(&mut body)
-        .map_err(|e| format!("scenario {scenario_id}: trace: {e}"))?;
+    let trace = dir.join(path_arg(manifest.telemetry.trace.as_ref())?);
+    let gz =
+        std::fs::read(&trace).map_err(|e| xorgate_hal::io::node_fs_message(&e, "open", &trace))?;
+    let mut bytes = Vec::new();
+    flate2::read::MultiGzDecoder::new(&gz[..])
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
     let mut samples = Vec::new();
-    for line in body.lines() {
+    let mut dropped = BTreeSet::new();
+    for line in text.split('\n') {
         if line.is_empty() {
             continue;
         }
-        let Ok(o) = serde_json::from_str::<Value>(line) else {
+        let o = parse_json(line)?;
+        if o.is_null() {
+            return Err("Cannot read properties of null (reading 't')".into());
+        }
+        let (Some(t), Some(m)) = (
+            o.get("t").filter(|t| t.is_number()).and_then(Value::as_f64),
+            o.get("metrics"),
+        ) else {
             continue;
         };
-        let (Some(t), Some(m)) = (o.get("t").and_then(Value::as_f64), o.get("metrics")) else {
-            continue;
-        };
-        if !m.is_object() {
+        if !(m.is_object() || m.is_array()) {
             continue;
         }
         samples.push(TraceSample {
             t,
-            seq: o.get("seq").cloned().unwrap_or(Value::Null),
+            seq: o.get("seq").cloned(),
             raw_metrics: m.clone(),
-            metrics: metrics_of(m),
+            metrics: metrics_of(m, &mut dropped),
         });
     }
     samples.sort_by(|a, b| a.t.total_cmp(&b.t));
@@ -204,6 +348,7 @@ pub fn load_scenario(assets_dir: &Path, scenario_id: &str) -> Result<LoadedScena
         dir,
         samples,
         lap_ms,
+        dropped_leaves: dropped,
     })
 }
 
@@ -217,21 +362,27 @@ pub fn sample_at(samples: &[TraceSample], offset_ms: f64) -> Option<usize> {
     Some(samples.partition_point(|s| s.t <= offset_ms) - 1)
 }
 
-/// `parkedMetrics`: same position, `gps.speed` zero (unit kept).
+/// `parkedMetrics`: same position, `gps.speed` `{value: 0}` with the old
+/// unit when it was a non-empty string (`speed?.unit ? {unit} : {}`).
 pub fn parked_metrics(m: &Metrics) -> Metrics {
     let mut out = m.clone();
     if let Some(gps) = out.get_mut("gps") {
-        let unit = gps.get("speed").and_then(|l| l.unit.clone());
-        let leaf = MetricLeaf {
-            value: xorgate_core::telemetry::JsNumber(0.0),
-            unit,
-        };
-        gps.insert("speed".into(), leaf);
+        let unit = gps
+            .get("speed")
+            .and_then(|l| l.unit.clone())
+            .filter(|u| !u.is_empty());
+        gps.insert(
+            "speed".into(),
+            MetricLeaf {
+                value: JsNumber(0.0),
+                unit,
+            },
+        );
     }
     out
 }
 
-/// `replayCaptureHead(lapPath, fps)` — the Phase 0 recipe, token for token.
+/// `replayCaptureHead(lapPath, fps)`: the Phase 0 recipe, token for token.
 pub fn replay_capture_head(lap_path: &Path, fps: f64) -> Vec<String> {
     vec![
         "filesrc".into(),
@@ -276,7 +427,18 @@ impl ReplayPhase {
     }
 }
 
-/// `ReplayPlayer`: the lap/gap state machine over tokio's monotonic clock.
+/// `player.state()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerState {
+    pub phase: ReplayPhase,
+    pub lap_index: u64,
+    /// Trace position in the lap; 0 outside `lap`.
+    pub offset_ms: f64,
+    pub lap_start_wall: i64,
+}
+
+/// `ReplayPlayer` (`replay.ts:184-302`): the lap/gap state machine over
+/// tokio's monotonic clock (`monoMs` and `hrtime` in one; tests pause it).
 pub struct ReplayPlayer {
     scenario: Arc<LoadedScenario>,
     phase: ReplayPhase,
@@ -303,8 +465,21 @@ impl ReplayPlayer {
     pub fn current(&self) -> &Arc<LoadedScenario> {
         &self.scenario
     }
+    /// Swap the scenario; the running lap (if any) keeps playing until ended.
     pub fn set_scenario(&mut self, s: Arc<LoadedScenario>) {
         self.scenario = s;
+    }
+    pub fn state(&self) -> PlayerState {
+        PlayerState {
+            phase: self.phase,
+            lap_index: self.lap_index,
+            offset_ms: if self.phase == ReplayPhase::Lap {
+                self.offset_ms()
+            } else {
+                0.0
+            },
+            lap_start_wall: self.lap_start_wall,
+        }
     }
     pub fn phase(&self) -> ReplayPhase {
         self.phase
@@ -409,37 +584,64 @@ impl ReplayPlayer {
 
 // ---------------------------------------------------------------- source ----
 
-/// What the replay source needs from the recording manager.
+/// What the replay source needs from the recording manager (`ReplayHost`,
+/// `replay.ts:309-314`).
 pub trait ReplayHost: Send + Sync {
     /// End every camera's lap cleanly now; respawn after `respawn_hold_ms`.
     fn cycle_video(&self);
     /// Close the telemetry session and open a new one (one pair per lap).
-    fn rotate_telemetry_session(&self, why: &str);
+    /// `Err` = the TS throw out of `stopRecorder`.
+    fn rotate_telemetry_session(&self, why: &str) -> Result<(), String>;
+    /// A throw the TS leaves uncaught (timer or stdout callback): Node exits 1.
+    fn fatal(&self, msg: String);
 }
 
 /// `VIDEO_GRACE_MS`: grace before the self-timer assumes no capture child.
-const VIDEO_GRACE_MS: f64 = 45_000.0;
+pub const VIDEO_GRACE_MS: f64 = 45_000.0;
 const SETTINGS_POLL_TICKS: u64 = 5;
 
+/// `() => loadSettings().simulation`.
+pub type SettingsFn = Arc<dyn Fn() -> Option<SimulationSettings> + Send + Sync>;
+/// `onEvent(level, "replay: …")`.
+pub type ReplayEventFn = Arc<dyn Fn(ActivityLevel, &str) + Send + Sync>;
+/// `Date.now()`.
+pub type WallFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// `ReplaySourceOptions` (`replay.ts:316-329`).
 pub struct ReplayOptions {
     pub assets_dir: PathBuf,
     pub default_scenario_id: Option<String>,
-    pub settings_path: PathBuf,
+    pub settings: SettingsFn,
+    /// The KVS master supervisor (the media block), or `None` without media.
     pub media: Option<Arc<dyn MediaControl>>,
-    pub state: StateHandle,
+    pub on_event: Option<ReplayEventFn>,
+    pub now: WallFn,
+    /// Self-timer period; 0 disables it (tests drive `tick()`).
     pub tick_ms: u64,
+}
+
+/// `source.status()`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReplayStatus {
+    pub scenario_id: String,
+    pub phase: ReplayPhase,
+    pub lap_index: u64,
+    pub offset_ms: f64,
+    pub video_driven: bool,
 }
 
 struct St {
     scenario_id: String,
     player: ReplayPlayer,
+    /// A capture child has reported PLAYING at least once this process.
     video_driven: bool,
+    /// A scenario switch is waiting for the respawn: hold 0 instead of the gap.
     switch_pending: bool,
     ticks: u64,
     stopped: bool,
 }
 
-/// Deferred work, run after the state lock is released.
+/// Work queued under the state lock, run after it is released.
 enum After {
     Rotate(String),
     Cycle,
@@ -448,53 +650,41 @@ enum After {
 pub struct ReplaySource {
     assets_dir: PathBuf,
     default_scenario_id: Option<String>,
-    settings_path: PathBuf,
+    settings: SettingsFn,
     catalog: ReplayCatalog,
     media: Option<Arc<dyn MediaControl>>,
-    state: StateHandle,
+    on_event: Option<ReplayEventFn>,
+    now: WallFn,
     st: Mutex<St>,
     host: OnceLock<Arc<dyn ReplayHost>>,
-}
-
-fn now_ms() -> i64 {
-    crate::now_ms()
 }
 
 impl ReplaySource {
     /// `createReplaySource(opts)`: loads the catalog and the starting scenario
     /// (an error = the TS throw at worker start → exit 1), then starts the
-    /// 1 s self-timer.
+    /// self-timer.
     pub fn create(opts: ReplayOptions) -> Result<Arc<Self>, String> {
         let catalog = load_catalog(&opts.assets_dir)?;
         if catalog.scenarios.is_empty() {
             return Err("replay: the catalog has no scenarios".into());
         }
-        let me = Self {
+        let mut me = Self {
             assets_dir: opts.assets_dir,
             default_scenario_id: opts.default_scenario_id,
-            settings_path: opts.settings_path,
+            settings: opts.settings,
             catalog,
             media: opts.media,
-            state: opts.state,
+            on_event: opts.on_event,
+            now: opts.now,
             st: Mutex::new(St {
                 scenario_id: String::new(),
-                // placeholder replaced right below
                 player: ReplayPlayer::new(Arc::new(LoadedScenario {
-                    manifest: ScenarioManifest {
-                        v: 1,
-                        id: String::new(),
-                        duration_ms: 0.0,
-                        original_start_ts: 0.0,
-                        original_end_ts: 0.0,
-                        streams: Vec::new(),
-                        telemetry: ScenarioTelemetry {
-                            trace: String::new(),
-                            rate_hz: 1.0,
-                        },
-                    },
+                    manifest: serde_json::from_value(serde_json::json!({}))
+                        .expect("all fields default"),
                     dir: PathBuf::new(),
                     samples: Vec::new(),
                     lap_ms: 0.0,
+                    dropped_leaves: BTreeSet::new(),
                 })),
                 video_driven: false,
                 switch_pending: false,
@@ -505,19 +695,20 @@ impl ReplaySource {
         };
         let id = me.resolve_scenario_id();
         let sc = Arc::new(load_scenario(&me.assets_dir, &id)?);
+        {
+            let st = me.st.get_mut().unwrap_or_else(|e| e.into_inner());
+            st.scenario_id = id.clone();
+            st.player = ReplayPlayer::new(sc.clone());
+        }
         me.log(
             ActivityLevel::Info,
             &format!(
                 "scenario {id} loaded ({} samples, lap {} s)",
                 sc.samples.len(),
-                (sc.lap_ms / 1000.0).round() as i64
+                js_round(sc.lap_ms / 1000.0)
             ),
         );
-        {
-            let mut st = me.lock();
-            st.scenario_id = id;
-            st.player = ReplayPlayer::new(sc);
-        }
+        me.warn_dropped(&sc);
         let me = Arc::new(me);
         if opts.tick_ms > 0 {
             let weak: Weak<Self> = Arc::downgrade(&me);
@@ -541,46 +732,65 @@ impl ReplaySource {
         self.st.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// `replayEvent(level, msg)`: `[agent] replay: …` + a flushed state event.
+    /// `log(level, msg)` → `onEvent(level, "replay: " + msg)`.
     fn log(&self, level: ActivityLevel, msg: &str) {
-        let msg = format!("replay: {msg}");
-        match level {
-            ActivityLevel::Warn => warn!("[agent] {msg}"),
-            _ => info!("[agent] {msg}"),
+        if let Some(f) = &self.on_event {
+            f(level, &format!("replay: {msg}"));
         }
-        self.state.note(level, msg, now_ms());
     }
 
-    fn settings(&self) -> Option<xorgate_core::settings::SimulationSettings> {
-        xorgate_hal::settings_io::load_settings(&self.settings_path).simulation
+    /// D70: one warn per scenario load naming the left-out trace paths.
+    fn warn_dropped(&self, sc: &LoadedScenario) {
+        if sc.dropped_leaves.is_empty() {
+            return;
+        }
+        let shown: Vec<&str> = sc
+            .dropped_leaves
+            .iter()
+            .take(10)
+            .map(String::as_str)
+            .collect();
+        let more = sc.dropped_leaves.len() - shown.len();
+        self.log(
+            ActivityLevel::Warn,
+            &format!(
+                "scenario {}: {} trace path(s) are not {{value:number, unit?:string}} and are left out of the live view: {}{}",
+                sc.manifest.id,
+                sc.dropped_leaves.len(),
+                shown.join(", "),
+                if more > 0 { format!(" (+{more} more)") } else { String::new() }
+            ),
+        );
     }
 
     fn loop_(&self) -> bool {
-        self.settings().and_then(|s| s.loop_).unwrap_or(true)
+        (self.settings)().and_then(|s| s.loop_).unwrap_or(true)
     }
 
     fn gap_ms(&self) -> f64 {
-        f64::from(self.settings().and_then(|s| s.gap_seconds).unwrap_or(30)) * 1000.0
+        f64::from((self.settings)().and_then(|s| s.gap_seconds).unwrap_or(30)) * 1000.0
     }
 
+    /// `resolveScenarioId()` (`replay.ts:369-374`): `settings.scenarioId ??
+    /// config.defaultScenarioId`, an empty string being falsy.
     fn resolve_scenario_id(&self) -> String {
-        let wanted = self
-            .settings()
+        let wanted = (self.settings)()
             .and_then(|s| s.scenario_id)
-            .or_else(|| self.default_scenario_id.clone());
+            .or_else(|| self.default_scenario_id.clone())
+            .filter(|w| !w.is_empty());
         if let Some(w) = &wanted {
-            if self.catalog.scenarios.iter().any(|s| &s.id == w) {
+            if self.catalog.has(w) {
                 return w.clone();
             }
             self.log(
                 ActivityLevel::Warn,
                 &format!(
                     "scenario \"{w}\" is not in the catalog — using {}",
-                    self.catalog.scenarios[0].id
+                    self.catalog.first_id()
                 ),
             );
         }
-        self.catalog.scenarios[0].id.clone()
+        self.catalog.first_id()
     }
 
     pub fn attach_host(&self, host: Arc<dyn ReplayHost>) {
@@ -628,8 +838,8 @@ impl ReplaySource {
             "lap {idx} of {} started ({how})",
             st.player.current().manifest.id
         );
-        after.push(After::Rotate(format!("replay lap {idx}")));
         self.log(ActivityLevel::Info, &msg);
+        after.push(After::Rotate(format!("replay lap {idx}")));
     }
 
     fn finish_lap(&self, st: &mut St, how: &str) {
@@ -643,7 +853,7 @@ impl ReplaySource {
         } else if will_loop {
             format!(
                 "lap ended ({how}); parked for {} s",
-                (self.gap_ms() / 1000.0).round() as i64
+                js_round(self.gap_ms() / 1000.0)
             )
         } else {
             format!("lap ended ({how}); parked — loop is off")
@@ -651,62 +861,80 @@ impl ReplaySource {
         self.log(ActivityLevel::Info, &msg);
     }
 
-    fn run_after(&self, after: Vec<After>) {
-        let Some(host) = self.host.get() else { return };
+    /// Runs the queued calls into the manager, lock released. The first
+    /// error stops the rest (the TS throw).
+    fn run_after(&self, after: Vec<After>) -> Result<(), String> {
+        let Some(host) = self.host.get() else {
+            return Ok(());
+        };
         for a in after {
             match a {
-                After::Rotate(why) => host.rotate_telemetry_session(&why),
+                After::Rotate(why) => host.rotate_telemetry_session(&why)?,
                 After::Cycle => host.cycle_video(),
             }
         }
+        Ok(())
     }
 
-    /// `reapply()`: re-read `simulation`; a changed scenario ends the lap in place.
-    pub fn reapply(&self) {
+    /// An error the TS would leave uncaught.
+    fn fatal(&self, e: String) {
+        if let Some(h) = self.host.get() {
+            h.fatal(e);
+        }
+    }
+
+    /// `reapply()`: re-read `simulation`; a changed scenario ends the lap in
+    /// place. `Err` = a throw out of the telemetry rotation.
+    pub fn reapply(&self) -> Result<(), String> {
+        if self.lock().stopped {
+            return Ok(());
+        }
+        let next = self.resolve_scenario_id();
+        let current = self.lock().scenario_id.clone();
+        if next == current {
+            return Ok(());
+        }
+        let loaded = match load_scenario(&self.assets_dir, &next) {
+            Ok(l) => Arc::new(l),
+            Err(e) => {
+                self.log(
+                    ActivityLevel::Warn,
+                    &format!("scenario {next} failed to load ({e}); keeping {current}"),
+                );
+                return Ok(());
+            }
+        };
         let mut after = Vec::new();
         {
             let mut st = self.lock();
-            if st.stopped {
-                return;
+            // P1: another caller switched while the lock was released.
+            if st.stopped || st.scenario_id == next {
+                return Ok(());
             }
-            drop(st);
-            let next = self.resolve_scenario_id();
-            st = self.lock();
-            if next == st.scenario_id {
-                return;
-            }
-            let loaded = match load_scenario(&self.assets_dir, &next) {
-                Ok(l) => Arc::new(l),
-                Err(e) => {
-                    let keep = st.scenario_id.clone();
-                    drop(st);
-                    self.log(
-                        ActivityLevel::Warn,
-                        &format!("scenario {next} failed to load ({e}); keeping {keep}"),
-                    );
-                    return;
-                }
-            };
             st.scenario_id = next.clone();
-            st.player.set_scenario(loaded);
+            st.player.set_scenario(loaded.clone());
             st.switch_pending = true;
             self.log(
                 ActivityLevel::Info,
                 &format!("scenario switched to {next} — ending the current lap"),
             );
             if st.video_driven && self.host.get().is_some() {
+                // → on_ended → respawn_hold_ms() = 0 → new child → on_playing
                 after.push(After::Cycle);
             } else {
+                // Telemetry-only: no child to cycle, restart the lap clock now.
                 if st.player.phase() == ReplayPhase::Lap {
                     self.finish_lap(&mut st, "scenario switch");
                 }
-                self.begin_lap(&mut st, now_ms(), "scenario switch", &mut after);
+                let now = (self.now)();
+                self.begin_lap(&mut st, now, "scenario switch", &mut after);
             }
         }
-        self.run_after(after);
+        self.warn_dropped(&loaded);
+        self.run_after(after)
     }
 
-    /// One clock tick (the 1 s self-timer).
+    /// One clock tick (the self-timer; public for tests).
     pub fn tick(&self) {
         let poll = {
             let mut st = self.lock();
@@ -717,13 +945,18 @@ impl ReplaySource {
             st.ticks.is_multiple_of(SETTINGS_POLL_TICKS)
         };
         if poll {
-            self.reapply();
+            if let Err(e) = self.reapply() {
+                self.fatal(e);
+                return;
+            }
         }
         let mut after = Vec::new();
         {
             let mut st = self.lock();
             let phase = st.player.phase();
             if st.video_driven {
+                // The capture child owns the lap clock. The timer only steps
+                // in when a respawn is overdue (gap + grace, no PLAYING).
                 if phase == ReplayPhase::Gap
                     && st.player.phase_age_ms() > self.gap_ms() + VIDEO_GRACE_MS
                 {
@@ -732,33 +965,39 @@ impl ReplaySource {
                         "no capture child came back after the gap — running the lap clock without video",
                     );
                     st.video_driven = false;
-                    self.begin_lap(&mut st, now_ms(), "timer fallback", &mut after);
+                    let now = (self.now)();
+                    self.begin_lap(&mut st, now, "timer fallback", &mut after);
                 }
             } else if phase == ReplayPhase::Idle && st.player.phase_age_ms() > VIDEO_GRACE_MS {
                 self.log(
                     ActivityLevel::Info,
                     "no capture child reported PLAYING — telemetry-only replay",
                 );
-                self.begin_lap(&mut st, now_ms(), "timer, no video", &mut after);
+                let now = (self.now)();
+                self.begin_lap(&mut st, now, "timer, no video", &mut after);
             } else if phase == ReplayPhase::Lap && st.player.lap_elapsed() {
                 self.finish_lap(&mut st, "lap time elapsed");
             } else if phase == ReplayPhase::Gap && st.player.phase_age_ms() >= self.gap_ms() {
-                self.begin_lap(&mut st, now_ms(), "timer", &mut after);
+                let now = (self.now)();
+                self.begin_lap(&mut st, now, "timer", &mut after);
             }
         }
-        self.run_after(after);
+        if let Err(e) = self.run_after(after) {
+            self.fatal(e);
+        }
     }
 
-    /// `status()` (diagnostics).
-    pub fn status_line(&self) -> String {
+    /// `status()` (diagnostics and tests).
+    pub fn status(&self) -> ReplayStatus {
         let st = self.lock();
-        format!(
-            "scenario={} phase={} lap={} videoDriven={}",
-            st.scenario_id,
-            st.player.phase().as_str(),
-            st.player.lap_index(),
-            st.video_driven
-        )
+        let p = st.player.state();
+        ReplayStatus {
+            scenario_id: st.scenario_id.clone(),
+            phase: p.phase,
+            lap_index: p.lap_index,
+            offset_ms: p.offset_ms,
+            video_driven: st.video_driven,
+        }
     }
 }
 
@@ -772,7 +1011,10 @@ impl ReplayCaptureHooks for ReplaySource {
             .iter()
             .find(|s| s.stream_key == cam.stream_key)
             .unwrap_or(&sc.manifest.streams[0]);
-        replay_capture_head(&sc.dir.join(&stream.lap), stream.fps)
+        replay_capture_head(
+            &sc.dir.join(stream.lap.as_deref().unwrap_or("")),
+            stream.fps,
+        )
     }
 
     fn on_playing(&self, key: &str, wall_ms: i64) {
@@ -785,7 +1027,9 @@ impl ReplayCaptureHooks for ReplaySource {
             st.video_driven = true;
             self.begin_lap(&mut st, wall_ms, "video playing", &mut after);
         }
-        self.run_after(after);
+        if let Err(e) = self.run_after(after) {
+            self.fatal(e);
+        }
     }
 
     fn on_ended(&self, key: &str, clean: bool) {
@@ -800,11 +1044,12 @@ impl ReplayCaptureHooks for ReplaySource {
     }
 
     fn respawn_hold_ms(&self, key: &str) -> Option<u64> {
-        let st = self.lock();
-        if key != Self::clock_stream(&st) || st.switch_pending {
-            return Some(0);
+        {
+            let st = self.lock();
+            if key != Self::clock_stream(&st) || st.switch_pending {
+                return Some(0);
+            }
         }
-        drop(st);
         self.loop_().then(|| self.gap_ms() as u64)
     }
 }
@@ -840,75 +1085,23 @@ impl TelemetrySource for ReplaySource {
     }
 }
 
-/// Container exits requested by `reboot` / `power_off` in replay mode
-/// (`REPLAY_EXIT_CODES`): the worker's main loop selects on this. SPIKE: a
-/// process-wide channel; the real WP puts it on the ctx.
-pub mod exit {
-    use std::sync::OnceLock;
-    use tokio::sync::mpsc;
+/// JS `Math.round` (ties toward +∞) as an integer for log text.
+pub(crate) fn js_round(x: f64) -> i64 {
+    js_math_round(x) as i64
+}
 
-    static TX: OnceLock<mpsc::UnboundedSender<(String, i32)>> = OnceLock::new();
-
-    /// Install the channel (worker, replay mode only).
-    pub fn install() -> mpsc::UnboundedReceiver<(String, i32)> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let _ = TX.set(tx);
-        rx
+/// JS `Math.round`: ties toward +∞, NaN stays NaN.
+pub(crate) fn js_math_round(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
     }
-
-    /// Ask the worker to shut down with `code`; false when not installed.
-    pub fn request(reason: &str, code: i32) -> bool {
-        TX.get()
-            .is_some_and(|tx| tx.send((reason.to_string(), code)).is_ok())
+    let f = x.floor();
+    if x - f >= 0.5 {
+        f + 1.0
+    } else {
+        f
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample(t: f64, speed: f64) -> TraceSample {
-        let raw = serde_json::json!({"gps": {"lat": {"value": 43.6}, "speed": {"value": speed, "unit": "km/h"}}});
-        TraceSample {
-            t,
-            seq: Value::from(0),
-            metrics: metrics_of(&raw),
-            raw_metrics: raw,
-        }
-    }
-
-    /// `sampleAt`: null before the first sample, nearest ≤ offset after.
-    #[test]
-    fn sample_at_is_nearest_at_or_before() {
-        let s = vec![
-            sample(-2328.0, 1.0),
-            sample(1000.0, 2.0),
-            sample(2000.0, 3.0),
-        ];
-        assert_eq!(sample_at(&s, -3000.0), None);
-        assert_eq!(sample_at(&s, 0.0), Some(0));
-        assert_eq!(sample_at(&s, 1000.0), Some(1));
-        assert_eq!(sample_at(&s, 1999.0), Some(1));
-        assert_eq!(sample_at(&s, 1e9), Some(2));
-    }
-
-    /// `parkedMetrics`: position kept, speed 0 with its unit.
-    #[test]
-    fn parked_metrics_zero_speed_keeps_unit() {
-        let m = parked_metrics(&sample(0.0, 42.0).metrics);
-        let sp = &m["gps"]["speed"];
-        assert_eq!(sp.value.0, 0.0);
-        assert_eq!(sp.unit.as_deref(), Some("km/h"));
-        assert_eq!(m["gps"]["lat"].value.0, 43.6);
-    }
-
-    /// `replayCaptureHead`: the Phase 0 recipe, token for token.
-    #[test]
-    fn capture_head_tokens() {
-        let h = replay_capture_head(Path::new("/a/s/cam0/lap.h264"), 15.0);
-        assert_eq!(
-            h.join(" "),
-            "filesrc location=/a/s/cam0/lap.h264 ! h264parse ! video/x-h264,framerate=15/1 ! avdec_h264 ! identity sync=true ! videoconvert ! videorate"
-        );
-    }
-}
+mod tests;

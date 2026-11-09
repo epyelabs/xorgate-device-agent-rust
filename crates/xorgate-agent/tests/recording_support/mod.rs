@@ -103,6 +103,10 @@ pub struct Log {
     pub pauses: AtomicUsize,
     pub uploader_stops: AtomicUsize,
     pub captures: Mutex<Vec<(bool, Vec<String>)>>,
+    /// Phase 7e: `cycle_all()` calls, and whether each capture spec carried
+    /// the replay hooks.
+    pub cycles: AtomicUsize,
+    pub capture_replay: Mutex<Vec<bool>>,
     pub sample_calls: AtomicUsize,
     pub spawned_callbacks: Mutex<Vec<String>>,
     /// The time source each recorder/capture saw at construction.
@@ -180,6 +184,9 @@ impl CaptureApi for FakeCapture {
     }
     fn stop(&self) {
         self.stop_all();
+    }
+    fn cycle_all(&self) {
+        self.log.cycles.fetch_add(1, Ordering::SeqCst);
     }
     fn stop_and_wait(&self) -> BoxFut<'_, ()> {
         Box::pin(async move {
@@ -383,6 +390,11 @@ impl RecordingBackend for FakeBackend {
             .lock()
             .unwrap()
             .push(spec.time_source.current());
+        self.log
+            .capture_replay
+            .lock()
+            .unwrap()
+            .push(spec.replay.is_some());
         self.log.captures.lock().unwrap().push((
             spec.record,
             spec.cameras.iter().map(|c| c.stream_key.clone()).collect(),
@@ -470,6 +482,8 @@ pub struct Rig {
     pub upload_override: Option<xorgate_cloud::s3::UploadOptions>,
     /// The clock trust gate (Phase 5b); `None` = always trusted.
     pub clock_trusted: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Phase 7e: the replay capture hooks (`None` = real mode).
+    pub replay: Option<Arc<dyn xorgate_agent::recording::capture::ReplayCaptureHooks>>,
 }
 
 impl Rig {
@@ -504,6 +518,7 @@ impl Rig {
             backend_override: None,
             upload_override: None,
             clock_trusted: None,
+            replay: None,
         }
     }
 
@@ -565,7 +580,7 @@ impl Rig {
             set_disabled_cameras: Some(Arc::new(move |k: &[String]| {
                 l2.disabled.lock().unwrap().push(k.to_vec())
             })),
-            replay: None,
+            replay: self.replay.clone(),
         };
         let (reading, clock, l4) = (self.reading.clone(), self.clock.clone(), log.clone());
         let power: Option<PowerSampleFn> = self.power_sample.then(|| -> PowerSampleFn {

@@ -16,8 +16,9 @@
 //! ([`RefreshWindow`] fed `ctx.clock.mono_ms()`); O3 `update` runs
 //! `xorgate-updater-rs.service` ([`PrivilegedArgv::for_rust_agent`]); O4
 //! real-mode `read_sms` answers the "sms reader not available in this build"
-//! sweep; replay mode (Phase 7e) turns the container-exit effect into a
-//! request on `crate::replay::exit`, which the worker's main loop selects on.
+//! sweep; replay mode (Phase 7e) turns the container-exit effect into an
+//! [`ExitRequest`](crate::shutdown::ExitRequest) on `ctx.exit_requests`,
+//! which the worker's main loop selects on.
 //!
 //! **`clear_sms` (Phase 5b WP3, `runSms` @ 09da38d `worker.ts:1027-1067`):**
 //! the `Effect::ClearSms` interpreter. It runs only AFTER the ledger claim and
@@ -346,9 +347,9 @@ impl Effects {
                 Effect::ContainerExit { reason, code } => {
                     // Replay mode (Phase 7e): `shutdown(reason, code)` — the
                     // worker's main loop runs the normal shutdown and exits.
-                    if !crate::replay::exit::request(&reason, code) {
-                        warn!("[agent] {reason}: container exit {code} requested but no exit channel is installed");
-                    }
+                    // No listener = the shutdown is already under way (a
+                    // second TS `shutdown()` returns at `if (shuttingDown)`).
+                    let _ = self.ctx.exit_requests.request(&reason, code);
                 }
                 Effect::PersistLedger(_) => {
                     // Only ever first, handled on the command task.

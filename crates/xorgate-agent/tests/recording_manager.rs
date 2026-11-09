@@ -1533,3 +1533,122 @@ async fn production_backend_video_pieces_are_inert_without_a_tree_or_camera() {
     assert!(!m.video_status().recording);
     m.stop();
 }
+
+// --- Phase 7e replay mode ------------------------------------------------------
+
+/// A replay hook set that only marks the capture spec as replay.
+struct NoopReplay;
+impl xorgate_agent::recording::capture::ReplayCaptureHooks for NoopReplay {
+    fn source_head(&self, _c: &xorgate_core::video_capture::CaptureCamera) -> Vec<String> {
+        vec!["filesrc".into()]
+    }
+    fn on_playing(&self, _k: &str, _w: i64) {}
+    fn on_ended(&self, _k: &str, _c: bool) {}
+    fn respawn_hold_ms(&self, _k: &str) -> Option<u64> {
+        Some(0)
+    }
+}
+
+/// `forceBootPolicyOff` (`manager.ts:532-535` @ 09da38d): with the replay
+/// hooks, a 3 A budget that would arm the boot defer (`hooks_wire_every_call_site`
+/// shows `deferring` in real mode) records at once, and the hooks reach the
+/// capture spec. Without them (every real device) nothing changes.
+#[tokio::test(start_paused = true)]
+async fn replay_forces_the_boot_policy_off_and_hands_the_hooks_to_capture() {
+    for replay in [false, true] {
+        let mut rig = Rig::new("replay-boot");
+        rig.budget_ma = Some(3000);
+        rig.gnss_wired = false;
+        if replay {
+            rig.replay = Some(Arc::new(NoopReplay));
+        }
+        rig.save_recording(&json!({"video": {"enabled": true, "gpsGate": "auto"}}));
+        let m = rig.build();
+        let hooks = hooks_for(m.clone(), &rig);
+        hooks.recording_start().await;
+        m.settled().await;
+        let st = hooks.recording_status();
+        if replay {
+            assert_eq!(
+                st.boot_defer.as_deref(),
+                Some("off"),
+                "replay: the policy evaluates as off"
+            );
+            assert_eq!(*rig.log.capture_replay.lock().unwrap(), [true]);
+            assert!(rig.spawns().iter().all(|s| s.record), "records at once");
+        } else {
+            assert_eq!(st.boot_defer.as_deref(), Some("deferring"));
+            assert!(rig.log.capture_replay.lock().unwrap().iter().all(|r| !r));
+        }
+        m.stop();
+    }
+}
+
+/// `rotateTelemetrySession(why)` (`manager.ts:406-414` @ 09da38d): one
+/// stop + start with the lap reason; a no-op with telemetry off; a throwing
+/// finalize is returned and leaves the recorder set (no `stopped` event).
+/// D71: a no-op once `stop()` has begun.
+#[tokio::test(start_paused = true)]
+async fn rotate_telemetry_session_stops_and_starts_once() {
+    let mut rig = Rig::new("rotate");
+    rig.video = false;
+    rig.save_recording(&json!({"telemetry": {"enabled": true}}));
+    let m = rig.build();
+    m.start().await;
+    let first = m.status().session_id.clone().unwrap();
+    m.rotate_telemetry_session("replay lap 1").unwrap();
+    let ev = rig.events();
+    assert_eq!(
+        ev[ev.len() - 2],
+        "telemetry recording stopped (replay lap 1)"
+    );
+    let second = m.status().session_id.clone().unwrap();
+    assert_ne!(second, first);
+    assert_eq!(
+        *ev.last().unwrap(),
+        format!(
+            "telemetry recording started (session {}…, 1 Hz)",
+            &second[..8]
+        )
+    );
+    assert_eq!(rig.log.recorders.lock().unwrap().len(), 2);
+    // A throwing finalize: returned, recorder kept, no `stopped` event.
+    rig.log.recorder_stop_failures.store(1, Ordering::SeqCst);
+    let n = rig.events().len();
+    assert!(m.rotate_telemetry_session("replay lap 2").is_err());
+    assert_eq!(rig.events().len(), n);
+    assert_eq!(m.status().session_id.as_deref(), Some(second.as_str()));
+    // D71: after stop() nothing re-opens a recorder.
+    m.stop();
+    let recs = rig.log.recorders.lock().unwrap().len();
+    m.rotate_telemetry_session("replay lap 3").unwrap();
+    assert_eq!(rig.log.recorders.lock().unwrap().len(), recs);
+
+    let mut off = Rig::new("rotate-off");
+    off.video = false;
+    let m2 = off.build();
+    m2.start().await;
+    m2.rotate_telemetry_session("replay lap 1").unwrap();
+    assert!(off.log.recorders.lock().unwrap().is_empty());
+    m2.stop();
+}
+
+/// `cycleVideo()` → the capture's `cycleAll()`; a no-op without capture.
+/// `report_fatal` reaches the worker's fatal route.
+#[tokio::test(start_paused = true)]
+async fn cycle_video_and_report_fatal() {
+    let mut rig = Rig::new("cycle");
+    rig.replay = Some(Arc::new(NoopReplay));
+    rig.save_recording(&json!({"video": {"enabled": true}}));
+    let m = rig.build();
+    let mut fatal = m.take_fatal().unwrap();
+    m.cycle_video(); // before start: no capture yet
+    assert_eq!(rig.log.cycles.load(Ordering::SeqCst), 0);
+    m.start().await;
+    m.settled().await;
+    m.cycle_video();
+    assert_eq!(rig.log.cycles.load(Ordering::SeqCst), 1);
+    m.report_fatal("EIO: i/o error, write".into());
+    assert_eq!(fatal.try_recv().unwrap(), "EIO: i/o error, write");
+    m.stop();
+}

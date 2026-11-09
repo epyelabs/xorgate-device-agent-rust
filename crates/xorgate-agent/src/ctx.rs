@@ -110,6 +110,9 @@ pub struct AgentCtx {
     pub cancel: CancellationToken,
     /// Every long-lived task is spawned on this tracker.
     pub tracker: TaskTracker,
+    /// In-process shutdown requests (the replay container exit); the
+    /// worker's main loop selects on the receiver.
+    pub exit_requests: crate::shutdown::ExitRequests,
 }
 
 impl AgentCtx {

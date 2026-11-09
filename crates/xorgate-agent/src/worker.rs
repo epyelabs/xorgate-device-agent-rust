@@ -8,6 +8,7 @@
 //! either a [`PhaseHooks`](crate::ctx::PhaseHooks) no-op or a comment naming
 //! the TS line it stands in for (O5).
 
+use std::borrow::Cow;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -175,14 +176,31 @@ pub fn hardware_block_line(b: &DeviceHardwareBlock) -> String {
 
 /// `sim` mode's source (O7): collectors off, no generator — empty metrics
 /// and the idle media block every tick.
-struct SimSource;
+/// The `sim` source (O7: no synthetic metrics). `media` = the KVS masters a
+/// `XORGATE_SIM_MEDIA` run supervises (`worker.ts:330-363` @ 09da38d):
+/// `read()` overlays their media block and `stop()` stops them; `None` = the
+/// hardcoded idle media block, exactly as before.
+struct SimSource {
+    media: Option<Arc<dyn MediaControl>>,
+}
+
+/// `XORGATE_SIM_MEDIA` (`worker.ts:335` @ 09da38d).
+const SIM_MEDIA_ENV: &str = "XORGATE_SIM_MEDIA";
+
+/// `["1", "true"].includes(process.env.XORGATE_SIM_MEDIA ?? "")`.
+fn sim_media_opt_in(v: Option<&str>) -> bool {
+    matches!(v, Some("1" | "true"))
+}
 
 impl TelemetrySource for SimSource {
     fn read(&self) -> BoxFut<'_, Result<TelemetryReading, String>> {
         Box::pin(async {
             Ok(TelemetryReading {
                 metrics: Default::default(),
-                media: TelemetryMedia::idle(),
+                media: match &self.media {
+                    Some(m) => m.read(),
+                    None => TelemetryMedia::idle(),
+                },
             })
         })
     }
@@ -198,7 +216,11 @@ impl TelemetrySource for SimSource {
     fn gnss_view(&self) -> Option<GnssView> {
         None
     }
-    fn stop(&self) {}
+    fn stop(&self) {
+        if let Some(m) = &self.media {
+            m.stop();
+        }
+    }
 }
 
 /// `new RecordingManager({...})` (`worker.ts:439-501`).
@@ -577,6 +599,8 @@ async fn run(args: &[String]) -> Result<i32> {
         paths.state.clone(),
     );
     let (hardware_tx, _) = tokio::sync::watch::channel(None);
+    // Only replay mode ever sends on it (core emits `ContainerExit` there only).
+    let (exit_requests, mut exit_rx) = crate::shutdown::ExitRequests::channel();
     let mut ctx = AgentCtx {
         env: env.clone(),
         paths: paths.clone(),
@@ -588,6 +612,7 @@ async fn run(args: &[String]) -> Result<i32> {
         clock: Arc::new(AgentClock::system()),
         cancel: CancellationToken::new(),
         tracker: TaskTracker::new(),
+        exit_requests,
     };
 
     // The tape's home-file snapshot, before boot can write any of them (#5).
@@ -621,11 +646,17 @@ async fn run(args: &[String]) -> Result<i32> {
     // the reconcile verdicts `reconcileHardwareNow` publishes.
     let stream_hw = Arc::new(StreamHardware::default());
     let media_cfg = crate::media::MediaConfig::from_env(&env, cfg.offline);
-    // Replay (Phase 7e): the masters run too; their guard is the scenario's
-    // stream list (`replay.streamGuard`), bound once the source exists.
+    // Replay (Phase 7e, `worker.ts:255`): the masters run too; their guard is
+    // the scenario's stream list (`replay.streamGuard`, `:228`), bound once
+    // the source exists. Sim (`worker.ts:330-336`): `XORGATE_SIM_MEDIA` opts
+    // a sim run in to the masters exactly like real mode (same guard).
     let replay_cell: Arc<std::sync::OnceLock<Arc<crate::replay::ReplaySource>>> =
         Arc::new(std::sync::OnceLock::new());
-    let media_on = matches!(cfg.mode, RunMode::Real | RunMode::Replay) && media_cfg.enabled;
+    let media_on = media_cfg.enabled
+        && match cfg.mode {
+            RunMode::Real | RunMode::Replay => true,
+            RunMode::Sim => sim_media_opt_in(std::env::var(SIM_MEDIA_ENV).ok().as_deref()),
+        };
     let media: Option<Arc<dyn MediaControl>> = media_on.then(|| {
         let guard: crate::media::GuardFn = if cfg.mode == RunMode::Replay {
             let cell = replay_cell.clone();
@@ -664,37 +695,56 @@ async fn run(args: &[String]) -> Result<i32> {
     ops.set_led_sim(cfg.mode == RunMode::Sim);
     ctx.hooks = ops.clone();
 
-    // Replay (Phase 7e, `worker.ts:250-272` @ 09da38d): the source, then the
-    // bridged `.gst` + `.camera` placeholder per scenario stream.
+    // Replay (Phase 7e, `worker.ts:238-272` @ 09da38d): the source, then the
+    // bridged `.gst` + `.camera` placeholder per scenario stream. Its events
+    // are `[agent] replay: …` lines plus a flushed state event, except the
+    // ones logged while it is built: the TS store does not exist yet then
+    // (`storeForEvents`, `:243-249`), so those reach the console only.
     let replay: Option<Arc<crate::replay::ReplaySource>> = if cfg.mode == RunMode::Replay {
+        let journal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let on_event: crate::replay::ReplayEventFn = {
+            let (state, clock, journal) = (state.clone(), ctx.clock.clone(), journal.clone());
+            Arc::new(move |level: ActivityLevel, msg: &str| {
+                replay_event(&state, &clock, &journal, level, msg)
+            })
+        };
+        let settings_path = paths.settings.clone();
+        let wall = ctx.clock.clone();
         let r = crate::replay::ReplaySource::create(crate::replay::ReplayOptions {
             assets_dir: cfg.replay.assets_dir.clone().into(),
             default_scenario_id: cfg.replay.default_scenario_id.clone(),
-            settings_path: paths.settings.clone(),
+            settings: Arc::new(move || {
+                xorgate_hal::settings_io::load_settings(&settings_path).simulation
+            }),
             media: media.clone(),
-            state: state.clone(),
+            on_event: Some(on_event),
+            now: Arc::new(move || wall.wall_ms()),
             tick_ms: 1000,
         })
         .map_err(|e| anyhow::anyhow!(e))?;
+        journal.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = replay_cell.set(r.clone());
-        write_replay_pipelines(&media_cfg.pipeline_dir, &paths.home, &r.scenario());
+        write_replay_pipelines(&media_cfg.pipeline_dir, &paths.home, &r.scenario())
+            .map_err(|e| anyhow::anyhow!(e))?;
         let weak = Arc::downgrade(&r);
-        ops.bind_replay(Arc::new(move || {
-            if let Some(r) = weak.upgrade() {
-                r.reapply();
-            }
+        ops.bind_replay(Arc::new(move || match weak.upgrade() {
+            Some(r) => r.reapply(),
+            None => Ok(()),
         }));
         Some(r)
     } else {
         None
     };
 
-    // `source` (`worker.ts:270-326`): real collectors, the replay source, or
-    // the empty sim source (O7).
+    // `source` (`worker.ts:270-363`): real collectors, the replay source, or
+    // the empty sim source (O7), which overlays the masters' media block
+    // when `XORGATE_SIM_MEDIA` built them.
     let source: Arc<dyn TelemetrySource> = match (cfg.mode, &replay) {
         (RunMode::Real, _) => collectors::start_with_media(&ctx, media.clone()).await,
         (RunMode::Replay, Some(r)) => r.clone(),
-        _ => Arc::new(SimSource),
+        _ => Arc::new(SimSource {
+            media: media.clone(),
+        }),
     };
 
     // Pidfile (`worker.ts:340-353`), then the initial state (`:356-379`).
@@ -896,26 +946,24 @@ async fn run(args: &[String]) -> Result<i32> {
     let mut camera_mount_poll = every(Duration::from_secs(60));
     let tape_on = ctx.tape.enabled();
     let mono0 = Instant::now();
-    let mut container_exit = (cfg.mode == RunMode::Replay).then(crate::replay::exit::install);
     sd_notify(&[sd_notify::NotifyState::Ready]);
 
-    let (sig, exit_code) = loop {
+    let (sig, exit_code): (Cow<'static, str>, i32) = loop {
         tokio::select! {
-            _ = sigterm.recv() => break ("SIGTERM", 0),
-            _ = sigint.recv() => break ("SIGINT", 0),
+            _ = sigterm.recv() => break ("SIGTERM".into(), 0),
+            _ = sigint.recv() => break ("SIGINT".into(), 0),
             _ = sighup.recv() => crate::shutdown::on_sighup(&ctx),
-            Some((reason, code)) = next_exit(&mut container_exit) => {
-                break (&*Box::leak(reason.into_boxed_str()), code)
-            }
+            // The replay container exit (`shutdown(\`${cmd} command\`, code)`).
+            Some(req) = exit_rx.recv() => break (req.reason.into(), req.code),
             Some(msg) = next_fatal(&mut recording_fatal) => break (
-                crate::shutdown::RECORDING_FATAL,
+                crate::shutdown::RECORDING_FATAL.into(),
                 crate::shutdown::on_recording_fatal(&msg),
             ),
             ev = events.recv() => match ev {
                 Some(ev) => plane.on_event(ev),
                 // The loop task died (review-wp1 #10a): the normal shutdown, exit 1.
                 None => break (
-                    crate::shutdown::LOOP_ENDED,
+                    crate::shutdown::LOOP_ENDED.into(),
                     crate::shutdown::on_mqtt_loop_ended(&ctx),
                 ),
             },
@@ -950,7 +998,7 @@ async fn run(args: &[String]) -> Result<i32> {
         // A dead loop has no stream left to close (no `disconnected cleanly`).
         link_closes: mqtt_end.is_some() && sig != crate::shutdown::LOOP_ENDED,
     }
-    .run_with(sig, exit_code, |how| async move {
+    .run_with(&sig, exit_code, |how| async move {
         match (mqtt_end, how) {
             (Some(end), ClientEnd::Graceful(budget)) => end.shutdown(budget).await,
             // X1: the TS would have crashed — no DISCONNECT, the will fires.
@@ -1004,27 +1052,59 @@ async fn after_tracker_wait<F: std::future::Future<Output = ()>>(
 }
 
 /// Replay (Phase 7e): the bridged KVS `.gst` and a `replay:<key>` camera
-/// identity per scenario stream, written only when absent (`worker.ts:259-272`).
-fn write_replay_pipelines(pipeline_dir: &str, home: &Path, sc: &crate::replay::LoadedScenario) {
+/// identity per scenario stream, written only when absent (`worker.ts:259-272`
+/// @ 09da38d). An fs error is the TS top-level throw (exit 1).
+fn write_replay_pipelines(
+    pipeline_dir: &str,
+    home: &Path,
+    sc: &crate::replay::LoadedScenario,
+) -> Result<(), String> {
     use xorgate_core::video_capture::{bridged_kvs_pipeline, camera_file_for, pipeline_file_for};
-    let _ = std::fs::create_dir_all(pipeline_dir);
+    use xorgate_hal::io::node_fs_message;
+    let dir = Path::new(pipeline_dir);
+    std::fs::create_dir_all(dir).map_err(|e| node_fs_message(&e, "mkdir", dir))?;
     for st in &sc.manifest.streams {
         let gst = pipeline_file_for(pipeline_dir, &st.stream_key);
         if !Path::new(&gst).exists() {
+            // `shmSocketPathFor(streamKey)` = `<home>/shm/<key>.sock`.
             let sock = home.join("shm").join(format!("{}.sock", st.stream_key));
-            let _ = std::fs::write(
+            std::fs::write(
                 &gst,
                 format!("{}\n", bridged_kvs_pipeline(&sock.to_string_lossy(), None)),
-            );
+            )
+            .map_err(|e| node_fs_message(&e, "open", Path::new(&gst)))?;
         }
         let cam = camera_file_for(pipeline_dir, &st.stream_key);
         if !Path::new(&cam).exists() {
-            let _ = std::fs::write(&cam, format!("replay:{}\n", st.stream_key));
+            std::fs::write(&cam, format!("replay:{}\n", st.stream_key))
+                .map_err(|e| node_fs_message(&e, "open", Path::new(&cam)))?;
         }
+    }
+    Ok(())
+}
+
+/// `replayEvent(level, msg)` (`worker.ts:244-249` @ 09da38d): `console.log` /
+/// `console.warn` of `[agent] <msg>`, then — once the store exists
+/// (`journal`) — a flushed state event.
+fn replay_event(
+    state: &StateHandle,
+    clock: &AgentClock,
+    journal: &std::sync::atomic::AtomicBool,
+    level: ActivityLevel,
+    msg: &str,
+) {
+    let t = clock.wall_ms();
+    match level {
+        ActivityLevel::Warn => warn!("[agent] {msg}"),
+        _ => info!("[agent] {msg}"),
+    }
+    if journal.load(std::sync::atomic::Ordering::SeqCst) {
+        state.note(level, msg.to_string(), t);
     }
 }
 
-/// The replay source's view of the recording manager (`attachHost`).
+/// The replay source's view of the recording manager (`attachHost`,
+/// `worker.ts:567-571` @ 09da38d).
 struct ReplayHostImpl(Arc<RecordingHooks>);
 
 impl crate::replay::ReplayHost for ReplayHostImpl {
@@ -1033,53 +1113,52 @@ impl crate::replay::ReplayHost for ReplayHostImpl {
             m.cycle_video();
         }
     }
-    fn rotate_telemetry_session(&self, why: &str) {
+    fn rotate_telemetry_session(&self, why: &str) -> Result<(), String> {
+        match self.0.manager() {
+            Some(m) => m.rotate_telemetry_session(why),
+            None => Ok(()),
+        }
+    }
+    fn fatal(&self, msg: String) {
         if let Some(m) = self.0.manager() {
-            m.rotate_telemetry_session(why);
+            m.report_fatal(msg);
         }
     }
 }
 
-/// `seedOnce(...)` at boot (`worker.ts:572-592` @ 09da38d).
+/// `seedOnce(...)` at boot (`worker.ts:572-592` @ 09da38d), before
+/// `recording.start()`; never with `--offline`.
 fn seed_replay(ctx: &AgentCtx, r: &crate::replay::ReplaySource) {
+    let journal = std::sync::atomic::AtomicBool::new(true);
     let note = |level: ActivityLevel, msg: &str| {
-        match level {
-            ActivityLevel::Warn => warn!("[agent] {msg}"),
-            _ => info!("[agent] {msg}"),
-        }
-        ctx.state.note(level, msg.to_string(), ctx.now_ms());
+        replay_event(&ctx.state, &ctx.clock, &journal, level, msg)
     };
-    let res = crate::replay::seed::seed_once(
-        r.catalog(),
-        r.assets_dir(),
-        &ctx.paths.home.join("recordings"),
-        &ctx.paths.home,
-        &ctx.env.config.device_id,
-        &crate::recording::time_source::read_boot_id(),
-        &|m| note(ActivityLevel::Warn, m),
-        &|m| note(ActivityLevel::Info, m),
-    );
+    let assets = r.assets_dir().to_path_buf();
+    let load = move |id: &str| crate::replay::load_scenario(&assets, id);
+    let boot_id = crate::recording::time_source::read_boot_id();
+    let res = crate::replay::seed::seed_once(&crate::replay::seed::SeedOptions {
+        catalog: r.catalog(),
+        load_scenario: &load,
+        recordings_root: ctx.paths.home.join("recordings"),
+        home: ctx.paths.home.to_path_buf(),
+        device_id: &ctx.env.config.device_id,
+        boot_id: &boot_id,
+        end_before_ms: None,
+        now: None,
+        mint: None,
+        on_event: Some(&note),
+    });
     match res {
-        Ok(Some(plan)) => note(
+        Ok(crate::replay::seed::SeedResult::Seeded(plan)) => note(
             ActivityLevel::Info,
             &format!(
                 "replay seed: {} session pair(s) staged for upload (delta {} d)",
                 plan.sessions.len(),
-                (plan.delta_ms as f64 / 86_400_000.0).round() as i64
+                crate::replay::js_round(plan.delta_ms / 86_400_000.0)
             ),
         ),
-        Ok(None) => {}
+        Ok(_) => {}
         Err(e) => note(ActivityLevel::Warn, &format!("replay seed failed: {e}")),
-    }
-}
-
-/// The replay container-exit request, or never.
-async fn next_exit(
-    rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<(String, i32)>>,
-) -> Option<(String, i32)> {
-    match rx {
-        Some(rx) => rx.recv().await,
-        None => std::future::pending().await,
     }
 }
 
@@ -1127,7 +1206,7 @@ mod tests {
     async fn d38_sim_mode_has_no_obd_group_and_rejects_obd_commands() {
         use xorgate_core::command_flow::{decide_command, Effect, RefreshWindow};
         use xorgate_core::commands::{parse_command, AckStatus, Ledger};
-        let src: Arc<dyn TelemetrySource> = Arc::new(SimSource);
+        let src: Arc<dyn TelemetrySource> = Arc::new(SimSource { media: None });
         assert!(src.obd().is_none(), "sim: no OBD collector");
         let r = src.read().await.unwrap();
         assert!(!r.metrics.contains_key("obd"), "sim: no obd group");

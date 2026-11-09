@@ -45,10 +45,12 @@
 //! `close` + `sidecar` per sidecar written, `delete` per 0-byte fragment
 //! dropped. Paths are relative to `home`. No-ops without a tape.
 //!
-//! Replay mode (Phase 7e SPIKE): the TS replay hooks `sourceHead`,
+//! Replay mode (Phase 7e): the TS replay hooks `sourceHead`,
 //! `onPlaying`, `onEnded`, `eosIsClean`, `respawnHoldMs` (`:314-340`,
-//! `:768-787` @ 09da38d) are [`ReplayCaptureHooks`]; installing them also
-//! means `eosIsClean: true`. Without hooks (every real device) every path is
+//! `:768-787` @ 09da38d) are [`ReplayCaptureHooks`] (`eosIsClean` is
+//! [`ReplayCaptureHooks::eos_is_clean`]). D72: PLAYING/EOS lines are keyed
+//! to the CURRENT child (a dead child's late stdout cannot touch its
+//! successor's run; unobservable for every TS-reachable input). Without hooks (every real device) every path is
 //! byte-for-byte the pre-7e behaviour: `cycle()` finalises the last fragment
 //! and re-enters the normal ladder (the TS without `respawnHoldMs`).
 
@@ -116,17 +118,29 @@ pub const GST_PLAYING_MARK: &str = "New clock:";
 pub const GST_EOS_MARK: &str = "Got EOS from element";
 
 /// The replay-mode capture hooks (`VideoCaptureOptions` `:314-340` @ 09da38d).
-/// Installing them is also `eosIsClean: true`.
+/// `None` on [`VideoCaptureOpts::replay`] = a real device: none of the TS
+/// hooks is set and every path is the pre-7e behaviour.
+///
+/// Locking: `source_head` and `respawn_hold_ms` are called WITH the
+/// supervisor lock held, so they must not call back into the supervisor
+/// (the replay source only takes its own lock and reads settings).
+/// `on_playing` and `on_ended` are called with no supervisor lock held,
+/// `on_ended` after the child's final sweep (its last sidecar is written).
 pub trait ReplayCaptureHooks: Send + Sync {
     /// `sourceHead(cam)`: the pipeline HEAD, re-evaluated on EVERY spawn.
     fn source_head(&self, cam: &CaptureCamera) -> Vec<String>;
-    /// `onPlaying(streamKey, wallMs)`: gst-launch printed `New clock:`.
+    /// `onPlaying(streamKey, wallMs)`: gst-launch printed `New clock:`
+    /// (once per child).
     fn on_playing(&self, key: &str, wall_ms: i64);
     /// `onEnded(streamKey, clean)`: a child exited and its session was swept.
     fn on_ended(&self, key: &str, clean: bool);
     /// `respawnHoldMs(streamKey)`: the gap before the next lap; `None` = park.
-    /// Called with the supervisor lock held: must not call back into capture.
     fn respawn_hold_ms(&self, key: &str) -> Option<u64>;
+    /// `eosIsClean`: a child that printed `Got EOS from element` before
+    /// exiting is a CLEAN end (the replay source: always).
+    fn eos_is_clean(&self) -> bool {
+        true
+    }
 }
 /// `timeSource()` — the tracker's CURRENT value, synchronously (the TS
 /// passes `() => this.timeSource.current()`, `manager.ts:717`).
@@ -1231,7 +1245,7 @@ async fn consume(
         match ev {
             // gst-launch's progress lines ride stdout: consumed always (an
             // unread pipe could block a chatty child); acted on only by the
-            // replay hooks, which are not ported.
+            // replay hooks, which a real device never installs.
             ChildEvent::Stdout(line) => {
                 s.opts.tape.child_line(ROLE_CAPTURE, &key, 1, &line);
                 // ACTED on only by the replay hooks (`video-capture.ts:676-683`).
@@ -1311,7 +1325,9 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
         // fragment is finalised; crash → it may be truncated.
         let cycled = std::mem::take(&mut run.cycling);
         // Replay: a lap ends by EOF (eosSeen + eosIsClean) or by cycle().
-        let eos_end = std::mem::take(&mut run.eos_seen) && o.replay.is_some();
+        // Without hooks `eos_seen` is never set (only `note_stdout` sets it).
+        let eos_end = std::mem::take(&mut run.eos_seen)
+            && o.replay.as_ref().is_some_and(|h| h.eos_is_clean());
         let clean = stopped || run.retiring || cycled || eos_end;
         s.final_sweep(key, run, clean, &mut out);
         let ended = run.session_id.take();

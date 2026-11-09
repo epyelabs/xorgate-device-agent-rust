@@ -29,6 +29,38 @@ use xorgate_core::telemetry::{ActivityLevel, ConnectionState, StatusPayload};
 use crate::ctx::{AgentCtx, ConfigPlane, TelemetrySource};
 use crate::mqtt_plane::{MqttHandle, MqttPlane, QoS};
 
+/// A shutdown asked for from inside the agent: the replay container exit
+/// (`shutdown(\`${cmd} command\`, code)`, `worker.ts:1256-1264` @ 09da38d),
+/// which runs the normal graceful [`Shutdown`] and exits with `code`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitRequest {
+    /// The `shutting down (<reason>)…` label.
+    pub reason: String,
+    pub code: i32,
+}
+
+/// The ctx-owned sender half ([`AgentCtx::exit_requests`]); the worker's main
+/// loop holds the receiver. Cheap to clone. A send after the receiver is gone
+/// (shutdown already under way) is dropped, like a second TS `shutdown()`.
+#[derive(Debug, Clone)]
+pub struct ExitRequests(tokio::sync::mpsc::UnboundedSender<ExitRequest>);
+
+impl ExitRequests {
+    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<ExitRequest>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Self(tx), rx)
+    }
+    /// Ask the worker to shut down; false when nobody listens.
+    pub fn request(&self, reason: &str, code: i32) -> bool {
+        self.0
+            .send(ExitRequest {
+                reason: reason.to_string(),
+                code,
+            })
+            .is_ok()
+    }
+}
+
 /// The hard exit budget after the final publish (`setTimeout(…, 2000)`, `:1324`).
 pub const EXIT_BUDGET: Duration = Duration::from_millis(2000);
 

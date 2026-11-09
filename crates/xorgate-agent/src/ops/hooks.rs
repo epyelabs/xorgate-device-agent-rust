@@ -99,8 +99,11 @@ pub struct OpsHooks {
     /// recorded `system.*` passes through untouched).
     led_replay: AtomicBool,
     /// Replay mode (Phase 7e): `replay?.reapply()` after `recording.reapply()`.
-    replay_reapply: OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    replay_reapply: OnceLock<ReplayReapplyFn>,
 }
+
+/// `replay.reapply()` as the config path calls it (`Err` = the TS throw).
+pub type ReplayReapplyFn = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 impl OpsHooks {
     /// The hooks exist before the camera reconciler, the LED and the
@@ -123,9 +126,8 @@ impl OpsHooks {
 
     /// Replay mode (Phase 7e): LED telemetry `null`, and the replay source's
     /// `reapply()` joins the config path.
-    pub fn bind_replay(&self, reapply: Arc<dyn Fn() + Send + Sync>) {
+    pub fn bind_replay(&self, reapply: ReplayReapplyFn) {
         self.led_replay.store(true, Ordering::SeqCst);
-        self.led_starting.store(false, Ordering::SeqCst);
         let _ = self.replay_reapply.set(reapply);
     }
 
@@ -208,9 +210,12 @@ impl PhaseHooks for OpsHooks {
         self.rec.overlay_media(media)
     }
     fn reapply_recording(&self) -> Result<(), String> {
+        // `recording.reapply(); replay?.reapply();` inside the config path's
+        // try (`worker.ts:979-983` @ 09da38d): a throw from either lands in
+        // `cloud config apply failed`, and a recording throw skips replay.
         self.rec.reapply_recording()?;
         if let Some(f) = self.replay_reapply.get() {
-            f();
+            f()?;
         }
         Ok(())
     }
@@ -429,6 +434,40 @@ mod tests {
         fn state(&self) -> Option<CameraMountState> {
             self.state.lock().unwrap().clone()
         }
+    }
+
+    /// Replay (Phase 7e): `ledTelemetryNow()` is `null`; `replay.reapply()`
+    /// runs after `recording.reapply()` on the config path and its error is
+    /// the config path's; `ledStarting` is untouched (as every mode).
+    #[test]
+    fn bind_replay_nulls_led_telemetry_and_joins_the_config_path() {
+        let h = OpsHooks::new(rec());
+        h.set_led_sim(false);
+        assert_eq!(h.led_telemetry(), Some(LED_TELEMETRY_STARTING));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(false));
+        let (c, f) = (calls.clone(), fail.clone());
+        h.bind_replay(Arc::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+            if f.load(Ordering::SeqCst) {
+                Err("EIO: i/o error, write".into())
+            } else {
+                Ok(())
+            }
+        }));
+        assert_eq!(h.led_telemetry(), None);
+        assert!(h.led_starting_flag().load(Ordering::SeqCst));
+        h.reapply_recording().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        fail.store(true, Ordering::SeqCst);
+        assert_eq!(
+            h.reapply_recording(),
+            Err("EIO: i/o error, write".to_string())
+        );
+        // Real and sim modes never bind it: the config path is unchanged.
+        let real = OpsHooks::new(rec());
+        real.reapply_recording().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     /// `ledStarting` is true until the first heartbeat tick, and the tick

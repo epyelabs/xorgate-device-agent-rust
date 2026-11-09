@@ -11,13 +11,10 @@
 //! still swept), `stopAndWait` SIGKILL escalation, and the inotify trigger on
 //! a real clock.
 //!
-//! NOT PORTED (P14 / Q6, replay mode): "VideoCaptureSupervisor replay hooks"
-//! ×5 — "sourceHead replaces the libcamerasrc head on every spawn and nothing
-//! after the tee", "reports PLAYING once per child and a clean EOS end;
-//! respawns after the hold as a new session", "without eosIsClean an EOF exit
-//! is still a crash (real-mode behaviour)", "respawnHoldMs null parks the
-//! camera until cycle() spawns it again", "cycle() on a running child SIGINTs
-//! it, finalizes, and respawns after the hold".
+//! Phase 7e: "VideoCaptureSupervisor replay hooks (device-simulator Phase 2)"
+//! ×5 @ 09da38d (`test/recording-video-capture.test.ts:1480-1632`) — the
+//! `replay_*` tests at the end — plus the 7e pins: `on_ended` after the final
+//! sweep, a stale child's stdout (D72), and real mode ignoring gst's lines.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -43,9 +40,15 @@ struct Entry {
     stopped: Mutex<Option<i32>>,
     tx: mpsc::UnboundedSender<ChildEvent>,
     exited: AtomicBool,
+    /// `stdoutSpawner`: `stop()` prints gst-launch's `-e` EOS line first.
+    eos_on_signal: bool,
 }
 
 impl Entry {
+    /// The child "prints" a stdout line (the TS spawner's `stdout?.(line)`).
+    fn stdout(&self, line: &str) {
+        let _ = self.tx.send(ChildEvent::Stdout(line.to_string()));
+    }
     fn exit(&self, code: Option<i32>) {
         if !self.exited.swap(true, Ordering::SeqCst) {
             let _ = self.tx.send(ChildEvent::Done(ChildDone {
@@ -75,6 +78,9 @@ impl CaptureChild for FakeChild {
     fn signal(&self, sig: i32) {
         // TS fakeSpawner: `stop(sig)` records the signal and resolves exit 0.
         *self.entry.stopped.lock().unwrap() = Some(sig);
+        if self.entry.eos_on_signal && !self.entry.exited.load(Ordering::SeqCst) {
+            self.entry.stdout("Got EOS from element \"pipeline0\".");
+        }
         self.entry.exit(Some(0));
     }
     fn renice(&self, _nice: i32) -> std::io::Result<()> {
@@ -86,6 +92,7 @@ impl CaptureChild for FakeChild {
 struct FakeBackend {
     spawns: Mutex<Vec<Arc<Entry>>>,
     pid: Option<u32>,
+    eos_on_signal: bool,
 }
 
 impl FakeBackend {
@@ -120,6 +127,7 @@ impl CaptureBackend for FakeBackend {
             stopped: Mutex::new(None),
             tx,
             exited: AtomicBool::new(false),
+            eos_on_signal: self.eos_on_signal,
         });
         self.spawns.lock().unwrap().push(entry.clone());
         (
@@ -1305,4 +1313,393 @@ async fn tape_hooks_report_spawn_lines_signals_exits_shm_and_fragments() {
         r#"shm ["shmpipe. 9999.    0"]"#.into(),
     ];
     assert_eq!(lines, want);
+}
+
+// ---------------------------------------------------------------------------
+// describe("VideoCaptureSupervisor replay hooks (device-simulator Phase 2)") ×5
+// + Phase 7e pins
+
+/// The TS hook options as one [`ReplayCaptureHooks`]: `sourceHead` from a
+/// queue (else a fixed head), `onPlaying`/`onEnded` recorded, `respawnHoldMs`
+/// from a cell, `eosIsClean` fixed. `on_ended` also records whether the
+/// ending session's `00000.json` already exists (the final sweep ran first).
+struct TestHooks {
+    heads: Mutex<std::collections::VecDeque<Vec<String>>>,
+    playing: Mutex<Vec<(String, i64)>>,
+    ended: Mutex<Vec<bool>>,
+    sidecar_at_end: Mutex<Vec<bool>>,
+    watch: Mutex<Option<PathBuf>>,
+    hold: Mutex<Option<u64>>,
+    eos_clean: bool,
+}
+
+impl TestHooks {
+    fn new(hold: Option<u64>, eos_clean: bool) -> Arc<Self> {
+        Arc::new(Self {
+            heads: Mutex::default(),
+            playing: Mutex::default(),
+            ended: Mutex::default(),
+            sidecar_at_end: Mutex::default(),
+            watch: Mutex::default(),
+            hold: Mutex::new(hold),
+            eos_clean,
+        })
+    }
+    fn ended(&self) -> Vec<bool> {
+        self.ended.lock().unwrap().clone()
+    }
+    fn playing(&self) -> Vec<String> {
+        self.playing
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+}
+
+impl ReplayCaptureHooks for TestHooks {
+    fn source_head(&self, _cam: &CaptureCamera) -> Vec<String> {
+        self.heads
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| vec!["filesrc".into(), "location=/a/lap.h264".into()])
+    }
+    fn on_playing(&self, key: &str, wall_ms: i64) {
+        self.playing
+            .lock()
+            .unwrap()
+            .push((key.to_string(), wall_ms));
+    }
+    fn on_ended(&self, _key: &str, clean: bool) {
+        self.ended.lock().unwrap().push(clean);
+        if let Some(d) = self.watch.lock().unwrap().as_ref() {
+            self.sidecar_at_end
+                .lock()
+                .unwrap()
+                .push(d.join("00000.json").exists());
+        }
+    }
+    fn respawn_hold_ms(&self, _key: &str) -> Option<u64> {
+        *self.hold.lock().unwrap()
+    }
+    fn eos_is_clean(&self) -> bool {
+        self.eos_clean
+    }
+}
+
+fn replay_cams() -> Vec<CaptureCamera> {
+    vec![cam("cam0", "replay")]
+}
+
+/// "sourceHead replaces the libcamerasrc head on every spawn and nothing after the tee"
+#[tokio::test(start_paused = true)]
+async fn replay_source_head_replaces_libcamerasrc_on_every_spawn() {
+    let home = Home::new("rp-head");
+    let be = Arc::new(FakeBackend {
+        eos_on_signal: true,
+        ..FakeBackend::default()
+    });
+    let ev = Events::default();
+    let h = TestHooks::new(Some(0), true);
+    h.heads.lock().unwrap().extend([
+        vec!["filesrc".to_string(), "location=/a/lap.h264".to_string()],
+        vec!["filesrc".to_string(), "location=/b/lap.h264".to_string()],
+    ]);
+    let mut o = opts(&home, replay_cams(), true, be.clone(), &ev);
+    o.replay = Some(h.clone());
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    assert_eq!(be.get(0).args[1..3], ["filesrc", "location=/a/lap.h264"]);
+    assert!(!be.get(0).joined().contains("libcamerasrc"));
+    assert!(be.get(0).joined().contains("splitmuxsink"));
+    // Everything after the head is the unchanged builder argv.
+    let real = {
+        let be2 = Arc::new(FakeBackend::default());
+        let s2 = VideoCaptureSupervisor::new(opts(&home, replay_cams(), true, be2.clone(), &ev));
+        s2.start();
+        let a = be2.get(0).args.clone();
+        s2.stop();
+        a
+    };
+    let tail = |a: &[String]| {
+        a.iter()
+            .skip_while(|t| *t != "!")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let strip = |v: Vec<String>| {
+        v.into_iter()
+            .map(|t| {
+                if t.starts_with("location=") && t.ends_with("%05d.mp4") {
+                    "location=<dir>".into()
+                } else {
+                    t
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(strip(tail(&be.get(0).args)), strip(tail(&real)));
+    // Re-evaluated on the next spawn (a cycle respawns with hold 0).
+    sup.cycle_all();
+    delay(5).await;
+    assert_eq!(be.len(), 2);
+    assert_eq!(be.get(1).args[1..3], ["filesrc", "location=/b/lap.h264"]);
+    sup.stop();
+}
+
+/// "reports PLAYING once per child and a clean EOS end; respawns after the hold as a new session"
+#[tokio::test(start_paused = true)]
+async fn replay_playing_once_per_child_clean_eos_end_and_respawn_after_the_hold() {
+    let home = Home::new("rp-eos");
+    let be = Arc::new(FakeBackend {
+        eos_on_signal: true,
+        ..FakeBackend::default()
+    });
+    let ev = Events::default();
+    let h = TestHooks::new(Some(30), true);
+    let mut o = opts(&home, replay_cams(), true, be.clone(), &ev);
+    o.stable_ms = 10;
+    o.sweep_poll_ms = 3_600_000;
+    o.replay = Some(h.clone());
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    let first = first_session(&sup);
+    let dir = home.session_dir("cam0", &first);
+    *h.watch.lock().unwrap() = Some(dir.clone());
+    be.get(0).stdout("Setting pipeline to PLAYING ...");
+    be.get(0).stdout("New clock: GstSystemClock");
+    be.get(0).stdout("New clock: GstSystemClock"); // a second print is not a second lap
+    delay(1).await;
+    assert_eq!(h.playing(), ["cam0"]);
+    assert!(
+        h.playing.lock().unwrap()[0].1 >= 1_760_000_000_000,
+        "Date.now() at the line"
+    );
+    // Natural EOF: EOS on stdout, then the shmsink teardown's exit code 1 (Phase 0 surprise 5).
+    std::fs::write(dir.join("00000.mp4"), "x").unwrap();
+    be.get(0).stdout("Got EOS from element \"pipeline0\".");
+    be.get(0).exit(Some(1));
+    delay(10).await;
+    assert_eq!(h.ended(), [true]);
+    assert_eq!(
+        *h.sidecar_at_end.lock().unwrap(),
+        [true],
+        "on_ended runs after the final sweep"
+    );
+    assert_eq!(read_json(&dir.join("00000.json"))["finalized"], true);
+    assert_eq!(sup.status()[0].state, CaptureState::Retrying);
+    assert_eq!(be.len(), 1);
+    assert!(has_event(
+        &ev,
+        &format!(
+            "video capture cam0 ended cleanly (session {}…); next lap in 0s",
+            &first[..8]
+        )
+    ));
+    delay(25).await;
+    assert_eq!(be.len(), 2);
+    assert_ne!(first_session(&sup), first);
+    // The new child reports its own PLAYING once.
+    be.get(1).stdout("New clock: GstSystemClock");
+    delay(1).await;
+    assert_eq!(h.playing(), ["cam0", "cam0"]);
+    sup.stop();
+}
+
+/// "without eosIsClean an EOF exit is still a crash (real-mode behaviour)"
+#[tokio::test(start_paused = true)]
+async fn replay_without_eos_is_clean_an_eof_exit_is_still_a_crash() {
+    let home = Home::new("rp-noeos");
+    let be = Arc::new(FakeBackend {
+        eos_on_signal: true,
+        ..FakeBackend::default()
+    });
+    let ev = Events::default();
+    let h = TestHooks::new(Some(0), false);
+    let mut o = opts(&home, replay_cams(), true, be.clone(), &ev);
+    o.stable_ms = 10;
+    o.sweep_poll_ms = 3_600_000;
+    o.replay = Some(h.clone());
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    let dir = home.session_dir("cam0", &first_session(&sup));
+    std::fs::write(dir.join("00000.mp4"), "x").unwrap();
+    be.get(0).stdout("Got EOS from element \"pipeline0\".");
+    be.get(0).exit(Some(1));
+    delay(10).await;
+    assert_eq!(h.ended(), [false]);
+    assert_eq!(read_json(&dir.join("00000.json"))["finalized"], false);
+    sup.stop();
+}
+
+/// "respawnHoldMs null parks the camera until cycle() spawns it again"
+#[tokio::test(start_paused = true)]
+async fn replay_hold_none_parks_until_cycle() {
+    let home = Home::new("rp-park");
+    let be = Arc::new(FakeBackend {
+        eos_on_signal: true,
+        ..FakeBackend::default()
+    });
+    let ev = Events::default();
+    let h = TestHooks::new(None, true);
+    let mut o = opts(&home, replay_cams(), false, be.clone(), &ev);
+    o.stable_ms = 10;
+    o.replay = Some(h.clone());
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    be.get(0).stdout("Got EOS from element \"pipeline0\".");
+    be.get(0).exit(Some(1));
+    delay(10).await;
+    assert_eq!(sup.status()[0].state, CaptureState::Stopped);
+    assert!(has_event(
+        &ev,
+        "video capture cam0 ended cleanly; parked (no loop)"
+    ));
+    delay(60_000).await;
+    assert_eq!(be.len(), 1, "parked: no respawn");
+    *h.hold.lock().unwrap() = Some(0);
+    sup.cycle("cam0");
+    assert_eq!(be.len(), 2);
+    sup.stop();
+}
+
+/// "cycle() on a running child SIGINTs it, finalizes, and respawns after the hold"
+#[tokio::test(start_paused = true)]
+async fn replay_cycle_sigints_finalizes_and_respawns_after_the_hold() {
+    let home = Home::new("rp-cycle");
+    let be = Arc::new(FakeBackend {
+        eos_on_signal: true,
+        ..FakeBackend::default()
+    });
+    let ev = Events::default();
+    let h = TestHooks::new(Some(0), true);
+    let mut o = opts(&home, replay_cams(), true, be.clone(), &ev);
+    o.stable_ms = 10;
+    o.sweep_poll_ms = 3_600_000;
+    o.replay = Some(h.clone());
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    let first = first_session(&sup);
+    let dir = home.session_dir("cam0", &first);
+    *h.watch.lock().unwrap() = Some(dir.clone());
+    std::fs::write(dir.join("00000.mp4"), "x").unwrap();
+    sup.cycle_all();
+    assert_eq!(be.get(0).stopped(), Some(libc::SIGINT));
+    delay(5).await;
+    assert_eq!(be.len(), 2);
+    assert_eq!(h.ended(), [true]);
+    assert_eq!(*h.sidecar_at_end.lock().unwrap(), [true]);
+    assert_eq!(read_json(&dir.join("00000.json"))["finalized"], true);
+    assert_ne!(first_session(&sup), first);
+    sup.stop();
+}
+
+/// 7e: a cycled child that prints no EOS line still ends its lap cleanly
+/// (`cycled`), and the hold — not the crash ladder — decides the respawn.
+/// `on_ended` fires for a stopped supervisor too (P5: the TS `onEnded` runs
+/// before the `stopped` check).
+#[tokio::test(start_paused = true)]
+async fn replay_cycle_uses_the_hold_and_on_ended_fires_on_stop() {
+    let home = Home::new("rp-ladder");
+    let be = Arc::new(FakeBackend::default()); // stop() prints no EOS
+    let ev = Events::default();
+    let h = TestHooks::new(Some(5000), true);
+    let mut o = opts(&home, replay_cams(), false, be.clone(), &ev);
+    o.stable_ms = 10;
+    o.replay = Some(h.clone());
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    sup.cycle("cam0");
+    delay(5).await;
+    assert_eq!(h.ended(), [true]);
+    assert_eq!(sup.status()[0].state, CaptureState::Retrying);
+    assert!(has_event(
+        &ev,
+        "video capture cam0 ended cleanly; next lap in 5s"
+    ));
+    delay(4990).await;
+    assert_eq!(be.len(), 1);
+    delay(10).await;
+    assert_eq!(be.len(), 2);
+    sup.stop();
+    delay(5).await;
+    assert_eq!(
+        h.ended(),
+        [true, true],
+        "onEnded for the stopped supervisor's child"
+    );
+}
+
+/// D72: PLAYING/EOS are keyed to the CURRENT child. A line from the
+/// previous child that arrives after the respawn changes nothing.
+#[tokio::test(start_paused = true)]
+async fn d72_a_previous_childs_late_stdout_cannot_touch_its_successor() {
+    let home = Home::new("rp-stale");
+    let be = Arc::new(FakeBackend {
+        eos_on_signal: true,
+        ..FakeBackend::default()
+    });
+    let ev = Events::default();
+    let h = TestHooks::new(Some(0), true);
+    let mut o = opts(&home, replay_cams(), false, be.clone(), &ev);
+    o.stable_ms = 10;
+    o.replay = Some(h.clone());
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    sup.cycle_all();
+    delay(5).await;
+    assert_eq!(be.len(), 2);
+    be.get(0).stdout("New clock: GstSystemClock");
+    be.get(0).stdout("Got EOS from element \"pipeline0\".");
+    delay(5).await;
+    assert!(h.playing().is_empty());
+    // The successor's own crash is still a crash: the stale EOS was not counted.
+    be.get(1).exit(Some(1));
+    delay(5).await;
+    assert_eq!(h.ended(), [true, false]);
+    sup.stop();
+}
+
+/// Real mode (no hooks): gst's PLAYING/EOS lines change nothing — an EOF
+/// exit after `Got EOS` is the crash ladder, byte for byte the pre-7e path.
+#[tokio::test(start_paused = true)]
+async fn real_mode_ignores_gst_stdout_and_an_eof_exit_is_a_crash() {
+    let home = Home::new("rp-real");
+    let be = Arc::new(FakeBackend {
+        eos_on_signal: true,
+        ..FakeBackend::default()
+    });
+    let ev = Events::default();
+    let mut o = opts(&home, cam0(), true, be.clone(), &ev);
+    o.stable_ms = 50;
+    o.sweep_poll_ms = 3_600_000;
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    let sid = first_session(&sup);
+    let dir = home.session_dir("cam0", &sid);
+    std::fs::write(dir.join("00000.mp4"), "x").unwrap();
+    be.get(0).stdout("New clock: GstSystemClock");
+    be.get(0).stdout("Got EOS from element \"pipeline0\".");
+    be.get(0).exit(Some(1));
+    delay(10).await;
+    assert_eq!(read_json(&dir.join("00000.json"))["finalized"], false);
+    assert_eq!(sup.status()[0].state, CaptureState::Retrying);
+    assert!(
+        has_event(
+            &ev,
+            &format!(
+                "video capture cam0 crashed quickly (code 1, session {}…)",
+                &sid[..8]
+            )
+        ) || ev
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(l, m)| *l == ActivityLevel::Warn && m.contains("cam0")),
+        "{:?}",
+        ev.lock().unwrap()
+    );
+    sup.stop();
 }

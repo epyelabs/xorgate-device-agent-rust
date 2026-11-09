@@ -122,6 +122,7 @@ pub fn test_ctx(
         clock: Arc::new(AgentClock::following_tokio(0)),
         cancel: CancellationToken::new(),
         tracker: TaskTracker::new(),
+        exit_requests: xorgate_agent::shutdown::ExitRequests::channel().0,
     }
 }
 
