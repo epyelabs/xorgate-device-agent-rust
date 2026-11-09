@@ -655,9 +655,37 @@ fn walk(root: &Path, base: &Path, out: &mut BTreeMap<String, u64>) {
 }
 
 /// The observers: pid liveness of the shims' children (100 ms), the
-/// recordings tree (1 s), `/dev/shm/shmpipe.*` (5 s). Returns when `stop` is
+/// recordings tree (1 s), `/dev/shm/shmpipe.*` (5 s, plus one closing
+/// snapshot at the stop: the end state). Returns when `stop` is
 /// cancelled, after writing `recordings.json` per agent.
 pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToken) {
+    observe_in(agents, run, stop, Path::new("/dev/shm")).await
+}
+
+/// `shmpipe.*` names in `dir`, sorted.
+fn shm_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("shmpipe."))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Append `{w, names}` to `<run>/shm.ndjson` when the set changed.
+fn shm_record(run: &Path, dir: &Path, last: &mut Option<Vec<String>>, now: i64) {
+    let names = shm_names(dir);
+    if last.as_ref() != Some(&names) {
+        append(&run.join("shm.ndjson"), &json!({"w": now, "names": names}));
+        *last = Some(names);
+    }
+}
+
+/// [`observe`] with the shm directory as a parameter (tests).
+async fn observe_in(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToken, shm_dir: &Path) {
     let mut known: Vec<BTreeMap<u32, bool>> = vec![BTreeMap::new(); agents.len()];
     let mut seen: Vec<BTreeMap<String, Seen>> = vec![BTreeMap::new(); agents.len()];
     let mut tick = 0u64;
@@ -702,18 +730,7 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
             }
         }
         if tick.is_multiple_of(50) {
-            let mut names: Vec<String> = fs::read_dir("/dev/shm")
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.starts_with("shmpipe."))
-                .collect();
-            names.sort();
-            if last_shm.as_ref() != Some(&names) {
-                append(&run.join("shm.ndjson"), &json!({"w": now, "names": names}));
-                last_shm = Some(names);
-            }
+            shm_record(&run, shm_dir, &mut last_shm, now);
         }
         tick += 1;
         tokio::select! {
@@ -721,6 +738,11 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
             _ = tokio::time::sleep(Duration::from_millis(100)) => {}
         }
     }
+    // The closing snapshot: the stop comes after both agents exited (+500 ms,
+    // `play`), so this record is the END state the `shm` row reads as the
+    // last one. Without it the last record could be the previous 5 s tick,
+    // before the agents' own exit-path unlink (7a close, Rust-vs-Rust).
+    shm_record(&run, shm_dir, &mut last_shm, wall_now_ms());
     for (i, a) in agents.iter().enumerate() {
         let files: Map<String, Value> = seen[i]
             .iter()
@@ -824,6 +846,46 @@ pub fn finish(a: &ObsAgent) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `shm` row's "orphans at end" is the LAST `shm.ndjson` record. The
+    /// periodic snapshot is every 5 s and the observer stops ~500 ms after
+    /// both agents exit, so without a closing snapshot the last record could
+    /// predate the exit and list the live segments of children that were
+    /// reaped since (7a close: Rust-vs-Rust `media`, both sides ~70 ms stops,
+    /// 2 false "orphans" per side). The record at stop must be the end state.
+    #[tokio::test]
+    async fn the_last_shm_record_is_the_state_at_stop() {
+        let d = std::env::temp_dir().join(format!("media-shm-end-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (run, shm) = (d.join("run"), d.join("shm"));
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(&shm).unwrap();
+        fs::write(shm.join("shmpipe. 1212.    0"), b"").unwrap();
+        fs::write(shm.join("other"), b"").unwrap();
+        let stop = CancellationToken::new();
+        let task = {
+            let (run, shm, stop) = (run.clone(), shm.clone(), stop.clone());
+            tokio::spawn(async move { observe_in(Vec::new(), run, stop, &shm).await })
+        };
+        // tick 0 has recorded the live segment; the "agent" then unlinks it
+        // and the run stops long before the next 5 s snapshot.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        fs::remove_file(shm.join("shmpipe. 1212.    0")).unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        stop.cancel();
+        task.await.unwrap();
+        let recs: Vec<Value> = fs::read_to_string(run.join("shm.ndjson"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            recs.first().unwrap()["names"],
+            json!(["shmpipe. 1212.    0"])
+        );
+        assert_eq!(recs.last().unwrap()["names"], json!([]), "{recs:?}");
+        let _ = fs::remove_dir_all(&d);
+    }
 
     /// `procs.ndjson` is appended by the exit runners and the observer at
     /// once: every record must land as one whole line.
