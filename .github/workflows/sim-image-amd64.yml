@@ -1,0 +1,46 @@
+name: sim-image-amd64
+
+# The Rust device-simulator image (Phase 7e WP2), x86_64: `sim/build-image.sh`
+# on a hosted x64 runner, then the image's own checks, then `docker save` as a
+# workflow ARTIFACT. MANUAL ONLY (workflow_dispatch; CI minutes are the owner's
+# call, as for ci.yml). It pushes nothing to any registry and publishes nothing
+# to S3: the sim hosts run images built on their own host (the homelab), and
+# switching any sim host's SIM_IMAGE is a user decision (7e Q-E2). No secrets.
+#
+#   gh workflow run sim-image-amd64.yml --ref <branch>
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sim-image-amd64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sim-image:
+    name: build xorgate-sim-rs (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: sim/build-image.sh --channel ci --tag "xorgate-sim-rs:ci-${GITHUB_SHA::7}"
+      - name: Check it (size, ldd, stamped version, no xorgate-sim:* tag)
+        run: |
+          img="xorgate-sim-rs:ci-${GITHUB_SHA::7}"
+          docker image inspect "$img" --format 'size {{.Size}} bytes'
+          docker run --rm --entrypoint sh "$img" -c '
+            ! (ldd /opt/xorgate-rs/bin/xorgate-rs | grep "not found") &&
+            ! (LD_LIBRARY_PATH=/opt/xorgate/media/lib ldd /opt/xorgate/media/xorgate-kvs-webrtc | grep "not found") &&
+            /opt/xorgate-rs/bin/xorgate-rs --version && cat /opt/xorgate-rs/build-info.json'
+          ! docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^xorgate-sim:'
+      - name: Save the image
+        run: docker save "xorgate-sim-rs:ci-${GITHUB_SHA::7}" | gzip -1 > xorgate-sim-rs-amd64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xorgate-sim-rs-amd64
+          path: xorgate-sim-rs-amd64.tar.gz
+          retention-days: 7
