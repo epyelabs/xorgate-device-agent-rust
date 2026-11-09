@@ -56,8 +56,9 @@
 //! TIME (P8): one `&dyn Clock` (the agent's `AgentClock`) for both policies;
 //! the wall clock only stamps `liveBlock.since` and session ids.
 //!
-//! Not ported (P14): `cycleVideo`, `rotateTelemetrySession`,
-//! `forceBootPolicyOff` and the replay-mode video hooks (`manager.ts:373-389`).
+//! Replay mode (Phase 7e SPIKE): `cycleVideo`, `rotateTelemetrySession`,
+//! `forceBootPolicyOff` (implied by [`VideoOpts::replay`]) and the replay-mode
+//! video hooks (`manager.ts:126-132, 184-189, 396-414` @ 09da38d).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -186,6 +187,8 @@ pub trait CaptureApi: Send + Sync {
     fn active_session_ids(&self) -> HashSet<String>;
     fn any_recording(&self) -> bool;
     fn status(&self) -> Vec<CaptureStatus>;
+    /// `cycleAll()` (replay mode, Phase 7e). Default: no-op.
+    fn cycle_all(&self) {}
 }
 
 /// `onEvent(level, msg)`.
@@ -244,6 +247,8 @@ pub struct CaptureSpec {
     pub on_event: EventFn,
     /// `onSpawned(streamKey)` → bounce that stream's KVS master.
     pub on_spawned: Arc<dyn Fn(&str) + Send + Sync>,
+    /// Replay-mode capture hooks (Phase 7e); `None` = real mode.
+    pub replay: Option<Arc<dyn crate::recording::capture::ReplayCaptureHooks>>,
 }
 
 /// What `buildUploader` (`manager.ts:246-278`) hands `new Uploader`.
@@ -338,6 +343,9 @@ pub struct VideoOpts {
     pub set_live_shed: Option<LiveShedFn>,
     /// `setDisabledCameras(keys)` → `MediaSupervisor::set_disabled_streams`.
     pub set_disabled_cameras: Option<DisabledCamerasFn>,
+    /// Replay mode (Phase 7e): the capture hooks; `Some` also forces the
+    /// boot defer + GPS gate `off` (`forceBootPolicyOff`). `None` = real.
+    pub replay: Option<Arc<dyn crate::recording::capture::ReplayCaptureHooks>>,
 }
 
 /// `RecordingManagerOptions` (`manager.ts:138-190`).
@@ -819,6 +827,30 @@ impl RecordingManager {
         }
     }
 
+    /// `cycleVideo()` (replay, `manager.ts:396-405` @ 09da38d).
+    pub fn cycle_video(&self) {
+        let c = lock(&self.inner.slots).capture.clone();
+        if let Some(c) = c {
+            c.cycle_all();
+        }
+    }
+
+    /// `rotateTelemetrySession(why)` (replay, `manager.ts:406-414` @ 09da38d):
+    /// no-op while telemetry recording is off.
+    pub fn rotate_telemetry_session(&self, why: &str) {
+        let inner = &self.inner;
+        let mut st = lock(&inner.state);
+        if st.recorder.is_none() || st.stop_requested {
+            return;
+        }
+        if let Err(e) = inner.stop_recorder(&mut st, why) {
+            tracing::error!("[agent] replay telemetry rotation failed: {e}");
+            return;
+        }
+        inner.start_recorder(&mut st);
+        inner.notify_status(&st);
+    }
+
     /// `videoStatus()` (`manager.ts:390-395`).
     pub fn video_status(&self) -> VideoRecordingStatus {
         let c = lock(&self.inner.slots).capture.clone();
@@ -1056,7 +1088,12 @@ impl Inner {
         let mut gate_holds_live = false;
         let mut gate_why = String::new();
         if !cameras.is_empty() {
-            let bcfg = flow::boot_defer_config(&st.cfg.video);
+            let mut bcfg = flow::boot_defer_config(&st.cfg.video);
+            // `forceBootPolicyOff` (replay, `manager.ts:532-535` @ 09da38d).
+            if vo.replay.is_some() {
+                bcfg.mode = xorgate_core::settings::BootDeferMode::Off;
+                bcfg.gate_mode = xorgate_core::settings::BootDeferMode::Off;
+            }
             let verdict =
                 st.boot_policy
                     .evaluate(&bcfg, self.clock.as_ref(), st.boot_sources.as_mut());
@@ -1281,6 +1318,7 @@ impl Inner {
             on_status: self.status_notifier(),
             on_event: self.on_event.clone(),
             on_spawned: Arc::new(move |k: &str| spawned(k)),
+            replay: vo.replay.clone(),
         });
         lock(&self.slots).capture = Some(capture.clone());
         capture.start();

@@ -16,8 +16,8 @@
 //! ([`RefreshWindow`] fed `ctx.clock.mono_ms()`); O3 `update` runs
 //! `xorgate-updater-rs.service` ([`PrivilegedArgv::for_rust_agent`]); O4
 //! real-mode `read_sms` answers the "sms reader not available in this build"
-//! sweep; replay mode never starts (O7), so the container-exit branch is
-//! unreachable and only logged.
+//! sweep; replay mode (Phase 7e) turns the container-exit effect into a
+//! request on `crate::replay::exit`, which the worker's main loop selects on.
 //!
 //! **`clear_sms` (Phase 5b WP3, `runSms` @ 09da38d `worker.ts:1027-1067`):**
 //! the `Effect::ClearSms` interpreter. It runs only AFTER the ledger claim and
@@ -344,8 +344,11 @@ impl Effects {
                     }
                 }
                 Effect::ContainerExit { reason, code } => {
-                    // Unreachable: MODE=replay refuses to start (O7).
-                    warn!("[agent] {reason}: container exit {code} is not supported by the Rust agent (replay mode, O7)");
+                    // Replay mode (Phase 7e): `shutdown(reason, code)` — the
+                    // worker's main loop runs the normal shutdown and exits.
+                    if !crate::replay::exit::request(&reason, code) {
+                        warn!("[agent] {reason}: container exit {code} requested but no exit channel is installed");
+                    }
                 }
                 Effect::PersistLedger(_) => {
                     // Only ever first, handled on the command task.

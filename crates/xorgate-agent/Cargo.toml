@@ -29,6 +29,8 @@ tracing-journald = { workspace = true }
 sd-notify = { workspace = true }
 nix = { workspace = true }
 gstreamer = { workspace = true }
+# Phase 7e replay: gunzip the scenario trace, gzip seeded telemetry segments.
+flate2 = { workspace = true }
 # Phase 3 WP3: the uploader hands `ObjectPut` its bodies as `Bytes`.
 bytes = { workspace = true }
 # Phase 3 WP4: setpriority(2) for the capture child (nice 10, video-capture.ts:690).
