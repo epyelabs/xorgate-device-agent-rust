@@ -13,6 +13,7 @@
 mod aws;
 mod diff;
 mod diff_p4;
+mod handoff;
 mod inspect;
 mod media;
 mod media_diff;
@@ -22,6 +23,7 @@ mod play;
 mod record;
 mod rewrite;
 mod synth;
+mod takeover;
 mod tolerances;
 mod watch;
 
@@ -158,6 +160,10 @@ fn main() -> Result<()> {
             let ma = media_diff::MediaCapture::load(&run.join("a"), &shm);
             let mb = media_diff::MediaCapture::load(&run.join("b"), &shm);
             media_diff::diff_media(&ma, &mb, &info, &table, &mut rep);
+            // Phase 6 P3a: the takeover stream of a handoff run (takeover.rs).
+            if let Some(h) = &info.handoff {
+                takeover::diff_takeover(&run, h, &ma, &mb, &mut rep);
+            }
             // Phase 4 streams (diff_p4.rs): led, at.
             let pa = diff_p4::P4Capture::load(&run.join("a"));
             let pb = diff_p4::P4Capture::load(&run.join("b"));
@@ -172,7 +178,7 @@ fn main() -> Result<()> {
             let unt = rep.untolerated();
             eprintln!(
                 "{}: {} untolerated, {} tolerated → {}",
-                if unt == 0 { "PASS" } else { "FAIL" },
+                diff::verdict(&rep),
                 unt,
                 rep.mismatches.len() - unt,
                 out.display()

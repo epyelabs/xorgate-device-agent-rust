@@ -250,6 +250,46 @@ pub const SCENARIOS: &[(&str, u64, &[&str], &str)] = &[
         &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
         "cam0 capture SIGKILLed (external) at 35 s, cam1 master exits 1 at 45 s, preset → 1080p15 at 70 s",
     ),
+    // ---- Phase 6 P3a: cross-agent takeover (P3a-takeover.md §2). Each
+    // carries `meta.rig.handoff` (the instant + the inherited state it must
+    // leave, `takeover_rig`); the player hands off only with
+    // `--handoff-signal`, otherwise the tape plays as an ordinary media run.
+    (
+        "p6-takeover-open",
+        170,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (a): both recorders + healthy uploads; handoff at 100 s mid-fragment / mid-segment (open sessions, no backlog)",
+    ),
+    (
+        "p6-takeover-vbacklog",
+        170,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (b): video only; fake-S3 503 from 30 s to handoff + 10 s; handoff at 100 s (closed fragments never uploaded + the active one)",
+    ),
+    (
+        "p6-takeover-vbacklog-503tail",
+        200,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a INFORMATIONAL (orchestrator 2026-11-07): p6-takeover-vbacklog with the 503 window lasting 60 s past the restart, so the next agent retries the inherited backlog through its own backoff; only the per-file fate is judged",
+    ),
+    (
+        "p6-takeover-tbacklog",
+        230,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (c): telemetry only; fake-S3 503 from 20 s to handoff + 10 s; handoff at 150 s (2 closed segments never uploaded + the open one)",
+    ),
+    (
+        "p6-takeover-inflight",
+        170,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a in-flight: both recorders; an mp4 PUT arriving in [92 s, 100 s) is held mid-transfer (its sidecar already PUT); SIGKILL handoff at 100 s aborts it",
+    ),
+    (
+        "p6-takeover-reap",
+        800,
+        &["media-hw", "rec", "nmea-fixonly", "lte", "exec-quiet", "clock"],
+        "P3a (a)+(b)+(c) with a 650 s tail: the drained X-era session dirs pass REAP_MIN_AGE_MS (10 min) under the next agent",
+    ),
     // ---- Phase 4 (WP6, phase-4-operations.md §8): every one carries `p4`
     // (records by scenario name, synth_p4.rs); the rig side is play.rs/p4.rs.
     (
@@ -702,9 +742,133 @@ pub fn rec_namespace(scenario: &str) -> Value {
             rec["upload"] = json!({"mode": "off"});
             rec["retention"] = json!({"maxBytes": 536_870_912u64, "minFreeBytes": 0});
         }
+        "p6-takeover-vbacklog" | "p6-takeover-vbacklog-503tail" => {
+            rec["telemetry"]["enabled"] = json!(false);
+        }
+        "p6-takeover-tbacklog" => {
+            rec["video"]["enabled"] = json!(false);
+        }
         _ => {}
     }
     rec
+}
+
+/// P3a handoff instants (tape ms), off every rotation: cam0's 10 s fragments,
+/// measured on the rig at ≈ 3.2 s + 10k (tape), cam1's at ≈ 6.7 s + 10k (L1
+/// 2026-11-07: 95 s cut cam0 1.8 s into a fragment → INVALID; a multiple of
+/// 10 s is ≈ 6.8 s / 3.3 s into them),
+/// cam1's (staggered 4 s), the 60 s telemetry rotation (`segments.ts:45`)
+/// and the fault-window edges. `takeover.rs` `edge` re-checks on each run.
+pub const TAKEOVER_OPEN_AT_MS: u64 = 100_000;
+pub const TAKEOVER_VBACKLOG_AT_MS: u64 = 100_000;
+pub const TAKEOVER_TBACKLOG_AT_MS: u64 = 150_000;
+pub const TAKEOVER_REAP_AT_MS: u64 = 150_000;
+pub const TAKEOVER_INFLIGHT_AT_MS: u64 = 100_000;
+/// The in-flight tape's hold window opens this long before the handoff: two
+/// cameras close a fragment every ≤ 6 s (10 s fragments, 4 s stagger), so at
+/// least one mp4 PUT starts inside it, and the single-flight uploader sends
+/// nothing after it (`uploader.ts:2,11,136-213` @09da38d), so exactly one is held.
+pub const TAKEOVER_INFLIGHT_LEAD_MS: u64 = 8_000;
+/// Held far past the handoff (the SIGKILL lands inside it; both agents' PUT
+/// timeouts are 60 s, `s3-put.ts:23-24,115`).
+pub const TAKEOVER_INFLIGHT_HOLD_MS: u64 = 20_000;
+/// How far past the handoff (tape time is frozen across it) the outage
+/// lasts. 0 (L5 2026-11-07): the bucket is healthy again by the time the next
+/// agent boots, so its first drain of the inherited backlog lands inside the
+/// boot's startup window. With a 10 s tail each side drained ~12 s after the
+/// restart on its OWN retry timer and its 1 Hz tick sampled the ~100 ms drain
+/// at a different point (`recording.backlogSegments` 12 vs 9, both ticks
+/// `uploading: true`) — a timing race no row covers, so the tape avoids it.
+/// The cost: the next agent never meets 503s on the inherited backlog (an
+/// Unverified item of P3a-takeover.md).
+pub const TAKEOVER_OUTAGE_TAIL_MS: u64 = 0;
+/// The informational `p6-takeover-vbacklog-503tail` lane's post-restart 503
+/// tail: the next agent retries through its backoff (2, 4, 8, 16, 32 s,
+/// `uploader.ts:71-72`) and drains at ~62 s, inside the tape's 100 s tail.
+pub const TAKEOVER_INFO_TAIL_MS: u64 = 60_000;
+
+/// `meta.rig` of a P3a tape: `handoff {atMs, segMs, expect}` + the fake-S3
+/// outage. `expect` names `takeover::classes` aggregates (signal-independent:
+/// a SIGTERM lets X finalize what a SIGKILL leaves open): `min` / `max`
+/// counts per side, and `reaped` (no X-era video file may be left at the end).
+pub fn takeover_rig(name: &str) -> Value {
+    let outage = |from: u64, at: u64| json!([{"fromMs": from, "toMs": at + TAKEOVER_OUTAGE_TAIL_MS, "status": 503}]);
+    let (at, faults, expect) = match name {
+        "p6-takeover-open" => (
+            TAKEOVER_OPEN_AT_MS,
+            None,
+            // An open session per camera (its manifest) + cam0's active mp4
+            // (≈ 6.8 s old at the cut, non-empty). cam1's (≈ 3.3 s) may still
+            // be 0 bytes — gst holds it — and then the drop-empty path of the
+            // agent that sweeps it (X at a SIGTERM, the next one after a
+            // SIGKILL) removes it: legitimate either way (L1 2026-11-07).
+            json!({
+                "min": {"video/cam0: mp4": 1, "video/cam0: session.json": 1, "video/cam1: session.json": 1, "telemetry: segment": 1},
+                "max": {"video/cam0: mp4": 1, "video/cam1: mp4": 1, "telemetry: segment": 1},
+            }),
+        ),
+        "p6-takeover-vbacklog" => (
+            TAKEOVER_VBACKLOG_AT_MS,
+            Some(outage(30_000, TAKEOVER_VBACKLOG_AT_MS)),
+            json!({
+                "min": {"video/cam0: mp4": 5, "video/cam1: mp4": 5},
+                "max": {"telemetry: segment": 0},
+            }),
+        ),
+        "p6-takeover-vbacklog-503tail" => (
+            TAKEOVER_VBACKLOG_AT_MS,
+            Some(
+                json!([{"fromMs": 30_000, "toMs": TAKEOVER_VBACKLOG_AT_MS + TAKEOVER_INFO_TAIL_MS, "status": 503}]),
+            ),
+            json!({
+                "min": {"video/cam0: mp4": 5, "video/cam1: mp4": 5},
+                "max": {"telemetry: segment": 0},
+            }),
+        ),
+        "p6-takeover-tbacklog" => (
+            TAKEOVER_TBACKLOG_AT_MS,
+            Some(outage(20_000, TAKEOVER_TBACKLOG_AT_MS)),
+            json!({
+                "min": {"telemetry: segment": 3},
+                "max": {"video/cam0: mp4": 0, "video/cam1: mp4": 0},
+            }),
+        ),
+        "p6-takeover-inflight" => (
+            TAKEOVER_INFLIGHT_AT_MS,
+            None,
+            json!({
+                "min": {"video/cam0: mp4": 1, "video/cam0: session.json": 1, "video/cam1: session.json": 1, "telemetry: segment": 1},
+                "inflight": 1,
+            }),
+        ),
+        _ => (
+            TAKEOVER_REAP_AT_MS,
+            Some(outage(30_000, TAKEOVER_REAP_AT_MS)),
+            json!({
+                "min": {"video/cam0: mp4": 10, "video/cam1: mp4": 10, "telemetry: segment": 3},
+                "reaped": true,
+            }),
+        ),
+    };
+    let mut rig = json!({"handoff": {"atMs": at, "segMs": 10_000, "expect": expect}});
+    if let Some(f) = faults {
+        rig["s3Faults"] = f;
+    }
+    if name == "p6-takeover-inflight" {
+        rig["s3Holds"] = json!([{
+            "fromMs": at - TAKEOVER_INFLIGHT_LEAD_MS,
+            "toMs": at,
+            "holdMs": TAKEOVER_INFLIGHT_HOLD_MS,
+            "suffix": ".mp4",
+        }]);
+    }
+    rig
+}
+
+/// The repo fixtures (tests of other modules build synth tapes too).
+#[cfg(test)]
+pub fn test_fixtures() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
 }
 
 fn rec_doc(rev: i64, rec: &Value) -> String {
@@ -1273,6 +1437,9 @@ fn build_inner(
                     json!({"s3Faults": [{"fromMs": 100_000, "toMs": 130_000, "status": 503}]}),
                 );
             }
+            n if n.starts_with("p6-takeover-") => {
+                rig = Some(takeover_rig(n));
+            }
             _ => {}
         }
     }
@@ -1497,7 +1664,8 @@ mod tests {
             .map(|s| s.0)
             .filter(|n| is_phase3(n))
             .collect();
-        assert_eq!(p3.len(), 8, "{p3:?}");
+        // 8 Phase 3 scenarios + the 6 Phase 6 P3a takeover tapes.
+        assert_eq!(p3.len(), 14, "{p3:?}");
         for name in p3 {
             let tape = build(name, None, &fixtures()).unwrap();
             assert_eq!(tape.meta.hardware, media_hardware_block(), "{name}");
@@ -1798,6 +1966,103 @@ mod tests {
             let mode = tape.meta.env.get("MODE").and_then(Value::as_str);
             assert_eq!(mode, Some(if name == "sms-sim" { "sim" } else { "real" }));
         }
+    }
+
+    #[test]
+    fn takeover_tapes_carry_their_handoff_state_and_outage() {
+        for (name, at, outage, video, telemetry) in [
+            ("p6-takeover-open", TAKEOVER_OPEN_AT_MS, None, true, true),
+            (
+                "p6-takeover-vbacklog",
+                TAKEOVER_VBACKLOG_AT_MS,
+                Some(30_000),
+                true,
+                false,
+            ),
+            (
+                "p6-takeover-tbacklog",
+                TAKEOVER_TBACKLOG_AT_MS,
+                Some(20_000),
+                false,
+                true,
+            ),
+            (
+                "p6-takeover-reap",
+                TAKEOVER_REAP_AT_MS,
+                Some(30_000),
+                true,
+                true,
+            ),
+            (
+                "p6-takeover-inflight",
+                TAKEOVER_INFLIGHT_AT_MS,
+                None,
+                true,
+                true,
+            ),
+        ] {
+            let tape = build(name, None, &fixtures()).unwrap();
+            let rig = tape.meta.rig.as_ref().unwrap();
+            assert_eq!(rig["handoff"]["atMs"], at, "{name}");
+            assert!(rig["handoff"]["expect"]["min"].is_object(), "{name}");
+            assert!(
+                at < tape.duration_ms(),
+                "{name}: the handoff is inside the tape"
+            );
+            let faults = crate::aws::faults_of(Some(rig));
+            match outage {
+                None => assert!(faults.is_empty(), "{name}"),
+                Some(from) => {
+                    assert_eq!(faults.len(), 1, "{name}");
+                    assert_eq!(faults[0].from_ms, from, "{name}");
+                    // The outage spans the handoff and ends 10 s (tape) after it.
+                    assert_eq!(
+                        faults[0].to_ms,
+                        (at + TAKEOVER_OUTAGE_TAIL_MS) as i64,
+                        "{name}"
+                    );
+                    assert_eq!(faults[0].status, 503);
+                }
+            }
+            let rec = rec_namespace(name);
+            assert_eq!(rec["video"]["enabled"], video, "{name}");
+            assert_eq!(rec["telemetry"]["enabled"], telemetry, "{name}");
+            assert_eq!(rec["upload"]["mode"], "auto", "{name}");
+            // Off the 60 s telemetry rotation by ≥ 10 s (recorder start ≈ 1-2 s).
+            let ph = at % 60_000;
+            assert!((10_000..=50_000).contains(&ph), "{name}: {ph}");
+            // Determinism.
+            let (mut x, mut y) = (Vec::new(), Vec::new());
+            tape.write_to(&mut x).unwrap();
+            build(name, None, &fixtures())
+                .unwrap()
+                .write_to(&mut y)
+                .unwrap();
+            assert_eq!(x, y, "{name}");
+        }
+        // The in-flight tape holds mp4 PUTs only, in the 8 s before the
+        // handoff, for longer than the stop takes.
+        let inf = build("p6-takeover-inflight", None, &fixtures()).unwrap();
+        let holds = crate::aws::holds_of(inf.meta.rig.as_ref());
+        assert_eq!(holds.len(), 1);
+        assert_eq!(holds[0].suffix, ".mp4");
+        assert_eq!(holds[0].to_ms, TAKEOVER_INFLIGHT_AT_MS as i64);
+        assert_eq!(
+            holds[0].from_ms,
+            (TAKEOVER_INFLIGHT_AT_MS - TAKEOVER_INFLIGHT_LEAD_MS) as i64
+        );
+        assert!(holds[0].hold_ms > TAKEOVER_INFLIGHT_LEAD_MS + 5_000);
+        assert_eq!(
+            inf.meta.rig.as_ref().unwrap()["handoff"]["expect"]["inflight"],
+            1
+        );
+        // The reap tape's tail outlives REAP_MIN_AGE_MS (video-source.ts:35).
+        let reap = build("p6-takeover-reap", None, &fixtures()).unwrap();
+        assert!(reap.duration_ms() >= 600_000 + 60_000);
+        assert_eq!(
+            reap.meta.rig.as_ref().unwrap()["handoff"]["expect"]["reaped"],
+            true
+        );
     }
 
     #[test]

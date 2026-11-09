@@ -3,8 +3,9 @@
 # prod agent. Idempotent; run from the Mac.
 #
 #   scripts/bench/install.sh <tarball>              # a pack.sh / CI tarball on the Mac
-#   scripts/bench/install.sh --from-bench-build [--bench-src /home/pi/src/xorgate-device-agent-rust]
-#                                                   # the bench's own cargo build, packed ON the bench
+#   scripts/bench/install.sh --from-bench-build     # RETIRED: refuses with exit 2. Never build on
+#                                                   # the bench: build in Docker (scripts/docker-build.sh
+#                                                   # pack) and pass the tarball (guide/01-setup.md)
 #   BENCH=pi@10.0.0.111 scripts/bench/install.sh …  # other address
 #
 # What it does on the bench (all as root, all re-runnable):
@@ -42,40 +43,37 @@ source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 
 usage() { sed -n '2,30p' "$0"; exit 2; }
 
+# On-bench builds are retired: a cargo build on the bench browned out its
+# power supply (the Pi and the modem share one). The option still parses so an
+# old command line gets a clear refusal instead of "unknown option".
+refuse_bench_build() {
+  echo "install.sh: --from-bench-build is retired: never build on the bench (a cargo build there browned out its shared power supply)." >&2
+  echo "  build in Docker instead:  scripts/docker-build.sh pack" >&2
+  echo "  then install the tarball: scripts/bench/install.sh target/dist/xorgate-agent-rs-<version>.tar.gz" >&2
+  exit 2
+}
+
 TARBALL=""
-FROM_BENCH=0
-BENCH_SRC=/home/pi/src/xorgate-device-agent-rust
 while [ $# -gt 0 ]; do
   case "$1" in
-    --from-bench-build) FROM_BENCH=1; shift ;;
-    --bench-src) BENCH_SRC="$2"; shift 2 ;;
+    --from-bench-build|--bench-src) refuse_bench_build ;;
     -h|--help) usage ;;
     -*) echo "unknown option: $1" >&2; usage ;;
     *) TARBALL="$1"; shift ;;
   esac
 done
-if [ "$FROM_BENCH" -eq 0 ] && [ -z "$TARBALL" ]; then usage; fi
-if [ "$FROM_BENCH" -eq 1 ] && [ -n "$TARBALL" ]; then echo "give a tarball OR --from-bench-build" >&2; usage; fi
+if [ -z "$TARBALL" ]; then usage; fi
 
-REMOTE_TARBALL=""
-if [ "$FROM_BENCH" -eq 1 ]; then
-  log "packing the bench's own build in $BENCH_SRC (scripts/pack.sh --channel bench)"
-  # pack.sh prints key=value lines on stdout; the `path=` one is the tarball.
-  REMOTE_TARBALL=$(bench_ssh "cd '$BENCH_SRC' && test -x target/release/xorgate-rs && scripts/pack.sh --channel bench" \
-    | sed -n 's/^path=//p')
-  [ -n "$REMOTE_TARBALL" ] || { echo "pack.sh on the bench did not report a tarball path" >&2; exit 1; }
-else
-  [ -f "$TARBALL" ] || { echo "no such tarball: $TARBALL" >&2; exit 1; }
-  # List once: `tar -tzf | grep -q` under pipefail fails spuriously (SIGPIPE).
-  LISTING=$(tar -tzf "$TARBALL")
-  for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service systemd/bench/90-bench-dev.conf; do
-    grep -qx "$required" <<<"$LISTING" || { echo "$TARBALL lacks $required" >&2; exit 1; }
-  done
-  REMOTE_TARBALL="/home/pi/xorgate-rs-upload/$(basename "$TARBALL")"
-  log "uploading $(basename "$TARBALL") ($(wc -c < "$TARBALL" | tr -d ' ') bytes) to $BENCH:$REMOTE_TARBALL"
-  bench_ssh 'mkdir -p /home/pi/xorgate-rs-upload'
-  bench_scp_to "$TARBALL" "$REMOTE_TARBALL"
-fi
+[ -f "$TARBALL" ] || { echo "no such tarball: $TARBALL" >&2; exit 1; }
+# List once: `tar -tzf | grep -q` under pipefail fails spuriously (SIGPIPE).
+LISTING=$(tar -tzf "$TARBALL")
+for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service systemd/bench/90-bench-dev.conf; do
+  grep -qx "$required" <<<"$LISTING" || { echo "$TARBALL lacks $required" >&2; exit 1; }
+done
+REMOTE_TARBALL="/home/pi/xorgate-rs-upload/$(basename "$TARBALL")"
+log "uploading $(basename "$TARBALL") ($(wc -c < "$TARBALL" | tr -d ' ') bytes) to $BENCH:$REMOTE_TARBALL"
+bench_ssh 'mkdir -p /home/pi/xorgate-rs-upload'
+bench_scp_to "$TARBALL" "$REMOTE_TARBALL"
 
 log "installing on $BENCH from $REMOTE_TARBALL"
 # Everything below runs as root ON THE BENCH. Quoted heredoc: nothing expands

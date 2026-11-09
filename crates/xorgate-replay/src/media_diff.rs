@@ -117,6 +117,8 @@ pub struct MediaCapture {
     /// Phase 5b WP4: every live telemetry tick's `metrics.system.health_flags`
     /// value TEXT `(ts, value)` (the agent's own LED state over time).
     pub live_flags: Vec<(i64, String)>,
+    /// P3a D59: the same for `metrics.system.led_state` (value TEXT).
+    pub live_led: Vec<(i64, String)>,
     /// `(ts, "<level>: <msg>")` of every `power shed →` event seen in the
     /// state.json snapshots (`files.ndjson`; T8/d30-js-reference).
     pub shed_events: Vec<(i64, String)>,
@@ -148,6 +150,64 @@ pub struct MediaCapture {
     /// session it holds sidecars of but never spawned was swept by crash
     /// recovery (a previous boot's session).
     pub live_sids: BTreeSet<String>,
+    /// Phase 6 P3a: `(spawn wall, kind)` per incarnation (`meta.json`
+    /// `incarnations`; empty before P3a = one incarnation of `kind`).
+    pub incarnations: Vec<(i64, String)>,
+    /// P3a: each session label's first appearance (wall ms).
+    pub session_first: BTreeMap<String, i64>,
+    /// P3a: each normalised `recordings/` path's first sighting (wall ms).
+    pub rec_first: BTreeMap<String, i64>,
+    /// The normaliser of this side (P3a `takeover.rs` normalises with it).
+    norm: Norm,
+}
+
+impl MediaCapture {
+    /// P3a (R2): the kind of the incarnation alive at wall `w`.
+    pub fn kind_at(&self, w: i64) -> &str {
+        self.incarnations
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= w)
+            .or(self.incarnations.first())
+            .map_or(self.kind.as_str(), |(_, k)| k.as_str())
+    }
+
+    /// P3a (R2): the kind of the incarnation that started session `label`.
+    pub fn kind_of_session(&self, label: &str) -> &str {
+        match self.session_first.get(label) {
+            Some(w) => self.kind_at(*w),
+            None => self.kind.as_str(),
+        }
+    }
+
+    /// This side's path normalisation (work dir, deviceId, session labels,
+    /// telemetry ms stamps).
+    pub fn norm_path(&self, p: &str) -> String {
+        self.norm.path(p)
+    }
+
+    /// When the observer first saw a normalised `recordings/` path.
+    pub fn first_seen(&self, rel: &str) -> Option<i64> {
+        self.rec_first.get(rel).copied()
+    }
+
+    /// Normalised S3 key → number of successful (200) PUTs.
+    pub fn successful_puts(&self) -> BTreeMap<String, usize> {
+        let mut m = BTreeMap::new();
+        for o in self.s3.iter().filter(|o| o.status == 200) {
+            *m.entry(o.key.clone()).or_default() += 1;
+        }
+        m
+    }
+
+    /// Every normalised `recordings/` file present at the end.
+    pub fn end_files(&self) -> BTreeSet<String> {
+        self.finals
+            .keys()
+            .chain(self.mp4_final.keys())
+            .cloned()
+            .collect()
+    }
 }
 
 /// Phase 7a (WP3): one tape `capture_timing` record (xorgate-hal
@@ -226,6 +286,7 @@ fn mask_ms(s: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Default)]
 struct Norm {
     work: String,
     id: String,
@@ -313,7 +374,10 @@ impl MediaCapture {
         // player's `gone`); and the agent never reaped that child
         // (`child_exit`): it died with its agent, the A3 race. Anything else
         // falls back to gst's own `handling interrupt.` line.
-        let tape = tape_recs(&dir.join("agent-tape.ndjson.gz"));
+        // P3a: one tape per Rust incarnation (`play::agent_tape_name`).
+        let tape: Vec<Value> = (0..16)
+            .flat_map(|n| tape_recs(&dir.join(crate::play::agent_tape_name(n))))
+            .collect();
         let death: BTreeMap<u32, i64> = shim
             .iter()
             .filter(|v| v["k"] == "eof")
@@ -402,11 +466,14 @@ impl MediaCapture {
             per_dir.entry(d).or_default().push((w, u));
         }
         let mut sids = BTreeMap::new();
+        let mut session_first = BTreeMap::new();
         for (d, mut v) in per_dir {
             v.sort();
-            for (i, (_, u)) in v.into_iter().enumerate() {
+            for (i, (w, u)) in v.into_iter().enumerate() {
                 // No `/` inside the label: it sits in paths.
-                sids.insert(u, format!("<sid:{}#{i}>", d.replace('/', ":")));
+                let label = format!("<sid:{}#{i}>", d.replace('/', ":"));
+                session_first.insert(label.clone(), w);
+                sids.insert(u, label);
             }
         }
         let files = vec![
@@ -536,7 +603,22 @@ impl MediaCapture {
             .filter(|v| v["k"] == "external" && v["role"] == "capture" && v["ok"] != false)
             .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
             .collect();
+        // P3a (R1): a child the rig's handoff stop signalled while it was
+        // alive ended by the RIG's doing (`handoff.rs`), like `external`.
+        let handoff_sig: BTreeMap<u32, String> = procs
+            .iter()
+            .filter(|v| v["k"] == "handoff")
+            .filter_map(|v| Some((v["pid"].as_u64()? as u32, v["sig"].as_str()?.to_string())))
+            .fold(BTreeMap::new(), |mut m, (p, s)| {
+                m.entry(p).or_insert(s);
+                m
+            });
         for s in spawns.iter_mut() {
+            if let Some(sig) = handoff_sig.get(&s.pid) {
+                s.end_w = exit_w.get(&s.pid).copied();
+                s.end = Some(format!("handoff:{sig}"));
+                continue;
+            }
             if s.role == "kvs" {
                 s.end_w = exit_w.get(&s.pid).copied();
                 s.end = kvs_end
@@ -571,6 +653,12 @@ impl MediaCapture {
             }
         }
 
+        let rec_first: BTreeMap<String, i64> = rec_json["files"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(rel, s)| Some((n.path(rel), s["first"].as_i64()?)))
+            .collect();
         let rec: BTreeMap<String, Seen> = rec_json["files"]
             .as_object()
             .into_iter()
@@ -707,6 +795,7 @@ impl MediaCapture {
         }
         let mut last_tick_backlog = None;
         let mut live_flags = Vec::new();
+        let mut live_led = Vec::new();
         let end_backlog = std::fs::read(dir.join("final/state.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -735,6 +824,12 @@ impl MediaCapture {
                 p.pointer("/metrics/system/health_flags/value"),
             ) {
                 live_flags.push((ts, f.to_string()));
+            }
+            if let (Some(ts), Some(f)) = (
+                p["ts"].as_i64(),
+                p.pointer("/metrics/system/led_state/value"),
+            ) {
+                live_led.push((ts, f.to_string()));
             }
             if prev.as_ref().is_some_and(|q| *q != cur) {
                 shed_changes.push(v["w"].as_i64().unwrap_or(0));
@@ -796,6 +891,7 @@ impl MediaCapture {
             shed_changes,
             last_tick_backlog,
             live_flags,
+            live_led,
             end_backlog,
             shed_events,
             nmea_reads: nmea_lines(&tape, None),
@@ -809,6 +905,15 @@ impl MediaCapture {
                 })
                 .and_then(|st| xorgate_core::orientation::parse_imu_mount(&st["imuMount"])),
             present,
+            incarnations: meta["incarnations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| Some((v["fromW"].as_i64()?, v["kind"].as_str()?.to_string())))
+                .collect(),
+            session_first,
+            rec_first,
+            norm: n,
         }
     }
 }
@@ -1593,6 +1698,106 @@ fn system_less_transients(p: &str, steps: &[Step], other: &[LeafSample]) -> Vec<
         .collect()
 }
 
+/// The LED/health leaves D59 may apply to (agent-computed on the LED
+/// heartbeat, ts:src/worker.ts:703-705, ts:src/lib/led-state.ts:223-253).
+const D59_LEAVES: &[&str] = &[
+    "metrics.system.health_flags.value",
+    "metrics.system.led_state.value",
+];
+
+/// P3a D59: how long after a boot (the run's start or a handoff restart,
+/// `PlayInfo::boot_wall`) a recorded LED/health blip counts as the boot
+/// transient — the startup window of the diff's boot rules (5 s).
+const D59_BOOT_MS: i64 = 5_000;
+/// `led_state_both_held`'s window: one LED heartbeat.
+const D59_LIVE_MS: i64 = 1_000;
+
+/// P3a D59 (P3a-takeover.md, D-row text there): a BOOT-STARTED recording
+/// session (recording on in settings.json at boot — every handoff, and a
+/// fielded cold boot) samples before the agent's first LED evaluation, so
+/// its first sample is the pre-LED `(health_flags 0, led_state starting)`,
+/// and the one-sample LED states of the boot transient that follow land
+/// MID-sequence (a split run), where `led_state_both_held` (the edge-only
+/// `fix_edge` arm) cannot reach them. `Some(drops)` when the two value
+/// sequences of an LED/health leaf differ ONLY by such blips: a single
+/// sample of value v between two samples of the same value u, at most
+/// [`D59_BOOT_MS`] after its boot, in a session whose first sample is too on
+/// BOTH sides, and that BOTH sides' live telemetry carried within
+/// ±[`D59_LIVE_MS`] (both LEDs held v; which recorder caught it is each
+/// one's own 1 s phase). Any kind pair (a timing race, not a kind
+/// difference). Anything else: None.
+fn d59_boot_led_blips(
+    p: &str,
+    play: &PlayInfo,
+    kinds: (&str, &str),
+    (la, lb): (&[LeafSample], &[LeafSample]),
+    (live_a, live_b): (LiveSeries, LiveSeries),
+) -> Option<Vec<(bool, Step)>> {
+    if !D59_LEAVES.contains(&p) {
+        return None;
+    }
+    let vals = |l: &[LeafSample]| -> Vec<(i64, String)> {
+        l.iter()
+            .filter_map(|(ts, o)| o.get(p).map(|v| (*ts, v.clone())))
+            .collect()
+    };
+    let (va, vb) = (vals(la), vals(lb));
+    let after_boot = |ts: i64| ts - play.boot_wall(ts) <= D59_BOOT_MS;
+    let boot_started = |v: &[(i64, String)]| v.first().is_some_and(|(ts, _)| after_boot(*ts));
+    if !boot_started(&va) || !boot_started(&vb) {
+        return None;
+    }
+    let near = |l: LiveSeries, ts: i64, v: &str| {
+        l.iter()
+            .any(|(t, x)| (t - ts).abs() <= D59_LIVE_MS && x == v)
+    };
+    let blips = |v: &[(i64, String)]| -> Vec<usize> {
+        (1..v.len().saturating_sub(1))
+            .filter(|&i| {
+                let (ts, x) = (v[i].0, &v[i].1);
+                v[i - 1].1 != *x
+                    && v[i - 1].1 == v[i + 1].1
+                    && after_boot(ts)
+                    && near(live_a, ts, x)
+                    && near(live_b, ts, x)
+            })
+            .collect()
+    };
+    // review-P3a F2: the side LACKING a blip must be a JS incarnation (the
+    // TS post-await LED read, worker.ts:544, races the heartbeat armed a few
+    // ms after the recorder, :597 vs :703; Rust arms its heartbeat after the
+    // connect, worker.rs:828, so it reads the previous tick deterministically
+    // and never lacks one). A Rust side lacking a blip stays judged.
+    let da = if kinds.1 == "js" {
+        blips(&va)
+    } else {
+        Vec::new()
+    };
+    let db = if kinds.0 == "js" {
+        blips(&vb)
+    } else {
+        Vec::new()
+    };
+    if da.is_empty() && db.is_empty() {
+        return None;
+    }
+    let dedup = |v: &[(i64, String)], d: &[usize]| -> Vec<String> {
+        let mut o: Vec<String> = Vec::new();
+        for (i, (_, x)) in v.iter().enumerate() {
+            if !d.contains(&i) && o.last() != Some(x) {
+                o.push(x.clone());
+            }
+        }
+        o
+    };
+    (dedup(&va, &da) == dedup(&vb, &db)).then(|| {
+        da.iter()
+            .map(|&i| (true, (va[i].1.clone(), 1, va[i].0)))
+            .chain(db.iter().map(|&i| (false, (vb[i].1.clone(), 1, vb[i].0))))
+            .collect()
+    })
+}
+
 fn d30_js_system_less_value(p: &str, lack: &[LeafSample], step: &Step) -> bool {
     if !p.starts_with("metrics.system.") {
         return false;
@@ -1652,6 +1857,7 @@ fn rec_values(
         rep,
         (None, None),
         (&[], &[]),
+        (&[], &[]),
     )
 }
 
@@ -1671,6 +1877,7 @@ fn rec_values_m(
         Option<&xorgate_core::orientation::ImuMount>,
     ),
     live: (LiveSeries, LiveSeries),
+    live_led: (LiveSeries, LiveSeries),
 ) {
     let id = "T4/rec-sample";
     let d30_gap_row = table
@@ -1686,6 +1893,12 @@ fn rec_values_m(
         .cloned();
     let d30_js_nosys_row = table
         .matcher_rows("d30_js_system_less_value", "rec-telemetry")
+        .first()
+        .cloned();
+    // P3a D59 (inert until its row exists in tolerances.toml): the boot
+    // transient's one-sample LED/health states of a boot-started session.
+    let d59_row = table
+        .matcher_rows("d59_boot_led_blip", "rec-telemetry")
         .first()
         .cloned();
     let collision = row_tol(table, id, "collisionMs", 0.0) as i64;
@@ -1864,6 +2077,29 @@ fn rec_values_m(
                             };
                             rep.push(mm("rec-telemetry", &at, &format!("{p}(values)"), x, y, rid));
                         }
+                    }
+                    continue;
+                }
+            }
+            // P3a D59 (`d59_boot_led_blips`): the LED/health leaves only, a
+            // boot-started session's mid-sequence one-sample boot states that
+            // BOTH sides' live telemetry carried. Every such blip removed,
+            // the sequences must be EQUAL; anything else stays judged below.
+            if let Some(rid) = d59_row.as_ref() {
+                let lv = if p.ends_with("led_state.value") {
+                    live_led
+                } else {
+                    live
+                };
+                if let Some(drops) = d59_boot_led_blips(p, play, kinds, (&la, &lb), lv) {
+                    for (side_a, st) in drops {
+                        let f = format!("{}×{}@{}", st.0, st.1, st.2);
+                        let (x, y) = if side_a {
+                            (f, String::new())
+                        } else {
+                            (String::new(), f)
+                        };
+                        rep.push(mm("rec-telemetry", &at, &format!("{p}(values)"), x, y, rid));
                     }
                     continue;
                 }
@@ -2585,7 +2821,7 @@ fn d30_session_end(
     let (Some(s0a), Some(s0b)) = (f64_at(ca, 0, "startTs"), f64_at(cb, 0, "startTs")) else {
         return false;
     };
-    let delta = match (a.kind.as_str(), b.kind.as_str()) {
+    let delta = match (a.kind_of_session(sid), b.kind_of_session(sid)) {
         ("js", "rust") => s0a - s0b,
         ("rust", "js") => s0b - s0a,
         ("js", "js") => (s0a - s0b).abs(),
@@ -3545,7 +3781,10 @@ pub fn diff_media(
         // rule: an unsigned Rust drop still counts (and fails).
         let rs_adj =
             |kind: &str, lack: usize, st: usize| if kind == "rust" { lack - st } else { lack };
-        for (side, kind, st) in [("A", &a.kind, starved.0), ("B", &b.kind, starved.1)] {
+        // P3a (R2): judged by the kind of the incarnation that RECORDED the
+        // session (no handoff: the side's kind).
+        let (ka, kb) = (a.kind_of_session(sid), b.kind_of_session(sid));
+        for (side, kind, st) in [("A", ka, starved.0), ("B", kb, starved.1)] {
             if kind == "rust" && st > 0 {
                 let id = table
                     .matcher_rows("d30_system_presence", "rec-telemetry")
@@ -3570,11 +3809,8 @@ pub fn diff_media(
                 ));
             }
         }
-        let (la, lb) = (
-            rs_adj(&a.kind, lack.0, starved.0),
-            rs_adj(&b.kind, lack.1, starved.1),
-        );
-        if let Some(tol) = system_presence_tol(table, &a.kind, &b.kind, la, lb) {
+        let (la, lb) = (rs_adj(ka, lack.0, starved.0), rs_adj(kb, lack.1, starved.1));
+        if let Some(tol) = system_presence_tol(table, ka, kb, la, lb) {
             rep.push(mm(
                 "rec-telemetry",
                 sid,
@@ -3638,12 +3874,13 @@ pub fn diff_media(
             &ep,
             play,
             &facts,
-            (a.kind.as_str(), b.kind.as_str()),
+            (a.kind_of_session(sid), b.kind_of_session(sid)),
             &pmic,
             table,
             rep,
             (a.imu_mount.as_ref(), b.imu_mount.as_ref()),
             (&a.live_flags, &b.live_flags),
+            (&a.live_led, &b.live_led),
         );
     }
 
@@ -5117,6 +5354,218 @@ fn d30_js_spawn_tick(a: &MediaCapture, b: &MediaCapture, rep: &Report) -> BTreeS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P3a D59, the two shapes seen (restart at 0 here; ms since it):
+    /// L9 2026-11-07 — Rust records hf 16 for ONE sample (2 070) just before
+    /// its LED went healthy, the JS sample 200 ms later already 0; L1.r2 —
+    /// the JS sample there carried no `system` (D30). Both live series held
+    /// 16 within 1 s. NEGATIVES: a blip > 5 s after the boot, a session that
+    /// did not start at a boot, one live series without the value, a
+    /// two-sample state, another leaf, a remaining difference: all None.
+    #[test]
+    fn d59_only_boot_transient_one_sample_led_states_both_lives_held() {
+        let hf = "metrics.system.health_flags.value";
+        let smp = |ts: i64, v: Option<&str>| -> LeafSample {
+            let mut o = BTreeMap::from([("metrics.gps.fix.value".to_string(), "3".to_string())]);
+            if let Some(v) = v {
+                o.insert(hf.to_string(), v.to_string());
+            }
+            (ts, o)
+        };
+        let play = PlayInfo {
+            start_wall: -200_000,
+            end_wall: 400_000,
+            handoff: Some(crate::takeover::HandoffInfo {
+                stop_w: -100_000,
+                restart_w: 0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let a = vec![
+            smp(1_067, Some("0")),
+            smp(2_070, Some("16")),
+            smp(3_067, Some("0")),
+            smp(4_070, Some("0")),
+        ];
+        let b = vec![
+            smp(1_267, Some("0")),
+            smp(2_272, Some("0")),
+            smp(3_262, Some("0")),
+            smp(4_273, Some("0")),
+        ];
+        let live_a = vec![(1_158, "16".to_string()), (2_163, "0".to_string())];
+        let live_b = vec![(1_380, "16".to_string()), (2_383, "0".to_string())];
+        let run = |p: &str,
+                   a: &[LeafSample],
+                   b: &[LeafSample],
+                   la: &[(i64, String)],
+                   lb: &[(i64, String)],
+                   play: &PlayInfo| {
+            d59_boot_led_blips(p, play, ("rust", "js"), (a, b), (la, lb))
+        };
+        let run_k = |k: (&str, &str),
+                     a: &[LeafSample],
+                     b: &[LeafSample],
+                     la: &[(i64, String)],
+                     lb: &[(i64, String)]| {
+            d59_boot_led_blips(hf, &play, k, (a, b), (la, lb))
+        };
+        assert_eq!(
+            run(hf, &a, &b, &live_a, &live_b, &play).unwrap(),
+            vec![(true, ("16".to_string(), 1, 2_070))]
+        );
+        // L1.r2: the other side's sample there had no system (no hf leaf).
+        let b_nosys = vec![
+            smp(1_267, Some("0")),
+            smp(2_272, None),
+            smp(3_262, Some("0")),
+        ];
+        assert!(run(hf, &a, &b_nosys, &live_a, &live_b, &play).is_some());
+        // Either column order (the Rust holder as B, the JS lacker as A).
+        assert!(run_k(("js", "rust"), &b, &a, &live_b, &live_a).is_some());
+        // JS-vs-JS: the lacking side is JS, the TS race (allowed).
+        assert!(run_k(("js", "js"), &a, &b, &live_a, &live_b).is_some());
+        // NEGATIVE (review-P3a F2): the side LACKING the blip is Rust — JS
+        // holding it, or Rust-vs-Rust — stays judged.
+        assert!(run_k(("js", "rust"), &a, &b, &live_a, &live_b).is_none());
+        assert!(run_k(("rust", "rust"), &a, &b, &live_a, &live_b).is_none());
+        assert!(run_k(("rust", "js"), &b, &a, &live_b, &live_a).is_none());
+        // NEGATIVE: the same blip 6 s after the boot.
+        let late_a = [
+            smp(1_067, Some("0")),
+            smp(5_067, Some("0")),
+            smp(6_070, Some("16")),
+            smp(7_067, Some("0")),
+        ];
+        let late_b = [
+            smp(1_267, Some("0")),
+            smp(5_262, Some("0")),
+            smp(6_272, Some("0")),
+            smp(7_273, Some("0")),
+        ];
+        let late_live = vec![(6_158, "16".to_string())];
+        assert!(run(hf, &late_a, &late_b, &late_live, &late_live, &play).is_none());
+        // NEGATIVE: a session that did not start at a boot (60 s after it).
+        let mid = PlayInfo {
+            handoff: Some(crate::takeover::HandoffInfo {
+                stop_w: -100_000,
+                restart_w: -60_000,
+                ..Default::default()
+            }),
+            ..play.clone()
+        };
+        assert!(run(hf, &a, &b, &live_a, &live_b, &mid).is_none());
+        // NEGATIVE: B's live telemetry never carried 16 near it.
+        let live_b0 = vec![(1_380, "0".to_string())];
+        assert!(run(hf, &a, &b, &live_a, &live_b0, &play).is_none());
+        // NEGATIVE: a two-sample state.
+        let two = vec![
+            smp(1_067, Some("0")),
+            smp(2_070, Some("16")),
+            smp(3_067, Some("16")),
+            smp(4_070, Some("0")),
+        ];
+        assert!(run(hf, &two, &b, &live_a, &live_b, &play).is_none());
+        // NEGATIVE: another leaf; a remaining difference after the drop.
+        assert!(run(
+            "metrics.system.rail_5v.value",
+            &a,
+            &b,
+            &live_a,
+            &live_b,
+            &play
+        )
+        .is_none());
+        let more = vec![
+            smp(1_067, Some("0")),
+            smp(2_070, Some("16")),
+            smp(3_067, Some("0")),
+            smp(4_070, Some("64")),
+        ];
+        assert!(run(hf, &more, &b, &live_a, &live_b, &play).is_none());
+    }
+
+    #[test]
+    fn p3a_r1_handoff_class_only_for_children_the_rig_signalled() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-r1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            concat!(
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":9147,"argv":["videotestsrc"],"w":500}"#,
+                "\n",
+                r#"{"k":"line","pid":9147,"fd":1,"line":"Got EOS from element \"pipeline0\".","w":1400}"#,
+                "\n",
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":9146,"argv":["videotestsrc"],"w":1000}"#,
+                "\n",
+                r#"{"k":"line","pid":9146,"fd":1,"line":"Got EOS from element \"pipeline0\".","w":4950}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            concat!(
+                "{\"k\":\"gone\",\"pid\":9147,\"w\":1500}\n",
+                "{\"w\":4900,\"pid\":9146,\"k\":\"handoff\",\"sig\":\"term\"}\n",
+                "{\"k\":\"gone\",\"pid\":9146,\"w\":5000}\n",
+            ),
+        )
+        .unwrap();
+        let m = MediaCapture::load(&dir, &[]);
+        let end = |pid: u32| {
+            m.spawns
+                .iter()
+                .find(|s| s.pid == pid)
+                .and_then(|s| s.end.clone())
+        };
+        // Signalled while alive → the rig's class, even though gst printed EOS.
+        assert_eq!(end(9146).as_deref(), Some("handoff:term"));
+        // Ended before the handoff (no record) → its own class.
+        assert_eq!(end(9147).as_deref(), Some("eos"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        let cap = |w: i64, end: &str| Spawn {
+            w,
+            role: "capture".into(),
+            key: "cam0".into(),
+            pid: w as u32,
+            argv: vec!["gst-launch-1.0".into()],
+            env: BTreeMap::new(),
+            playing: None,
+            end: Some(end.into()),
+            end_w: None,
+            sid: None,
+        };
+        let side = |spawns: Vec<Spawn>| MediaCapture {
+            kind: "js".into(),
+            spawns,
+            present: true,
+            ..Default::default()
+        };
+        let unt = |a: &MediaCapture, b: &MediaCapture, path: &str| {
+            let mut rep = Report::default();
+            diff_media(a, b, &PlayInfo::default(), &table, &mut rep);
+            rep.mismatches
+                .iter()
+                .filter(|x| x.stream == "children" && x.path == path && x.tol == UNTOLERATED)
+                .count()
+        };
+        let same = side(vec![cap(1_000, "handoff:kill")]);
+        assert_eq!(unt(&same, &same.clone(), "(ended)"), 0);
+        // NEGATIVE: A's child was killed by the rig, B's ended by itself.
+        assert_eq!(unt(&same, &side(vec![cap(1_000, "eos")]), "(ended)"), 1);
+        // NEGATIVE: a spawn-count difference is not touched by R1.
+        let two = side(vec![cap(1_000, "handoff:kill"), cap(20_000, "int")]);
+        assert_eq!(unt(&same, &two, "(spawn count)"), 1);
+    }
 
     /// T10 flash: a kvs master stopped by the capture-spawn bounce in the
     /// same instant on one side only is tolerated — only next to a capture
