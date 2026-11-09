@@ -39,7 +39,7 @@ f=tools/replay/shims/bluetoothctl; sh -n "$f" && { ! command -v shellcheck >/dev
 # carries are waived for it alone: SC2155 (`export X="$(…)"`), SC2015 + SC2317
 # (the `forward` trap handler).
 for f in sim/entrypoint.sh sim/build-image.sh scripts/docker-build.sh scripts/tests/sim-image.sh; do
-  ex=(); [ "$f" != sim/entrypoint.sh ] || ex=(-e SC2155,SC2015,SC2317)
+  ex=(); [ "$f" != sim/entrypoint.sh ] || ex=(-e "SC2155,SC2015,SC2317")
   bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "${ex[@]}" "$f"; } >"$LOGS/sc-p7e.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p7e.log"; }
 done
 # Phase 6 drive blackbox: the python bench tools parse (ast only: py_compile

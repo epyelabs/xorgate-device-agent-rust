@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015,SC2034,SC1003,SC2020  # `a && b || c` asserts; vars read inside check's eval; tr char sets
+# shellcheck disable=SC2015,SC2034,SC1003,SC2020,SC2317,SC2016  # `a && b || c` asserts; vars + functions used inside check's eval; tr char sets; a literal $ in sed
 # Phase 7e WP2: the Rust simulator image's recipe, checked without building it.
 #   - sim/Dockerfile: built from source (no JS image), SDK + fork pinned, the
 #     agent stage's apt list = Dockerfile.build's;
