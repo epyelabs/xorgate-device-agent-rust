@@ -85,6 +85,10 @@ h=$(sha256sum "$SRC/Dockerfile.build" | cut -c1-12)
 check "default (arm64) tag = xorgate-rs-build:$tc-<sha256(Dockerfile.build)[:12]> ($arm)" "[ \"\$arm\" = \"xorgate-rs-build:$tc-$h\" ]"
 check "amd64 tag has its own name ($amd)" "[[ \"\$amd\" == xorgate-rs-build-amd64:$tc-* ]] && [ \"\${amd##*-}\" != \"$h\" ]"
 check "Dockerfile.build has exactly one arm64 FROM (the line amd64 rewrites)" "[ \"\$(grep -c '^FROM --platform=linux/arm64 ' '$SRC/Dockerfile.build')\" = 1 ]"
+check "the default Dockerfile text is Dockerfile.build byte for byte" "[ \"\$(\"$D\" dockerfile | sha256sum)\" = \"\$(sha256sum < '$SRC/Dockerfile.build')\" ]"
+check "the amd64 text differs from Dockerfile.build in that one FROM line only" "[ \"\$(diff <(\"$D\" --platform linux/amd64 dockerfile) '$SRC/Dockerfile.build' | grep -c '^[<>]')\" = 2 ] && \"$D\" --platform linux/amd64 dockerfile | grep -qx 'FROM --platform=linux/amd64 debian:bookworm'"
+amd_hash=$("$D" --platform linux/amd64 dockerfile | sha256sum | cut -c1-12)
+check "the amd64 tag is the hash of the amd64 text" "[ \"\${amd##*-}\" = \"$amd_hash\" ]"
 "$D" --platform linux/riscv64 image-tag >/dev/null 2>&1; rc=$?
 check "an unknown platform is refused" "[ $rc = 2 ]"
 

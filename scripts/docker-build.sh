@@ -10,6 +10,7 @@
 #   scripts/docker-build.sh shell           # interactive bash in the build container
 #   scripts/docker-build.sh pack            # build --release, then scripts/pack.sh --channel bench
 #   scripts/docker-build.sh image-tag       # print the build image tag and exit
+#   scripts/docker-build.sh dockerfile      # print the Dockerfile text it builds from
 #
 # x86_64 (Phase 7e, the simulator image's agent): put `--platform linux/amd64`
 # first, e.g. `scripts/docker-build.sh --platform linux/amd64 test`. Build amd64
@@ -101,6 +102,10 @@ fi
 IMAGE="$IMAGE_NAME:${TOOLCHAIN}-${DF_HASH}"
 if [ "${1:-}" = "image-tag" ]; then
   echo "$IMAGE"
+  exit 0
+fi
+if [ "${1:-}" = "dockerfile" ]; then
+  printf '%s\n' "$DF_TEXT"
   exit 0
 fi
 
