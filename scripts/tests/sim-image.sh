@@ -17,8 +17,10 @@
 # Run as root in a throwaway container (it installs a stub at
 # /opt/xorgate-rs/bin/xorgate-rs):
 #   docker run --rm -v "$PWD:/src:ro" -w /src debian:bookworm bash scripts/tests/sim-image.sh
-# Race stress (review-wp2-fixes N6): SIM_RACE_RUNS=<n> (default 20) sets the
-# iterations of the TERM-races-a-power_off case, e.g. -e SIM_RACE_RUNS=600.
+# Race stress (review-wp2-fixes N6, N8): SIM_RACE_RUNS=<n> (default 20) sets
+# the iterations of the TERM-before-the-power_off-exit race, and
+# SIM_RACE_AFTER_RUNS=<n> (default 51) those of the TERM 0-1 ms AFTER it,
+# e.g. -e SIM_RACE_RUNS=600 -e SIM_RACE_AFTER_RUNS=600.
 set -uo pipefail
 [ -f /.dockerenv ] && [ "$(id -u)" = 0 ] || { echo "refusing: run me as root in a throwaway container (see header)"; exit 2; }
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -213,6 +215,8 @@ STUB
 }
 sigterm_case() { # $1 = dir, $2 = entrypoint → sets rc (999 = hung), fin, marker
   fixture "$1"
+  # PRESEED=1: stale .agent-* files from an earlier start (T1).
+  if [ -n "${PRESEED:-}" ]; then echo 3 > "$1/state/.agent-exit"; echo 999999 > "$1/state/.agent-pid"; fi
   CREDS_DIR="$1/creds" ASSETS_DIR="$1/assets" XORGATE_HOME="$1/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$2" > "$1.log" 2>&1 &
   local ep=$!
   for _ in $(seq 100); do [ -f "$1/state/ready" ] && break; sleep 0.05; done
@@ -271,6 +275,34 @@ chmod +x "$STUB"
 sigterm_case "$T/t" "$E"
 check "D74: an agent killed by the forwarded TERM → exit 143, no marker, no .agent-* files left" "[ $rc = 143 ] && [ $marker = no ] && [ -z \"\$(ls -A '$T/t/state' | grep '^\.agent-')\" ]"
 
+# T1 (review-wp2-fixes): stale .agent-exit=3 / .agent-pid from an earlier
+# start in a persistent /state. A `docker stop` must still TERM the agent and
+# report ITS status (143), not the stale 3 (no marker: the sim must not park).
+cat > "$STUB" <<'STUB'
+#!/usr/bin/env bash
+trap 'touch "$XORGATE_HOME/termed"; trap - TERM; kill -TERM $$' TERM
+touch "$XORGATE_HOME/ready"
+while :; do sleep 0.1; done
+STUB
+chmod +x "$STUB"
+PRESEED=1 sigterm_case "$T/s" "$E"
+check "D74: stale .agent-exit=3 + .agent-pid → TERM reaches the agent, exit 143, no marker" "[ $rc = 143 ] && [ -f '$T/s/state/termed' ] && [ $marker = no ]"
+
+# N8 (review-wp2-fixes): `forward` runs as a trap while `set -e` may be on;
+# no step of it may fail (that exits the entrypoint 1). As the TERM trap of a
+# `set -e` shell, with no pid file and a dead child:
+mkdir -p "$T/fw"
+fwd=$(sed -n '/^forward() {$/,/^}$/p' "$E")
+out=$(bash -c 'set -e; XORGATE_HOME=$1; child=999999; eval "$2"; trap forward TERM; kill -TERM $$; echo survived' _ "$T/fw" "$fwd" 2>&1); rc=$?
+check "N8: forward survives as a TERM trap under set -e (no pid file)" "[ $rc = 0 ] && [[ \"\$out\" == *survived* ]]"
+# A TERM after the status is recorded (injected right after the D74 block,
+# where `set -e` is back on) is ignored: exit 3 + the marker, at once.
+sed '/^# \[7e\] D74 end$/a kill -TERM $$; trap -p TERM > "$XORGATE_HOME/trap-after"' "$E" > "$T/late-term.sh"
+printf '#!/usr/bin/env bash\nexit 3\n' > "$STUB"; chmod +x "$STUB"
+fixture "$T/l"
+timeout 10 env CREDS_DIR="$T/l/creds" ASSETS_DIR="$T/l/assets" XORGATE_HOME="$T/l/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$T/late-term.sh" > "$T/l.log" 2>&1; rc=$?
+check "N8: a TERM after the status is recorded is ignored → exit 3 + the marker" "[ \"\$(grep -cF 'kill -TERM \$\$;' '$T/late-term.sh')\" = 1 ] && [ $rc = 3 ] && [ -f '$T/l/state/power-off' ] && [ \"\$(cat '$T/l/state/trap-after')\" = \"trap -- '' SIGTERM\" ]"
+
 # N2 + N6 (review-wp2-fixes): the race, by behaviour. The agent ignores TERM,
 # sends TERM to the entrypoint itself and exits 3 at once, so the TERM lands
 # while the power_off is already exiting. Each run must give exit 3 AND the
@@ -288,20 +320,29 @@ while :; do
   [ "$(tr '\0' ' ' < "/proc/$pp/cmdline" 2>/dev/null)" = "bash $RACE_EP " ] || break
   p=$pp
 done
-kill -TERM "$p"
+if [ "${RACE_MODE:-before}" = after ]; then
+  # N8: the TERM lands RACE_DELAY s after this exit 3 (0 = no sleep at all).
+  ( [ "$RACE_DELAY" = 0 ] || sleep "$RACE_DELAY"; kill -TERM "$p" 2>/dev/null ) &
+  echo $! > "$RACE_SLEEPER"
+else
+  kill -TERM "$p"
+fi
 exit 3
 STUB
 chmod +x "$STUB"
-race() { # $1 = entrypoint, $2 = runs → race_ok, race_bad
+race() { # $1 = entrypoint, $2 = runs, $3 = before|after → race_ok, race_bad
   race_ok=0; race_bad=""
-  local i
+  local i d s
   for i in $(seq "$2"); do
-    fixture "$T/r"
-    timeout 10 env RACE_EP="$1" CREDS_DIR="$T/r/creds" ASSETS_DIR="$T/r/assets" XORGATE_HOME="$T/r/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$1" > "$T/r.log" 2>&1; rc=$?
+    fixture "$T/r"; rm -f "$T/sleeper"
+    d=0; [ "${3:-before}" = after ] && d=$(echo "0 0.0005 0.001" | cut -d' ' -f$(( (i - 1) % 3 + 1 )))
+    timeout 10 env RACE_EP="$1" RACE_MODE="${3:-before}" RACE_DELAY="$d" RACE_SLEEPER="$T/sleeper" CREDS_DIR="$T/r/creds" ASSETS_DIR="$T/r/assets" XORGATE_HOME="$T/r/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$1" > "$T/r.log" 2>&1; rc=$?
+    # The sleeper must be gone before the next run (no stray TERM).
+    s=$(cat "$T/sleeper" 2>/dev/null); [ -z "$s" ] || for _ in $(seq 100); do kill -0 "$s" 2>/dev/null || break; sleep 0.02; done
     if [ $rc = 3 ] && [ -f "$T/r/state/power-off" ] && grep -q 'power_off: parking this container' "$T/r.log"; then
       race_ok=$((race_ok + 1))
     else
-      race_bad="$race_bad run$i:rc=$rc"
+      race_bad="$race_bad run$i:rc=$rc${d:+@$d}"
     fi
   done
 }
@@ -311,6 +352,12 @@ echo "race: $race_ok/$RACE_RUNS kept 3 + marker${race_bad:+; lost:$race_bad}"
 check "D74 race: TERM landing as a power_off exits keeps 3 + the marker ($race_ok/$RACE_RUNS)" "[ $race_ok = $RACE_RUNS ]"
 race "$T/js-shape.sh" 20
 check "NEGATIVE: the JS shape loses racing power_offs ($((20 - race_ok))/20 lost)" "[ $race_ok -lt 20 ]"
+# N8 (review-wp2-fixes): the opposite ordering, the TERM 0 / 0.5 / 1 ms AFTER
+# the power_off's exit 3 (610cbb9 lost about 1 run in 4 at 0 ms as exit 1).
+RACE_AFTER_RUNS=${SIM_RACE_AFTER_RUNS:-51}
+race "$E" "$RACE_AFTER_RUNS" after
+echo "race-after: $race_ok/$RACE_AFTER_RUNS kept 3 + marker${race_bad:+; lost:$race_bad}"
+check "D74 race: TERM 0-1 ms AFTER a power_off's exit keeps 3 + the marker ($race_ok/$RACE_AFTER_RUNS)" "[ $race_ok = $RACE_AFTER_RUNS ]"
 
 # An agent killed by a signal (no TERM to the entrypoint): 128+n passes through.
 for sig in SEGV KILL; do

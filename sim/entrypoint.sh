@@ -89,22 +89,29 @@ echo "[sim] device=$DEVICE_ID assets=$ASSETS_DIR scenario=${SCENARIO:-<settings.
 # runs the agent, records its pid in .agent-pid and its exact status (3, 0,
 # 128+n for a signal-killed agent) in .agent-exit. `forward` signals the agent
 # itself; this shell waits until the wrapper has recorded the status (or is
-# gone), and exits with the recorded code.
+# gone), and exits with the recorded code. Once it is recorded, TERM/INT are
+# ignored: the agent is gone, and the marker write + exit must not be cut.
+# Stale files from an earlier start (a persistent /state) go first, before
+# the trap can read them (review-wp2-fixes T1).
+rm -f "$XORGATE_HOME/.agent-pid" "$XORGATE_HOME/.agent-exit"
 child=""
 forward() {
   local p=""
-  # The wrapper writes the pid right after the fork; until then, retry briefly
-  # (a stop in the first instant of a start), then fall back to the wrapper.
+  # Before the wrapper exists there is nothing to signal (the JS shape too).
+  [[ -n "$child" ]] || return 0
+  # The wrapper writes the pid right after the fork; until then, retry
+  # briefly. Every step must survive `set -e` (it is on outside this block's
+  # `set +e`; a failing command in a trap would exit 1, review-wp2-fixes N8).
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    { read -r p < "$XORGATE_HOME/.agent-pid"; } 2>/dev/null
+    { read -r p < "$XORGATE_HOME/.agent-pid"; } 2>/dev/null || true
     [[ -n "$p" ]] && break
     sleep 0.05
   done
-  p="${p:-$child}"
-  [[ -n "$p" ]] && kill -TERM "$p" 2>/dev/null || true
+  # No pid recorded: signal the wrapper's child (the agent), not the wrapper
+  # (procps is in the image; N9).
+  { [[ -n "$p" ]] && kill -TERM "$p"; } 2>/dev/null || pkill -TERM -P "$child" 2>/dev/null || true
 }
 trap forward TERM INT
-rm -f "$XORGATE_HOME/.agent-pid" "$XORGATE_HOME/.agent-exit"
 (
   set +e
   # [7e] the Rust agent replaces `node /opt/xorgate/dist/worker.js`.
@@ -112,7 +119,9 @@ rm -f "$XORGATE_HOME/.agent-pid" "$XORGATE_HOME/.agent-exit"
   agent=$!
   echo "$agent" > "$XORGATE_HOME/.agent-pid"
   wait "$agent"
-  echo "$?" > "$XORGATE_HOME/.agent-exit"
+  rc=$?
+  echo "$rc" > "$XORGATE_HOME/.agent-exit"
+  exit "$rc"
 ) &
 child=$!
 set +e
@@ -126,6 +135,7 @@ until [[ -s "$XORGATE_HOME/.agent-exit" ]] || ! kill -0 "$child" 2>/dev/null; do
   c=$?
   if (( c == 127 || c < 0 )); then sleep 0.05; else code=$c; fi
 done
+trap '' TERM INT
 rec=""
 { read -r rec < "$XORGATE_HOME/.agent-exit"; } 2>/dev/null
 [[ "$rec" =~ ^[0-9]+$ ]] && code=$rec
