@@ -117,8 +117,13 @@ RUN test -n "${GIT_SHA}" || { echo "GIT_SHA is required (use sim/build-image.sh)
 # judged by version, stay cached. Chosen over dropping the cache (cold
 # dependency builds every time) and over a per-sha cache id (unbounded
 # growth, one prune per sha).
+# The target mount is `sharing=locked` (review-wp2-fixes N1): BuildKit holds it
+# exclusively for this whole RUN, the touch AND the build. With the default
+# `shared`, a second build overlapping on this host touches its sources, then
+# waits on cargo's lock while the first build (another tree) writes NEWER
+# workspace artifacts, which it then reuses. Concurrent sim builds queue here.
 RUN --mount=type=cache,id=xorgate-sim-rs-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=xorgate-sim-rs-target,target=/src/target \
+    --mount=type=cache,id=xorgate-sim-rs-target,target=/src/target,sharing=locked \
     find /src -path /src/target -prune -o -type f -exec touch {} + \
  && XORGATE_GIT_SHA="${GIT_SHA}" cargo build --release --locked -p xorgate-agent \
  && mkdir -p /out/bin \

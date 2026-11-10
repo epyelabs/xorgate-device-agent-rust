@@ -2,7 +2,7 @@
 # Build the Rust simulator image (Phase 7e WP2) from this repo.
 #
 #   sim/build-image.sh [--sha <short sha>] [--channel <c>] [--tag <name:tag>]
-#                      [--label k=v]... [--dry-run] [-- <extra docker build args>]
+#                      [--dry-run] [-- <extra docker build args>]
 #
 # Defaults: sha = `git rev-parse --short HEAD` (+ "-dirty" on an unclean tree),
 # channel = bench (a hand build, scripts/build-info.sh), tag =
@@ -14,6 +14,13 @@
 # rebuilding `xorgate-sim:dev`/`:prod` recreates every dev/prod sim on the
 # next sim-host tick (sim-host README "Roll out a new sim image"), so this
 # script refuses any tag outside `xorgate-sim-rs:*`.
+#
+# No image labels (review-wp2 S4): Docker copies every image label onto each
+# container created from the image, so a label baked in here (e.g.
+# `xorgate.agent=<tag>`) would put a sim host's PROD containers under an
+# agent's cleanup filter. `--label`, also after `--`, is refused: label the
+# containers you create instead. The image's own labels (OCI revision, the two
+# pins) are fixed in sim/Dockerfile.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -21,17 +28,20 @@ SHA=""
 CHANNEL=bench
 TAG=""
 DRY=0
-LABELS=()
+no_label() { echo "refusing $1: no image labels (Docker copies them onto every container; label the containers you create instead)" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --sha) SHA="$2"; shift 2 ;;
     --channel) CHANNEL="$2"; shift 2 ;;
     --tag) TAG="$2"; shift 2 ;;
-    --label) LABELS+=(--label "$2"); shift 2 ;;
+    --label | --label=*) no_label "$1" ;;
     --dry-run) DRY=1; shift ;;
     --) shift; break ;;
     *) echo "unknown arg: $1 (see the header)" >&2; exit 2 ;;
   esac
+done
+for a in "$@"; do
+  case "$a" in --label | --label=*) no_label "'$a' (after --)" ;; esac
 done
 
 if [ -z "$SHA" ]; then
@@ -54,7 +64,7 @@ esac
 
 cmd=(docker build -f "$REPO/sim/Dockerfile"
   --build-arg "GIT_SHA=$SHA" --build-arg "BUILD_CHANNEL=$CHANNEL"
-  ${LABELS[@]+"${LABELS[@]}"} -t "$TAG" "$@" "$REPO")
+  -t "$TAG" "$@" "$REPO")
 if [ "$DRY" = 1 ]; then
   printf '%q ' "${cmd[@]}"
   echo

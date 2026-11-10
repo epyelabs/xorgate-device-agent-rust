@@ -88,10 +88,12 @@ set +e
 wait "$child"
 code=$?
 # [7e] D74: a trapped signal makes `wait` return 128+n at once, while the agent
-# is still finalising; wait again (bash keeps an already-reaped child's status)
-# until a wait completes with no signal in between, so `docker stop` keeps the
-# agent's own exit code (a power_off's 3 keeps its marker). 127 = the status
-# was already collected: keep it.
+# is still finalising; wait again until a wait completes with no signal in
+# between, so `docker stop` keeps the agent's own exit code (a power_off's 3
+# keeps its marker). Bash keeps a reaped child's status, and a repeated `wait`
+# returns that stored status again (bash 5.2), even after the agent is gone.
+# Only in POSIX mode (`--posix`, POSIXLY_CORRECT) does a re-wait of an
+# already-collected pid return 127; the break then keeps the code collected.
 while [[ -n "${stopping:-}" ]]; do
   stopping=""
   wait "$child"

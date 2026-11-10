@@ -18,7 +18,6 @@ Build on the host that runs the sims (x86_64, the homelab), from a git checkout:
 
 ```sh
 sim/build-image.sh                          # → xorgate-sim-rs:<short sha>
-sim/build-image.sh --label k=v               # extra image labels pass through
 sim/build-image.sh --sha <short sha>        # a tree without .git (rsync / git archive)
 ```
 
@@ -28,7 +27,7 @@ sim/build-image.sh --sha <short sha>        # a tree without .git (rsync / git a
   - the agent on `debian:bookworm` with the device build's toolchain and apt list.
 - No stage copies from a JS image. Pins and rationale are in the `sim/Dockerfile` header.
 - `docker buildx build --platform linux/arm64 -f sim/Dockerfile …` (with the same `--build-arg`s) gives an arm64 variant.
-- Do not bake an `xorgate.agent=<tag>` label into the image: Docker copies image labels onto every container created from it, so a sim host's containers would match an agent's cleanup filter. Label the containers you create instead.
+- No image labels beyond the Dockerfile's own (the OCI revision and the two pins): Docker copies image labels onto every container created from it, so an `xorgate.agent=<tag>` baked in would put a sim host's containers under an agent's cleanup filter. `sim/build-image.sh` refuses `--label` (also after `--`). Label the containers you create instead.
 - The script only ever tags `xorgate-sim-rs:*`. **Never tag `xorgate-sim:dev` or `xorgate-sim:prod`**: a sim host recreates every one of its sims when the image it runs changes.
 - CI: `.github/workflows/sim-image-amd64.yml` is manual only (`gh workflow run sim-image-amd64.yml --ref <branch>`). It uploads a `docker save` artifact and pushes nothing.
 

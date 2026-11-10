@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015,SC2034,SC1003,SC2020,SC2317,SC2016  # `a && b || c` asserts; vars + functions used inside check's eval; tr char sets; a literal $ in sed
+# shellcheck disable=SC2015,SC2034,SC1003,SC2020,SC2317,SC2329,SC2016  # `a && b || c` asserts; vars + functions used inside check's eval; tr char sets; a literal $ in sed
 # Phase 7e WP2: the Rust simulator image's recipe, checked without building it.
 #   - sim/Dockerfile: built from source (no JS image), SDK + fork pinned, the
 #     agent stage's apt list = Dockerfile.build's;
-#   - sim/build-image.sh: honest identity, `xorgate-sim-rs:*` tags only;
+#   - sim/build-image.sh: honest identity, `xorgate-sim-rs:*` tags only, no
+#     image labels;
 #   - scripts/docker-build.sh: the default arm64 image tag is still the hash of
-#     Dockerfile.build; --platform linux/amd64 gets its own name;
+#     Dockerfile.build; --platform linux/amd64 gets its own name; amd64 `pack`
+#     is refused before any docker call;
 #   - sim/entrypoint.sh, run for real against a STUB agent: argv/env, exit 0,
 #     exit 3 + marker + parked restart, required inputs, and D74 (a `docker
 #     stop` waits for the agent's own graceful exit, also through a power_off's
-#     exit 3; a signal-killed agent's 128+n passes through), with NEGATIVE
-#     controls: the JS shape (one `wait`) exits 143 before the agent finishes.
+#     exit 3, also when the TERM races the exit; a signal-killed agent's
+#     128+n passes through), with NEGATIVE controls: the JS shape (one `wait`)
+#     exits 143 before the agent finishes.
 # Run as root in a throwaway container (it installs a stub at
 # /opt/xorgate-rs/bin/xorgate-rs):
 #   docker run --rm -v "$PWD:/src:ro" -w /src debian:bookworm bash scripts/tests/sim-image.sh
@@ -24,6 +27,7 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 command -v jq >/dev/null || { apt-get update -qq >/dev/null && apt-get install -y -qq jq >/dev/null; }
 command -v git >/dev/null || apt-get install -y -qq git >/dev/null 2>&1 || { apt-get update -qq >/dev/null && apt-get install -y -qq git >/dev/null; }
 DF="$SRC/sim/Dockerfile"
+W=$(mktemp -d)
 
 echo "== sim/Dockerfile"
 check "no stage or COPY comes from a JS (xorgate-sim) image" "! grep -nE '^(FROM|COPY).*xorgate-sim(:|[[:space:]])' '$DF'"
@@ -53,13 +57,28 @@ check "the dockerignore keeps .git and the aarch64 media out" "grep -qx '\*\*/.g
 # that uses the shared target cache, so no stale workspace crate is reused.
 run_block=$(awk '/^RUN --mount=type=cache,id=xorgate-sim-rs-registry/ {on=1} on {print} on && !/\\$/ {exit}' "$DF")
 check "the cached cargo build touches every source first, in the same RUN" "printf '%s\n' \"\$run_block\" | grep -q 'find /src -path /src/target -prune -o -type f -exec touch {} +' && [ \"\$(printf '%s\n' \"\$run_block\" | grep -n 'exec touch' | cut -d: -f1)\" -lt \"\$(printf '%s\n' \"\$run_block\" | grep -n 'cargo build' | cut -d: -f1)\" ]"
-check "no floating '# syntax=' frontend line" "! grep -q '^# syntax=' '$DF'"
-check "no image label baked in (containers are labelled by whoever creates them)" "! grep -q '^LABEL.*xorgate.agent' '$DF'"
+# N1 (review-wp2-fixes): the target mount of THAT RUN is sharing=locked, so an
+# overlapping build cannot write newer artifacts between this build's touch
+# and its cargo run (BuildKit holds a locked mount for the whole RUN).
+target_mount=$(printf '%s\n' "$run_block" | grep -E -- '--mount=type=cache,([^ ]*,)?id=xorgate-sim-rs-target(,| )')
+check "the target cache mount of that RUN is sharing=locked (touch + build under one lock)" "[ \"\$(printf '%s\n' \"\$target_mount\" | grep -c .)\" = 1 ] && printf '%s\n' \"\$target_mount\" | grep -qE ',sharing=locked( |,|\$)'"
+# S5 + N5 (review-wp2-fixes): every spelling BuildKit honours as the parser
+# directive (directives are case-insensitive, spaces optional).
+syntax_re='^#[[:space:]]*syntax[[:space:]]*='
+no_syntax() { ! grep -qiE "$syntax_re" "$1"; }
+check "no floating '# syntax=' frontend line (any spelling)" "no_syntax '$DF'"
+for d in '# syntax=docker/dockerfile:1' '#syntax=docker/dockerfile:1' '# syntax = docker/dockerfile:1' '#SYNTAX=docker/dockerfile:1'; do
+  { printf '%s\n' "$d"; cat "$DF"; } > "$W/df-syntax"
+  check "NEGATIVE: the syntax pin catches '$d'" "! no_syntax '$W/df-syntax'"
+done
+# S4: the image's labels are the Dockerfile's own, nothing else (a container
+# inherits every image label; the build-image.sh half is pinned below).
+label_keys=$(awk '/^LABEL / {on=1} on {print} on && !/\\$/ {on=0}' "$DF" | grep -oE '[A-Za-z0-9._-]+=' | tr -d = | sort | tr '\n' ' ')
+check "the Dockerfile's only image labels: OCI title/revision + the two pins ($label_keys)" "[ \"\$label_keys\" = 'dev.xorgate.kvs-fork dev.xorgate.kvs-sdk org.opencontainers.image.revision org.opencontainers.image.title ' ]"
 check "the JS timedatectl shim is installed and answers NTPSynchronized=yes" "grep -q '^COPY sim/timedatectl /usr/local/bin/timedatectl$' '$DF' && [ \"\$(sh '$SRC/sim/timedatectl' show -p NTPSynchronized --value)\" = yes ] && ! sh '$SRC/sim/timedatectl' status 2>/dev/null"
 
 echo "== sim/build-image.sh"
 B="$SRC/sim/build-image.sh"
-W=$(mktemp -d)
 cp -a "$SRC/sim" "$W/sim"  # a copy with no .git around it
 out=$("$W/sim/build-image.sh" --dry-run 2>&1); rc=$?
 check "no git and no --sha: refuses (rc 2)" "[ $rc = 2 ] && [[ \"\$out\" == *'pass --sha'* ]]"
@@ -73,8 +92,16 @@ for s in 'abc 1' 'a;b' '-x' 'ABC'; do
   "$B" --sha "$s" --dry-run >/dev/null 2>&1; rc=$?
   check "refuses sha '$s'" "[ $rc = 2 ]"
 done
-out=$("$B" --sha abc1234-dirty --channel ci --label xorgate.agent=p7e --tag xorgate-sim-rs:x --dry-run 2>&1)
-check "label + channel + -dirty sha pass through" "[[ \"\$out\" == *'--label xorgate.agent=p7e'* ]] && [[ \"\$out\" == *'BUILD_CHANNEL=ci'* ]] && [[ \"\$out\" == *'GIT_SHA=abc1234-dirty'* ]]"
+out=$("$B" --sha abc1234-dirty --channel ci --tag xorgate-sim-rs:x --dry-run 2>&1); rc=$?
+check "channel + -dirty sha pass through; the command carries no --label" "[ $rc = 0 ] && [[ \"\$out\" == *'BUILD_CHANNEL=ci'* ]] && [[ \"\$out\" == *'GIT_SHA=abc1234-dirty'* ]] && [[ \"\$out\" != *--label* ]]"
+# S4 (review-wp2-fixes): round 0's baked `xorgate.agent=p7e` came through
+# `build-image.sh --label`, so every image label is refused, in each spelling
+# docker accepts, also after `--`.
+for l in '--label xorgate.agent=p7e' '--label=xorgate.agent=p7e' '--label org.example=1' '-- --label xorgate.agent=p7e' '-- --label=xorgate.agent=p7e'; do
+  # shellcheck disable=SC2086  # $l is split into its words on purpose
+  out=$("$B" --sha abc1234 --dry-run $l 2>&1); rc=$?
+  check "refuses an image label: '$l' (rc 2, no build command)" "[ $rc = 2 ] && [[ \"\$out\" == *'no image labels'* ]] && [[ \"\$out\" != *'docker build'* ]]"
+done
 G=$(mktemp -d)
 cp -a "$SRC/sim" "$G/sim"
 git -C "$G" init -q && git -C "$G" -c user.name=t -c user.email=t@t add -A && git -C "$G" -c user.name=t -c user.email=t@t commit -qm t
@@ -99,6 +126,17 @@ amd_hash=$("$D" --platform linux/amd64 dockerfile | sha256sum | cut -c1-12)
 check "the amd64 tag is the hash of the amd64 text" "[ \"\${amd##*-}\" = \"$amd_hash\" ]"
 "$D" --platform linux/riscv64 image-tag >/dev/null 2>&1; rc=$?
 check "an unknown platform is refused" "[ $rc = 2 ]"
+# N4 (review-wp2-fixes): amd64 `pack` is refused before ANY docker call (round
+# 1's late refusal started a real docker build). A stub docker that logs its
+# argv is first on PATH; `--clean` is the control that the stub is reached.
+SD=$(mktemp -d)
+printf '#!/bin/sh\necho "$*" >> "%s/docker.log"\nexit 0\n' "$SD" > "$SD/docker"; chmod +x "$SD/docker"
+PATH="$SD:$PATH" "$D" --clean >/dev/null 2>&1
+check "control: the stub docker is reached (--clean calls it)" "grep -q '^volume rm' '$SD/docker.log'"
+rm -f "$SD/docker.log"
+PATH="$SD:$PATH" "$D" --platform linux/amd64 pack > "$SD/out" 2>&1; rc=$?
+check "amd64 pack: refused (rc 2) with ZERO docker calls" "[ $rc = 2 ] && [ ! -e '$SD/docker.log' ] && grep -q 'pack is aarch64-only' '$SD/out'"
+rm -rf "$SD"
 
 echo "== sim/entrypoint.sh against a stub agent"
 E="$SRC/sim/entrypoint.sh"
@@ -198,6 +236,30 @@ sigterm_case "$T/p" "$E"
 check "D74: TERM during a power_off (the agent exits 3) → exit 3 AND the marker" "[ $rc = 3 ] && [ $fin = yes ] && [ $marker = yes ]"
 sigterm_case "$T/pn" "$T/js-shape.sh"
 check "NEGATIVE: the JS shape loses that power_off (143, no marker)" "[ $rc = 143 ] && [ $marker = no ]"
+
+# N2 (review-wp2-fixes): the race S2 fixes, by behaviour. The agent ignores
+# TERM, sends TERM to the entrypoint itself and exits 3 at once, so the TERM
+# lands while the power_off is already exiting (the agent may be reaped before
+# the trap's re-wait). 20 runs, bounded; each must give exit 3 AND the marker.
+# (Round 0's `kill -0` loop lost about 1 run in 4 here: 143, no marker.)
+cat > "$STUB" <<'STUB'
+#!/usr/bin/env bash
+trap '' TERM
+kill -TERM "$PPID"
+exit 3
+STUB
+chmod +x "$STUB"
+race_ok=0; race_bad=""
+for i in $(seq 20); do
+  fixture "$T/r"
+  timeout 10 env CREDS_DIR="$T/r/creds" ASSETS_DIR="$T/r/assets" XORGATE_HOME="$T/r/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$E" > "$T/r.log" 2>&1; rc=$?
+  if [ $rc = 3 ] && [ -f "$T/r/state/power-off" ] && grep -q 'power_off: parking this container' "$T/r.log"; then
+    race_ok=$((race_ok + 1))
+  else
+    race_bad="$race_bad run$i:rc=$rc"
+  fi
+done
+check "D74 race: TERM landing as a power_off exits keeps 3 + the marker ($race_ok/20${race_bad:+;$race_bad})" "[ $race_ok = 20 ]"
 
 # An agent killed by a signal (no TERM to the entrypoint): 128+n passes through.
 for sig in SEGV KILL; do
