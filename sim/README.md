@@ -66,9 +66,9 @@ An offline smoke needs no cloud: dummy self-signed creds, a `kvs.json` with one 
 The entrypoint is the JS one with three changes, each marked `[7e]`:
 1. the agent command;
 2. the boot-id fallback (there is no node in this image);
-3. the `wait` loop (D74).
+3. the D74 block: the wrapper that records the agent's exit status, and the wait for it.
 
-On `docker stop`, the JS entrypoint's single `wait` returns 143 as soon as its trap runs. The container then dies before the agent finishes its shutdown, so the last segment is left to the next boot's recovery and presence goes offline through the Last-Will. Here the trap sets a flag and the entrypoint waits again until it has the agent's own exit status. So:
+On `docker stop`, the JS entrypoint's single `wait` returns 143 as soon as its trap runs. The container then dies before the agent finishes its shutdown, so the last segment is left to the next boot's recovery and presence goes offline through the Last-Will. Here an untrapped wrapper subshell runs the agent and records its exact exit status in `/state/.agent-exit` (and its pid in `.agent-pid`, which the TERM forward signals); the entrypoint waits until the wrapper has recorded it and exits with that code, so it never reads the agent's status from a `wait` that a trap interrupted (bash can lose it there, review-wp2-fixes N6). Both files are removed again before the exit. So:
 - `docker stop` takes the agent's graceful shutdown: finalize, then `online:false` plus DISCONNECT within its 2 s exit budget (the sim host's stop timeout is 20 s);
 - a `power_off` that is exiting when the TERM lands keeps its 3 and its marker.
 

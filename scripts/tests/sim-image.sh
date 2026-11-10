@@ -13,10 +13,12 @@
 #     stop` waits for the agent's own graceful exit, also through a power_off's
 #     exit 3, also when the TERM races the exit; a signal-killed agent's
 #     128+n passes through), with NEGATIVE controls: the JS shape (one `wait`)
-#     exits 143 before the agent finishes.
+#     exits 143 before the agent finishes, and loses a racing power_off.
 # Run as root in a throwaway container (it installs a stub at
 # /opt/xorgate-rs/bin/xorgate-rs):
 #   docker run --rm -v "$PWD:/src:ro" -w /src debian:bookworm bash scripts/tests/sim-image.sh
+# Race stress (review-wp2-fixes N6): SIM_RACE_RUNS=<n> (default 20) sets the
+# iterations of the TERM-races-a-power_off case, e.g. -e SIM_RACE_RUNS=600.
 set -uo pipefail
 [ -f /.dockerenv ] && [ "$(id -u)" = 0 ] || { echo "refusing: run me as root in a throwaway container (see header)"; exit 2; }
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -73,8 +75,15 @@ for d in '# syntax=docker/dockerfile:1' '#syntax=docker/dockerfile:1' '# syntax 
 done
 # S4: the image's labels are the Dockerfile's own, nothing else (a container
 # inherits every image label; the build-image.sh half is pinned below).
-label_keys=$(awk '/^LABEL / {on=1} on {print} on && !/\\$/ {on=0}' "$DF" | grep -oE '[A-Za-z0-9._-]+=' | tr -d = | sort | tr '\n' ' ')
-check "the Dockerfile's only image labels: OCI title/revision + the two pins ($label_keys)" "[ \"\$label_keys\" = 'dev.xorgate.kvs-fork dev.xorgate.kvs-sdk org.opencontainers.image.revision org.opencontainers.image.title ' ]"
+# N7: Dockerfile instructions are case-insensitive and may be indented, so the
+# LABEL instruction is matched on its first word, case-folded.
+label_keys() { awk 'toupper($1)=="LABEL" {on=1} on {print} on && !/\\$/ {on=0}' "$1" | grep -oE '[A-Za-z0-9._-]+=' | tr -d = | sort | tr '\n' ' '; }
+want_labels='dev.xorgate.kvs-fork dev.xorgate.kvs-sdk org.opencontainers.image.revision org.opencontainers.image.title '
+check "the Dockerfile's only image labels: OCI title/revision + the two pins ($(label_keys "$DF"))" "[ \"\$(label_keys '$DF')\" = \"\$want_labels\" ]"
+for l in 'LABEL xorgate.agent="p7e"' 'label xorgate.agent="p7e"' '  LABEL xorgate.agent="p7e"'; do
+  { cat "$DF"; printf '%s\n' "$l"; } > "$W/df-label"
+  check "NEGATIVE: the label allowlist catches '$l'" "[ \"\$(label_keys '$W/df-label')\" != \"\$want_labels\" ]"
+done
 check "the JS timedatectl shim is installed and answers NTPSynchronized=yes" "grep -q '^COPY sim/timedatectl /usr/local/bin/timedatectl$' '$DF' && [ \"\$(sh '$SRC/sim/timedatectl' show -p NTPSynchronized --value)\" = yes ] && ! sh '$SRC/sim/timedatectl' status 2>/dev/null"
 
 echo "== sim/build-image.sh"
@@ -220,10 +229,25 @@ sigterm_case() { # $1 = dir, $2 = entrypoint → sets rc (999 = hung), fin, mark
   marker=no; [ -f "$1/state/power-off" ] && marker=yes
   pkill -f "$STUB" 2>/dev/null; sleep 2.2
 }
-# The JS shape: the loop removed and the trap line put back, nothing else.
-sed -e '/^while \[\[ -n "\${stopping:-}" \]\]; do$/,/^done$/d' \
-    -e "s/^trap 'stopping=1; forward' TERM INT\$/trap forward TERM INT/" "$E" > "$T/js-shape.sh"
-check "NEGATIVE control is the JS shape (loop + trap line only)" "[ \"\$(diff '$E' '$T/js-shape.sh' | grep -c '^<')\" = 8 ] && [ \"\$(diff '$E' '$T/js-shape.sh' | grep '^>')\" = '> trap forward TERM INT' ]"
+# The JS shape: the `[7e] D74` block put back to the JS lines it replaces
+# (09da38d:sim/entrypoint.sh, `child=""` .. `set -e`, with only the worker
+# line swapped for the Rust agent, as everywhere), nothing else.
+cat > "$T/js-block" <<'JS'
+child=""
+forward() { [[ -n "$child" ]] && kill -TERM "$child" 2>/dev/null || true; }
+trap forward TERM INT
+/opt/xorgate-rs/bin/xorgate-rs run --mode "${MODE:-replay}" &
+child=$!
+set +e
+wait "$child"
+code=$?
+set -e
+JS
+awk -v blk="$T/js-block" '
+  /^# \[7e\] D74 begin/ {while ((getline l < blk) > 0) print l; skip=1; next}
+  skip && /^# \[7e\] D74 end$/ {skip=0; next}
+  !skip {print}' "$E" > "$T/js-shape.sh"
+check "NEGATIVE control is the JS shape (the one D74 block → the 9 JS lines, nothing else)" "[ \"\$(grep -c '^# \[7e\] D74 begin' '$E')\" = 1 ] && [ \"\$(grep -cx '# \[7e\] D74 end' '$E')\" = 1 ] && [ \"\$(sed '/^# \[7e\] D74 begin/,\$d' '$E')\" = \"\$(sed '/^child=\"\"\$/,\$d' '$T/js-shape.sh')\" ] && [ \"\$(sed '1,/^# \[7e\] D74 end\$/d' '$E')\" = \"\$(sed '1,/^set -e\$/d' '$T/js-shape.sh')\" ] && ! grep -qE 'agent-exit|^# \[7e\] D74 (begin|end)' '$T/js-shape.sh'"
 
 stub_term 0 2
 sigterm_case "$T/d" "$E"
@@ -237,29 +261,56 @@ check "D74: TERM during a power_off (the agent exits 3) → exit 3 AND the marke
 sigterm_case "$T/pn" "$T/js-shape.sh"
 check "NEGATIVE: the JS shape loses that power_off (143, no marker)" "[ $rc = 143 ] && [ $marker = no ]"
 
-# N2 (review-wp2-fixes): the race S2 fixes, by behaviour. The agent ignores
-# TERM, sends TERM to the entrypoint itself and exits 3 at once, so the TERM
-# lands while the power_off is already exiting (the agent may be reaped before
-# the trap's re-wait). 20 runs, bounded; each must give exit 3 AND the marker.
-# (Round 0's `kill -0` loop lost about 1 run in 4 here: 143, no marker.)
+# An agent that the forwarded TERM kills (no handler): its 143 passes through.
+cat > "$STUB" <<'STUB'
+#!/usr/bin/env bash
+touch "$XORGATE_HOME/ready"
+while :; do sleep 0.1; done
+STUB
+chmod +x "$STUB"
+sigterm_case "$T/t" "$E"
+check "D74: an agent killed by the forwarded TERM → exit 143, no marker, no .agent-* files left" "[ $rc = 143 ] && [ $marker = no ] && [ -z \"\$(ls -A '$T/t/state' | grep '^\.agent-')\" ]"
+
+# N2 + N6 (review-wp2-fixes): the race, by behaviour. The agent ignores TERM,
+# sends TERM to the entrypoint itself and exits 3 at once, so the TERM lands
+# while the power_off is already exiting. Each run must give exit 3 AND the
+# marker. (Round 0's `kill -0` loop lost about 1 run in 4 here; 48869e6's
+# re-wait lost ~1-2% as exit 255, N6.) The entrypoint is the topmost ancestor
+# running `bash <script>`: the agent's parent is the D74 wrapper (a subshell
+# of the entrypoint, same argv) in the Rust shape, the entrypoint itself in
+# the JS shape.
 cat > "$STUB" <<'STUB'
 #!/usr/bin/env bash
 trap '' TERM
-kill -TERM "$PPID"
+p=$PPID
+while :; do
+  read -r _ _ _ pp _ < "/proc/$p/stat"
+  [ "$(tr '\0' ' ' < "/proc/$pp/cmdline" 2>/dev/null)" = "bash $RACE_EP " ] || break
+  p=$pp
+done
+kill -TERM "$p"
 exit 3
 STUB
 chmod +x "$STUB"
-race_ok=0; race_bad=""
-for i in $(seq 20); do
-  fixture "$T/r"
-  timeout 10 env CREDS_DIR="$T/r/creds" ASSETS_DIR="$T/r/assets" XORGATE_HOME="$T/r/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$E" > "$T/r.log" 2>&1; rc=$?
-  if [ $rc = 3 ] && [ -f "$T/r/state/power-off" ] && grep -q 'power_off: parking this container' "$T/r.log"; then
-    race_ok=$((race_ok + 1))
-  else
-    race_bad="$race_bad run$i:rc=$rc"
-  fi
-done
-check "D74 race: TERM landing as a power_off exits keeps 3 + the marker ($race_ok/20${race_bad:+;$race_bad})" "[ $race_ok = 20 ]"
+race() { # $1 = entrypoint, $2 = runs → race_ok, race_bad
+  race_ok=0; race_bad=""
+  local i
+  for i in $(seq "$2"); do
+    fixture "$T/r"
+    timeout 10 env RACE_EP="$1" CREDS_DIR="$T/r/creds" ASSETS_DIR="$T/r/assets" XORGATE_HOME="$T/r/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$1" > "$T/r.log" 2>&1; rc=$?
+    if [ $rc = 3 ] && [ -f "$T/r/state/power-off" ] && grep -q 'power_off: parking this container' "$T/r.log"; then
+      race_ok=$((race_ok + 1))
+    else
+      race_bad="$race_bad run$i:rc=$rc"
+    fi
+  done
+}
+RACE_RUNS=${SIM_RACE_RUNS:-20}
+race "$E" "$RACE_RUNS"
+echo "race: $race_ok/$RACE_RUNS kept 3 + marker${race_bad:+; lost:$race_bad}"
+check "D74 race: TERM landing as a power_off exits keeps 3 + the marker ($race_ok/$RACE_RUNS)" "[ $race_ok = $RACE_RUNS ]"
+race "$T/js-shape.sh" 20
+check "NEGATIVE: the JS shape loses racing power_offs ($((20 - race_ok))/20 lost)" "[ $race_ok -lt 20 ]"
 
 # An agent killed by a signal (no TERM to the entrypoint): 128+n passes through.
 for sig in SEGV KILL; do

@@ -3,8 +3,9 @@
 # the real xorgate-device-agent in `--mode replay` — the RUST agent (Phase 7e
 # WP2). A copy of the JS image's sim/entrypoint.sh @ 09da38d with exactly three
 # changes, each marked [7e]: the worker is `xorgate-rs run`, the boot-id
-# fallback needs no node, and a trapped signal re-waits for the agent's own
-# exit status (D74: the trap sets a flag, the wait loops on it).
+# fallback needs no node, and `docker stop` keeps the agent's own exit status
+# (D74: the block between `[7e] D74 begin` and `end`, which replaces the JS
+# lines from `child=""` to `set -e`; the worker line sits inside it).
 #
 # Mounts:  /creds      cert.crt, private.key, ca.pem, kvs.json — the provision bundle (ro)
 #          /assets/v1  the scenario asset pack: catalog.json + <scenarioId>/… (ro, shared)
@@ -77,31 +78,60 @@ echo "[sim] device=$DEVICE_ID assets=$ASSETS_DIR scenario=${SCENARIO:-<settings.
 
 # Run the worker as a child so a `docker stop` (SIGTERM) still reaches it for a
 # graceful shutdown, while this shell survives to translate the exit code.
+# [7e] D74 begin: the agent's exit status is recorded by an UNTRAPPED wrapper,
+# never read from a `wait` a trap interrupted. In the JS shape (the lines this
+# block replaces) a `docker stop` makes the single `wait` return 143 at once,
+# while the agent is still finalising, so the container dies before the
+# agent's graceful shutdown. Re-waiting after a trap is not enough either: when
+# the TERM races the agent's own exit, bash 5.2 can lose the status (the
+# re-wait returns -1 → `exit -1` = 255, and a power_off's marker is lost;
+# review-wp2-fixes N6). So a wrapper subshell (no trap: it is never signalled)
+# runs the agent, records its pid in .agent-pid and its exact status (3, 0,
+# 128+n for a signal-killed agent) in .agent-exit. `forward` signals the agent
+# itself; this shell waits until the wrapper has recorded the status (or is
+# gone), and exits with the recorded code.
 child=""
-forward() { [[ -n "$child" ]] && kill -TERM "$child" 2>/dev/null || true; }
-# [7e] D74: the trap also records that a signal interrupted the wait.
-trap 'stopping=1; forward' TERM INT
-# [7e] the Rust agent replaces `node /opt/xorgate/dist/worker.js`.
-/opt/xorgate-rs/bin/xorgate-rs run --mode "${MODE:-replay}" &
+forward() {
+  local p=""
+  # The wrapper writes the pid right after the fork; until then, retry briefly
+  # (a stop in the first instant of a start), then fall back to the wrapper.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    { read -r p < "$XORGATE_HOME/.agent-pid"; } 2>/dev/null
+    [[ -n "$p" ]] && break
+    sleep 0.05
+  done
+  p="${p:-$child}"
+  [[ -n "$p" ]] && kill -TERM "$p" 2>/dev/null || true
+}
+trap forward TERM INT
+rm -f "$XORGATE_HOME/.agent-pid" "$XORGATE_HOME/.agent-exit"
+(
+  set +e
+  # [7e] the Rust agent replaces `node /opt/xorgate/dist/worker.js`.
+  /opt/xorgate-rs/bin/xorgate-rs run --mode "${MODE:-replay}" &
+  agent=$!
+  echo "$agent" > "$XORGATE_HOME/.agent-pid"
+  wait "$agent"
+  echo "$?" > "$XORGATE_HOME/.agent-exit"
+) &
 child=$!
 set +e
 wait "$child"
 code=$?
-# [7e] D74: a trapped signal makes `wait` return 128+n at once, while the agent
-# is still finalising; wait again until a wait completes with no signal in
-# between, so `docker stop` keeps the agent's own exit code (a power_off's 3
-# keeps its marker). Bash keeps a reaped child's status, and a repeated `wait`
-# returns that stored status again (bash 5.2), even after the agent is gone.
-# Only in POSIX mode (`--posix`, POSIXLY_CORRECT) does a re-wait of an
-# already-collected pid return 127; the break then keeps the code collected.
-while [[ -n "${stopping:-}" ]]; do
-  stopping=""
+# A trapped signal makes `wait` return 128+n at once: wait again until the
+# wrapper has recorded the status or is gone. A `wait` that cannot wait (127
+# in POSIX mode, or -1 when bash lost the status) sleeps instead of spinning.
+until [[ -s "$XORGATE_HOME/.agent-exit" ]] || ! kill -0 "$child" 2>/dev/null; do
   wait "$child"
   c=$?
-  [[ $c -eq 127 ]] && break
-  code=$c
+  if (( c == 127 || c < 0 )); then sleep 0.05; else code=$c; fi
 done
+rec=""
+{ read -r rec < "$XORGATE_HOME/.agent-exit"; } 2>/dev/null
+[[ "$rec" =~ ^[0-9]+$ ]] && code=$rec
+rm -f "$XORGATE_HOME/.agent-pid" "$XORGATE_HOME/.agent-exit"
 set -e
+# [7e] D74 end
 if [[ $code -eq 3 ]]; then
   date -u +%FT%TZ > "$XORGATE_HOME/power-off"
   echo "[sim] power_off: parking this container (exit 3; marker written)"
