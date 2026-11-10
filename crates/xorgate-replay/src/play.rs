@@ -240,6 +240,49 @@ fn parse_env_kv(s: &str) -> Result<(String, String), String> {
 /// The program name of the rig's capture-host shim (`tools/replay/shims/`).
 pub const CAPTURE_HOST_SHIM: &str = "xorgate-capture";
 
+/// Whether an env key is one of the Rust capture-host knobs.
+fn is_capture_knob(k: &str) -> bool {
+    k.starts_with("XORGATE_CAPTURE_") || k == "XORGATE_SIDECAR_TIMING"
+}
+
+/// The capture-host knobs on a JS side are an error: the JS agent ignores
+/// them, so a run labelled `host`/`exact` would silently compare gst-launch.
+/// Checked at the side's first start (`rig_side_env`) AND at every handoff
+/// incarnation (`incarnation_env`, review-close F4: `--env-b
+/// XORGATE_CAPTURE_BACKEND=host --then-b js`).
+fn refuse_js_knobs(kind: AgentKind, env: &[(String, String)]) -> Result<()> {
+    if kind == AgentKind::Js {
+        if let Some((k, _)) = env.iter().find(|(k, _)| is_capture_knob(k)) {
+            bail!("{k} is a Rust capture-host knob: refused on a JS side");
+        }
+    }
+    Ok(())
+}
+
+/// P3a: the env of incarnation `n` of a side switching to `kind` (the
+/// agent's own tape path is per incarnation and Rust-only). Refuses the
+/// capture-host knobs on a JS incarnation (review-close F4).
+fn incarnation_env(
+    kind: AgentKind,
+    env: &[(String, String)],
+    dir: &Path,
+    n: usize,
+) -> Result<Vec<(String, String)>> {
+    refuse_js_knobs(kind, env)?;
+    let mut out: Vec<(String, String)> = env
+        .iter()
+        .filter(|(k, _)| k != "XORGATE_RS_TAPE")
+        .cloned()
+        .collect();
+    if kind == AgentKind::Rust {
+        out.push((
+            "XORGATE_RS_TAPE".into(),
+            dir.join(agent_tape_name(n)).display().to_string(),
+        ));
+    }
+    Ok(out)
+}
+
 /// Phase 7a (WP3): the env a side's `--env-a`/`--env-b` adds, in order. A
 /// `XORGATE_CAPTURE_BACKEND=host` side gets `XORGATE_CAPTURE_HOST_BIN=<bin>/
 /// xorgate-capture` (the rig shim; the agent would otherwise re-exec itself
@@ -251,12 +294,7 @@ pub fn rig_side_env(
     extra: &[(String, String)],
     bin: &Path,
 ) -> Result<Vec<(String, String)>> {
-    let knob = |k: &str| k.starts_with("XORGATE_CAPTURE_") || k == "XORGATE_SIDECAR_TIMING";
-    if kind == AgentKind::Js {
-        if let Some((k, _)) = extra.iter().find(|(k, _)| knob(k)) {
-            bail!("{k} is a Rust capture-host knob: refused on a JS side");
-        }
-    }
+    refuse_js_knobs(kind, extra)?;
     let mut out = extra.to_vec();
     let host = extra
         .iter()
@@ -1234,17 +1272,12 @@ impl Agent {
     /// agent's own tape path depends on the kind (`media::prepare_agent`'s
     /// env does not; the OBD helper source and the Pi helper do, and a
     /// handoff refuses those tapes, `handoff::Plan::of`).
-    fn switch_kind(&mut self, kind: AgentKind) {
+    fn switch_kind(&mut self, kind: AgentKind) -> Result<()> {
         let n = self.incarnations.len();
+        self.env = incarnation_env(kind, &self.env, &self.dir, n)?;
         self.kind = kind;
-        self.env.retain(|(k, _)| k != "XORGATE_RS_TAPE");
-        if kind == AgentKind::Rust {
-            self.env.push((
-                "XORGATE_RS_TAPE".into(),
-                self.dir.join(agent_tape_name(n)).display().to_string(),
-            ));
-        }
         self.pty_open_cache = None;
+        Ok(())
     }
 
     fn obs(&self) -> ObsAgent {
@@ -1621,7 +1654,7 @@ async fn run_handoff(
     }
     let restart_w = wall_now_ms();
     for (i, a) in agents.iter_mut().enumerate() {
-        a.switch_kind(plan.then[i]);
+        a.switch_kind(plan.then[i])?;
         a.start(args)?;
     }
     Ok(crate::takeover::HandoffInfo {
@@ -1970,6 +2003,14 @@ pub async fn run(args: PlayArgs) -> Result<()> {
             None
         },
     )?;
+    // review-close F4: refuse before anything starts, not at the handoff
+    // (`switch_kind` refuses too).
+    if let Some(h) = &handoff_plan {
+        for (label, then) in [("a", h.then[0]), ("b", h.then[1])] {
+            refuse_js_knobs(then, args.env_for(label))
+                .with_context(|| format!("--then-{label} {}", then.as_str()))?;
+        }
+    }
     // A calibration = the same kind sequence on both sides.
     let calibration =
         args.a == args.b && handoff_plan.as_ref().is_none_or(|h| h.then[0] == h.then[1]);
@@ -3931,6 +3972,31 @@ mod tests {
             assert!(e.to_string().contains(k), "{e}");
         }
         assert!(rig_side_env(AgentKind::Js, &[kv("FOO", "1")], bin).is_ok());
+        // review-close F4: a handoff to a JS incarnation refuses them too
+        // (`--env-b XORGATE_CAPTURE_BACKEND=host --then-b js`), whatever
+        // the side started as; a Rust incarnation keeps them and gets its
+        // own tape; a JS one without knobs drops the Rust tape.
+        let dir = Path::new("/w/b");
+        let knobbed = rig_side_env(AgentKind::Rust, &[kv("XORGATE_CAPTURE_BACKEND", "host")], bin).unwrap();
+        for env in [knobbed.clone(), vec![kv("XORGATE_SIDECAR_TIMING", "exact")]] {
+            let e = incarnation_env(AgentKind::Js, &env, dir, 1).unwrap_err();
+            assert!(e.to_string().contains("refused on a JS side"), "{e}");
+        }
+        let rs = incarnation_env(AgentKind::Rust, &knobbed, dir, 1).unwrap();
+        assert!(rs.iter().any(|(k, v)| k == "XORGATE_CAPTURE_BACKEND" && v == "host"), "{rs:?}");
+        assert_eq!(
+            rs.iter().filter(|(k, _)| k == "XORGATE_RS_TAPE").count(),
+            1,
+            "{rs:?}"
+        );
+        let js = incarnation_env(
+            AgentKind::Js,
+            &[kv("FOO", "1"), kv("XORGATE_RS_TAPE", "/w/b/agent-tape.ndjson.gz")],
+            dir,
+            1,
+        )
+        .unwrap();
+        assert_eq!(js, vec![kv("FOO", "1")]);
         for bad in ["NOEQUALS", "=v", "A B=1"] {
             assert!(parse(&["--env-a", bad]).is_err(), "{bad}");
         }
