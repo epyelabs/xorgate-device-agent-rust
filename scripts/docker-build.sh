@@ -9,6 +9,20 @@
 #   scripts/docker-build.sh clippy --workspace --all-targets -- -D warnings
 #   scripts/docker-build.sh shell           # interactive bash in the build container
 #   scripts/docker-build.sh pack            # build --release, then scripts/pack.sh --channel bench
+#   scripts/docker-build.sh image-tag       # print the build image tag and exit
+#   scripts/docker-build.sh dockerfile      # print the Dockerfile text it builds from
+#
+# x86_64 (Phase 7e, the simulator image's agent): put `--platform linux/amd64`
+# first, e.g. `scripts/docker-build.sh --platform linux/amd64 test`. Build amd64
+# on an x86_64 host (the homelab): on a Mac it runs under emulation (slow). The
+# amd64 build image is Dockerfile.build with its ONE `FROM --platform=linux/arm64`
+# line rewritten (Dockerfile.build itself is never edited for it, so the default
+# arm64 image tag — a hash of that file — stays what every checkout already has).
+# It gets its own image name (xorgate-rs-build-amd64:<toolchain>-<hash of the
+# rewritten file>), target sub-directory (/target/<checkout>-amd64) and output
+# dir (target/docker-amd64/release/), so the two never collide.
+# (XORGATE_DOCKER_TARGET_DIR overrides the target sub-directory for BOTH: set
+# it per platform, or the two builds share and thrash one target dir.)
 #
 # Output: target/docker/release/xorgate-rs (a Linux aarch64 binary). The build
 # itself runs in a Docker volume (CARGO_TARGET_DIR=/target/<checkout>) — not in the
@@ -41,8 +55,21 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PLATFORM=linux/arm64
-IMAGE_NAME=xorgate-rs-build
-TARGET_DIR="${XORGATE_DOCKER_TARGET_DIR:-/target/$(basename "$REPO")}"
+if [ "${1:-}" = "--platform" ]; then
+  PLATFORM="${2:-}"
+  shift 2 || { echo "--platform needs a value" >&2; exit 2; }
+fi
+case "$PLATFORM" in
+  linux/arm64) IMAGE_NAME=xorgate-rs-build; SUFFIX=""; OUT_DIR=target/docker/release ;;
+  linux/amd64) IMAGE_NAME=xorgate-rs-build-amd64; SUFFIX="-amd64"; OUT_DIR=target/docker-amd64/release ;;
+  *) echo "--platform must be linux/arm64 (default) or linux/amd64 (got '$PLATFORM')" >&2; exit 2 ;;
+esac
+TARGET_DIR="${XORGATE_DOCKER_TARGET_DIR:-/target/$(basename "$REPO")$SUFFIX}"
+# Refused before anything is built (review-wp2 S7).
+if [ "${1:-}" = pack ] && [ -n "$SUFFIX" ]; then
+  echo "pack is aarch64-only (the device tarball)" >&2
+  exit 2
+fi
 case "$TARGET_DIR" in
   /target/?*) ;;
   *) echo "XORGATE_DOCKER_TARGET_DIR must be /target/<name> (got $TARGET_DIR)" >&2; exit 2 ;;
@@ -61,18 +88,47 @@ if [ -f "$REPO/rust-toolchain.toml" ]; then
   TOOLCHAIN=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/rust-toolchain.toml" | head -n1)
   [ -n "$TOOLCHAIN" ] || TOOLCHAIN=stable
 fi
-if command -v shasum >/dev/null 2>&1; then
-  DF_HASH=$(shasum -a 256 "$REPO/Dockerfile.build" | cut -c1-12)
+# The Dockerfile text the image is built from: Dockerfile.build verbatim for
+# arm64; for amd64 the same text with its one arm64 FROM line rewritten.
+dockerfile_text() {
+  if [ -z "$SUFFIX" ]; then
+    cat "$REPO/Dockerfile.build"
+  else
+    local n
+    n=$(grep -c '^FROM --platform=linux/arm64 ' "$REPO/Dockerfile.build" || true)
+    [ "$n" = 1 ] || { echo "Dockerfile.build: expected exactly one 'FROM --platform=linux/arm64' line (found $n)" >&2; return 1; }
+    sed 's#^FROM --platform=linux/arm64 #FROM --platform=linux/amd64 #' "$REPO/Dockerfile.build"
+  fi
+}
+DF_TEXT=$(dockerfile_text)
+sha12() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -c1-12; else sha256sum | cut -c1-12; fi; }
+# arm64 hashes the FILE itself (the tag every checkout has, by construction);
+# amd64 hashes the rewritten text.
+if [ -z "$SUFFIX" ]; then
+  DF_HASH=$(sha12 < "$REPO/Dockerfile.build")
 else
-  DF_HASH=$(sha256sum "$REPO/Dockerfile.build" | cut -c1-12)
+  DF_HASH=$(printf '%s\n' "$DF_TEXT" | sha12)
 fi
 IMAGE="$IMAGE_NAME:${TOOLCHAIN}-${DF_HASH}"
+if [ "${1:-}" = "image-tag" ]; then
+  echo "$IMAGE"
+  exit 0
+fi
+if [ "${1:-}" = "dockerfile" ]; then
+  printf '%s\n' "$DF_TEXT"
+  exit 0
+fi
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo ">> building image $IMAGE (toolchain $TOOLCHAIN, $PLATFORM)" >&2
   t0=$(date +%s)
-  docker build --platform "$PLATFORM" -f "$REPO/Dockerfile.build" \
-    --build-arg "RUST_TOOLCHAIN=$TOOLCHAIN" -t "$IMAGE" "$REPO"
+  if [ -z "$SUFFIX" ]; then
+    docker build --platform "$PLATFORM" -f "$REPO/Dockerfile.build" \
+      --build-arg "RUST_TOOLCHAIN=$TOOLCHAIN" -t "$IMAGE" "$REPO"
+  else
+    printf '%s\n' "$DF_TEXT" | docker build --platform "$PLATFORM" -f - \
+      --build-arg "RUST_TOOLCHAIN=$TOOLCHAIN" -t "$IMAGE" "$REPO"
+  fi
   echo ">> image built in $(( $(date +%s) - t0 )) s" >&2
 fi
 
@@ -91,9 +147,9 @@ run_in() {
 
 copy_out() {
   # The volume is only visible inside a container: copy the binary into the repo.
-  mkdir -p "$REPO/target/docker/release"
-  run_in sh -c "cp '$TARGET_DIR/release/xorgate-rs' /src/target/docker/release/xorgate-rs && ls -l '$TARGET_DIR/release/xorgate-rs'"
-  echo ">> binary: $REPO/target/docker/release/xorgate-rs ($(wc -c < "$REPO/target/docker/release/xorgate-rs" | tr -d ' ') bytes)" >&2
+  mkdir -p "$REPO/$OUT_DIR"
+  run_in sh -c "cp '$TARGET_DIR/release/xorgate-rs' /src/$OUT_DIR/xorgate-rs && ls -l '$TARGET_DIR/release/xorgate-rs'"
+  echo ">> binary: $REPO/$OUT_DIR/xorgate-rs ($(wc -c < "$REPO/$OUT_DIR/xorgate-rs" | tr -d ' ') bytes)" >&2
 }
 
 MODE="${1:-build}"
@@ -108,7 +164,7 @@ case "$MODE" in
   pack)
     run_in cargo build --release "$@"
     copy_out
-    "$REPO/scripts/pack.sh" --channel bench --bin "$REPO/target/docker/release/xorgate-rs"
+    "$REPO/scripts/pack.sh" --channel bench --bin "$REPO/$OUT_DIR/xorgate-rs"
     ;;
   shell)
     DOCKER_TTY=1 run_in bash

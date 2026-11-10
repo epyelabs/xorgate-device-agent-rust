@@ -35,6 +35,15 @@ if command -v shellcheck >/dev/null; then D5=$(mktemp -d); for c in status apply
 f=tools/replay/shims/bluetoothctl; sh -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -s sh "$f"; } >"$LOGS/sc-p5b-shim.log" 2>&1 && pass "sh -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p5b-shim.log"; }  # Phase 5b WP4
 for f in tools/replay/tests/*.sh tools/capture-host/run-rig.sh; do bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "$f"; } >"$LOGS/sc-p7a.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p7a.log"; }; done  # Phase 7a WP3
 for f in tools/replay/shims/xorgate-capture tools/replay/timing_truth.py tools/replay/tests/timing_truth_test.py tools/capture-host/timing_harness.py; do python3 -m py_compile "$f" 2>"$LOGS/py-p7a.log" && pass "py_compile $f" || { failc "py_compile $f:"; cat "$LOGS/py-p7a.log"; }; done  # Phase 7a WP3
+# Phase 7e WP2: the simulator image's scripts (bash -n + shellcheck -x).
+# sim/entrypoint.sh keeps the JS entrypoint's lines byte for byte (its diff vs
+# the JS file is the three [7e] changes only), so the findings that shape
+# carries are waived for it alone: SC2155 (`export X="$(…)"`), SC2015 + SC2317
+# (the `forward` trap handler; SC2329 is shellcheck >= 0.10's name for it).
+for f in sim/entrypoint.sh sim/build-image.sh scripts/docker-build.sh scripts/tests/sim-image.sh; do
+  ex=(); [ "$f" != sim/entrypoint.sh ] || ex=(-e "SC2155,SC2015,SC2317,SC2329")
+  bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "${ex[@]}" "$f"; } >"$LOGS/sc-p7e.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p7e.log"; }
+done
 # Phase 6 drive blackbox: the python bench tools parse (ast only: py_compile
 # would write __pycache__ into the mounted repo).
 for f in scripts/bench/*.py; do python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$f" && pass "python3 ast.parse $f" || failc "python3 ast.parse $f"; done

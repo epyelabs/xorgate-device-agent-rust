@@ -1,0 +1,1 @@
+{"v":1,"deviceId":"src-device","streamKey":"cam0","sessionId":"00000000-0000-7000-8000-000000000000","seq":0,"startTs":1700000000000,"startMono":1000,"durationMs":3000,"sizeBytes":19331,"timeSource":"ntp","codec":"h264","width":1280,"height":720,"fps":15,"bitrateKbps":200,"anchor":"boundary","finalized":true}

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Container shim for the agent's time-provenance probe (recording/session.ts):
+# `timedatectl show -p NTPSynchronized --value` → "yes". The container clock IS
+# the NTP-synced host clock; without this the probe falls back to "unsynced".
+# Spike-only stand-in for the `timeSource` forcing Phase 2 does in-process.
+case "$*" in
+  *NTPSynchronized*) echo yes ;;
+  *) echo "timedatectl shim: unsupported args: $*" >&2; exit 1 ;;
+esac

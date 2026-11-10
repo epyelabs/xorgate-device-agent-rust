@@ -1,0 +1,15 @@
+# BuildKit picks up <Dockerfile>.dockerignore next to the Dockerfile; the
+# build context is the Rust repo root (sim/build-image.sh).
+**/.git
+.github
+target
+target-*
+**/node_modules
+guide
+docs
+tools/replay/.cache
+media/lib
+media/xorgate-kvs-webrtc
+sim/state
+sim/creds
+**/*.ndjson.gz

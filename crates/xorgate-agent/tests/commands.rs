@@ -76,6 +76,8 @@ struct Rig {
     plane: Arc<dyn CommandPlane>,
     reports: mpsc::UnboundedReceiver<ReportOrigin>,
     timeline: Timeline,
+    /// The worker's end of `ctx.exit_requests` (the replay container exit).
+    exits: mpsc::UnboundedReceiver<xorgate_agent::shutdown::ExitRequest>,
 }
 
 fn rig(tag: &str, device: &str, mode: RunMode, wall0: i64) -> Rig {
@@ -95,6 +97,8 @@ fn rig_obd(
     env.config.mode = mode;
     ctx.env = Arc::new(env);
     ctx.clock = Arc::new(AgentClock::following_tokio(wall0));
+    let (exit_tx, exits) = xorgate_agent::shutdown::ExitRequests::channel();
+    ctx.exit_requests = exit_tx;
     let timeline: Timeline = Default::default();
     let link = FakeLink::new(timeline.clone());
     link.set(LinkState::Connected);
@@ -116,6 +120,7 @@ fn rig_obd(
         plane,
         reports: rx,
         timeline,
+        exits,
     }
 }
 
@@ -191,9 +196,9 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
     let mut checked = 0;
     for (ci, c) in f.cases.iter().enumerate() {
         let mode = RunMode::parse(&c.mode).unwrap();
-        // Replay never starts in Rust (O7); ledger-error steps inject a
-        // message no real filesystem produces (covered below + in core).
-        if mode == RunMode::Replay || c.steps.iter().any(|s| s.ledger_error.is_some()) {
+        // Ledger-error steps inject a message no real filesystem produces
+        // (covered below + in core). Replay-mode cases run since Phase 7e.
+        if c.steps.iter().any(|s| s.ledger_error.is_some()) {
             continue;
         }
         let mut r = rig(&format!("cf{ci}"), "dev-1", mode, T0);
@@ -267,6 +272,17 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
                 .filter_map(|l| l.strip_prefix("event ").map(str::to_string))
                 .collect();
             assert_eq!(events(&r.ctx)[ev0..], want_ev[..], "{what}: events");
+            // `shutdown(reason, code)` (replay container exit) → ctx.exit_requests.
+            let want_exits: Vec<String> = s
+                .trace
+                .iter()
+                .filter_map(|l| l.strip_prefix("shutdown ").map(str::to_string))
+                .collect();
+            let mut got_exits = Vec::new();
+            while let Ok(e) = r.exits.try_recv() {
+                got_exits.push(format!("{} {}", e.reason, e.code));
+            }
+            assert_eq!(got_exits, want_exits, "{what}: shutdown");
             // configSync.request("boot") count (incl. a +45 s timer that fired before this step).
             let want_reports = s.trace.iter().filter(|l| *l == "report boot").count();
             assert_eq!(drain(&mut r.reports), want_reports, "{what}: reports");
@@ -302,8 +318,8 @@ async fn handle_command_trace_fixture_through_the_running_plane() {
         r.ctx.cancel.cancel();
     }
     assert_eq!(
-        checked, 43,
-        "steps replayed (replay-mode + ledger-error cases excluded)"
+        checked, 50,
+        "steps replayed (ledger-error cases excluded; the 7 replay-mode steps included)"
     );
 }
 

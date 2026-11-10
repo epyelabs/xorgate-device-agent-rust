@@ -1,0 +1,1 @@
+{"v":1,"home":{"lat":10.0,"lon":20.0,"label":"fixture"},"seedSet":["fx-short"],"scenarios":[{"id":"fx-short","title":"Fixture lap (synthetic)","durationMs":3000,"originalStartTs":1700000000000}]}

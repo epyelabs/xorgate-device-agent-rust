@@ -509,4 +509,88 @@ mod tests {
         assert_eq!(trust_secs(1_499), "1");
         assert_eq!(trust_secs(0), "0");
     }
+
+    /// F-P2-ROUND review F1: the late-sync text at NON-ROUND instants, where
+    /// the printed P is NOT the printed T − G. TS @ 09da38d `clock-trust.ts`:
+    /// `secs(ms) = (ms / 1000).toFixed(0)` (`:104-106`); the grace flip sets
+    /// `heldMs = elapsed` and prints G = `secs(elapsed)` (`:129-135`); the late
+    /// path leaves `heldMs` alone (`:113`) and prints T = `secs(mono − start)`
+    /// and P = `secs(mono − start − heldMs)` (`:121`). So P is rounded from the
+    /// RAW held ms, never `T − G`: |T − G − P| can be 1. The texts below are
+    /// the real `createClockTrust` output at these instants (fake mono + fake
+    /// probe, run with tsx in the js-09da38d copy, F-P2-ROUND fix evidence),
+    /// and each case enters through a different runtime call, like the agent.
+    #[test]
+    fn late_sync_text_at_non_round_instants_rounds_p_from_the_raw_hold() {
+        fn warn(g: &str) -> (TrustEventLevel, String) {
+            (
+                TrustEventLevel::Warn,
+                format!("[clock] no NTP/GPS/NITZ sync {g} s after start — publishing on an UNTRUSTED clock (0 sample(s) held); timestamps may be early until a sync lands"),
+            )
+        }
+        fn late(src: &str, t: &str, p: &str) -> (TrustEventLevel, String) {
+            (
+                TrustEventLevel::Info,
+                format!("[clock] {src} synchronized {t} s after boot — clock trusted (published {p} s on an untrusted clock)"),
+            )
+        }
+        fn events(outs: Vec<Vec<TrustOutput>>) -> Vec<(TrustEventLevel, String)> {
+            outs.into_iter()
+                .flatten()
+                .filter_map(|o| match o {
+                    TrustOutput::Event(l, m) => Some((l, m)),
+                    _ => None,
+                })
+                .collect()
+        }
+        let g = CLOCK_TRUST_GRACE_MS;
+
+        // T − G − P = +1: grace at 300 400 (G 300.4 → 300), trust at 330 600
+        // (T 330.6 → 331), raw P 30 200 → 30 (T − G would print 31). The shape
+        // of every F-P2-ROUND p4-clock-cap run. Grace via trusted() (the
+        // publish tick), trust via an `ntp` probe answer.
+        let mut c = ClockTrustCore::new(0, g);
+        let (_, o1) = c.trusted(300_400);
+        let o2 = c.on_probe(Ok(Ntp), 330_600);
+        assert_eq!(
+            events(vec![o1, o2]),
+            vec![warn("300"), late("ntp", "331", "30")]
+        );
+
+        // T − G − P = −1: grace at 300 600 (G 301), trust at 331 400 (T 331),
+        // raw P 30 800 → 31 (T − G would print 30). Grace via status(), trust
+        // via a GPS step (noteStep).
+        let mut c = ClockTrustCore::new(0, g);
+        let (_, o1) = c.status(300_600);
+        let o2 = c.note_step(SteppedClockSource::Gps, 331_400);
+        assert_eq!(
+            events(vec![o1, o2]),
+            vec![warn("301"), late("gps", "331", "31")]
+        );
+
+        // Two toFixed ties, T − G − P = −1: grace at 300 500 (G 300.5 → 301),
+        // trust at 331 000 (T 331), raw P 30 500 → 31 (T − G would print 30).
+        // Grace via an `unsynced` probe answer, trust via `ntp`.
+        let mut c = ClockTrustCore::new(0, g);
+        let o1 = c.on_probe(Ok(Unsynced), 300_500);
+        let o2 = c.on_probe(Ok(Ntp), 331_000);
+        assert_eq!(
+            events(vec![o1, o2]),
+            vec![warn("301"), late("ntp", "331", "31")]
+        );
+
+        // T − G − P = +1 from a non-zero start: start 2 500, grace at mono
+        // 302 900 (elapsed 300 400 → 300), trust at mono 393 100 (elapsed
+        // 390 600 → 391), raw P 90 200 → 90 (T − G would print 91). Grace via
+        // check_grace(), trust via a NITZ step.
+        let mut c = ClockTrustCore::new(2_500, g);
+        let o1 = c.check_grace(302_900);
+        let o2 = c.note_step(SteppedClockSource::Nitz, 393_100);
+        assert_eq!(
+            events(vec![o1, o2]),
+            vec![warn("300"), late("nitz", "391", "90")]
+        );
+        // The hold froze at the grace flip's raw elapsed, not its printed G.
+        assert_eq!(c.status(393_100).0.held_ms, 300_400);
+    }
 }
