@@ -25,16 +25,18 @@
 #   XORGATE_AGENT_LABEL   the `xorgate.agent` container label (default `rig`):
 #                         every container of the run carries it (hygiene filter)
 #
-# Steps: gen-certs.sh → js-build.sh → build-bins.sh → mosquitto up → `play`
-# (real time; the tape's length + settle) → `diff` → copy → compose down -v
-# (on every exit path, errors and signals included).
+# Steps: gen-certs.sh → js-build.sh → build-bins.sh → hash .cache/bin →
+# mosquitto up → `play` (real time; the tape's length + settle) → `diff` → copy
+# (+ `bins.sha256`: the sha256 of xorgate-replay, xorgate-rs and any
+# xorgate-rs-* as found at play start) → compose down -v (on every exit path,
+# errors and signals included).
 # Exit code = the diff's (non-zero on any UNTOLERATED mismatch).
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 EVIDENCE_ROOT="${EVIDENCE_ROOT:-$(cd "$REPO/../../plans/device-agent-js-to-rust/phase-3/evidence" 2>/dev/null && pwd || echo "$HERE/.cache/evidence")}"
 
-usage() { sed -n '2,28p' "$0"; exit 2; }
+usage() { sed -n '2,33p' "$0"; exit 2; }
 [ $# -ge 1 ] || usage
 TAPE=""; A=js; B=rust; OUT=""; BUILD=1; EXTRA=()
 while [ $# -gt 0 ]; do
@@ -86,6 +88,22 @@ for s in "a $A_KIND $A_REF" "b $B_KIND $B_REF"; do
   JS_DIR_ARGS+=(--js-dir-"$l" "/rig/jscache/js-$r")
 done
 [ "$BUILD" -eq 0 ] || "$HERE/build-bins.sh"
+# Per-run binary record (F-P2-ROUND review F5): the sha256 of every binary the
+# run can use, hashed BEFORE `play` and written to the run's own `bins.sha256`
+# (the agent side(s): `xorgate-rs`, plus any `xorgate-rs-*` it may exec as a
+# per-side wrapper; the harness: `xorgate-replay`, used for play AND diff).
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+BINS_SHA=$(
+  cd "$HERE/.cache/bin"
+  echo "# binaries in tools/replay/.cache/bin at play start ($(date -u +%FT%TZ)); repo HEAD $(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+  for f in xorgate-replay xorgate-rs xorgate-rs-* rig-statvfs.so; do
+    [ -f "$f" ] && sha256 "$f"
+  done
+  true
+)
+for f in xorgate-replay xorgate-rs; do
+  printf '%s\n' "$BINS_SHA" | grep -q "  $f\$" || { echo "no $f in $HERE/.cache/bin" >&2; exit 2; }
+done
 
 mkdir -p "$HERE/.cache/tapes" "$HERE/.cache/runs"
 DEST_TAPE="$HERE/.cache/tapes/$(basename "$TAPE")"
@@ -137,5 +155,6 @@ RC=0
 run_dc run --rm -T rig diff "/rig/out/$RUN" --tolerances /rig/tools/tolerances.toml || RC=$?
 mkdir -p "$OUT"
 cp -R "$HERE/.cache/runs/$RUN/." "$OUT/"
+printf '%s\n' "$BINS_SHA" > "$OUT/bins.sha256"
 echo ">> diff: $OUT/diff.md (exit $RC)"
 exit $RC
