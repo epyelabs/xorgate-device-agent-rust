@@ -210,7 +210,12 @@ class T(unittest.TestCase):
         self.assertEqual(self.run_check(side({4: -20}))["verdict"], "FAIL")
         # WP3 review F4: the last SIDECAR is not the last mp4 (a later mp4
         # lost its sidecar) -> not a cut -> FAILS.
-        self.assertEqual(self.run_check(side({4: 700}, mp4s=[0, 1, 2, 3, 4, 5]))["verdict"], "FAIL")
+        # review-close-fixes N1: mp4 5 carries the SAME birth as fragment
+        # 4's startTs (and 4's own birth is right), so the birth check passes
+        # whichever mp4 it reads: ONLY the last-mp4 rule can fail this.
+        s5 = side({4: 700}, mp4s=[0, 1, 2, 3, 4, 5])
+        s5.births[5] = s5.cars[4][0]
+        self.assertEqual(self.run_check(s5)["verdict"], "FAIL")
         # The stop came one GOP or more after the rotation keyframe -> FAILS.
         self.assertEqual(self.run_check(side({4: 700}, eos=2_100))["verdict"], "FAIL")
         # The file did not open at the stop (|d - e| > slack) -> FAILS.
@@ -250,7 +255,14 @@ class T(unittest.TestCase):
         # (2) the file opened before interrupt - 20;
         self.assertEqual(self.run_check(side(742 - 21))["verdict"], "FAIL")
         # (3) in the window but not the session's last non-empty mp4;
-        self.assertEqual(self.run_check(side(807, mp4s=[0, 1, 2, 3, 4, 5]))["verdict"], "FAIL")
+        s5 = side(807, mp4s=[0, 1, 2, 3, 4, 5])
+        s5.births[4] = s5.births[5] = s5.cars[4][0]  # birth check passes either way: only last-mp4 fails it
+        self.assertEqual(self.run_check(s5)["verdict"], "FAIL")
+        # review-close-fixes N1b: condition 4's e >= 0. The interrupt came
+        # BEFORE expected(N) (e = -500) with Got EOS at +100: the window
+        # [-520, +120] holds a file born at +50 with a matching birth, so
+        # only `0 <= e` can refuse it (no such fragment can exist).
+        self.assertEqual(self.run_check(side(50, intr=-500, got=100, birth_off=0))["verdict"], "FAIL")
         # (4) no Got EOS line: today's one-marker rule, +65 from the interrupt;
         self.assertEqual(self.run_check(side(742 + 65, got=None))["verdict"], "FAIL")
         # (5) a stalled EOS: Got EOS > one GOP after the interrupt, d inside it;

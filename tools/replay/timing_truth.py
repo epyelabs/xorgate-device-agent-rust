@@ -178,11 +178,11 @@ def last_mp4s(side_dir):
 
 
 def check_session(s, starts, anchors, min_fragments, expect=None, last_mp4=None):
-    """`last_mp4`: (seq, birth) of the session's last non-empty mp4, or None."""
     """One session: `starts` {seq: startTs}, `anchors` {seq: anchor or None}.
     `expect` ("exact" | "legacy"): the mode the RUN was configured for (WP3
     review F1); every fragment must then be of that kind. `None` infers it
-    from the data (only the `--source lines` harness, which is exact)."""
+    from the data (only the `--source lines` harness, which is exact).
+    `last_mp4`: (seq, birth) of the session's last non-empty mp4, or None."""
     rows = []
     errors = []
     fps = s["fps"]
