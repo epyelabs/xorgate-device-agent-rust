@@ -47,9 +47,13 @@ class Side:
         ]
         self.cars = {}
         self.mp4s = None  # None = one non-empty mp4 per sidecar
+        self.births = {}  # seq -> the player's statx birth (default: the sidecar's startTs)
 
     def eos(self, w):
         self.shim.append({"k": "line", "pid": 77, "fd": 1, "line": "handling interrupt.", "w": w})
+
+    def got_eos(self, w):
+        self.shim.append({"k": "line", "pid": 77, "fd": 1, "line": 'Got EOS from element "pipeline0".', "w": w})
 
     def host_line(self, n, frame_wall, lag, f0_mono=5_000_000_000, mono_off_ms=0):
         """The host's XG-FRAGMENT for fragment n whose first frame is at
@@ -69,7 +73,10 @@ class Side:
             for v in self.shim:
                 f.write(json.dumps(v) + "\n")
         seqs = sorted(self.cars) if self.mp4s is None else self.mp4s
-        files = {"video/cam0/%s/%05d.mp4" % (SID, q): {"size": 100} for q in seqs}
+        files = {}
+        for q in seqs:
+            b = self.births.get(q, self.cars[q][0] if q in self.cars else None)
+            files["video/cam0/%s/%05d.mp4" % (SID, q)] = {"size": 100, **({} if b is None else {"birth": b})}
         with open(os.path.join(self.dir, "recordings.json"), "w") as f:
             json.dump({"files": files}, f)
         for n, (st, anchor, where) in self.cars.items():
@@ -203,13 +210,74 @@ class T(unittest.TestCase):
         self.assertEqual(self.run_check(side({4: -20}))["verdict"], "FAIL")
         # WP3 review F4: the last SIDECAR is not the last mp4 (a later mp4
         # lost its sidecar) -> not a cut -> FAILS.
-        self.assertEqual(self.run_check(side({4: 700}, mp4s=[0, 1, 2, 3, 4, 5]))["verdict"], "FAIL")
+        # review-close-fixes N1: mp4 5 carries the SAME birth as fragment
+        # 4's startTs (and 4's own birth is right), so the birth check passes
+        # whichever mp4 it reads: ONLY the last-mp4 rule can fail this.
+        s5 = side({4: 700}, mp4s=[0, 1, 2, 3, 4, 5])
+        s5.births[5] = s5.cars[4][0]
+        self.assertEqual(self.run_check(s5)["verdict"], "FAIL")
         # The stop came one GOP or more after the rotation keyframe -> FAILS.
         self.assertEqual(self.run_check(side({4: 700}, eos=2_100))["verdict"], "FAIL")
         # The file did not open at the stop (|d - e| > slack) -> FAILS.
         self.assertEqual(self.run_check(side({4: 700}, eos=400))["verdict"], "FAIL")
         # No stop line at all -> FAILS.
         self.assertEqual(self.run_check(side({4: 700}, eos=None))["verdict"], "FAIL")
+
+    def test_the_cut_window_spans_interrupt_to_got_eos_with_the_review_conditions(self):
+        # F-7A-CUT (review-close): a-rec-boot-defer cam1 00010 relative to
+        # expected(10): handling interrupt. +742, file born +806, startTs
+        # +807, Got EOS +808 (gst's send_event took 65 ms). With both
+        # markers the file must open in [interrupt - 20, Got EOS + 20];
+        # startTs must be the player's birth within 1 ms.
+        def side(d, intr=742, got=808, birth_off=-1, mp4s=None):
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            os.makedirs(self.tmp)
+            s = Side(self.tmp, tool="xorgate-capture")
+            for k in range(5):
+                frame = P + k * SEG * 1000
+                off = d if k == 4 else 2_010
+                s.car(k, (frame + off) if k else (P + 2_010), "boundary" if k == 0 else "fstat")
+            exp4 = P + 4 * SEG * 1000
+            if intr is not None:
+                s.eos(exp4 + intr)
+            if got is not None:
+                s.got_eos(exp4 + got)
+            s.births[4] = exp4 + d + birth_off
+            s.mp4s = mp4s
+            return s
+        r = self.run_check(side(807))
+        self.assertEqual(r["verdict"], "PASS", r)
+        self.assertTrue(r["rows"][-1].get("cut"), r["rows"][-1])
+        self.assertEqual(r["rows"][-1]["eos_window"], [742, 808], r["rows"][-1])
+        # Negatives, each FAILS:
+        # (1) the file opened after Got EOS + 20;
+        self.assertEqual(self.run_check(side(808 + 21))["verdict"], "FAIL")
+        # (2) the file opened before interrupt - 20;
+        self.assertEqual(self.run_check(side(742 - 21))["verdict"], "FAIL")
+        # (3) in the window but not the session's last non-empty mp4;
+        s5 = side(807, mp4s=[0, 1, 2, 3, 4, 5])
+        s5.births[4] = s5.births[5] = s5.cars[4][0]  # birth check passes either way: only last-mp4 fails it
+        self.assertEqual(self.run_check(s5)["verdict"], "FAIL")
+        # review-close-fixes N1b: condition 4's e >= 0. The interrupt came
+        # BEFORE expected(N) (e = -500) with Got EOS at +100: the window
+        # [-520, +120] holds a file born at +50 with a matching birth, so
+        # only `0 <= e` can refuse it (no such fragment can exist).
+        self.assertEqual(self.run_check(side(50, intr=-500, got=100, birth_off=0))["verdict"], "FAIL")
+        # (4) no Got EOS line: today's one-marker rule, +65 from the interrupt;
+        self.assertEqual(self.run_check(side(742 + 65, got=None))["verdict"], "FAIL")
+        # (5) a stalled EOS: Got EOS > one GOP after the interrupt, d inside it;
+        self.assertEqual(self.run_check(side(1_200, intr=100, got=100 + 2_001))["verdict"], "FAIL")
+        # (6) in the window but startTs is not the player's birth (2 ms off).
+        self.assertEqual(self.run_check(side(807, birth_off=-2))["verdict"], "FAIL")
+        # Controls: the window edges themselves pass; the same one-marker
+        # shape within 20 ms still passes (today's rule unchanged).
+        self.assertEqual(self.run_check(side(808 + 20))["verdict"], "PASS")
+        self.assertEqual(self.run_check(side(742 - 20))["verdict"], "PASS")
+        self.assertEqual(self.run_check(side(742 + 15, got=None))["verdict"], "PASS")
+        # No recorded birth at all: never a cut.
+        s = side(807)
+        s.births[4] = None
+        self.assertEqual(self.run_check(s)["verdict"], "FAIL")
 
     def test_gaps_mixed_sessions_and_min_fragments_fail(self):
         s = exact_side(self.tmp)

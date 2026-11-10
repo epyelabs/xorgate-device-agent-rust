@@ -110,6 +110,8 @@ def sessions_of(shim):
             "fps": fps_of(argv),
             "playing_shim": None,
             "eos_shim": None,
+            "intr_shim": None,
+            "goteos_shim": None,
             "lines": [],
         }
     for v in shim:
@@ -123,6 +125,11 @@ def sessions_of(shim):
         # EOS itself): bounds the legacy `cut` class (WP3 review F4).
         if ("handling interrupt" in line or "Got EOS" in line) and s["eos_shim"] is None:
             s["eos_shim"] = v.get("w")
+        # F-7A-CUT (review-close): both markers, for the cut window.
+        if "handling interrupt" in line and s["intr_shim"] is None:
+            s["intr_shim"] = v.get("w")
+        if "Got EOS" in line and s["goteos_shim"] is None:
+            s["goteos_shim"] = v.get("w")
         if v.get("fd") == 1 and line.startswith(FRAG_PREFIX):
             try:
                 s["lines"].append(json.loads(line[len(FRAG_PREFIX):]))
@@ -153,7 +160,8 @@ def sidecars_of(side_dir):
 
 
 def last_mp4s(side_dir):
-    """{sid: the highest seq of a NON-EMPTY mp4 the player ever saw} from the
+    """{sid: (the highest seq of a NON-EMPTY mp4 the player ever saw, that
+    file's birth wall ms as the PLAYER's statx recorded it, or None)} from the
     side's recordings.json (empty when absent: then no fragment is a `cut`)."""
     out = {}
     try:
@@ -163,7 +171,9 @@ def last_mp4s(side_dir):
     for rel, st in files.items():
         m = re.search(r"/([^/]+)/(\d{5})\.mp4$", rel)
         if m and (st or {}).get("size", 0) > 0:
-            out[m.group(1)] = max(out.get(m.group(1), -1), int(m.group(2)))
+            q = int(m.group(2))
+            if q > out.get(m.group(1), (-1, None))[0]:
+                out[m.group(1)] = (q, (st or {}).get("birth"))
     return out
 
 
@@ -171,7 +181,8 @@ def check_session(s, starts, anchors, min_fragments, expect=None, last_mp4=None)
     """One session: `starts` {seq: startTs}, `anchors` {seq: anchor or None}.
     `expect` ("exact" | "legacy"): the mode the RUN was configured for (WP3
     review F1); every fragment must then be of that kind. `None` infers it
-    from the data (only the `--source lines` harness, which is exact)."""
+    from the data (only the `--source lines` harness, which is exact).
+    `last_mp4`: (seq, birth) of the session's last non-empty mp4, or None."""
     rows = []
     errors = []
     fps = s["fps"]
@@ -220,14 +231,38 @@ def check_session(s, starts, anchors, min_fragments, expect=None, last_mp4=None)
             # "last" is the session's last NON-EMPTY mp4 (recordings.json, not
             # the last sidecar), the shim's stop instant e = eos − expected(N)
             # lies in [0, one GOP), and the file opened at it (|d − e| ≤ slack).
-            e = None if s.get("eos_shim") is None else s["eos_shim"] - (p_shim + q * step_ms)
+            #
+            # F-7A-CUT (review-close, accepted with conditions): the file
+            # opens when the injected EOS reaches splitmuxsink, i.e. AFTER
+            # gst-launch's `handling interrupt.` and BEFORE the pipeline's
+            # `Got EOS` (posted once every sink handled it). With BOTH markers
+            # (1) the file must open in [interrupt - slack, Got EOS + slack],
+            # and (2) a Got EOS more than one GOP after the interrupt is a
+            # stalled EOS, never a cut. With one marker only: today's
+            # |d - e| <= slack. Always (3) startTs must be the player's OWN
+            # statx birth of that mp4 (recordings.json `birth`) within 1 ms,
+            # so an mtime stamp (also ~Got EOS) can never pass as a cut; and
+            # (4) e = stop - expected(N) in [0, one GOP) and the last
+            # non-empty mp4, unchanged.
+            exp_w = p_shim + q * step_ms
+            e = None if s.get("eos_shim") is None else s["eos_shim"] - exp_w
+            last_q, birth = last_mp4 if last_mp4 is not None else (None, None)
+            intr, got = s.get("intr_shim"), s.get("goteos_shim")
+            if intr is not None and got is not None:
+                opened = (got - intr <= GOP_S * 1000
+                          and intr - SLACK_MS <= st <= got + SLACK_MS)
+                row["eos_window"] = [round(intr - exp_w, 1), round(got - exp_w, 1)]
+            else:
+                opened = e is not None and abs(d_shim - e) <= SLACK_MS
             cut = (
-                last_mp4 is not None
-                and q == last_mp4
+                last_q is not None
+                and q == last_q
                 and 0 <= d_shim < LEGACY_LAG_MS - LEGACY_BAND_MS
                 and e is not None
                 and 0 <= e < GOP_S * 1000
-                and abs(d_shim - e) <= SLACK_MS
+                and opened
+                and birth is not None
+                and abs(st - birth) <= 1
             )
             if cut:
                 row["cut"] = True

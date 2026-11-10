@@ -18,7 +18,8 @@ if command -v shellcheck >/dev/null; then
   fixture_bench; reset_units
   D=$(mktemp -d)
   for cmd in "dev-manifests.sh" "profile.sh shared" "profile.sh exclusive" "exclusive.sh begin" "exclusive.sh end" "exclusive.sh tape-off" \
-             "exclusive.sh status" "gate-seam.sh on" "shm-audit.sh" "soak.sh" "filler.sh seed" "start.sh" "ntp-unsync.sh status" "status.sh"; do
+             "exclusive.sh status" "gate-seam.sh on" "shm-audit.sh" "soak.sh" "filler.sh seed" "start.sh" "ntp-unsync.sh status" "status.sh" \
+             "drive-blackbox-ctl.sh install" "drive-blackbox-ctl.sh status" "drive-blackbox-ctl.sh uninstall" "drive-blackbox-ctl.sh summary latest"; do
     n=${cmd//[ \/]/_}
     # shellcheck disable=SC2086
     XORGATE_TEST_DUMP="$D/$n.sh" bash scripts/bench/$cmd >/dev/null 2>&1 || true
@@ -34,5 +35,8 @@ if command -v shellcheck >/dev/null; then D5=$(mktemp -d); for c in status apply
 f=tools/replay/shims/bluetoothctl; sh -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -s sh "$f"; } >"$LOGS/sc-p5b-shim.log" 2>&1 && pass "sh -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p5b-shim.log"; }  # Phase 5b WP4
 for f in tools/replay/tests/*.sh tools/capture-host/run-rig.sh; do bash -n "$f" && { ! command -v shellcheck >/dev/null || shellcheck -x "$f"; } >"$LOGS/sc-p7a.log" 2>&1 && pass "bash -n + shellcheck $f" || { failc "lint $f:"; cat "$LOGS/sc-p7a.log"; }; done  # Phase 7a WP3
 for f in tools/replay/shims/xorgate-capture tools/replay/timing_truth.py tools/replay/tests/timing_truth_test.py tools/capture-host/timing_harness.py; do python3 -m py_compile "$f" 2>"$LOGS/py-p7a.log" && pass "py_compile $f" || { failc "py_compile $f:"; cat "$LOGS/py-p7a.log"; }; done  # Phase 7a WP3
+# Phase 6 drive blackbox: the python bench tools parse (ast only: py_compile
+# would write __pycache__ into the mounted repo).
+for f in scripts/bench/*.py; do python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$f" && pass "python3 ast.parse $f" || failc "python3 ast.parse $f"; done
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail
