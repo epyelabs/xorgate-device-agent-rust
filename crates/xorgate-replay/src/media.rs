@@ -1002,7 +1002,11 @@ mod tests {
                 + "\n",
         )
         .unwrap();
-        let agent = ObsAgent { work: work.clone(), home: d.join("home"), dir: dir.clone() };
+        let agent = ObsAgent {
+            work: work.clone(),
+            home: d.join("home"),
+            dir: dir.clone(),
+        };
         let stop = CancellationToken::new();
         let task = {
             let (run, shm, stop) = (d.clone(), shm.clone(), stop.clone());
@@ -1022,11 +1026,18 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        let at_stop = |pid: u32| recs.iter().find(|v| v["k"] == "alive_at_stop" && v["pid"] == pid).cloned();
+        let at_stop = |pid: u32| {
+            recs.iter()
+                .find(|v| v["k"] == "alive_at_stop" && v["pid"] == pid)
+                .cloned()
+        };
         let gone = |pid: u32| recs.iter().any(|v| v["k"] == "gone" && v["pid"] == pid);
         // Clean up the survivors before asserting (never leak a process).
         let _ = std::process::Command::new("sh")
-            .args(["-c", &format!("kill -KILL -{pl} {pa} {po} 2>/dev/null; true")])
+            .args([
+                "-c",
+                &format!("kill -KILL -{pl} {pa} {po} 2>/dev/null; true"),
+            ])
             .status();
         let _ = alive_c.wait();
         let _ = other.wait();

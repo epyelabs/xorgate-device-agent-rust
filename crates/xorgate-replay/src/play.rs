@@ -3977,13 +3977,22 @@ mod tests {
         // the side started as; a Rust incarnation keeps them and gets its
         // own tape; a JS one without knobs drops the Rust tape.
         let dir = Path::new("/w/b");
-        let knobbed = rig_side_env(AgentKind::Rust, &[kv("XORGATE_CAPTURE_BACKEND", "host")], bin).unwrap();
+        let knobbed = rig_side_env(
+            AgentKind::Rust,
+            &[kv("XORGATE_CAPTURE_BACKEND", "host")],
+            bin,
+        )
+        .unwrap();
         for env in [knobbed.clone(), vec![kv("XORGATE_SIDECAR_TIMING", "exact")]] {
             let e = incarnation_env(AgentKind::Js, &env, dir, 1).unwrap_err();
             assert!(e.to_string().contains("refused on a JS side"), "{e}");
         }
         let rs = incarnation_env(AgentKind::Rust, &knobbed, dir, 1).unwrap();
-        assert!(rs.iter().any(|(k, v)| k == "XORGATE_CAPTURE_BACKEND" && v == "host"), "{rs:?}");
+        assert!(
+            rs.iter()
+                .any(|(k, v)| k == "XORGATE_CAPTURE_BACKEND" && v == "host"),
+            "{rs:?}"
+        );
         assert_eq!(
             rs.iter().filter(|(k, _)| k == "XORGATE_RS_TAPE").count(),
             1,
@@ -3991,7 +4000,10 @@ mod tests {
         );
         let js = incarnation_env(
             AgentKind::Js,
-            &[kv("FOO", "1"), kv("XORGATE_RS_TAPE", "/w/b/agent-tape.ndjson.gz")],
+            &[
+                kv("FOO", "1"),
+                kv("XORGATE_RS_TAPE", "/w/b/agent-tape.ndjson.gz"),
+            ],
             dir,
             1,
         )

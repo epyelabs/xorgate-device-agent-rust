@@ -757,8 +757,7 @@ impl MediaCapture {
             .iter()
             .filter(|nm| {
                 xorgate_core::capture_ladder::shm_owner_pid(nm).is_some_and(|p| {
-                    mine.contains(&p)
-                        && (gone.contains(&p) || capture_alive_at_stop.contains(&p))
+                    mine.contains(&p) && (gone.contains(&p) || capture_alive_at_stop.contains(&p))
                 })
             })
             .cloned()
@@ -4764,7 +4763,11 @@ fn shm_orphans_verdict(
                 "shm",
                 "end",
                 "(capture child of a Rust side alive at stop)",
-                if side == "A" { pids.clone() } else { String::new() },
+                if side == "A" {
+                    pids.clone()
+                } else {
+                    String::new()
+                },
                 if side == "B" { pids } else { String::new() },
                 UNTOLERATED,
             ));
@@ -7061,7 +7064,8 @@ kind = "decisions"
     /// the fix such a child was never "gone", so its segment counted 0.
     #[test]
     fn a_capture_child_alive_at_stop_strands_its_segments() {
-        let dir = std::env::temp_dir().join(format!("xorgate-replay-shm-alive-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("xorgate-replay-shm-alive-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -7087,9 +7091,15 @@ kind = "decisions"
             ),
         )
         .unwrap();
-        let shm = [serde_json::json!({"w": 9000, "names": ["shmpipe. 1190.    0", "shmpipe. 4242.    0"]})];
+        let shm = [
+            serde_json::json!({"w": 9000, "names": ["shmpipe. 1190.    0", "shmpipe. 4242.    0"]}),
+        ];
         let mut m = MediaCapture::load(&dir, &shm);
-        assert_eq!(m.capture_alive_at_stop, [1190], "only this side's capture children");
+        assert_eq!(
+            m.capture_alive_at_stop,
+            [1190],
+            "only this side's capture children"
+        );
         assert_eq!(m.shm_orphan_names, ["shmpipe. 1190.    0"]);
         assert_eq!(m.shm_orphans, 1);
         // A child alive at the stop with no gone record at all counts too.
@@ -7121,11 +7131,16 @@ kind = "decisions"
             .map(|r| format!("{} {} {}", r.path, r.b, r.tol))
             .collect();
         assert!(
-            rows.contains(&format!("(capture child of a Rust side alive at stop) [1190] {UNTOLERATED}")),
+            rows.contains(&format!(
+                "(capture child of a Rust side alive at stop) [1190] {UNTOLERATED}"
+            )),
             "{rows:?}"
         );
         assert!(
-            rows.iter().any(|r| r.starts_with("(orphan shmpipe segments of a Rust side)") && r.ends_with(UNTOLERATED)),
+            rows.iter().any(
+                |r| r.starts_with("(orphan shmpipe segments of a Rust side)")
+                    && r.ends_with(UNTOLERATED)
+            ),
             "{rows:?}"
         );
         // The mirror: no child alive at stop, no orphan, no row.
