@@ -4720,6 +4720,9 @@ fn diff_sudo(a: &Capture, b: &Capture, table: &Table, rep: &mut Report) {
 
 /// Every row of the table (a rule without rows, else each of its rows) with
 /// the number of mismatches citing it (`<id>` or `<id>/<sub>`), 0 included.
+/// A `<id>/<sub>` that is itself an entry of the table (a sibling
+/// `[[rule]]` such as `T16/trust-published`) counts only under its own
+/// entry, never under its prefix too.
 pub fn row_hits(rep: &Report, table: &Table) -> Vec<(String, usize)> {
     let mut ids: Vec<String> = Vec::new();
     for r in &table.rules {
@@ -4731,14 +4734,16 @@ pub fn row_hits(rep: &Report, table: &Table) -> Vec<(String, usize)> {
             ids.extend(r.rows.iter().map(|w| format!("{}/{}", r.id, w.id)));
         }
     }
-    ids.into_iter()
+    ids.iter()
         .map(|id| {
             let n = rep
                 .mismatches
                 .iter()
-                .filter(|m| m.tol == id || m.tol.starts_with(&format!("{id}/")))
+                .filter(|m| {
+                    m.tol == *id || (m.tol.starts_with(&format!("{id}/")) && !ids.contains(&m.tol))
+                })
                 .count();
-            (id, n)
+            (id.clone(), n)
         })
         .collect()
 }
@@ -4823,8 +4828,14 @@ pub fn render(
     let _ = writeln!(o, "| id | count | rule |");
     let _ = writeln!(o, "|---|---|---|");
     for (id, list) in &by_tol {
+        // The id's own rule first (a sibling `[[rule]]` such as
+        // `T16/trust-published`), else its base rule (`T12/cut-fragment`).
         let base = id.split('/').next().unwrap_or(id);
-        let title = table.rule(base).map(|r| r.title.as_str()).unwrap_or("");
+        let title = table
+            .rule(id)
+            .or_else(|| table.rule(base))
+            .map(|r| r.title.as_str())
+            .unwrap_or("");
         let _ = writeln!(o, "| {id} | {} | {} |", list.len(), title);
     }
     if let Some(list) = by_tol.get(UNTOLERATED) {
@@ -5215,6 +5226,68 @@ mod tests {
         let md = render(&rep, &a, &b, &PlayInfo::default(), &t, Path::new("run"));
         assert!(md.contains("| sms | **0 — not exercised** |"), "{md}");
         assert!(md.contains("| T8/input-edge | 0 |"), "{md}");
+    }
+
+    /// F-P2-ROUND review F6: a sibling `[[rule]]` named `<id>/<sub>`
+    /// (`T16/trust-published`) is counted under its own entry only, not under
+    /// its prefix `T16` too; a dynamic sub-id of a row-less rule (`T4/gps`,
+    /// no entry of its own) still counts under `T4`. The "By tolerance id"
+    /// table titles each id with its OWN rule first (`T16/trust-published`,
+    /// `T12/cut-fragment`), else with its base rule's (`T4/gps`).
+    #[test]
+    fn row_hits_count_a_sibling_rule_once_and_titles_name_its_own_rule() {
+        let t = table();
+        let mut rep = Report::default();
+        for tol in [
+            "T16",
+            "T16/trust-published",
+            "T16/trust-published",
+            "T12/cut-fragment",
+            "T4/gps",
+        ] {
+            rep.push(Mismatch {
+                stream: "events".into(),
+                at: "multiset".into(),
+                path: format!("x {tol}"),
+                a: "1".into(),
+                b: "0".into(),
+                tol: tol.into(),
+            });
+        }
+        let hits = row_hits(&rep, &t);
+        let n = |id: &str| hits.iter().find(|(i, _)| i == id).map(|(_, n)| *n);
+        assert_eq!(n("T16"), Some(1), "{hits:?}");
+        assert_eq!(n("T16/trust-published"), Some(2), "{hits:?}");
+        assert_eq!(n("T12"), Some(0), "{hits:?}");
+        assert_eq!(n("T12/cut-fragment"), Some(1), "{hits:?}");
+        assert_eq!(n("T4"), Some(1), "{hits:?}");
+        let (a, b) = (cap("js", vec![]), cap("rust", vec![]));
+        let md = render(&rep, &a, &b, &PlayInfo::default(), &t, Path::new("run"));
+        let title = |id: &str| t.rule(id).unwrap().title.clone();
+        assert_ne!(title("T16"), title("T16/trust-published"));
+        assert!(
+            md.contains(&format!(
+                "| T16/trust-published | 2 | {} |",
+                title("T16/trust-published")
+            )),
+            "{md}"
+        );
+        assert!(
+            md.contains(&format!("| T16 | 1 | {} |", title("T16"))),
+            "{md}"
+        );
+        assert_ne!(title("T12"), title("T12/cut-fragment"));
+        assert!(
+            md.contains(&format!(
+                "| T12/cut-fragment | 1 | {} |",
+                title("T12/cut-fragment")
+            )),
+            "{md}"
+        );
+        assert!(
+            md.contains(&format!("| T4/gps | 1 | {} |", title("T4"))),
+            "{md}"
+        );
     }
 
     fn table() -> Table {
