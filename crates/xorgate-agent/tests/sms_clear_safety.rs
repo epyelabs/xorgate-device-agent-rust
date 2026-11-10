@@ -383,6 +383,19 @@ fn unsafe_code_is_denied_except_at_todays_ffi_sites() {
         allows,
         [
             "xorgate-agent/src/alloc.rs tune",
+            // Phase 7a WP0: the capture host's FFI (sigaction, the
+            // async-signal-safe fault handler, setlocale, dgettext, the raw
+            // gst_parse_launchv, gst_deinit; WP1: setpriority for
+            // the per-thread nice sync, tgkill for the signal forward).
+            "xorgate-agent/src/capture_host/nls.rs tr",
+            "xorgate-agent/src/capture_host/sys.rs deinit",
+            "xorgate-agent/src/capture_host/sys.rs fault_handler",
+            "xorgate-agent/src/capture_host/sys.rs nice_threads_like_main",
+            "xorgate-agent/src/capture_host/sys.rs parse_launchv",
+            "xorgate-agent/src/capture_host/sys.rs raw_write",
+            "xorgate-agent/src/capture_host/sys.rs set_disposition",
+            "xorgate-agent/src/capture_host/sys.rs setlocale_from_env",
+            "xorgate-agent/src/capture_host/sys.rs thread_kill",
             "xorgate-agent/src/cli/manage/format.rs clock",
             "xorgate-agent/src/cli/sms.rs stdout_columns",
             "xorgate-agent/src/recording/capture/backend.rs renice",
