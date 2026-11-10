@@ -7108,7 +7108,9 @@ kind = "decisions"
             "{\"k\":\"alive_at_stop\",\"pid\":1190,\"w\":9000,\"pgid\":1190,\"members\":[1190]}\n",
         )
         .unwrap();
-        assert_eq!(MediaCapture::load(&dir, &shm).shm_orphans, 1);
+        let mut js = MediaCapture::load(&dir, &shm);
+        assert_eq!(js.shm_orphans, 1);
+        assert_eq!(js.shm_orphan_gone, [None], "alive at stop: never seen gone");
         let _ = std::fs::remove_dir_all(&dir);
 
         let table = Table::load(
@@ -7147,6 +7149,41 @@ kind = "decisions"
         let mut rep = Report::default();
         shm_orphans_verdict(&clean, &clean, 10_000, &table, &mut rep);
         assert!(rep.mismatches.is_empty(), "{:?}", rep.mismatches);
+
+        // review-close-fixes N2 (c) + N3: the same child on a JS side. The
+        // Rust-only row never names a JS side; but its segment is a JS
+        // orphan with no `gone` instant, which neither D41 arm (reaper miss,
+        // hung end-of-run) nor T18 explains, so the orphan row itself is
+        // UNTOLERATED in JS-vs-Rust AND in JS-vs-JS: a JS capture child alive
+        // at the stop is a rig defect (the player SIGKILLs the JS agent's
+        // group before the observer stops), never a tolerated JS orphan.
+        js.kind = "js".into();
+        js.present = true;
+        let js_clean = MediaCapture {
+            kind: "js".into(),
+            present: true,
+            ..Default::default()
+        };
+        for other in [&clean, &js_clean] {
+            let mut rep = Report::default();
+            shm_orphans_verdict(&js, other, 10_000, &table, &mut rep);
+            let rows: Vec<String> = rep
+                .mismatches
+                .iter()
+                .map(|r| format!("{} {}", r.path, r.tol))
+                .collect();
+            assert!(
+                !rows
+                    .iter()
+                    .any(|r| r.contains("capture child of a Rust side")),
+                "{rows:?}"
+            );
+            assert!(
+                rows.contains(&format!("(orphan shmpipe segments) {UNTOLERATED}")),
+                "{} side: {rows:?}",
+                other.kind
+            );
+        }
     }
 
     /// Phase 5b WP5 item 9: the end-of-run orphan counter reads shmsink's REAL

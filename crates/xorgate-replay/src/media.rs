@@ -986,7 +986,22 @@ mod tests {
         let mut leader = spawn("sleep 30 & sleep 0.6; exit 0"); // leader exits, member lives
         let mut clean = spawn("sleep 0.3"); // exits before the stop
         let mut other = spawn("exec sleep 30"); // alive, but not a capture tool
+                                                // review-close-fixes N2: a capture child that dies just before the
+                                                // cancel (only the FINAL liveness pass sees it gone), and two capture
+                                                // children NOT leading their own group (they share this test's
+                                                // group, as a JS agent's children share the agent's): their group's
+                                                // live members must never count for them.
+        let mut late = spawn("exec sleep 30");
+        let inherit = |sh: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", sh])
+                .spawn()
+                .unwrap()
+        };
+        let mut nl_alive = inherit("exec sleep 30");
+        let mut nl_clean = inherit("sleep 0.3");
         let (pa, pl, pc, po) = (alive_c.id(), leader.id(), clean.id(), other.id());
+        let (pz, pn, pk) = (late.id(), nl_alive.id(), nl_clean.id());
         let rec = |pid: u32, tool: &str| {
             json!({"k": "spawn", "tool": tool, "pid": pid, "argv": [], "w": 0}).to_string()
         };
@@ -997,6 +1012,9 @@ mod tests {
                 rec(pl, "xorgate-capture"),
                 rec(pc, "gst-launch-1.0"),
                 rec(po, "xorgate-kvs-webrtc"),
+                rec(pz, "gst-launch-1.0"),
+                rec(pn, "gst-launch-1.0"),
+                rec(pk, "gst-launch-1.0"),
             ]
             .join("\n")
                 + "\n",
@@ -1018,7 +1036,13 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         clean.wait().unwrap();
         leader.wait().unwrap();
+        nl_clean.wait().unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
+        // `late` dies and is reaped with NO await before the cancel: no
+        // periodic pass can run in between (current-thread runtime), so
+        // only the final pass can record it gone.
+        late.kill().unwrap();
+        late.wait().unwrap();
         stop.cancel();
         task.await.unwrap();
         let recs: Vec<Value> = fs::read_to_string(dir.join("procs.ndjson"))
@@ -1041,6 +1065,8 @@ mod tests {
             .status();
         let _ = alive_c.wait();
         let _ = other.wait();
+        let _ = nl_alive.kill(); // by pid only: it shares this test's group
+        let _ = nl_alive.wait();
         let a = at_stop(pa).expect("the live capture child");
         assert_eq!(a["members"], json!([pa]), "{a}");
         let l = at_stop(pl).expect("the group leader exited, its member still runs");
@@ -1050,6 +1076,18 @@ mod tests {
         assert!(!m.is_empty() && !m.contains(&json!(pl)), "{l}");
         assert!(at_stop(pc).is_none() && gone(pc), "a clean exit: {recs:?}");
         assert!(at_stop(po).is_none(), "not a capture tool: {recs:?}");
+        // N2 (a): the final liveness pass.
+        assert!(
+            at_stop(pz).is_none() && gone(pz),
+            "died just before the cancel: {recs:?}"
+        );
+        // N2 (b): only a child that LEADS its own group has its group checked.
+        let n = at_stop(pn).expect("a live non-leader capture child");
+        assert_eq!(n["members"], json!([]), "{n}");
+        assert!(
+            at_stop(pk).is_none() && gone(pk),
+            "a non-leader's clean exit, whatever its group: {recs:?}"
+        );
         let _ = fs::remove_dir_all(&d);
     }
 
