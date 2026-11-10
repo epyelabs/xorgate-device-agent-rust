@@ -39,7 +39,7 @@
 #   restored). Exclusive profile = media-on (profile.sh exclusive).
 #   Window helpers: gate-seam.sh (D12), soak.sh (D15), filler.sh (D9), shm-audit.sh.
 #
-# end: stops Rust, SIGINT/5 s/SIGKILL any Rust gst-launch-1.0/xorgate-kvs-webrtc
+# end: stops Rust, SIGINT/5 s/SIGKILL any Rust gst-launch-1.0/xorgate-capture/xorgate-kvs-webrtc
 #   left (never a JS pid; cannot fail), starts + verifies the JS agent (so no
 #   later failure can leave PROD down), removes the runtime drop-ins, the D12
 #   gate seam, the soak sampler and the D9 filler, re-asserts the shared
@@ -282,7 +282,7 @@ end)
   # Leftover Rust capture/masters would hold the cameras the JS agent is about
   # to reopen. kill_rs_media cannot fail (always returns 0, bounded 5 s, and
   # runs in an errexit-exempt `||` context), so PROD is still restored next.
-  echo "== 1b. Rust gst-launch-1.0/xorgate-kvs-webrtc leftovers (SIGINT, 5 s, SIGKILL; never a JS pid)"
+  echo "== 1b. Rust gst-launch-1.0/xorgate-capture/xorgate-kvs-webrtc leftovers (SIGINT, 5 s, SIGKILL; never a JS pid)"
   kill_rs_media || echo "  ! leftover sweep failed — continuing (JS first)"
   echo "== 1c. NTP (review-wp6 M4): set-ntp true + undo an ntp-unsync.sh break"
   ntp_restore || echo "  ! ntp restore failed — run scripts/bench/ntp-unsync.sh restore"

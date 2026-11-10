@@ -10,7 +10,10 @@
 //!   `tools/replay/media/`) when the tape has channels, else a missing path
 //!   (Phase 2 behaviour: media self-gates);
 //! - `gst-launch-1.0` on PATH = the shim (`tools/replay/shims/`), which execs
-//!   the real binary with `videotestsrc` for `libcamerasrc`;
+//!   the real binary with `videotestsrc` for `libcamerasrc`; Phase 7a: a
+//!   Rust side run with `XORGATE_CAPTURE_BACKEND=host` reaches the
+//!   `xorgate-capture` shim through `XORGATE_CAPTURE_HOST_BIN` (play.rs
+//!   `rig_side_env`), which does the same swap and execs the real host;
 //! - `rpicam-hello` on PATH when the tape carries its `exec` answer;
 //! - `NODE_EXTRA_CA_CERTS` = the rig CA (Node; the Rust agent reads the
 //!   system store the player updated, P5);
@@ -315,6 +318,18 @@ pub fn shim_children(work: &Path) -> Vec<ShimChild> {
         .collect()
 }
 
+/// The capture programs the rig's shims log (`tool`): the JS / default Rust
+/// `gst-launch-1.0`, and the Phase 7a capture host `xorgate-capture`
+/// (`tools/replay/shims/xorgate-capture`, a Rust side with
+/// `XORGATE_CAPTURE_BACKEND=host`). Both are capture children to the rig:
+/// the same per-attempt exits, the same `eof` wait, the same key.
+pub const CAPTURE_TOOLS: &[&str] = &["gst-launch-1.0", "xorgate-capture"];
+
+/// Whether a shim `tool` is a capture child ([`CAPTURE_TOOLS`]).
+pub fn is_capture_tool(tool: &str) -> bool {
+    CAPTURE_TOOLS.contains(&tool)
+}
+
 /// The stream key a capture argv belongs to: its shmsink socket
 /// `<home>/shm/<key>.sock`.
 pub fn capture_key(argv: &[String]) -> Option<String> {
@@ -332,6 +347,82 @@ fn alive(pid: u32) -> bool {
             .map(|(_, rest)| !rest.starts_with('Z') && !rest.starts_with('X'))
             .unwrap_or(false),
         Err(_) => false,
+    }
+}
+
+/// `/proc/<pid>/stat`'s process group of a live (not zombie) process
+/// (P3a's parser, `handoff::parse_stat`).
+fn pgid_of(pid: u32) -> Option<u32> {
+    let e = crate::handoff::parse_stat(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
+    (!e.dead).then_some(e.pgrp as u32)
+}
+
+/// Every live process of process group `pgid` (`handoff::scan_proc`).
+fn group_members(pgid: u32) -> Vec<u32> {
+    let mut out: Vec<u32> = crate::handoff::scan_proc()
+        .into_iter()
+        .filter(|e| !e.dead && e.pgrp as u32 == pgid)
+        .map(|e| e.pid as u32)
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// What the observer knows of one shim child: alive at the last pass, and
+/// its process group (read once while it was alive).
+#[derive(Debug, Clone, Copy)]
+struct Known {
+    live: bool,
+    pgid: Option<u32>,
+    capture: bool,
+}
+
+/// One liveness pass over agent `a`'s shim children: a newly dead child gets
+/// its `gone` record.
+fn liveness_pass(a: &ObsAgent, known: &mut BTreeMap<u32, Known>, now: i64) {
+    for c in shim_children(&a.work) {
+        known.entry(c.pid).or_insert(Known {
+            live: true,
+            pgid: None,
+            capture: is_capture_tool(&c.tool),
+        });
+    }
+    for (pid, k) in known.iter_mut() {
+        if !k.live {
+            continue;
+        }
+        if alive(*pid) {
+            if k.pgid.is_none() {
+                k.pgid = pgid_of(*pid);
+            }
+        } else {
+            k.live = false;
+            append(
+                &a.dir.join("procs.ndjson"),
+                &json!({"w": now, "pid": pid, "k": "gone"}),
+            );
+        }
+    }
+}
+
+/// review-close F2: at the stop, every CAPTURE child that outlived its agent:
+/// still alive itself, or (it led its own process group, as the Rust
+/// supervisor's `process_group(0)` makes it) a live member of that group.
+/// One `alive_at_stop` record each; `media_diff` counts its segments as
+/// orphans (a child that outlives its agent strands them).
+fn alive_at_stop(a: &ObsAgent, known: &BTreeMap<u32, Known>, now: i64) {
+    for (pid, k) in known.iter().filter(|(_, k)| k.capture) {
+        let members = match k.pgid {
+            Some(g) if g == *pid => group_members(g),
+            _ => Vec::new(),
+        };
+        if k.live || !members.is_empty() {
+            append(
+                &a.dir.join("procs.ndjson"),
+                &json!({"w": now, "pid": pid, "k": "alive_at_stop", "pgid": k.pgid,
+                    "members": members}),
+            );
+        }
     }
 }
 
@@ -416,7 +507,7 @@ pub struct ShimSpawn {
 /// `(role, key)` of a shim spawn: a capture by its shmsink socket, a KVS
 /// master by its OWN channel (`<deviceId>-<key>`, never the tape's name).
 pub fn spawn_role_key(s: &ShimSpawn, plan: &MediaPlan) -> Option<(String, String)> {
-    if s.tool == "gst-launch-1.0" {
+    if is_capture_tool(&s.tool) {
         return capture_key(&s.argv).map(|k| (ROLE_CAPTURE.to_string(), k));
     }
     if s.tool == "xorgate-kvs-webrtc" {
@@ -586,7 +677,7 @@ pub fn external_exit(a: &ObsAgent, plan: &MediaPlan, r: &ChildExitRec) -> Value 
             .into_iter()
             .rev()
             .find(|c| {
-                c.tool == "gst-launch-1.0"
+                is_capture_tool(&c.tool)
                     && capture_key(&c.argv).as_deref() == Some(r.key.as_str())
                     && alive(c.pid)
             })
@@ -611,6 +702,16 @@ struct Seen {
     last: i64,
     size: u64,
     gone: Option<i64>,
+    /// Phase 7a (WP3): an mp4's birthtime (statx btime, epoch ms), read when
+    /// the file is first seen — the D51 matcher feeds it to WP2's recovery
+    /// shift (`recovery_end_anchor_lag` / `recovery_shift_lag`).
+    birth: Option<i64>,
+}
+
+/// Phase 7a (WP3): a file's birthtime in epoch ms (`None` = no btime).
+fn birth_ms(p: &Path) -> Option<i64> {
+    let t = fs::metadata(p).ok()?.created().ok()?;
+    Some(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64)
 }
 
 fn walk(root: &Path, base: &Path, out: &mut BTreeMap<String, u64>) {
@@ -630,35 +731,56 @@ fn walk(root: &Path, base: &Path, out: &mut BTreeMap<String, u64>) {
 }
 
 /// The observers: pid liveness of the shims' children (100 ms), the
-/// recordings tree (1 s), `/dev/shm/shmpipe.*` (5 s). Returns when `stop` is
+/// recordings tree (1 s), `/dev/shm/shmpipe.*` (5 s, plus one closing
+/// snapshot at the stop: the end state). Returns when `stop` is
 /// cancelled, after writing `recordings.json` per agent.
 pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToken) {
-    let mut known: Vec<BTreeMap<u32, bool>> = vec![BTreeMap::new(); agents.len()];
+    observe_in(agents, run, stop, Path::new("/dev/shm")).await
+}
+
+/// `shmpipe.*` names in `dir`, sorted.
+fn shm_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("shmpipe."))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Append `{w, names}` to `<run>/shm.ndjson` when the set changed.
+fn shm_record(run: &Path, dir: &Path, last: &mut Option<Vec<String>>, now: i64) {
+    let names = shm_names(dir);
+    if last.as_ref() != Some(&names) {
+        append(&run.join("shm.ndjson"), &json!({"w": now, "names": names}));
+        *last = Some(names);
+    }
+}
+
+/// [`observe`] with the shm directory as a parameter (tests).
+async fn observe_in(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToken, shm_dir: &Path) {
+    let mut known: Vec<BTreeMap<u32, Known>> = vec![BTreeMap::new(); agents.len()];
     let mut seen: Vec<BTreeMap<String, Seen>> = vec![BTreeMap::new(); agents.len()];
     let mut tick = 0u64;
     let mut last_shm: Option<Vec<String>> = None;
     loop {
         let now = wall_now_ms();
         for (i, a) in agents.iter().enumerate() {
-            for c in shim_children(&a.work) {
-                known[i].entry(c.pid).or_insert(true);
-            }
-            for (pid, live) in known[i].iter_mut() {
-                if *live && !alive(*pid) {
-                    *live = false;
-                    append(
-                        &a.dir.join("procs.ndjson"),
-                        &json!({"w": now, "pid": pid, "k": "gone"}),
-                    );
-                }
-            }
+            liveness_pass(a, &mut known[i], now);
             if tick.is_multiple_of(10) {
                 let mut cur = BTreeMap::new();
                 let root = a.home.join("recordings");
                 walk(&root, &root, &mut cur);
                 for (rel, size) in &cur {
-                    let s = seen[i].entry(rel.clone()).or_insert(Seen {
+                    let s = seen[i].entry(rel.clone()).or_insert_with(|| Seen {
                         first: now,
+                        birth: rel
+                            .ends_with(".mp4")
+                            .then(|| birth_ms(&root.join(rel)))
+                            .flatten(),
                         ..Default::default()
                     });
                     s.last = now;
@@ -673,18 +795,7 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
             }
         }
         if tick.is_multiple_of(50) {
-            let mut names: Vec<String> = fs::read_dir("/dev/shm")
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.starts_with("shmpipe."))
-                .collect();
-            names.sort();
-            if last_shm.as_ref() != Some(&names) {
-                append(&run.join("shm.ndjson"), &json!({"w": now, "names": names}));
-                last_shm = Some(names);
-            }
+            shm_record(&run, shm_dir, &mut last_shm, now);
         }
         tick += 1;
         tokio::select! {
@@ -692,14 +803,31 @@ pub async fn observe(agents: Vec<ObsAgent>, run: PathBuf, stop: CancellationToke
             _ = tokio::time::sleep(Duration::from_millis(100)) => {}
         }
     }
+    // The closing snapshot: the stop comes after both agents exited (+500 ms,
+    // `play`), so this record is the END state the `shm` row reads as the
+    // last one. Without it the last record could be the previous 5 s tick,
+    // before the agents' own exit-path unlink (7a close, Rust-vs-Rust).
+    // review-close F2: one last liveness pass first (a child that died in
+    // the final <= 100 ms gets its `gone`), then every capture child still
+    // alive (or its process group) is recorded as having outlived its agent.
+    let now = wall_now_ms();
+    for (i, a) in agents.iter().enumerate() {
+        liveness_pass(a, &mut known[i], now);
+        alive_at_stop(a, &known[i], now);
+    }
+    shm_record(&run, shm_dir, &mut last_shm, now);
     for (i, a) in agents.iter().enumerate() {
         let files: Map<String, Value> = seen[i]
             .iter()
             .map(|(rel, s)| {
-                (
-                    rel.clone(),
-                    json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone}),
-                )
+                (rel.clone(), {
+                    let mut v =
+                        json!({"first": s.first, "last": s.last, "size": s.size, "gone": s.gone});
+                    if let Some(b) = s.birth {
+                        v["birth"] = json!(b);
+                    }
+                    v
+                })
             })
             .collect();
         let _ = fs::write(
@@ -741,7 +869,7 @@ pub fn finish(a: &ObsAgent) -> Result<()> {
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         {
             match (v["k"].as_str(), v["tool"].as_str()) {
-                (Some("spawn"), Some("gst-launch-1.0")) => {
+                (Some("spawn"), Some(t)) if is_capture_tool(t) => {
                     spawned.insert(v["pid"].as_u64());
                 }
                 (Some("eof"), _) => {
@@ -791,6 +919,211 @@ pub fn finish(a: &ObsAgent) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `shm` row's "orphans at end" is the LAST `shm.ndjson` record. The
+    /// periodic snapshot is every 5 s and the observer stops ~500 ms after
+    /// both agents exit, so without a closing snapshot the last record could
+    /// predate the exit and list the live segments of children that were
+    /// reaped since (7a close: Rust-vs-Rust `media`, both sides ~70 ms stops,
+    /// 2 false "orphans" per side). The record at stop must be the end state.
+    /// review-close F8 (the mirror of the pin below): a segment that is
+    /// still there at the stop is in the LAST record.
+    #[tokio::test]
+    async fn a_segment_kept_through_the_stop_is_in_the_last_record() {
+        let d = std::env::temp_dir().join(format!("media-shm-kept-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (run, shm) = (d.join("run"), d.join("shm"));
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(&shm).unwrap();
+        fs::write(shm.join("shmpipe. 1212.    0"), b"").unwrap();
+        let stop = CancellationToken::new();
+        let task = {
+            let (run, shm, stop) = (run.clone(), shm.clone(), stop.clone());
+            tokio::spawn(async move { observe_in(Vec::new(), run, stop, &shm).await })
+        };
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        // A second segment appears after tick 0 and is kept (stranded).
+        fs::write(shm.join("shmpipe. 1300.    0"), b"").unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        stop.cancel();
+        task.await.unwrap();
+        let recs: Vec<Value> = fs::read_to_string(run.join("shm.ndjson"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            recs.last().unwrap()["names"],
+            json!(["shmpipe. 1212.    0", "shmpipe. 1300.    0"]),
+            "{recs:?}"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// review-close F2: at the stop, a final liveness pass, then every
+    /// capture child that outlived its agent gets an `alive_at_stop` record:
+    /// alive itself, or (its own process-group leader, as the Rust
+    /// supervisor spawns it) a live member of its group after the leader
+    /// exited. A capture child that exited cleanly gets none; nor does a
+    /// non-capture child.
+    #[tokio::test]
+    async fn capture_children_alive_at_stop_are_recorded_with_their_group() {
+        use std::os::unix::process::CommandExt;
+        let d = std::env::temp_dir().join(format!("media-alive-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (work, dir, shm) = (d.join("work"), d.join("side"), d.join("shm"));
+        for p in [&work, &dir, &shm] {
+            fs::create_dir_all(p).unwrap();
+        }
+        let spawn = |sh: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", sh])
+                .process_group(0)
+                .spawn()
+                .unwrap()
+        };
+        let mut alive_c = spawn("exec sleep 30"); // outlives the stop
+        let mut leader = spawn("sleep 30 & sleep 0.6; exit 0"); // leader exits, member lives
+        let mut clean = spawn("sleep 0.3"); // exits before the stop
+        let mut other = spawn("exec sleep 30"); // alive, but not a capture tool
+                                                // review-close-fixes N2: a capture child that dies just before the
+                                                // cancel (only the FINAL liveness pass sees it gone), and two capture
+                                                // children NOT leading their own group (they share this test's
+                                                // group, as a JS agent's children share the agent's): their group's
+                                                // live members must never count for them.
+        let mut late = spawn("exec sleep 30");
+        let inherit = |sh: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", sh])
+                .spawn()
+                .unwrap()
+        };
+        let mut nl_alive = inherit("exec sleep 30");
+        let mut nl_clean = inherit("sleep 0.3");
+        let (pa, pl, pc, po) = (alive_c.id(), leader.id(), clean.id(), other.id());
+        let (pz, pn, pk) = (late.id(), nl_alive.id(), nl_clean.id());
+        let rec = |pid: u32, tool: &str| {
+            json!({"k": "spawn", "tool": tool, "pid": pid, "argv": [], "w": 0}).to_string()
+        };
+        fs::write(
+            work.join("shim.ndjson"),
+            [
+                rec(pa, "gst-launch-1.0"),
+                rec(pl, "xorgate-capture"),
+                rec(pc, "gst-launch-1.0"),
+                rec(po, "xorgate-kvs-webrtc"),
+                rec(pz, "gst-launch-1.0"),
+                rec(pn, "gst-launch-1.0"),
+                rec(pk, "gst-launch-1.0"),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let agent = ObsAgent {
+            work: work.clone(),
+            home: d.join("home"),
+            dir: dir.clone(),
+        };
+        let stop = CancellationToken::new();
+        let task = {
+            let (run, shm, stop) = (d.clone(), shm.clone(), stop.clone());
+            tokio::spawn(async move { observe_in(vec![agent], run, stop, &shm).await })
+        };
+        // Let tick 0 see every child alive (it reads the leader's group),
+        // then reap the two short-lived shells so they are really gone (no
+        // zombie; the blocking waits pause this current-thread runtime).
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        clean.wait().unwrap();
+        leader.wait().unwrap();
+        nl_clean.wait().unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // `late` dies and is reaped with NO await before the cancel: no
+        // periodic pass can run in between (current-thread runtime), so
+        // only the final pass can record it gone.
+        late.kill().unwrap();
+        late.wait().unwrap();
+        stop.cancel();
+        task.await.unwrap();
+        let recs: Vec<Value> = fs::read_to_string(dir.join("procs.ndjson"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let at_stop = |pid: u32| {
+            recs.iter()
+                .find(|v| v["k"] == "alive_at_stop" && v["pid"] == pid)
+                .cloned()
+        };
+        let gone = |pid: u32| recs.iter().any(|v| v["k"] == "gone" && v["pid"] == pid);
+        // Clean up the survivors before asserting (never leak a process).
+        let _ = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("kill -KILL -{pl} {pa} {po} 2>/dev/null; true"),
+            ])
+            .status();
+        let _ = alive_c.wait();
+        let _ = other.wait();
+        let _ = nl_alive.kill(); // by pid only: it shares this test's group
+        let _ = nl_alive.wait();
+        let a = at_stop(pa).expect("the live capture child");
+        assert_eq!(a["members"], json!([pa]), "{a}");
+        let l = at_stop(pl).expect("the group leader exited, its member still runs");
+        assert!(gone(pl), "the leader itself is gone: {recs:?}");
+        assert_eq!(l["pgid"], json!(pl));
+        let m = l["members"].as_array().unwrap();
+        assert!(!m.is_empty() && !m.contains(&json!(pl)), "{l}");
+        assert!(at_stop(pc).is_none() && gone(pc), "a clean exit: {recs:?}");
+        assert!(at_stop(po).is_none(), "not a capture tool: {recs:?}");
+        // N2 (a): the final liveness pass.
+        assert!(
+            at_stop(pz).is_none() && gone(pz),
+            "died just before the cancel: {recs:?}"
+        );
+        // N2 (b): only a child that LEADS its own group has its group checked.
+        let n = at_stop(pn).expect("a live non-leader capture child");
+        assert_eq!(n["members"], json!([]), "{n}");
+        assert!(
+            at_stop(pk).is_none() && gone(pk),
+            "a non-leader's clean exit, whatever its group: {recs:?}"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn the_last_shm_record_is_the_state_at_stop() {
+        let d = std::env::temp_dir().join(format!("media-shm-end-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (run, shm) = (d.join("run"), d.join("shm"));
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(&shm).unwrap();
+        fs::write(shm.join("shmpipe. 1212.    0"), b"").unwrap();
+        fs::write(shm.join("other"), b"").unwrap();
+        let stop = CancellationToken::new();
+        let task = {
+            let (run, shm, stop) = (run.clone(), shm.clone(), stop.clone());
+            tokio::spawn(async move { observe_in(Vec::new(), run, stop, &shm).await })
+        };
+        // tick 0 has recorded the live segment; the "agent" then unlinks it
+        // and the run stops long before the next 5 s snapshot.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        fs::remove_file(shm.join("shmpipe. 1212.    0")).unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        stop.cancel();
+        task.await.unwrap();
+        let recs: Vec<Value> = fs::read_to_string(run.join("shm.ndjson"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            recs.first().unwrap()["names"],
+            json!(["shmpipe. 1212.    0"])
+        );
+        assert_eq!(recs.last().unwrap()["names"], json!([]), "{recs:?}");
+        let _ = fs::remove_dir_all(&d);
+    }
 
     /// `procs.ndjson` is appended by the exit runners and the observer at
     /// once: every record must land as one whole line.

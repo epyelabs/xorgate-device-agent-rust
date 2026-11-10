@@ -27,6 +27,7 @@ pub mod boot_policy;
 pub mod build_info;
 pub mod cameras;
 pub mod capture_ladder;
+pub mod capture_timing;
 pub mod cli_set;
 pub mod clock;
 pub mod clock_step;
