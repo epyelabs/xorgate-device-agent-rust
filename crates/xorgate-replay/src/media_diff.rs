@@ -102,6 +102,11 @@ pub struct MediaCapture {
     pub shm_orphan_names: Vec<String>,
     /// Per orphan (same order): the wall ms its owner child was seen gone.
     pub shm_orphan_gone: Vec<Option<i64>>,
+    /// review-close F2: this side's capture children that OUTLIVED its agent
+    /// (`procs.ndjson` `alive_at_stop`: alive, or a live member of their own
+    /// process group, at the observer's stop), sorted. Their segments count
+    /// as orphans; on a Rust side each is UNTOLERATED.
+    pub capture_alive_at_stop: Vec<u32>,
     /// The agent did NOT exit within 30 s of the player's SIGTERM and was
     /// SIGKILLed (the player's `[rig] agent <x> did NOT exit in 30 s` line in
     /// `<side>/stderr.log`) — the JS SIGTERM hang (js-bug-triage bug 3).
@@ -737,11 +742,24 @@ impl MediaCapture {
             .filter(|s| s.role == "capture")
             .map(|s| s.pid)
             .collect();
+        // review-close F2: a capture child that outlived its agent (alive, or
+        // its process group, at the stop) strands its segments as surely as
+        // a dead one whose segments were never unlinked.
+        let capture_alive_at_stop: Vec<u32> = procs
+            .iter()
+            .filter(|v| v["k"] == "alive_at_stop")
+            .filter_map(|v| v["pid"].as_u64().map(|p| p as u32))
+            .filter(|p| mine.contains(p))
+            .collect::<BTreeSet<u32>>()
+            .into_iter()
+            .collect();
         let shm_orphan_names: Vec<String> = last_names
             .iter()
             .filter(|nm| {
-                xorgate_core::capture_ladder::shm_owner_pid(nm)
-                    .is_some_and(|p| mine.contains(&p) && gone.contains(&p))
+                xorgate_core::capture_ladder::shm_owner_pid(nm).is_some_and(|p| {
+                    mine.contains(&p)
+                        && (gone.contains(&p) || capture_alive_at_stop.contains(&p))
+                })
             })
             .cloned()
             .collect();
@@ -885,6 +903,7 @@ impl MediaCapture {
             s3,
             s3_bodies,
             shm_orphans,
+            capture_alive_at_stop,
             shm_orphan_names,
             shm_orphan_gone,
             agent_hung,
@@ -4739,6 +4758,17 @@ fn shm_orphans_verdict(
             .collect()
     };
     for (side, m) in [("A", a), ("B", b)] {
+        if m.kind == "rust" && !m.capture_alive_at_stop.is_empty() {
+            let pids = format!("{:?}", m.capture_alive_at_stop);
+            rep.push(mm(
+                "shm",
+                "end",
+                "(capture child of a Rust side alive at stop)",
+                if side == "A" { pids.clone() } else { String::new() },
+                if side == "B" { pids } else { String::new() },
+                UNTOLERATED,
+            ));
+        }
         if m.kind == "rust" && m.shm_orphans > 0 {
             let names = format!("{:?}", m.shm_orphan_names);
             rep.push(mm(
@@ -7022,6 +7052,86 @@ kind = "decisions"
         })
         .unwrap();
         assert_eq!(back["diskSource"], "shim");
+    }
+
+    /// review-close F2: a capture child that OUTLIVED its agent (the
+    /// observer's `alive_at_stop`: alive itself, or a live member of its own
+    /// process group, at the stop) strands its segments: they count as
+    /// orphans, and on a Rust side the child itself is UNTOLERATED. Before
+    /// the fix such a child was never "gone", so its segment counted 0.
+    #[test]
+    fn a_capture_child_alive_at_stop_strands_its_segments() {
+        let dir = std::env::temp_dir().join(format!("xorgate-replay-shm-alive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shim.ndjson"),
+            concat!(
+                r#"{"k":"spawn","tool":"gst-launch-1.0","pid":1185,"argv":["videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam0.sock"],"w":1000}"#,
+                "\n",
+                r#"{"k":"spawn","tool":"xorgate-capture","pid":1190,"argv":["__capture-host","videotestsrc","!","shmsink","socket-path=/w/a/home/shm/cam1.sock"],"w":1000}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        // 1185 exited cleanly and its segment is gone; 1190 outlived the
+        // agent (its group leader exited, a member still runs), and kept
+        // its segment; 4242 is not ours.
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            concat!(
+                "{\"k\":\"gone\",\"pid\":1185,\"w\":3100}\n",
+                "{\"k\":\"gone\",\"pid\":1190,\"w\":3200}\n",
+                "{\"k\":\"alive_at_stop\",\"pid\":1190,\"w\":9000,\"pgid\":1190,\"members\":[1201]}\n",
+                "{\"k\":\"alive_at_stop\",\"pid\":4242,\"w\":9000,\"pgid\":4242,\"members\":[]}\n",
+            ),
+        )
+        .unwrap();
+        let shm = [serde_json::json!({"w": 9000, "names": ["shmpipe. 1190.    0", "shmpipe. 4242.    0"]})];
+        let mut m = MediaCapture::load(&dir, &shm);
+        assert_eq!(m.capture_alive_at_stop, [1190], "only this side's capture children");
+        assert_eq!(m.shm_orphan_names, ["shmpipe. 1190.    0"]);
+        assert_eq!(m.shm_orphans, 1);
+        // A child alive at the stop with no gone record at all counts too.
+        std::fs::write(
+            dir.join("procs.ndjson"),
+            "{\"k\":\"alive_at_stop\",\"pid\":1190,\"w\":9000,\"pgid\":1190,\"members\":[1190]}\n",
+        )
+        .unwrap();
+        assert_eq!(MediaCapture::load(&dir, &shm).shm_orphans, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let table = Table::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap();
+        m.kind = "rust".into();
+        m.present = true;
+        let clean = MediaCapture {
+            kind: "rust".into(),
+            present: true,
+            ..Default::default()
+        };
+        let mut rep = Report::default();
+        shm_orphans_verdict(&clean, &m, 10_000, &table, &mut rep);
+        let rows: Vec<String> = rep
+            .mismatches
+            .iter()
+            .map(|r| format!("{} {} {}", r.path, r.b, r.tol))
+            .collect();
+        assert!(
+            rows.contains(&format!("(capture child of a Rust side alive at stop) [1190] {UNTOLERATED}")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.starts_with("(orphan shmpipe segments of a Rust side)") && r.ends_with(UNTOLERATED)),
+            "{rows:?}"
+        );
+        // The mirror: no child alive at stop, no orphan, no row.
+        let mut rep = Report::default();
+        shm_orphans_verdict(&clean, &clean, 10_000, &table, &mut rep);
+        assert!(rep.mismatches.is_empty(), "{:?}", rep.mismatches);
     }
 
     /// Phase 5b WP5 item 9: the end-of-run orphan counter reads shmsink's REAL
