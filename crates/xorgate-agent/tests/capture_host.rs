@@ -53,6 +53,32 @@ async fn drain(rx: &mut UnboundedReceiver<ChildEvent>, run: &mut Run, until: Opt
     }
 }
 
+/// [`drain`] until a STDERR line starts with `until` (child still running)
+/// or the child is done.
+async fn drain_err(rx: &mut UnboundedReceiver<ChildEvent>, run: &mut Run, until: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let ev = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("capture host timed out");
+        match ev {
+            Some(ChildEvent::Stdout(l)) => run.out.push(l),
+            Some(ChildEvent::Stderr(l)) => {
+                let hit = l.starts_with(until);
+                run.err.push(l);
+                if hit {
+                    return;
+                }
+            }
+            Some(ChildEvent::Done(d)) => {
+                run.done = Some(d);
+                return;
+            }
+            None => return,
+        }
+    }
+}
+
 fn status_field(pid: u32, key: &str) -> String {
     let st = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
     st.lines()
@@ -173,16 +199,47 @@ async fn host_backend_sigint_eos_process_name_and_dispositions() {
     assert!(run.err.is_empty(), "{:?}", run.err);
 }
 
+/// A record `-e` pipeline whose EOS cannot complete on its own: the one
+/// buffer sleeps 600 s in identity, on the queue's thread, so fakesrc's
+/// thread is free and the forced EOS is queued at once (`Waiting for EOS...`
+/// is printed; without the queue `send_event` blocks behind the sleep, in
+/// gst-launch too). `fakesink async=false` reaches PLAYING without a preroll
+/// buffer. A SIGINT sent during the drain lands during the drain however
+/// slow the machine is (ci-sigint-race; the same lines and death by the
+/// second SIGINT from gst-launch 1.22 on the rig).
+const UNDRAINABLE: &str =
+    "-e fakesrc num-buffers=1 ! queue ! identity sleep-time=600000000 ! fakesink async=false";
+
+/// Scenario 2b: once the first SIGINT's one-shot watch is removed, a second
+/// SIGINT takes the default action; SIGTERM always does.
+///
+/// ci-sigint-race (CI runs 42845761508 and 42922380542): this test used to
+/// send the second SIGINT the moment `handling interrupt.` was read, with
+/// the EOS draining behind a 1 s sleep. Both are timing windows:
+/// - gst-launch prints that line BEFORE its watch is removed, and the host
+///   keeps that order (MH), so a SIGINT that lands right after the line is
+///   coalesced into the dispatch being handled (gst-launch swallows it) and
+///   the EOS completes: exit 0, the CI failure. Real gst-launch does the
+///   same (`tools/capture-host/sigint2probe.py`, class W);
+/// - the EOS completed ~1 s after PLAYING whatever the test did.
+///
+/// Now the second SIGINT waits for `Waiting for EOS...`, which the loop
+/// prints on the NEXT dispatch, after `intr_handler` returned and so after
+/// the watch was removed (SigCgt shows it), and the drain cannot end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn second_sigint_and_sigterm_take_the_default_action() {
     let b = HostBackend::with_exe(BIN);
-    // EOS waits behind a 1 s sleep in identity: the second SIGINT lands
-    // while the first one's EOS is still draining (scenario 2b).
-    let (child, mut rx) = b.spawn(&toks("-e fakesrc ! identity sleep-time=1000000 ! fakesink"));
+    let (child, mut rx) = b.spawn(&toks(UNDRAINABLE));
+    let pid = child.pid().expect("spawned");
     let mut run = Run::default();
     drain(&mut rx, &mut run, Some("New clock:")).await;
     child.signal(libc::SIGINT);
-    drain(&mut rx, &mut run, Some("handling interrupt.")).await;
+    drain(&mut rx, &mut run, Some("Waiting for EOS...")).await;
+    assert!(run.done.is_none(), "{run:?}");
+    assert!(
+        !mask_has(&status_field(pid, "SigCgt"), libc::SIGINT),
+        "the SIGINT watch is still installed after its dispatch: {run:?}"
+    );
     child.signal(libc::SIGINT);
     drain(&mut rx, &mut run, None).await;
     let d = run.done.clone().unwrap();
@@ -190,6 +247,10 @@ async fn second_sigint_and_sigterm_take_the_default_action() {
         (d.exit_code, d.signal),
         (None, Some(libc::SIGINT)),
         "{run:?}"
+    );
+    assert!(
+        !run.out.iter().any(|l| l.starts_with("Got EOS")),
+        "the EOS completed: the second SIGINT did not land mid-drain: {run:?}"
     );
 
     let (child, mut rx) = b.spawn(&toks("fakesrc ! identity sleep-time=10000 ! fakesink"));
@@ -301,6 +362,13 @@ async fn sigint_before_the_watch_is_armed_kills_by_sigint() {
 
 /// R-WP0-12: SIGHUP's watch is G_SOURCE_CONTINUE: two SIGHUPs, two lines,
 /// the pipeline keeps running, then a SIGINT stops it (exit 0).
+///
+/// Each SIGHUP is sent the moment the previous line is read. That is
+/// deterministic only because the host re-arms the watch BEFORE the line,
+/// as GLib clears its `pending` flag before the callback (ci-sigint-race,
+/// D47 dropped). With the old order a SIGHUP landing right after the line
+/// was coalesced and the second line never came (CI run 42922380542: drain
+/// timeout). Pinned exactly by `capture_host::tests::a_sighup_after_its_line_is_dispatched_again`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_sighup_watch_stays_armed() {
     let b = HostBackend::with_exe(BIN);
@@ -320,6 +388,80 @@ async fn the_sighup_watch_stays_armed() {
         run.out.iter().filter(|l| l.starts_with("SIGHUP: ")).count(),
         2
     );
+}
+
+/// `/bin/sh` that ignores SIGINT, SIGHUP and SIGQUIT and then execs
+/// `program args…`: SIG_IGN survives exec (std's spawn resets only SIGPIPE
+/// and the mask), so the program starts with all three ignored, as under a
+/// CI job shell, `nohup` or `cmd &` in a non-interactive shell.
+fn ignoring(program: &str, args: &[String]) -> xorgate_hal::child::ChildSpec {
+    let mut argv = vec![
+        "-c".to_string(),
+        "trap '' INT HUP QUIT; exec \"$0\" \"$@\"".to_string(),
+        program.to_string(),
+    ];
+    argv.extend_from_slice(args);
+    xorgate_hal::child::ChildSpec::new("/bin/sh".to_string(), argv)
+}
+
+/// ci-sigint-race (the orchestrator's inherited-disposition hypothesis):
+/// a host that INHERITS SIGINT/SIGHUP/SIGQUIT as SIG_IGN keeps the whole
+/// signal contract. The watches replace the inherited SIG_IGN (as
+/// `g_unix_signal_add` does), each SIGHUP dispatches, and after the first
+/// SIGINT the default action is SIG_DFL itself, not the inherited
+/// disposition (GLib's `unref_unix_signal_handler_unlocked` sets SIG_DFL),
+/// so the second SIGINT kills mid-drain. A host that restored the inherited
+/// disposition would ignore it and this test would time out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inherited_ignored_signals_keep_the_signal_contract() {
+    let bits = |sigs: &[i32]| sigs.iter().fold(0u64, |m, s| m | 1 << (s - 1));
+    let ign3 = bits(&[libc::SIGINT, libc::SIGHUP, libc::SIGQUIT]);
+    // The wrapper really hands over SIG_IGN.
+    let (_c, mut rx) =
+        xorgate_hal::child::spawn(&ignoring("/bin/cat", &["/proc/self/status".to_string()]));
+    let mut run = Run::default();
+    drain(&mut rx, &mut run, None).await;
+    let ign = run
+        .out
+        .iter()
+        .find_map(|l| l.strip_prefix("SigIgn:"))
+        .map(|v| u64::from_str_radix(v.trim(), 16).unwrap())
+        .expect("SigIgn");
+    assert_eq!(ign & ign3, ign3, "{run:?}");
+
+    let spec = HostBackend::with_exe(BIN).spec(&toks(UNDRAINABLE));
+    let (child, mut rx) = xorgate_hal::child::spawn(&ignoring(BIN, &spec.args));
+    let pid = child.pid().expect("spawned");
+    let mut run = Run::default();
+    drain(&mut rx, &mut run, Some("New clock:")).await;
+    // Caught, no longer ignored, at PLAYING (as gst-launch).
+    let cgt = u64::from_str_radix(&status_field(pid, "SigCgt"), 16).unwrap();
+    let ign = u64::from_str_radix(&status_field(pid, "SigIgn"), 16).unwrap();
+    assert_eq!(cgt & ign3, ign3, "SigCgt {cgt:x}");
+    assert_eq!(ign & ign3, 0, "SigIgn {ign:x}");
+    for _ in 0..2 {
+        child.signal(libc::SIGHUP);
+        drain(&mut rx, &mut run, Some("SIGHUP: ")).await;
+        assert!(run.done.is_none(), "{run:?}");
+    }
+    child.signal(libc::SIGINT);
+    drain(&mut rx, &mut run, Some("Waiting for EOS...")).await;
+    assert!(run.done.is_none(), "{run:?}");
+    let ign = u64::from_str_radix(&status_field(pid, "SigIgn"), 16).unwrap();
+    assert_eq!(
+        ign & bits(&[libc::SIGINT]),
+        0,
+        "SIGINT back to SIG_IGN: {ign:x}"
+    );
+    child.signal(libc::SIGINT);
+    drain(&mut rx, &mut run, None).await;
+    let d = run.done.clone().unwrap();
+    assert_eq!(
+        (d.exit_code, d.signal),
+        (None, Some(libc::SIGINT)),
+        "{run:?}"
+    );
+    assert!(!run.out.iter().any(|l| l.starts_with("Got EOS")), "{run:?}");
 }
 
 /// R-WP0-12: a READY→PAUSED failure is `LEC_STATE_CHANGE_FAILURE` (-1 =
@@ -481,9 +623,20 @@ async fn every_thread_runs_at_the_agents_nice_after_playing() {
         }
     });
     drain(&mut rx, &mut run, Some("New clock:")).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let after = task_nices(pid);
-    assert!(after.len() >= 4, "{after:?}"); // main, xg-sigwait, filesrc, queue
+    // The host renices on its PLAYING dispatch, after `New clock:` (the old
+    // fixed 300 ms wait was a wall-clock assumption, ci-sigint-race): poll.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let after = loop {
+        let after = task_nices(pid);
+        // main, xg-sigwait, filesrc, queue
+        if (after.len() >= 4 && after.iter().all(|(_, v)| *v == 10))
+            || std::time::Instant::now() >= deadline
+        {
+            break after;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(after.len() >= 4, "{after:?}");
     assert!(after.iter().all(|(_, v)| *v == 10), "{after:?}");
     child.signal(libc::SIGINT);
     drain(&mut rx, &mut run, None).await;
@@ -512,7 +665,15 @@ async fn diag_probes_are_off_by_default_and_name_a_starved_branch_when_on() {
         let (child, mut rx) = xorgate_hal::child::spawn(&spec);
         let mut run = Run::default();
         drain(&mut rx, &mut run, Some("New clock:")).await;
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        if on {
+            // Wait for the line itself (ci-sigint-race: no wall-clock window).
+            drain_err(&mut rx, &mut run, "xorgate-capture diag: ").await;
+            assert!(run.done.is_none(), "{run:?}");
+        } else {
+            // Absence: 4x the stall period. A slow host can only make this
+            // vacuous, never fail it.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+        }
         child.signal(libc::SIGINT);
         drain(&mut rx, &mut run, None).await;
         let d = run.done.clone().unwrap();
@@ -524,11 +685,15 @@ async fn diag_probes_are_off_by_default_and_name_a_starved_branch_when_on() {
             .filter(|l| l.contains("diag"))
             .collect();
         if on {
-            assert_eq!(
-                run.err,
-                vec!["xorgate-capture diag: fakesink0 (fakesink0) no buffers for 0 s".to_string()],
-                "{run:?}"
-            );
+            // `N s` is the quiet time when the loop's check ran: 0 on time, more
+            // only if the host was starved past the 300 ms stall by a second.
+            let n = run.err.first().and_then(|l| {
+                l.strip_prefix("xorgate-capture diag: fakesink0 (fakesink0) no buffers for ")?
+                    .strip_suffix(" s")?
+                    .parse::<u64>()
+                    .ok()
+            });
+            assert!(run.err.len() == 1 && n.is_some(), "{run:?}");
         } else {
             assert!(diag.is_empty() && run.err.is_empty(), "{run:?}");
         }
