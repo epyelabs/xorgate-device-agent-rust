@@ -826,7 +826,7 @@ pub fn retag_trust_published(
         };
         let own = (secs(d - slack)..=secs(d + slack)).contains(&p);
         let algebra = crate::diff::trust_tgp_ok(t, g, p);
-        (own && algebra).then(|| Side {
+        (own && algebra).then_some(Side {
             src,
             t,
             p,
