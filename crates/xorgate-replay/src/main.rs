@@ -169,6 +169,7 @@ fn main() -> Result<()> {
             let pb = diff_p4::P4Capture::load(&run.join("b"));
             diff_p4::diff_p4(&pa, &pb, &table, &mut rep);
             diff_p4::retag_clock_iso(&table, &a, &b, &mut rep);
+            diff_p4::retag_trust_published(&table, &a, &b, &info, &mut rep);
             diff_p4::diff_obd_gate(&run, &mut rep);
             rep.hits = diff::row_hits(&rep, &table);
             let md = diff::render(&rep, &a, &b, &info, &table, &run);

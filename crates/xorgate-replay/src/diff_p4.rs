@@ -644,7 +644,8 @@ pub fn setclock_tolerated(table: &Table, x: &str, y: &str) -> Option<String> {
 /// within `anchor_ms` are re-cited to T16; nothing is compared across agents
 /// by wall time.
 pub fn retag_clock_iso(table: &Table, a: &Capture, b: &Capture, rep: &mut Report) {
-    let Some(r) = table.of_kind("p4", "events").next() else {
+    // T16 itself, never another p4 events rule (T16/trust-published).
+    let Some(r) = table.of_kind("p4", "events").find(|r| r.id == "T16") else {
         return;
     };
     let Some(lim) = r.tolerance.get("anchor_ms").map(|v| *v as i64) else {
@@ -691,6 +692,165 @@ pub fn retag_clock_iso(table: &Table, a: &Capture, b: &Capture, rep: &mut Report
             rep.retag(k, r.id.clone());
         }
     }
+}
+
+/// The id of the clock-trust "published N s" row (F-P2-ROUND): a rule of its
+/// own in the T16 family, so T16's own bounds are untouched.
+pub const TRUST_PUBLISHED_ID: &str = "T16/trust-published";
+
+/// `[clock] <src> synchronized <T> s after boot — clock trusted (published
+/// <P> s on an untrusted clock)` (ts:src/agent/clock-trust.ts:121 @09da38d ↔
+/// crates/xorgate-core/src/clock_trust.rs `late_trusted_event`) →
+/// `(src, T, P)`, canonical digits only (the text must re-format to itself);
+/// any other text → None.
+pub fn late_trust_text(m: &str) -> Option<(String, i64, i64)> {
+    let r = m.strip_prefix("[clock] ")?;
+    let (src, r) = r.split_once(" synchronized ")?;
+    let (t, r) = r.split_once(" s after boot — clock trusted (published ")?;
+    let p = r.strip_suffix(" s on an untrusted clock)")?;
+    // unsigned: toFixed(0) of a monotonic elapsed never prints a sign
+    let (t, p): (u64, u64) = (t.parse().ok()?, p.parse().ok()?);
+    let canon = format!(
+        "[clock] {src} synchronized {t} s after boot — clock trusted (published {p} s on an untrusted clock)"
+    );
+    (canon == m && matches!(src, "ntp" | "gps" | "nitz"))
+        .then(|| (src.to_string(), t as i64, p as i64))
+}
+
+/// T16/trust-published (F-P2-ROUND): the late-trust text's P is
+/// `secs(now − start − heldMs)` (ts:src/agent/clock-trust.ts:121) with
+/// `heldMs` = the elapsed of the grace flip (:129-132) — so the raw P is the
+/// side's OWN trust instant minus its OWN grace-flip instant (the start
+/// cancels), each read in the same synchronous call as that event's own
+/// state.json stamp (`onEvent` → `Date.now()`, ts:src/worker.ts:477-483;
+/// Rust `agent_event_sink` → `clock.wall_ms()`). The trust instant is the
+/// step at THAT agent's 30 s stepper tick (ts:src/agent/clock-step.ts:291),
+/// whose phase differs per agent (the T16 boot skew), so a raw P near x.5 s
+/// rounds to either side of it (`secs` = toFixed(0), :104-106).
+///
+/// Re-cited to the row ONLY when ALL of these hold; anything else stays
+/// UNTOLERATED:
+/// - no handoff (one era); the only UNTOLERATED `events` rows naming a
+///   late-trust text are exactly two: one A-only (1/0), one B-only (0/1);
+/// - each side has exactly ONE `clock trusted` event (it is that row's
+///   text) and exactly ONE grace warning ([`crate::diff::grace_text`]), the
+///   trust after the warning;
+/// - per side, P is what that side's OWN instants print: P ∈
+///   [secs(d − instant_ms), secs(d + instant_ms)] with d = the trust
+///   event's stamp − the grace event's stamp (`trust_secs` = the pinned
+///   toFixed(0));
+/// - per side, |T − G − P| ≤ 1 against that side's OWN grace G (each of T,
+///   G, P is toFixed(0) of its own raw ms and raw T = raw G + raw P);
+/// - across sides: the same src and the same T (the texts differ ONLY in P),
+///   |P_A − P_B| ≤ `published_s`, and the two trust instants and the two
+///   grace instants each < `apart_ms` apart (one tick, own phases).
+pub fn retag_trust_published(
+    table: &Table,
+    a: &Capture,
+    b: &Capture,
+    play: &crate::diff::PlayInfo,
+    rep: &mut Report,
+) {
+    let Some(r) = table.rules.iter().find(|r| {
+        r.id == TRUST_PUBLISHED_ID
+            && r.kind == "p4"
+            && crate::tolerances::stream_matches(&r.streams, "events")
+    }) else {
+        return;
+    };
+    let tol = |k: &str| r.tolerance.get(k).map(|v| *v as i64);
+    let (Some(lim), Some(slack), Some(apart)) =
+        (tol("published_s"), tol("instant_ms"), tol("apart_ms"))
+    else {
+        return;
+    };
+    if play.handoff.is_some() {
+        return;
+    }
+    let idx: Vec<usize> = (0..rep.mismatches.len())
+        .filter(|&i| {
+            let m = &rep.mismatches[i];
+            m.stream == "events" && m.tol == UNTOLERATED && m.path.contains("clock trusted")
+        })
+        .collect();
+    let [i, j] = idx.as_slice() else { return };
+    // (A count, B count) of a multiset row.
+    let counts = |k: usize| {
+        let m = &rep.mismatches[k];
+        (m.at == "multiset").then(|| (m.a.clone(), m.b.clone()))
+    };
+    let one = |x: &str, y: &str| Some((x.to_string(), y.to_string()));
+    // i: on A only; j: on B only.
+    let (i, j) = if counts(*i) == one("1", "0") && counts(*j) == one("0", "1") {
+        (*i, *j)
+    } else if counts(*i) == one("0", "1") && counts(*j) == one("1", "0") {
+        (*j, *i)
+    } else {
+        return;
+    };
+    struct Side {
+        src: String,
+        t: i64,
+        p: i64,
+        trust_at: i64,
+        grace_at: i64,
+    }
+    // `key`: this side's only row, `info: <text>`.
+    let side = |c: &Capture, key: &str| -> Option<Side> {
+        let trust: Vec<&(i64, String, String)> = c
+            .events
+            .iter()
+            .filter(|(_, _, m)| m.contains("clock trusted"))
+            .collect();
+        let grace: Vec<&(i64, String, String)> = c
+            .events
+            .iter()
+            .filter(|(_, _, m)| m.starts_with("[clock] no NTP/GPS/NITZ sync "))
+            .collect();
+        let ([tr], [gr]) = (trust.as_slice(), grace.as_slice()) else {
+            return None;
+        };
+        if tr.1 != "info" || gr.1 != "warn" || format!("{}: {}", tr.1, tr.2) != key {
+            return None;
+        }
+        let (src, t, p) = late_trust_text(&tr.2)?;
+        let (g, _n) = crate::diff::grace_text(&gr.2)?;
+        let d = tr.0 - gr.0;
+        if d <= 0 {
+            return None;
+        }
+        let secs = |ms: i64| -> i64 {
+            xorgate_core::clock_trust::trust_secs(ms.max(0) as u64)
+                .parse()
+                .unwrap_or(i64::MIN)
+        };
+        let own = (secs(d - slack)..=secs(d + slack)).contains(&p);
+        let algebra = crate::diff::trust_tgp_ok(t, g, p);
+        (own && algebra).then(|| Side {
+            src,
+            t,
+            p,
+            trust_at: tr.0,
+            grace_at: gr.0,
+        })
+    };
+    let (Some(x), Some(y)) = (
+        side(a, &rep.mismatches[i].path),
+        side(b, &rep.mismatches[j].path),
+    ) else {
+        return;
+    };
+    if x.src != y.src
+        || x.t != y.t
+        || x.p == y.p
+        || (x.p - y.p).abs() > lim
+        || (x.trust_at - y.trust_at).abs() >= apart
+        || (x.grace_at - y.grace_at).abs() >= apart
+    {
+        return;
+    }
+    rep.retag(i, r.id.clone());
+    rep.retag(j, r.id.clone());
 }
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ` → epoch ms.
@@ -1779,5 +1939,296 @@ tolerance = { epoch_s = 1 }
         let mut rep = Report::default();
         diff_at(&a, &b, &mut rep);
         assert!(rep.untolerated() >= 2, "{:?}", rep.mismatches);
+    }
+
+    // ---- T16/trust-published (F-P2-ROUND) --------------------------------
+
+    fn repo_table() -> Table {
+        Table::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/replay/tolerances.toml"),
+        )
+        .unwrap()
+    }
+
+    fn grace(g: i64, n: i64) -> String {
+        format!("[clock] no NTP/GPS/NITZ sync {g} s after start — publishing on an UNTRUSTED clock ({n} sample(s) held); timestamps may be early until a sync lands")
+    }
+
+    fn late(src: &str, t: i64, p: i64) -> String {
+        format!("[clock] {src} synchronized {t} s after boot — clock trusted (published {p} s on an untrusted clock)")
+    }
+
+    /// One side: `(stamp, level, text)` events plus the one `connected to`.
+    fn tcap(kind: &str, evs: Vec<(i64, &str, String)>) -> Capture {
+        Capture {
+            meta: crate::diff::AgentMeta {
+                label: "x".into(),
+                kind: kind.into(),
+                ..Default::default()
+            },
+            events: evs
+                .into_iter()
+                .chain([(1_000, "info", "connected to broker:8883".to_string())])
+                .map(|(t, l, m)| (t, l.to_string(), m))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The usual side: grace warning at `g_at` (G, N = 298), late trust at
+    /// `t_at` printing `src`, T, P.
+    fn tside(kind: &str, g_at: i64, g: i64, t_at: i64, src: &str, t: i64, p: i64) -> Capture {
+        tcap(
+            kind,
+            vec![
+                (g_at, "warn", grace(g, 298)),
+                (t_at, "info", late(src, t, p)),
+            ],
+        )
+    }
+
+    /// The real events diff, then the post-pass; the rows naming a trust
+    /// text, as `(A count, B count, tol)`, and the events-stream UNTOLERATED
+    /// count.
+    fn trust_rows(
+        a: &Capture,
+        b: &Capture,
+        play: &crate::diff::PlayInfo,
+    ) -> (Vec<(String, String, String)>, usize) {
+        let t = repo_table();
+        let mut rep = crate::diff::diff(a, b, play, &[], &t);
+        retag_trust_published(&t, a, b, play, &mut rep);
+        let rows = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.stream == "events" && m.path.contains("clock trusted"))
+            .map(|m| (m.a.clone(), m.b.clone(), m.tol.clone()))
+            .collect();
+        let unt = rep
+            .mismatches
+            .iter()
+            .filter(|m| m.stream == "events" && m.tol == UNTOLERATED)
+            .count();
+        (rows, unt)
+    }
+
+    fn tolerated(a: &Capture, b: &Capture) -> bool {
+        let (rows, unt) = trust_rows(a, b, &crate::diff::PlayInfo::default());
+        rows.len() == 2 && rows.iter().all(|r| r.2 == TRUST_PUBLISHED_ID) && unt == 0
+    }
+
+    fn rejected(a: &Capture, b: &Capture) -> bool {
+        let (rows, _) = trust_rows(a, b, &crate::diff::PlayInfo::default());
+        !rows.is_empty() && rows.iter().all(|r| r.2 == UNTOLERATED)
+    }
+
+    /// F-P2-ROUND: the late-trust text may differ ONLY in P, by ±1, each P
+    /// what its own grace→trust instants print, |T − G − P| ≤ 1 per side,
+    /// the instants < 1 s apart. Everything else stays UNTOLERATED.
+    #[test]
+    fn trust_published_only_a_one_second_rounding_split() {
+        // The combined gate's first run: A 30 554 ms → 31, B 30 403 ms → 30.
+        let a = tside("js", 149_756, 300, 180_310, "gps", 331, 31);
+        let b = tside("rust", 149_760, 300, 180_163, "gps", 331, 30);
+        assert!(tolerated(&a, &b));
+        // either column order, any kind pair (per-agent instants)
+        assert!(tolerated(&b, &a));
+        let b_js = tside("js", 149_760, 300, 180_163, "gps", 331, 30);
+        assert!(tolerated(&a, &b_js));
+        // The reverse direction (the re-run): A 30 162 → 30, B 30 520 → 31.
+        assert!(tolerated(
+            &tside("js", 282_766, 300, 312_928, "gps", 331, 30),
+            &tside("rust", 282_285, 300, 312_805, "gps", 331, 31),
+        ));
+        // A P on its own instants' x.5 edge, inside instant_ms: either print.
+        assert!(tolerated(
+            &tside("js", 150_000, 300, 180_520, "gps", 331, 30),
+            &tside("rust", 150_010, 300, 180_610, "gps", 331, 31),
+        ));
+        // The texts equal: no row at all (nothing to tolerate).
+        let (rows, unt) = trust_rows(&a, &a.clone(), &crate::diff::PlayInfo::default());
+        assert!(rows.is_empty() && unt == 0);
+
+        // NEGATIVE ±2: everything else consistent (A 30 400 → 30, B 31 600
+        // → 32, T − G − P = 1 / −1, trust 700 ms and grace 500 ms apart).
+        assert!(rejected(
+            &tside("js", 150_000, 300, 180_400, "gps", 331, 30),
+            &tside("rust", 149_500, 300, 181_100, "gps", 331, 32),
+        ));
+        // NEGATIVE: another source.
+        assert!(rejected(
+            &a,
+            &tside("rust", 149_760, 300, 180_163, "nitz", 331, 30)
+        ));
+        // NEGATIVE: another T (P consistent on both sides).
+        assert!(rejected(
+            &a,
+            &tside("rust", 149_760, 300, 180_163, "gps", 330, 30)
+        ));
+        // NEGATIVE: the message missing on one side.
+        let none = tcap("rust", vec![(149_760, "warn", grace(300, 298))]);
+        assert!(rejected(&a, &none));
+        // NEGATIVE: an extra message (B twice, same text) …
+        let twice = tcap(
+            "rust",
+            vec![
+                (149_760, "warn", grace(300, 298)),
+                (180_163, "info", late("gps", 331, 30)),
+                (180_170, "info", late("gps", 331, 30)),
+            ],
+        );
+        assert!(rejected(&a, &twice));
+        // … or the other P as well (one row only is left, B-only).
+        let both = tcap(
+            "rust",
+            vec![
+                (149_760, "warn", grace(300, 298)),
+                (180_163, "info", late("gps", 331, 30)),
+                (180_170, "info", late("gps", 331, 31)),
+            ],
+        );
+        assert!(rejected(&a, &both));
+        // … or an early-form trust text beside the late one.
+        let early = tcap(
+            "rust",
+            vec![
+                (149_760, "warn", grace(300, 298)),
+                (180_163, "info", late("gps", 331, 30)),
+                (
+                    180_170,
+                    "info",
+                    "[clock] gps synchronized — clock trusted (telemetry held 300 s, 298 sample(s))"
+                        .into(),
+                ),
+            ],
+        );
+        assert!(rejected(&a, &early));
+        // NEGATIVE: no grace warning on one side (P has no instant to derive from).
+        let no_grace = tcap("rust", vec![(180_163, "info", late("gps", 331, 30))]);
+        assert!(rejected(&a, &no_grace));
+        // NEGATIVE (cross-field): B prints 30 but its own instants say 31
+        // (30 700 ms, beyond instant_ms of the edge).
+        assert!(rejected(
+            &a,
+            &tside("rust", 149_760, 300, 180_460, "gps", 331, 30)
+        ));
+        // NEGATIVE (cross-field): |T − G − P| = 2 on B's OWN grace G 299
+        // (P 30 is what its instants print).
+        assert!(rejected(
+            &a,
+            &tside("rust", 149_760, 299, 180_163, "gps", 331, 30)
+        ));
+        // NEGATIVE: the trust before the grace warning on one side.
+        assert!(rejected(
+            &a,
+            &tcap(
+                "rust",
+                vec![
+                    (180_163, "warn", grace(300, 298)),
+                    (149_760, "info", late("gps", 331, 30)),
+                ],
+            )
+        ));
+        // NEGATIVE: the trust instants ≥ 1 s apart (grace 456 ms apart;
+        // B 30 000 ms → 30).
+        assert!(rejected(
+            &a,
+            &tside("rust", 149_300, 300, 179_300, "gps", 331, 30)
+        ));
+        // NEGATIVE: the grace instants ≥ 1 s apart (1 044 ms; trust 890 ms
+        // apart; B 30 400 ms → 30, T − G − P = 1: only the instants fail).
+        assert!(rejected(
+            &a,
+            &tside("rust", 150_800, 300, 181_200, "gps", 331, 30)
+        ));
+        // NEGATIVE: non-canonical digits.
+        let pad = tcap(
+            "rust",
+            vec![
+                (149_760, "warn", grace(300, 298)),
+                (
+                    180_163,
+                    "info",
+                    late("gps", 331, 30).replace("(published 30", "(published 030"),
+                ),
+            ],
+        );
+        assert!(rejected(&a, &pad));
+        // NEGATIVE: a handoff run (two eras) is never this row.
+        let play = crate::diff::PlayInfo {
+            handoff: Some(crate::takeover::HandoffInfo {
+                restart_w: 1_000_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (rows, _) = trust_rows(&a, &b, &play);
+        assert!(!rows.is_empty() && rows.iter().all(|r| r.2 == UNTOLERATED));
+        // The parser: the late form only, canonical, known sources.
+        assert_eq!(
+            late_trust_text(&late("gps", 331, 30)),
+            Some(("gps".into(), 331, 30))
+        );
+        assert_eq!(late_trust_text(&late("modem", 331, 30)), None);
+        assert_eq!(late_trust_text(&late("gps", 331, -1)), None);
+        assert_eq!(
+            late_trust_text(
+                "[clock] gps synchronized — clock trusted (telemetry held 300 s, 298 sample(s))"
+            ),
+            None
+        );
+    }
+
+    /// The two held FAILs of the Phase 7e combined gate, rebuilt from their
+    /// own `[clock]` event stamps and texts (the implausible-NITZ lines, the
+    /// step and the step-cap lines left out; synthetic tape): the two trust
+    /// rows are this row's; the re-run's differing grace warnings are NOT
+    /// (they stay with T8/grace-fallback-phase, which needs telemetry).
+    #[test]
+    fn trust_published_reproduces_the_combined_gate_runs() {
+        // B-p4-clock-cap: A (JS) 31, B (Rust) 30.
+        let (rows, unt) = trust_rows(
+            &tside(
+                "js",
+                1_794_330_149_756,
+                300,
+                1_794_330_180_310,
+                "gps",
+                331,
+                31,
+            ),
+            &tside(
+                "rust",
+                1_794_330_149_760,
+                300,
+                1_794_330_180_163,
+                "gps",
+                331,
+                30,
+            ),
+            &crate::diff::PlayInfo::default(),
+        );
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.2 == TRUST_PUBLISHED_ID));
+        assert_eq!(unt, 0);
+        // B-p4-clock-cap.r2: A (JS) 30 with N 299, B (Rust) 31 with N 298.
+        let a = tcap(
+            "js",
+            vec![
+                (1_794_333_282_766, "warn", grace(300, 299)),
+                (1_794_333_312_928, "info", late("gps", 331, 30)),
+            ],
+        );
+        let b = tcap(
+            "rust",
+            vec![
+                (1_794_333_282_285, "warn", grace(300, 298)),
+                (1_794_333_312_805, "info", late("gps", 331, 31)),
+            ],
+        );
+        let (rows, unt) = trust_rows(&a, &b, &crate::diff::PlayInfo::default());
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.2 == TRUST_PUBLISHED_ID));
+        assert_eq!(unt, 2, "the two grace rows are not this row's");
     }
 }

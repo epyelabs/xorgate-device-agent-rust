@@ -4332,9 +4332,10 @@ fn diff_events(
 /// system clock …` texts (offset, source, step count) are identical; (iv)
 /// the trust events differ ONLY as: JS `no NTP/GPS/NITZ sync <G> s …
 /// (<N> sample(s) held) …` + `<src> synchronized <T> s after boot — clock
-/// trusted (published <T−G> s on an untrusted clock)`, Rust `<src>
-/// synchronized — clock trusted (telemetry held <G> s, <N> sample(s))`,
-/// same src and N. Anything else: None (judged as usual).
+/// trusted (published <P> s on an untrusted clock)` with |T − G − P| ≤ 1
+/// ([`trust_tgp_ok`]), Rust `<src> synchronized — clock trusted (telemetry
+/// held <G> s, <N> sample(s))`, same src and N. Anything else: None (judged
+/// as usual).
 fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
     let (js, rs) = match (a.meta.kind.as_str(), b.meta.kind.as_str()) {
         ("js", "rust") => (a, b),
@@ -4421,7 +4422,8 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
         // Both sides held to the 300 s grace and fell back with the SAME
         // warning (same G, same N held); both then trust at their step with
         // `<src> synchronized <T> s after boot — clock trusted (published
-        // <P> s on an untrusted clock)`, T and P one check interval apart.
+        // <P> s on an untrusted clock)`, T one check interval apart and
+        // |T − G − P| ≤ 1 on each side ([`trust_tgp_ok`]).
         let rs_fb: Vec<&(i64, String, String)> = rs
             .events
             .iter()
@@ -4451,7 +4453,8 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
             Some((num(t)?, num(p)?))
         };
         let ((tj, pj), (tr, pr)) = (parse(&js_trust[0].2)?, parse(&rs_trust[0].2)?);
-        if !(29..=31).contains(&(tj - tr)) || tj - gj != pj || tr - gr != pr {
+        if !(29..=31).contains(&(tj - tr)) || !trust_tgp_ok(tj, gj, pj) || !trust_tgp_ok(tr, gr, pr)
+        {
             return None;
         }
         return Some(
@@ -4488,7 +4491,7 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
     let (t, p) = t.split_once(" s after boot — clock trusted (published ")?;
     let p = p.strip_suffix(" s on an untrusted clock)")?;
     let (g, n, g2, n2, t, p) = (num(g)?, num(n)?, num(g2)?, num(n2)?, num(t)?, num(p)?);
-    if g != g2 || n != n2 || t - g2 != p {
+    if g != g2 || n != n2 || !trust_tgp_ok(t, g2, p) {
         return None;
     }
     Some(
@@ -4497,6 +4500,20 @@ fn d40_keys(a: &Capture, b: &Capture) -> Option<BTreeSet<String>> {
             .chain(step_keys)
             .collect(),
     )
+}
+
+/// F-P2-ROUND (review-P2 finding 3): one side's late-trust T and P against
+/// its OWN grace G. Each is toFixed(0) of its own raw ms
+/// (ts:src/agent/clock-trust.ts:104-106 @09da38d): T of now − start (:121),
+/// G of the grace-flip elapsed (:129, :135), P of now − start − heldMs with
+/// heldMs = that same elapsed (:121, :132); so raw T = raw G + raw P (plus
+/// the ≤ 1 ms between :121's two `monoMs()` reads) and, with every rounding
+/// error in [−0.5, +0.5), P ∈ {T − G − 1, T − G, T − G + 1}. "T − G = P" is
+/// NOT an identity (p4-clock-cap.jsrs.a: T 331, G 300, P 30). Rust
+/// computes the same three values (crates/xorgate-core/src/clock_trust.rs
+/// `trust_secs`, `late_trusted_event`, `establish`, `check_grace`).
+pub(crate) fn trust_tgp_ok(t: i64, g: i64, p: i64) -> bool {
+    (t - g - p).abs() <= 1
 }
 
 /// T8/grace-fallback-phase (orchestrator ruling 2026-10-27): what the 300 s
@@ -4516,7 +4533,7 @@ struct GraceEdge {
 /// UNTRUSTED clock (<N> sample(s) held); timestamps may be early until a sync
 /// lands` (ts:src/agent/clock-trust.ts:127-137 @09da38d ↔ crates/xorgate-core
 /// /src/clock_trust.rs:148) → `(G, N)`; any other text → None.
-fn grace_text(m: &str) -> Option<(i64, i64)> {
+pub(crate) fn grace_text(m: &str) -> Option<(i64, i64)> {
     let r = m.strip_prefix("[clock] no NTP/GPS/NITZ sync ")?;
     let (g, r) = r.split_once(" s after start — publishing on an UNTRUSTED clock (")?;
     let n = r.strip_suffix(" sample(s) held); timestamps may be early until a sync lands")?;
@@ -8396,6 +8413,85 @@ mod tests {
             &side("rust", 61_200, 299, 361_300, step("597.1", "gps"))
         )
         .is_none());
+
+        // F-P2-ROUND (review-P2 finding 3): T, G and P are each toFixed(0)
+        // of their own raw ms, so P = T − G ± 1 on a side is the documented
+        // race too (both arms, either side); P = T − G ± 2 still FAILS.
+        let trust_p = |t: i64, dp: i64| {
+            format!("[clock] gps synchronized {t} s after boot — clock trusted (published {} s on an untrusted clock)", t - 300 + dp)
+        };
+        let side_p = |kind: &str, imp_at: i64, step_at: i64, dp: i64| {
+            ev(
+                kind,
+                vec![
+                    (100, "info", "[agent] started".into()),
+                    (imp_at, "warn", imp.clone()),
+                    (300_600, "warn", fb(299)),
+                    (step_at, "info", step("597.1", "gps")),
+                    (step_at + 100, "info", trust_p((step_at + 100) / 1000, dp)),
+                ],
+            )
+        };
+        let js_p = |step_at: i64, dp: i64| {
+            ev(
+                "js",
+                vec![
+                    (400, "warn", imp.clone()),
+                    (300_600, "warn", fb(299)),
+                    (step_at, "info", step("597.1", "gps")),
+                    (step_at + 100, "info", trust_p((step_at + 100) / 1000, dp)),
+                ],
+            )
+        };
+        let rs0 = || rs(300_300, step("597.1", "gps"));
+        for dp in [-1, 0, 1] {
+            // tick 1, the JS side's P off by dp, then the Rust side's
+            assert!(
+                d40_keys(
+                    &side_p("js", 30_400, 360_400, dp),
+                    &side_p("rust", 30_200, 330_300, 0)
+                )
+                .is_some(),
+                "tick-1 JS P = T − G {dp:+}"
+            );
+            assert!(
+                d40_keys(
+                    &side_p("js", 30_400, 360_400, 0),
+                    &side_p("rust", 30_200, 330_300, dp)
+                )
+                .is_some(),
+                "tick-1 Rust P = T − G {dp:+}"
+            );
+            // tick 0 (only JS prints the late form)
+            assert!(
+                d40_keys(&js_p(330_400, dp), &rs0()).is_some(),
+                "tick-0 P = T − G {dp:+}"
+            );
+        }
+        for dp in [-2, 2] {
+            assert!(
+                d40_keys(
+                    &side_p("js", 30_400, 360_400, dp),
+                    &side_p("rust", 30_200, 330_300, 0)
+                )
+                .is_none(),
+                "NEGATIVE tick-1 JS P = T − G {dp:+}"
+            );
+            assert!(
+                d40_keys(
+                    &side_p("js", 30_400, 360_400, 0),
+                    &side_p("rust", 30_200, 330_300, dp)
+                )
+                .is_none(),
+                "NEGATIVE tick-1 Rust P = T − G {dp:+}"
+            );
+            assert!(
+                d40_keys(&js_p(330_400, dp), &rs0()).is_none(),
+                "NEGATIVE tick-0 P = T − G {dp:+}"
+            );
+        }
+        assert!(trust_tgp_ok(331, 300, 30) && trust_tgp_ok(331, 300, 32));
+        assert!(!trust_tgp_ok(331, 300, 29) && !trust_tgp_ok(331, 300, 33));
 
         // Orchestrator ruling 2026-10-27: the displayed step offset may
         // differ by 0.1 (toFixed(1) of the same float formula at two fixes
