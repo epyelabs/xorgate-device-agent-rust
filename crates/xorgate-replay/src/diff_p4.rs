@@ -816,15 +816,20 @@ pub fn retag_trust_published(
         let (src, t, p) = late_trust_text(&tr.2)?;
         let (g, _n) = crate::diff::grace_text(&gr.2)?;
         let d = tr.0 - gr.0;
+        // The trust must follow its grace flip. Not redundant with the
+        // own-instants check: a trust stamped before its grace that prints
+        // P 0 passes that one (secs(max(0, d ± slack)) = 0); pinned by
+        // `trust_published_per_side_counts_and_order`.
         if d <= 0 {
             return None;
         }
-        let secs = |ms: i64| -> i64 {
+        // A parse failure is no instant at all: reject (never widen the range).
+        let secs = |ms: i64| -> Option<i64> {
             xorgate_core::clock_trust::trust_secs(ms.max(0) as u64)
                 .parse()
-                .unwrap_or(i64::MIN)
+                .ok()
         };
-        let own = (secs(d - slack)..=secs(d + slack)).contains(&p);
+        let own = (secs(d - slack)?..=secs(d + slack)?).contains(&p);
         let algebra = crate::diff::trust_tgp_ok(t, g, p);
         (own && algebra).then_some(Side {
             src,
@@ -2177,6 +2182,91 @@ tolerance = { epoch_s = 1 }
             ),
             None
         );
+    }
+
+    /// F-P2-ROUND review F2/F3: the cases that ONLY the per-side checks
+    /// reject. An extra event carried identically by BOTH sides pairs up in
+    /// the events multiset and makes no row, so the row shape stays the
+    /// valid 1/0 + 0/1 pair and only "exactly ONE trust and ONE grace per
+    /// side" rejects it; a trust stamped BEFORE its grace that prints P 0
+    /// passes the own-instants check (secs(max(0, d ± 50)) = 0), so only
+    /// the trust-after-grace order rejects it.
+    #[test]
+    fn trust_published_per_side_counts_and_order() {
+        // The valid split these cases build on (combined run 1, 31 / 30).
+        let base_a = vec![
+            (149_756, "warn", grace(300, 298)),
+            (180_310, "info", late("gps", 331, 31)),
+        ];
+        let base_b = vec![
+            (149_760, "warn", grace(300, 298)),
+            (180_163, "info", late("gps", 331, 30)),
+        ];
+        assert!(tolerated(
+            &tcap("js", base_a.clone()),
+            &tcap("rust", base_b.clone())
+        ));
+        let with = |base: &Vec<(i64, &'static str, String)>, extra: (i64, &'static str, String)| {
+            let mut v = base.clone();
+            v.push(extra);
+            v
+        };
+        // NEGATIVE (F2): both sides carry the SAME extra trust text, AFTER
+        // the late one (so a "first event" shortcut would still pick the
+        // late text): no row of its own, the 1/0 + 0/1 pair is unchanged.
+        let early =
+            "[clock] gps synchronized — clock trusted (telemetry held 300 s, 298 sample(s))"
+                .to_string();
+        let (a, b) = (
+            tcap("js", with(&base_a, (180_400, "info", early.clone()))),
+            tcap("rust", with(&base_b, (180_410, "info", early))),
+        );
+        let (rows, _) = trust_rows(&a, &b, &crate::diff::PlayInfo::default());
+        assert_eq!(rows.len(), 2, "the shared extra text pairs up: {rows:?}");
+        assert!(rejected(&a, &b), "two trust events per side: {rows:?}");
+        // NEGATIVE (F2): both sides carry the SAME second grace warning
+        // (e.g. a non-handoff restart on both), after the trust.
+        let (a, b) = (
+            tcap("js", with(&base_a, (450_000, "warn", grace(300, 298)))),
+            tcap("rust", with(&base_b, (450_100, "warn", grace(300, 298)))),
+        );
+        let (rows, unt) = trust_rows(&a, &b, &crate::diff::PlayInfo::default());
+        assert_eq!(
+            (rows.len(), unt),
+            (2, 2),
+            "the shared grace pairs up: {rows:?}"
+        );
+        assert!(rejected(&a, &b), "two grace warnings per side: {rows:?}");
+        // NEGATIVE (F3): A's trust stamped 500 ms BEFORE its grace, printing
+        // P 0 (own instants secs(max(0, −500 ± 50)) = 0; |T − G − P| = 0);
+        // B is a valid 1 000 ms → 1 (|T − G − P| = 1); trust 600 ms and
+        // grace 900 ms apart, same src and T. Only the order rejects it.
+        let a = tcap(
+            "js",
+            vec![
+                (150_900, "warn", grace(300, 298)),
+                (150_400, "info", late("gps", 300, 0)),
+            ],
+        );
+        let b = tcap(
+            "rust",
+            vec![
+                (150_000, "warn", grace(300, 298)),
+                (151_000, "info", late("gps", 300, 1)),
+            ],
+        );
+        assert!(rejected(&a, &b));
+        // Contrast: the same two texts with A's trust 300 ms AFTER its grace
+        // (300 ms → 0; trust 100 ms and grace 600 ms apart) ARE the row, so
+        // the order is the only thing the case above gets wrong.
+        let a_ordered = tcap(
+            "js",
+            vec![
+                (150_600, "warn", grace(300, 298)),
+                (150_900, "info", late("gps", 300, 0)),
+            ],
+        );
+        assert!(tolerated(&a_ordered, &b));
     }
 
     /// The two held FAILs of the Phase 7e combined gate, rebuilt from their
