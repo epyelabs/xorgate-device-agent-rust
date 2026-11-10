@@ -643,7 +643,16 @@ impl Launch {
     }
 
     /// `hup_handler` (`gst-launch.c:523-540`).
+    ///
+    /// The watch is re-armed FIRST, as GLib clears a unix-signal source's
+    /// `pending` flag BEFORE it runs the callback
+    /// (`g_unix_signal_watch_dispatch`, GLib 2.74): a SIGHUP that lands while
+    /// the handler runs (after its line) is dispatched again, it is not
+    /// coalesced into this one (ci-sigint-race; drops D47). One that lands
+    /// between the wait thread's post and this call still coalesces, as it
+    /// does in GLib while the flag is set.
     fn hup_handler(&mut self) {
+        sys::dispatched(libc::SIGHUP);
         if std::env::var_os("GST_DEBUG_DUMP_DOT_DIR").is_some() {
             print("SIGHUP: dumping dot file snapshot ...\n");
         } else {
@@ -652,7 +661,6 @@ impl Launch {
             );
         }
         dump(&self.pipeline, "gst-launch.snapshot");
-        sys::dispatched(libc::SIGHUP);
     }
 
     /// `query_pipeline_position` (`gst-launch.c:1006-1038`), tty stdout only.
@@ -734,6 +742,9 @@ fn print(s: &str) {
     let mut o = std::io::stdout().lock();
     let _ = o.write_all(s.as_bytes());
     let _ = o.flush();
+    drop(o);
+    #[cfg(test)]
+    tests::after_print(s);
 }
 
 /// `gst_printerr`: stderr.
@@ -746,6 +757,83 @@ fn printerr(s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs on the printing thread right after [`print`] wrote a line (tests
+    /// only): "a signal that lands just after this line".
+    static AFTER_PRINT: std::sync::Mutex<Option<fn(&str)>> = std::sync::Mutex::new(None);
+
+    pub(super) fn after_print(s: &str) {
+        let hook = *AFTER_PRINT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = hook {
+            f(s);
+        }
+    }
+
+    fn launch(pipeline: &gst::Element, bus: &gst::Bus) -> Launch {
+        Launch {
+            pipeline: pipeline.clone(),
+            bus: bus.clone(),
+            eos_on_shutdown: false,
+            is_live: false,
+            buffering: false,
+            prerolled: false,
+            in_progress: false,
+            waiting_eos: false,
+            tfthen: None,
+            shared: Arc::new(Shared::default()),
+            timing: None,
+            pending_end: None,
+            diag: None,
+            playing_seen: false,
+        }
+    }
+
+    fn signal_messages(bus: &gst::Bus) -> Vec<i32> {
+        let mut v = Vec::new();
+        while let Some(m) = bus.pop() {
+            if let gst::MessageView::Application(a) = m.view() {
+                if let Some(s) = a.structure().filter(|s| s.name() == sys::SIGNAL_MESSAGE) {
+                    v.push(s.get::<i32>("signo").unwrap());
+                }
+            }
+        }
+        v
+    }
+
+    /// ci-sigint-race (drops D47): GLib clears a unix-signal source's
+    /// `pending` flag BEFORE the callback, so in gst-launch a SIGHUP that
+    /// lands once `SIGHUP: …` is printed is dispatched AGAIN (a second line).
+    /// The host re-arms the watch before the line: the SIGHUP delivered
+    /// right after the line posts a second dispatch. Re-arming after the
+    /// handler (the old order) coalesces it into the one being handled: no
+    /// post, RED — and `tests/capture_host.rs::the_sighup_watch_stays_armed`,
+    /// which sends its second SIGHUP on reading the first line, then waits
+    /// forever for a second line (CI run 42922380542).
+    #[test]
+    fn a_sighup_after_its_line_is_dispatched_again() {
+        let _g = sys::testing::lock();
+        sys::testing::reset();
+        gst::init().unwrap();
+        let pipeline: gst::Element = gst::Pipeline::new().upcast();
+        let bus = pipeline.bus().unwrap();
+        let mut l = launch(&pipeline, &bus);
+        sys::testing::prime_hup_pending(&bus); // the loop popped SIGHUP #1
+        fn second_hup(line: &str) {
+            if line.starts_with("SIGHUP: ") {
+                sys::deliver(libc::SIGHUP); // as the wait thread would
+            }
+        }
+        *AFTER_PRINT.lock().unwrap() = Some(second_hup);
+        l.hup_handler();
+        *AFTER_PRINT.lock().unwrap() = None;
+        assert_eq!(
+            signal_messages(&bus),
+            vec![libc::SIGHUP],
+            "the SIGHUP after the line was coalesced into the one being handled"
+        );
+        assert!(sys::testing::hup_is_pending(), "its dispatch is pending");
+        sys::testing::reset();
+    }
 
     fn os(a: &[&str]) -> Vec<OsString> {
         a.iter().map(OsString::from).collect()
