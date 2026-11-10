@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Xorgate device simulator image, RUST agent (Phase 7e WP2).
 #
 # A drop-in for the JS simulator image (device/xorgate-device-agent
@@ -22,9 +21,14 @@
 #                build, forward-compatible with 24.04's 1.24 (7e decision R3).
 #   runtime      ubuntu 24.04 (on 1.20 the bridge-only file chain stalls after
 #                ~1 s; JS Phase 0) + GStreamer base/good/bad/ugly/libav +
-#                libcurl/libssl for the master + ca-certificates jq procps.
-#                No node and no timedatectl shim: replay forces `ntp`
-#                in-process (worker.rs, `worker.ts:465-469`).
+#                libcurl/libssl for the master + ca-certificates jq procps +
+#                the JS image's `timedatectl` shim (so a hand-run `MODE=sim`
+#                reports `ntp` as the JS image does; replay forces `ntp`
+#                in-process anyway, worker.rs / `worker.ts:465-469`). No node.
+#
+# No `# syntax=` line: the built-in Dockerfile frontend (BuildKit) supports
+# `RUN --mount`, and a floating `docker/dockerfile:1` would be fetched from
+# Docker Hub on every build (review-wp2 S5).
 #
 # Build context = the Rust repo root. Use sim/build-image.sh (it passes the
 # git identity and refuses `xorgate-sim:*` tags):
@@ -36,8 +40,8 @@
 # The fork pins the SDK as a submodule (xorgate-kvs-webrtc/.gitmodules,
 # third_party/amazon-kinesis-video-streams-webrtc-sdk-c @ v1.19.1 = d7322f63).
 # The master comes from the PUBLIC fork at a pinned commit: epyelabs/
-# xorgate-kvs-webrtc main @ 731b924 ("Bound the encoder teardown so a wedged
-# EOS drain cannot dark the channel").
+# xorgate-kvs-webrtc main @ 731b924 (the merge of PR #4, "Bound the encoder
+# teardown so a wedged EOS drain cannot dark the channel").
 ARG KVS_SDK_TAG=v1.19.1
 ARG KVS_SDK_COMMIT=d7322f63af3c600ee7031b28436e3f8a12664272
 ARG KVS_FORK_REPO=https://github.com/epyelabs/xorgate-kvs-webrtc.git
@@ -104,9 +108,19 @@ RUN grep -Eq "^channel = \"${RUST_TOOLCHAIN}\"" rust-toolchain.toml \
 ARG GIT_SHA=
 ARG BUILD_CHANNEL=bench
 RUN test -n "${GIT_SHA}" || { echo "GIT_SHA is required (use sim/build-image.sh)" >&2; exit 1; }
+# The target cache is shared by every build on this BuildKit host (all shas,
+# branches, worktrees), and cargo judges a path crate fresh by mtime: a tree
+# whose files are OLDER than the cached artifacts (a `git archive` of an
+# earlier commit, an rsync) would silently reuse another tree's workspace
+# crates under this sha (review-wp2 S1). So every source file is touched
+# first: the workspace crates always rebuild (~1 min), while registry crates,
+# judged by version, stay cached. Chosen over dropping the cache (cold
+# dependency builds every time) and over a per-sha cache id (unbounded
+# growth, one prune per sha).
 RUN --mount=type=cache,id=xorgate-sim-rs-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=xorgate-sim-rs-target,target=/src/target \
-    XORGATE_GIT_SHA="${GIT_SHA}" cargo build --release --locked -p xorgate-agent \
+    find /src -path /src/target -prune -o -type f -exec touch {} + \
+ && XORGATE_GIT_SHA="${GIT_SHA}" cargo build --release --locked -p xorgate-agent \
  && mkdir -p /out/bin \
  && cp target/release/xorgate-rs /out/bin/xorgate-rs \
  && scripts/build-info.sh "${BUILD_CHANNEL}" --version "${GIT_SHA}" --out /out/build-info.json \
@@ -132,7 +146,9 @@ COPY --from=agent-build /out/build-info.json /opt/xorgate-rs/build-info.json
 RUN ! (ldd /opt/xorgate-rs/bin/xorgate-rs | grep "not found") \
   && /opt/xorgate-rs/bin/xorgate-rs --version
 COPY sim/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# The JS image's shim, byte for byte (device/xorgate-device-agent sim/timedatectl @ 09da38d).
+COPY sim/timedatectl /usr/local/bin/timedatectl
+RUN chmod +x /entrypoint.sh /usr/local/bin/timedatectl
 ARG GIT_SHA=
 ARG KVS_SDK_TAG
 ARG KVS_FORK_COMMIT

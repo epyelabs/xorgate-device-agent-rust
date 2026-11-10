@@ -3,7 +3,8 @@
 # the real xorgate-device-agent in `--mode replay` — the RUST agent (Phase 7e
 # WP2). A copy of the JS image's sim/entrypoint.sh @ 09da38d with exactly three
 # changes, each marked [7e]: the worker is `xorgate-rs run`, the boot-id
-# fallback needs no node, and `wait` loops until the agent is gone (D74).
+# fallback needs no node, and a trapped signal re-waits for the agent's own
+# exit status (D74: the trap sets a flag, the wait loops on it).
 #
 # Mounts:  /creds      cert.crt, private.key, ca.pem, kvs.json — the provision bundle (ro)
 #          /assets/v1  the scenario asset pack: catalog.json + <scenarioId>/… (ro, shared)
@@ -78,7 +79,8 @@ echo "[sim] device=$DEVICE_ID assets=$ASSETS_DIR scenario=${SCENARIO:-<settings.
 # graceful shutdown, while this shell survives to translate the exit code.
 child=""
 forward() { [[ -n "$child" ]] && kill -TERM "$child" 2>/dev/null || true; }
-trap forward TERM INT
+# [7e] D74: the trap also records that a signal interrupted the wait.
+trap 'stopping=1; forward' TERM INT
 # [7e] the Rust agent replaces `node /opt/xorgate/dist/worker.js`.
 /opt/xorgate-rs/bin/xorgate-rs run --mode "${MODE:-replay}" &
 child=$!
@@ -86,11 +88,16 @@ set +e
 wait "$child"
 code=$?
 # [7e] D74: a trapped signal makes `wait` return 128+n at once, while the agent
-# is still finalising its last segment; wait again until it has really exited,
-# so `docker stop` keeps the agent's own exit code and its graceful shutdown.
-while kill -0 "$child" 2>/dev/null; do
+# is still finalising; wait again (bash keeps an already-reaped child's status)
+# until a wait completes with no signal in between, so `docker stop` keeps the
+# agent's own exit code (a power_off's 3 keeps its marker). 127 = the status
+# was already collected: keep it.
+while [[ -n "${stopping:-}" ]]; do
+  stopping=""
   wait "$child"
-  code=$?
+  c=$?
+  [[ $c -eq 127 ]] && break
+  code=$c
 done
 set -e
 if [[ $code -eq 3 ]]; then

@@ -8,8 +8,9 @@
 #     Dockerfile.build; --platform linux/amd64 gets its own name;
 #   - sim/entrypoint.sh, run for real against a STUB agent: argv/env, exit 0,
 #     exit 3 + marker + parked restart, required inputs, and D74 (a `docker
-#     stop` waits for the agent's own graceful exit), with a NEGATIVE control:
-#     the JS shape (one `wait`) exits 143 before the agent finishes.
+#     stop` waits for the agent's own graceful exit, also through a power_off's
+#     exit 3; a signal-killed agent's 128+n passes through), with NEGATIVE
+#     controls: the JS shape (one `wait`) exits 143 before the agent finishes.
 # Run as root in a throwaway container (it installs a stub at
 # /opt/xorgate-rs/bin/xorgate-rs):
 #   docker run --rm -v "$PWD:/src:ro" -w /src debian:bookworm bash scripts/tests/sim-image.sh
@@ -48,6 +49,13 @@ check "agent-build apt list = Dockerfile.build's ($(echo "$a" | wc -w) packages)
 tc=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$SRC/rust-toolchain.toml")
 check "RUST_TOOLCHAIN default = rust-toolchain.toml ($tc)" "grep -q '^ARG RUST_TOOLCHAIN=$tc\$' '$DF'"
 check "the dockerignore keeps .git and the aarch64 media out" "grep -qx '\*\*/.git' '$SRC/sim/Dockerfile.dockerignore' && grep -qx 'media/lib' '$SRC/sim/Dockerfile.dockerignore' && grep -qx 'media/xorgate-kvs-webrtc' '$SRC/sim/Dockerfile.dockerignore'"
+# S1 (review-wp2): every source is touched in the SAME RUN, before the build
+# that uses the shared target cache, so no stale workspace crate is reused.
+run_block=$(awk '/^RUN --mount=type=cache,id=xorgate-sim-rs-registry/ {on=1} on {print} on && !/\\$/ {exit}' "$DF")
+check "the cached cargo build touches every source first, in the same RUN" "printf '%s\n' \"\$run_block\" | grep -q 'find /src -path /src/target -prune -o -type f -exec touch {} +' && [ \"\$(printf '%s\n' \"\$run_block\" | grep -n 'exec touch' | cut -d: -f1)\" -lt \"\$(printf '%s\n' \"\$run_block\" | grep -n 'cargo build' | cut -d: -f1)\" ]"
+check "no floating '# syntax=' frontend line" "! grep -q '^# syntax=' '$DF'"
+check "no image label baked in (containers are labelled by whoever creates them)" "! grep -q '^LABEL.*xorgate.agent' '$DF'"
+check "the JS timedatectl shim is installed and answers NTPSynchronized=yes" "grep -q '^COPY sim/timedatectl /usr/local/bin/timedatectl$' '$DF' && [ \"\$(sh '$SRC/sim/timedatectl' show -p NTPSynchronized --value)\" = yes ] && ! sh '$SRC/sim/timedatectl' status 2>/dev/null"
 
 echo "== sim/build-image.sh"
 B="$SRC/sim/build-image.sh"
@@ -146,29 +154,73 @@ run_ep "$T/c" "$E" > "$T/c.log" 2>&1; rc=$?
 check "a missing creds file → exit 1" "[ $rc = 1 ] && grep -q 'missing .*kvs.json' '$T/c.log'"
 
 # D. D74: SIGTERM to the entrypoint (docker stop) waits for the agent.
-cat > "$STUB" <<'EOF'
+# stub_term <exit code> <secs>: on TERM, finish for <secs>, write `finalized`, exit <code>.
+stub_term() {
+  cat > "$STUB" <<STUB
 #!/usr/bin/env bash
-trap 'sleep 2; echo done > "$XORGATE_HOME/finalized"; exit 0' TERM
-touch "$XORGATE_HOME/ready"
+trap 'sleep $2; echo done > "\$XORGATE_HOME/finalized"; exit $1' TERM
+touch "\$XORGATE_HOME/ready"
 while :; do sleep 0.1; done
-EOF
-chmod +x "$STUB"
-sigterm_case() { # $1 = dir, $2 = entrypoint → sets rc, fin
+STUB
+  chmod +x "$STUB"
+}
+sigterm_case() { # $1 = dir, $2 = entrypoint → sets rc (999 = hung), fin, marker
   fixture "$1"
   CREDS_DIR="$1/creds" ASSETS_DIR="$1/assets" XORGATE_HOME="$1/state" IOT_DATA_ENDPOINT=127.0.0.1 bash "$2" > "$1.log" 2>&1 &
   local ep=$!
   for _ in $(seq 100); do [ -f "$1/state/ready" ] && break; sleep 0.05; done
   kill -TERM "$ep"
-  wait "$ep"; rc=$?
+  # Bounded (review-wp2 S6): a regression that never reaches the agent FAILs, never hangs.
+  local i
+  for i in $(seq 100); do kill -0 "$ep" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$ep" 2>/dev/null; then
+    kill -KILL "$ep" 2>/dev/null; wait "$ep" 2>/dev/null; rc=999
+  else
+    wait "$ep"; rc=$?
+  fi
   fin=no; [ -f "$1/state/finalized" ] && fin=yes
+  marker=no; [ -f "$1/state/power-off" ] && marker=yes
   pkill -f "$STUB" 2>/dev/null; sleep 2.2
 }
+# The JS shape: the loop removed and the trap line put back, nothing else.
+sed -e '/^while \[\[ -n "\${stopping:-}" \]\]; do$/,/^done$/d' \
+    -e "s/^trap 'stopping=1; forward' TERM INT\$/trap forward TERM INT/" "$E" > "$T/js-shape.sh"
+check "NEGATIVE control is the JS shape (loop + trap line only)" "[ \"\$(diff '$E' '$T/js-shape.sh' | grep -c '^<')\" = 8 ] && [ \"\$(diff '$E' '$T/js-shape.sh' | grep '^>')\" = '> trap forward TERM INT' ]"
+
+stub_term 0 2
 sigterm_case "$T/d" "$E"
-check "D74: SIGTERM → the entrypoint exits with the agent's own code (0) AFTER its shutdown finished" "[ $rc = 0 ] && [ $fin = yes ]"
-sed '/^while kill -0 "\$child"/,/^done$/d' "$E" > "$T/js-shape.sh"
-check "NEGATIVE control is the JS shape (the loop removed, nothing else)" "[ \"\$(diff '$E' '$T/js-shape.sh' | grep -c '^<')\" = 4 ]"
+check "D74: SIGTERM → the agent's own code (0) AFTER its shutdown finished" "[ $rc = 0 ] && [ $fin = yes ] && [ $marker = no ]"
 sigterm_case "$T/n" "$T/js-shape.sh"
 check "NEGATIVE: the JS shape exits 143 before the agent finished (the bug D74 fixes)" "[ $rc = 143 ] && [ $fin = no ]"
+
+stub_term 3 0.5
+sigterm_case "$T/p" "$E"
+check "D74: TERM during a power_off (the agent exits 3) → exit 3 AND the marker" "[ $rc = 3 ] && [ $fin = yes ] && [ $marker = yes ]"
+sigterm_case "$T/pn" "$T/js-shape.sh"
+check "NEGATIVE: the JS shape loses that power_off (143, no marker)" "[ $rc = 143 ] && [ $marker = no ]"
+
+# An agent killed by a signal (no TERM to the entrypoint): 128+n passes through.
+for sig in SEGV KILL; do
+  printf '#!/usr/bin/env bash\nkill -%s $$\n' "$sig" > "$STUB"; chmod +x "$STUB"
+  fixture "$T/k$sig"
+  run_ep "$T/k$sig" "$E" > "$T/k$sig.log" 2>&1; rc=$?
+  want=$([ $sig = SEGV ] && echo 139 || echo 137)
+  check "an agent killed by SIG$sig → exit $want, no marker" "[ $rc = $want ] && [ ! -f '$T/k$sig/state/power-off' ]"
+done
+
+# Two starts get two boot ids; an uploadBucket an earlier run persisted is kept.
+cat > "$STUB" <<'STUB'
+#!/usr/bin/env bash
+echo "$XORGATE_BOOT_ID" >> "$XORGATE_HOME/bootids"
+exit 0
+STUB
+chmod +x "$STUB"
+fixture "$T/e"
+run_ep "$T/e" "$E" >/dev/null 2>&1
+jq '. + {uploadBucket: "persisted-bucket"}' "$T/e/state/creds/kvs.json" > "$T/e/kvs.tmp" && mv "$T/e/kvs.tmp" "$T/e/state/creds/kvs.json"
+run_ep "$T/e" "$E" >/dev/null 2>&1
+check "two starts, two different boot ids" "[ \"\$(sort -u '$T/e/state/bootids' | wc -l)\" = 2 ]"
+check "a persisted uploadBucket survives the next start's creds refresh" "[ \"\$(jq -r .uploadBucket '$T/e/state/creds/kvs.json')\" = persisted-bucket ]"
 
 rm -rf "$T" "$W" "$STUB"
 if [ $fail = 0 ]; then echo "== result: ALL PASS"; else echo "== result: FAILURES"; fi

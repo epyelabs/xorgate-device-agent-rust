@@ -18,7 +18,7 @@ Build on the host that runs the sims (x86_64, the homelab), from a git checkout:
 
 ```sh
 sim/build-image.sh                          # → xorgate-sim-rs:<short sha>
-sim/build-image.sh --label xorgate.agent=p7e   # extra labels pass through
+sim/build-image.sh --label k=v               # extra image labels pass through
 sim/build-image.sh --sha <short sha>        # a tree without .git (rsync / git archive)
 ```
 
@@ -28,6 +28,7 @@ sim/build-image.sh --sha <short sha>        # a tree without .git (rsync / git a
   - the agent on `debian:bookworm` with the device build's toolchain and apt list.
 - No stage copies from a JS image. Pins and rationale are in the `sim/Dockerfile` header.
 - `docker buildx build --platform linux/arm64 -f sim/Dockerfile …` (with the same `--build-arg`s) gives an arm64 variant.
+- Do not bake an `xorgate.agent=<tag>` label into the image: Docker copies image labels onto every container created from it, so a sim host's containers would match an agent's cleanup filter. Label the containers you create instead.
 - The script only ever tags `xorgate-sim-rs:*`. **Never tag `xorgate-sim:dev` or `xorgate-sim:prod`**: a sim host recreates every one of its sims when the image it runs changes.
 - CI: `.github/workflows/sim-image-amd64.yml` is manual only (`gh workflow run sim-image-amd64.yml --ref <branch>`). It uploads a `docker save` artifact and pushes nothing.
 
@@ -68,6 +69,8 @@ The entrypoint is the JS one with three changes, each marked `[7e]`:
 2. the boot-id fallback (there is no node in this image);
 3. the `wait` loop (D74).
 
-On `docker stop`, the JS entrypoint's single `wait` returns 143 as soon as its trap runs. The container then dies before the agent finishes its shutdown, so the last segment is left to the next boot's recovery. Here the entrypoint waits for the agent's own exit.
+On `docker stop`, the JS entrypoint's single `wait` returns 143 as soon as its trap runs. The container then dies before the agent finishes its shutdown, so the last segment is left to the next boot's recovery and presence goes offline through the Last-Will. Here the trap sets a flag and the entrypoint waits again until it has the agent's own exit status. So:
+- `docker stop` takes the agent's graceful shutdown: finalize, then `online:false` plus DISCONNECT within its 2 s exit budget (the sim host's stop timeout is 20 s);
+- a `power_off` that is exiting when the TERM lands keeps its 3 and its marker.
 
-The image also has no `timedatectl` shim: replay mode reports `ntp` in-process.
+The image carries the JS image's `timedatectl` shim (`sim/timedatectl`, byte for byte), so a hand-run `MODE=sim` reports `ntp` as the JS image does. Replay forces `ntp` in-process anyway.

@@ -21,6 +21,8 @@
 # It gets its own image name (xorgate-rs-build-amd64:<toolchain>-<hash of the
 # rewritten file>), target sub-directory (/target/<checkout>-amd64) and output
 # dir (target/docker-amd64/release/), so the two never collide.
+# (XORGATE_DOCKER_TARGET_DIR overrides the target sub-directory for BOTH: set
+# it per platform, or the two builds share and thrash one target dir.)
 #
 # Output: target/docker/release/xorgate-rs (a Linux aarch64 binary). The build
 # itself runs in a Docker volume (CARGO_TARGET_DIR=/target/<checkout>) — not in the
@@ -63,6 +65,11 @@ case "$PLATFORM" in
   *) echo "--platform must be linux/arm64 (default) or linux/amd64 (got '$PLATFORM')" >&2; exit 2 ;;
 esac
 TARGET_DIR="${XORGATE_DOCKER_TARGET_DIR:-/target/$(basename "$REPO")$SUFFIX}"
+# Refused before anything is built (review-wp2 S7).
+if [ "${1:-}" = pack ] && [ -n "$SUFFIX" ]; then
+  echo "pack is aarch64-only (the device tarball)" >&2
+  exit 2
+fi
 case "$TARGET_DIR" in
   /target/?*) ;;
   *) echo "XORGATE_DOCKER_TARGET_DIR must be /target/<name> (got $TARGET_DIR)" >&2; exit 2 ;;
@@ -94,10 +101,13 @@ dockerfile_text() {
   fi
 }
 DF_TEXT=$(dockerfile_text)
-if command -v shasum >/dev/null 2>&1; then
-  DF_HASH=$(printf '%s\n' "$DF_TEXT" | shasum -a 256 | cut -c1-12)
+sha12() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -c1-12; else sha256sum | cut -c1-12; fi; }
+# arm64 hashes the FILE itself (the tag every checkout has, by construction);
+# amd64 hashes the rewritten text.
+if [ -z "$SUFFIX" ]; then
+  DF_HASH=$(sha12 < "$REPO/Dockerfile.build")
 else
-  DF_HASH=$(printf '%s\n' "$DF_TEXT" | sha256sum | cut -c1-12)
+  DF_HASH=$(printf '%s\n' "$DF_TEXT" | sha12)
 fi
 IMAGE="$IMAGE_NAME:${TOOLCHAIN}-${DF_HASH}"
 if [ "${1:-}" = "image-tag" ]; then
@@ -154,7 +164,6 @@ case "$MODE" in
   pack)
     run_in cargo build --release "$@"
     copy_out
-    [ -z "$SUFFIX" ] || { echo "pack is aarch64-only (the device tarball)" >&2; exit 2; }
     "$REPO/scripts/pack.sh" --channel bench --bin "$REPO/$OUT_DIR/xorgate-rs"
     ;;
   shell)
