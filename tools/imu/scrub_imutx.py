@@ -341,7 +341,10 @@ class SyntheticGen:
             n = self.n_la
             self.n_la += 1
         r = rng or self.rng
-        return [_q(0.15 * math.sin(n / self.p[3] + ph) + r.uniform(-0.03, 0.03), 8) for ph in (self.p[7], self.p[8], self.p[9])]
+        return [
+            _q(0.15 * math.sin(n / self.p[3] + ph) + r.uniform(-0.03, 0.03), 8)
+            for ph in (self.p[7], self.p[8], self.p[9])
+        ]
 
     def byte(self):
         return self.rng.randrange(256)

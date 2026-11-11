@@ -413,7 +413,8 @@ class OnTrendRedraw(unittest.TestCase):
         tx.probe()
         tx.send(1, b"\x01")
         for n in range(self.N):
-            tx.packet(3, synth.base_ts() + synth.rv_report(n % 256, (0, 0, 0, 0), 0) + synth.la_report(n % 256, (0, 0, 0)))
+            payload = synth.rv_report(n % 256, (0, 0, 0, 0), 0) + synth.la_report(n % 256, (0, 0, 0))
+            tx.packet(3, synth.base_ts() + payload)
         ops = tx.ops()
         cls = S.classify(ops)
         gen = S.SyntheticGen(self.SEED)

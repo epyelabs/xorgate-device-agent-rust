@@ -466,7 +466,9 @@ def stats(records):
             probe = f"zero-length write {w0['errno']}, then {tail}"
     out["probe"] = probe
     # D3: reads the i2c-dev 8192-byte cap cut short (a 2nd header of 0x7FFF).
-    out["clamp_reads"] = sum(1 for o in ops if o["op"] == "read" and (o.get("len") or 0) > 8192 and o.get("ret") == 8192)
+    out["clamp_reads"] = sum(
+        1 for o in ops if o["op"] == "read" and (o.get("len") or 0) > 8192 and o.get("ret") == 8192
+    )
     ex = next((r for r in records if r["op"] == "exit"), None)
     out["exit_record"] = None if ex is None else (f"code {ex['code']}" if "code" in ex else f"signal {ex['signal']}")
     meta_counts = (records[0].get("counts") or {}) if records and records[0].get("op") == "meta" else {}
