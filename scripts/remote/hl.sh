@@ -66,7 +66,7 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o Ser
 trap 'echo "hl: FAILED (rc $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 usage() { sed -n '2,57p' "$0"; exit 2; }
-die() { echo "hl: $*" >&2; exit 2; }
+die() { echo "hl: $*" >&2; if [ "${STATE_PENDING_OK:-1}" = 1 ] && [ -n "${STATEF:-}" ] && grep -q '^state=pending$' "$STATEF" 2>/dev/null; then set_state refused-local "$*"; fi; exit 2; }
 rsh() { "$SSH" "${SSH_OPTS[@]}" "$HL_HOST" "$@"; }
 # stdin -> its sha256 (64 hex).
 sha256_stdin() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-64; }
@@ -141,13 +141,18 @@ cmd_sync() {
   rsh "bash -s" "$HL_ROOT_REL" "$tag" "$force" <<'EOF'
 set -eu
 R="$HOME/$1"; T="$R/$2"
-mkdir -p "$R/_shared/bin"
+mkdir -p "$R/_shared/bin" "$R/_shared/res"
 if [ -e "$T" ] && [ ! -f "$T/.hl-tag" ]; then echo "hl: $T exists and is not a helper tag dir: refusing" >&2; exit 3; fi
+# Under the reservation lock (fix-check M4/P1): a `run` checks verified.fp under
+# the same lock, so it either started before this point (and the session check
+# below refuses the sync) or sees verified.fp gone (and refuses itself).
+exec 9>>"$R/_shared/res/.lock"
+flock -w 60 9 || { echo "hl: could not take the reservation lock: refusing to sync" >&2; exit 3; }
 live=$(tmux ls -F '#{session_name}' 2>/dev/null | grep "^hl_$2_" || true)
 if [ -n "$live" ] && [ "$3" != 1 ]; then echo "hl: job(s) of $2 running ($(echo $live)): refusing to change its tree (stop them, or sync --force)" >&2; exit 3; fi
 mkdir -p "$T/src" "$T/bin" "$T/logs" "$T/out" "$T/inbox"
 [ -f "$T/.hl-tag" ] || echo "$2 $(date -u +%FT%TZ)" > "$T/.hl-tag"
-rm -f "$T/verified.fp" "$T/source.txt.new"
+rm -f "$T/verified.fp" "$T/source.txt.new" "$T/ignored.txt"
 EOF
   # 2. the helper's remote side (from THIS checkout, so any tree can be run).
   "$RSYNC" -a --delete -e "$SSH ${SSH_OPTS[*]}" "$HERE/" "$HL_HOST:$HL_ROOT_REL/$tag/bin/"
@@ -165,6 +170,9 @@ EOF
     { (cd "$w" && git check-ignore --no-index --stdin < "$tmp/extra.txt") || [ $? -eq 1 ]; } | LC_ALL=C sort -u > "$tmp/ignored.txt"
     LC_ALL=C comm -23 "$tmp/extra.txt" "$tmp/ignored.txt" > "$tmp/stale.txt"
   fi
+  # verify-src accepts no file outside the manifest + this ignore list (M4/P2).
+  [ -f "$tmp/ignored.txt" ] || : > "$tmp/ignored.txt"
+  "$RSYNC" -a -e "$SSH ${SSH_OPTS[*]}" "$tmp/ignored.txt" "$HL_HOST:$HL_ROOT_REL/$tag/"
   if [ -s "$tmp/stale.txt" ]; then
     echo "hl: pruning $(wc -l < "$tmp/stale.txt" | tr -d ' ') stale file(s) from $tag/src" >&2
     rsh "$(job_sh "$tag") prune-src $tag" < "$tmp/stale.txt"
@@ -174,35 +182,69 @@ EOF
   echo "synced $tag: $head ($branch) dirty_entries=$dirty files=$n tree_fp=${fp:0:12}"
 }
 
+# Fix-check S1: every `run` gets a run id. A local record
+# ($HL_STATE_DIR/<host>/<tag>.<name>) says whether the run reached the homelab;
+# the homelab ties <name>.rc to the run id (<name>.rcid). `wait` reports an rc
+# only for THIS run id, and a run refused on the Mac or lost to ssh as such.
+state_file() { printf '%s/%s/%s.%s' "${HL_STATE_DIR:-$HOME/.cache/xorgate-hl}" "$(printf '%s' "$HL_HOST" | tr -c 'A-Za-z0-9._@-' _)" "$1" "$2"; }
+set_state() { # <state> [msg]
+  [ -n "${STATEF:-}" ] || return 0
+  mkdir -p "$(dirname "$STATEF")"
+  printf 'runid=%s\nstate=%s\nmsg=%s\n' "$RUNID" "$1" "$(printf '%s' "${2:-}" | tr '\n' ' ' | cut -c1-300)" > "$STATEF"
+}
+
 cmd_run() {
   need_tag "${1:-}"; [ $# -ge 2 ] || usage
-  local tag=$1 job=$2 a q=""
+  local tag=$1 job=$2 a q="" name rc out
   shift 2
   # Review F12: the job word is checked here, before any remote shell sees it.
   hl_known_job "$job" || { [ "$job" = pack ] && die "pack is aarch64-only (the device tarball): build it on the Mac"; die "unknown job '$job' (one of: $HL_JOBS_ALLOWED)"; }
   if [ -n "${HL_JOB_NAME:-}" ]; then hl_valid_job "$HL_JOB_NAME" || die "bad HL_JOB_NAME '$HL_JOB_NAME'"; fi
+  name=${HL_JOB_NAME:-$job}
+  RUNID="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
+  STATEF=$(state_file "$tag" "$name")
+  set_state pending
   if [ "$job" = lanes ]; then
     if [ $# -ne 1 ] || [ ! -f "$1" ]; then die "lanes needs one local items file"; fi
     cmd_push "$tag" "$1" inbox >/dev/null
     set -- "inbox/$(basename "$1")"
   fi
   for a in "$@"; do q="$q $(printf '%q' "$a")"; done
-  rsh "$(fwd_env) $(job_sh "$tag") start $tag $(printf '%q' "$job")$q"
+  if out=$(rsh "$(fwd_env) HL_RUN_ID=$RUNID $(job_sh "$tag") start $tag $(printf '%q' "$job")$q" 2>&1); then rc=0; else rc=$?; fi
+  [ -z "$out" ] || printf '%s\n' "$out"
+  case $rc in
+    0) set_state started ;;
+    255) set_state start-failed "ssh failed (rc 255): $(printf '%s' "$out" | tail -1)"; exit 255 ;;
+    *) set_state refused-remote "$(printf '%s' "$out" | tail -1)"; exit "$rc" ;;
+  esac
 }
 
 cmd_wait() {
   need_tag "${1:-}"; [ $# -ge 2 ] || usage
-  local tag=$1 name=$2 max=${3:-3600} t0 out left
+  local tag=$1 name=$2 max=${3:-3600} t0 out left sf rid="" st="" msg=""
   hl_valid_job "$name" || die "bad job name $name"
+  sf=$(state_file "$tag" "$name")
+  if [ -f "$sf" ]; then
+    rid=$(sed -n 's/^runid=//p' "$sf"); st=$(sed -n 's/^state=//p' "$sf"); msg=$(sed -n 's/^msg=//p' "$sf")
+    case "$st" in
+      refused-local) echo "$name rc=75 (REFUSED on the Mac before the remote start: $msg)"; return 0 ;;
+      start-failed) echo "$name rc=75 (NOT STARTED: $msg)"; return 0 ;;
+    esac
+  fi
   t0=$(date +%s)
   while :; do
     # (a poll that finds no .rc yet is not a failure: no ERR trap in here)
-    if out=$(trap - ERR; rsh "cd $HL_ROOT_REL/$tag/logs && test -f $name.rc && printf '%s' \"\$(cat $name.rc)\" && { test -f $name.refused && printf ' (REFUSED: %s)' \"\$(cat $name.refused)\" || true; }"); then
-      echo "$name rc=$out"
-      return 0
+    if out=$(trap - ERR; rsh "cd $HL_ROOT_REL/$tag/logs && test -f $name.rc && printf '%s|%s|%s' \"\$(cat $name.rc)\" \"\$(cat $name.rcid 2>/dev/null)\" \"\$(cat $name.refused 2>/dev/null)\""); then
+      local rrc=${out%%|*} rest=${out#*|}; local rcid=${rest%%|*} refused=${rest#*|}
+      # With a local run id, only THIS run's rc counts (fix-check S1).
+      if [ -z "$rid" ] || [ "$rcid" = "$rid" ]; then
+        if [ -n "$refused" ]; then echo "$name rc=$rrc (REFUSED: $refused)"; else echo "$name rc=$rrc"; fi
+        return 0
+      fi
     fi
+    if [ "$st" = refused-remote ]; then echo "$name rc=75 (REFUSED: $msg)"; return 0; fi
     left=$(( max - ($(date +%s) - t0) ))
-    [ "$left" -gt 0 ] || { echo "hl: $tag/$name still running after ${max}s" >&2; exit 124; }
+    [ "$left" -gt 0 ] || { echo "hl: $tag/$name still running after ${max}s${rid:+ (run id $rid)}" >&2; exit 124; }
     sleep $(( left < 30 ? left : 30 ))
   done
 }

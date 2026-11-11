@@ -11,7 +11,7 @@ git config --global --add safe.directory '*' 2>/dev/null
 # (the ONE-TREE touch runs on the host before this container: hl-job.sh touch_if_new_tree)
 mkdir -p /src/tools/replay/.cache/bin
 # shellcheck disable=SC2086  # verbatim from build-bins.sh
-cargo build --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/ \
+cargo build --locked --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/ \
     && cc -shared -fPIC -O2 -Wall -Wextra -o /src/tools/replay/.cache/bin/rig-statvfs.so /src/tools/replay/statvfs-shim/rig_statvfs.c -ldl || exit 1
 O=/out/bins
 rm -rf "$O" && mkdir -p "$O"

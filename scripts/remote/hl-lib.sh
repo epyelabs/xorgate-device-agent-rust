@@ -53,16 +53,28 @@ hl_known_job() {
   case " $HL_JOBS_ALLOWED " in *" ${1:-} "*) return 0 ;; esac
   return 1
 }
+# Which reservations a job holds against the "fat-LTO runs alone" rule
+# (handbook; fix-check H2): `lto` = a fat-LTO release link (build-bins,
+# release) runs only when NO other cargo job of ANY tag is reserved, and no
+# cargo job starts while one runs; `cargo` = the other cargo jobs.
+hl_job_kind() {
+  case "${1:-}" in
+    build-bins|release) echo lto ;;
+    gate|cargo-gate|test|cargo) echo cargo ;;
+    *) echo none ;;
+  esac
+}
 # Docker memory string (16g, 512m) -> whole GiB, rounded up. (bash 3.2-safe:
 # the Mac's /bin/bash runs hl.sh.)
 hl_mem_gb() {
   local m
   m=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+  # Zero is refused (fix-check S2): docker reads --memory 0 as NO limit.
   case "$m" in
-    [0-9]*g) [[ ${m%g} =~ ^[0-9]+$ ]] && { echo "${m%g}"; return 0; } ;;
-    [0-9]*m) [[ ${m%m} =~ ^[0-9]+$ ]] && { echo $(( (${m%m} + 1023) / 1024 )); return 0; } ;;
+    [0-9]*g) [[ ${m%g} =~ ^[0-9]+$ ]] && [ "${m%g}" -gt 0 ] && { echo "${m%g}"; return 0; } ;;
+    [0-9]*m) [[ ${m%m} =~ ^[0-9]+$ ]] && [ "${m%m}" -gt 0 ] && { echo $(( (${m%m} + 1023) / 1024 )); return 0; } ;;
   esac
-  echo "bad memory value: ${1:-} (use <n>g or <n>m)" >&2
+  echo "bad memory value: ${1:-} (use <n>g or <n>m, > 0)" >&2
   return 1
 }
 # --cpus value: a positive number with at most 2 decimals.

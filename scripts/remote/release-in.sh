@@ -4,7 +4,7 @@
 set -u
 git config --global --add safe.directory '*' 2>/dev/null
 # (the ONE-TREE touch runs on the host before this container: hl-job.sh touch_if_new_tree)
-cargo build --release || exit 1
+cargo build --release --locked || exit 1
 O=/out/bins/release
 rm -rf "$O" && mkdir -p "$O"
 cp "$CARGO_TARGET_DIR/release/xorgate-rs" "$O/"

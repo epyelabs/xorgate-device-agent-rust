@@ -24,15 +24,25 @@ items=$1
 HL_PREFLIGHT=${HL_PREFLIGHT:-each}; HL_WAIT_OTHERS=${HL_WAIT_OTHERS:-0}; HL_PEERS=${HL_PEERS:-}
 HL_RUN_SECS=${HL_RUN_SECS:-2700}
 HL_PREFLIGHT_STEP=${HL_PREFLIGHT_STEP:-300}; HL_PREFLIGHT_MAX=${HL_PREFLIGHT_MAX:-3600}
+HL_SAMPLE_SECS=${HL_SAMPLE_SECS:-10}
+: "${SHARED:?}"
 : "${HL_HELPER_IMAGE:?}"   # the helper's amd64 image (hl-job.sh exports the script-tests one)
 R=$SRC/tools/replay; BIN=$R/.cache/bin; Q=$OUTD/q.tsv; LG=$T/logs/lanes
 mkdir -p "$LG" "$OUTD/untol" "$OUTD/runs"
-[ -f "$Q" ] || printf 'name\ttape\tmode\tstart\tsecs\trc\tverdict\tuntol\ttol\tids\tload_start\tload_end\tload_max\twaited\tcaps\tothers\tcopy\tcpustat\n' > "$Q"
+[ -f "$Q" ] || printf 'name\ttape\tmode\tstart\tsecs\trc\tverdict\tuntol\ttol\tids\tload_start\tload_end\tload_max\twaited\tcaps\tothers\tcopy\tcpustat\tothers_during\tres_during\n' > "$Q"
 load1() { cut -d' ' -f1 /proc/loadavg; }
 others() {
   docker ps --filter label=xorgate.agent --format '{{.Label "xorgate.agent"}}:{{.Names}}' \
     | awk -F: -v me="$TAG" -v peers=",${HL_PEERS}," '$1 != me && index(peers, "," $1 ",") == 0' | tr '\n' ';'
 }
+# Fix-check S9: the overlap record covers the WHOLE run. Every HL_SAMPLE_SECS
+# the sampler adds the other agents' labelled containers and the other tags'
+# live reservations it sees to the run's sets (q.tsv others_during/res_during).
+sample_overlap() { # <name>
+  others | tr ';' '\n' | sed '/^$/d' >> "$LG/$1.odur"
+  bash "$HERE/hl-job.sh" res-others "$TAG" "$HL_PEERS" >> "$LG/$1.rdur" 2>/dev/null
+}
+joinset() { [ -f "$1" ] && sort -u "$1" | tr '\n' ';' ; true; }
 modes=$(grep -vE '^[[:space:]]*(#|$)' "$items" | awk '{print $3}' | sort -u | tr '\n' ' ')
 case " $modes " in
   *" ab "*)
@@ -74,10 +84,13 @@ while read -r name tape mode purge _; do
   export COMPOSE_PROJECT_NAME
   COMPOSE_PROJECT_NAME=hl_${TAG}_$(printf '%s' "$name" | tr '[:upper:].' '[:lower:]-' | tr -cd 'a-z0-9_-')
   o0=$(others); l0=$(load1); start=$(date -u +%FT%TZ); s=$(date +%s)
-  # Sampler: max 1-min load every 15 s, and the rig container's real caps once.
+  rm -f "$LG/$name.odur" "$LG/$name.rdur"; sample_overlap "$name"
+  # Sampler: max 1-min load, other agents' containers and reservations every
+  # HL_SAMPLE_SECS (10), and the rig container's real caps once.
   ( mx=$l0; capd=""
     while :; do
-      sleep 15
+      sleep "$HL_SAMPLE_SECS"
+      sample_overlap "$name"
       l=$(load1); mx=$(awk -v a="$mx" -v b="$l" 'BEGIN { print (b > a) ? b : a }')
       echo "$mx" > "$LG/$name.loadmax"
       c=$(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter label=com.docker.compose.service=rig | head -1)
@@ -95,6 +108,7 @@ while read -r name tape mode purge _; do
   timeout --kill-after=60 "$HL_RUN_SECS" "$R/run-rig.sh" "$tf" --no-build --out "$out" "${args[@]}" > "$LG/$name.log" 2>&1
   rc=$?
   kill "$smp" 2>/dev/null; wait "$smp" 2>/dev/null
+  sample_overlap "$name"
   # Linux host: the rig writes some run files as root with mode 0600, so
   # run-rig.sh's own `cp -R` into --out (as the ai user) stops part-way (the
   # diff itself ran as root inside the rig, on the complete run). Copy the
@@ -104,7 +118,7 @@ while read -r name tape mode purge _; do
   copy=ok
   if grep -q "^cp: " "$LG/$name.log"; then copy=rescued; fi
   if [ -n "$run" ] && [ -d "$R/.cache/runs/$run" ]; then
-    docker run --rm --platform linux/amd64 --label "xorgate.agent=$TAG" -v "$R/.cache/runs:/r" -v "$OUTD/runs:/o" "$HL_HELPER_IMAGE" \
+    docker run --rm --platform linux/amd64 --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=${HL_JOB_NAME:-lanes}" -v "$R/.cache/runs:/r" -v "$OUTD/runs:/o" "$HL_HELPER_IMAGE" \
       sh -c 'mkdir -p "/o/$1" && cp -a "/r/$2/." "/o/$1/" && chown -R "$3" "/o/$1" && rm -rf "/r/$2"' _ "$name" "$run" "$(id -u):$(id -g)" \
       || copy=FAILED
   fi
@@ -116,8 +130,8 @@ while read -r name tape mode purge _; do
     row=$(python3 -I "$HERE/hl-summ.py" row "$out")
     python3 -I "$HERE/hl-summ.py" untol "$out" > "$OUTD/untol/$name.txt"
   else row=$(printf 'NO-DIFF\t-\t-\t-'); fi
-  printf '%s\t%s\t%s\t%s\t%ss\trc=%s%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\t%s\n' "$name" "$tape" "$mode" "$start" "$(( $(date +%s) - s ))" "$rc" "${drc:+/diff=$drc}" \
-    "$row" "$l0" "$(load1)" "$(cat "$LG/$name.loadmax" 2>/dev/null || echo "$l0")" "$waited" "$(cat "$LG/$name.caps" 2>/dev/null || echo '?')" "[$o0]" "$copy" "$(cat "$LG/$name.cpustat" 2>/dev/null || echo '?')" >> "$Q"
+  printf '%s\t%s\t%s\t%s\t%ss\trc=%s%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\t%s\t[%s]\t[%s]\n' "$name" "$tape" "$mode" "$start" "$(( $(date +%s) - s ))" "$rc" "${drc:+/diff=$drc}" \
+    "$row" "$l0" "$(load1)" "$(cat "$LG/$name.loadmax" 2>/dev/null || echo "$l0")" "$waited" "$(cat "$LG/$name.caps" 2>/dev/null || echo '?')" "[$o0]" "$copy" "$(cat "$LG/$name.cpustat" 2>/dev/null || echo '?')" "$(joinset "$LG/$name.odur")" "$(joinset "$LG/$name.rdur")" >> "$Q"
   tail -1 "$Q" | cut -f1-10
   if [ "${purge:-}" = purge ]; then rm -rf "${out:?}"; echo "$name: run dir purged (O8)"; fi
 done < "$items"

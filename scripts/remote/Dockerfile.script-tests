@@ -3,6 +3,6 @@
 # xorgate-rs-script-tests:bookworm-<sha256 of this file, 12>.
 FROM debian:bookworm
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 shellcheck sudo git curl procps ca-certificates util-linux \
+ && apt-get install -y --no-install-recommends python3 shellcheck sudo git curl procps ca-certificates util-linux tmux \
  && rm -rf /var/lib/apt/lists/*
 RUN git config --global --add safe.directory '*'

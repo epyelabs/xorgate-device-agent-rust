@@ -40,7 +40,8 @@ HL="$W/remote/hl.sh"
 export HL_HOST=fake@homelab HL_SSH=$STUB/ssh HL_RSYNC=$STUB/rsync STUB_LOG=$LOG FAKEHOME=$FH
 # The test host's memory is not the homelab's: lift the hard floor for the suite
 # (HL_GUARD_TESTING is never forwarded by hl.sh; the stub ssh passes the env).
-export HL_GUARD_TESTING=1 HL_MIN_FREE_GB=0 HL_TEST_MEMAVAIL_GB=64
+export HL_GUARD_TESTING=1 HL_MIN_FREE_GB=0 HL_TEST_MEMAVAIL_GB=64 HL_STATE_DIR=$W/state
+REAL_TMUX=$(command -v tmux || true); export REAL_TMUX
 # From the temp dir: a mounted git WORKTREE's .git points at a host path, and
 # git refuses even --global config inside it.
 (cd "$W" && git config --global user.email t@example.invalid && git config --global user.name t \
@@ -87,7 +88,26 @@ cat > "$STUB/docker" <<'EOF'
 echo "docker $*" >> "$STUB_LOG/docker.log"
 case "$1 ${2:-}" in
   "image inspect") exit 0 ;;
-  "ps "*) [ -f "$STUB_LOG/ps.out" ] && grep -- "${STUB_PS_GREP:-.}" "$STUB_LOG/ps.out"; exit 0 ;;
+  "ps "*)
+    # ps.tab: "<id> <xorgate.agent or -> <xorgate.hl or -> <xorgate.hl.job or ->"; label filters honoured
+    shift; fmt=""; filters=()
+    while [ $# -gt 0 ]; do case "$1" in --filter) filters+=("$2"); shift 2 ;; --format) fmt=$2; shift 2 ;; *) shift ;; esac; done
+    [ -f "$STUB_LOG/ps.tab" ] || exit 0
+    while read -r id agent hl job; do
+      keep=1
+      for f in ${filters[@]+"${filters[@]}"}; do
+        case "$f" in
+          label=xorgate.agent) [ "$agent" != - ] || keep=0 ;;
+          label=xorgate.agent=*) [ "$agent" = "${f#label=xorgate.agent=}" ] || keep=0 ;;
+          label=xorgate.hl=1) [ "$hl" = 1 ] || keep=0 ;;
+          label=xorgate.hl.job=*) [ "$job" = "${f#label=xorgate.hl.job=}" ] || keep=0 ;;
+          *) keep=0 ;;
+        esac
+      done
+      [ $keep = 1 ] || continue
+      if [ -n "$fmt" ]; then printf '%s\n' "$fmt" | sed -e "s/{{.Label \"xorgate.agent\"}}/$agent/g" -e "s/{{.Names}}/$id/g" -e "s/{{.Status}}/Up/g"; else echo "$id"; fi
+    done < "$STUB_LOG/ps.tab"
+    exit 0 ;;
   "network ls"|"volume ls")
     k=$1; shift 2
     case " $* " in *" --format "*) cat "$STUB_LOG/$k.projects" 2>/dev/null; exit 0 ;; esac
@@ -96,19 +116,21 @@ case "$1 ${2:-}" in
     exit 0 ;;
   "network rm"|"volume rm") echo "$1 rm $3" >> "$STUB_LOG/removed"; exit 0 ;;
   "exec "*) case "$*" in *"/proc/1/comm"*) echo systemd ;; esac; exit 0 ;;
-  "run "*) exit "${STUB_DOCKER_RUN_RC:-0}" ;;
+  "run "*) [ -z "${STUB_DOCKER_SLEEP:-}" ] || sleep "$STUB_DOCKER_SLEEP"; exit "${STUB_DOCKER_RUN_RC:-0}" ;;
   *) exit 0 ;;
 esac
 EOF
 cat > "$STUB/tmux" <<'EOF'
 #!/usr/bin/env bash
 echo "tmux $*" >> "$STUB_LOG/tmux.log"
+# STUB_REAL_TMUX=1: the real tmux (on a private TMUX_TMPDIR socket: fix-check M1)
+if [ "${STUB_REAL_TMUX:-0}" = 1 ] && [ -n "${REAL_TMUX:-}" ]; then exec "$REAL_TMUX" "$@"; fi
 case "$1" in
   has-session) grep -qx -- "${3#=}" "$STUB_LOG/sessions" 2>/dev/null ;;
   ls) cat "$STUB_LOG/sessions" 2>/dev/null ;;
   list-panes) cat "$STUB_LOG/pane.${3#=}" 2>/dev/null ;;
   kill-session) echo "killed ${3#=}" >> "$STUB_LOG/killed" ;;
-  new-session) shift 4; bash -c "$*"; exit 0 ;;   # new-session -d -s <name> <cmd>: run the job synchronously (tmux itself returns 0)
+  new-session) [ "${STUB_TMUX_NORUN:-0}" = 1 ] && exit 0; shift 4; bash -c "$*"; exit 0 ;;   # new-session -d -s <name> <cmd>: run the job synchronously (tmux itself returns 0)
 esac
 EOF
 REAL_TOUCH=$(command -v touch)
@@ -304,7 +326,7 @@ out=$(HL_CPUS=4 HL_JOBS=2 "$HL" wait t1 nosuchjob 1 2>&1); rc=$?
 case "$out" in *FAILED*) bad "a pending wait / forwarded env printed a false FAILED: $out" ;; *"still running after 1s"*) [ $rc = 124 ] && ok "wait times out with rc 124 and no false 'FAILED' (bash 3.2 ERR quirks)" || bad "wait timeout rc $rc" ;; *) bad "wait timeout text: $out" ;; esac
 
 echo "== build-bins-in.sh = build-bins.sh (drift guard)"
-for pat in 'cargo build --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/' \
+for pat in 'cargo build --locked --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/' \
            'cc -shared -fPIC -O2 -Wall -Wextra -o /src/tools/replay/.cache/bin/rig-statvfs.so /src/tools/replay/statvfs-shim/rig_statvfs.c -ldl'; do
   grep -qF -- "$pat" "$SRC/tools/replay/build-bins.sh" && grep -qF -- "$pat" "$SRC/scripts/remote/build-bins-in.sh" \
     && ok "same line in both: ${pat:0:40}…" || bad "drift: '$pat' not in both build-bins.sh and build-bins-in.sh"
@@ -361,7 +383,7 @@ OD=$(ls -d "$T1/out/lanes/${FP1:0:12}-"* 2>/dev/null | head -1); Q=$OD/q.tsv
 [ -n "$OD" ] && [ -f "$Q" ] && ok "lanes write to out/lanes/<tree_fp12>-<bins sha12>/" || { bad "lanes output dir"; ls -R "$T1/out" | head -20; }
 r1=$(grep '^L1	' "$Q"); r2=$(grep '^L2	' "$Q")
 case "$r1" in *'rc=1/diff=1	FAIL	1	7	T1:5,T3:2	'*'	rescued	'*) ok "lane row: rc + the diff's exit, verdict, counts, ids with hits > 0, copy rescued" ;; *) bad "lane row: $r1"; cat "$T1/logs/lanes.log"; esac
-grep -q 'docker run --rm --platform linux/amd64 --label xorgate.agent=t1 -v .*/.cache/runs:/r .* xorgate-rs-script-tests:bookworm-[0-9a-f]* sh -c .*cp -a .* L1 run-x ' "$LOG/docker.log" \
+grep -q 'docker run --rm --platform linux/amd64 --label xorgate.agent=t1 --label xorgate.hl=1 --label xorgate.hl.job=lanes -v .*/.cache/runs:/r .* xorgate-rs-script-tests:bookworm-[0-9a-f]* sh -c .*cp -a .* L1 run-x ' "$LOG/docker.log" \
   && ok "the run is re-copied as root in a labelled container (0600 root files)" || { bad "no rescue copy"; grep cp "$LOG/docker.log"; }
 [ -f "$OD/runs/L1/bins.sha256" ] && ok "bins.sha256 written when run-rig.sh's copy stopped" || bad "bins.sha256 missing"
 grep -q "^# tree_fp=$FP1" "$OD/lanes-bins.sha256" && ok "the lane record names its tree_fp" || bad "lanes-bins.sha256 provenance"
@@ -418,30 +440,212 @@ mkdir -p "$W/mine" && echo keep > "$W/mine/notes"
 "$HL" fetch t2 "$W/mine" >/dev/null 2>&1 && bad "fetch into a non-empty foreign dir accepted" || ok "fetch refuses a non-empty dir that is not its own"
 [ -f "$W/mine/notes" ] && ok "…and deleted nothing there" || bad "fetch deleted a foreign file"
 
-echo "== stop (F4): the rig's process group, then the session"
-: > "$LOG/ps.out"; : > "$LOG/killed"
+echo "== fix-check M4/P1: a run waiting on the lock never runs on a tag that a sync is changing"
+cat > "$W/slowrsync" <<EOS
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in --files-from=*) sleep 5 ;; esac; done
+exec "$STUB/rsync" "\$@"
+EOS
+chmod +x "$W/slowrsync"; mkdir -p "$RES"; : > "$LOG/vf.log"
+mv "$STUB/docker" "$STUB/docker.orig"
+cat > "$STUB/docker" <<EOS
+#!/usr/bin/env bash
+case "\$1" in run) echo "docker run: verified.fp \$([ -e "$T2/verified.fp" ] && echo present || echo ABSENT)" >> "$LOG/vf.log" ;; esac
+exec "$STUB/docker.orig" "\$@"
+EOS
+chmod +x "$STUB/docker"
+( exec 8>>"$RES/.lock"; flock 8; sleep 4 ) & lp=$!
+sleep 0.5
+( HL_LOCK_WAIT=30 HL_JOB_NAME=p1 "$HL" run t2 test > "$W/p1run.out" 2>&1; echo $? > "$W/p1run.rc" ) & rp=$!
+sleep 1
+echo 'fn main() { /* P1 */ }' > "$R/crates/a/src/main.rs"
+( HL_RSYNC=$W/slowrsync "$HL" sync t2 "$R" > "$W/p1sync.out" 2>&1; echo $? > "$W/p1sync.rc" ) & sp=$!
+wait "$lp"; wait "$rp"; wait "$sp"
+mv "$STUB/docker.orig" "$STUB/docker"
+! grep -q ABSENT "$LOG/vf.log" && ok "no job container started while its tag was mid-sync (run $(cat "$W/p1run.rc"), sync $(cat "$W/p1sync.rc"))" \
+  || bad "a job ran while verified.fp was ABSENT: $(cat "$LOG/vf.log")"
+git -C "$R" checkout -q -- crates/a/src/main.rs; "$HL" sync t2 "$R" >/dev/null 2>&1
+( exec 8>>"$RES/.lock"; flock 8; sleep 3 ) & lp=$!
+sleep 0.5
+echo 'fn main() { /* lock */ }' > "$R/crates/a/src/main.rs"
+( "$HL" sync t2 "$R" > "$W/lsync.out" 2>&1; echo $? > "$W/lsync.rc" ) & sp=$!
+sleep 1.5
+[ -e "$T2/verified.fp" ] && ok "sync prep waits for the reservation lock before it invalidates the tag" || bad "sync prep invalidated the tag without the lock"
+wait "$lp"; wait "$sp"
+[ "$(cat "$W/lsync.rc")" = 0 ] && ok "…and completes once the lock is free" || bad "sync after the lock: $(tail -2 "$W/lsync.out")"
+git -C "$R" checkout -q -- crates/a/src/main.rs; "$HL" sync t2 "$R" >/dev/null 2>&1
+
+echo "== fix-check M4/P2: a prune that fails fails the sync; verify-src rejects extra files"
+mkdir -p "$R/crates/a/tests" && echo '#[test] fn stale() {}' > "$R/crates/a/tests/stuck.rs" && git -C "$R" add crates/a/tests/stuck.rs && git -C "$R" commit -qm stuck
+"$HL" sync t2 "$R" >/dev/null 2>&1
+git -C "$R" rm -q crates/a/tests/stuck.rs && git -C "$R" commit -qm unstuck
+REAL_RM=$(PATH=/usr/bin:/bin command -v rm)
+cat > "$STUB/rm" <<EOS
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in */crates/a/tests/stuck.rs) echo "rm: cannot remove '\$a': Permission denied" >&2; exit 1 ;; esac; done
+exec $REAL_RM "\$@"
+EOS
+chmod +x "$STUB/rm"
+out=$("$HL" sync t2 "$R" 2>&1); rc=$?
+$REAL_RM -f "$STUB/rm"
+[ $rc != 0 ] && printf '%s\n' "$out" | grep -q 'could not remove stale' && [ ! -e "$T2/verified.fp" ] \
+  && ok "a failed prune fails the sync loudly and leaves the tag unverified" || bad "failed prune: rc $rc, $(printf '%s' "$out" | tail -2)"
+"$HL" run t2 test >/dev/null 2>&1 && bad "start accepted after a failed prune" || ok "…and start refuses the tag"
+$REAL_RM -f "$T2/src/crates/a/tests/stuck.rs"; "$HL" sync t2 "$R" >/dev/null 2>&1 && ok "…a clean re-sync repairs it" || bad "re-sync after a failed prune"
+echo junk > "$T2/src/crates/a/stray.rs"; cp "$T2/source.txt" "$T2/source.txt.new"
+out=$(HOME=$FH bash "$T2/bin/hl-job.sh" verify-src t2 2>&1) && bad "verify-src accepted a stray file" \
+  || { case "$out" in *"neither in the manifest nor git-ignored"*) ok "verify-src rejects a file that is neither in the manifest nor git-ignored" ;; *) bad "stray text: $out" ;; esac; }
+$REAL_RM -f "$T2/src/crates/a/stray.rs"
+sed 's/^tree_fp=.*/tree_fp=bogus/' "$T2/source.txt" > "$T2/source.txt.new"
+HOME=$FH bash "$T2/bin/hl-job.sh" verify-src t2 >/dev/null 2>&1 && bad "verify-src installed a record whose tree_fp != the manifest" || ok "verify-src refuses a record whose tree_fp != the manifest (n3)"
+$REAL_RM -f "$T2/source.txt.new"; "$HL" sync t2 "$R" >/dev/null 2>&1
+
+echo "== fix-check S1: wait never reports an older run's rc"
+HL_JOB_NAME=sweep "$HL" run t2 test >/dev/null 2>&1; [ "$(cat "$T2/logs/sweep.rc")" = 0 ] && ok "precondition: sweep rc 0"
+HL_JOB_NAME=sweep "$HL" run t2 lanes "$W/no-such-items.txt" >/dev/null 2>&1
+out=$("$HL" wait t2 sweep 3 2>&1); case "$out" in "sweep rc=75 (REFUSED on the Mac before the remote start: "*) ok "a run refused on the Mac: wait says so, not the old rc 0" ;; *) bad "Mac-side refusal: $out" ;; esac
+printf '#!/bin/sh\necho "ssh: connect to host homelab: No route to host" >&2\nexit 255\n' > "$W/sshfail"; chmod +x "$W/sshfail"
+HL_SSH=$W/sshfail HL_JOB_NAME=sweep "$HL" run t2 test >/dev/null 2>&1
+out=$("$HL" wait t2 sweep 3 2>&1); case "$out" in "sweep rc=75 (NOT STARTED: ssh failed"*) ok "a run lost to ssh: wait says NOT STARTED" ;; *) bad "ssh failure: $out" ;; esac
+STUB_TMUX_NORUN=1 HL_JOB_NAME=sweep "$HL" run t2 test >/dev/null 2>&1
+out=$("$HL" wait t2 sweep 2 2>&1); rc=$?
+[ $rc = 124 ] && ok "a started job with no rc yet: wait does not report the previous rc (n1)" || bad "wait while the job runs: rc $rc, $out"
+echo "hl_t2_sweep" >> "$LOG/sessions"
+HL_JOB_NAME=sweep "$HL" run t2 test >/dev/null 2>&1
+out=$("$HL" wait t2 sweep 3 2>&1); case "$out" in *"REFUSED: "*"already running"*) ok "a remote refusal before the rc file: wait says REFUSED" ;; *) bad "remote die: $out" ;; esac
+sed -i '/^hl_t2_sweep$/d' "$LOG/sessions"
+
+echo "== fix-check S2: zero caps are refused (docker reads 0 as no limit)"
+for kv in HL_MEM=0g HL_SUITE_CPUS=0 HL_RIG_MEM=0m HL_SUITE_MEM=0g HL_JS_CPUS=0 HL_RIG_CPUS=0; do
+  out=$(env "$kv" HL_JOB_NAME=z "$HL" run t2 test 2>&1) && bad "$kv admitted" || { case "$out" in *"bad ${kv%%=*}"*) ok "$kv refused" ;; *) bad "$kv text: $out" ;; esac; }
+done
+out=$(printf '' | HOME=$FH HL_JS_CPUS=0 bash "$T2/bin/hl-job.sh" js-cache t2 09da38d 2>&1) && bad "js-cache with HL_JS_CPUS=0 admitted" || ok "js-cache refuses HL_JS_CPUS=0"
+
+echo "== fix-check H2: a fat-LTO build runs alone among cargo jobs of ANY tag"
+echo "hl_t9_c" >> "$LOG/sessions"; echo "4 4 kind:cargo" > "$RES/t9_c"
+out=$("$HL" run t2 build-bins 2>&1) && bad "build-bins admitted beside another tag's cargo job" || { case "$out" in *"runs ALONE"*) ok "build-bins refused beside another tag's cargo job" ;; *) bad "lto text: $out" ;; esac; }
+HL_JOB_NAME=c2 "$HL" run t2 test >/dev/null 2>&1; [ ! -f "$T2/logs/c2.refused" ] && ok "two cargo jobs (no fat-LTO) may share the host" || bad "cargo beside cargo refused"
+echo "4 4 kind:lto" > "$RES/t9_c"
+out=$(HL_JOB_NAME=c3 "$HL" run t2 test 2>&1) && bad "test admitted beside a fat-LTO build" || { case "$out" in *"fat-LTO build"*) ok "a cargo job is refused while a fat-LTO build runs" ;; *) bad "lto text: $out" ;; esac; }
+sed -i '/^hl_t9_c$/d' "$LOG/sessions"; $REAL_RM -f "$RES/t9_c"
+STUB_DOCKER_RUN_RC=1 "$HL" run t2 build-bins >/dev/null 2>&1; grep -q 'kind=lto' "$T2/logs/build-bins.env" && ok "build-bins reserves kind:lto" || bad "build-bins kind"
+
+echo "== fix-check M1: a REAL tmux server does not inherit the reservation lock"
+if [ -n "$REAL_TMUX" ]; then
+  export TMUX_TMPDIR=$W/tmx; mkdir -p "$TMUX_TMPDIR"   # a private server: none runs before the first start
+  out1=$(STUB_REAL_TMUX=1 STUB_DOCKER_SLEEP=6 HL_JOB_NAME=rt1 "$HL" run t2 test 2>&1)
+  sleep 1
+  spid=$(STUB_REAL_TMUX=1 tmux display -p -t hl_t2_rt1 '#{pid}' 2>/dev/null)
+  nfd=0; for fd in /proc/"$spid"/fd/*; do case "$(readlink "$fd" 2>/dev/null)" in */res/.lock) nfd=$((nfd + 1)) ;; esac; done
+  out2=$(STUB_REAL_TMUX=1 HL_LOCK_WAIT=3 HL_JOB_NAME=rt2 "$HL" run t2 test 2>&1)
+  case "$out1$out2" in *"started hl_t2_rt1"*"started hl_t2_rt2"*) [ -n "$spid" ] && [ "$nfd" = 0 ] \
+      && ok "two sequential runs both start; the tmux server holds no lock fd (server pid $spid)" || bad "server lock fds: $nfd (pid $spid)" ;;
+    *) bad "second run under a server spawned by the first: $out2" ;; esac
+  for _ in $(seq 40); do [ -f "$T2/logs/rt1.rc" ] && [ -f "$T2/logs/rt2.rc" ] && break; sleep 1; done
+  STUB_REAL_TMUX=1 tmux kill-server 2>/dev/null; unset TMUX_TMPDIR
+else echo "NOTE: no tmux here: the real-tmux lock test needs it (the helper's script-tests image has it)"; fi
+
+echo "== fix-check M2: an ab lane needs side bins of their source's CURRENT tree"
+"$HL" sync t3 "$R" >/dev/null 2>&1
+mk_bins() { # <tagdir> <content> <fp>
+  mkdir -p "$1/out/bins" && (cd "$1/out/bins" && printf '%s' "$2" > xorgate-rs && printf R > xorgate-replay && printf S > rig-statvfs.so \
+    && sha256sum xorgate-rs xorgate-replay rig-statvfs.so > SHA256SUMS && chmod +x xorgate-rs && printf 'head=x\ntree_fp=%s\n' "$3" > HEAD); }
+mk_bins "$T3" OLD-T3-AGENT "$(cat "$T3/verified.fp")"
+B2=$T2/src/tools/replay/.cache/bin; TP2=$T2/src/tools/replay/.cache/tapes
+mkdir -p "$B2" "$TP2"; : > "$TP2/smoke.ndjson.gz"
+printf '\177ELF' > "$B2/xorgate-rs"; printf r > "$B2/xorgate-replay"; printf s > "$B2/rig-statvfs.so"
+printf 'tree_fp=%s\nvia=test\n' "$(cat "$T2/verified.fp")" > "$B2/BUILT_FROM"
+HL_JOB_NAME=ia "$HL" run t2 import-bins t3 a >/dev/null 2>&1; HL_JOB_NAME=ib "$HL" run t2 import-bins t3 b >/dev/null 2>&1
+cat > "$T2/src/tools/replay/run-rig.sh" <<'EOS'
+#!/usr/bin/env bash
+out=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
+mkdir -p "$out"; echo ">> diff: $out/diff.md (exit 0)"
+printf -- '- verdict: **PASS** (0 untolerated, 1 tolerated)\n' > "$out/diff.md"
+printf '{"hits":[["T1",1]],"mismatches":[],"stats":{}}\n' > "$out/diff.json"
+exit 0
+EOS
+chmod +x "$T2/src/tools/replay/run-rig.sh"
+printf 'AB1 smoke ab\n' > "$W/items-ab.txt"
+HL_PREFLIGHT=none HL_JOB_NAME=abl "$HL" run t2 lanes "$W/items-ab.txt" >/dev/null 2>&1
+[ "$(cat "$T2/logs/abl.rc")" = 0 ] && ok "precondition: an ab lane with current side bins runs" || bad "ab lane with current sides: $(tail -2 "$T2/logs/abl.log")"
+echo 'fn moved() {}' > "$R/crates/a/src/moved.rs"; "$HL" sync t3 "$R" >/dev/null 2>&1
+HL_PREFLIGHT=none HL_JOB_NAME=abl2 "$HL" run t2 lanes "$W/items-ab.txt" >/dev/null 2>&1
+[ "$(cat "$T2/logs/abl2.rc")" != 0 ] && grep -q 'now at another tree' "$T2/logs/abl2.log" && ok "the source re-synced: the ab lane is refused (P4)" || bad "ab lane on a stale source tree: $(tail -2 "$T2/logs/abl2.log")"
+mk_bins "$T3" NEW-T3-AGENT "$(cat "$T3/verified.fp")"
+HL_PREFLIGHT=none HL_JOB_NAME=abl3 "$HL" run t2 lanes "$W/items-ab.txt" >/dev/null 2>&1
+[ "$(cat "$T2/logs/abl3.rc")" != 0 ] && grep -q "not t3's CURRENT bins\|now at another tree" "$T2/logs/abl3.log" && ok "the source rebuilt on its new tree: still refused until re-imported" || bad "ab lane on stale side bins: $(tail -2 "$T2/logs/abl3.log")"
+HL_JOB_NAME=ia "$HL" run t2 import-bins t3 a >/dev/null 2>&1; HL_JOB_NAME=ib "$HL" run t2 import-bins t3 b >/dev/null 2>&1
+HL_PREFLIGHT=none HL_JOB_NAME=abl4 "$HL" run t2 lanes "$W/items-ab.txt" >/dev/null 2>&1
+[ "$(cat "$T2/logs/abl4.rc")" = 0 ] && ok "…and runs again after a re-import" || bad "ab after re-import: $(tail -2 "$T2/logs/abl4.log")"
+STUB_DOCKER_RUN_RC=1 HL_JOB_NAME=bb "$HL" run t2 build-bins >/dev/null 2>&1
+[ ! -e "$B2/xorgate-rs-a" ] && [ ! -e "$B2/xorgate-rs-b" ] && [ ! -e "$B2/BUILT_FROM.a" ] && ok "build-bins clears the side bins it supersedes" || bad "side bins survived build-bins"
+$REAL_RM -f "$R/crates/a/src/moved.rs"
+
+echo "== fix-check S4: lanes key = tree + ALL bins (n4); run args never executed (n9)"
+printf '\177ELF-1' > "$B2/xorgate-rs"; printf r > "$B2/xorgate-replay"; printf s > "$B2/rig-statvfs.so"
+printf 'tree_fp=%s\nvia=test\n' "$(cat "$T2/verified.fp")" > "$B2/BUILT_FROM"
+printf 'K1 smoke rsrs\n' > "$W/items-k.txt"
+HL_PREFLIGHT=none HL_JOB_NAME=k1 "$HL" run t2 lanes "$W/items-k.txt" >/dev/null 2>&1
+printf '\177ELF-2' > "$B2/xorgate-rs"
+HL_PREFLIGHT=none HL_JOB_NAME=k2 "$HL" run t2 lanes "$W/items-k.txt" >/dev/null 2>&1
+[ "$(grep -l '^K1	' "$T2"/out/lanes/*/q.tsv 2>/dev/null | wc -l)" = 2 ] && ok "a rebuilt xorgate-rs on the same tree gets its own lanes dir (K1 ran twice)" || bad "rebuilt agent reused the old lanes rows"
+"$HL" run t2 cargo 'test; touch /tmp/hl-pwned-cargo' >/dev/null 2>&1
+HL_JOB_NAME=it "$HL" run t2 import-tapes t2 '$(touch /tmp/hl-pwned-tape)' >/dev/null 2>&1
+[ ! -e /tmp/hl-pwned-cargo ] && [ ! -e /tmp/hl-pwned-tape ] && ok "cargo args / tape names with shell syntax are never executed" || bad "an argument was executed"
+
+echo "== fix-check S9: the lane record covers the whole run (other containers / reservations)"
+cat > "$T2/src/tools/replay/run-rig.sh" <<'EOS'
+#!/usr/bin/env bash
+out=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
+sleep 5; mkdir -p "$out"; echo ">> diff: $out/diff.md (exit 0)"
+printf -- '- verdict: **PASS** (0 untolerated, 1 tolerated)\n' > "$out/diff.md"; printf '{"hits":[],"mismatches":[],"stats":{}}\n' > "$out/diff.json"
+EOS
+printf 'S9 smoke rsrs\n' > "$W/items-s9.txt"; : > "$LOG/ps.tab"
+# present only from ~1.5 s to ~3.5 s of a 5 s run: only the THROUGHOUT sampling can see it
+( sleep 1.5; echo "f1 p7x 1 job" >> "$LOG/ps.tab"; echo "hl_p7x_job" >> "$LOG/sessions"; echo "4 4" > "$RES/p7x_job"
+  sleep 2; : > "$LOG/ps.tab"; sed -i '/^hl_p7x_job$/d' "$LOG/sessions"; rm -f "$RES/p7x_job" ) & mid=$!
+HL_PREFLIGHT=none HL_SAMPLE_SECS=1 HL_JOB_NAME=s9 "$HL" run t2 lanes "$W/items-s9.txt" >/dev/null 2>&1
+wait "$mid"
+r=$(grep -h '^S9	' "$T2"/out/lanes/*/q.tsv | head -1)
+case "$r" in *"p7x:f1"*"p7x_job"*) ok "a container and a reservation that appeared MID-run are in the row" ;; *) bad "overlap record: $(printf '%s' "$r" | cut -f16-)" ;; esac
+: > "$LOG/ps.tab"; sed -i '/^hl_p7x_job$/d' "$LOG/sessions"; $REAL_RM -f "$RES/p7x_job"
+
+echo "== stop (F4 + fix-check M3/S3/S7): scoped to the tag, the job and the helper's labels"
+: > "$LOG/killed"; : > "$LOG/docker.log"
+printf 'c-lx t2 1 lanesx\nc-other t2 1 otherjob\nc-foreign t21 1 lanesx\nh-hand t2 - lanesx\n' > "$LOG/ps.tab"
 # The rig stand-in traps TERM like run-rig.sh (which tears its compose project
 # down on TERM): only a TERM to its process group leaves the marker; a KILL does not.
 export TERM_MARK=$W/termed
+bash -c 'exec timeout 300 sleep 297' & foreign=$!
 bash -c 'timeout 300 bash -c "trap \"echo termed > \$TERM_MARK; exit 0\" TERM; sleep 299 & wait"; exit 0' & jobp=$!
 sleep 1
 tpid=$(ps -o pid= --ppid "$jobp" | tr -d ' ' | head -1); spid=$(ps -o pid= --ppid "$tpid" | tr -d ' ' | head -1)
 [ -n "$spid" ] && [ "$(ps -o pgid= -p "$tpid" | tr -d ' ')" != "$(ps -o pgid= -p "$jobp" | tr -d ' ')" ] \
   && ok "precondition: timeout runs in its own process group (why a tmux kill alone misses it)" || bad "precondition: process tree"
-echo "hl_t2_lanesx" >> "$LOG/sessions"; echo "$jobp" > "$LOG/pane.hl_t2_lanesx"; echo "8 8" > "$RES/t2_lanesx"
-mkdir -p "$T2/logs" && date -u +%s > "$T2/logs/lanesx.start"
+printf 'hl_t2_lanesx\nhl_t21_y\nhl_t2-1_z\n' >> "$LOG/sessions"; echo "$jobp" > "$LOG/pane.hl_t2_lanesx"; echo "8 8" > "$RES/t2_lanesx"
+mkdir -p "$T2/logs" && echo rid-x > "$T2/logs/lanesx.runid"
 out=$(HL_STOP_WAIT=4 "$HL" stop t2 lanesx 2>&1)
 sleep 1
 gone() { local st; st=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' '); [ -z "$st" ] || [ "${st#Z}" != "$st" ]; }   # absent or a zombie
 gone "$spid" && ok "stop ends the timeout's process group: the rig child is gone" || { bad "rig child survived stop: $out"; kill "$spid" 2>/dev/null; }
 [ -f "$TERM_MARK" ] && ! printf '%s\n' "$out" | grep -q KILL && ok "…by TERM (the rig's teardown trap ran), no KILL needed" || bad "stop did not TERM the rig gracefully: $out"
+kill -0 "$foreign" 2>/dev/null && ok "a foreign timeout group (not under the session) survives (n6)" || bad "stop killed a foreign timeout group"
 orphan=$(ps -o pid= --ppid "$spid" 2>/dev/null | tr -d ' '); [ -z "$orphan" ] || kill "$orphan" 2>/dev/null
-grep -qx "killed hl_t2_lanesx" "$LOG/killed" && ok "…and kills the session" || bad "session not killed"
-[ "$(cat "$T2/logs/lanesx.rc" 2>/dev/null)" = 143 ] && [ -f "$T2/logs/lanesx.stopped" ] && [ ! -e "$RES/t2_lanesx" ] && ok "…writes rc 143 + .stopped and frees the reservation" || bad "stop bookkeeping"
-wait "$jobp" 2>/dev/null
-sed -i '/^hl_t2_lanesx$/d' "$LOG/sessions"
+[ "$(cat "$LOG/killed")" = "killed hl_t2_lanesx" ] && ok "…kills exactly the session hl_t2_lanesx" || bad "sessions killed: $(tr '\n' ' ' < "$LOG/killed")"
+grep -q '^docker ps -aq --filter label=xorgate.agent=t2 --filter label=xorgate.hl=1 --filter label=xorgate.hl.job=lanesx$' "$LOG/docker.log" \
+  && grep -q '^docker rm -f c-lx$' "$LOG/docker.log" && ok "…and removes only that job's helper container (not another job, tag or a hand-rolled one: n7, S3, S7)" \
+  || bad "stop containers: $(grep 'rm -f\|ps -aq' "$LOG/docker.log" | tr '\n' '|')"
+[ "$(cat "$T2/logs/lanesx.rc" 2>/dev/null)" = 143 ] && [ "$(cat "$T2/logs/lanesx.rcid")" = rid-x ] && [ -f "$T2/logs/lanesx.stopped" ] && [ ! -e "$RES/t2_lanesx" ] \
+  && ok "…writes rc 143 (with the run id) + .stopped and frees the reservation" || bad "stop bookkeeping"
+wait "$jobp" 2>/dev/null; kill "$foreign" 2>/dev/null; wait "$foreign" 2>/dev/null
+sed -i '/^hl_t2_lanesx$/d' "$LOG/sessions"; echo "hl_t2_other" >> "$LOG/sessions"
+: > "$LOG/killed"; : > "$LOG/docker.log"
+HL_STOP_WAIT=2 "$HL" stop t2 >/dev/null 2>&1
+[ "$(cat "$LOG/killed")" = "killed hl_t2_other" ] && ok "stop <tag>: only hl_t2_* sessions (hl_t21_y, hl_t2-1_z survive: n8)" || bad "stop <tag> sessions: $(tr '\n' ' ' < "$LOG/killed")"
+grep -q '^docker rm -f c-lx c-other$' "$LOG/docker.log" && ok "stop <tag>: all of t2's helper containers, none of t21's, no hand-rolled one" || bad "stop <tag> containers: $(grep 'rm -f' "$LOG/docker.log")"
+printf '' > "$LOG/sessions"; : > "$LOG/ps.tab"
 
-echo "== systemd suites: clock guard (F10)"
+echo "== systemd suites: clock guard (F10 + fix-check S5)"
 : > "$LOG/docker.log"
 "$HL" run t1 systemd >/dev/null 2>&1; [ "$(cat "$T1/logs/systemd.rc")" = 0 ] && grep -q 'docker run -d' "$LOG/docker.log" && ok "benign systemd suites run" || bad "benign systemd suites: $(tail -3 "$T1/logs/systemd.log")"
 echo 'hwclock --systohc' >> "$R/scripts/tests/install-rs-systemd.sh"; "$HL" sync t1 "$R" >/dev/null 2>&1; : > "$LOG/docker.log"
@@ -451,22 +655,36 @@ echo 'hwclock --systohc' >> "$R/scripts/tests/install-rs-systemd.sh"; "$HL" sync
 sed -i 's/^hwclock --systohc$/hwclock --systohc  # hl-clock-mocked (a stub on PATH)/' "$R/scripts/tests/install-rs-systemd.sh"; "$HL" sync t1 "$R" >/dev/null 2>&1
 "$HL" run t1 systemd >/dev/null 2>&1; [ "$(cat "$T1/logs/systemd.rc")" = 0 ] && ok "…unless the line is marked hl-clock-mocked" || bad "mocked line refused"
 git -C "$R" checkout -q -- scripts/tests/install-rs-systemd.sh
+CG="$SRC/scripts/remote/clock-guard.py"
+for l in 'date -u -s "2020-01-01 00:00"' 'date --set=@0' 'ntpdate pool.ntp.org' 'chronyc makestep' 'timedatectl set-time x' 'sudo hwclock -w' \
+         'X=/usr/sbin/hwclock; "$X" -w' 'eval "$cmd"' 'bash -c "$c"' 'sudo "$SETCLK"' 'true && $tool --apply' 'run() { "$@"; }'; do
+  printf '%s\n' "$l" > "$W/cg.sh"; python3 -I "$CG" "$W/cg.sh" >/dev/null && bad "clock guard missed: $l" || ok "clock guard refuses: $l"
+done
+printf '[ "$(date +%%s)" -gt 0 ] && echo ok\nfoo=$(date -u +%%FT%%TZ)\necho "$x" | grep -q y\nsystemctl start x\n' > "$W/cg.sh"
+python3 -I "$CG" "$W/cg.sh" >/dev/null && ok "clock guard passes plain date reads, assignments and named commands" || bad "clock guard false positive: $(python3 -I "$CG" "$W/cg.sh")"
+if [ -f "$SRC/scripts/tests/unit-ordering.sh" ]; then
+  python3 -I "$CG" "$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh" >/dev/null && ok "the real systemd suites pass the clock guard" || bad "real suites: $(python3 -I "$CG" "$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh")"
+fi
 
-echo "== clean (only this tag)"
+echo "== fix-check S6: no build rewrites Cargo.lock"
+grep -q 'cargo build --locked --profile' "$SRC/scripts/remote/build-bins-in.sh" && grep -q 'cargo build --release --locked' "$SRC/scripts/remote/release-in.sh" \
+  && ok "build-bins-in.sh and release-in.sh build --locked" || bad "--locked missing"
+
+echo "== clean (only this tag, only helper containers)"
 printf 'hl_t1_x\nhl_t1-2_y\nhl_t11_z\nother\n' > "$LOG/sessions"
-printf 'c1\nc2\n' > "$LOG/ps.out"; : > "$LOG/docker.log"; : > "$LOG/killed"; : > "$LOG/removed"
+printf 'c1 t1 1 x\nc2 t1 1 y\nc3 t11 1 x\nc4 t1 - x\n' > "$LOG/ps.tab"; : > "$LOG/docker.log"; : > "$LOG/killed"; : > "$LOG/removed"
 for r in t1_x t11_x t1-2_y; do echo "1 1" > "$RES/$r"; done
 printf 'hl_t1_lanes-a\nhl_t11_lanes-b\nhl_t1-2_lanes-c\n' > "$LOG/network.projects"
 printf 'hl_t1_lanes-a\nhl_t1_onlyvol\nhl_t11_lanes-b\nhl_t1-2_lanes-c\n' > "$LOG/volume.projects"
-STUB_PS_GREP=c "$HL" clean t1 >/dev/null 2>&1
+"$HL" clean t1 >/dev/null 2>&1
 [ "$(cat "$LOG/killed")" = "killed hl_t1_x" ] && ok "only session hl_t1_x killed" || { bad "sessions killed:"; cat "$LOG/killed"; }
 [ ! -e "$RES/t1_x" ] && [ -e "$RES/t11_x" ] && [ -e "$RES/t1-2_y" ] && ok "only t1_* reservations removed (t11_*, t1-2_* kept)" || bad "reservations removed: $(ls "$RES")"
 sort "$LOG/removed" > "$W/removed.sorted"
 printf 'network rm network-hl_t1_lanes-a\nvolume rm volume-hl_t1_lanes-a\nvolume rm volume-hl_t1_onlyvol\n' | diff - "$W/removed.sorted" >/dev/null \
   && ok "compose networks/volumes: exactly hl_t1_*'s, incl. a volume whose project has no network (F15)" || { bad "compose removal:"; cat "$W/removed.sorted"; }
-grep -q '^docker ps -aq --filter label=xorgate.agent=t1$' "$LOG/docker.log" && ok "container filter = exactly label xorgate.agent=t1" || bad "container filter"
-grep -q '^docker rm -f c1 c2$' "$LOG/docker.log" && ok "removes the labelled containers" || bad "docker rm"
-grep -q 'run --rm --platform linux/amd64 --label xorgate.agent=t1 -v xorgate-rs-p7-target:/target xorgate-rs-script-tests:bookworm-[0-9a-f]* rm -rf /target/t1$' "$LOG/docker.log" && ok "removes /target/t1 only (amd64 helper image)" || { bad "target rm"; grep 'rm -rf' "$LOG/docker.log"; }
+grep -q '^docker ps -aq --filter label=xorgate.agent=t1 --filter label=xorgate.hl=1$' "$LOG/docker.log" && ok "container filter = exactly xorgate.agent=t1 AND xorgate.hl=1" || bad "container filter"
+grep -q '^docker rm -f c1 c2$' "$LOG/docker.log" && ok "removes t1's helper containers only (not t11's, not a hand-rolled t1 one)" || bad "docker rm: $(grep 'rm -f' "$LOG/docker.log")"
+grep -q 'run --rm --platform linux/amd64 --label xorgate.agent=t1 --label xorgate.hl=1 --label xorgate.hl.job=clean -v xorgate-rs-p7-target:/target xorgate-rs-script-tests:bookworm-[0-9a-f]* rm -rf /target/t1$' "$LOG/docker.log" && ok "removes /target/t1 only (amd64 helper image)" || { bad "target rm"; grep 'rm -rf' "$LOG/docker.log"; }
 [ ! -e "$T1" ] && [ -d "$T2" ] && [ -d "$FH/xorgate-rs-p7/_shared" ] && ok "t1 dir gone; t2 and _shared kept" || bad "dirs after clean"
 ! grep -q 'docker \(system\|image\|builder\|volume\) prune' "$LOG/docker.log" && ok "no prune of any kind" || bad "a prune ran"
 
@@ -481,6 +699,6 @@ if command -v shellcheck >/dev/null; then
   (cd "$SRC" && shellcheck -x scripts/remote/*.sh scripts/tests/hl.sh) > "$W/sc.log" 2>&1 && ok "shellcheck -x scripts/remote/*.sh + this suite" || { bad "shellcheck:"; cat "$W/sc.log"; }
 else echo "NOTE: no shellcheck, bash -n only"; fi
 for f in "$SRC"/scripts/remote/*.sh; do bash -n "$f" || bad "bash -n $f"; done
-python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$SRC/scripts/remote/hl-summ.py" && ok "hl-summ.py parses" || bad "hl-summ.py parse"
+for py in hl-summ.py clock-guard.py; do python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$SRC/scripts/remote/$py" && ok "$py parses" || bad "$py parse"; done
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail
