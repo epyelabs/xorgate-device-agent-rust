@@ -23,9 +23,10 @@ items=$1
 HL_PREFLIGHT=${HL_PREFLIGHT:-each}; HL_WAIT_OTHERS=${HL_WAIT_OTHERS:-0}; HL_PEERS=${HL_PEERS:-}
 HL_RUN_SECS=${HL_RUN_SECS:-2700}
 HL_PREFLIGHT_STEP=${HL_PREFLIGHT_STEP:-300}; HL_PREFLIGHT_MAX=${HL_PREFLIGHT_MAX:-3600}
+: "${HL_HELPER_IMAGE:?}"   # the helper's amd64 image (hl-job.sh exports the script-tests one)
 R=$SRC/tools/replay; BIN=$R/.cache/bin; Q=$T/out/q.tsv; LG=$T/logs/lanes
 mkdir -p "$LG" "$T/out/untol" "$T/out/runs"
-[ -f "$Q" ] || printf 'name\ttape\tmode\tstart\tsecs\trc\tverdict\tuntol\ttol\tids\tload_start\tload_end\tload_max\twaited\tcaps\tothers\n' > "$Q"
+[ -f "$Q" ] || printf 'name\ttape\tmode\tstart\tsecs\trc\tverdict\tuntol\ttol\tids\tload_start\tload_end\tload_max\twaited\tcaps\tothers\tcopy\n' > "$Q"
 load1() { cut -d' ' -f1 /proc/loadavg; }
 others() {
   docker ps --filter label=xorgate.agent --format '{{.Label "xorgate.agent"}}:{{.Names}}' \
@@ -87,14 +88,29 @@ while read -r name tape mode purge _; do
   timeout --kill-after=60 "$HL_RUN_SECS" "$R/run-rig.sh" "$tf" --no-build --out "$out" "${args[@]}" > "$LG/$name.log" 2>&1
   rc=$?
   kill "$smp" 2>/dev/null; wait "$smp" 2>/dev/null
+  # Linux host: the rig writes some run files as root with mode 0600, so
+  # run-rig.sh's own `cp -R` into --out (as the ai user) stops part-way (the
+  # diff itself ran as root inside the rig, on the complete run). Copy the
+  # run again as root in a labelled container, hand it to the ai user and
+  # delete the .cache/runs copy (which the ai user cannot delete either).
   run=$(grep -o '→ \.cache/runs/[^ ]*' "$LG/$name.log" | head -1 | sed 's#^→ \.cache/runs/##')
-  [ -n "$run" ] && [ -d "$R/.cache/runs/$run" ] && rm -rf "${R:?}/.cache/runs/$run"
+  copy=ok
+  if grep -q "^cp: " "$LG/$name.log"; then copy=rescued; fi
+  if [ -n "$run" ] && [ -d "$R/.cache/runs/$run" ]; then
+    docker run --rm --platform linux/amd64 --label "xorgate.agent=$TAG" -v "$R/.cache/runs:/r" -v "$T/out/runs:/o" "$HL_HELPER_IMAGE" \
+      sh -c 'mkdir -p "/o/$1" && cp -a "/r/$2/." "/o/$1/" && chown -R "$3" "/o/$1" && rm -rf "/r/$2"' _ "$name" "$run" "$(id -u):$(id -g)" \
+      || copy=FAILED
+  fi
+  # run-rig.sh writes bins.sha256 after its copy; a stopped copy skipped it.
+  [ -f "$out/bins.sha256" ] || { echo "# written by hl-lanes.sh (run-rig.sh's copy stopped): the lane's binaries"; cat "$T/out/lanes-bins.sha256"; } > "$out/bins.sha256" 2>/dev/null
+  # The diff's own exit code, when run-rig.sh got to print it.
+  drc=$(sed -n 's/^>> diff: .* (exit \([0-9]*\))$/\1/p' "$LG/$name.log" | tail -1)
   if [ -f "$out/diff.json" ]; then
     row=$(python3 -I "$HERE/hl-summ.py" row "$out")
     python3 -I "$HERE/hl-summ.py" untol "$out" > "$T/out/untol/$name.txt"
   else row=$(printf 'NO-DIFF\t-\t-\t-'); fi
-  printf '%s\t%s\t%s\t%s\t%ss\trc=%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\n' "$name" "$tape" "$mode" "$start" "$(( $(date +%s) - s ))" "$rc" \
-    "$row" "$l0" "$(load1)" "$(cat "$LG/$name.loadmax" 2>/dev/null || echo "$l0")" "$waited" "$(cat "$LG/$name.caps" 2>/dev/null || echo '?')" "[$o0]" >> "$Q"
+  printf '%s\t%s\t%s\t%s\t%ss\trc=%s%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\n' "$name" "$tape" "$mode" "$start" "$(( $(date +%s) - s ))" "$rc" "${drc:+/diff=$drc}" \
+    "$row" "$l0" "$(load1)" "$(cat "$LG/$name.loadmax" 2>/dev/null || echo "$l0")" "$waited" "$(cat "$LG/$name.caps" 2>/dev/null || echo '?')" "[$o0]" "$copy" >> "$Q"
   tail -1 "$Q" | cut -f1-10
   if [ "${purge:-}" = purge ]; then rm -rf "${out:?}"; echo "$name: run dir purged (O8)"; fi
 done < "$items"

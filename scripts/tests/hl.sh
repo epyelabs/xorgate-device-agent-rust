@@ -200,8 +200,9 @@ echo "== rig override (synth, lanes)"
 : > "$LOG/docker.log"
 HL_RIG_CPUS=6 HL_RIG_MEM=6g "$HL" run t1 synth smoke >/dev/null 2>&1
 G=$T1/gen
-grep -q '^FROM --platform=linux/amd64 node:20-bookworm$' "$G/Dockerfile.rig.amd64" && ! grep -q arm64 "$G/Dockerfile.rig.amd64" \
-  && ok "Dockerfile.rig: the one FROM rewritten to amd64" || bad "Dockerfile.rig rewrite"
+GD=$T1/src/tools/replay/.cache/hl/Dockerfile.rig.amd64
+grep -q '^FROM --platform=linux/amd64 node:20-bookworm$' "$GD" && ! grep -q arm64 "$GD" && grep -q 'dockerfile: .cache/hl/Dockerfile.rig.amd64$' "$G/compose.hl.yml" \
+  && ok "Dockerfile.rig: the one FROM rewritten to amd64, inside the build context" || bad "Dockerfile.rig rewrite"
 grep -q 'cpus: 6$' "$G/compose.hl.yml" && grep -q 'mem_limit: 6g' "$G/compose.hl.yml" && [ "$(grep -c 'platform: linux/amd64' "$G/compose.hl.yml")" = 2 ] \
   && ok "compose override: amd64 for both services, rig caps 6/6g" || bad "compose override"
 grep -q 'docker compose run --rm -T --no-deps rig synth smoke' "$LOG/docker.log" && ok "synth through compose" || bad "synth call"
@@ -215,7 +216,8 @@ mkdir -p "$B" "$TP"; printf '\177ELFstub' > "$B/xorgate-rs"; : > "$TP/smoke.ndjs
 cat > "$T1/src/tools/replay/run-rig.sh" <<'EOF'
 #!/usr/bin/env bash
 out=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
-mkdir -p "$out" && echo ">> play x → .cache/runs/run-x (real time)"
+mkdir -p "$out" "$(dirname "$0")/.cache/runs/run-x" && echo ">> play x → .cache/runs/run-x (real time)"
+echo "cp: cannot open 'x' for reading: Permission denied"; echo ">> diff: $out/diff.md (exit 1)"
 printf -- '- verdict: **FAIL** (1 untolerated, 7 tolerated)\n' > "$out/diff.md"
 printf '{"hits":[["T1",5],["T3",2],["T9",0]],"mismatches":[{"stream":"telemetry","at":"ts A 1 / B 1","path":"metrics.gps.lat.value","a":"SENTINEL-111","b":"SENTINEL-222","tol":"UNTOLERATED"}],"stats":{}}\n' > "$out/diff.json"
 exit 1
@@ -225,7 +227,10 @@ printf '# comment\nL1 smoke rsrs\nL2 20261010T211828Z jsrs purge\n' > "$W/items.
 HL_PREFLIGHT=none "$HL" run t1 lanes "$W/items.txt" >/dev/null 2>&1
 Q=$T1/out/q.tsv
 r1=$(grep '^L1	' "$Q"); r2=$(grep '^L2	' "$Q")
-case "$r1" in *'rc=1	FAIL	1	7	T1:5,T3:2	'*) ok "lane row: rc, verdict, counts, ids with hits > 0" ;; *) bad "lane row: $r1"; cat "$T1/logs/lanes.log"; esac
+case "$r1" in *'rc=1/diff=1	FAIL	1	7	T1:5,T3:2	'*'	rescued') ok "lane row: rc + the diff's exit, verdict, counts, ids with hits > 0, copy rescued" ;; *) bad "lane row: $r1"; cat "$T1/logs/lanes.log"; esac
+grep -q 'docker run --rm --platform linux/amd64 --label xorgate.agent=t1 -v .*/.cache/runs:/r .* xorgate-rs-script-tests:bookworm-[0-9a-f]* sh -c .*cp -a .* L1 run-x ' "$LOG/docker.log" \
+  && ok "the run is re-copied as root in a labelled container (0600 root files)" || { bad "no rescue copy"; grep cp "$LOG/docker.log"; }
+[ -f "$T1/out/runs/L1/bins.sha256" ] && ok "bins.sha256 written when run-rig.sh's copy stopped" || bad "bins.sha256 missing"
 [ -n "$r2" ] && [ ! -e "$T1/out/runs/L2" ] && [ -d "$T1/out/runs/L1" ] && ok "purge removes only that run dir (O8)" || bad "purge"
 grep -q $'telemetry\tmetrics.gps.lat.value\tts' "$T1/out/untol/L1.txt" && ok "untolerated path recorded" || bad "untol file"
 grep -rq SENTINEL "$Q" "$T1/out/untol" "$T1/logs/lanes.log" && bad "a VALUE leaked into the summaries" || ok "no value in q.tsv / untol / the job log"
