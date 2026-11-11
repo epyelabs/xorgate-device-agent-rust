@@ -117,6 +117,24 @@ mutate X5 $C/sh2.rs \
   'readings.0.entry(bytes[1]).or_insert_with(|| initial_reading(bytes[1]));' \
   '0xFC re-seed only when absent (F7)'
 
+# --- review-wp1 fix round ---------------------------------------------------
+mutate R1 $C/shtp.rs \
+  'if total > DATA_BUFFER_SIZE {' \
+  'if total >= DATA_BUFFER_SIZE {' \
+  'replace threshold off by one: >= 512 (review F4)'
+mutate X6 $C/py_fmt.rs \
+  'if exact.parse::<f64>() == Ok(x) {' \
+  'if false && exact.parse::<f64>() == Ok(x) {' \
+  'shortest-digit ties rounded up, not to even (review F1)'
+mutate X7 $C/sh2.rs \
+  'Err(original) => Err(packet_str_error(packet).unwrap_or(original)),' \
+  'Err(original) => Err(original),' \
+  'print(packet) raising not modelled (review F2)'
+mutate X8 $C/py_fmt.rs \
+  'if address < 0 {' \
+  'if address < i64::MIN {' \
+  'negative probe address in two'"'"'s complement (review F5)'
+
 if ! run_tests /tmp/mut-final.log; then
   echo "FINAL NOT GREEN"
   exit 2
