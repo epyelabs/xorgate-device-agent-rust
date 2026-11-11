@@ -193,7 +193,71 @@ def gen_float_repr(B, meta):
                1e-4, 1e-5, 0.00012, 1.5e-7, 5e-324, 1.7976931348623157e308, 2.5e-05,
                9007199254740993.0, 0.30000000000000004, -0.0, 1e22, 1e21, 12345.678,
                float("nan"), float("inf"), float("-inf"), 0.0001220703125, 6.103515625e-05]
+    # review-wp1 F1: exact ties between two equally short candidates (dtoa
+    # mode 0 picks the EVEN digit).
+    for bits in (0x430D76330FD2DE42, 0x42B68CABCD439650, 0x42BAB2F693FA5990):
+        general.append(struct.unpack("<d", struct.pack("<Q", bits))[0])
     out["general"] = [[struct.pack(">d", x).hex(), repr(x), json.dumps(x)] for x in general]
+    return out
+
+
+# --------------------------------------------------------------------------
+# float_fuzz.json (review-wp1 F1): 2 000 000 doubles from a splitmix64 stream
+# the Rust test regenerates bit-for-bit; only CPython's repr / json.dumps
+# streams (sha256) and every 10 007th row are stored.
+# --------------------------------------------------------------------------
+
+MASK64 = (1 << 64) - 1
+FUZZ_SEED = 0x7C1F1
+FUZZ_RAW, FUZZ_DECIMAL, FUZZ_DYADIC = 1_000_000, 500_000, 500_000
+
+
+class SplitMix64:
+    def __init__(self, seed):
+        self.state = seed & MASK64
+
+    def next(self):
+        self.state = (self.state + 0x9E3779B97F4A7C15) & MASK64
+        z = self.state
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & MASK64
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & MASK64
+        return z ^ (z >> 31)
+
+
+def fuzz_doubles():
+    """The corpus, in order. Mirrored by `fuzz_doubles` in
+    crates/xorgate-core/tests/imu_codec_fixtures.rs."""
+    rng = SplitMix64(FUZZ_SEED)
+    for _ in range(FUZZ_RAW):  # any bit pattern: subnormals, NaN, inf, extremes
+        yield struct.unpack("<d", struct.pack("<Q", rng.next()))[0]
+    for _ in range(FUZZ_DECIMAL):  # decimal-looking: d (1-17 digits) e (-25..25)
+        n = 1 + rng.next() % 17
+        d = rng.next() % (10 ** n)
+        e = rng.next() % 51 - 25
+        x = float(f"{d}e{e}")
+        yield -x if rng.next() & 1 else x
+    for _ in range(FUZZ_DYADIC):  # m * 2**-k, 15-17 digits: shortest-digit ties
+        m = (1 << 40) + rng.next() % ((1 << 53) - (1 << 40))
+        k = 1 + rng.next() % 12
+        x = m * 2.0 ** -k
+        yield -x if rng.next() & 1 else x
+
+
+def gen_float_fuzz(meta):
+    out = dict(meta)
+    reprs, jsons, samples = [], [], []
+    for idx, x in enumerate(fuzz_doubles()):
+        r, j = repr(x), json.dumps(x)
+        reprs.append(r)
+        jsons.append(j)
+        if idx % 10007 == 0:
+            samples.append([idx, struct.pack(">d", x).hex(), r, j])
+    out["prng"] = "splitmix64"
+    out["seed"] = FUZZ_SEED
+    out["counts"] = {"raw": FUZZ_RAW, "decimal": FUZZ_DECIMAL, "dyadic": FUZZ_DYADIC}
+    out["reprSha256"] = hashlib.sha256("\n".join(reprs).encode()).hexdigest()
+    out["jsonSha256"] = hashlib.sha256("\n".join(jsons).encode()).hexdigest()
+    out["samples"] = samples
     return out
 
 
@@ -331,6 +395,9 @@ def gen_py_text(B, meta):
                     (40, str(RuntimeError("Unprocessable Batch bytes", 3)))]:
         helper.append(["read", n, text, f"read failed {n}x: {text}"])
     out["helperTexts"] = helper
+    # busdevice's probe text (i2c_device.py:176); a negative address is
+    # unreachable but pinned (review-wp1 F5: Python prints `0x-5`).
+    out["noDeviceTexts"] = [[a, f"No I2C device at address: 0x{a:x}"] for a in (0x4A, 0x4B, 0, -5, 0x14A)]
     return out
 
 
@@ -449,6 +516,11 @@ def gen_shtp(B, make, meta):
     read_case("eagain_full", [h18, None])
     read_case("eio_full", [h18, ("oserr", 5)])
     read_case("short_full", [h18, frame(18, 3, 7, payload(6, 9))])
+    # review-wp1 F4: the replace threshold is `> 512`. At exactly 512 the
+    # stale buffer is KEPT, which only shows when the full read fails.
+    read_case("exact_512_eagain", [frame(512, 3, 4, b""), None])
+    read_case("exact_512_short", [frame(512, 3, 4, b""), frame(512, 3, 4, payload(96, 11))])
+    read_case("exact_513_eagain", [frame(513, 3, 4, b""), None])
     for c in (1, 2, 3, 4, 5):
         read_case(f"count_{c}", [frame(c, 3, 2, b""), frame(c, 3, 2, payload(16, 10))[:c]])
     out["readPackets"] = reads
@@ -583,6 +655,18 @@ def gen_sh2(B, make, meta):
         "truncated_f8": [pkt(2, f8(), count=20, buf_len=14)],
         "f8_zero_part": [pkt(2, f8(0))],
     }
+    # review-wp1 F2: a raising slice left pending by a failed batch, then an
+    # EMPTY packet. On channels 2/3 the driver's own `print(packet)` raises
+    # (`self.report_id` = data[0]) and replaces the error; nothing is printed.
+    leftovers = {
+        "dcd_fail": f1(6, 1) + bytes([0x07]) + bytes(9),
+        "stab_bad": sensor(0x13, 1, 0, 0, [0x0009]) + bytes([0x07]) + bytes(9),
+    }
+    for lname, body in leftovers.items():
+        for ch in (0, 1, 2, 3, 4, 5, 6):
+            seqs[f"{lname}_leftover_then_empty_ch{ch}"] = [pkt(3, body), pkt(ch, b"")]
+    seqs["unknown_id_ch6"] = [pkt(6, bytes([0x07]) + bytes(9))]
+    seqs["unknown_id_empty_tail_ch2"] = [pkt(2, b"", count=6)]
     batches = []
     for name, packets in seqs.items():
         bno, _f = make([])
@@ -624,6 +708,7 @@ def main():
     B, make, meta = build_stack(os.path.abspath(args.adafruit))
     os.makedirs(args.out, exist_ok=True)
     for name, fn in (("float_repr", lambda: gen_float_repr(B, meta)),
+                     ("float_fuzz", lambda: gen_float_fuzz(meta)),
                      ("py_text", lambda: gen_py_text(B, meta)),
                      ("shtp", lambda: gen_shtp(B, make, meta)),
                      ("sh2", lambda: gen_sh2(B, make, meta))):

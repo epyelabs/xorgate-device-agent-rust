@@ -20,8 +20,11 @@
 //! form that occurs is ±`6.103515625e-05` (plan P2). The formatter is
 //! nevertheless the general CPython rule (`repr` switches to exponent form
 //! for a decimal exponent < -4 or ≥ 16, prints a 2-digit signed exponent and
-//! adds `.0` to integral fixed-point values); Rust's `{:e}` supplies the same
-//! shortest round-trip digits as CPython's `dtoa` mode 0.
+//! adds `.0` to integral fixed-point values). The digits are CPython's
+//! `dtoa` mode 0: the shortest round-trip string, a tie between two equally
+//! short candidates going to the EVEN digit. Rust's shortest `{:e}` breaks
+//! such ties UP, so [`float_repr`] re-rounds them (review-wp1 F1); a
+//! 2 000 000-double CPython fuzz fixture pins it (`float_fuzz.json`).
 
 use std::fmt::Write as _;
 
@@ -66,7 +69,26 @@ pub fn float_repr(x: f64) -> String {
         return if x.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
     }
     // `{:e}` = the shortest round-trip digits: "-6.103515625e-5", "1e16".
-    let sci = format!("{x:e}");
+    let mut sci = format!("{x:e}");
+    // CPython's dtoa mode 0 breaks a tie between two equally short
+    // round-tripping candidates to EVEN; Rust's shortest form rounds it UP
+    // (`1036592000687048.25` → CPython `…048.2`, `{:e}` `…048.3`; review-wp1
+    // F1). Re-round the exact value at the same digit count (`{:.*e}` rounds
+    // the exact binary value half-to-even) and keep it if it still round-trips.
+    let n = sci
+        .trim_start_matches('-')
+        .split('e')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .count();
+    if n > 1 {
+        let exact = format!("{:.*e}", n - 1, x);
+        if exact.parse::<f64>() == Ok(x) {
+            sci = exact;
+        }
+    }
     let (neg, body) = match sci.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, sci.as_str()),
@@ -334,8 +356,13 @@ impl PyExc {
 }
 
 /// busdevice's probe failure (`i2c_device.py:176`).
+/// Python's `f"0x{n:x}"` puts the sign after the literal `0x` (`0x-5`).
 pub fn no_i2c_device_text(address: i64) -> String {
-    format!("No I2C device at address: 0x{address:x}")
+    if address < 0 {
+        format!("No I2C device at address: 0x-{:x}", address.unsigned_abs())
+    } else {
+        format!("No I2C device at address: 0x{address:x}")
+    }
 }
 
 /// `f"init failed at {hex(addr)}: {exc}"` (`bno085_read.py:61`).
@@ -394,6 +421,23 @@ mod tests {
         assert_eq!(float_repr(1e16), "1e+16");
         assert_eq!(float_repr(1.5e-7), "1.5e-07");
         assert_eq!(float_repr(0.0001), "0.0001");
+    }
+
+    // review-wp1 F1: an exact tie between two equally short candidates goes
+    // to the EVEN digit (CPython dtoa mode 0), not up (Rust `{:e}`).
+    // Bits/texts from CPython 3.11 `repr`.
+    #[test]
+    fn float_repr_breaks_shortest_ties_to_even() {
+        for (bits, want) in [
+            (0x430d76330fd2de42u64, "1036592000687048.2"),
+            (0x42b68cabcd439650, "24793433588630.312"),
+            (0x42bab2f693fa5990, "29355943393881.562"),
+        ] {
+            let x = f64::from_bits(bits);
+            assert_eq!(float_repr(x), want, "{bits:016x}");
+            assert_eq!(float_repr(-x), format!("-{want}"), "-{bits:016x}");
+            assert_eq!(json_float(x), want);
+        }
     }
 
     #[test]

@@ -396,10 +396,27 @@ pub fn process_report(id: u8, bytes: &[u8], readings: &mut Readings) -> Result<(
 }
 
 /// `_handle_packet(packet)` (`__init__.py:829-837`): separate into the
-/// persistent `pending` list, then pop LIFO until empty. On `Err` Python
-/// first `print(packet)`s a multi-line hex dump to stdout (D80: the Rust
-/// reader does not reproduce it) and re-raises.
+/// persistent `pending` list, then pop LIFO until empty. On error Python
+/// runs `print(packet)` and re-raises. That `print` is the multi-line hex
+/// dump (D80: the Rust reader does not reproduce it), UNLESS `Packet.__str__`
+/// itself raises first ([`packet_str_error`]); then THAT exception replaces
+/// the original one and nothing is printed (review-wp1 F2).
+///
+/// So `Err` means "Python raised"; Python printed the dump iff, in addition,
+/// `packet_str_error(packet)` is `None`.
 pub fn handle_packet(
+    packet: &Packet,
+    pending: &mut Vec<ReportSlice>,
+    readings: &mut Readings,
+) -> Result<(), PyExc> {
+    let result = separate_then_process(packet, pending, readings);
+    match result {
+        Ok(()) => Ok(()),
+        Err(original) => Err(packet_str_error(packet).unwrap_or(original)),
+    }
+}
+
+fn separate_then_process(
     packet: &Packet,
     pending: &mut Vec<ReportSlice>,
     readings: &mut Readings,
@@ -409,6 +426,28 @@ pub fn handle_packet(
         process_report(slice.id, &slice.bytes, readings)?;
     }
     Ok(())
+}
+
+/// The exception `str(packet)` raises, if any (`Packet.__str__`,
+/// `__init__.py:394-439`, in evaluation order):
+/// - `channels[self.channel_number]` (`:400-403`, `debug.py:7-14`) →
+///   `KeyError(channel)` for a channel > 5 (the driver's sequence store
+///   rejects those earlier, `i2c.py:70`; reachable only through this API);
+/// - `self.report_id` = `self.data[0]` (`:404-408,441-444`) on channel 2 or 3
+///   → `IndexError('bytearray index out of range')` for an EMPTY packet.
+///
+/// The other branches are guarded by `len(self.data) >= 6` / `in reports`.
+pub fn packet_str_error(packet: &Packet) -> Option<PyExc> {
+    let ch = packet.header.channel;
+    if usize::from(ch) >= crate::shtp::CHANNEL_COUNT {
+        return Some(PyExc::KeyError(i64::from(ch)));
+    }
+    let control_or_input = ch == crate::shtp::CHANNEL_CONTROL
+        || ch == crate::shtp::CHANNEL_INPUT_SENSOR_REPORTS;
+    if control_or_input && packet.data.is_empty() {
+        return Some(PyExc::msg(ExcKind::IndexError, BYTEARRAY_INDEX));
+    }
+    None
 }
 
 /// `_get_feature_enable_report(feature_id, report_interval,
@@ -592,6 +631,27 @@ mod tests {
         let q14 = Scalar::Q14.value();
         assert_eq!(r.quaternion().unwrap()[0], 51.0 * q14, "the stale RV wins");
         assert!(pending.is_empty());
+    }
+
+    // review-wp1 F2: `_handle_packet`'s `print(packet)` (`__init__.py:836`)
+    // raises itself for an EMPTY channel-2/3 packet (`self.report_id`,
+    // `:404-408,442-444`), replacing the leftover's error; nothing printed.
+    #[test]
+    fn empty_control_packet_error_comes_from_print_packet() {
+        let mut bad = encode_input_report(REPORT_STABILITY_CLASSIFIER, 1, 0, 0, &[9], &[]);
+        bad.extend([0x07; 10]);
+        let (mut pending, mut r) = (Vec::new(), Readings::new());
+        let e = handle_packet(&pkt(&bad), &mut pending, &mut r).unwrap_err();
+        assert_eq!(e, PyExc::KeyError(7));
+        assert_eq!(pending.len(), 1);
+        let empty = |ch: u8| Packet::from_buffer(&encode_packet(ch, 0, &[], false));
+        let mut p2 = pending.clone();
+        let e = handle_packet(&empty(3), &mut p2, &mut r).unwrap_err();
+        assert_eq!(e.py_str(), "bytearray index out of range");
+        assert!(packet_str_error(&empty(3)).is_some());
+        let e = handle_packet(&empty(4), &mut pending, &mut r).unwrap_err();
+        assert_eq!(e.py_str(), "list index out of range");
+        assert!(packet_str_error(&empty(4)).is_none());
     }
 
     #[test]

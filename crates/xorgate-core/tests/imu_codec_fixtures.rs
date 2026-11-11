@@ -117,6 +117,73 @@ fn general_float_repr_and_json_match_cpython() {
     }
 }
 
+/// splitmix64, mirroring `SplitMix64` in `gen_codec_fixtures.py`.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
+/// The generator's `fuzz_doubles()`, bit for bit: raw bit patterns, then
+/// decimal-looking `d e e` values (both parsers are correctly rounded), then
+/// dyadic `m · 2⁻ᵏ` (exact), which is where shortest-digit ties live.
+fn fuzz_doubles(seed: u64, raw: usize, decimal: usize, dyadic: usize) -> Vec<f64> {
+    let mut rng = SplitMix64(seed);
+    let mut out = Vec::with_capacity(raw + decimal + dyadic);
+    for _ in 0..raw {
+        out.push(f64::from_bits(rng.next()));
+    }
+    for _ in 0..decimal {
+        let n = 1 + (rng.next() % 17) as u32;
+        let d = rng.next() % 10u64.pow(n);
+        let e = (rng.next() % 51) as i64 - 25;
+        let x: f64 = format!("{d}e{e}").parse().unwrap();
+        out.push(if rng.next() & 1 == 1 { -x } else { x });
+    }
+    for _ in 0..dyadic {
+        let m = (1u64 << 40) + rng.next() % ((1u64 << 53) - (1u64 << 40));
+        let k = 1 + (rng.next() % 12) as i32;
+        let x = m as f64 * 2f64.powi(-k);
+        out.push(if rng.next() & 1 == 1 { -x } else { x });
+    }
+    out
+}
+
+/// review-wp1 F1: CPython `repr`/`json.dumps` over 2 000 000 doubles
+/// (`float_fuzz.json`: sha256 of both streams + every 10 007th row),
+/// including exact shortest-digit ties (dtoa mode 0 → the EVEN digit).
+#[test]
+fn float_fuzz_matches_cpython_repr_and_json() {
+    let f = load("float_fuzz");
+    assert_eq!(s(&f["prng"]), "splitmix64");
+    let c = &f["counts"];
+    let xs = fuzz_doubles(
+        f["seed"].as_u64().unwrap(),
+        i(&c["raw"]) as usize,
+        i(&c["decimal"]) as usize,
+        i(&c["dyadic"]) as usize,
+    );
+    assert!(xs.len() >= 1_000_000);
+    let reprs: Vec<String> = xs.iter().map(|x| float_repr(*x)).collect();
+    let jsons: Vec<String> = xs.iter().map(|x| json_float(*x)).collect();
+    for row in f["samples"].as_array().unwrap() {
+        let idx = i(&row[0]) as usize;
+        assert_eq!(hex::encode(xs[idx].to_be_bytes()), s(&row[1]), "row {idx} bits");
+        assert_eq!(reprs[idx], s(&row[2]), "row {idx} repr");
+        assert_eq!(jsons[idx], s(&row[3]), "row {idx} json");
+    }
+    let rd = hex::encode(Sha256::digest(reprs.join("\n").as_bytes()));
+    let jd = hex::encode(Sha256::digest(jsons.join("\n").as_bytes()));
+    assert_eq!(rd, s(&f["reprSha256"]), "repr stream");
+    assert_eq!(jd, s(&f["jsonSha256"]), "json stream");
+}
+
 // ---------------------------------------------------------------------------
 // json.dumps lines and Python exception text
 // ---------------------------------------------------------------------------
@@ -294,7 +361,10 @@ fn helper_error_texts_match() {
         };
         assert_eq!(got, s(&row[3]));
     }
-    assert_eq!(no_i2c_device_text(0x4a), "No I2C device at address: 0x4a");
+    // busdevice `i2c_device.py:176`, incl. Python's `0x-5` (review-wp1 F5).
+    for row in load("py_text")["noDeviceTexts"].as_array().unwrap() {
+        assert_eq!(no_i2c_device_text(i(&row[0])), s(&row[1]));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,15 +458,17 @@ fn read_packet(
     Ok(p)
 }
 
-/// `_read_packet` on 21 scripted cases, incl. 2nd/3rd header disagreement,
+/// `_read_packet` on 24 scripted cases, incl. 2nd/3rd header disagreement,
 /// a third header beyond the buffer (stale bytes), > 512 (buffer REPLACED,
 /// also shrinking 1000 → 520), the 8192 clamp on a `0x7FFF`/`0xFFFF` second
 /// header (`index out of range`, buffer 32767 partly filled), EAGAIN
-/// (`TypeError`), EIO, a short read, counts 1-5 (review F2/F5).
+/// (`TypeError`), EIO, a short read, counts 1-5 (review F2/F5), and a full
+/// read failing at exactly 512 (stale buffer KEPT) vs 513 (replaced): the
+/// `> 512` threshold (review-wp1 F4).
 #[test]
 fn read_packet_matches_the_real_driver() {
     let rows = load("shtp")["readPackets"].clone();
-    assert_eq!(rows.as_array().unwrap().len(), 21);
+    assert_eq!(rows.as_array().unwrap().len(), 24);
     for row in rows.as_array().unwrap() {
         let label = s(&row["label"]);
         let len_before = i(&row["bufferLenBefore"]) as usize;
@@ -599,11 +671,13 @@ fn set_feature_bytes_match() {
     }
 }
 
-/// `_handle_packet` (`__init__.py:829-837`) over 26 packet sequences with a
+/// `_handle_packet` (`__init__.py:829-837`) over 42 packet sequences with a
 /// PERSISTENT pending list: LIFO (oldest duplicate wins), leftovers from a
 /// failed batch processed last (F1), `KeyError` / `Unprocessable Batch
 /// bytes` / `IndexError` / `struct.error` texts, `0xFC` zero seeds at any
-/// time (F7), the self-reset advertisement + reset-complete, every sensor id.
+/// time (F7), the self-reset advertisement + reset-complete, every sensor id,
+/// and `print(packet)` itself raising on an empty channel-2/3 packet or a
+/// channel > 5 (review-wp1 F2).
 #[test]
 fn batches_match_the_real_driver() {
     let rows = load("sh2")["batches"].clone();
@@ -619,12 +693,10 @@ fn batches_match_the_real_driver() {
                 (Err(e), false) => assert_eq!(e.py_str(), s(&step["exc"][1]), "{name}[{n}]"),
                 _ => panic!("{name}[{n}]: rust {res:?} vs python {}", step["exc"]),
             }
-            // Python printed the D80 dump iff it raised.
-            assert_eq!(
-                res.is_err(),
-                step["dumped"].as_bool().unwrap(),
-                "{name}[{n}]"
-            );
+            // Python printed the D80 dump iff it raised AND `str(packet)`
+            // did not raise itself (review-wp1 F2).
+            let dumped = res.is_err() && packet_str_error(&packet).is_none();
+            assert_eq!(dumped, step["dumped"].as_bool().unwrap(), "{name}[{n}]");
             let want_pending: Vec<&str> =
                 step["pending"].as_array().unwrap().iter().map(s).collect();
             let got_pending: Vec<String> = pending.iter().map(|p| hex::encode(&p.bytes)).collect();

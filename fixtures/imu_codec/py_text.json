@@ -1129,5 +1129,27 @@
    "('Unprocessable Batch bytes', 3)",
    "read failed 40x: ('Unprocessable Batch bytes', 3)"
   ]
+ ],
+ "noDeviceTexts": [
+  [
+   74,
+   "No I2C device at address: 0x4a"
+  ],
+  [
+   75,
+   "No I2C device at address: 0x4b"
+  ],
+  [
+   0,
+   "No I2C device at address: 0x0"
+  ],
+  [
+   -5,
+   "No I2C device at address: 0x-5"
+  ],
+  [
+   330,
+   "No I2C device at address: 0x14a"
+  ]
  ]
 }

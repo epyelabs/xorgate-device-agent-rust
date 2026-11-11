@@ -2908,6 +2908,117 @@
    "bufferHead": "120003070910171e252caaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7"
   },
   {
+   "label": "exact_512_eagain",
+   "script": [
+    "00020304",
+    null
+   ],
+   "start": "ramp",
+   "bufferBefore": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+   "bufferLenBefore": 512,
+   "seqBefore": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "exc": [
+    "TypeError",
+    "'NoneType' object is not subscriptable"
+   ],
+   "reads": [
+    4,
+    512
+   ],
+   "seqAfter": [
+    0,
+    0,
+    0,
+    4,
+    0,
+    0
+   ],
+   "bufferLen": 512,
+   "bufferSha256": "0d77dc070659c7a33480eb2a78ec0c150a57c84c57da372d1582576fe3871b2e",
+   "bufferHead": "00020304a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7"
+  },
+  {
+   "label": "exact_512_short",
+   "script": [
+    "00020304",
+    "000203040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4"
+   ],
+   "start": "ramp",
+   "bufferBefore": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+   "bufferLenBefore": 512,
+   "seqBefore": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "exc": [
+    "IndexError",
+    "index out of range"
+   ],
+   "reads": [
+    4,
+    512
+   ],
+   "seqAfter": [
+    0,
+    0,
+    0,
+    4,
+    0,
+    0
+   ],
+   "bufferLen": 512,
+   "bufferSha256": "3c3a30d914107397d99c10dbc069b2843a6ebec49480523a07a33f3e46290e6d",
+   "bufferHead": "000203040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900"
+  },
+  {
+   "label": "exact_513_eagain",
+   "script": [
+    "01020304",
+    null
+   ],
+   "start": "ramp",
+   "bufferBefore": "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+   "bufferLenBefore": 512,
+   "seqBefore": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   "exc": [
+    "TypeError",
+    "'NoneType' object is not subscriptable"
+   ],
+   "reads": [
+    4,
+    513
+   ],
+   "seqAfter": [
+    0,
+    0,
+    0,
+    4,
+    0,
+    0
+   ],
+   "bufferLen": 513,
+   "bufferSha256": "8ae7498b01f40e9d2a04df8a8a91cc0b180eb9eb64b78129f59a6d6ab547816b",
+   "bufferHead": "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  },
+  {
    "label": "count_1",
    "script": [
     "01000302",

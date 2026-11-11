@@ -2406,6 +2406,414 @@
      "pending": []
     }
    ]
+  },
+  {
+   "name": "dcd_fail_leftover_then_empty_ch0",
+   "steps": [
+    {
+     "packet": "1e000300f100060000010000000000000000000007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "f1000600000100000000000000000000"
+     ]
+    },
+    {
+     "packet": "04000000",
+     "exc": [
+      "RuntimeError",
+      "Unable to save calibration data"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "dcd_fail_leftover_then_empty_ch1",
+   "steps": [
+    {
+     "packet": "1e000300f100060000010000000000000000000007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "f1000600000100000000000000000000"
+     ]
+    },
+    {
+     "packet": "04000100",
+     "exc": [
+      "RuntimeError",
+      "Unable to save calibration data"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "dcd_fail_leftover_then_empty_ch2",
+   "steps": [
+    {
+     "packet": "1e000300f100060000010000000000000000000007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "f1000600000100000000000000000000"
+     ]
+    },
+    {
+     "packet": "04000200",
+     "exc": [
+      "IndexError",
+      "bytearray index out of range"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "dcd_fail_leftover_then_empty_ch3",
+   "steps": [
+    {
+     "packet": "1e000300f100060000010000000000000000000007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "f1000600000100000000000000000000"
+     ]
+    },
+    {
+     "packet": "04000300",
+     "exc": [
+      "IndexError",
+      "bytearray index out of range"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "dcd_fail_leftover_then_empty_ch4",
+   "steps": [
+    {
+     "packet": "1e000300f100060000010000000000000000000007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "f1000600000100000000000000000000"
+     ]
+    },
+    {
+     "packet": "04000400",
+     "exc": [
+      "RuntimeError",
+      "Unable to save calibration data"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "dcd_fail_leftover_then_empty_ch5",
+   "steps": [
+    {
+     "packet": "1e000300f100060000010000000000000000000007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "f1000600000100000000000000000000"
+     ]
+    },
+    {
+     "packet": "04000500",
+     "exc": [
+      "RuntimeError",
+      "Unable to save calibration data"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "dcd_fail_leftover_then_empty_ch6",
+   "steps": [
+    {
+     "packet": "1e000300f100060000010000000000000000000007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "f1000600000100000000000000000000"
+     ]
+    },
+    {
+     "packet": "04000600",
+     "exc": [
+      "KeyError",
+      "6"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "stab_bad_leftover_then_empty_ch0",
+   "steps": [
+    {
+     "packet": "1400030013010000090007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "130100000900"
+     ]
+    },
+    {
+     "packet": "04000000",
+     "exc": [
+      "IndexError",
+      "list index out of range"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "stab_bad_leftover_then_empty_ch1",
+   "steps": [
+    {
+     "packet": "1400030013010000090007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "130100000900"
+     ]
+    },
+    {
+     "packet": "04000100",
+     "exc": [
+      "IndexError",
+      "list index out of range"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "stab_bad_leftover_then_empty_ch2",
+   "steps": [
+    {
+     "packet": "1400030013010000090007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "130100000900"
+     ]
+    },
+    {
+     "packet": "04000200",
+     "exc": [
+      "IndexError",
+      "bytearray index out of range"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "stab_bad_leftover_then_empty_ch3",
+   "steps": [
+    {
+     "packet": "1400030013010000090007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "130100000900"
+     ]
+    },
+    {
+     "packet": "04000300",
+     "exc": [
+      "IndexError",
+      "bytearray index out of range"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "stab_bad_leftover_then_empty_ch4",
+   "steps": [
+    {
+     "packet": "1400030013010000090007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "130100000900"
+     ]
+    },
+    {
+     "packet": "04000400",
+     "exc": [
+      "IndexError",
+      "list index out of range"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "stab_bad_leftover_then_empty_ch5",
+   "steps": [
+    {
+     "packet": "1400030013010000090007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "130100000900"
+     ]
+    },
+    {
+     "packet": "04000500",
+     "exc": [
+      "IndexError",
+      "list index out of range"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "stab_bad_leftover_then_empty_ch6",
+   "steps": [
+    {
+     "packet": "1400030013010000090007000000000000000000",
+     "exc": [
+      "KeyError",
+      "7"
+     ],
+     "dumped": true,
+     "readings": {},
+     "pending": [
+      "130100000900"
+     ]
+    },
+    {
+     "packet": "04000600",
+     "exc": [
+      "KeyError",
+      "6"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "unknown_id_ch6",
+   "steps": [
+    {
+     "packet": "0e00060007000000000000000000",
+     "exc": [
+      "KeyError",
+      "6"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
+  },
+  {
+   "name": "unknown_id_empty_tail_ch2",
+   "steps": [
+    {
+     "packet": "06000200",
+     "exc": [
+      "IndexError",
+      "bytearray index out of range"
+     ],
+     "dumped": false,
+     "readings": {},
+     "pending": []
+    }
+   ]
   }
  ],
  "decode": [
