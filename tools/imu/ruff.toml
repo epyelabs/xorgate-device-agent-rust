@@ -1,0 +1,6 @@
+# WP0a tooling lint (tools/imu only).
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "B", "I", "UP"]
