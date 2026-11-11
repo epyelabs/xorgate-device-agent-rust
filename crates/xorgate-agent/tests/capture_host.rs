@@ -138,10 +138,19 @@ async fn host_backend_sigint_eos_process_name_and_dispositions() {
     // test process ignores, minus SIGPIPE (std resets it for children): it
     // must add nothing (the rig transcripts, from a clean parent, read 0 for
     // both gst-launch and the host).
+    //
+    // ci-sigint-race: glibc's internal signals 32 (SIGCANCEL) and 33
+    // (SIGSETXID) are left out. glibc 2.36's posix_spawn child sets them to
+    // SIG_IGN before exec (they are blocked during the spawn), and std spawns
+    // through posix_spawn, so every child of a Rust parent starts with them
+    // ignored: the host as the agent spawns it, and this test process too
+    // when cargo runs it, but not when a shell does (then this assertion
+    // failed with `left: 2147483648, right: 0`). Neither is ever used.
+    let internal = (1u64 << 31) | (1u64 << 32);
     let parent_ign = u64::from_str_radix(&status_field(std::process::id(), "SigIgn"), 16).unwrap();
-    let want = parent_ign & !(1u64 << (libc::SIGPIPE - 1));
+    let want = parent_ign & !(1u64 << (libc::SIGPIPE - 1)) & !internal;
     assert_eq!(
-        u64::from_str_radix(&status_field(pid, "SigIgn"), 16).unwrap(),
+        u64::from_str_radix(&status_field(pid, "SigIgn"), 16).unwrap() & !internal,
         want
     );
     // R-WP0-4: the mask was in place before ANY thread existed, so every
