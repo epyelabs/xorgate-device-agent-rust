@@ -8,7 +8,7 @@ Reads a transcript written by `tools/imu/capture/bno085_read.py`
 -e trace=openat,ioctl,read,write`) and writes JSON lines:
 
     {"op": "meta", "format": "imutx/1", "device": "/dev/i2c-1", "clock": "monotonic", ...}
-    {"op": "open",  "path": "/dev/i2c-1", "flags": "O_RDWR|O_CLOEXEC", "ret": 3, "errno": null, "t_us": .., "dur_us": ..}
+    {"op": "open", "path": "/dev/i2c-1", "flags": "O_RDWR|O_CLOEXEC", "ret": 3, "errno": null, "t_us": .., ...}
     {"op": "ioctl", "req": 1795, "arg": 74, "ret": 0, "errno": null, "t_us": .., "dur_us": ..}
     {"op": "write", "len": 5, "hex": "0500010001", "ret": 5, "errno": null, "t_us": .., "dur_us": ..}
     {"op": "read",  "len": 4, "hex": "....", "ret": 4, "errno": null, "t_us": .., "dur_us": ..}

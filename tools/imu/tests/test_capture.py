@@ -21,7 +21,8 @@ sys.path.insert(0, IMU)
 import bno085_read as W  # noqa: E402  (the wrapper, not the real helper)
 import imutx  # noqa: E402
 
-PLAN_FLAGS = ["-qq", "--seccomp-bpf", "-f", "-tt", "-r", "-T", "-xx", "-s", "4096", "-e", "trace=openat,ioctl,read,write"]
+PLAN_FLAGS = ["-qq", "--seccomp-bpf", "-f", "-tt", "-r", "-T", "-xx", "-s", "4096",
+              "-e", "trace=openat,ioctl,read,write"]
 
 
 class Argv(unittest.TestCase):
@@ -198,7 +199,7 @@ class RealStrace(unittest.TestCase):
                 ("ioctl", 0x0703, None, None, "ENOTTY"),
                 ("write", None, 0, "", None),
                 ("write", None, 5, "0500010001", None),
-                ("read", None, 4, "14000307", None),
+                ("read", None, 4, "05000100", None),  # reads back the bytes it wrote
                 ("stdout", None, None, None, None),
                 ("stdout", None, None, None, None),
             ],

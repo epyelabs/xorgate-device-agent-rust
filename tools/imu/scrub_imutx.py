@@ -342,7 +342,7 @@ def apply_scrub(ops, cls, gen):
     for field in cls.fields:
         values = _draw_units(field, gen)
         units = field.units
-        for unit, value in zip(units, values):
+        for unit, value in zip(units, values, strict=False):  # a partial report has fewer units
             live = [(j, p) for j, p in enumerate(unit) if cls.sensitive(p) and p not in done]
             if not live:
                 continue
@@ -357,7 +357,7 @@ def apply_scrub(ops, cls, gen):
                 redraws += 1
                 v = (int.from_bytes(cand, "little") + 1) % (1 << (8 * len(cand)))
                 cand = v.to_bytes(len(cand), "little")
-            for (_, p), b in zip(live, cand):
+            for (_, p), b in zip(live, cand, strict=True):
                 bufs[p[0]][p[1]] = b
                 done.add(p)
     new_ops = []
@@ -388,7 +388,8 @@ def recompute_stdout(scrubbed_ops, oracle):
 
 def command_oracle(cmd):
     def run(ops):
-        payload = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in [{"op": "meta", "format": "imutx/1"}] + ops)
+        recs = [{"op": "meta", "format": "imutx/1"}] + ops
+        payload = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in recs)
         p = subprocess.run(cmd, shell=True, input=payload, capture_output=True, text=True, check=False)
         if p.returncode != 0:
             raise ScrubError(f"oracle command failed (rc {p.returncode})")
@@ -422,7 +423,7 @@ def stdout_shape_violations(raw_records, new_records):
     a, b = stdout_shape(raw_records), stdout_shape(new_records)
     if a == b:
         return []
-    for i, (x, y) in enumerate(zip(a, b)):
+    for i, (x, y) in enumerate(zip(a, b, strict=False)):
         if x != y:
             return [f"stdout line {i}: kind/text differs from the raw transcript ({x[0]} vs {y[0]})"]
     return [f"stdout has {len(b)} lines, the raw transcript {len(a)}"]
@@ -436,7 +437,7 @@ def self_check(raw_records, scrubbed_records):
     raw_ops, new_ops = ops_of(raw_records), ops_of(scrubbed_records)
     if len(raw_ops) != len(new_ops):
         return [f"op count {len(new_ops)} != raw {len(raw_ops)}"]
-    for i, (a, b) in enumerate(zip(raw_ops, new_ops)):
+    for i, (a, b) in enumerate(zip(raw_ops, new_ops, strict=True)):
         if {k: x for k, x in a.items() if k != "hex"} != {k: x for k, x in b.items() if k != "hex"}:
             v.append(f"op {i}: fields other than hex differ")
         if len(a.get("hex") or "") != len(b.get("hex") or ""):

@@ -254,7 +254,7 @@ class OracleHook(unittest.TestCase):
         raw_samples = [r["line"] for r in self.raw if r["op"] == "stdout" and "sample" in r["line"]]
         new_samples = [r["line"] for r in out if r["op"] == "stdout" and "sample" in r["line"]]
         self.assertEqual(len(raw_samples), len(new_samples))
-        for a, b in zip(raw_samples, new_samples):
+        for a, b in zip(raw_samples, new_samples, strict=True):
             self.assertNotEqual(a, b)
 
     def test_oracle_that_changes_ops_is_rejected(self):
