@@ -26,7 +26,7 @@ HL_PREFLIGHT_STEP=${HL_PREFLIGHT_STEP:-300}; HL_PREFLIGHT_MAX=${HL_PREFLIGHT_MAX
 : "${HL_HELPER_IMAGE:?}"   # the helper's amd64 image (hl-job.sh exports the script-tests one)
 R=$SRC/tools/replay; BIN=$R/.cache/bin; Q=$T/out/q.tsv; LG=$T/logs/lanes
 mkdir -p "$LG" "$T/out/untol" "$T/out/runs"
-[ -f "$Q" ] || printf 'name\ttape\tmode\tstart\tsecs\trc\tverdict\tuntol\ttol\tids\tload_start\tload_end\tload_max\twaited\tcaps\tothers\tcopy\n' > "$Q"
+[ -f "$Q" ] || printf 'name\ttape\tmode\tstart\tsecs\trc\tverdict\tuntol\ttol\tids\tload_start\tload_end\tload_max\twaited\tcaps\tothers\tcopy\tcpustat\n' > "$Q"
 load1() { cut -d' ' -f1 /proc/loadavg; }
 others() {
   docker ps --filter label=xorgate.agent --format '{{.Label "xorgate.agent"}}:{{.Names}}' \
@@ -79,9 +79,15 @@ while read -r name tape mode purge _; do
       sleep 15
       l=$(load1); mx=$(awk -v a="$mx" -v b="$l" 'BEGIN { print (b > a) ? b : a }')
       echo "$mx" > "$LG/$name.loadmax"
-      if [ -z "$capd" ]; then
-        c=$(docker ps -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter label=com.docker.compose.service=rig | head -1)
-        [ -n "$c" ] && { docker inspect -f '{{.HostConfig.NanoCpus}}/{{.HostConfig.Memory}}' "$c" > "$LG/$name.caps"; capd=1; }
+      c=$(docker ps -q --no-trunc --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter label=com.docker.compose.service=rig | head -1)
+      if [ -n "$c" ] && [ -z "$capd" ]; then
+        docker inspect -f '{{.HostConfig.NanoCpus}}/{{.HostConfig.Memory}}' "$c" > "$LG/$name.caps"; capd=1
+      fi
+      # CFS quota throttling of the rig (cgroup v2, systemd driver): the last
+      # sample before the container goes is the run's total.
+      cs=/sys/fs/cgroup/system.slice/docker-$c.scope/cpu.stat
+      if [ -n "$c" ] && [ -r "$cs" ]; then
+        awk '/^(usage_usec|nr_throttled|throttled_usec) / { printf "%s=%s ", $1, $2 }' "$cs" > "$LG/$name.cpustat"
       fi
     done ) &
   smp=$!
@@ -109,8 +115,8 @@ while read -r name tape mode purge _; do
     row=$(python3 -I "$HERE/hl-summ.py" row "$out")
     python3 -I "$HERE/hl-summ.py" untol "$out" > "$T/out/untol/$name.txt"
   else row=$(printf 'NO-DIFF\t-\t-\t-'); fi
-  printf '%s\t%s\t%s\t%s\t%ss\trc=%s%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\n' "$name" "$tape" "$mode" "$start" "$(( $(date +%s) - s ))" "$rc" "${drc:+/diff=$drc}" \
-    "$row" "$l0" "$(load1)" "$(cat "$LG/$name.loadmax" 2>/dev/null || echo "$l0")" "$waited" "$(cat "$LG/$name.caps" 2>/dev/null || echo '?')" "[$o0]" "$copy" >> "$Q"
+  printf '%s\t%s\t%s\t%s\t%ss\trc=%s%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\t%s\n' "$name" "$tape" "$mode" "$start" "$(( $(date +%s) - s ))" "$rc" "${drc:+/diff=$drc}" \
+    "$row" "$l0" "$(load1)" "$(cat "$LG/$name.loadmax" 2>/dev/null || echo "$l0")" "$waited" "$(cat "$LG/$name.caps" 2>/dev/null || echo '?')" "[$o0]" "$copy" "$(cat "$LG/$name.cpustat" 2>/dev/null || echo '?')" >> "$Q"
   tail -1 "$Q" | cut -f1-10
   if [ "${purge:-}" = purge ]; then rm -rf "${out:?}"; echo "$name: run dir purged (O8)"; fi
 done < "$items"

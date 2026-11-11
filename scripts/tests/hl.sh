@@ -227,7 +227,7 @@ printf '# comment\nL1 smoke rsrs\nL2 20261010T211828Z jsrs purge\n' > "$W/items.
 HL_PREFLIGHT=none "$HL" run t1 lanes "$W/items.txt" >/dev/null 2>&1
 Q=$T1/out/q.tsv
 r1=$(grep '^L1	' "$Q"); r2=$(grep '^L2	' "$Q")
-case "$r1" in *'rc=1/diff=1	FAIL	1	7	T1:5,T3:2	'*'	rescued') ok "lane row: rc + the diff's exit, verdict, counts, ids with hits > 0, copy rescued" ;; *) bad "lane row: $r1"; cat "$T1/logs/lanes.log"; esac
+case "$r1" in *'rc=1/diff=1	FAIL	1	7	T1:5,T3:2	'*'	rescued	'*) ok "lane row: rc + the diff's exit, verdict, counts, ids with hits > 0, copy rescued" ;; *) bad "lane row: $r1"; cat "$T1/logs/lanes.log"; esac
 grep -q 'docker run --rm --platform linux/amd64 --label xorgate.agent=t1 -v .*/.cache/runs:/r .* xorgate-rs-script-tests:bookworm-[0-9a-f]* sh -c .*cp -a .* L1 run-x ' "$LOG/docker.log" \
   && ok "the run is re-copied as root in a labelled container (0600 root files)" || { bad "no rescue copy"; grep cp "$LOG/docker.log"; }
 [ -f "$T1/out/runs/L1/bins.sha256" ] && ok "bins.sha256 written when run-rig.sh's copy stopped" || bad "bins.sha256 missing"
