@@ -174,7 +174,11 @@ fn float_fuzz_matches_cpython_repr_and_json() {
     let jsons: Vec<String> = xs.iter().map(|x| json_float(*x)).collect();
     for row in f["samples"].as_array().unwrap() {
         let idx = i(&row[0]) as usize;
-        assert_eq!(hex::encode(xs[idx].to_be_bytes()), s(&row[1]), "row {idx} bits");
+        assert_eq!(
+            hex::encode(xs[idx].to_be_bytes()),
+            s(&row[1]),
+            "row {idx} bits"
+        );
         assert_eq!(reprs[idx], s(&row[2]), "row {idx} repr");
         assert_eq!(jsons[idx], s(&row[3]), "row {idx} json");
     }

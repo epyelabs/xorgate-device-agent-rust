@@ -442,8 +442,8 @@ pub fn packet_str_error(packet: &Packet) -> Option<PyExc> {
     if usize::from(ch) >= crate::shtp::CHANNEL_COUNT {
         return Some(PyExc::KeyError(i64::from(ch)));
     }
-    let control_or_input = ch == crate::shtp::CHANNEL_CONTROL
-        || ch == crate::shtp::CHANNEL_INPUT_SENSOR_REPORTS;
+    let control_or_input =
+        ch == crate::shtp::CHANNEL_CONTROL || ch == crate::shtp::CHANNEL_INPUT_SENSOR_REPORTS;
     if control_or_input && packet.data.is_empty() {
         return Some(PyExc::msg(ExcKind::IndexError, BYTEARRAY_INDEX));
     }
