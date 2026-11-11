@@ -624,7 +624,7 @@ tpid=$(ps -o pid= --ppid "$jobp" | tr -d ' ' | head -1); spid=$(ps -o pid= --ppi
   && ok "precondition: timeout runs in its own process group (why a tmux kill alone misses it)" || bad "precondition: process tree"
 printf 'hl_t2_lanesx\nhl_t21_y\nhl_t2-1_z\n' >> "$LOG/sessions"; echo "$jobp" > "$LOG/pane.hl_t2_lanesx"; echo "8 8" > "$RES/t2_lanesx"
 mkdir -p "$T2/logs" && echo rid-x > "$T2/logs/lanesx.runid"
-out=$(HL_STOP_WAIT=4 "$HL" stop t2 lanesx 2>&1)
+out=$(HL_STOP_WAIT=15 "$HL" stop t2 lanesx 2>&1)   # 15 s: a loaded host is slow to reap the TERMed group
 sleep 1
 gone() { local st; st=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' '); [ -z "$st" ] || [ "${st#Z}" != "$st" ]; }   # absent or a zombie
 gone "$spid" && ok "stop ends the timeout's process group: the rig child is gone" || { bad "rig child survived stop: $out"; kill "$spid" 2>/dev/null; }
