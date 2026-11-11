@@ -618,14 +618,18 @@ async fn every_thread_runs_at_the_agents_nice_after_playing() {
         "{before:?}"
     );
     child.renice(10).unwrap();
-    // Unblock PAUSED: the writer opens the FIFO and keeps feeding it.
+    // Unblock PAUSED: the writer opens the FIFO and keeps feeding it until
+    // the checks are done (at most 30 s; a killed host ends it with EPIPE).
+    // It used to stop after 2 s, so a slow renice ended in a vanished pid.
     let fifo2 = fifo.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done2 = done.clone();
     let writer = std::thread::spawn(move || {
         use std::io::Write;
         let mut w = std::fs::OpenOptions::new().write(true).open(fifo2).unwrap();
         let chunk = [0u8; 4096];
-        for _ in 0..200 {
-            if w.write_all(&chunk).is_err() {
+        for _ in 0..3000 {
+            if done2.load(std::sync::atomic::Ordering::SeqCst) || w.write_all(&chunk).is_err() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -647,6 +651,7 @@ async fn every_thread_runs_at_the_agents_nice_after_playing() {
     };
     assert!(after.len() >= 4, "{after:?}");
     assert!(after.iter().all(|(_, v)| *v == 10), "{after:?}");
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
     child.signal(libc::SIGINT);
     drain(&mut rx, &mut run, None).await;
     let _ = writer.join();
