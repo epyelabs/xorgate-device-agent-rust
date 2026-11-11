@@ -208,16 +208,24 @@ async fn host_backend_sigint_eos_process_name_and_dispositions() {
     assert!(run.err.is_empty(), "{:?}", run.err);
 }
 
-/// A record `-e` pipeline whose EOS cannot complete on its own: the one
-/// buffer sleeps 600 s in identity, on the queue's thread, so fakesrc's
-/// thread is free and the forced EOS is queued at once (`Waiting for EOS...`
-/// is printed; without the queue `send_event` blocks behind the sleep, in
-/// gst-launch too). `fakesink async=false` reaches PLAYING without a preroll
-/// buffer. A SIGINT sent during the drain lands during the drain however
-/// slow the machine is (ci-sigint-race; the same lines and death by the
-/// second SIGINT from gst-launch 1.22 on the rig).
-const UNDRAINABLE: &str =
-    "-e fakesrc num-buffers=1 ! queue ! identity sleep-time=600000000 ! fakesink async=false";
+/// A record `-e` pipeline whose EOS cannot complete on its own. fakesrc
+/// sends ONE buffer then its own EOS, through a tee: the async fakesink
+/// prerolls on it, so the buffer exists before PAUSED completes (and so
+/// before `New clock:`); on the other branch identity holds it for 600 s, on
+/// the queue's thread, with the EOS queued behind it. The pipeline posts EOS
+/// only when both sinks have it, so after SIGINT the drain cannot end, and
+/// the forced EOS returns at once (fakesrc's thread is free), so `Waiting for
+/// EOS...` is printed (ci-sigint-race; the same lines and death by the second
+/// SIGINT from gst-launch 1.22 on the rig, 50/50 under contention).
+///
+/// Two first tries were not deterministic: without the queue, `send_event`
+/// blocks behind the sleep (no `Waiting for EOS...`, gst-launch too); with
+/// `num-buffers=1 ! queue ! identity … ! fakesink async=false`, nothing
+/// prerolls, so on a starved host the SIGINT can land before fakesrc made
+/// its buffer, and the EOS then passes straight through (`Got EOS`, 32/500
+/// full-binary runs on 2 CPUs).
+const UNDRAINABLE: &str = "-e fakesrc num-buffers=1 ! tee name=t t. ! queue ! fakesink \
+     t. ! queue ! identity sleep-time=600000000 ! fakesink async=false";
 
 /// Scenario 2b: once the first SIGINT's one-shot watch is removed, a second
 /// SIGINT takes the default action; SIGTERM always does.
