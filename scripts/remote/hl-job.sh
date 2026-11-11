@@ -4,11 +4,12 @@
 #
 #   hl-job.sh start <tag> <job> [args]   reserve caps, start a detached tmux session `hl_<tag>_<name>`
 #   hl-job.sh exec <tag> <job> [args]    the job itself (what the session runs)
+#   hl-job.sh stop <tag> [name]          stop a job: the rig's `timeout` process groups, then the session
 #   hl-job.sh status [tag] | preflight | clean <tag>
 #   hl-job.sh list-src|prune-src|verify-src <tag>   (hl.sh sync's steps)
 #   hl-job.sh js-cache <tag> <ref>       (a `git archive` tar on stdin)
 #
-# Layout: ~/xorgate-rs-p7/<tag>/{.hl-tag, source.txt, manifest.*, src/, bin/, logs/, out/, inbox/}
+# Layout: ~/xorgate-rs-p7/<tag>/{.hl-tag, source.txt, verified.fp, manifest.*, src/, bin/, logs/, out/, inbox/}
 # and ~/xorgate-rs-p7/_shared/{bin/, res/, jscache-amd64/, tools/}. Jobs and their knobs:
 # see hl.sh's header. HL_DRYRUN=1 prints every docker/tmux command instead of running it
 # (scripts/tests/hl.sh).
@@ -27,6 +28,9 @@ HL_RUN_SECS=${HL_RUN_SECS:-2700}
 HL_PREFLIGHT=${HL_PREFLIGHT:-each}
 HL_WAIT_OTHERS=${HL_WAIT_OTHERS:-0}
 HL_PEERS=${HL_PEERS:-}
+HL_JS_CPUS=${HL_JS_CPUS:-4}
+HL_JS_MEM=${HL_JS_MEM:-8g}
+HL_STOP_WAIT=${HL_STOP_WAIT:-120}
 HL_PROFILE=${HL_PROFILE:-release}
 SCRIPT_TESTS_DF=$HERE/Dockerfile.script-tests
 
@@ -36,7 +40,11 @@ ts() { date -u +%FT%TZ; }
 docker() { if [ "${HL_DRYRUN:-0}" = 1 ]; then echo "DRY docker $*"; else command docker "$@"; fi; }
 tmux() { if [ "${HL_DRYRUN:-0}" = 1 ]; then echo "DRY tmux $*"; else command tmux "$@"; fi; }
 load1() { cut -d' ' -f1 /proc/loadavg; }
-mem_avail_gb() { awk '/^MemAvailable:/ { printf "%d\n", $2 / 1048576 }' /proc/meminfo; }
+mem_avail_gb() {
+  # HL_TEST_MEMAVAIL_GB: scripts/tests/hl.sh only (honoured with HL_GUARD_TESTING=1).
+  if [ "${HL_GUARD_TESTING:-0}" = 1 ] && [ -n "${HL_TEST_MEMAVAIL_GB:-}" ]; then echo "$HL_TEST_MEMAVAIL_GB"; return; fi
+  awk '/^MemAvailable:/ { printf "%d\n", $2 / 1048576 }' /proc/meminfo
+}
 
 tagdir() {
   hl_valid_tag "${1:-}" || die "bad tag '${1:-}'"
@@ -55,27 +63,52 @@ cmd_prune_src() {
   done
   echo "pruned $n"
 }
+# Review F1: sync ships the record as source.txt.new; only a complete, verified
+# tree installs it and writes verified.fp (= its tree_fp). `start` refuses a tag
+# whose verified.fp is missing or differs from source.txt's tree_fp.
 cmd_verify_src() {
   tagdir "$1"
+  [ -f "$T/source.txt.new" ] || die "no source.txt.new: the sync did not ship its record"
   (cd "$SRC" && sha256sum -c --quiet --strict "$T/manifest.sha256") || die "the tree on the homelab does NOT match the shipped manifest"
   local fp
   fp=$(sha256sum < "$T/manifest.sha256" | cut -c1-64)
-  grep -qx "tree_fp=$fp" "$T/source.txt" || die "source.txt tree_fp does not match the manifest"
+  grep -qx "tree_fp=$fp" "$T/source.txt.new" || die "source.txt.new tree_fp does not match the manifest"
+  mv -f "$T/source.txt.new" "$T/source.txt"
+  echo "$fp" > "$T/verified.fp"
   cat "$T/source.txt" >> "$T/source.log"
   echo "verified $(wc -l < "$T/manifest.txt") files, tree_fp ${fp:0:12}"
 }
+tree_fp() { sed -n 's/^tree_fp=//p' "$T/source.txt" 2>/dev/null; }
+tag_verified() { [ -f "$T/verified.fp" ] && [ -n "$(tree_fp)" ] && [ "$(cat "$T/verified.fp")" = "$(tree_fp)" ]; }
 
 # ------------------------------------------------------- reservations / caps
-# One file per running job: _shared/res/<tag>_<name> = "<cpus> <mem_gb>".
-# A reservation whose tmux session is gone is stale and ignored.
+# One file per running job: _shared/res/<tag>_<name> holds EXACTLY
+# "<cpus> <mem_gb>" (cpus: integer or 2 decimals; mem: whole GiB), optionally
+# followed by " pid:<n>" for work that is not a tmux job (js-cache).
+# - A well-formed reservation counts while its tmux session hl_<tag>_<name>
+#   (or its pid) is alive; once that is gone it is stale and ignored.
+# - A MALFORMED one (e.g. "8 8g") counts as the full CPU cap, whatever its
+#   session: fail closed (review F2), with a message naming the file.
+res_line_ok() { [[ ${1:-} =~ ^[0-9]+(\.[0-9]{1,2})?\ [0-9]+(\ pid:[0-9]+)?$ ]]; }
+res_live() { # <file> <line>
+  case "$2" in
+    *" pid:"*) kill -0 "${2##*pid:}" 2>/dev/null ;;
+    *) command tmux has-session -t "=hl_$(basename "$1")" 2>/dev/null ;;
+  esac
+}
 res_sum() {
-  local f c m s total_c=0 total_m=0
+  local f line c m total_c=0 total_m=0
   mkdir -p "$SHARED/res"
   for f in "$SHARED/res"/*; do
     [ -f "$f" ] || continue
-    s=hl_$(basename "$f")
-    command tmux has-session -t "=$s" 2>/dev/null || continue
-    read -r c m < "$f"
+    line=$(head -n1 "$f" 2>/dev/null || true)
+    if ! res_line_ok "$line"; then
+      echo "hl-job: MALFORMED reservation $f ('$line'): counted as the full cap ($HL_CAP_TOTAL_CPUS CPUs); fix it to '<cpus> <mem_gb>'" >&2
+      total_c=$(awk -v a="$total_c" -v b="$HL_CAP_TOTAL_CPUS" 'BEGIN { print a + b }')
+      continue
+    fi
+    res_live "$f" "$line" || continue
+    read -r c m _ <<<"$line"
     total_c=$(awk -v a="$total_c" -v b="$c" 'BEGIN { print a + b }')
     total_m=$((total_m + m))
   done
@@ -85,47 +118,87 @@ job_budget() { # <job> -> "<cpus> <mem>"
   case "$1" in
     lanes) echo "$(awk -v c="$HL_RIG_CPUS" 'BEGIN { print c + 1 }') $HL_RIG_MEM" ;;
     suites|systemd) echo "$HL_SUITE_CPUS $HL_SUITE_MEM" ;;
+    import-bins|import-tapes) echo "1 1g" ;;
     *) echo "$HL_CPUS $HL_MEM" ;;
   esac
+}
+# The plan's hard limits may only be made stricter (review F3).
+check_limits() {
+  [[ $HL_TOTAL_CPUS =~ ^[0-9]+(\.[0-9]{1,2})?$ ]] || { echo "bad HL_TOTAL_CPUS '$HL_TOTAL_CPUS'"; return 1; }
+  [[ $HL_MIN_FREE_GB =~ ^[0-9]+$ ]] || { echo "bad HL_MIN_FREE_GB '$HL_MIN_FREE_GB'"; return 1; }
+  [ "${HL_GUARD_TESTING:-0}" = 1 ] && return 0
+  awk -v t="$HL_TOTAL_CPUS" -v c="$HL_CAP_TOTAL_CPUS" 'BEGIN { exit !(t <= c) }' \
+    || { echo "HL_TOTAL_CPUS=$HL_TOTAL_CPUS is above the plan cap $HL_CAP_TOTAL_CPUS"; return 1; }
+  [ "$HL_MIN_FREE_GB" -ge "$HL_CAP_MIN_FREE_GB" ] \
+    || { echo "HL_MIN_FREE_GB=$HL_MIN_FREE_GB is below the plan floor $HL_CAP_MIN_FREE_GB"; return 1; }
+}
+# reserve <cpus> <gb>: under the caller's lock, check the budget against every
+# live reservation. Prints the refusal reason and returns 1 when over.
+budget_ok() {
+  local cpus=$1 gb=$2 used_c used_m avail sum
+  sum=$(res_sum) || { echo "could not read the reservations"; return 1; }
+  read -r used_c used_m <<<"$sum"
+  if [ -z "${used_c:-}" ] || [ -z "${used_m:-}" ]; then echo "could not read the reservations"; return 1; fi
+  awk -v u="$used_c" -v c="$cpus" -v t="$HL_TOTAL_CPUS" 'BEGIN { exit !(u + c <= t) }' \
+    || { echo "helper jobs already hold $used_c CPUs; +$cpus would exceed HL_TOTAL_CPUS=$HL_TOTAL_CPUS"; return 1; }
+  avail=$(mem_avail_gb)
+  [ $((avail - used_m - gb)) -ge "$HL_MIN_FREE_GB" ] \
+    || { echo "MemAvailable ${avail}G - held ${used_m}G - this ${gb}G < HL_MIN_FREE_GB=${HL_MIN_FREE_GB}G"; return 1; }
+}
+# The reservation lock (review F3): check + reserve + session start are one step.
+res_lock() {
+  mkdir -p "$SHARED/res"
+  exec 9>>"$SHARED/res/.lock"
+  flock -w "${HL_LOCK_WAIT:-60}" 9
 }
 
 cmd_start() {
   tagdir "$1"; local job=$2; shift 2
-  local name=${HL_JOB_NAME:-$job} s cpus mem gb used_c used_m avail v
-  hl_valid_job "$name" || die "bad job name '$name'"
-  case "$job" in
-    gate|cargo-gate|test|cargo|suites|systemd|build-bins|release|import-bins|import-tapes|synth|lanes|images) ;;
-    pack) die "pack is aarch64-only (the device tarball): build it on the Mac (handbook HOMELAB EXECUTION)" ;;
-    *) die "unknown job '$job'" ;;
-  esac
-  hl_valid_cpus "$HL_CPUS" || die "bad HL_CPUS '$HL_CPUS'"
-  hl_valid_cpus "$HL_RIG_CPUS" || die "bad HL_RIG_CPUS '$HL_RIG_CPUS'"
-  read -r cpus mem <<<"$(job_budget "$job")"
-  gb=$(hl_mem_gb "$mem") || exit 2
-  s=hl_${TAG}_$name
+  local s cpus mem gb v why
+  NAME=${HL_JOB_NAME:-$job}
+  hl_valid_job "$NAME" || die "bad job name '$NAME'"
+  if ! hl_known_job "$job"; then
+    [ "$job" = pack ] && die "pack is aarch64-only (the device tarball): build it on the Mac (handbook HOMELAB EXECUTION)"
+    die "unknown job '$job'"
+  fi
+  s=hl_${TAG}_$NAME
+  # A RUNNING job of that name keeps its files (its own rc will follow).
   command tmux has-session -t "=$s" 2>/dev/null && die "session $s is already running"
-  read -r used_c used_m <<<"$(res_sum)"
-  awk -v u="$used_c" -v c="$cpus" -v t="$HL_TOTAL_CPUS" 'BEGIN { exit !(u + c <= t) }' \
-    || die "refused: helper jobs already hold $used_c CPUs; +$cpus would exceed HL_TOTAL_CPUS=$HL_TOTAL_CPUS"
-  avail=$(mem_avail_gb)
-  [ $((avail - used_m - gb)) -ge "$HL_MIN_FREE_GB" ] \
-    || die "refused: MemAvailable ${avail}G - held ${used_m}G - this ${gb}G < HL_MIN_FREE_GB=${HL_MIN_FREE_GB}G"
-  mkdir -p "$T/logs" "$SHARED/res"
-  rm -f "$T/logs/$name.rc" "$T/logs/$name.end"
+  # Review F5: from here on, a refusal writes its OWN rc (75) + reason, so
+  # `wait` can never report an older run's rc.
+  mkdir -p "$T/logs"
+  rm -f "$T/logs/$NAME.rc" "$T/logs/$NAME.end" "$T/logs/$NAME.refused" "$T/logs/$NAME.stopped"
+  tag_verified || refuse "the last sync of $TAG did not complete and verify (verified.fp missing or != source.txt tree_fp): sync again"
+  hl_valid_cpus "$HL_CPUS" || refuse "bad HL_CPUS '$HL_CPUS'"
+  hl_valid_cpus "$HL_RIG_CPUS" || refuse "bad HL_RIG_CPUS '$HL_RIG_CPUS'"
+  why=$(check_limits) || refuse "$why"
+  read -r cpus mem <<<"$(job_budget "$job")"
+  gb=$(hl_mem_gb "$mem") || refuse "bad memory value '$mem'"
+  res_lock || refuse "could not take the reservation lock $SHARED/res/.lock"
+  why=$(budget_ok "$cpus" "$gb") || refuse "$why"
   {
-    echo "job=$job name=$name args=$* started=$(ts) budget_cpus=$cpus budget_mem=$mem"
+    echo "job=$job name=$NAME args=$* started=$(ts) budget_cpus=$cpus budget_mem=$mem"
     for v in $HL_FORWARD_VARS; do eval "[ \"\${$v+set}\" = set ]" && eval "echo \"$v=\${$v}\""; done
     cat "$T/source.txt"
-  } > "$T/logs/$name.env"
-  echo "$cpus $gb" > "$SHARED/res/${TAG}_$name"
+  } > "$T/logs/$NAME.env"
+  echo "$cpus $gb" > "$SHARED/res/${TAG}_$NAME"
   local q="" a
   for a in "$@"; do q="$q $(printf '%q' "$a")"; done
   local envs="" v2
   for v2 in $HL_FORWARD_VARS; do
     if eval "[ \"\${$v2+set}\" = set ]"; then envs="$envs $v2=$(eval "printf '%q' \"\$$v2\"")"; fi
   done
-  tmux new-session -d -s "$s" "env$envs HL_JOB_NAME=$name bash $(printf '%q' "$HERE/hl-job.sh") exec $TAG $job$q > $(printf '%q' "$T/logs/$name.log") 2>&1"
-  echo "started $s (log ~/$HL_ROOT_REL/$TAG/logs/$name.log; budget ${cpus} CPUs / ${mem})"
+  if ! tmux new-session -d -s "$s" "env$envs HL_JOB_NAME=$NAME bash $(printf '%q' "$HERE/hl-job.sh") exec $TAG $job$q > $(printf '%q' "$T/logs/$NAME.log") 2>&1"; then
+    rm -f "$SHARED/res/${TAG}_$NAME"
+    refuse "tmux could not start session $s"
+  fi
+  echo "started $s (log ~/$HL_ROOT_REL/$TAG/logs/$NAME.log; budget ${cpus} CPUs / ${mem})"
+}
+refuse() { # <reason>: a refused start leaves rc 75 + the reason (review F5)
+  echo "75" > "$T/logs/$NAME.rc"
+  echo "$1" > "$T/logs/$NAME.refused"
+  echo "hl-job: refused: $1" >&2
+  exit 2
 }
 
 # ------------------------------------------------------------- docker helpers
@@ -148,28 +221,34 @@ brun() {
     -v "$HL_REG_VOL:/usr/local/cargo/registry" -v "$HL_GIT_VOL:/usr/local/cargo/git" -v "$HL_TARGET_VOL:/target" \
     -e "CARGO_TARGET_DIR=/target/$TAG" -e "CARGO_BUILD_JOBS=$jobs" -e CARGO_TERM_COLOR=never \
     -e "HL_HEAD=$(sed -n 's/^head=//p' "$T/source.txt")" -e "HL_UID=$(id -u)" -e "HL_GID=$(id -g)" \
-    -e "HL_JOB_NAME=${HL_JOB_NAME:-}" -e "HL_PROFILE=$HL_PROFILE" -e "HL_TOUCH=${HL_TOUCH:-0}" \
+    -e "HL_JOB_NAME=${HL_JOB_NAME:-}" -e "HL_PROFILE=$HL_PROFILE" -e "HL_TAG=$TAG" \
+    -e "HL_TREE_FP=$(tree_fp)" -e "HL_DIRTY=$(sed -n 's/^dirty_entries=//p' "$T/source.txt")" \
+    -e "HL_DIFFSHA=$(sed -n 's/^diff_vs_head_sha256=//p' "$T/source.txt")" \
     -w /src "$img" sh -c 'rc=0; bash "$@" || rc=$?; chown -R "$HL_UID:$HL_GID" /src /logs /out 2>/dev/null; exit $rc' hl "/hl/bin/$1" "${@:2}"
 }
 # ONE TREE PER TARGET DIR: /target/<tag> belongs to this tag's tree. When the
 # tree changed since the last cargo job here (a re-sync), every .rs is touched
-# so cargo's mtime fingerprints cannot keep a stale artifact.
+# so cargo's mtime fingerprints cannot keep a stale artifact. The touch runs on
+# the HOST before any container, and target.fp is written only after it
+# succeeded (review F7): a failed `docker run` can no longer skip it.
 touch_if_new_tree() {
   local fp last
-  fp=$(sed -n 's/^tree_fp=//p' "$T/source.txt")
+  fp=$(tree_fp)
   last=$(cat "$T/target.fp" 2>/dev/null || true)
-  if [ "$fp" != "$last" ]; then HL_TOUCH=1; echo "== tree changed (${last:0:12} -> ${fp:0:12}): touching every .rs"; else HL_TOUCH=0; fi
-  export HL_TOUCH
+  if [ "$fp" != "$last" ]; then
+    echo "== tree changed (${last:0:12} -> ${fp:0:12}): touching every crates/**/*.rs"
+    find "$SRC/crates" -name '*.rs' -exec touch {} + || { echo "== touch FAILED: target.fp not updated"; return 1; }
+  fi
   echo "$fp" > "$T/target.fp"
 }
 
 # ---------------------------------------------------------------------- jobs
 job_cargo_gate() { # [full|test]
-  touch_if_new_tree
+  touch_if_new_tree || return 1
   brun "${HL_JOB_NAME:-cargo-gate}" "$HL_CPUS" "$HL_MEM" "$(build_image)" gate-in.sh "${1:-full}"
 }
 job_cargo() {
-  touch_if_new_tree
+  touch_if_new_tree || return 1
   brun "${HL_JOB_NAME:-cargo}" "$HL_CPUS" "$HL_MEM" "$(build_image)" cargo-in.sh "$@"
 }
 # The plain script suites: every scripts/tests, scripts/bench/tests and
@@ -198,9 +277,22 @@ job_suites() {
   echo "SUITES_DONE fails=$fails"
   [ "$fails" -eq 0 ]
 }
+# Review F10: the systemd suites run --privileged on the PROD host (CAP_SYS_TIME,
+# /dev/rtc0). Refuse them if a suite would run a clock/RTC-setting tool; a line
+# that only exercises a mock carries the marker `hl-clock-mocked`.
+clock_guard() {
+  local f hits bad=0
+  for f in "$@"; do
+    hits=$(grep -nE 'hwclock|timedatectl[[:space:]]+set|date[[:space:]]+(-s|--set)|xorgate-setclock|settimeofday|clock_settime' "$f" \
+      | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'hl-clock-mocked' || true)
+    if [ -n "$hits" ]; then echo "REFUSED: $f would run a clock/RTC-setting tool on the PROD host:"; echo "$hits"; bad=1; fi
+  done
+  return $bad
+}
 job_systemd() {
   local pair name suite pkgs rc fails=0
   mkdir -p "$T/logs/suites"
+  clock_guard "$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh" || { echo "SYSTEMD_DONE fails=REFUSED"; return 1; }
   for pair in "unit-ordering:systemd" "install-rs-systemd:systemd python3 sudo"; do
     suite=${pair%%:*}; pkgs=${pair#*:}; name=hl_${TAG}_sd-$suite
     # Recipe = each suite's header (systemd 252 as PID 1, privileged, private cgroupns).
@@ -230,26 +322,39 @@ job_gate() {
   echo "GATE_DONE rc=$rc"
   return $rc
 }
+# Review F6: the previous bins go FIRST (a failed build leaves none), and the
+# new ones record the tree they came from (out/bins/HEAD + .cache/bin/BUILT_FROM).
 job_build_bins() {
-  touch_if_new_tree
+  local B=$SRC/tools/replay/.cache/bin
+  if ! rm -rf "$T/out/bins" || ! rm -f "$B/xorgate-rs" "$B/xorgate-replay" "$B/rig-statvfs.so" "$B/BUILT_FROM"; then
+    echo "could not remove the previous bins (root-owned leftovers?)"; return 1
+  fi
+  touch_if_new_tree || return 1
   brun "${HL_JOB_NAME:-build-bins}" "$HL_CPUS" "$HL_MEM" "$(build_image)" build-bins-in.sh "$HL_PROFILE" || return 1
-  cat "$T/out/bins/SHA256SUMS"
+  cat "$T/out/bins/SHA256SUMS" "$T/out/bins/HEAD"
 }
 job_release() {
-  touch_if_new_tree
+  rm -rf "$T/out/bins/release" || return 1
+  touch_if_new_tree || return 1
   brun "${HL_JOB_NAME:-release}" "$HL_CPUS" "$HL_MEM" "$(build_image)" release-in.sh || return 1
   cat "$T/out/bins/release/SHA256SUMS"
 }
 job_import_bins() { # <fromtag> [a|b]
-  local from=$1 side=${2:-} F B f
+  local from=$1 side=${2:-} F B f bfp
   hl_valid_tag "$from" || die "bad tag $from"
   F=$ROOT/$from/out/bins; B=$SRC/tools/replay/.cache/bin
   [ -f "$F/SHA256SUMS" ] || die "$from has no out/bins (run build-bins there)"
   (cd "$F" && sha256sum -c --quiet SHA256SUMS) || die "$from's out/bins fail their own SHA256SUMS"
+  # Review F6: only bins built from the source tag's CURRENT verified tree.
+  bfp=$(sed -n 's/^tree_fp=//p' "$F/HEAD")
+  [ -n "$bfp" ] || die "$from's out/bins/HEAD has no tree_fp (built by an older helper): rebuild there"
+  [ "$bfp" = "$(cat "$ROOT/$from/verified.fp" 2>/dev/null)" ] || die "$from's bins were built from tree ${bfp:0:12}, not $from's current verified tree: rebuild there"
   mkdir -p "$B"
   case "$side" in
-    "") for f in xorgate-rs xorgate-replay rig-statvfs.so; do cp "$F/$f" "$B/$f"; done ;;
-    a|b) cp "$F/xorgate-rs" "$B/xorgate-rs-$side" ;;
+    "") for f in xorgate-rs xorgate-replay rig-statvfs.so; do cp "$F/$f" "$B/$f"; done
+        printf 'tree_fp=%s\nvia=import-bins:%s\n' "$bfp" "$from" > "$B/BUILT_FROM" ;;
+    a|b) cp "$F/xorgate-rs" "$B/xorgate-rs-$side"
+         printf 'tree_fp=%s\nvia=import-bins:%s\n' "$bfp" "$from" > "$B/BUILT_FROM.$side" ;;
     *) die "side must be a or b" ;;
   esac
   { echo "# imported $(ts) from $from$([ -n "$side" ] && echo " as side $side")"; cat "$F/HEAD"; } >> "$B/IMPORTS"
@@ -320,17 +425,27 @@ job_synth() {
   cat "$T/out/tapes.sha256"
   return $rc
 }
+# Review F6: lanes run only on bins built from (or imported for) THIS tree, and
+# write to out/lanes/<tree_fp12>-<bins sha12>/, so a re-sync or a rebuild never
+# reuses another tree's rows ("done already" holds only inside that dir).
 job_lanes() { # <items file, relative to the tag dir>
-  local items=$T/$1
+  local items=$T/$1 B=$SRC/tools/replay/.cache/bin fp bfp binsha OUTD
   [ -f "$items" ] || die "no items file $items"
-  mkdir -p "$T/out/runs"
+  fp=$(tree_fp)
+  [ -f "$B/BUILT_FROM" ] || die "no .cache/bin/BUILT_FROM: run build-bins (or import-bins) on this tree first"
+  bfp=$(sed -n 's/^tree_fp=//p' "$B/BUILT_FROM")
+  [ "$bfp" = "$fp" ] || die ".cache/bin was built from tree ${bfp:0:12}, this tree is ${fp:0:12}: run build-bins (or import-bins from a tag with this tree)"
+  binsha=$( (cd "$B" && sha256sum xorgate-replay rig-statvfs.so xorgate-rs-a xorgate-rs-b 2>/dev/null; head -c 4 xorgate-rs | grep -q ELF && sha256sum xorgate-rs) | sha256sum | cut -c1-12)
+  OUTD=$T/out/lanes/${fp:0:12}-$binsha
+  mkdir -p "$OUTD/runs"
   rig_env "$(project lanes)"
   (cd "$SRC/tools/replay" && "$SRC/tools/replay/gen-certs.sh" >/dev/null && docker compose build --quiet rig) || die "rig image build failed"
-  echo "== lanes $1 on $(sed -n 's/^head=//p' "$T/source.txt") rig image $RIG_IMAGE caps ${HL_RIG_CPUS} CPUs/${HL_RIG_MEM}"
-  (cd "$SRC/tools/replay/.cache/bin" && sha256sum xorgate-rs* xorgate-replay rig-statvfs.so 2>/dev/null) | tee "$T/out/lanes-bins.sha256"
+  echo "== lanes $1 on $(sed -n 's/^head=//p' "$T/source.txt") tree_fp ${fp:0:12} rig image $RIG_IMAGE caps ${HL_RIG_CPUS} CPUs/${HL_RIG_MEM} -> $OUTD"
+  { echo "# tree_fp=$fp"; cat "$B/BUILT_FROM"; for f in "$B"/BUILT_FROM.?; do [ -f "$f" ] && sed "s/^/${f##*.}: /" "$f"; done
+    (cd "$B" && sha256sum xorgate-rs* xorgate-replay rig-statvfs.so 2>/dev/null); } | tee "$OUTD/lanes-bins.sha256"
   HL_HELPER_IMAGE=$(script_image)
   docker image inspect "$HL_HELPER_IMAGE" >/dev/null 2>&1 || die "helper image $HL_HELPER_IMAGE missing: run the images job"
-  TAG=$TAG T=$T SRC=$SRC HL_HELPER_IMAGE=$HL_HELPER_IMAGE bash "$HERE/hl-lanes.sh" "$items"
+  TAG=$TAG T=$T SRC=$SRC OUTD=$OUTD HL_HELPER_IMAGE=$HL_HELPER_IMAGE bash "$HERE/hl-lanes.sh" "$items"
 }
 job_images() {
   local img sid ok=0
@@ -411,7 +526,7 @@ cmd_status() {
   echo "homelab $(hostname) $(ts) load $(cut -d' ' -f1-3 /proc/loadavg) mem_avail $(mem_avail_gb)G helper_held(cpus mem_gb)=$(res_sum)"
   for t in ${1:-$(cd "$ROOT" 2>/dev/null && for d in */.hl-tag; do [ -f "$d" ] && dirname "$d"; done)}; do
     tagdir "$t"
-    echo "-- $TAG: $(sed -n 's/^head=//p' "$T/source.txt" 2>/dev/null) ($(sed -n 's/^branch=//p' "$T/source.txt" 2>/dev/null)) dirty=$(sed -n 's/^dirty_entries=//p' "$T/source.txt" 2>/dev/null)"
+    echo "-- $TAG: $(sed -n 's/^head=//p' "$T/source.txt" 2>/dev/null) ($(sed -n 's/^branch=//p' "$T/source.txt" 2>/dev/null)) dirty=$(sed -n 's/^dirty_entries=//p' "$T/source.txt" 2>/dev/null) tree_fp=$(tree_fp | cut -c1-12) $(tag_verified && echo verified || echo 'NOT VERIFIED (sync again)')"
     for f in "$T"/logs/*.start; do
       [ -f "$f" ] || continue
       local n; n=$(basename "$f" .start)
@@ -434,7 +549,7 @@ cmd_clean() {
   # shellcheck disable=SC2086
   [ -z "$ids" ] || { docker rm -f $ids >/dev/null; echo "removed containers: $(echo "$ids" | wc -w)"; }
   # 3. compose networks/volumes of this tag's rig projects (hl_<tag>_*).
-  for p in $(docker network ls --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep "^hl_${TAG}_" || true); do
+  for p in $( { docker network ls --format '{{.Label "com.docker.compose.project"}}'; docker volume ls --format '{{.Label "com.docker.compose.project"}}'; } | sort -u | grep "^hl_${TAG}_" || true); do
     for id in $(command docker network ls -q --filter "label=com.docker.compose.project=$p"); do docker network rm "$id" >/dev/null; done
     for id in $(command docker volume ls -q --filter "label=com.docker.compose.project=$p"); do docker volume rm "$id" >/dev/null; done
     echo "removed compose leftovers of $p"
@@ -455,6 +570,55 @@ cmd_clean() {
   echo "removed $T"
 }
 
+# ---------------------------------------------------------------------- stop
+# Review F4: a tmux kill alone leaves a lane's `timeout` + run-rig.sh running
+# (GNU timeout makes its own process group), still playing and no longer
+# reserved. So: collect the process groups of every `timeout` under the
+# session, kill the session (the job loop stops), then TERM those groups
+# (run-rig.sh traps TERM and tears its compose project down), wait for them,
+# and finally stop any container of the tag that is still up (exact label).
+timeout_pgids() { # <root pid>: process groups of the `timeout` processes below it
+  [ -n "${1:-}" ] || return 0
+  ps -e -o pid=,ppid=,pgid=,comm= | awk -v root="$1" '
+    { pp[$1] = $2; pg[$1] = $3; cm[$1] = $4 }
+    END {
+      for (p in cm) if (cm[p] == "timeout") {
+        q = p; n = 0
+        while (q in pp && q != root && q != 1 && n++ < 64) q = pp[q]
+        if (q == root) print pg[p]
+      }
+    }' | sort -u
+}
+cmd_stop() { # <tag> [name]
+  tagdir "$1"; local want=${2:-} s sessions pane pgs pg n waited ids
+  sessions=$(command tmux ls -F '#{session_name}' 2>/dev/null | grep "^hl_${TAG}_" || true)
+  if [ -n "$want" ]; then sessions=$(printf '%s\n' "$sessions" | grep -x "hl_${TAG}_$want" || true); fi
+  [ -n "$sessions" ] || echo "no running job of $TAG${want:+ named $want}"
+  for s in $sessions; do
+    pane=$(command tmux list-panes -t "=$s" -F '#{pane_pid}' 2>/dev/null | head -n1)
+    pgs=$(timeout_pgids "$pane")
+    tmux kill-session -t "=$s" && echo "killed session $s"
+    for pg in $pgs; do echo "TERM process group $pg"; kill -TERM -- "-$pg" 2>/dev/null || true; done
+    waited=0
+    for pg in $pgs; do
+      while kill -0 -- "-$pg" 2>/dev/null && [ "$waited" -lt "$HL_STOP_WAIT" ]; do sleep 2; waited=$((waited + 2)); done
+      if kill -0 -- "-$pg" 2>/dev/null; then echo "process group $pg still alive after ${HL_STOP_WAIT}s: KILL"; kill -KILL -- "-$pg" 2>/dev/null || true; fi
+    done
+    n=${s#"hl_${TAG}_"}
+    if [ ! -f "$T/logs/$n.rc" ]; then echo 143 > "$T/logs/$n.rc"; echo "stopped by hl.sh stop $(ts)" > "$T/logs/$n.stopped"; fi
+    rm -f "$SHARED/res/${TAG}_$n"
+  done
+  for _ in $(seq 30); do
+    ids=$(docker ps -q --filter "label=xorgate.agent=$TAG")
+    [ -z "$ids" ] && break
+    [ "${HL_DRYRUN:-0}" = 1 ] && break
+    sleep 2
+  done
+  # shellcheck disable=SC2086
+  if [ -n "${ids:-}" ]; then docker stop $ids >/dev/null; echo "stopped containers: $(echo "$ids" | wc -w)"; fi
+  echo "stop $TAG${want:+/$want}: done"
+}
+
 # ------------------------------------------------------------------ js-cache
 cmd_js_cache() { # <tag> <ref>; tar on stdin
   tagdir "$1"; local ref=$2 dest tmp
@@ -462,10 +626,20 @@ cmd_js_cache() { # <tag> <ref>; tar on stdin
   dest=$SHARED/jscache-amd64/js-$ref
   if [ -f "$dest/dist/worker.js" ] && [ -f "$dest/dist/cli.js" ]; then cat > /dev/null; echo "js: $dest (exists)"; return 0; fi
   mkdir -p "$SHARED/jscache-amd64"
+  # Review F11: the build holds a reservation like any job (pid-scoped).
+  local gb why res=$SHARED/res/${TAG}_js-cache
+  gb=$(hl_mem_gb "$HL_JS_MEM") || die "bad HL_JS_MEM"
+  why=$(check_limits) || die "refused: $why"
+  res_lock || die "refused: could not take the reservation lock"
+  why=$(budget_ok "$HL_JS_CPUS" "$gb") || die "refused: $why"
+  echo "$HL_JS_CPUS $gb pid:$$" > "$res"
+  exec 9>&-
+  # shellcheck disable=SC2064  # expand $res now
+  trap "rm -f '$res'" EXIT
   tmp=$(mktemp -d "$SHARED/jscache-amd64/.tmp-$ref.XXXX")
   tar -x -C "$tmp" || die "bad archive"
   # = tools/replay/js-build.sh's build, on linux/amd64.
-  docker run --rm --label "xorgate.agent=$TAG" --label xorgate.hl=1 --cpus "$HL_CPUS" --memory "$HL_MEM" \
+  docker run --rm --label "xorgate.agent=$TAG" --label xorgate.hl=1 --cpus "$HL_JS_CPUS" --memory "$HL_JS_MEM" \
     --platform linux/amd64 -v "$tmp:/js" -w /js -e "HL_UID=$(id -u)" -e "HL_GID=$(id -g)" node:20-bookworm \
     sh -c 'npm ci --no-audit --no-fund --loglevel=error && npm run build >/dev/null && node --version; rc=$?; chown -R "$HL_UID:$HL_GID" /js; exit $rc' \
     || { rm -rf "$tmp"; die "JS build failed"; }
@@ -474,10 +648,11 @@ cmd_js_cache() { # <tag> <ref>; tar on stdin
   echo "js: $dest (built from $ref, linux/amd64)"
 }
 
-[ $# -ge 1 ] || die "usage: hl-job.sh start|exec|status|preflight|clean|list-src|prune-src|verify-src|js-cache …"
+[ $# -ge 1 ] || die "usage: hl-job.sh start|exec|stop|status|preflight|clean|list-src|prune-src|verify-src|js-cache …"
 c=$1; shift
 case "$c" in
   start) [ $# -ge 2 ] || die "start <tag> <job> [args]"; cmd_start "$@" ;;
+  stop) cmd_stop "$@" ;;
   exec) cmd_exec "$@" ;;
   status) cmd_status "$@" ;;
   preflight) cmd_preflight ;;

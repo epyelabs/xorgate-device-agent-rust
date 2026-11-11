@@ -15,23 +15,43 @@ HL_GIT_VOL=${HL_GIT_VOL:-xorgate-rs-p7-cargo-git}
 HL_CPUS=${HL_CPUS:-16}
 HL_MEM=${HL_MEM:-32g}
 # Guard rails across ALL helper jobs on the host (sum of the running jobs'
-# HL_CPUS, and the memory left for the simulators/ollama/the rest).
-HL_TOTAL_CPUS=${HL_TOTAL_CPUS:-24}
-HL_MIN_FREE_GB=${HL_MIN_FREE_GB:-16}
+# budgets, and the memory left for the simulators/ollama/the rest). These are
+# the plan's HARD limits: an override may only make them STRICTER (lower
+# HL_TOTAL_CPUS, higher HL_MIN_FREE_GB); hl-job.sh refuses a looser value
+# (review F3). HL_GUARD_TESTING=1 (never forwarded by hl.sh) lifts that for
+# scripts/tests/hl.sh only.
+HL_CAP_TOTAL_CPUS=24
+HL_CAP_MIN_FREE_GB=16
+HL_TOTAL_CPUS=${HL_TOTAL_CPUS:-$HL_CAP_TOTAL_CPUS}
+HL_MIN_FREE_GB=${HL_MIN_FREE_GB:-$HL_CAP_MIN_FREE_GB}
 # Quiet-host preflight for rig lanes: homelab 1-min load.
 HL_MAX_LOAD=${HL_MAX_LOAD:-8}
 # Pinned tools.
 HL_DENY_VERSION=${HL_DENY_VERSION:-0.20.2}
 HL_JS_REF=${HL_JS_REF:-09da38d}
 
+# Tag names that must never be a helper tag (review F14): `clean <tag>` removes
+# containers by `label=xorgate.agent=<tag>`, and these labels are carried by
+# images (`p7e`: the amd64 build image; `hl-shared`: the helper's images), by
+# the rig's compose default (`rig`) or by hand-made bring-up containers.
+HL_RESERVED_TAGS="rig hl-shared p7e hl-bringup shared"
 # A tag names ONE tree on the homelab: ~/xorgate-rs-p7/<tag>/, /target/<tag>,
 # label xorgate.agent=<tag>. Lower-case, digits and '-' only, so the session
 # and compose-project prefixes `hl_<tag>_` can never match another tag.
 hl_valid_tag() {
-  [[ ${1:-} =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]]
+  [[ ${1:-} =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || return 1
+  case " $HL_RESERVED_TAGS " in *" $1 "*) return 1 ;; esac
+  return 0
 }
 hl_valid_job() {
   [[ ${1:-} =~ ^[a-z0-9][a-z0-9.-]{0,39}$ ]]
+}
+# The jobs `run` accepts (review F12: checked on the Mac BEFORE the remote shell
+# parses anything, and again on the homelab).
+HL_JOBS_ALLOWED="gate cargo-gate test cargo suites systemd build-bins release import-bins import-tapes synth lanes images"
+hl_known_job() {
+  case " $HL_JOBS_ALLOWED " in *" ${1:-} "*) return 0 ;; esac
+  return 1
 }
 # Docker memory string (16g, 512m) -> whole GiB, rounded up. (bash 3.2-safe:
 # the Mac's /bin/bash runs hl.sh.)
@@ -50,4 +70,4 @@ hl_valid_cpus() {
   [[ ${1:-} =~ ^[0-9]+(\.[0-9]{1,2})?$ ]] && awk -v c="$1" 'BEGIN { exit !(c > 0) }'
 }
 # The env vars hl.sh forwards to a remote job (and hl-job.sh records).
-HL_FORWARD_VARS="HL_CPUS HL_MEM HL_JOBS HL_TOTAL_CPUS HL_MIN_FREE_GB HL_MAX_LOAD HL_JOB_NAME HL_PEERS HL_PREFLIGHT HL_WAIT_OTHERS HL_RIG_CPUS HL_RIG_MEM HL_RUN_SECS HL_JS_REF HL_SUITES HL_SUITE_CPUS HL_SUITE_MEM HL_PROFILE HL_DENY_VERSION HL_PREFLIGHT_STEP HL_PREFLIGHT_MAX"
+HL_FORWARD_VARS="HL_CPUS HL_MEM HL_JOBS HL_TOTAL_CPUS HL_MIN_FREE_GB HL_MAX_LOAD HL_JOB_NAME HL_PEERS HL_PREFLIGHT HL_WAIT_OTHERS HL_RIG_CPUS HL_RIG_MEM HL_RUN_SECS HL_JS_REF HL_SUITES HL_SUITE_CPUS HL_SUITE_MEM HL_PROFILE HL_DENY_VERSION HL_PREFLIGHT_STEP HL_PREFLIGHT_MAX HL_JS_CPUS HL_JS_MEM HL_STOP_WAIT"

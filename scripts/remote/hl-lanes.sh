@@ -13,19 +13,20 @@
 # 1-min load <= HL_MAX_LOAD (and, with HL_WAIT_OTHERS=1, no other agent's
 # labelled container; HL_PEERS = tags not counted as others); 5-min steps, 60 min
 # max, then the job stops (exit 3). Rows: out/q.tsv; untolerated paths (no
-# values): out/untol/<name>.txt.
+# values): <OUTD>/untol/<name>.txt. OUTD = out/lanes/<tree_fp12>-<bins sha12>/
+# (hl-job.sh): "done already" holds only for the same tree AND bins (review F6).
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/remote/hl-lib.sh
 . "$HERE/hl-lib.sh"
 items=$1
-: "${TAG:?}" "${T:?}" "${SRC:?}"
+: "${TAG:?}" "${T:?}" "${SRC:?}" "${OUTD:?}"
 HL_PREFLIGHT=${HL_PREFLIGHT:-each}; HL_WAIT_OTHERS=${HL_WAIT_OTHERS:-0}; HL_PEERS=${HL_PEERS:-}
 HL_RUN_SECS=${HL_RUN_SECS:-2700}
 HL_PREFLIGHT_STEP=${HL_PREFLIGHT_STEP:-300}; HL_PREFLIGHT_MAX=${HL_PREFLIGHT_MAX:-3600}
 : "${HL_HELPER_IMAGE:?}"   # the helper's amd64 image (hl-job.sh exports the script-tests one)
-R=$SRC/tools/replay; BIN=$R/.cache/bin; Q=$T/out/q.tsv; LG=$T/logs/lanes
-mkdir -p "$LG" "$T/out/untol" "$T/out/runs"
+R=$SRC/tools/replay; BIN=$R/.cache/bin; Q=$OUTD/q.tsv; LG=$T/logs/lanes
+mkdir -p "$LG" "$OUTD/untol" "$OUTD/runs"
 [ -f "$Q" ] || printf 'name\ttape\tmode\tstart\tsecs\trc\tverdict\tuntol\ttol\tids\tload_start\tload_end\tload_max\twaited\tcaps\tothers\tcopy\tcpustat\n' > "$Q"
 load1() { cut -d' ' -f1 /proc/loadavg; }
 others() {
@@ -60,7 +61,7 @@ while read -r name tape mode purge _; do
   esac
   tf=$R/.cache/tapes/$tape.ndjson.gz
   [ -f "$tf" ] || { echo "no tape $tf"; exit 2; }
-  out=$T/out/runs/$name
+  out=$OUTD/runs/$name
   if [ -f "$out/diff.md" ] || grep -q "^$name	" "$Q"; then echo "$name: done already"; continue; fi
   waited=0
   while [ "$HL_PREFLIGHT" = each ]; do
@@ -103,17 +104,17 @@ while read -r name tape mode purge _; do
   copy=ok
   if grep -q "^cp: " "$LG/$name.log"; then copy=rescued; fi
   if [ -n "$run" ] && [ -d "$R/.cache/runs/$run" ]; then
-    docker run --rm --platform linux/amd64 --label "xorgate.agent=$TAG" -v "$R/.cache/runs:/r" -v "$T/out/runs:/o" "$HL_HELPER_IMAGE" \
+    docker run --rm --platform linux/amd64 --label "xorgate.agent=$TAG" -v "$R/.cache/runs:/r" -v "$OUTD/runs:/o" "$HL_HELPER_IMAGE" \
       sh -c 'mkdir -p "/o/$1" && cp -a "/r/$2/." "/o/$1/" && chown -R "$3" "/o/$1" && rm -rf "/r/$2"' _ "$name" "$run" "$(id -u):$(id -g)" \
       || copy=FAILED
   fi
   # run-rig.sh writes bins.sha256 after its copy; a stopped copy skipped it.
-  [ -f "$out/bins.sha256" ] || { echo "# written by hl-lanes.sh (run-rig.sh's copy stopped): the lane's binaries"; cat "$T/out/lanes-bins.sha256"; } > "$out/bins.sha256" 2>/dev/null
+  [ -f "$out/bins.sha256" ] || { echo "# written by hl-lanes.sh (run-rig.sh's copy stopped): the lane's binaries"; cat "$OUTD/lanes-bins.sha256"; } > "$out/bins.sha256" 2>/dev/null
   # The diff's own exit code, when run-rig.sh got to print it.
   drc=$(sed -n 's/^>> diff: .* (exit \([0-9]*\))$/\1/p' "$LG/$name.log" | tail -1)
   if [ -f "$out/diff.json" ]; then
     row=$(python3 -I "$HERE/hl-summ.py" row "$out")
-    python3 -I "$HERE/hl-summ.py" untol "$out" > "$T/out/untol/$name.txt"
+    python3 -I "$HERE/hl-summ.py" untol "$out" > "$OUTD/untol/$name.txt"
   else row=$(printf 'NO-DIFF\t-\t-\t-'); fi
   printf '%s\t%s\t%s\t%s\t%ss\trc=%s%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\t%s\n' "$name" "$tape" "$mode" "$start" "$(( $(date +%s) - s ))" "$rc" "${drc:+/diff=$drc}" \
     "$row" "$l0" "$(load1)" "$(cat "$LG/$name.loadmax" 2>/dev/null || echo "$l0")" "$waited" "$(cat "$LG/$name.caps" 2>/dev/null || echo '?')" "[$o0]" "$copy" "$(cat "$LG/$name.cpustat" 2>/dev/null || echo '?')" >> "$Q"

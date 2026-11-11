@@ -3,5 +3,5 @@
 set -u
 git config --global --add safe.directory '*' 2>/dev/null
 echo "== HEAD ${HL_HEAD:-unknown} | $(rustc -V) | $(uname -m) | cargo $*"
-if [ "${HL_TOUCH:-0}" = 1 ]; then find crates -name '*.rs' -exec touch {} +; echo "== touched every crates/**/*.rs (new tree in this target dir)"; fi
+# (the ONE-TREE touch runs on the host before this container: hl-job.sh touch_if_new_tree)
 exec cargo "$@"
