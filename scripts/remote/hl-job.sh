@@ -315,16 +315,20 @@ job_suites() {
   local img t n rc fails=0
   img=$(script_image)
   docker image inspect "$img" >/dev/null 2>&1 || die "script-tests image $img missing: run the images job"
-  mkdir -p "$T/logs/suites"
+  # Per job: two suites jobs of one tag (e.g. mutation subsets) never share a
+  # container name or a log file. The default job `suites` (and `gate`) keep logs/suites/.
+  local LD=$T/logs/suites
+  case "$(jobl)" in suites|gate|gate-cargo) ;; *) LD=$T/logs/suites-$(jobl) ;; esac
+  mkdir -p "$LD"
   echo "== suites on $(sed -n 's/^head=//p' "$T/source.txt") $(ts) image $img"
   for t in $(suite_list); do
     n=$(echo "$t" | tr / _)
-    docker run --rm --name "hl_${TAG}_suite-${n%.sh}" --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=$(jobl)" \
+    docker run --rm --name "hl_${TAG}_$(jobl)-${n%.sh}" --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=$(jobl)" \
       --cpus "$HL_SUITE_CPUS" --memory "$HL_SUITE_MEM" -v "$SRC:/src:ro" -v "$HERE:/hl/bin:ro" ${HL_MUTANTS:+-e "MUTANTS=$HL_MUTANTS"} "$img" \
-      timeout 1800 bash /hl/bin/suite-in.sh "$t" > "$T/logs/suites/$n.log" 2>&1
+      timeout 1800 bash /hl/bin/suite-in.sh "$t" > "$LD/$n.log" 2>&1
     rc=$?
     [ $rc -eq 0 ] || fails=$((fails + 1))
-    echo "$(head -1 "$T/logs/suites/$n.log") (container rc=$rc)"
+    echo "$(head -1 "$LD/$n.log") (container rc=$rc)"
   done
   echo "SUITES_DONE fails=$fails"
   [ "$fails" -eq 0 ]
