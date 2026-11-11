@@ -281,9 +281,12 @@ pub fn arm(bus: &gstreamer::Bus) {
     }
 }
 
-/// The bus loop dispatched a received signal. SIGINT's watch is one-shot
-/// (`intr_handler` returns G_SOURCE_REMOVE → GLib restores SIG_DFL); SIGHUP's
-/// stays (G_SOURCE_CONTINUE).
+/// The bus loop dispatches a received signal. SIGINT's watch is one-shot
+/// (`intr_handler` returns G_SOURCE_REMOVE → GLib restores SIG_DFL), called
+/// at the END of `intr_handler`, so a second SIGINT before it coalesces
+/// (GLib swallows it: its source is removed); SIGHUP's stays
+/// (G_SOURCE_CONTINUE), called at the START of `hup_handler`, as GLib clears
+/// the source's `pending` before the callback (ci-sigint-race, drops D47).
 pub fn dispatched(sig: i32) {
     if sig == libc::SIGINT {
         INTR.store(OFF, Ordering::SeqCst);
@@ -543,6 +546,17 @@ pub(super) mod testing {
         INTR.load(Ordering::SeqCst) == OFF
     }
 
+    /// As if the wait thread had posted an ARMED SIGHUP (now PENDING) and the
+    /// loop popped it: `POST` = `bus`.
+    pub fn prime_hup_pending(bus: &gstreamer::Bus) {
+        *POST.lock().unwrap() = Some(bus.clone());
+        HUP.store(PENDING, Ordering::SeqCst);
+    }
+
+    pub fn hup_is_pending() -> bool {
+        HUP.load(Ordering::SeqCst) == PENDING
+    }
+
     pub fn reset() {
         INTR.store(OFF, Ordering::SeqCst);
         HUP.store(OFF, Ordering::SeqCst);
@@ -758,10 +772,12 @@ mod tests {
         testing::reset();
     }
 
-    /// D47 pinned: a SIGHUP that arrives while its dispatch is pending (i.e.
-    /// during `hup_handler`, before `dispatched`) COALESCES (no second post);
-    /// after `dispatched` the watch is armed again and the next one posts.
-    /// (GLib clears its pending flag before the callback and re-dispatches.)
+    /// A SIGHUP that arrives while its dispatch is pending (posted, and the
+    /// loop has not started `hup_handler` yet: GLib's `pending` flag is still
+    /// set) COALESCES (no second post); after `dispatched` (the START of
+    /// `hup_handler`, as GLib clears `pending` before the callback) the watch
+    /// is armed again and the next one posts. (Was D47's pin, when the host
+    /// called `dispatched` at the END of the handler; ci-sigint-race.)
     #[test]
     fn d47_a_sighup_during_its_dispatch_coalesces() {
         let _g = testing::lock();
