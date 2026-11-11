@@ -285,12 +285,15 @@ mod tests {
     fn a_read_is_one_syscall_and_may_be_short() {
         let (r, w) = pipe(false);
         assert_eq!(write_once(w.as_fd(), b"abc"), Ok(3));
+        // The writer is gone: a read-until-full loop would make a SECOND
+        // read(2) (EOF) instead of blocking, so the count catches it.
+        drop(w);
         // Reading /proc/thread-self/io is itself counted in syscr: measure
         // that overhead first (two back-to-back samples), then subtract it.
         let a = sysc().0;
         let overhead = sysc().0 - a;
         let before = sysc().0;
-        // read_exact would block here waiting for the other 5 bytes.
+        // One read(2): 3 bytes, not the 8 asked for (no read_exact).
         assert_eq!(read_once(r.as_fd(), 8), Ok(b"abc".to_vec()));
         assert_eq!(sysc().0 - before - overhead, 1);
     }
