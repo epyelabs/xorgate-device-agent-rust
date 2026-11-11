@@ -94,7 +94,7 @@ cmd_start() {
   local name=${HL_JOB_NAME:-$job} s cpus mem gb used_c used_m avail v
   hl_valid_job "$name" || die "bad job name '$name'"
   case "$job" in
-    gate|cargo-gate|test|cargo|suites|systemd|build-bins|release|import-bins|synth|lanes|images) ;;
+    gate|cargo-gate|test|cargo|suites|systemd|build-bins|release|import-bins|import-tapes|synth|lanes|images) ;;
     pack) die "pack is aarch64-only (the device tarball): build it on the Mac (handbook HOMELAB EXECUTION)" ;;
     *) die "unknown job '$job'" ;;
   esac
@@ -255,6 +255,20 @@ job_import_bins() { # <fromtag> [a|b]
   { echo "# imported $(ts) from $from$([ -n "$side" ] && echo " as side $side")"; cat "$F/HEAD"; } >> "$B/IMPORTS"
   (cd "$B" && sha256sum xorgate-rs* xorgate-replay rig-statvfs.so 2>/dev/null)
 }
+job_import_tapes() { # <fromtag> <name>...: rig tapes of another tag (sha recorded)
+  local from=$1 n F D; shift
+  hl_valid_tag "$from" || die "bad tag $from"
+  F=$ROOT/$from/src/tools/replay/.cache/tapes; D=$SRC/tools/replay/.cache/tapes
+  [ $# -gt 0 ] || die "name the tapes"
+  mkdir -p "$D"
+  for n in "$@"; do
+    [[ $n =~ ^[A-Za-z0-9._-]+$ ]] || die "bad tape name $n"
+    [ -f "$F/$n.ndjson.gz" ] || die "$from has no tape $n"
+    cp "$F/$n.ndjson.gz" "$D/"
+    [ -f "$F/$n.ndjson.gz.cli.ndjson" ] && cp "$F/$n.ndjson.gz.cli.ndjson" "$D/"
+  done
+  (cd "$D" && sha256sum ./*.ndjson.gz) | sed 's#  \./#  #' | tee "$T/out/tapes.sha256"
+}
 # The rig on amd64 WITHOUT editing the tree: a compose override (platform,
 # caps, the helper label) + Dockerfile.rig with its one arm64 FROM rewritten.
 rig_env() { # <compose-project>
@@ -367,6 +381,7 @@ cmd_exec() {
       build-bins) job_build_bins ;;
       release) job_release ;;
       import-bins) job_import_bins "$@" ;;
+      import-tapes) job_import_tapes "$@" ;;
       synth) job_synth "$@" ;;
       lanes) job_lanes "$@" ;;
       images) job_images ;;

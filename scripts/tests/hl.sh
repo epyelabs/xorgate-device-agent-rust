@@ -251,6 +251,9 @@ T2=$FH/xorgate-rs-p7/t2; "$HL" sync t2 "$R" >/dev/null 2>&1
 mkdir -p "$T1/out/bins" && (cd "$T1/out/bins" && printf A > xorgate-rs && printf B > xorgate-replay && printf C > rig-statvfs.so && sha256sum xorgate-rs xorgate-replay rig-statvfs.so > SHA256SUMS && echo '# built from git x' > HEAD)
 "$HL" run t2 import-bins t1 >/dev/null 2>&1; [ "$(cat "$T2/src/tools/replay/.cache/bin/xorgate-rs" 2>/dev/null)" = A ] && ok "import-bins copies" || bad "import-bins"
 "$HL" run t2 import-bins t1 a >/dev/null 2>&1; [ "$(cat "$T2/src/tools/replay/.cache/bin/xorgate-rs-a" 2>/dev/null)" = A ] && ok "import-bins as side a" || bad "import-bins side a"
+mkdir -p "$T1/src/tools/replay/.cache/tapes" && printf tape > "$T1/src/tools/replay/.cache/tapes/m1.ndjson.gz"
+"$HL" run t2 import-tapes t1 m1 >/dev/null 2>&1; [ "$(cat "$T2/src/tools/replay/.cache/tapes/m1.ndjson.gz" 2>/dev/null)" = tape ] && grep -q '  m1.ndjson.gz$' "$T2/out/tapes.sha256" && ok "import-tapes copies + records sha" || bad "import-tapes"
+HL_JOB_NAME=it2 "$HL" run t2 import-tapes t1 nope >/dev/null 2>&1; [ "$(cat "$T2/logs/it2.rc")" != 0 ] && ok "import-tapes refuses a missing tape" || bad "import-tapes missing tape"
 printf Z > "$T1/out/bins/xorgate-replay"
 "$HL" run t2 import-bins t1 >/dev/null 2>&1; [ "$(cat "$T2/logs/import-bins.rc")" != 0 ] && ok "import-bins refuses a sha mismatch" || bad "import-bins ignored a sha mismatch"
 

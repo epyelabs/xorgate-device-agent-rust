@@ -27,6 +27,7 @@
 #   release      cargo build --release (amd64; the simulator image's agent) -> out/bins/release/
 #   import-bins FROMTAG [a|b]   copy FROMTAG's out/bins into this tree's .cache/bin (sha-checked);
 #                with a|b: as xorgate-rs-a / xorgate-rs-b, the sides of an `ab` lane
+#   import-tapes FROMTAG NAME...   copy FROMTAG's rig tapes NAME.ndjson.gz (+ .cli.ndjson) into this tree
 #   synth NAME...   synthesise rig tapes with this tree's xorgate-replay (out/tapes.sha256)
 #   lanes FILE   rig lanes, serial: FILE (a local file, pushed first) holds `name tape mode [purge]` lines,
 #                mode = cal | jsrs | rsrs | ab. Quiet-host preflight before each run; out/q.tsv
