@@ -222,7 +222,7 @@ class RealStrace(unittest.TestCase):
         loop = os.path.join(self.d, "loop.py")
         with open(loop, "w") as f:
             f.write("import os, sys\nfd = os.open(os.environ['FAKE_DEV'], os.O_RDONLY)\n"
-                    "for _ in range(60000):\n    os.read(fd, 1)\nsys.exit(0)\n")
+                    "for _ in range(250000):\n    os.read(fd, 1)\nsys.exit(0)\n")
         env = dict(self.env, XORGATE_P7C_REAL_HELPER=loop)
         p = subprocess.run([sys.executable, WRAPPER], env=env, capture_output=True, text=True, cwd=self.d)
         self.assertEqual(p.returncode, 0, p.stderr)

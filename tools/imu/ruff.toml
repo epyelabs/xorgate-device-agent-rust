@@ -8,6 +8,8 @@ select = ["E", "F", "W", "B", "I", "UP"]
 [lint.per-file-ignores]
 # Synthetic strace fixture lines are long by nature.
 "tests/test_imutx.py" = ["E501"]
+# Mutants are exact source lines.
+"tests/mutations.py" = ["E501"]
 
 [lint.isort]
 known-first-party = ["bno085_read", "imutx", "scrub_imutx", "synth"]
