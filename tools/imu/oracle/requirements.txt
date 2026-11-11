@@ -1,0 +1,16 @@
+# Phase 7c WP2 oracle: the bench's Adafruit stack (wp0.md) + what pip resolved for it on 2026-11-11
+# (pip download, debian:bookworm-slim, python3 3.11.2). Hash-pinned: pip install --require-hashes.
+Adafruit-PureIO==1.1.11 --hash=sha256:281ab2099372cc0decc26326918996cbf21b8eed694ec4764d51eefa029d324e
+adafruit-blinka==9.1.0 --hash=sha256:6f617d4ebb7c2e14dfe1259c63f21df4a77d1b12d5efd92cf71ae4bf34d21b91
+adafruit-circuitpython-bno08x==1.3.3 --hash=sha256:30a9fce5cbf140a1fccb69722f142d753f4c4d72a29f1590884b5d8ffd7d4adc
+adafruit-circuitpython-busdevice==5.2.17 --hash=sha256:5a834fbe0b88b07d20494bec566815da154aa4b1b668e2e665277b34b3578e44
+adafruit-circuitpython-connectionmanager==3.1.8 --hash=sha256:f93e27874a840f728b5cdbb1bcf0aee4e75ed1c0ba46b4562606ac3ac3ea2cca
+adafruit-circuitpython-requests==4.1.18 --hash=sha256:83b63cfd25ec45bec6401dd1f5109d8e262749bd4d1e8ad6e61d5a4a4a7f6dd5
+adafruit-circuitpython-typing==1.13.0 --hash=sha256:6bfb25ae818a81d569a0048a179815f5944b846edf8f3a2043a84622d8610434
+adafruit-platformdetect==3.88.0 --hash=sha256:69e694d80d551c6cb8e39f731e6ee0de1f135e64cffee0e2a665b1f9579c10d7
+binho-host-adapter==0.1.6 --hash=sha256:f71ca176c1e2fc1a5dce128beb286da217555c6c7c805f2ed282a6f3507ec277
+pyftdi==0.57.2 --hash=sha256:dec3acdc262594d8b1850a6aee608b861c2973f90011faf5cccae3107d3c67a4
+pyserial==3.5 --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0
+pyusb==1.3.1 --hash=sha256:bf9b754557af4717fe80c2b07cc2b923a9151f5c08d17bdb5345dac09d6a0430
+sysv-ipc==1.2.0 --hash=sha256:6128b3f6bc3e5e4027e80d58e8d34e6c2c027453bf3a831c72f5e6e3a786bd0b
+typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

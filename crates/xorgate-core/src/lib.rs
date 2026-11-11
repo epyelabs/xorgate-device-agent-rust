@@ -83,3 +83,11 @@ pub mod upload_keys;
 pub mod upload_step;
 pub mod video_capture;
 pub mod video_presets;
+// Phase 7c WP1 (the Rust BNO085 reader's pure codec + its frozen I/O traits).
+pub mod imu_io;
+pub mod py_fmt;
+pub mod sh2;
+pub mod shtp;
+// Phase 7c WP2: the BNO085 client state machine and its lockstep runner.
+pub mod bno08x_client;
+pub mod imu_lockstep;
