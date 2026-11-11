@@ -26,8 +26,10 @@ never written to the scrubbed file (meta says `"seed": "secret"`); with
 `--seed-out` it goes to a 0600 file in the PRIVATE dir only. With a public
 seed, anyone could recompute every draw, and a redraw (taken only where the
 draw equalled the original) would reveal that original exactly. A redraw is a
-fresh draw from the same secret stream, so no fixed relation to the original
-remains either. `--seed N` exists for tests only.
+fresh draw of the SAME field at the SAME trend index with fresh jitter from a
+separate secret stream (review X4): it stays on the trend, so it cannot be
+spotted as an outlier against its neighbours (a uniform redraw could be, and
+the neighbours' median then estimated the original). `--seed N` exists for tests only.
 
 Where the report bytes are: the scrubber replays the Adafruit driver's view of
 the bus (bno08x 1.3.3, `i2c.py:30-105`, `__init__.py:365-392`):
@@ -97,6 +99,7 @@ SENSOR_REPORT_LEN = {
 CONTROL_REPORT_LEN = {0xF8: 16, 0xFC: 17, 0xF1: 16, 0xFB: 5, 0xFA: 5}
 
 KEEP = "keep"
+REDRAW_TRIES = 8
 SENSITIVE_KINDS = ("rv", "rv_acc", "la", "delay", "other", "tail")
 
 
@@ -310,35 +313,57 @@ class SyntheticGen:
 
     def __init__(self, seed):
         self.rng = random.Random(seed)
+        # Redraws use their OWN secret stream, so a redraw never shifts the
+        # draws that follow it (review X4).
+        self.redraw_rng = random.Random(f"redraw:{seed}")
         r = self.rng
         self.p = [r.uniform(20.0, 80.0) for _ in range(4)] + [r.uniform(0.0, 2 * math.pi) for _ in range(6)]
         self.n_rv = 0
         self.n_la = 0
 
-    def rv(self):
-        n = self.n_rv
-        self.n_rv += 1
+    def rv(self, n=None, rng=None):
+        if n is None:
+            n = self.n_rv
+            self.n_rv += 1
         p = self.p
-        ang = 0.8 + 0.5 * math.sin(n / p[0] + p[4]) + self.rng.uniform(-0.01, 0.01)
+        ang = 0.8 + 0.5 * math.sin(n / p[0] + p[4]) + (rng or self.rng).uniform(-0.01, 0.01)
         ax = (math.sin(n / p[1] + p[5]), math.cos(n / p[1] + p[5]), 0.4 + 0.1 * math.sin(n / p[2] + p[6]))
         norm = math.sqrt(sum(a * a for a in ax))
         s = math.sin(ang / 2.0) / norm
         q = (ax[0] * s, ax[1] * s, ax[2] * s, math.cos(ang / 2.0))
         return [_q(v, 14) for v in q]
 
-    def rv_acc(self):
-        return [_q(0.2 + self.rng.uniform(0.0, 0.3), 12)]
+    def rv_acc(self, rng=None):
+        return [_q(0.2 + (rng or self.rng).uniform(0.0, 0.3), 12)]
 
-    def la(self):
-        n = self.n_la
-        self.n_la += 1
-        return [
-            _q(0.15 * math.sin(n / self.p[3] + ph) + self.rng.uniform(-0.03, 0.03), 8)
-            for ph in (self.p[7], self.p[8], self.p[9])
-        ]
+    def la(self, n=None, rng=None):
+        if n is None:
+            n = self.n_la
+            self.n_la += 1
+        r = rng or self.rng
+        return [_q(0.15 * math.sin(n / self.p[3] + ph) + r.uniform(-0.03, 0.03), 8) for ph in (self.p[7], self.p[8], self.p[9])]
 
     def byte(self):
         return self.rng.randrange(256)
+
+    def index(self, kind):
+        """The trend index the NEXT draw of `kind` will use (None: no trend)."""
+        return {"rv": self.n_rv, "la": self.n_la}.get(kind)
+
+    def redraw(self, kind, n, k):
+        """A fresh value for unit `k` of a `kind` field drawn at trend index `n`
+        (review X4): the SAME trend with fresh jitter from the redraw stream, so
+        a redrawn word has the distribution of any other draw and does not stand
+        out from its neighbours. Byte kinds are uniform, like their draws. Uses
+        the base formulas even when a subclass overrides the draws (tests)."""
+        r = self.redraw_rng
+        if kind == "rv":
+            return SyntheticGen.rv(self, n or 0, r)[k]
+        if kind == "rv_acc":
+            return SyntheticGen.rv_acc(self, r)[k]
+        if kind == "la":
+            return SyntheticGen.la(self, n or 0, r)[k]
+        return r.randrange(256)
 
 
 def _draw_units(field, gen):
@@ -358,9 +383,10 @@ def apply_scrub(ops, cls, gen):
     done = set()
     redraws = 0
     for field in cls.fields:
+        n = gen.index(field.kind)
         values = _draw_units(field, gen)
         units = field.units
-        for unit, value in zip(units, values, strict=False):  # a partial report has fewer units
+        for k, (unit, value) in enumerate(zip(units, values, strict=False)):  # a partial report has fewer units
             live = [(j, p) for j, p in enumerate(unit) if cls.sensitive(p) and p not in done]
             if not live:
                 continue
@@ -370,11 +396,25 @@ def apply_scrub(ops, cls, gen):
                 new = bytes([value & 0xFF])
             orig = bytes(bufs[p[0]][p[1]] for _, p in live)
             cand = bytes(new[j] for j, _ in live)
+            v_cur, tries = value, 0
             while cand == orig:
-                # The draw equals the original at THIS position: a fresh draw
-                # from the secret stream (no fixed relation to the original).
+                # The draw equals the original at THIS position: re-draw it ON
+                # the trend (same field, same index, fresh secret jitter), so the
+                # redraw is indistinguishable from any other draw (review X4).
+                # Where the jitter cannot move this unit (e.g. an axis component
+                # near 0), fall back after 8 tries to a +-1 LSB nudge with a
+                # secret sign (+-256 when only the high byte is live).
                 redraws += 1
-                cand = bytes(gen.byte() for _ in cand)
+                tries += 1
+                if tries <= REDRAW_TRIES:
+                    v_cur = gen.redraw(field.kind, n, k)
+                else:
+                    step = 1 if (len(unit) == 1 or any(j == 0 for j, _ in live)) else 256
+                    v_cur += gen.redraw_rng.choice((-step, step))
+                    if len(unit) == 2:
+                        v_cur = max(-32768, min(32767, v_cur))
+                new = struct.pack("<h", v_cur) if len(unit) == 2 else bytes([v_cur & 0xFF])
+                cand = bytes(new[j] for j, _ in live)
             for (_, p), b in zip(live, cand, strict=True):
                 bufs[p[0]][p[1]] = b
                 done.add(p)

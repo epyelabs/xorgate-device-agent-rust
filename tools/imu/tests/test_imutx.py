@@ -277,6 +277,16 @@ class Stats(unittest.TestCase):
         self.assertGreater(st["cadence_hz"], 0)
         self.assertNotIn("hex", json.dumps(st))
 
+    def test_clamp_reads_counted(self):
+        # D3: a 0x7FFF second header -> read(32767) -> i2c-dev returns 8192.
+        recs = [
+            {"op": "meta", "format": "imutx/1"},
+            {"op": "read", "len": 32767, "hex": "00" * 8192, "ret": 8192, "errno": None, "t_us": 0},
+            {"op": "read", "len": 8192, "hex": "00" * 8192, "ret": 8192, "errno": None, "t_us": 1},
+            {"op": "read", "len": 4, "hex": "00000000", "ret": 4, "errno": None, "t_us": 2},
+        ]
+        self.assertEqual(imutx.stats(recs)["clamp_reads"], 1)
+
     def test_probe_fallback_branch(self):
         recs = [
             {"op": "meta", "format": "imutx/1"},

@@ -3,7 +3,7 @@
 
     imutx.py convert RAW.strace -o OUT.imutx [--device /dev/i2c-1] [--keep-raw]
     imutx.py summary FILE.imutx      # counts only
-    imutx.py stats FILE.imutx        # counts only: probe branch, packets/channel, init, zero seeds, cadence
+    imutx.py stats FILE.imutx        # counts only: probe branch, packets/channel, init, zero seeds, cadence, clamps
 
 Reads a transcript written by `tools/imu/capture/bno085_read.py`
 (`strace -q --seccomp-bpf -f -tt --relative-timestamps=ns -T -xx -s 4096
@@ -465,6 +465,8 @@ def stats(records):
                 tail = "1-byte read " + (nxt["errno"] or "ok")
             probe = f"zero-length write {w0['errno']}, then {tail}"
     out["probe"] = probe
+    # D3: reads the i2c-dev 8192-byte cap cut short (a 2nd header of 0x7FFF).
+    out["clamp_reads"] = sum(1 for o in ops if o["op"] == "read" and (o.get("len") or 0) > 8192 and o.get("ret") == 8192)
     ex = next((r for r in records if r["op"] == "exit"), None)
     out["exit_record"] = None if ex is None else (f"code {ex['code']}" if "code" in ex else f"signal {ex['signal']}")
     meta_counts = (records[0].get("counts") or {}) if records and records[0].get("op") == "meta" else {}

@@ -265,6 +265,41 @@ class Scrub(unittest.TestCase):
         self.assertEqual(S.self_check(self.raw, out), [])
         self.assertGreaterEqual(stats["redraws"], 1)
 
+    def test_redraw_that_cannot_leave_the_original_falls_back_to_a_nudge(self):
+        # review X4 termination: an on-trend redraw that keeps returning the
+        # original (a unit the jitter cannot move) must end in a +-1 LSB nudge.
+        class Stuck(S.SyntheticGen):
+            def __init__(self):
+                super().__init__(1)
+                self.rvs = [(1000 + n, -2000, 3000, 12000 - n) for n in range(3)]
+                self.las = [(5 + n, -7, 9) for n in range(3)]
+                self.cur = None
+
+            def rv(self):
+                self.cur = list(self.rvs.pop(0))
+                return list(self.cur)
+
+            def rv_acc(self):
+                self.cur = [0x0123]
+                return list(self.cur)
+
+            def la(self):
+                self.cur = list(self.las.pop(0))
+                return list(self.cur)
+
+            def redraw(self, kind, n, k):
+                return self.cur[k] if kind in ("rv", "rv_acc", "la") else super().redraw(kind, n, k)
+
+        out, stats = self.scrub(gen=Stuck())
+        self.assertEqual(S.self_check(self.raw, out), [])
+        self.assertGreaterEqual(stats["redraws"], 24 * (S.REDRAW_TRIES + 1))
+        raw_ops, new_ops = S.ops_of(self.raw), S.ops_of(out)
+        for f in self.fulls:
+            a, b = bytes.fromhex(raw_ops[f]["hex"]), bytes.fromhex(new_ops[f]["hex"])
+            for lo, _hi in RV_WORDS + LA_WORDS + [RV_ACC]:
+                x, y = struct.unpack_from("<h", a, lo)[0], struct.unpack_from("<h", b, lo)[0]
+                self.assertEqual(abs(x - y), 1)
+
     def test_seed_is_secret(self):
         # review F6: no seed value in the output; default scrubs differ.
         out, _ = self.scrub(seed=123456789)
@@ -287,6 +322,21 @@ class Scrub(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(os.stat(seed).st_mode), 0o600)
             with open(seed) as f, open(out) as g:
                 self.assertNotIn(f.read().strip(), g.read())
+
+    def test_cli_default_seed_is_secret_per_run(self):
+        # review X5: the PRODUCTION path (the CLI without --seed) draws a new
+        # secret seed every run.
+        with tempfile.TemporaryDirectory() as d:
+            raw = os.path.join(d, "raw.imutx")
+            S._write(raw, self.raw)
+            outs = []
+            for n in (1, 2):
+                out = os.path.join(d, f"out{n}.imutx")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(S.main(["scrub", raw, "-o", out, "--stdout-pending"]), 0)
+                with open(out) as f:
+                    outs.append(f.read())
+            self.assertNotEqual(outs[0], outs[1])
 
     def test_refuses_double_scrub_and_non_imutx(self):
         out, _ = self.scrub()
@@ -338,3 +388,75 @@ class OracleHook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _words_of(ops, cls):
+    """{kind: [[unit values per field] ...]} for complete word units, in order."""
+    out = {"rv": [], "la": [], "rv_acc": []}
+    for f in cls.fields:
+        if f.kind in out and all(len(u) == 2 for u in f.units):
+            out[f.kind].append([struct.unpack("<h", bytes(bytes.fromhex(ops[u[0][0]]["hex"])[p[1]] for p in u))[0]
+                                for u in f.units])
+    return out
+
+
+class OnTrendRedraw(unittest.TestCase):
+    """review X4: a redrawn word must stay on the synthetic trend. The raw
+    transcript here is built so that EVERY original equals its draw, so every
+    unit is redrawn; the redraws must look like ordinary draws."""
+
+    SEED = 4242
+    N = 150
+
+    def setUp(self):
+        tx = synth.Tx()
+        tx.probe()
+        tx.send(1, b"\x01")
+        for n in range(self.N):
+            tx.packet(3, synth.base_ts() + synth.rv_report(n % 256, (0, 0, 0, 0), 0) + synth.la_report(n % 256, (0, 0, 0)))
+        ops = tx.ops()
+        cls = S.classify(ops)
+        gen = S.SyntheticGen(self.SEED)
+        bufs = {i: bytearray.fromhex(op["hex"]) for i, op in enumerate(ops) if op["op"] == "read"}
+        for f in cls.fields:  # the same draw order as apply_scrub
+            for unit, v in zip(f.units, S._draw_units(f, gen), strict=False):
+                b = struct.pack("<h", v) if len(unit) == 2 else bytes([v & 0xFF])
+                for j, p in enumerate(unit):
+                    bufs[p[0]][p[1]] = b[j]
+        for i, b in bufs.items():
+            ops[i]["hex"] = b.hex()
+        self.raw = [tx.recs[0]] + ops
+        self.cls = cls
+
+    def test_every_unit_is_redrawn_on_the_trend(self):
+        out, stats = S.scrub(self.raw, seed=self.SEED, stdout_pending=True)
+        self.assertEqual(S.self_check(self.raw, out), [])
+        self.assertGreaterEqual(stats["redraws"], self.N * (4 + 1 + 3))
+        draws = _words_of(S.ops_of(self.raw), self.cls)  # raw == the draws
+        redrawn = _words_of(S.ops_of(out), self.cls)
+        # Same trend index, fresh jitter: |redraw - draw| stays within the
+        # generator's jitter span (LA: 2 x 0.03 m/s^2 in Q8 = 15.4 LSB; RV: an
+        # angle jitter of 0.02 rad moves a Q14 component by < 0.01 x 16384).
+        bound = {"la": 16, "rv": 165, "rv_acc": int(0.3 * 4096) + 1}
+        for kind, b in bound.items():
+            worst = max(abs(x - y) for fa, fb in zip(draws[kind], redrawn[kind], strict=True)
+                        for x, y in zip(fa, fb, strict=True))
+            self.assertLessEqual(worst, b, f"{kind}: a redraw left the trend by {worst} LSB")
+
+    def test_redraws_do_not_stand_out_from_their_neighbours(self):
+        out, _ = S.scrub(self.raw, seed=self.SEED, stdout_pending=True)
+
+        def worst_dev(series):
+            worst = 0
+            for i in range(len(series)):
+                nb = sorted(series[max(0, i - 4):i] + series[i + 1:i + 5])
+                worst = max(worst, abs(series[i] - nb[len(nb) // 2]))
+            return worst
+
+        base = _words_of(S.ops_of(self.raw), self.cls)  # ordinary draws: the attacker's baseline
+        new = _words_of(S.ops_of(out), self.cls)
+        for kind in ("rv", "la"):
+            for c in range(len(base[kind][0])):
+                b = worst_dev([f[c] for f in base[kind]])
+                w = worst_dev([f[c] for f in new[kind]])
+                self.assertLessEqual(w, 2 * b + 4, f"{kind}[{c}]: redraws deviate {w} LSB vs {b} for plain draws")

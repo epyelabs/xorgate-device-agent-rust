@@ -65,9 +65,22 @@ MUTANTS = [
      "reviewer R10: converter keeps a FOREIGN pid's device open"),
     ("R5", "scrub_imutx.py", "            and ret == req\n", "",
      "reviewer R5: full-read detection ignores ret == req"),
-    ("R9", "scrub_imutx.py", "                cand = bytes(gen.byte() for _ in cand)\n",
-     "                cand = bytes(gen.byte() for _ in range(2))\n",
-     "reviewer R9: the redraw of a 1-byte unit is broken"),
+    ("R9", "scrub_imutx.py",
+     '                new = struct.pack("<h", v_cur) if len(unit) == 2 else bytes([v_cur & 0xFF])\n',
+     '                new = struct.pack("<h", v_cur) if len(unit) == 2 else orig[:1]\n',
+     "reviewer R9: the redraw of a 1-byte unit never changes the byte (the suite hangs: killed by the timeout)"),
+    ("X4a", "scrub_imutx.py", "                    v_cur = gen.redraw(field.kind, n, k)\n",
+     "                    v_cur = gen.redraw_rng.randrange(-32768, 32768) if len(unit) == 2 else gen.redraw_rng.randrange(256)\n",
+     "review X4: a word redraw is a uniform 16-bit value (the old, detectable redraw)"),
+    ("X4b", "scrub_imutx.py", "REDRAW_TRIES = 8\n", "REDRAW_TRIES = 10**9\n",
+     "review X4: no bounded fallback (an unmovable unit loops forever: killed by the timeout)"),
+    ("X5", "scrub_imutx.py", "    seed = secrets.randbits(64) if a.seed is None else a.seed\n",
+     "    seed = 0x7C0A if a.seed is None else a.seed\n",
+     "review X5: the CLI default seed is a public constant"),
+    ("S9", "scrub_imutx.py", "        seed = secrets.randbits(64)\n", "        seed = 0x7C0A\n",
+     "scrub() default seed is a public constant (reviewer N1)"),
+    ("D3", "imutx.py", '(o.get("len") or 0) > 8192 and', '(o.get("len") or 0) >= 0 and',
+     "W0 lesson D3: the clamp count also counts an exact 8192-byte read"),
     ("S8", "scrub_imutx.py", '    meta["scrubbed"] = {"tool": TOOL, "seed": "secret", "stdout": stdout_state}\n',
      '    meta["scrubbed"] = {"tool": TOOL, "seed": seed, "stdout": stdout_state}\n',
      "scrubber records the seed in meta (review F6)"),
@@ -86,9 +99,15 @@ MUTANTS = [
 ]
 
 
+SUITE_TIMEOUT_S = 120  # a hanging suite is a failing suite (redraw-loop mutants)
+
+
 def run_suite(root):
-    p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=root,
-                       capture_output=True, text=True)
+    try:
+        p = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=root,
+                           capture_output=True, text=True, timeout=SUITE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return 124, f"TIMEOUT after {SUITE_TIMEOUT_S} s"
     last = (p.stderr.strip().splitlines() or [""])[-1]
     return p.returncode, last
 
