@@ -2,6 +2,8 @@
 """strace -> `*.imutx` converter (Phase 7c WP0a; plan §WP0a, review F18).
 
     imutx.py convert RAW.strace -o OUT.imutx [--device /dev/i2c-1] [--keep-raw]
+    imutx.py summary FILE.imutx      # counts only
+    imutx.py stats FILE.imutx        # counts only: probe branch, packets/channel, init, zero seeds, cadence
 
 Reads a transcript written by `tools/imu/capture/bno085_read.py`
 (`strace -qq --seccomp-bpf -f -tt -r -T -xx -s 4096
@@ -435,6 +437,60 @@ def summarize(records, counts):
     return s
 
 
+def stats(records):
+    """The WP0b `wp0-capture.md` numbers, COUNTS ONLY (no value leaves this):
+    the probe branch, packets per channel, init duration, zero-seed samples,
+    cadence, plus the `summarize` counts."""
+    from scrub_imutx import classify, ops_of  # same directory; lazy to keep imutx standalone
+
+    ops = ops_of(records)
+    out = summarize(records, {})
+    writes = [o for o in ops if o["op"] == "write"]
+    probe = "none"
+    if writes and writes[0].get("len") == 0:
+        w0 = writes[0]
+        if w0.get("errno") is None:
+            probe = "zero-length write accepted"
+        else:
+            i = ops.index(w0)
+            nxt = next((o for o in ops[i + 1 :] if o["op"] in ("read", "write")), None)
+            tail = "no 1-byte read"
+            if nxt is not None and nxt["op"] == "read" and nxt.get("len") == 1:
+                tail = "1-byte read " + (nxt["errno"] or "ok")
+            probe = f"zero-length write {w0['errno']}, then {tail}"
+    out["probe"] = probe
+    per_channel = {}
+    for _idx, _count, channel in classify(ops).full_reads:
+        per_channel[str(channel)] = per_channel.get(str(channel), 0) + 1
+    out["packets_per_channel"] = per_channel
+    t_first = ops[0]["t_us"] if ops else None
+    ready_t = None
+    samples = []
+    zero_quat = zero_lin = 0
+    for r in records:
+        if r["op"] != "stdout":
+            continue
+        try:
+            obj = json.loads(r["line"])
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") == "ready" and ready_t is None:
+            ready_t = r["t_us"]
+        if obj.get("type") == "sample":
+            samples.append(r["t_us"])
+            zero_quat += all(v == 0 for v in (obj.get("quat") or {}).values())
+            zero_lin += all(v == 0 for v in (obj.get("linaccel") or {}).values())
+    out["init_ms"] = round((ready_t - t_first) / 1000, 1) if ready_t is not None and t_first is not None else None
+    out["zero_seed_samples"] = {"quat_all_zero": zero_quat, "linaccel_all_zero": zero_lin}
+    if len(samples) > 1:
+        out["cadence_hz"] = round((len(samples) - 1) / ((samples[-1] - samples[0]) / 1e6), 2)
+    else:
+        out["cadence_hz"] = None
+    return out
+
+
 def write_records(records, out_path):
     d = os.path.dirname(os.path.abspath(out_path))
     fd, tmp = tempfile.mkstemp(prefix=".imutx-", dir=d)
@@ -467,10 +523,15 @@ def main(argv=None):
     c.add_argument("--keep-raw", action="store_true", help="do NOT delete the raw strace (tests only)")
     s = sub.add_parser("summary", help="counts-only summary of an imutx file")
     s.add_argument("imutx")
+    t = sub.add_parser("stats", help="counts-only WP0b numbers (probe, channels, init, zero seeds, cadence)")
+    t.add_argument("imutx")
     a = ap.parse_args(argv)
 
     if a.cmd == "summary":
         print(json.dumps(summarize(read_records(a.imutx), {}), sort_keys=True))
+        return 0
+    if a.cmd == "stats":
+        print(json.dumps(stats(read_records(a.imutx)), sort_keys=True))
         return 0
     try:
         with open(a.raw, encoding="latin-1") as f:

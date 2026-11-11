@@ -137,7 +137,8 @@ class FakeStraceRun(unittest.TestCase):
             self.assertEqual(p.returncode, 4)
             self.assertEqual(p.stdout, '{"type": "ready"}\n')
             self.assertEqual(p.stderr, "")
-            argv = json.load(open(argv_log))
+            with open(argv_log) as f:
+                argv = json.load(f)
             self.assertEqual(argv[1:-4], [*PLAN_FLAGS, "-o", os.path.join(out, "w0-1.strace")])
             self.assertEqual(argv[-4:], ["python3", helper, "--address", "0x4a"])
 

@@ -203,5 +203,30 @@ class ConvertCli(unittest.TestCase):
         self.assertNotIn("hex", json.dumps(s))
 
 
+class Stats(unittest.TestCase):
+    def test_counts_only_stats(self):
+        sys.path.insert(0, HERE)
+        import synth
+
+        tx, _ = synth.basic()
+        st = imutx.stats(tx.recs)
+        self.assertEqual(st["probe"], "zero-length write accepted")
+        self.assertEqual(st["packets_per_channel"], {"0": 1, "2": 1, "3": 3})
+        self.assertEqual(st["zero_seed_samples"], {"quat_all_zero": 0, "linaccel_all_zero": 3})
+        self.assertEqual(st["stdout"]["sample"], 3)
+        self.assertIsNotNone(st["init_ms"])
+        self.assertGreater(st["cadence_hz"], 0)
+        self.assertNotIn("hex", json.dumps(st))
+
+    def test_probe_fallback_branch(self):
+        recs = [
+            {"op": "meta", "format": "imutx/1"},
+            {"op": "open", "ret": 3, "errno": None, "t_us": 0},
+            {"op": "write", "len": 0, "hex": "", "ret": -1, "errno": "EOPNOTSUPP", "t_us": 1},
+            {"op": "read", "len": 1, "hex": "00", "ret": 1, "errno": None, "t_us": 2},
+        ]
+        self.assertEqual(imutx.stats(recs)["probe"], "zero-length write EOPNOTSUPP, then 1-byte read ok")
+
+
 if __name__ == "__main__":
     unittest.main()
