@@ -56,6 +56,8 @@ MUTANTS = [
     ("C9", "imutx.py", "            if self._is_device_fd(pid, fd):\n                self.i2c_fds[pid].discard(fd)\n",
      "            if False:\n                self.i2c_fds[pid].discard(fd)\n",
      "converter ignores close() of the device fd (review Q3)"),
+    ("C11", "imutx.py", '                self._emit({"op": "close", **base})\n', "",
+     "converter drops the device-fd close op record"),
     ("C10", "imutx.py", '                self._emit({"op": "exit", "code": int(me.group("code")), "t_us": t_us})\n',
      "                pass\n", "converter drops the normal exit code (review F3)"),
     ("R10", "imutx.py", "                if pid == self.main_pid:\n                    if fd is not None:\n",

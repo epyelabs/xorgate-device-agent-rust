@@ -15,6 +15,7 @@ Reads a transcript written by `tools/imu/capture/bno085_read.py`
     {"op": "write", "len": 5, "hex": "0500010001", "ret": 5, "errno": null, "t_us": .., "dur_us": ..}
     {"op": "read",  "len": 4, "hex": "....", "ret": 4, "errno": null, "t_us": .., "dur_us": ..}
     {"op": "read",  "len": 4, "hex": "", "ret": -1, "errno": "EAGAIN", "t_us": .., "dur_us": ..}
+    {"op": "close", "ret": 0, "errno": null, "t_us": .., "dur_us": ..}   (device fd only)
     {"op": "stdout", "line": "{\"type\": \"ready\", \"address\": \"0x4a\"}", "t_us": ..}
     {"op": "signal", "sig": "SIGTERM", "t_us": ..}
     {"op": "exit", "signal": "SIGTERM", "t_us": ..}      (death by signal)
@@ -41,9 +42,11 @@ Reads a transcript written by `tools/imu/capture/bno085_read.py`
 - `dur_us`: the `-T` duration.
 - `exit {code}` comes from `+++ exited with N +++` (kept by `-q`, review F3);
   `exit {signal}` from `+++ killed by SIG +++`.
-- `close` of the device fd ends the device mapping (counted as
-  `device_closes`, no op record); `fd_reuse` counts a device fd number that a
-  later `openat` reused without a traced close. Both counts land in meta.
+- `close` of the device fd is an op record `{op: close, ret, errno, t_us,
+  dur_us}` in sequence (the WP2 lockstep treats it as an op), ends the device
+  mapping and is counted as `device_closes`; a close of any other fd is
+  count-only. `fd_reuse` counts a device fd number that a later `openat`
+  reused without a traced close. Both counts land in meta.
 
 F18: after the output is written (temp file, fsync, rename, mode 0600) the RAW
 strace is DELETED unless `--keep-raw`. A parse failure keeps the raw file and
@@ -363,6 +366,7 @@ class Converter:
             if self._is_device_fd(pid, fd):
                 self.i2c_fds[pid].discard(fd)
                 self.counts["device_closes"] += 1
+                self._emit({"op": "close", **base})
             else:
                 self.counts["dropped_syscalls"] += 1
             return
@@ -419,7 +423,7 @@ def summarize(records, counts):
     s = {"ops": {}, "errnos": {}, "stdout": {"ready": 0, "sample": 0, "error": 0, "non_json": 0, "partial": 0}}
     for r in records:
         op = r["op"]
-        if op in ("open", "ioctl", "read", "write"):
+        if op in ("open", "ioctl", "read", "write", "close"):
             s["ops"][op] = s["ops"].get(op, 0) + 1
             if r.get("errno"):
                 s["errnos"][r["errno"]] = s["errnos"].get(r["errno"], 0) + 1

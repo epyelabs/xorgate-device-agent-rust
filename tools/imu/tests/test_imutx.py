@@ -173,9 +173,20 @@ class ConvertEdges(unittest.TestCase):
             "7 10:00:00.000300 (+     0.000100000) close(5) = 0 <0.000002>",
         ]
         recs, counts = imutx.convert_lines(lines)
-        self.assertEqual([r["op"] for r in recs[1:]], ["open"])
+        # The device close is an op, in sequence; the read on the closed fd
+        # number and the close of fd 5 are count-only.
+        self.assertEqual([r["op"] for r in recs[1:]], ["open", "close"])
+        self.assertEqual(recs[2], {"op": "close", "ret": 0, "errno": None, "t_us": 100, "dur_us": 2})
         self.assertEqual(counts["device_closes"], 1)
         self.assertEqual(counts["dropped_syscalls"], 2)
+
+    def test_failed_device_close_keeps_its_errno(self):
+        lines = [
+            f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            "7 10:00:00.000100 (+     0.000100000) close(3) = -1 EIO (Input/output error) <0.000002>",
+        ]
+        recs, _ = imutx.convert_lines(lines)
+        self.assertEqual((recs[-1]["op"], recs[-1]["ret"], recs[-1]["errno"]), ("close", -1, "EIO"))
 
     def test_foreign_pid_device_open_is_not_kept(self):
         # pid 7 is the main tracee; pid 8 (a child or thread) opens the device.

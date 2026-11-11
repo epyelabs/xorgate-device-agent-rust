@@ -105,6 +105,8 @@ FAKE_HELPER = textwrap.dedent(
     f.write(bytes([5, 0, 1, 0, 1]))
     f.seek(0)
     f.read(4)
+    if sys.argv[1:] != ["--loop"]:
+        f.close()  # a deterministic device close (otherwise left to interpreter shutdown)
     print('{"type": "ready", "address": "0x4a"}', flush=True)
     if sys.argv[1:] == ["--loop"]:
         while True:
@@ -207,6 +209,7 @@ class RealStrace(unittest.TestCase):
                 ("write", None, 0, "", None),
                 ("write", None, 5, "0500010001", None),
                 ("read", None, 4, "05000100", None),  # reads back the bytes it wrote
+                ("close", None, None, None, None),
                 ("stdout", None, None, None, None),
                 ("stdout", None, None, None, None),
                 ("exit", None, None, None, None),
