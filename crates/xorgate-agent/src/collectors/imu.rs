@@ -22,13 +22,31 @@
 //! The euler mount correction re-reads `settings.json` `imuMount` per mapped
 //! tick (`imu.ts:90`), so a cloud config change applies live.
 //!
+//! Phase 7c (WP3, `phase-7c-rust-imu.md` §Design 1/3): `XORGATE_IMU_BACKEND`
+//! picks the reader the collector spawns, and NOTHING else changes —
+//! detection, the supervision ladder, the log lines (the park line keeps its
+//! Python wording, R7) and the NDJSON consumer are the same code for both:
+//! - unset / empty / `python` → `python3 <python_dir>/bno085_read.py
+//!   --address 0x4a`, byte-identical to before (the default; C6);
+//! - `rust` → the agent's own binary re-executed as the Rust reader:
+//!   program `XORGATE_IMU_READER_BIN`, or [`SELF_EXE`] (`/proc/self/exe`)
+//!   when that is unset or blank, `argv[0] = xorgate-imu`, args
+//!   `__imu-reader --address 0x4a` (tape `imu_spawn` argv
+//!   `["xorgate-imu", "__imu-reader", "--address", "0x4a"]`);
+//! - anything else → `python` and ONE warn per process.
+//!
+//! Both are read when the collector starts a reader, so a re-detect re-reads
+//! them. CM4 rule (plan R9 / Q-C4): no BCM2711 device enables `rust` until a
+//! CM4 A/B row passes — an operational rule, not enforced here (wp3.md).
+//!
 //! TS quirk reproduced: execa 9 (`reject:false`) resolves a spawn failure
 //! with `notFound:false`, so `streamImuData`'s "python3 not found …" line
 //! (`hardware/imu.ts:170-174`) NEVER prints; a missing interpreter reads as
 //! `reader exited before any sample (exit ?)` (probed with tsx on the 89b5c64
 //! scratch copy; WP2 evidence, ambiguity A3).
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard, Once};
 
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -49,6 +67,93 @@ use crate::ctx::{AgentCtx, BoxFut, GroupSample};
 
 /// The helper's file name (`pythonScript("bno085_read.py")`).
 pub const IMU_HELPER: &str = "bno085_read.py";
+
+/// Phase 7c: the reader backend switch (§Design 3). Unset/empty = `python`.
+pub const IMU_BACKEND_ENV: &str = "XORGATE_IMU_BACKEND";
+/// Phase 7c: the program the `rust` backend executes (rig relay, the C10b
+/// strace wrapper, the shared profile's blocking shim). Unset/blank = the
+/// running agent binary ([`SELF_EXE`]).
+pub const IMU_READER_BIN_ENV: &str = "XORGATE_IMU_READER_BIN";
+/// What the `rust` backend executes by default: the running binary's own
+/// inode, so a re-exec still works after `xorgate-rs update` replaced the
+/// file on disk (7a's capture-host rule).
+pub use crate::recording::capture::backend::SELF_EXE;
+
+/// Which reader a `XORGATE_IMU_BACKEND` value selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImuBackend {
+    /// `python3 <python_dir>/bno085_read.py` (the default; byte parity).
+    Python,
+    /// `xorgate-rs __imu-reader` (phase 7c).
+    Rust,
+}
+
+/// `XORGATE_IMU_BACKEND` → backend: unset or empty → `python`; `python` /
+/// `rust` (trimmed, case-sensitive); anything else → `python` and
+/// `Err(value)` so the caller warns once. Pure: never reads the env.
+pub fn select_imu_backend(value: Option<&str>) -> Result<ImuBackend, String> {
+    match value.map(str::trim) {
+        None | Some("") | Some("python") => Ok(ImuBackend::Python),
+        Some("rust") => Ok(ImuBackend::Rust),
+        Some(other) => Err(other.to_string()),
+    }
+}
+
+/// The reader's [`ChildSpec`] for a detected address, given the two knob
+/// values (`None` = unset). An invalid backend warns ONCE per process and
+/// falls back to `python`. Pure apart from that one warn.
+pub fn reader_spec(
+    backend: Option<&str>,
+    reader_bin: Option<&str>,
+    python_dir: &Path,
+    addr: u32,
+) -> ChildSpec {
+    let kind = select_imu_backend(backend).unwrap_or_else(|bad| {
+        static WARN: Once = Once::new();
+        WARN.call_once(|| {
+            warn!("[imu] {IMU_BACKEND_ENV}={bad:?} is not python|rust; using python")
+        });
+        ImuBackend::Python
+    });
+    match kind {
+        ImuBackend::Python => {
+            let script = python_dir.join(IMU_HELPER);
+            ChildSpec::new(
+                "python3",
+                vec![
+                    script.display().to_string(),
+                    "--address".to_string(),
+                    to_hex_addr(addr),
+                ],
+            )
+        }
+        ImuBackend::Rust => {
+            let exe = reader_bin
+                .filter(|v| !v.trim().is_empty())
+                .map_or_else(|| SELF_EXE.to_string(), str::to_string);
+            let mut spec = ChildSpec::new(
+                exe,
+                vec![
+                    crate::imu_reader::SUBCOMMAND.to_string(),
+                    "--address".to_string(),
+                    to_hex_addr(addr),
+                ],
+            );
+            spec.arg0 = Some(crate::imu_reader::PROCESS_NAME.to_string());
+            spec
+        }
+    }
+}
+
+/// The argv the tape's `imu_spawn` records: `argv[0]` as the child sees it
+/// (`arg0` when set: `xorgate-imu`), then the args — as 7a records
+/// `xorgate-capture`. For the python backend this is exactly
+/// [`ChildSpec::argv`] (`python3 …`), unchanged.
+pub fn tape_argv(spec: &ChildSpec) -> Vec<String> {
+    std::iter::once(spec.arg0.clone().unwrap_or_else(|| spec.program.clone()))
+        .chain(spec.args.iter().cloned())
+        .collect()
+}
 
 /// The IMU's edges: detection and the helper spawn (injectable for tests).
 pub trait ImuIo: Send + Sync + 'static {
@@ -180,16 +285,13 @@ impl Shared {
             }
         };
         info!("{}", detected_line(addr));
-        let script = self.ctx.paths.python_dir.join(super::imu::IMU_HELPER);
-        let spec = ChildSpec::new(
-            "python3",
-            vec![
-                script.display().to_string(),
-                "--address".to_string(),
-                to_hex_addr(addr),
-            ],
+        let spec = reader_spec(
+            std::env::var(IMU_BACKEND_ENV).ok().as_deref(),
+            std::env::var(IMU_READER_BIN_ENV).ok().as_deref(),
+            &self.ctx.paths.python_dir,
+            addr,
         );
-        self.ctx.tape.imu_spawn(&spec.argv());
+        self.ctx.tape.imu_spawn(&tape_argv(&spec));
         let (handle, rx) = self.io.spawn(&spec);
         self.lock().stream = Some(handle);
         self.run(rx).await;
@@ -294,5 +396,110 @@ impl Collector for ImuCollector {
                 updated_mono: mono,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    const PY: &str = "/opt/xorgate-rs/python";
+
+    /// The spec main (`4d66542`) built, verbatim (`collectors/imu.rs:183-191`
+    /// there): the C6 reference for "knob unset → byte-identical".
+    fn main_spec(python_dir: &Path, addr: u32) -> ChildSpec {
+        let script = python_dir.join(IMU_HELPER);
+        ChildSpec::new(
+            "python3",
+            vec![
+                script.display().to_string(),
+                "--address".to_string(),
+                to_hex_addr(addr),
+            ],
+        )
+    }
+
+    fn same(a: &ChildSpec, b: &ChildSpec) -> bool {
+        a.program == b.program
+            && a.args == b.args
+            && a.env == b.env
+            && a.cwd == b.cwd
+            && a.arg0 == b.arg0
+    }
+
+    #[test]
+    fn the_backend_value_table() {
+        use ImuBackend::*;
+        assert_eq!(select_imu_backend(None), Ok(Python));
+        assert_eq!(select_imu_backend(Some("")), Ok(Python));
+        assert_eq!(select_imu_backend(Some("  ")), Ok(Python));
+        assert_eq!(select_imu_backend(Some("python")), Ok(Python));
+        assert_eq!(select_imu_backend(Some(" python\n")), Ok(Python));
+        assert_eq!(select_imu_backend(Some("rust")), Ok(Rust));
+        assert_eq!(select_imu_backend(Some("\trust ")), Ok(Rust));
+        // case-sensitive; anything else is an error the caller warns about
+        assert_eq!(select_imu_backend(Some("Rust")), Err("Rust".into()));
+        assert_eq!(select_imu_backend(Some("PYTHON")), Err("PYTHON".into()));
+        assert_eq!(select_imu_backend(Some("rust2")), Err("rust2".into()));
+    }
+
+    #[test]
+    fn knob_unset_gives_a_byte_identical_python_spec() {
+        let dir = PathBuf::from(PY);
+        let want = main_spec(&dir, 0x4a);
+        for backend in [
+            None,
+            Some(""),
+            Some("python"),
+            Some(" python "),
+            Some("bogus"),
+        ] {
+            for bin in [None, Some(""), Some("/x/y")] {
+                let got = reader_spec(backend, bin, &dir, 0x4a);
+                assert!(same(&got, &want), "{backend:?}/{bin:?}: {got:?}");
+                assert_eq!(tape_argv(&got), want.argv(), "{backend:?}/{bin:?}");
+            }
+        }
+        assert_eq!(
+            want.argv(),
+            [
+                "python3",
+                "/opt/xorgate-rs/python/bno085_read.py",
+                "--address",
+                "0x4a"
+            ]
+        );
+        // 0x4b too (the other address detection can report)
+        assert!(same(
+            &reader_spec(None, None, &dir, 0x4b),
+            &main_spec(&dir, 0x4b)
+        ));
+    }
+
+    #[test]
+    fn rust_reexecs_proc_self_exe_as_xorgate_imu() {
+        let dir = PathBuf::from(PY);
+        for bin in [None, Some(""), Some("   ")] {
+            let s = reader_spec(Some("rust"), bin, &dir, 0x4a);
+            assert_eq!(s.program, "/proc/self/exe", "{bin:?}: a blank BIN is unset");
+            assert_eq!(s.arg0.as_deref(), Some("xorgate-imu"));
+            assert_eq!(s.args, ["__imu-reader", "--address", "0x4a"]);
+            assert!(s.env.is_empty() && s.cwd.is_none());
+            assert_eq!(
+                tape_argv(&s),
+                ["xorgate-imu", "__imu-reader", "--address", "0x4a"]
+            );
+        }
+        assert_eq!(SELF_EXE, "/proc/self/exe");
+        let s = reader_spec(
+            Some("rust"),
+            Some("/rig/cache/bin/xorgate-replay"),
+            &dir,
+            0x4b,
+        );
+        assert_eq!(s.program, "/rig/cache/bin/xorgate-replay");
+        assert_eq!(s.arg0.as_deref(), Some("xorgate-imu"));
+        assert_eq!(s.args, ["__imu-reader", "--address", "0x4b"]);
     }
 }

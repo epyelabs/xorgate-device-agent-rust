@@ -43,7 +43,17 @@ crossterm = { workspace = true }
 futures-core = { workspace = true }
 unicode-width = { workspace = true }
 
+[features]
+# Phase 7c WP3: the IMU reader's TEST-ONLY socket transport
+# (`imu_reader/test_bus.rs`). Enabled ONLY by the self dev-dependency below,
+# i.e. in `cargo test` / `clippy --all-targets` builds; `cargo build` (rig,
+# tarball, CI release) never has it.
+imu-test-bus = []
+
 [dev-dependencies]
+# Phase 7c WP3: `tests/imu_reader.rs` runs the real `xorgate-rs __imu-reader`
+# over the test bus.
+xorgate-agent = { path = ".", features = ["imu-test-bus"] }
 xorgate-hal = { workspace = true, features = ["test-support"] }
 # `start_paused` tests of the spine (tokio::time::pause); `net` for the stub broker.
 tokio = { workspace = true, features = ["test-util", "net"] }

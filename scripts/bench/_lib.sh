@@ -135,7 +135,7 @@ PY
 # absent file (masters never start), the exclusive one at the packaged runtime.
 env_file_guard() {
   local bad
-  bad=$(grep -E "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7A_KNOBS_RE)=" "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
+  bad=$(grep -E "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7A_KNOBS_RE|$P7C_KNOBS_RE)=" "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
   if [ -n "$bad" ]; then
     echo "REFUSING: $RS_ENV sets $(echo "$bad" | tr '\n' ' ')— an EnvironmentFile overrides the profile drop-ins; remove those keys by hand"
     exit 1
@@ -164,13 +164,14 @@ inputs_safe() {
   grep -qx 'Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: GPS_NMEA_PORT=/run/xorgate-rs-no-gps in $INPUTS_DROPIN"; ok=1; }
   grep -qx 'Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python in $INPUTS_DROPIN"; ok=1; }
   grep -qx "HARDWARE_MANIFEST=$HW_SHARED" "$RS_ENV" 2>/dev/null || { echo "  missing: HARDWARE_MANIFEST=$HW_SHARED in $RS_ENV (dev-manifests.sh)"; ok=1; }
-  if grep -qE "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7A_KNOBS_RE)=" "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN/XORGATE_LED_*/XORGATE_SMS_PORT/XORGATE_OBD_*/XORGATE_CAPTURE_*/XORGATE_SIDECAR_TIMING"; ok=1; fi
+  if grep -qE "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7A_KNOBS_RE|$P7C_KNOBS_RE)=" "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN/XORGATE_LED_*/XORGATE_SMS_PORT/XORGATE_OBD_*/XORGATE_CAPTURE_*/XORGATE_SIDECAR_TIMING/XORGATE_IMU_*"; ok=1; fi
   if [ -f "/etc/xorgate/hardware.json" ]; then
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("imu"))' "$HW_SHARED" 2>/dev/null)" = None ] || { echo "  missing: imu: null in $HW_SHARED (dev-manifests.sh / profile.sh shared)"; ok=1; }
   fi
   p4_inputs_safe || ok=1
   p5b_inputs_safe || ok=1
   p7a_inputs_safe || ok=1
+  p7c_inputs_safe || ok=1
   return $ok
 }
 profile_shared() {
@@ -233,6 +234,15 @@ Environment=XORGATE_SMS_PORT=/run/xorgate-rs-no-sms
 # carry either knob (env_file_guard: an EnvironmentFile beats these).
 Environment=XORGATE_CAPTURE_BACKEND=gst-launch
 Environment=XORGATE_CAPTURE_HOST_BIN=/var/lib/xorgate-rs/shared-shims/xorgate-capture
+# Phase 7c (WP3, §Design 3): the JS prod agent owns the BNO085, and two SHTP
+# clients break the sensor. The `rust` IMU backend IGNORES
+# XORGATE_PYTHON_DIR=no-python above, so one guard would be one mistake away
+# from a second client: the backend is pinned to python (whose helper the
+# no-python dir hides), AND the Rust reader's program is the blocking
+# shared-shims/xorgate-imu (exit 1), so a stray XORGATE_IMU_BACKEND=rust still
+# opens no I2C bus. The env file may not carry either knob (env_file_guard).
+Environment=XORGATE_IMU_BACKEND=python
+Environment=XORGATE_IMU_READER_BIN=/var/lib/xorgate-rs/shared-shims/xorgate-imu
 CONF
   remove_if_present "$EXCLUSIVE_DROPIN" || true
 }
@@ -274,6 +284,10 @@ UnsetEnvironment=XORGATE_LED_GPIOCHIP XORGATE_SMS_PORT XORGATE_LED_WRITER
 # XORGATE_SIDECAR_TIMING) in /run/xorgate-agent-rs-exclusive.env (an
 # EnvironmentFile beats Environment=).
 UnsetEnvironment=XORGATE_CAPTURE_HOST_BIN
+# Phase 7c (WP3): likewise the Rust IMU reader re-executes the packaged agent
+# binary (no shim in the window); the backend stays the shared pin (python),
+# and a 7c window turns `rust` on in /run/xorgate-agent-rs-exclusive.env.
+UnsetEnvironment=XORGATE_IMU_READER_BIN
 # EnvironmentFile= wins over Environment=, and a later file over an earlier
 # one: this one (last drop-in) points HARDWARE_MANIFEST at the real IMU block
 # and KVS_MANIFEST at the channels-on DEV manifest (beats agent-rs-dev.env).
@@ -335,7 +349,7 @@ c15_check() {
 # Phase 3 (WP6) additions — media-off shared profile, window helpers
 # (plan phase-3-recording-media.md §Bench recipe, P3/P7/P13). Appended only.
 SHIMS_DIR=$RS_HOME/shared-shims
-SHIM_NAMES="rpicam-hello gst-launch-1.0 pinctrl xorgate-capture"
+SHIM_NAMES="rpicam-hello gst-launch-1.0 pinctrl xorgate-capture xorgate-imu"
 SHARED_PATH=$SHIMS_DIR:/usr/local/bin:/usr/bin:/bin
 NO_KVS=$RS_HOME/no-kvs
 KVS_SHARED=$RS_ETC/kvs.json
@@ -1005,6 +1019,53 @@ p7a_inputs_safe() {
   grep -qx "Environment=XORGATE_CAPTURE_HOST_BIN=$HOST_SHIM" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_CAPTURE_HOST_BIN=$HOST_SHIM in $INPUTS_DROPIN (Phase 7a)"; ok=1; }
   if [ "$(grep -c '^Environment=XORGATE_CAPTURE_' "$INPUTS_DROPIN" 2>/dev/null)" != 2 ]; then echo "  UNSAFE: $INPUTS_DROPIN must set XORGATE_CAPTURE_* exactly twice (the two pins)"; ok=1; fi
   return $ok
+}
+# ---------------------------------------------------------------------------
+# Phase 7c (WP3, phase-7c-rust-imu.md §Design 3) — the Rust IMU reader
+# (`xorgate-rs __imu-reader`, argv[0] and comm `xorgate-imu`). The knobs live
+# ONLY in the shared drop-in (pins) and, in a window, a /run drop-in or the
+# exclusive env file; never in $RS_ENV (an EnvironmentFile beats the pins).
+P7C_KNOBS_RE='XORGATE_IMU_[A-Z_]*'
+IMU_SHIM=$SHIMS_DIR/xorgate-imu
+# 0 when the Phase 7c half of the shared profile is in force: BOTH pins in the
+# shared drop-in, and no other XORGATE_IMU_* line there (the shim itself is
+# checked with the other SHIM_NAMES: present, exits 1).
+p7c_inputs_safe() {
+  local ok=0
+  grep -qx "Environment=XORGATE_IMU_BACKEND=python" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_IMU_BACKEND=python in $INPUTS_DROPIN (Phase 7c)"; ok=1; }
+  grep -qx "Environment=XORGATE_IMU_READER_BIN=$IMU_SHIM" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_IMU_READER_BIN=$IMU_SHIM in $INPUTS_DROPIN (Phase 7c)"; ok=1; }
+  if [ "$(grep -c '^Environment=XORGATE_IMU_' "$INPUTS_DROPIN" 2>/dev/null)" != 2 ]; then echo "  UNSAFE: $INPUTS_DROPIN must set XORGATE_IMU_* exactly twice (the two pins)"; ok=1; fi
+  return $ok
+}
+# The live SHTP clients on this host (WP4: <= 1 at every switch): python IMU
+# helpers (`python3 …/bno085_read.py`) and Rust readers (comm `xorgate-imu`),
+# each tagged with the unit whose cgroup holds it (JS, RUST or other).
+# Test seam: XORGATE_TEST_IMU_PIDS_CMD (a bash command whose stdout replaces
+# the /proc scan; NEVER set on the bench).
+imu_reader_pids() {
+  if [ -n "${XORGATE_TEST_IMU_PIDS_CMD:-}" ]; then bash -c "$XORGATE_TEST_IMU_PIDS_CMD"; return 0; fi
+  local d p comm cmd
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    pid_alive "$p" || continue
+    comm=$(cat "$d/comm" 2>/dev/null) || continue
+    if [ "$comm" = xorgate-imu ]; then echo "$p"; continue; fi
+    cmd=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null) || continue
+    case "$cmd" in python3\ */bno085_read.py*|*/python3\ */bno085_read.py*) echo "$p" ;; esac
+  done
+}
+imu_readers_report() {
+  local p n=0 owner kind line=""
+  for p in $(imu_reader_pids); do
+    n=$((n + 1))
+    if grep -qE "/$UNIT\.service(/|\$)" "/proc/$p/cgroup" 2>/dev/null; then owner=RUST
+    elif grep -qE "/$JS_UNIT\.service(/|\$)" "/proc/$p/cgroup" 2>/dev/null; then owner=JS
+    else owner=other; fi
+    if [ "$(cat "/proc/$p/comm" 2>/dev/null)" = xorgate-imu ]; then kind=xorgate-imu; else kind=python; fi
+    line="$line $owner:$kind:$p"
+  done
+  echo "  IMU readers (SHTP clients): $n${line:+ ->$line}"
+  if [ "$n" -gt 1 ]; then echo "  UNSAFE: $n SHTP clients on the BNO085 (two clients break the sensor)"; fi
 }
 LIB
 }

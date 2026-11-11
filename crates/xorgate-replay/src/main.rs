@@ -8,6 +8,7 @@
 //! xorgate-replay play  --tape T --out RUN --a js|rust --b js|rust [rig flags]   (inside the rig)
 //! xorgate-replay diff  RUN [--tolerances tools/replay/tolerances.toml] [-o RUN/diff.md]
 //! xorgate-replay imu-lockstep FILE.imutx… [--errno fixtures/imu_oracle/errno.json] [--verbose]
+//! xorgate-replay __imu-reader --address 0x4a   (the rig's IMU relay, run by a `rust`-backend agent)
 //! ```
 #![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
@@ -16,6 +17,7 @@ mod diff;
 mod diff_p4;
 mod handoff;
 mod imu_lockstep_cli;
+mod imu_relay;
 mod inspect;
 mod media;
 mod media_diff;
@@ -96,6 +98,12 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
+    // Phase 7c WP3: `xorgate-replay __imu-reader …` is the rig's Rust-backend
+    // IMU relay (the player points a `rust` side's XORGATE_IMU_READER_BIN at
+    // this binary); dispatched before clap, like the agent's own subcommand.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(imu_relay::SUBCOMMAND)) {
+        std::process::exit(imu_relay::main());
+    }
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Inspect { tape, dump, kinds } => {

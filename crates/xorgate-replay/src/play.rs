@@ -245,6 +245,12 @@ fn is_capture_knob(k: &str) -> bool {
     k.starts_with("XORGATE_CAPTURE_") || k == "XORGATE_SIDECAR_TIMING"
 }
 
+/// Phase 7c (WP3): the Rust IMU reader knobs (`XORGATE_IMU_BACKEND`,
+/// `XORGATE_IMU_READER_BIN`). The JS agent ignores them too.
+fn is_imu_knob(k: &str) -> bool {
+    k.starts_with("XORGATE_IMU_")
+}
+
 /// The capture-host knobs on a JS side are an error: the JS agent ignores
 /// them, so a run labelled `host`/`exact` would silently compare gst-launch.
 /// Checked at the side's first start (`rig_side_env`) AND at every handoff
@@ -254,6 +260,9 @@ fn refuse_js_knobs(kind: AgentKind, env: &[(String, String)]) -> Result<()> {
     if kind == AgentKind::Js {
         if let Some((k, _)) = env.iter().find(|(k, _)| is_capture_knob(k)) {
             bail!("{k} is a Rust capture-host knob: refused on a JS side");
+        }
+        if let Some((k, _)) = env.iter().find(|(k, _)| is_imu_knob(k)) {
+            bail!("{k} is a Rust IMU reader knob: refused on a JS side");
         }
     }
     Ok(())
@@ -289,13 +298,31 @@ fn incarnation_env(
 /// with the real `libcamerasrc`) unless the caller set one. The capture-host
 /// knobs on a JS side are an error: the JS agent ignores them, so a run
 /// labelled `host`/`exact` would silently compare gst-launch.
+///
+/// Phase 7c (WP3, §Design 6): a `XORGATE_IMU_BACKEND=rust` side gets
+/// `XORGATE_IMU_READER_BIN=<relay>` (the player's own binary, whose
+/// `__imu-reader` subcommand is the argv-asserting IMU relay; the agent
+/// would otherwise re-exec itself and open `/dev/i2c-1`) unless the caller
+/// set one.
 pub fn rig_side_env(
     kind: AgentKind,
     extra: &[(String, String)],
     bin: &Path,
+    relay: &Path,
 ) -> Result<Vec<(String, String)>> {
     refuse_js_knobs(kind, extra)?;
     let mut out = extra.to_vec();
+    let rust_imu = extra
+        .iter()
+        .rev()
+        .find(|(k, _)| k == "XORGATE_IMU_BACKEND")
+        .is_some_and(|(_, v)| v.trim() == "rust");
+    if rust_imu && !extra.iter().any(|(k, _)| k == "XORGATE_IMU_READER_BIN") {
+        out.push((
+            "XORGATE_IMU_READER_BIN".to_string(),
+            relay.display().to_string(),
+        ));
+    }
     let host = extra
         .iter()
         .rev()
@@ -1220,7 +1247,8 @@ impl Agent {
             }
         }
         // Phase 7a (WP3): the side's own knobs, last (they win).
-        for (k, v) in rig_side_env(kind, args.env_for(label), &bin)? {
+        let relay = std::env::current_exe().context("the player's own path (IMU relay)")?;
+        for (k, v) in rig_side_env(kind, args.env_for(label), &bin, &relay)? {
             env.retain(|(ek, _)| *ek != k);
             env.push((k, v));
         }
@@ -3909,6 +3937,59 @@ mod tests {
     /// the rig shim as its host program (never the agent's own re-exec, which
     /// would run the real libcamerasrc); an explicit HOST_BIN is kept; the
     /// capture-host knobs are refused on a JS side; a bad pair is refused.
+    const RELAY_STR: &str = "/rig/cache/bin/xorgate-replay";
+
+    /// Phase 7c (WP3): a `XORGATE_IMU_BACKEND=rust` side's reader program is
+    /// the relay (the player's own binary) unless given; python/unset sides
+    /// get nothing; the IMU knobs are refused on a JS side and on a JS
+    /// handoff incarnation.
+    #[test]
+    fn side_env_points_a_rust_imu_side_at_the_relay_and_refuses_js() {
+        let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let bin = Path::new("/tmp/rig-work/b/bin");
+        assert_eq!(
+            rig_side_env(
+                AgentKind::Rust,
+                &[kv("XORGATE_IMU_BACKEND", "rust")],
+                bin,
+                Path::new(RELAY_STR)
+            )
+            .unwrap(),
+            vec![
+                kv("XORGATE_IMU_BACKEND", "rust"),
+                kv("XORGATE_IMU_READER_BIN", "/rig/cache/bin/xorgate-replay"),
+            ]
+        );
+        for v in ["python", "", "bogus"] {
+            assert_eq!(
+                rig_side_env(
+                    AgentKind::Rust,
+                    &[kv("XORGATE_IMU_BACKEND", v)],
+                    bin,
+                    Path::new(RELAY_STR)
+                )
+                .unwrap(),
+                vec![kv("XORGATE_IMU_BACKEND", v)]
+            );
+        }
+        let own = [
+            kv("XORGATE_IMU_BACKEND", "rust"),
+            kv("XORGATE_IMU_READER_BIN", "/x"),
+        ];
+        assert_eq!(
+            rig_side_env(AgentKind::Rust, &own, bin, Path::new(RELAY_STR)).unwrap(),
+            own.to_vec()
+        );
+        for k in ["XORGATE_IMU_BACKEND", "XORGATE_IMU_READER_BIN"] {
+            let e = rig_side_env(AgentKind::Js, &[kv(k, "rust")], bin, Path::new(RELAY_STR))
+                .unwrap_err();
+            assert!(e.to_string().contains(k), "{e}");
+            let e =
+                incarnation_env(AgentKind::Js, &[kv(k, "rust")], Path::new("/w/b"), 1).unwrap_err();
+            assert!(e.to_string().contains("refused on a JS side"), "{e}");
+        }
+    }
+
     #[test]
     fn side_env_points_a_host_side_at_the_shim_and_refuses_js() {
         use clap::Parser;
@@ -3933,7 +4014,7 @@ mod tests {
         let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
         let bin = Path::new("/tmp/rig-work/b/bin");
         assert_eq!(
-            rig_side_env(AgentKind::Rust, p.env_for("b"), bin).unwrap(),
+            rig_side_env(AgentKind::Rust, p.env_for("b"), bin, Path::new(RELAY_STR)).unwrap(),
             vec![
                 kv("XORGATE_CAPTURE_BACKEND", "host"),
                 kv("XORGATE_SIDECAR_TIMING", "exact"),
@@ -3948,7 +4029,8 @@ mod tests {
             rig_side_env(
                 AgentKind::Rust,
                 &[kv("XORGATE_CAPTURE_BACKEND", "gst-launch")],
-                bin
+                bin,
+                Path::new(RELAY_STR)
             )
             .unwrap(),
             vec![kv("XORGATE_CAPTURE_BACKEND", "gst-launch")]
@@ -3959,7 +4041,7 @@ mod tests {
             kv("XORGATE_CAPTURE_HOST_BIN", "/x"),
         ];
         assert_eq!(
-            rig_side_env(AgentKind::Rust, &own, bin).unwrap(),
+            rig_side_env(AgentKind::Rust, &own, bin, Path::new(RELAY_STR)).unwrap(),
             own.to_vec()
         );
         // A JS side cannot take a capture-host knob (it would ignore it).
@@ -3968,10 +4050,11 @@ mod tests {
             "XORGATE_SIDECAR_TIMING",
             "XORGATE_CAPTURE_HOST_BIN",
         ] {
-            let e = rig_side_env(AgentKind::Js, &[kv(k, "host")], bin).unwrap_err();
+            let e = rig_side_env(AgentKind::Js, &[kv(k, "host")], bin, Path::new(RELAY_STR))
+                .unwrap_err();
             assert!(e.to_string().contains(k), "{e}");
         }
-        assert!(rig_side_env(AgentKind::Js, &[kv("FOO", "1")], bin).is_ok());
+        assert!(rig_side_env(AgentKind::Js, &[kv("FOO", "1")], bin, Path::new(RELAY_STR)).is_ok());
         // review-close F4: a handoff to a JS incarnation refuses them too
         // (`--env-b XORGATE_CAPTURE_BACKEND=host --then-b js`), whatever
         // the side started as; a Rust incarnation keeps them and gets its
@@ -3981,6 +4064,7 @@ mod tests {
             AgentKind::Rust,
             &[kv("XORGATE_CAPTURE_BACKEND", "host")],
             bin,
+            Path::new(RELAY_STR),
         )
         .unwrap();
         for env in [knobbed.clone(), vec![kv("XORGATE_SIDECAR_TIMING", "exact")]] {

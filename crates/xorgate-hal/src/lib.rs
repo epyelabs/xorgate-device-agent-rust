@@ -24,6 +24,7 @@ pub mod fragment_stat;
 pub mod fs_watch;
 pub mod gzip_finalize;
 pub mod hardware_file;
+pub mod i2c_dev;
 pub mod imu_detect;
 pub mod io;
 pub mod kvs_manifest_io;
