@@ -420,10 +420,16 @@ cmd_clean() {
     echo "removed compose leftovers of $p"
   done
   # 4. its target dir, then its dir (root-owned leftovers through a labelled container).
-  docker run --rm --label "xorgate.agent=$TAG" -v "$HL_TARGET_VOL:/target" alpine rm -rf "/target/$TAG" && echo "removed /target/$TAG"
+  # The helper's own amd64 image: the homelab's `alpine:latest` is an arm64
+  # image (exec format error without binfmt), and re-pulling would retag it.
+  local img; img=$(script_image)
+  docker image inspect "$img" >/dev/null 2>&1 || die "script-tests image $img missing (run the images job): nothing removed"
+  if docker run --rm --platform linux/amd64 --label "xorgate.agent=$TAG" -v "$HL_TARGET_VOL:/target" "$img" rm -rf "/target/$TAG"; then
+    echo "removed /target/$TAG"
+  else die "could not remove /target/$TAG"; fi
   rm -f "$SHARED/res/${TAG}_"*
   if ! rm -rf "${T:?}" 2>/dev/null; then
-    docker run --rm --label "xorgate.agent=$TAG" -v "$ROOT:/r" alpine rm -rf "/r/$TAG"
+    docker run --rm --platform linux/amd64 --label "xorgate.agent=$TAG" -v "$ROOT:/r" "$img" rm -rf "/r/$TAG"
     [ "${HL_DRYRUN:-0}" = 1 ] || rm -rf "${T:?}"
   fi
   echo "removed $T"

@@ -256,7 +256,7 @@ STUB_PS_GREP=c "$HL" clean t1 >/dev/null 2>&1
 [ "$(cat "$LOG/killed")" = "killed hl_t1_x" ] && ok "only session hl_t1_x killed" || { bad "sessions killed:"; cat "$LOG/killed"; }
 grep -q '^docker ps -aq --filter label=xorgate.agent=t1$' "$LOG/docker.log" && ok "container filter = exactly label xorgate.agent=t1" || bad "container filter"
 grep -q '^docker rm -f c1 c2$' "$LOG/docker.log" && ok "removes the labelled containers" || bad "docker rm"
-grep -q 'alpine rm -rf /target/t1$' "$LOG/docker.log" && ok "removes /target/t1 only" || bad "target rm"
+grep -q 'run --rm --platform linux/amd64 --label xorgate.agent=t1 -v xorgate-rs-p7-target:/target xorgate-rs-script-tests:bookworm-[0-9a-f]* rm -rf /target/t1$' "$LOG/docker.log" && ok "removes /target/t1 only (amd64 helper image)" || { bad "target rm"; grep 'rm -rf' "$LOG/docker.log"; }
 [ ! -e "$T1" ] && [ -d "$T2" ] && [ -d "$FH/xorgate-rs-p7/_shared" ] && ok "t1 dir gone; t2 and _shared kept" || bad "dirs after clean"
 ! grep -q 'docker \(system\|image\|builder\|volume\) prune' "$LOG/docker.log" && ok "no prune of any kind" || bad "a prune ran"
 
