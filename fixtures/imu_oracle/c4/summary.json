@@ -11,7 +11,7 @@
   "stdout_lines": 5,
   "samples": 4,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.22295,
   "problems": []
  },
@@ -27,7 +27,7 @@
   "stdout_lines": 3,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 6.11285,
   "problems": []
  },
@@ -43,7 +43,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 12.28135,
   "problems": []
  },
@@ -59,7 +59,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 3.64075,
   "problems": []
  },
@@ -75,7 +75,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0202,
   "problems": []
  },
@@ -91,7 +91,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0202,
   "problems": []
  },
@@ -107,7 +107,7 @@
   "stdout_lines": 5,
   "samples": 4,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.04205,
   "problems": []
  },
@@ -123,7 +123,7 @@
   "stdout_lines": 5,
   "samples": 4,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.22295,
   "problems": []
  },
@@ -139,7 +139,7 @@
   "stdout_lines": 6,
   "samples": 5,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.3232,
   "problems": []
  },
@@ -155,7 +155,7 @@
   "stdout_lines": 26,
   "samples": 5,
   "d80_lines": 20,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.4737,
   "problems": []
  },
@@ -171,7 +171,7 @@
   "stdout_lines": 39,
   "samples": 6,
   "d80_lines": 32,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.7747,
   "problems": []
  },
@@ -187,7 +187,7 @@
   "stdout_lines": 4,
   "samples": 3,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.22295,
   "problems": []
  },
@@ -203,7 +203,7 @@
   "stdout_lines": 9,
   "samples": 5,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.3232,
   "problems": []
  },
@@ -219,7 +219,7 @@
   "stdout_lines": 5,
   "samples": 3,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 6.92695,
   "problems": []
  },
@@ -235,7 +235,7 @@
   "stdout_lines": 51,
   "samples": 50,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 8.11965,
   "problems": []
  },
@@ -251,7 +251,7 @@
   "stdout_lines": 37,
   "samples": 7,
   "d80_lines": 29,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.5634,
   "problems": []
  },
@@ -267,7 +267,7 @@
   "stdout_lines": 3,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.0825,
   "problems": []
  },
@@ -283,7 +283,7 @@
   "stdout_lines": 26,
   "samples": 5,
   "d80_lines": 20,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.4737,
   "problems": []
  },
@@ -299,7 +299,7 @@
   "stdout_lines": 14,
   "samples": 0,
   "d80_lines": 13,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 3.77145,
   "problems": []
  },
@@ -315,7 +315,7 @@
   "stdout_lines": 3,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.02245,
   "problems": []
  },
@@ -331,7 +331,7 @@
   "stdout_lines": 6,
   "samples": 5,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.3232,
   "problems": []
  },
@@ -347,7 +347,7 @@
   "stdout_lines": 5,
   "samples": 4,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.27295,
   "problems": []
  },
@@ -363,7 +363,7 @@
   "stdout_lines": 4,
   "samples": 3,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.22295,
   "problems": []
  },
@@ -379,7 +379,7 @@
   "stdout_lines": 27,
   "samples": 5,
   "d80_lines": 21,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.52395,
   "problems": []
  },
@@ -395,7 +395,7 @@
   "stdout_lines": 4,
   "samples": 3,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.12245,
   "problems": []
  },
@@ -411,7 +411,7 @@
   "stdout_lines": 4,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 24.12395,
   "problems": []
  },
@@ -427,7 +427,7 @@
   "stdout_lines": 4,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 4.02445,
   "problems": []
  },
@@ -443,7 +443,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 3.7614,
   "problems": []
  },
@@ -459,7 +459,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0002,
   "problems": []
  },
@@ -475,7 +475,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0102,
   "problems": []
  },
@@ -491,7 +491,7 @@
   "stdout_lines": 4,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 4.02445,
   "problems": []
  },
@@ -507,7 +507,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0001,
   "problems": []
  },
@@ -523,7 +523,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0001,
   "problems": []
  },
@@ -539,7 +539,7 @@
   "stdout_lines": 2,
   "samples": 1,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 1.8619,
   "problems": []
  },
@@ -555,7 +555,7 @@
   "stdout_lines": 3,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.0325,
   "problems": []
  },
@@ -571,7 +571,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0202,
   "problems": []
  },
@@ -587,7 +587,7 @@
   "stdout_lines": 1,
   "samples": 0,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 0.0202,
   "problems": []
  },
@@ -603,7 +603,7 @@
   "stdout_lines": 6,
   "samples": 5,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.37345,
   "problems": []
  },
@@ -619,7 +619,7 @@
   "stdout_lines": 3,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 4.12295,
   "problems": []
  },
@@ -635,7 +635,7 @@
   "stdout_lines": 4,
   "samples": 3,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.1227,
   "problems": []
  },
@@ -651,7 +651,7 @@
   "stdout_lines": 4,
   "samples": 3,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.97695,
   "problems": []
  },
@@ -667,7 +667,7 @@
   "stdout_lines": 3,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 9.1781,
   "problems": []
  },
@@ -683,7 +683,7 @@
   "stdout_lines": 3,
   "samples": 2,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.08275,
   "problems": []
  },
@@ -699,7 +699,7 @@
   "stdout_lines": 6,
   "samples": 5,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
   "virtual_s": 2.3232,
   "problems": []
  },
@@ -715,7 +715,439 @@
   "stdout_lines": 4,
   "samples": 3,
   "d80_lines": 0,
-  "stderr": "",
+  "stderr_bytes": 0,
+  "virtual_s": 2.18275,
+  "problems": []
+ },
+ {
+  "name": "s01b_large_advert",
+  "row": 1,
+  "title": "a ~276-byte channel-0 advertisement after each soft reset (c5.md 2d; synthetic bytes)",
+  "exit": {
+   "code": 0
+  },
+  "records": 115,
+  "ops": 96,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.02245,
+  "problems": []
+ },
+ {
+  "name": "s01c_cached_runs",
+  "row": 1,
+  "title": "runs of cached (repeated) samples after empty reads, then fresh ones (c5.md 2f)",
+  "exit": {
+   "code": 0
+  },
+  "records": 355,
+  "ops": 292,
+  "stdout_lines": 25,
+  "samples": 24,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 4.10735,
+  "problems": []
+ },
+ {
+  "name": "s09b_la_before_rv",
+  "row": 9,
+  "title": "batches carry linear acceleration BEFORE the rotation vector (c5.md 2b)",
+  "exit": {
+   "code": 0
+  },
+  "records": 151,
+  "ops": 126,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s27c_product_id_3_reports",
+  "row": 27,
+  "title": "a 3-report, 52-byte product-id packet on channel 2 during init (c5.md 2c)",
+  "exit": {
+   "code": 0
+  },
+  "records": 115,
+  "ops": 96,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.02245,
+  "problems": []
+ },
+ {
+  "name": "s25b_seq_skip_wraps",
+  "row": 25,
+  "title": "channel-3 sequence advances by 37 per packet: many wraps that skip past 255 (c5.md 2e)",
+  "exit": {
+   "code": 0
+  },
+  "records": 829,
+  "ops": 694,
+  "stdout_lines": 61,
+  "samples": 60,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 7.9274,
+  "problems": []
+ },
+ {
+  "name": "s19b_eagain_40x",
+  "row": 19,
+  "title": "40 consecutive loop-read EAGAINs: the TypeError text becomes the 40x text (review-wp2 F1)",
+  "exit": {
+   "code": 4
+  },
+  "records": 234,
+  "ops": 176,
+  "stdout_lines": 4,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 4.42445,
+  "problems": []
+ },
+ {
+  "name": "s18f_clamp_40x",
+  "row": 18,
+  "title": "40 consecutive 8192-clamped reads: 'index out of range' becomes the 40x text (review-wp2 F1)",
+  "exit": {
+   "code": 4
+  },
+  "records": 394,
+  "ops": 336,
+  "stdout_lines": 4,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 5.22845,
+  "problems": []
+ },
+ {
+  "name": "s16b_sigint_buffered_exit",
+  "row": 16,
+  "title": "SIGINT at an error-path sleep with _data_ready lines still buffered: close, THEN the exit flush (F4)",
+  "exit": {
+   "code": 0
+  },
+  "records": 122,
+  "ops": 100,
+  "stdout_lines": 5,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.09255,
+  "problems": []
+ },
+ {
+  "name": "s16c_sigint_in_init",
+  "row": 16,
+  "title": "SIGINT in soft reset's 0.5 s sleep: Python unwinds (closes the bus), dies by SIGINT (F5, D83)",
+  "exit": {
+   "signal": "SIGINT"
+  },
+  "records": 10,
+  "ops": 6,
+  "stdout_lines": 0,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr_bytes": 1070,
+  "virtual_s": 0.0202,
+  "problems": []
+ },
+ {
+  "name": "s29b_sigterm_in_init",
+  "row": 29,
+  "title": "SIGTERM during init (after the 2nd soft reset): death by signal, no close",
+  "exit": {
+   "signal": "SIGTERM"
+  },
+  "records": 13,
+  "ops": 8,
+  "stdout_lines": 0,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 1.0303,
+  "problems": []
+ },
+ {
+  "name": "s04b_enable_budget_boundary",
+  "row": 4,
+  "title": "the 2 s enable budget: a check lands on exactly 2.0 s (`<`, not `<=`) -> exit 3 (F8)",
+  "exit": {
+   "code": 3
+  },
+  "records": 64,
+  "ops": 44,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 3.75,
+  "problems": []
+ },
+ {
+  "name": "s03b_wait_budget_boundary",
+  "row": 3,
+  "title": "the 2 s _wait_for_packet budget: a check lands on exactly 2.0 s; the attempt is retried (F8)",
+  "exit": {
+   "code": 0
+  },
+  "records": 139,
+  "ops": 106,
+  "stdout_lines": 2,
+  "samples": 1,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 6.1017,
+  "problems": []
+ },
+ {
+  "name": "s01_clean_init_rs",
+  "row": 1,
+  "title": "clean init, ready, samples [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 139,
+  "ops": 116,
+  "stdout_lines": 5,
+  "samples": 4,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.22295,
+  "problems": []
+ },
+ {
+  "name": "s01b_large_advert_rs",
+  "row": 1,
+  "title": "a ~276-byte channel-0 advertisement after each soft reset (c5.md 2d; synthetic bytes) [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 115,
+  "ops": 96,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.02245,
+  "problems": []
+ },
+ {
+  "name": "s02_id_second_attempt_rs",
+  "row": 2,
+  "title": "product id read on the 2nd attempt [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 739,
+  "ops": 512,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 6.11285,
+  "problems": []
+ },
+ {
+  "name": "s07_zero_first_sample_rs",
+  "row": 7,
+  "title": "zero seeds: all-zero, then quat-only, then full samples [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 103,
+  "ops": 80,
+  "stdout_lines": 5,
+  "samples": 4,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.04205,
+  "problems": []
+ },
+ {
+  "name": "s09_base_timestamp_rs",
+  "row": 9,
+  "title": "FB/FA-prefixed batches, several reports, a continuation-bit header [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 151,
+  "ops": 126,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s09b_la_before_rv_rs",
+  "row": 9,
+  "title": "batches carry linear acceleration BEFORE the rotation vector (c5.md 2b) [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 151,
+  "ops": 126,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s10_unprocessable_rs",
+  "row": 10,
+  "title": "'Unprocessable Batch bytes' mid-stream (#49), then recovery [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 192,
+  "ops": 146,
+  "stdout_lines": 26,
+  "samples": 5,
+  "d80_lines": 20,
+  "stderr_bytes": 0,
+  "virtual_s": 2.4737,
+  "problems": []
+ },
+ {
+  "name": "s13_ffff_header_rs",
+  "row": 13,
+  "title": "0xFFFF / 0x7FFF headers: the two _data_ready lines, stale sample [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 154,
+  "ops": 126,
+  "stdout_lines": 9,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s15_self_reset_frozen_rs",
+  "row": 15,
+  "title": "sensor resets itself: KeyError(0), Unprocessable(1), then frozen (SYNTHETIC; W0 pending) [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 194,
+  "ops": 134,
+  "stdout_lines": 37,
+  "samples": 7,
+  "d80_lines": 29,
+  "stderr_bytes": 0,
+  "virtual_s": 2.5634,
+  "problems": []
+ },
+ {
+  "name": "s17_leftover_slices_rs",
+  "row": 17,
+  "title": "FB+05+04+1-byte remainder, then a good 05: the STALE RV wins (F1) [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 192,
+  "ops": 146,
+  "stdout_lines": 26,
+  "samples": 5,
+  "d80_lines": 20,
+  "stderr_bytes": 0,
+  "virtual_s": 2.4737,
+  "problems": []
+ },
+ {
+  "name": "s24a_count0_and_short_rs",
+  "row": 24,
+  "title": "loop: 2nd header count 0 -> PacketError -> continue; count 3 -> short read, empty packet [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 161,
+  "ops": 136,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.37345,
+  "problems": []
+ },
+ {
+  "name": "s26_queued_12_rs",
+  "row": 26,
+  "title": ">= 12 packets queued during an enable: 11 handled per call [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 298,
+  "ops": 276,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.97695,
+  "problems": []
+ },
+ {
+  "name": "s27_zero_part_number_rs",
+  "row": 27,
+  "title": "_check_id: part number 0 -> waits out the 5 s budget on other traffic -> retry [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 1653,
+  "ops": 1122,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 9.1781,
+  "problems": []
+ },
+ {
+  "name": "s27c_product_id_3_reports_rs",
+  "row": 27,
+  "title": "a 3-report, 52-byte product-id packet on channel 2 during init (c5.md 2c) [restamp per transfer]",
+  "exit": {
+   "code": 0
+  },
+  "records": 115,
+  "ops": 96,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.02245,
+  "problems": []
+ },
+ {
+  "name": "s29_sigterm_midloop_rs",
+  "row": 29,
+  "title": "SIGTERM mid-loop: death by signal; the buffered _data_ready lines are LOST [restamp per transfer]",
+  "exit": {
+   "signal": "SIGTERM"
+  },
+  "records": 128,
+  "ops": 107,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
   "virtual_s": 2.18275,
   "problems": []
  }

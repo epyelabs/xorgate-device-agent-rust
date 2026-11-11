@@ -35,8 +35,12 @@ review-wp0-tools item 1):
 - (c) a stdout record's `t_us` is the virtual time of the write that emitted
   it: the end (`t_us + dur_us`) of the last op consumed before it (0 before
   the first op); in model mode the virtual clock at that moment;
-- (d) `signal` / `exit` records pass through, and the helper's own exit
-  (code or signal) must equal the transcript's `exit` record when it has one.
+- (d) `signal` / `exit` records pass through; the `exit` record is MANDATORY
+  and the helper's own exit (code or signal) must equal it (review-wp2 F6);
+- (e) a transcript whose meta `counts` show a capture defect
+  (`truncated_strings`, `other_pid_stdout_writes`, `foreign_pid_device_ops`,
+  `fd_reuse`) is refused; `replay` FAILS a transcript with no stdout records
+  (review-wp2 F2).
 
 `close` records: one on the device fd is an op (the helper closes the bus at
 interpreter teardown via `SMBus.__del__`); a `close` record that names a
@@ -90,6 +94,11 @@ def f64_bits(x):
 
 def bits_f64(b):
     return struct.unpack("<d", struct.pack("<Q", b))[0]
+
+
+# meta `counts` of the WP0a converter that make a capture incomplete
+# (review-wp2 F2): any of them > 0 and the transcript is refused.
+CAPTURE_DEFECTS = ("truncated_strings", "other_pid_stdout_writes", "foreign_pid_device_ops", "fd_reuse")
 
 
 class OracleMismatch(Exception):
@@ -360,6 +369,10 @@ class ReplayBackend:
         if not records or records[0].get("op") != "meta":
             raise OracleMismatch("not an imutx transcript (no meta record)")
         self.meta = records[0]
+        counts = self.meta.get("counts") or {}
+        bad = {k: counts[k] for k in CAPTURE_DEFECTS if counts.get(k)}
+        if bad:
+            raise OracleMismatch(f"capture defects in meta counts: {bad} (an incomplete capture is never replayed)")
         self.inp = records[1:]
         self.expected_stdout = [r for r in self.inp if r["op"] == "stdout"]
         self.body = [r for r in self.inp if r["op"] != "stdout"]
@@ -473,16 +486,15 @@ class ReplayBackend:
         if left_ops:
             raise OracleMismatch(f"the helper exited ({exit_}) with {len(left_ops)} transcript records left "
                                  f"(next: {left_ops[0]['op']})")
-        if want is not None:
-            got = {k: exit_[k] for k in exit_}
-            exp = {k: want[k] for k in ("code", "signal") if k in want}
-            if got != exp:
-                raise OracleMismatch(f"exit {got} vs the transcript's {exp}")
-            self.rec.add(want)
-        else:
-            # No exit record (a capture without one): record the helper's exit in
-            # meta only, so the op stream stays exactly the input's (contract a).
-            self.rec.records[0]["oracle_exit"] = exit_
+        if want is None:
+            # review-wp2 F6: the exit record is MANDATORY (the W0/B'' capture uses
+            # `strace -q`, which keeps `+++ exited with N +++`).
+            raise OracleMismatch(f"the transcript has no exit record (the helper exited {exit_})")
+        got = {k: exit_[k] for k in exit_}
+        exp = {k: want[k] for k in ("code", "signal") if k in want}
+        if got != exp:
+            raise OracleMismatch(f"exit {got} vs the transcript's {exp}")
+        self.rec.add(want)
 
 
 # --------------------------------------------------------------------------
@@ -575,12 +587,15 @@ def cmd_scenario(a):
             "records": len(be.rec.records), "ops": sum(be.counts.values()),
             "stdout_lines": len(lines), "samples": be.samples,
             "d80_lines": len(lines) - len(strip_d80(lines)),
-            "stderr": stderr.decode("utf-8", "replace"),
+            "stderr_bytes": len(stderr),
             "virtual_s": be.ns / 1e9,
         }
         problems = sc.check(be, exit_, lines)
-        if stderr:
+        allowed = getattr(sc, "allow_stderr", None)
+        if stderr and not (allowed and allowed in stderr.decode("utf-8", "replace")):
             problems.append("helper wrote to stderr")
+        if allowed and allowed not in stderr.decode("utf-8", "replace"):
+            problems.append(f"expected {allowed!r} on stderr")
         row["problems"] = problems
         summary.append(row)
         print(f"{name:<34} row {sc.row:>2} exit {exit_} ops {row['ops']:>6} samples {be.samples:>3} "
@@ -607,12 +622,16 @@ def cmd_replay(a):
            "exit": exit_, "stdout_expected": len(want), "stdout_got": len(got),
            "stdout_equal": [x[1] for x in want] == [x[1] for x in got], "positions_equal": want == got,
            "ignored_closes": be.ignored_closes, "stderr_bytes": len(stderr)}
-    if want and want != got:
+    if want != got:
         first = next((i for i, (x, y) in enumerate(zip(want, got, strict=False)) if x != y), min(len(want), len(got)))
         res["first_stdout_diff"] = first
+    if not want:
+        # review-wp2 F2: a transcript without stdout records is a broken capture
+        # (fd 1 lost, or written by an untraced syscall), never a pass.
+        res["no_stdout_records"] = True
     # counts only: no line content is printed (safe for a raw transcript)
     print(json.dumps(res))
-    return 0 if (not want or want == got) and not stderr else 4
+    return 0 if want and want == got and not stderr else 4
 
 
 def cmd_stdin(a):
@@ -634,12 +653,71 @@ SAMPLE_FIELDS = (("quat", "r"), ("quat", "i"), ("quat", "j"), ("quat", "k"),
                  ("linaccel", "x"), ("linaccel", "y"), ("linaccel", "z"))
 
 
+INPUT_CHANNELS = (3, 4, 5)
+
+
+def report_fields(records):
+    """Every sensor report in every input-channel (3-5) FULL read of a
+    transcript, split by the REAL driver's `_separate_batch` (bno08x 1.3.3,
+    imported here, outside the helper process; independent of the scrubber's
+    `classify()`), whether or not the helper ever published it: LIFO-losing
+    duplicates and reports overwritten in the same drain included
+    (review-wp2 F3). A full read = a read of exactly the masked count of the
+    4-byte read before it. Returns {key: bytes}, key = (op index, slice index,
+    field): for 0x05 the i/j/k/real words, the accuracy word and the delay
+    byte; for 0x04 the x/y/z words and the delay byte; for any other sensor
+    id every data byte from offset 4 and the delay byte. Also the set of
+    feature ids a `0xFC` (get-feature response) seeded."""
+    import adafruit_bno08x as drv  # noqa: PLC0415
+
+    fields, seeded, prev = {}, set(), None
+    ops = [r for r in records if r["op"] in ("open", "ioctl", "read", "write", "close")]
+    for i, r in enumerate(ops):
+        if r["op"] != "read":
+            continue
+        b = bytes.fromhex(r.get("hex") or "") if not r.get("errno") else None
+        if b is not None and prev is not None and len(prev) == 4 and len(b) > 4:
+            count = struct.unpack_from("<H", prev)[0] & 0x7FFF
+            if r.get("len") == count:
+                pkt = drv.Packet(bytearray(b))
+                slices = []
+                try:
+                    drv._separate_batch(pkt, slices)  # slices appended before an error stay
+                except Exception:  # noqa: BLE001, S110 - the driver raises on #49 remainders
+                    pass
+                for si, (rid, rb) in enumerate(slices):
+                    rb = bytes(rb)
+                    if rid == 0xFC and len(rb) >= 2:
+                        seeded.add(rb[1])
+                    if b[2] not in INPUT_CHANNELS or rid >= 0xF0:
+                        continue
+                    names = {0x05: ("i", "j", "k", "real", "accuracy"), 0x04: ("x", "y", "z")}.get(rid)
+                    if len(rb) > 3:
+                        fields[(i, si, "delay")] = rb[3:4]
+                    if names:
+                        for w, name in enumerate(names):
+                            word = rb[4 + 2 * w:6 + 2 * w]
+                            if word:
+                                fields[(i, si, f"{rid:#04x}.{name}")] = word
+                    else:
+                        for off in range(4, len(rb)):
+                            fields[(i, si, f"{rid:#04x}.byte{off}")] = rb[off:off + 1]
+        prev = b
+    return fields, seeded
+
+
 def leakcheck(raw_records, scrubbed_records, helper=HELPER_DEFAULT):
-    """review-wp0-tools F11: replay RAW and SCRUBBED through the oracle and
-    require every published sample field to DIFFER at the same sample index.
-    Independent of the scrubber's `classify()`. A field that is exactly 0.0 in
-    BOTH is a zero seed (`0xFC`, kept as framing) and is counted, not failed.
-    Returns a counts-only report."""
+    """review-wp0-tools F11 + review-wp2 F3. Two halves, both independent of
+    the scrubber's `classify()`:
+    - published: replay RAW and SCRUBBED through the oracle; every published
+      sample field must DIFFER at the same sample index. A field 0.0 in BOTH
+      passes only when it provably came from a `0xFC` zero seed (the per-report
+      half found no equal word AND the raw transcript seeds that feature);
+    - per report: every sensor report word in every input-channel full read,
+      published or not (LIFO losers, overwritten reports), must differ at the
+      same position (`report_fields`).
+    Returns a counts-only report (positions are op/slice indexes and field
+    names, never values)."""
     out = {}
     samples = {}
     for label, recs in (("raw", raw_records), ("scrubbed", scrubbed_records)):
@@ -658,11 +736,32 @@ def leakcheck(raw_records, scrubbed_records, helper=HELPER_DEFAULT):
             if a[g][k] == b[g][k]:
                 if a[g][k] == 0.0:
                     rep["zero_seed_fields"] += 1
+                    rep[f"_zero_{g}"] = rep.get(f"_zero_{g}", 0) + 1
                 else:
                     rep["equal"] += 1
                     if len(rep["equal_positions"]) < 20:
                         rep["equal_positions"].append([idx, f"{g}.{k}"])
-    rep["pass"] = rep["equal"] == 0 and not rep.get("sample_count_differs") and rep["samples_raw"] > 0
+    # Per-report half (F3): every sensor report word, published or not.
+    raw_f, seeded = report_fields(raw_records)
+    scr_f, _ = report_fields(scrubbed_records)
+    rep["reports_words"] = len(raw_f)
+    rep["report_structure_differs"] = sorted(raw_f) != sorted(scr_f)
+    eq = [k for k in raw_f if k in scr_f and raw_f[k] == scr_f[k]]
+    rep["report_equal"] = len(eq)
+    rep["report_equal_positions"] = [[k[0], k[1], k[2]] for k in eq[:20]]
+    # A published field 0.0 in BOTH is exempt only when its reading can only
+    # have come from a 0xFC seed: every report word was proven to differ
+    # above (so no report word supplied an equal 0.0) AND the raw transcript
+    # holds a 0xFC for that feature. Otherwise it counts as equal.
+    unexplained = 0
+    for g, fid in (("quat", 0x05), ("linaccel", 0x04)):
+        n = rep.pop(f"_zero_{g}", 0)
+        if n and (eq or fid not in seeded):
+            unexplained += n
+    rep["zero_seed_fields_unexplained"] = unexplained
+    rep["pass"] = (rep["equal"] == 0 and unexplained == 0 and rep["report_equal"] == 0
+                   and not rep["report_structure_differs"] and not rep.get("sample_count_differs")
+                   and rep["samples_raw"] > 0)
     rep.update(out)
     return rep
 

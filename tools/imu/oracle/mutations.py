@@ -120,6 +120,75 @@ MUTATIONS = [
                  " && packet.header.channel != CHANNEL_SHTP_COMMAND\n            {",
          "            if packet.header.channel < 255 {"),
     ]),
+    ("M14", "review F8", "the 2 s `_wait_for_packet` budget compared with `<=`", [
+        (CLIENT, "        while io.clock.monotonic() - start < timeout {",
+         "        while io.clock.monotonic() - start <= timeout {"),
+    ]),
+    ("R1", "c5.md 2a", "the 3rd-header sequence stored only when its channel differs from the 2nd header's", [
+        (CLIENT, "        self.seq\n            .store_received(p.header.channel, p.header.sequence)?;",
+         "        if p.header.channel != h.channel {\n"
+         "            self.seq.store_received(p.header.channel, p.header.sequence)?;\n        }"),
+    ]),
+    ("R2", "c5.md 2a", "the 3rd-header sequence stored only when its count differs from the 2nd header's", [
+        (CLIENT, "        self.seq\n            .store_received(p.header.channel, p.header.sequence)?;",
+         "        if p.header.packet_byte_count != h.packet_byte_count {\n"
+         "            self.seq.store_received(p.header.channel, p.header.sequence)?;\n        }"),
+    ]),
+    # The reviewer's 12 (review-wp2.md, scratchpad wp2rv/rv_mutations.py), verbatim.
+
+    ("N1", "review", "the error path skips the interval wait (no sleep after a failed iteration)", [
+        (CLIENT, "                }\n            }\n            Ok((quat, linaccel)) => {",
+            "                }\n                continue;\n            }\n            Ok((quat, linaccel)) => {"),
+    ]),
+    ("N2", "review", "quaternion read BEFORE the first drain (stale)", [
+        (CLIENT, "        self.process_available_packets(io, None)?;\n        let quat = self.readings.quaternion()?;\n",  # noqa: E501 (the reviewer's text, verbatim)
+            "        let quat = self.readings.quaternion()?;\n        self.process_available_packets(io, None)?;\n"),
+    ]),
+    ("N3", "review", "an error in the SECOND drain is swallowed (stale linaccel used)", [
+        (CLIENT, "        self.process_available_packets(io, None)?;\n        let linaccel",
+            "        let _ = self.process_available_packets(io, None);\n        let linaccel"),
+    ]),
+    ("N4", "review", "probe: a failed zero-length write raises at once (no 1-byte fallback read)", [
+        (CLIENT, "    let mut result = ShtpBuffer::from_bytes(vec![0; 1]);\n",
+            "    if address >= 0 {\n        return Err(PyExc::msg(ExcKind::ValueError, &no_i2c_device_text(address)));\n    }\n"  # noqa: E501 (the reviewer's text, verbatim)
+            "    let mut result = ShtpBuffer::from_bytes(vec![0; 1]);\n"),
+    ]),
+    ("N5", "review", "a write EAGAIN is 'sent' but the sequence byte does NOT advance", [
+        (CLIENT, "        io.bus.write(self.addr7, &bytes).map_err(os_exc)?;\n        self.seq.advance_after_send(channel);",  # noqa: E501 (the reviewer's text, verbatim)
+            "        if matches!(io.bus.write(self.addr7, &bytes).map_err(os_exc)?, crate::imu_io::WriteOutcome::WouldBlock) {\n"  # noqa: E501 (the reviewer's text, verbatim)
+            "            return Ok(());\n        }\n        self.seq.advance_after_send(channel);"),
+    ]),
+    ("N6", "review", "the pending-slice list is cleared at the start of every loop iteration", [
+        (CLIENT, "    ) -> Result<([f64; 4], [f64; 3]), PyExc> {\n",
+            "    ) -> Result<([f64; 4], [f64; 3]), PyExc> {\n        self.pending.clear();\n"),
+    ]),
+    ("N7", "review", "enable budget compared with <= (boundary)", [
+        (CLIENT, "        while io.clock.monotonic() - start < FEATURE_ENABLE_TIMEOUT {",
+            "        while io.clock.monotonic() - start <= FEATURE_ENABLE_TIMEOUT {"),
+    ]),
+    ("N8", "review", "_wait_for_packet_type budget 5.5 s instead of 5.0 s", [
+        (CLIENT, "pub const WAIT_FOR_PACKET_TYPE_TIMEOUT: f64 = 5.0;", "pub const WAIT_FOR_PACKET_TYPE_TIMEOUT: f64 = 5.5;"),  # noqa: E501 (the reviewer's text, verbatim)
+    ]),
+    ("N9", "review", "the 40x counter counts only consecutive errors with the SAME text", [
+        (CLIENT, "    let mut consecutive: u32 = 0;\n",
+            "    let mut consecutive: u32 = 0;\n    let mut last_err = String::new();\n"),
+        (CLIENT, "            Err(exc) => {\n                consecutive += 1;\n",
+            "            Err(exc) => {\n                if exc.py_str() != last_err {\n                    consecutive = 0;\n"  # noqa: E501 (the reviewer's text, verbatim)
+            "                    last_err = exc.py_str();\n                }\n                consecutive += 1;\n"),
+    ]),
+    ("N10", "review", "loop/init read EAGAIN -> [Errno 11] (the readinto half of M11 ONLY; probe untouched)", [
+        (CLIENT, "            ReadOutcome::WouldBlock => self.buffer.fill(end, ReadBytes::WouldBlock),",
+            "            ReadOutcome::WouldBlock => Err(PyExc::os(11, \"Resource temporarily unavailable\")),"),
+    ]),
+    ("N11", "review", "readinto short read -> a different IndexError text (8192 clamp / short read)", [
+        (CLIENT, "            ReadOutcome::Data(b) => self.buffer.fill(end, ReadBytes::Data(&b)),",
+            "            ReadOutcome::Data(b) => self.buffer.fill(end, ReadBytes::Data(&b))"
+            ".map_err(|_| PyExc::msg(ExcKind::IndexError, \"bytearray index out of range\")),"),
+    ]),
+    ("N12", "review", "the 0xFC zero seed for the rotation vector has 3 zeros, not 4", [
+        (SH2, "        | REPORT_GEOMAGNETIC_ROTATION_VECTOR => Reading::Floats(vec![0.0; 4]),",
+            "        | REPORT_GEOMAGNETIC_ROTATION_VECTOR => Reading::Floats(vec![0.0; 3]),"),
+    ]),
     ("X9", "extra", "a raising `str(packet)` does not replace the batch error (review-wp1 F2)", [
         (SH2, "        Err(original) => Err(packet_str_error(packet).unwrap_or(original)),",
          "        Err(original) => Err(original),"),
@@ -191,7 +260,10 @@ def main():
     print("|---|---|---|---|---|")
     for mid, src, desc, red, fails, other, ok in rows:
         v = "**RED**" if red else ("SURVIVED" if ok else "did not compile")
-        names = ", ".join(f.split("_")[0] for f in fails) + ((" + " + ", ".join(other)) if other else "")
+        names = ", ".join(f.split("_")[0] + ("_rs" if f.endswith("_rs") else "") for f in fails)
+        names += (" + " + ", ".join(other)) if other else ""
+        if fails and all(f.endswith("_rs") for f in fails):
+            names += " (**restamp-only**)"
         print(f"| {mid} | {src} | {desc} | {v} | {len(fails)}: {names} |")
     return 0 if rc == 0 and all(r[3] for r in rows) else 1
 

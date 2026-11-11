@@ -3,6 +3,7 @@
 # runners and print counts-only verdicts (no bytes, no values):
 #   (a) the Rust client:  xorgate-replay imu-lockstep   (crates/xorgate-core imu_lockstep)
 #   (b) the Python oracle: tools/imu/oracle/oracle.py replay (the unmodified helper, real stack)
+# DIR is mounted READ-ONLY in both halves (private transcripts).
 # Run on the homelab from the repo root of a PINNED tree:
 #   sh tools/imu/oracle/c5.sh DIR            # DIR: the 0700 private transcript dir
 # Env: AGENT (label, default p7c-c5), TARGET (cargo target dir in the
@@ -25,7 +26,7 @@ docker run --rm --label "xorgate.agent=$AGENT" --network none --cpus "$CPUS" --m
   || rc=1
 echo "== (b) Python oracle, replay ($DIR)"
 for f in "$DIR"/*.imutx; do
-  OUT="$DIR" AGENT="$AGENT" sh "$REPO/tools/imu/oracle/run.sh" run /oracle/oracle.py replay "/out/$(basename "$f")" || rc=1
+  OUT="$DIR" OUT_RO=1 AGENT="$AGENT" sh "$REPO/tools/imu/oracle/run.sh" run /oracle/oracle.py replay "/out/$(basename "$f")" || rc=1
 done
 echo "== c5: $([ $rc = 0 ] && echo ALL PASS || echo FAIL)"
 exit $rc

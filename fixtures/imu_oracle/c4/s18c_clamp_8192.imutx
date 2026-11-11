@@ -1,4 +1,4 @@
-{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s18c_clamp_8192","row":18,"title":"2nd header 0xFFFF on channel 3 -> read(32767) clamped to 8192 -> 'index out of range'","synthetic":true,"helper_sha256":"7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b","oracle_image":"xorgate-p7c-oracle:1dde56c2d0cb","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
+{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s18c_clamp_8192","row":18,"title":"2nd header 0xFFFF on channel 3 -> read(32767) clamped to 8192 -> 'index out of range'","synthetic":true,"helper_sha256":"7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
 {"op":"open","path":"/dev/i2c-1","flags":"O_RDWR|O_CLOEXEC","ret":3,"errno":null,"t_us":0,"dur_us":100}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":100,"dur_us":50}
 {"op":"write","len":0,"hex":"","ret":0,"errno":null,"t_us":150,"dur_us":10000}

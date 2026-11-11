@@ -96,6 +96,14 @@ class Sensor:
         self.part = PART
         self.on_feature = None  # hook(fid) -> frames queued BEFORE the 0xFC
         self.batch_override = None  # hook(b) -> payload or None
+        # Real-data shapes seen in W0 (c5.md), modelled synthetically:
+        self.restamp = False  # every transfer of a packet gets a NEW seq; 2nd+ carry the continuation bit
+        self.tx_seq = [0] * 6  # restamp mode: the per-channel transfer sequence
+        self.head_transfers = 0  # restamp mode: transfers of the current head frame so far
+        self.seq_step = [1] * 6  # the sensor's per-packet sequence advance, per channel
+        self.la_first = False  # batches carry linear acceleration BEFORE the rotation vector
+        self.id_reports = 1  # product-id reports per channel-2 response packet
+        self.advert = ADVERT  # the channel-0 advertisement payload
 
     # -- frames ------------------------------------------------------------
     def frame(self, channel, payload, cont=False):
@@ -103,7 +111,7 @@ class Sensor:
         if cont:
             count |= 0x8000
         f = hdr(count, channel, self.seq[channel]) + payload
-        self.seq[channel] = (self.seq[channel] + 1) % 256
+        self.seq[channel] = (self.seq[channel] + self.seq_step[channel]) % 256
         return f
 
     def push(self, channel, payload, cont=False):
@@ -118,18 +126,21 @@ class Sensor:
         self.queue.clear()
         self.enabled.clear()
         self.next_report_ns = None
-        self.push(0, ADVERT)
+        self.head_transfers = 0
+        self.push(0, self.advert)
         self.push(1, bytes([0x01]))
 
     def default_batch(self, b):
-        p = base_ts(0x10 + b)
+        parts = []
         if 0x05 in self.enabled:
-            p += rv(self.rseq, rv_words(b))
+            parts.append(rv(self.rseq, rv_words(b)))
             self.rseq += 1
         if 0x04 in self.enabled:
-            p += la(self.rseq, la_words(b))
+            parts.append(la(self.rseq, la_words(b)))
             self.rseq += 1
-        return p
+        if self.la_first:
+            parts.reverse()
+        return base_ts(0x10 + b) + b"".join(parts)
 
     def tick(self):
         now = self.be.ns
@@ -155,8 +166,21 @@ class Sensor:
         if not self.queue:
             return bytes(n)
         head = self.queue[0]
+        if self.restamp:
+            # The first transfer of a packet carries its plain header; every
+            # later transfer (the 2nd header read, the full read) carries the
+            # continuation bit and the channel's NEXT sequence number, with
+            # the same byte count.
+            ch = head[2]
+            count = struct.unpack_from("<H", head)[0] & 0x7FFF
+            if self.head_transfers:
+                count |= 0x8000
+            head = hdr(count, ch, self.tx_seq[ch]) + head[4:]
+            self.tx_seq[ch] = (self.tx_seq[ch] + self.seq_step[ch]) % 256
+            self.head_transfers += 1
         if n >= len(head):
             self.queue.popleft()
+            self.head_transfers = 0
             return head + bytes(n - len(head))
         return head[:n]
 
@@ -170,7 +194,7 @@ class Sensor:
             self.reset()
         elif channel == 2 and payload[:1] == b"\xf9":
             if self.answer_id:
-                self.push(2, f8(self.part))
+                self.push(2, f8(self.part) * self.id_reports)
         elif channel == 2 and payload[:1] == b"\xfd" and len(payload) >= 2:
             fid = payload[1]
             if self.on_feature:
@@ -1023,6 +1047,229 @@ class S29SigtermMidLoop(Scenario):
         return 15 if self.armed and req["op"] == "ioctl" else None
 
 
+
+# ------------------------------------------------- review-wp2 + c5.md additions
+ADVERT_LARGE = ADVERT + bytes((0x80 + i) & 0xFF for i in range(241))  # a ~276-byte channel-0 packet
+
+
+class S01bLargeAdvert(Scenario):
+    name = "s01b_large_advert"
+    row = 1
+    title = "a ~276-byte channel-0 advertisement after each soft reset (c5.md 2d; synthetic bytes)"
+    stop_after = 2
+    expect_in = (READY,)
+
+    def setup(self):
+        self.sensor.advert = ADVERT_LARGE
+
+
+class S01cCachedRuns(Scenario):
+    name = "s01c_cached_runs"
+    row = 1
+    title = "runs of cached (repeated) samples after empty reads, then fresh ones (c5.md 2f)"
+    stop_after = 24
+
+    def on_read(self, be, n):
+        it = self.it
+        if it is not None:
+            self.sensor.reports = (it // 4) % 2 == 0
+        return super().on_read(be, n)
+
+    def extra_check(self, be, lines):
+        s = samples_of(lines)
+        runs = sum(1 for a, b in zip(s, s[1:], strict=False) if a == b)
+        return [] if runs >= 6 else [f"only {runs} repeated samples"]
+
+
+class S09bLaBeforeRv(Scenario):
+    name = "s09b_la_before_rv"
+    row = 9
+    title = "batches carry linear acceleration BEFORE the rotation vector (c5.md 2b)"
+    stop_after = 5
+
+    def setup(self):
+        self.sensor.la_first = True
+
+
+class S27cProductId3Reports(Scenario):
+    name = "s27c_product_id_3_reports"
+    row = 27
+    title = "a 3-report, 52-byte product-id packet on channel 2 during init (c5.md 2c)"
+    stop_after = 2
+    expect_in = (READY,)
+
+    def setup(self):
+        self.sensor.id_reports = 3
+
+
+class S25bSeqSkipWraps(Scenario):
+    name = "s25b_seq_skip_wraps"
+    row = 25
+    title = "channel-3 sequence advances by 37 per packet: many wraps that skip past 255 (c5.md 2e)"
+    stop_after = 60
+
+    def setup(self):
+        self.sensor.seq_step[3] = 37
+
+
+class S19bEagain40x(Scenario):
+    name = "s19b_eagain_40x"
+    row = 19
+    title = "40 consecutive loop-read EAGAINs: the TypeError text becomes the 40x text (review-wp2 F1)"
+    stop_after = None
+    expect_exit = {"code": 4}
+    expect_in = ("{\"type\": \"error\", \"error\": \"read failed 40x: 'NoneType' object is not subscriptable\"}",)
+
+    def on_read(self, be, n):
+        if self.it is not None and self.it >= 2 and self.first_of_iteration():
+            return "EAGAIN"
+        return super().on_read(be, n)
+
+
+class S18fClamp40x(Scenario):
+    name = "s18f_clamp_40x"
+    row = 18
+    title = "40 consecutive 8192-clamped reads: 'index out of range' becomes the 40x text (review-wp2 F1)"
+    stop_after = None
+    expect_exit = {"code": 4}
+    expect_in = ('{"type": "error", "error": "read failed 40x: index out of range"}',)
+
+    def on_read(self, be, n):
+        if self.it is not None and self.it >= 2 and self.first_of_iteration():
+            self.sensor.glitch(hdr(20, 3, 1), bytes([0xFF, 0xFF, 0x03, 0x05]), bytes(8192))
+        return super().on_read(be, n)
+
+
+class S16bSigintBufferedExit(Scenario):
+    name = "s16b_sigint_buffered_exit"
+    row = 16
+    title = "SIGINT at an error-path sleep with _data_ready lines still buffered: close, THEN the exit flush (F4)"
+    stop_after = None
+    expect_in = (BYTE_COUNT, SEQ_FF)
+
+    def setup(self):
+        self.armed = False
+
+    def on_read(self, be, n):
+        if self.it == 2 and self.first_of_iteration():
+            self.armed = True
+            self.sensor.glitch(bytes([0xFF, 0xFF, 0x03, 0xFF]), "EIO")
+        return super().on_read(be, n)
+
+    def sigint_at_sleep(self, be, secs):
+        return self.armed and secs == self.interval
+
+
+class S16cSigintInInit(Scenario):
+    name = "s16c_sigint_in_init"
+    row = 16
+    title = "SIGINT in soft reset's 0.5 s sleep: Python unwinds (closes the bus), dies by SIGINT (F5, D83)"
+    stop_after = None
+    expect_exit = {"signal": "SIGINT"}
+    allow_stderr = "KeyboardInterrupt"  # CPython's traceback (D83(a): the agent logs it)
+
+    def sigint_at_sleep(self, be, secs):
+        return secs == 0.5
+
+
+class S29bSigtermInInit(Scenario):
+    name = "s29b_sigterm_in_init"
+    row = 29
+    title = "SIGTERM during init (after the 2nd soft reset): death by signal, no close"
+    stop_after = None
+    expect_exit = {"signal": "SIGTERM"}
+
+    def setup(self):
+        self.w = 0
+
+    def on_write(self, be, data):
+        self.w += 1
+        return super().on_write(be, data)
+
+    def kill_before(self, be, req):
+        return 15 if self.w >= 3 and req["op"] == "read" else None
+
+
+class _BudgetBoundary(Scenario):
+    """From the trigger write on, ops are priced so that every budget check
+    lands on a multiple of 0.25 s: one check sees EXACTLY the budget (2.0),
+    where `<` and `<=` differ (review-wp2 F8). The doubles are exact."""
+
+    Q = 250 * MS
+
+    def setup(self):
+        self.aligned = False
+        self.align_next = False
+
+    def trigger(self, data):
+        raise NotImplementedError
+
+    def on_write(self, be, data):
+        if self.aligned and len(data) >= 3 and data[2] == 1:
+            self.aligned = False  # the next attempt's soft reset: normal prices again
+        if self.trigger(data):
+            self.aligned = self.align_next = True
+        return super().on_write(be, data)
+
+    def cost(self, be, kind, err):
+        if not self.aligned:
+            return super().cost(be, kind, err)
+        if self.align_next:
+            self.align_next = False
+            rem = be.ns % self.Q
+            return self.Q - rem if rem else self.Q
+        return 0 if kind == "ioctl" else self.Q
+
+
+class S04bEnableBudgetBoundary(_BudgetBoundary):
+    name = "s04b_enable_budget_boundary"
+    row = 4
+    title = "the 2 s enable budget: a check lands on exactly 2.0 s (`<`, not `<=`) -> exit 3 (F8)"
+    expect_exit = {"code": 3}
+    expect_in = (INIT + "('Was not able to enable feature', 5)\"}",)
+
+    def setup(self):
+        super().setup()
+        self.sensor.answer_features[0x05] = False
+
+    def trigger(self, data):
+        return len(data) >= 6 and data[2] == 2 and data[4] == 0xFD and data[5] == 0x05
+
+
+class S03bWaitBudgetBoundary(_BudgetBoundary):
+    name = "s03b_wait_budget_boundary"
+    row = 3
+    title = "the 2 s _wait_for_packet budget: a check lands on exactly 2.0 s; the attempt is retried (F8)"
+    stop_after = 1
+    expect_in = (READY,)
+
+    def setup(self):
+        super().setup()
+        self.f9 = 0
+
+    def trigger(self, data):
+        return False
+
+    def on_write(self, be, data):
+        if len(data) >= 5 and data[2] == 2 and data[4] == 0xF9:
+            self.f9 += 1
+            if self.f9 == 1:  # lost: the sensor never answers it; align the clock from here
+                self.aligned = self.align_next = True
+                return len(data)
+        return super().on_write(be, data)
+
+
+def _restamped(cls):
+    """The same scenario on a bus in "restamp per transfer" mode (c5.md 2a)."""
+
+    def setup(self):
+        cls.setup(self)
+        self.sensor.restamp = True
+        self.sensor.tx_seq = list(self.sensor.seq)
+
+    return type(cls.__name__ + "Rs", (cls,), {
+        "name": cls.name + "_rs", "title": cls.title + " [restamp per transfer]", "setup": setup})
+
 ALL = {cls.name: cls for cls in (
     S01CleanInit, S02IdSecondAttempt, S03IdNever, S04EnableTimeout, S05ProbeNack, S06SoftResetEio,
     S07ZeroFirstSample, S08LifoDuplicateRv, S09BaseTimestamp, S10Unprocessable, S11UnknownReportId,
@@ -1034,4 +1281,17 @@ ALL = {cls.name: cls for cls in (
     S21cEbusyLoop, S22aOpenEnoent, S22bOpenEacces, S23aProbeZeroWrite, S23bProbeFallbackRead,
     S23cProbeFallbackEagain, S23dProbeFallbackEmpty, S24aCount0And1to4, S24bCount0Init, S25SeqWrap,
     S26Queued12, S27ZeroPartNumber, S27bCheckIdSkipsChannels01, S28UnsolicitedFc, S29SigtermMidLoop,
+    S01bLargeAdvert, S01cCachedRuns, S09bLaBeforeRv, S27cProductId3Reports, S25bSeqSkipWraps, S19bEagain40x,
+    S18fClamp40x, S16bSigintBufferedExit, S16cSigintInInit, S29bSigtermInInit, S04bEnableBudgetBoundary,
+    S03bWaitBudgetBoundary,
 )}
+
+# c5.md 2a: a representative subset again, on a bus that restamps every transfer.
+RESTAMP_SUBSET = (
+    S01CleanInit, S01bLargeAdvert, S02IdSecondAttempt, S07ZeroFirstSample, S09BaseTimestamp, S09bLaBeforeRv,
+    S10Unprocessable, S13FfffHeader, S15SelfResetFrozen, S17LeftoverSlices, S24aCount0And1to4, S26Queued12,
+    S27ZeroPartNumber, S27cProductId3Reports, S29SigtermMidLoop,
+)
+for _cls in RESTAMP_SUBSET:
+    _rs = _restamped(_cls)
+    ALL[_rs.name] = _rs

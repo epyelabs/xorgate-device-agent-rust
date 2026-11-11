@@ -47,8 +47,9 @@
 //! stdout is reproduced with CPython's buffering (the helper's stdout is a
 //! pipe, so it is block-buffered): `print()`ed non-JSON lines (the two
 //! `_data_ready` lines) wait in a buffer and go out in the SAME write as the
-//! next `emit` (`print(..., flush=True)`), or at a normal exit; a death by
-//! signal loses them. The `print(packet)` dump of a failed batch is NOT
+//! next `emit` (`print(..., flush=True)`), or at a normal exit, AFTER the bus
+//! is closed ([`ReaderEnd::unflushed`], review-wp2 F4); a death by signal
+//! loses them. The `print(packet)` dump of a failed batch is NOT
 //! reproduced (D80).
 
 use crate::imu_io::{
@@ -156,7 +157,8 @@ impl<T: ImuSink + ?Sized> ImuSink for &mut T {
 
 /// CPython's block-buffered stdout, reduced to what the helper does with it:
 /// `print(text)` buffers, `print(json, flush=True)` writes buffer + line in one
-/// write, a normal exit flushes, a death by signal loses the buffer.
+/// write; what is left at a normal exit is handed to the caller
+/// ([`ReaderEnd::unflushed`]); a death by signal loses it.
 struct Stdout<'a, S: ImuSink> {
     sink: &'a mut S,
     buffered: String,
@@ -174,14 +176,6 @@ impl<S: ImuSink> Stdout<'_, S> {
         self.print(line);
         let chunk = std::mem::take(&mut self.buffered);
         self.sink.write_chunk(&chunk)
-    }
-
-    /// The interpreter's flush at a normal exit.
-    fn flush_at_exit(&mut self) {
-        if !self.buffered.is_empty() {
-            let chunk = std::mem::take(&mut self.buffered);
-            let _ = self.sink.write_chunk(&chunk);
-        }
     }
 }
 
@@ -528,16 +522,31 @@ fn init<B: I2cOps, C: ImuClock, S: ImuSink>(
     Ok(d)
 }
 
+/// How [`run`] ended, and what the caller must still do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReaderEnd {
+    /// The exit status ([`ReaderExit::code`]).
+    pub exit: ReaderExit,
+    /// `print()`ed text CPython still holds in its stdout buffer (the
+    /// `_data_ready` lines of the last iterations). CPython's teardown order
+    /// is: `main()` returns → the bus is CLOSED (`SMBus.__del__`) → the
+    /// interpreter FLUSHES stdout (review-wp2 F4). So the caller closes the bus
+    /// fd FIRST, then writes this in ONE write (if non-empty), then exits.
+    /// Always empty for [`ReaderExit::StdoutClosed`].
+    pub unflushed: String,
+}
+
 /// Run the reader to its end: the helper's `main()` after argument parsing.
-/// Returns how it ended; the caller exits with [`ReaderExit::code`]. A death by
+/// Returns how it ended; the caller then closes the bus, writes
+/// [`ReaderEnd::unflushed`] and exits with [`ReaderExit::code`]. A death by
 /// signal (SIGTERM, SIGINT during init) never returns here: those are the
-/// default dispositions of the real process (WP3).
+/// default dispositions of the real process (WP3; D83).
 pub fn run<B: I2cOps, C: ImuClock, S: ImuSink>(
     bus: &mut B,
     clock: &mut C,
     sink: &mut S,
     args: &ReaderArgs,
-) -> ReaderExit {
+) -> ReaderEnd {
     let mut io = Io {
         bus,
         clock,
@@ -547,10 +556,12 @@ pub fn run<B: I2cOps, C: ImuClock, S: ImuSink>(
         },
     };
     let exit = run_inner(&mut io, args);
-    if exit != ReaderExit::StdoutClosed {
-        io.out.flush_at_exit();
-    }
-    exit
+    let unflushed = if exit == ReaderExit::StdoutClosed {
+        String::new()
+    } else {
+        std::mem::take(&mut io.out.buffered)
+    };
+    ReaderEnd { exit, unflushed }
 }
 
 fn run_inner<B: I2cOps, C: ImuClock, S: ImuSink>(

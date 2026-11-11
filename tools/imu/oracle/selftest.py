@@ -15,6 +15,11 @@ takes the `generic_linux` (PureIO) path, that PureIO's `open`/`ioctl` and
 `time.monotonic`/`time.sleep` are the fakes, and that lgpio's import-time call
 was `gpiochip_open(0)` (D81), with an empty stderr.
 
+Part 3 pins the replay contract on model transcripts (review-wp2 F2/F6): a
+transcript without stdout records, without an exit record, or with a capture
+defect in its meta counts FAILS; and the leak check (F3): a "scrubbed"
+transcript that keeps one never-published report (s08's LIFO loser) FAILS.
+
 Run as a NON-root user in the oracle image (EACCES needs it). Exit 0 = pass.
 """
 import fcntl
@@ -170,6 +175,8 @@ print(json.dumps({
     "monotonic_is_fake": time.monotonic.__module__ == "sitecustomize",
     "sleep_is_fake": time.sleep.__module__ == "sitecustomize",
     "lgpio_calls": lgpio.CALLS,
+    "board_modules": sorted(m for m in sys.modules if m.startswith("adafruit_blinka.board.")),
+    "bcm_modules": sorted(m for m in sys.modules if m.startswith("adafruit_blinka.microcontroller.bcm")),
 }), flush=True)
 '''
 
@@ -204,15 +211,104 @@ def part2():
     want = {"board": "RASPBERRY_PI_5", "chip": "BCM2XXX", "scl": "3", "sda": "2",
             "i2c_module": "adafruit_blinka.microcontroller.generic_linux.i2c",
             "open_is_fake": True, "ioctl_is_fake": True, "monotonic_is_fake": True, "sleep_is_fake": True,
-            "lgpio_calls": [["gpiochip_open", 0]]}
+            "lgpio_calls": [["gpiochip_open", 0]],
+            "board_modules": ["adafruit_blinka.board.raspberrypi", "adafruit_blinka.board.raspberrypi.raspi_5"],
+            "bcm_modules": ["adafruit_blinka.microcontroller.bcm2712", "adafruit_blinka.microcontroller.bcm2712.pin"]}
     RESULTS.append({"case": "real stack under the shim", "ok": got == want and exit_ == {"code": 0} and not stderr,
                     "got": got, "exit": exit_, "stderr": stderr.decode(errors="replace"),
                     "requests": [r["op"] for r in be.requests]})
 
 
+def _rc(fn):
+    try:
+        return fn()
+    except oracle.OracleMismatch as e:
+        return f"mismatch: {str(e)[:60]}"
+
+
+def _xor_scrub(records, keep_loser):
+    """Synthetic stand-in for a scrubber: XOR every RV/LA data word of every
+    channel-3 full read, optionally leaving the 2nd RV of a batch (s08's
+    LIFO loser, never published) ORIGINAL (the review-wp2 F3 demo)."""
+    lens = {0xFB: 5, 0xFA: 5, 0x05: 14, 0x04: 10, 0xF8: 16, 0xFC: 17, 0xF1: 16}
+    out, kept = [], 0
+    for r in records:
+        r = dict(r)
+        if r["op"] == "read" and r.get("len", 0) > 4 and r.get("hex"):
+            b = bytearray.fromhex(r["hex"])
+            if len(b) >= 4 and b[2] == 3:
+                n, i, rvs = (b[0] | b[1] << 8) & 0x7FFF, 4, 0
+                while i < min(n, len(b)) and b[i] in lens:
+                    rid = b[i]
+                    if rid in (0x05, 0x04):
+                        rvs += rid == 0x05
+                        if keep_loser and rid == 0x05 and rvs == 2:
+                            kept += 1
+                        else:
+                            for w in range(4 if rid == 0x05 else 3):
+                                b[i + 4 + 2 * w] ^= 0x5A
+                            if rid == 0x05:
+                                b[i + 12] ^= 0x5A  # the accuracy word
+                            b[i + 3] ^= 0x5A  # the delay byte
+                    i += lens[rid]
+                r["hex"] = b.hex()
+        out.append(r)
+    return out, kept
+
+
+def part3():
+    """The replay contract (review-wp2 F2/F6) and the per-report leak check (F3),
+    on transcripts the model backend writes here (synthetic)."""
+    import scenarios  # noqa: PLC0415
+
+    d = tempfile.mkdtemp()
+
+    def model(name):
+        be = oracle.ModelBackend(scenarios.ALL[name]())
+        oracle.run_helper(be)
+        return oracle.strip_clock(be.rec.records)
+
+    base = model("s10_unprocessable")
+
+    def replay_rc(recs):
+        path = os.path.join(d, "t.imutx")
+        oracle.write_records(path, recs)
+        import argparse  # noqa: PLC0415
+        import contextlib  # noqa: PLC0415
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            return _rc(lambda: oracle.cmd_replay(argparse.Namespace(transcript=path, helper=oracle.HELPER_DEFAULT,
+                                                                    out=None)))
+
+    cases = {
+        "control: the transcript as written": (base, 0),
+        "no stdout records (F2)": ([r for r in base if r["op"] != "stdout"], 4),
+        "no exit record (F6)": ([r for r in base if r["op"] != "exit"], 3),
+        "meta fd_reuse 1 (F2)": ([dict(base[0], counts={"fd_reuse": 1})] + base[1:], 3),
+        "meta truncated_strings 2 (F2)": ([dict(base[0], counts={"truncated_strings": 2})] + base[1:], 3),
+    }
+    for label, (recs, want) in cases.items():
+        got = replay_rc(recs)
+        ok = got == want if isinstance(got, int) else (want == 3 and got.startswith("mismatch"))
+        RESULTS.append({"case": f"replay: {label}", "ok": ok, "got": got, "want": want})
+
+    raw = model("s08_lifo_duplicate_rv")
+    full, _ = _xor_scrub(raw, keep_loser=False)
+    loser, kept = _xor_scrub(raw, keep_loser=True)
+    for label, scr, want_pass in (("every report word scrubbed", full, True),
+                                  ("the LIFO loser kept ORIGINAL (F3 demo)", loser, False),
+                                  ("raw vs raw", raw, False)):
+        rep = oracle.leakcheck(raw, scr)
+        ok = rep["pass"] == want_pass and (scr is not loser or kept > 0)
+        RESULTS.append({"case": f"leakcheck: {label}", "ok": ok,
+                        "pass": rep["pass"], "published_equal": rep["equal"], "report_equal": rep["report_equal"],
+                        "kept_loser_reports": kept if scr is loser else None})
+
+
 def main():
     part1()
     part2()
+    part3()
     for r in RESULTS:
         print(("PASS " if r["ok"] else "FAIL ") + json.dumps(r))
     bad = [r for r in RESULTS if not r["ok"]]

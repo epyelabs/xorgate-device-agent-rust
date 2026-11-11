@@ -82,8 +82,15 @@ pub struct LockstepRun {
     pub chunks: Vec<(usize, String)>,
     /// op/clock records consumed.
     pub consumed: usize,
-    /// A device `close` record followed the client's return.
+    /// A device `close` record followed the client's return (CPython's
+    /// `SMBus.__del__`; WP3's reader closes the bus fd there).
     pub teardown_close: bool,
+    /// The client was killed by a SIGINT in an INIT sleep, and the
+    /// transcript's device `close` after it was accepted without the client
+    /// (D83(a): CPython unwinds the `KeyboardInterrupt` and closes the bus;
+    /// the Rust reader dies by the default disposition, the kernel closes the
+    /// fd). The ONLY case a teardown close is not the client's (review-wp2 F5).
+    pub python_only_close: bool,
 }
 
 impl LockstepRun {
@@ -121,6 +128,8 @@ struct State<'r> {
     dead: bool,
     dead_clock: f64,
     killed: Option<String>,
+    /// A SIGINT killed the client in an init-phase `sleep` (not the loop wait).
+    init_sigint: bool,
     mismatch: Option<String>,
     chunks: Vec<(usize, String)>,
 }
@@ -432,6 +441,7 @@ impl ImuClock for Handle<'_, '_> {
         if s.sleep_common(secs) == Some(true) {
             // A SIGINT in an init-phase sleep: default disposition (D83).
             s.kill("SIGINT");
+            s.init_sigint = true;
         }
     }
 
@@ -484,23 +494,38 @@ pub fn run(recs: &[Value], errno: &ErrnoTable, args: &ReaderArgs) -> LockstepRun
         dead: false,
         dead_clock: 0.0,
         killed: None,
+        init_sigint: false,
         mismatch: None,
         chunks: Vec::new(),
     });
     let (mut bus, mut clock, mut sink) = (Handle(&state), Handle(&state), Handle(&state));
-    let exit = bno08x_client::run(&mut bus, &mut clock, &mut sink, args);
+    let end = bno08x_client::run(&mut bus, &mut clock, &mut sink, args);
     let mut s = state.into_inner();
     let exit = if s.killed.is_some() || s.mismatch.is_some() {
         None
     } else {
-        Some(exit)
+        Some(end.exit)
     };
+    // The caller's teardown, in CPython's order (review-wp2 F4): close the bus
+    // fd, THEN write what stdout still buffers.
     let mut teardown_close = false;
+    let mut python_only_close = false;
     if exit.is_some() {
         if let Some(r) = s.peek() {
             if op_of(r) == "close" {
                 s.take();
                 teardown_close = true;
+            }
+        }
+        if !end.unflushed.is_empty() {
+            let pos = s.consumed;
+            s.chunks.push((pos, end.unflushed.clone()));
+        }
+    } else if s.init_sigint && s.mismatch.is_none() {
+        if let Some(r) = s.peek() {
+            if op_of(r) == "close" {
+                s.take();
+                python_only_close = true;
             }
         }
     }
@@ -529,8 +554,18 @@ pub fn run(recs: &[Value], errno: &ErrnoTable, args: &ReaderArgs) -> LockstepRun
         chunks: s.chunks,
         consumed: s.consumed,
         teardown_close,
+        python_only_close,
     }
 }
+
+/// The WP0a converter's meta `counts` that make a capture incomplete
+/// (review-wp2 F2; the same list as `oracle.py CAPTURE_DEFECTS`).
+pub const CAPTURE_DEFECTS: &[&str] = &[
+    "truncated_strings",
+    "other_pid_stdout_writes",
+    "foreign_pid_device_ops",
+    "fd_reuse",
+];
 
 const DUMP_HEAD: &str = "\t\t********** Packet *************";
 const DUMP_TAIL: &str = "\t\t*******************************";
@@ -601,7 +636,10 @@ pub fn expected_exit(recs: &[Value]) -> Option<(Option<i64>, Option<String>)> {
 /// - stdout lines byte-equal to the transcript's, D80 dumps filtered, AND at
 ///   the same positions in the op stream;
 /// - the exit: the transcript's `exit {code}` = the client's code, `exit
-///   {signal}` = the signal that killed it. (No exit record: not compared.)
+///   {signal}` = the signal that killed it; the exit record is MANDATORY
+///   (review-wp2 F6);
+/// - no capture defect in the meta counts, and (strace transcripts) at least
+///   one stdout record (review-wp2 F2).
 pub fn verdict(recs: &[Value], run: &LockstepRun) -> Vec<String> {
     let mut p = Vec::new();
     if let Some(m) = &run.mismatch {
@@ -631,14 +669,36 @@ pub fn verdict(recs: &[Value], run: &LockstepRun) -> Vec<String> {
             want[i].0, got[i].0
         ));
     }
-    if let Some((code, signal)) = expected_exit(recs) {
-        let got = (run.exit.map(|e| i64::from(e.code())), run.killed.clone());
-        if (code, signal.clone()) != got {
-            p.push(format!(
-                "exit: oracle code {code:?} signal {signal:?} vs rust code {:?} signal {:?}",
-                got.0, got.1
-            ));
+    // review-wp2 F2: an incomplete capture is never compared.
+    if let Some(counts) = recs
+        .first()
+        .and_then(|m| m.get("counts"))
+        .and_then(Value::as_object)
+    {
+        for key in CAPTURE_DEFECTS {
+            if let Some(n) = counts.get(*key).and_then(Value::as_u64).filter(|n| *n > 0) {
+                p.push(format!("capture defect: meta counts {key} = {n}"));
+            }
         }
+    }
+    // review-wp2 F2: a strace transcript without stdout records is a broken
+    // capture (fd 1 lost or written by an untraced syscall), never a pass. (An
+    // oracle-written model transcript may legitimately have none: a death by
+    // signal during init.)
+    if !is_strict(recs) && expected_lines(recs).is_empty() {
+        p.push("no stdout records: a broken capture".into());
+    }
+    let Some((code, signal)) = expected_exit(recs) else {
+        // review-wp2 F6: the exit record is MANDATORY.
+        p.push("exit: the transcript has no exit record".into());
+        return p;
+    };
+    let got = (run.exit.map(|e| i64::from(e.code())), run.killed.clone());
+    if (code, signal.clone()) != got {
+        p.push(format!(
+            "exit: oracle code {code:?} signal {signal:?} vs rust code {:?} signal {:?}",
+            got.0, got.1
+        ));
     }
     p
 }

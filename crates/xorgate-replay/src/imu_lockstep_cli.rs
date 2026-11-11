@@ -94,6 +94,8 @@ pub fn run(args: &ImuLockstepArgs) -> Result<bool> {
                 },
                 if run.teardown_close {
                     " teardown_close"
+                } else if run.python_only_close {
+                    " python_only_close"
                 } else {
                     ""
                 }

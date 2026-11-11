@@ -89,6 +89,8 @@ fn c4_the_rust_client_equals_the_python_oracle_on_every_scenario() {
             run.killed,
             if run.teardown_close {
                 ", teardown close"
+            } else if run.python_only_close {
+                ", python-only close (D83a)"
             } else {
                 ""
             }
@@ -189,4 +191,52 @@ fn c4_negative_controls_fail() {
         e["code"] = Value::from(3);
     });
     assert!(p.iter().any(|m| m.starts_with("exit:")), "{p:?}");
+}
+
+/// review-wp2 F6/F2 in the Rust runner (next-op mode, as C5/C10b run it): the
+/// exit record is MANDATORY; a capture without stdout records, or with a
+/// capture defect in its meta counts, FAILS.
+#[test]
+fn c5_runner_refuses_incomplete_captures() {
+    let errno = errno();
+    let (_, recs) = transcripts()
+        .into_iter()
+        .find(|(n, _)| n.starts_with("s10_"))
+        .unwrap();
+    // what strace would show: no clock records, meta clock monotonic
+    let base: Vec<Value> = recs
+        .into_iter()
+        .filter(|r| r["op"] != "clock")
+        .map(|mut r| {
+            if r["op"] == "meta" {
+                r["clock"] = Value::from("monotonic");
+            }
+            r
+        })
+        .collect();
+    let args = ReaderArgs::default();
+    let check = |t: &Vec<Value>| imu_lockstep::verdict(t, &imu_lockstep::run(t, &errno, &args));
+    assert!(check(&base).is_empty(), "control: {:?}", check(&base));
+
+    let no_exit: Vec<Value> = base.iter().filter(|r| r["op"] != "exit").cloned().collect();
+    let p = check(&no_exit);
+    assert!(p.iter().any(|m| m.contains("no exit record")), "{p:?}");
+
+    let no_stdout: Vec<Value> = base
+        .iter()
+        .filter(|r| r["op"] != "stdout")
+        .cloned()
+        .collect();
+    let p = check(&no_stdout);
+    assert!(p.iter().any(|m| m.contains("no stdout records")), "{p:?}");
+
+    for key in imu_lockstep::CAPTURE_DEFECTS {
+        let mut t = base.clone();
+        t[0]["counts"] = serde_json::json!({ *key: 1 });
+        let p = check(&t);
+        assert!(
+            p.iter().any(|m| m.contains("capture defect")),
+            "{key}: {p:?}"
+        );
+    }
 }

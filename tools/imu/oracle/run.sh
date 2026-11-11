@@ -5,7 +5,8 @@
 #   run.sh run [-i] ARGS...     -> python3 /oracle/ARGS... in the image, --network none, non-root,
 #                                  the repo's tools/imu/oracle at /oracle (ro), python/bno085_read.py
 #                                  at /helper (ro), $OUT (default ./oracle-out) at /out.
-# Env: AGENT (label, default p7c-wp2), CPUS (default 4), OUT.
+# Env: AGENT (label, default p7c-wp2), CPUS (default 4), OUT, OUT_RO=1 (mount /out READ-ONLY:
+#      private transcripts; c5.sh always sets it).
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
@@ -27,9 +28,15 @@ case "$cmd" in
     tty=""
     if [ "${1:-}" = "-i" ]; then tty="-i"; shift; fi
     OUT=${OUT:-$PWD/oracle-out}
-    mkdir -p "$OUT"
+    if [ "${OUT_RO:-0}" = 1 ]; then
+      [ -d "$OUT" ] || { echo "run.sh: $OUT is not a directory" >&2; exit 2; }
+      outmount="$OUT:/out:ro"
+    else
+      mkdir -p "$OUT"
+      outmount="$OUT:/out"
+    fi
     docker run --rm $tty --label "xorgate.agent=$AGENT" --network none --cpus "$CPUS" --memory 4g \
-      -v "$HERE:/oracle:ro" -v "$REPO/python/bno085_read.py:/helper/bno085_read.py:ro" -v "$OUT:/out" \
+      -v "$HERE:/oracle:ro" -v "$REPO/python/bno085_read.py:/helper/bno085_read.py:ro" -v "$outmount" \
       -e "P7C_ORACLE_IMAGE=$(tag)" "$(tag)" python3 "$@" ;;
   *) echo "usage: run.sh image-tag|build|run [-i] ARGS..." >&2; exit 2 ;;
 esac

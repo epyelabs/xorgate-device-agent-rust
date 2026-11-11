@@ -1,4 +1,4 @@
-{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s22b_open_eacces","row":22,"title":"open EACCES -> '[Errno 13] Permission denied: '/dev/i2c-1'' -> exit 3","synthetic":true,"helper_sha256":"7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b","oracle_image":"xorgate-p7c-oracle:1dde56c2d0cb","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
+{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s22b_open_eacces","row":22,"title":"open EACCES -> '[Errno 13] Permission denied: '/dev/i2c-1'' -> exit 3","synthetic":true,"helper_sha256":"7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
 {"op":"open","path":"/dev/i2c-1","flags":"O_RDWR|O_CLOEXEC","ret":-1,"errno":"EACCES","t_us":0,"dur_us":100}
 {"op":"stdout","line":"{\"type\": \"error\", \"error\": \"init failed at 0x4a: [Errno 13] Permission denied: '/dev/i2c-1'\"}","t_us":100}
 {"op":"exit","code":3,"t_us":100}
