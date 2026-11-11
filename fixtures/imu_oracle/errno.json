@@ -1,0 +1,90 @@
+{
+ "errno": {
+  "EACCES": [
+   13,
+   "Permission denied"
+  ],
+  "EAGAIN": [
+   11,
+   "Resource temporarily unavailable"
+  ],
+  "EBADF": [
+   9,
+   "Bad file descriptor"
+  ],
+  "EBUSY": [
+   16,
+   "Device or resource busy"
+  ],
+  "EINTR": [
+   4,
+   "Interrupted system call"
+  ],
+  "EINVAL": [
+   22,
+   "Invalid argument"
+  ],
+  "EIO": [
+   5,
+   "Input/output error"
+  ],
+  "EMSGSIZE": [
+   90,
+   "Message too long"
+  ],
+  "ENODEV": [
+   19,
+   "No such device"
+  ],
+  "ENOENT": [
+   2,
+   "No such file or directory"
+  ],
+  "ENOMEM": [
+   12,
+   "Cannot allocate memory"
+  ],
+  "ENOSYS": [
+   38,
+   "Function not implemented"
+  ],
+  "ENOTTY": [
+   25,
+   "Inappropriate ioctl for device"
+  ],
+  "ENXIO": [
+   6,
+   "No such device or address"
+  ],
+  "EOPNOTSUPP": [
+   95,
+   "Operation not supported"
+  ],
+  "EPERM": [
+   1,
+   "Operation not permitted"
+  ],
+  "EPIPE": [
+   32,
+   "Broken pipe"
+  ],
+  "EPROTO": [
+   71,
+   "Protocol error"
+  ],
+  "EREMOTEIO": [
+   121,
+   "Remote I/O error"
+  ],
+  "ESHUTDOWN": [
+   108,
+   "Cannot send after transport endpoint shutdown"
+  ],
+  "ETIMEDOUT": [
+   110,
+   "Connection timed out"
+  ]
+ },
+ "generatedBy": "tools/imu/oracle/oracle.py errno-table",
+ "python": "3.11.2"
+}

@@ -1,0 +1,722 @@
+[
+ {
+  "name": "s01_clean_init",
+  "row": 1,
+  "title": "clean init, ready, samples",
+  "exit": {
+   "code": 0
+  },
+  "records": 139,
+  "ops": 116,
+  "stdout_lines": 5,
+  "samples": 4,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.22295,
+  "problems": []
+ },
+ {
+  "name": "s02_id_second_attempt",
+  "row": 2,
+  "title": "product id read on the 2nd attempt",
+  "exit": {
+   "code": 0
+  },
+  "records": 739,
+  "ops": 512,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 6.11285,
+  "problems": []
+ },
+ {
+  "name": "s03_id_never",
+  "row": 3,
+  "title": "product id never answered -> exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 1879,
+  "ops": 1252,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 12.28135,
+  "problems": []
+ },
+ {
+  "name": "s04_enable_timeout",
+  "row": 4,
+  "title": "feature 0x05 never acknowledged -> exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 640,
+  "ops": 428,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 3.64075,
+  "problems": []
+ },
+ {
+  "name": "s05_probe_nack",
+  "row": 5,
+  "title": "probe: zero-length write AND 1-byte read fail -> exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 9,
+  "ops": 6,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0202,
+  "problems": []
+ },
+ {
+  "name": "s06_softreset_eio",
+  "row": 6,
+  "title": "EIO on the soft-reset write escapes init -> exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 9,
+  "ops": 6,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0202,
+  "problems": []
+ },
+ {
+  "name": "s07_zero_first_sample",
+  "row": 7,
+  "title": "zero seeds: all-zero, then quat-only, then full samples",
+  "exit": {
+   "code": 0
+  },
+  "records": 103,
+  "ops": 80,
+  "stdout_lines": 5,
+  "samples": 4,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.04205,
+  "problems": []
+ },
+ {
+  "name": "s08_lifo_duplicate_rv",
+  "row": 8,
+  "title": "two RVs in one batch: the OLDEST wins (LIFO)",
+  "exit": {
+   "code": 0
+  },
+  "records": 139,
+  "ops": 116,
+  "stdout_lines": 5,
+  "samples": 4,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.22295,
+  "problems": []
+ },
+ {
+  "name": "s09_base_timestamp",
+  "row": 9,
+  "title": "FB/FA-prefixed batches, several reports, a continuation-bit header",
+  "exit": {
+   "code": 0
+  },
+  "records": 151,
+  "ops": 126,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s10_unprocessable",
+  "row": 10,
+  "title": "'Unprocessable Batch bytes' mid-stream (#49), then recovery",
+  "exit": {
+   "code": 0
+  },
+  "records": 192,
+  "ops": 146,
+  "stdout_lines": 26,
+  "samples": 5,
+  "d80_lines": 20,
+  "stderr": "",
+  "virtual_s": 2.4737,
+  "problems": []
+ },
+ {
+  "name": "s11_unknown_report_id",
+  "row": 11,
+  "title": "unknown report id -> KeyError; command responses (clock reads, SAVE_DCD fail)",
+  "exit": {
+   "code": 0
+  },
+  "records": 249,
+  "ops": 186,
+  "stdout_lines": 39,
+  "samples": 6,
+  "d80_lines": 32,
+  "stderr": "",
+  "virtual_s": 2.7747,
+  "problems": []
+ },
+ {
+  "name": "s12_channel_gt5",
+  "row": 12,
+  "title": "a header on channel 6 -> 'list assignment index out of range'",
+  "exit": {
+   "code": 0
+  },
+  "records": 138,
+  "ops": 116,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.22295,
+  "problems": []
+ },
+ {
+  "name": "s13_ffff_header",
+  "row": 13,
+  "title": "0xFFFF / 0x7FFF headers: the two _data_ready lines, stale sample",
+  "exit": {
+   "code": 0
+  },
+  "records": 154,
+  "ops": 126,
+  "stdout_lines": 9,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s14_errors_39_then_40",
+  "row": 14,
+  "title": "39 errors, a success, then 40 errors -> exit 4",
+  "exit": {
+   "code": 4
+  },
+  "records": 375,
+  "ops": 276,
+  "stdout_lines": 5,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 6.92695,
+  "problems": []
+ },
+ {
+  "name": "s14b_errors_between_cached",
+  "row": 14,
+  "title": "45 errors, each followed by a CACHED sample (no new report): the count resets anyway",
+  "exit": {
+   "code": 0
+  },
+  "records": 544,
+  "ops": 384,
+  "stdout_lines": 51,
+  "samples": 50,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 8.11965,
+  "problems": []
+ },
+ {
+  "name": "s15_self_reset_frozen",
+  "row": 15,
+  "title": "sensor resets itself: KeyError(0), Unprocessable(1), then frozen (SYNTHETIC; W0 pending)",
+  "exit": {
+   "code": 0
+  },
+  "records": 194,
+  "ops": 134,
+  "stdout_lines": 37,
+  "samples": 7,
+  "d80_lines": 29,
+  "stderr": "",
+  "virtual_s": 2.5634,
+  "problems": []
+ },
+ {
+  "name": "s16_sigint_at_sleep",
+  "row": 16,
+  "title": "SIGINT at the loop's error-path interval sleep -> exit 0",
+  "exit": {
+   "code": 0
+  },
+  "records": 118,
+  "ops": 98,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.0825,
+  "problems": []
+ },
+ {
+  "name": "s17_leftover_slices",
+  "row": 17,
+  "title": "FB+05+04+1-byte remainder, then a good 05: the STALE RV wins (F1)",
+  "exit": {
+   "code": 0
+  },
+  "records": 192,
+  "ops": 146,
+  "stdout_lines": 26,
+  "samples": 5,
+  "d80_lines": 20,
+  "stderr": "",
+  "virtual_s": 2.4737,
+  "problems": []
+ },
+ {
+  "name": "s17b_empty_packet_raising_leftover",
+  "row": 17,
+  "title": "a leftover stability report (class 5) from a failed batch raises on an EMPTY packet: print(packet) raises first and its text wins (review-wp1 F2)",
+  "exit": {
+   "code": 3
+  },
+  "records": 89,
+  "ops": 56,
+  "stdout_lines": 14,
+  "samples": 0,
+  "d80_lines": 13,
+  "stderr": "",
+  "virtual_s": 3.77145,
+  "problems": []
+ },
+ {
+  "name": "s18a_headers_disagree_init",
+  "row": 18,
+  "title": "2nd/3rd headers disagree (count, channel, seq) on the product-id packet",
+  "exit": {
+   "code": 0
+  },
+  "records": 115,
+  "ops": 96,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.02245,
+  "problems": []
+ },
+ {
+  "name": "s18b_over_512",
+  "row": 18,
+  "title": "packets > 512: buffer replaced (600, then 520)",
+  "exit": {
+   "code": 0
+  },
+  "records": 151,
+  "ops": 126,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s18c_clamp_8192",
+  "row": 18,
+  "title": "2nd header 0xFFFF on channel 3 -> read(32767) clamped to 8192 -> 'index out of range'",
+  "exit": {
+   "code": 0
+  },
+  "records": 140,
+  "ops": 116,
+  "stdout_lines": 5,
+  "samples": 4,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.27295,
+  "problems": []
+ },
+ {
+  "name": "s18d_all_ones",
+  "row": 18,
+  "title": "2nd header FF FF FF FF -> channel 255 -> error before any full read",
+  "exit": {
+   "code": 0
+  },
+  "records": 138,
+  "ops": 116,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.22295,
+  "problems": []
+ },
+ {
+  "name": "s18e_stale_tail",
+  "row": 18,
+  "title": "loop: 3rd header claims more than was read -> stale buffer bytes parsed",
+  "exit": {
+   "code": 0
+  },
+  "records": 203,
+  "ops": 156,
+  "stdout_lines": 27,
+  "samples": 5,
+  "d80_lines": 21,
+  "stderr": "",
+  "virtual_s": 2.52395,
+  "problems": []
+ },
+ {
+  "name": "s19_eagain",
+  "row": 19,
+  "title": "EAGAIN: probe write and soft-reset write treated as sent (seq still +1); a loop read -> TypeError; a short write count is ignored",
+  "exit": {
+   "code": 0
+  },
+  "records": 118,
+  "ops": 96,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.12245,
+  "problems": []
+ },
+ {
+  "name": "s20a_mixed_errors",
+  "row": 20,
+  "title": "EREMOTEIO/ETIMEDOUT/ENXIO on ioctl and read; the LAST text wins -> exit 4",
+  "exit": {
+   "code": 4
+  },
+  "records": 214,
+  "ops": 156,
+  "stdout_lines": 4,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 24.12395,
+  "problems": []
+ },
+ {
+  "name": "s20b_enodev",
+  "row": 20,
+  "title": "bus gone mid-stream: ENODEV on every ioctl -> exit 4",
+  "exit": {
+   "code": 4
+  },
+  "records": 194,
+  "ops": 136,
+  "stdout_lines": 4,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 4.02445,
+  "problems": []
+ },
+ {
+  "name": "s20c_write_errors",
+  "row": 20,
+  "title": "write errors in init: id request EREMOTEIO (retried), set-feature ENXIO -> exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 70,
+  "ops": 54,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 3.7614,
+  "problems": []
+ },
+ {
+  "name": "s21a_ebusy_probe",
+  "row": 21,
+  "title": "EBUSY on I2C_SLAVE at the probe -> 'No I2C device' (busdevice catches it)",
+  "exit": {
+   "code": 3
+  },
+  "records": 7,
+  "ops": 4,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0002,
+  "problems": []
+ },
+ {
+  "name": "s21b_ebusy_after_probe",
+  "row": 21,
+  "title": "EBUSY on I2C_SLAVE after the probe (soft reset) -> '[Errno 16]' exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 8,
+  "ops": 5,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0102,
+  "problems": []
+ },
+ {
+  "name": "s21c_ebusy_loop",
+  "row": 21,
+  "title": "EBUSY on I2C_SLAVE mid-stream -> 40x -> exit 4",
+  "exit": {
+   "code": 4
+  },
+  "records": 194,
+  "ops": 136,
+  "stdout_lines": 4,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 4.02445,
+  "problems": []
+ },
+ {
+  "name": "s22a_open_enoent",
+  "row": 22,
+  "title": "open ENOENT -> the BCM2712 bus-missing constant -> exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 4,
+  "ops": 1,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0001,
+  "problems": []
+ },
+ {
+  "name": "s22b_open_eacces",
+  "row": 22,
+  "title": "open EACCES -> '[Errno 13] Permission denied: '/dev/i2c-1'' -> exit 3",
+  "exit": {
+   "code": 3
+  },
+  "records": 4,
+  "ops": 1,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0001,
+  "problems": []
+ },
+ {
+  "name": "s23a_probe_zero_write",
+  "row": 23,
+  "title": "probe: the zero-length write is accepted (a real write op)",
+  "exit": {
+   "code": 0
+  },
+  "records": 91,
+  "ops": 74,
+  "stdout_lines": 2,
+  "samples": 1,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 1.8619,
+  "problems": []
+ },
+ {
+  "name": "s23b_probe_fallback_read",
+  "row": 23,
+  "title": "probe: zero-length write EOPNOTSUPP -> 1-byte read OK -> init continues",
+  "exit": {
+   "code": 0
+  },
+  "records": 117,
+  "ops": 98,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.0325,
+  "problems": []
+ },
+ {
+  "name": "s23c_probe_fallback_eagain",
+  "row": 23,
+  "title": "probe: write EOPNOTSUPP, fallback read EAGAIN -> TypeError escapes the probe",
+  "exit": {
+   "code": 3
+  },
+  "records": 9,
+  "ops": 6,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0202,
+  "problems": []
+ },
+ {
+  "name": "s23d_probe_fallback_empty",
+  "row": 23,
+  "title": "probe: write EOPNOTSUPP, fallback read returns 0 bytes -> 'index out of range'",
+  "exit": {
+   "code": 3
+  },
+  "records": 9,
+  "ops": 6,
+  "stdout_lines": 1,
+  "samples": 0,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 0.0202,
+  "problems": []
+ },
+ {
+  "name": "s24a_count0_and_short",
+  "row": 24,
+  "title": "loop: 2nd header count 0 -> PacketError -> continue; count 3 -> short read, empty packet",
+  "exit": {
+   "code": 0
+  },
+  "records": 161,
+  "ops": 136,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.37345,
+  "problems": []
+ },
+ {
+  "name": "s24b_count0_init",
+  "row": 24,
+  "title": "init: count 0 in _wait_for_packet -> PacketError propagates -> attempt retried",
+  "exit": {
+   "code": 0
+  },
+  "records": 143,
+  "ops": 116,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 4.12295,
+  "problems": []
+ },
+ {
+  "name": "s25_seq_wrap",
+  "row": 25,
+  "title": "sequence 0xFE/0xFF received on channel 2 -> sends use them and wrap 255 -> 0",
+  "exit": {
+   "code": 0
+  },
+  "records": 127,
+  "ops": 106,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.1227,
+  "problems": []
+ },
+ {
+  "name": "s26_queued_12",
+  "row": 26,
+  "title": ">= 12 packets queued during an enable: 11 handled per call",
+  "exit": {
+   "code": 0
+  },
+  "records": 298,
+  "ops": 276,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.97695,
+  "problems": []
+ },
+ {
+  "name": "s27_zero_part_number",
+  "row": 27,
+  "title": "_check_id: part number 0 -> waits out the 5 s budget on other traffic -> retry",
+  "exit": {
+   "code": 0
+  },
+  "records": 1653,
+  "ops": 1122,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 9.1781,
+  "problems": []
+ },
+ {
+  "name": "s27b_check_id_skips_ch0_ch1",
+  "row": 27,
+  "title": "_check_id: channel 0/1 packets before the product id are skipped, not handled",
+  "exit": {
+   "code": 0
+  },
+  "records": 133,
+  "ops": 108,
+  "stdout_lines": 3,
+  "samples": 2,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.08275,
+  "problems": []
+ },
+ {
+  "name": "s28_unsolicited_fc",
+  "row": 28,
+  "title": "an unsolicited 0xFC mid-stream re-zeros linaccel",
+  "exit": {
+   "code": 0
+  },
+  "records": 151,
+  "ops": 126,
+  "stdout_lines": 6,
+  "samples": 5,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.3232,
+  "problems": []
+ },
+ {
+  "name": "s29_sigterm_midloop",
+  "row": 29,
+  "title": "SIGTERM mid-loop: death by signal; the buffered _data_ready lines are LOST",
+  "exit": {
+   "signal": "SIGTERM"
+  },
+  "records": 128,
+  "ops": 107,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr": "",
+  "virtual_s": 2.18275,
+  "problems": []
+ }
+]

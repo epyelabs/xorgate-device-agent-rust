@@ -409,7 +409,22 @@ pub fn handle_packet(
     pending: &mut Vec<ReportSlice>,
     readings: &mut Readings,
 ) -> Result<(), PyExc> {
-    let result = separate_then_process(packet, pending, readings);
+    handle_packet_with(packet, pending, readings, |_| {})
+}
+
+/// [`handle_packet`] with an observer called after each report was processed
+/// WITHOUT error, in processing (LIFO) order (phase 7c WP2). The client uses it
+/// for the one side effect `process_report` cannot have in a pure codec:
+/// `_handle_command_response` reads `time.monotonic()` for a successful
+/// `ME_CALIBRATE` / `SAVE_DCD` response (`__init__.py:876-882`; see
+/// [`command_response_reads_clock`]). Same error rule as [`handle_packet`].
+pub fn handle_packet_with(
+    packet: &Packet,
+    pending: &mut Vec<ReportSlice>,
+    readings: &mut Readings,
+    mut processed: impl FnMut(&ReportSlice),
+) -> Result<(), PyExc> {
+    let result = separate_then_process(packet, pending, readings, &mut processed);
     match result {
         Ok(()) => Ok(()),
         Err(original) => Err(packet_str_error(packet).unwrap_or(original)),
@@ -420,10 +435,12 @@ fn separate_then_process(
     packet: &Packet,
     pending: &mut Vec<ReportSlice>,
     readings: &mut Readings,
+    processed: &mut impl FnMut(&ReportSlice),
 ) -> Result<(), PyExc> {
     separate_batch(packet, pending)?;
     while let Some(slice) = pending.pop() {
         process_report(slice.id, &slice.bytes, readings)?;
+        processed(&slice);
     }
     Ok(())
 }
@@ -448,6 +465,16 @@ pub fn packet_str_error(packet: &Packet) -> Option<PyExc> {
         return Some(PyExc::msg(ExcKind::IndexError, BYTEARRAY_INDEX));
     }
     None
+}
+
+/// Whether processing this (successfully parsed) report called
+/// `time.monotonic()`: a `0xF1` command response for `ME_CALIBRATE` or
+/// `SAVE_DCD` with status 0 (`_handle_command_response`, `__init__.py:876-882`).
+pub fn command_response_reads_clock(slice: &ReportSlice) -> bool {
+    slice.id == REPORT_COMMAND_RESPONSE
+        && slice.bytes.len() >= 16
+        && slice.bytes[5] == 0
+        && matches!(slice.bytes[2], COMMAND_ME_CALIBRATE | COMMAND_SAVE_DCD)
 }
 
 /// `_get_feature_enable_report(feature_id, report_interval,
