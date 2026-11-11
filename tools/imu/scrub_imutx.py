@@ -2,7 +2,7 @@
 """Shape-preserving scrubber for `*.imutx` transcripts (Phase 7c WP0a; plan
 §WP0a "Scrubber", review F18, user decision Q-C3: the repo is assumed PUBLIC).
 
-    scrub_imutx.py scrub RAW.imutx -o SCRUBBED.imutx [--seed N]
+    scrub_imutx.py scrub RAW.imutx -o SCRUBBED.imutx [--seed-out PRIVATE_FILE]
                    (--oracle-cmd CMD | --stdout-pending)
     scrub_imutx.py check RAW.imutx SCRUBBED.imutx      # the positional self-check
 
@@ -17,9 +17,17 @@ timestamp is kept):
 - "tail" bytes the driver never consumes: bytes of a full packet read beyond
   the packet's own byte count, and unconsumed payload of an input-report
   packet (channels 3-5) after a batch error.
-The replacements come from a deterministic synthetic generator (a slow
-synthetic rotation and small synthetic accelerations) re-encoded to Q14/Q8/Q12
-words, independent of the original values.
+The replacements come from a synthetic generator (a slow synthetic rotation
+and small synthetic accelerations, with seeded periods, phases and jitter)
+re-encoded to Q14/Q8/Q12 words, independent of the original values.
+
+The seed is SECRET (review F6): a fresh `secrets.randbits(64)` per scrub,
+never written to the scrubbed file (meta says `"seed": "secret"`); with
+`--seed-out` it goes to a 0600 file in the PRIVATE dir only. With a public
+seed, anyone could recompute every draw, and a redraw (taken only where the
+draw equalled the original) would reveal that original exactly. A redraw is a
+fresh draw from the same secret stream, so no fixed relation to the original
+remains either. `--seed N` exists for tests only.
 
 Where the report bytes are: the scrubber replays the Adafruit driver's view of
 the bus (bno08x 1.3.3, `i2c.py:30-105`, `__init__.py:365-392`):
@@ -46,7 +54,8 @@ The positional self-check (`check`): every scrubbed unit (a data word where
 both bytes are in the transcript, else the single byte) must differ from the
 original AT THE SAME POSITION; every other byte must be unchanged; the op
 stream must be identical apart from `hex`. A synthetic value that happens to
-equal the original at its position is re-drawn before writing. A multiset
+equal the original at its position is re-drawn (fresh, from the secret
+stream) before writing. The meta must carry no seed value. A multiset
 comparison is NOT used: a stationary sensor's near-zero words recur in any
 generator (review F18).
 
@@ -65,14 +74,15 @@ import argparse
 import copy
 import json
 import math
+import os
 import random
 import re
+import secrets
 import struct
 import subprocess
 import sys
 
 TOOL = "scrub-imutx/1"
-DEFAULT_SEED = 0x7C0A
 DATA_BUFFER_SIZE = 512
 HEADER_LEN = 4
 INPUT_CHANNELS = (3, 4, 5)
@@ -293,19 +303,24 @@ def _q(v, bits):
 
 
 class SyntheticGen:
-    """Deterministic synthetic motion: a slow rotation about a wandering axis
-    and small accelerations, plus seeded jitter. Never reads the original."""
+    """Synthetic motion: a slow rotation about a wandering axis and small
+    accelerations. Periods, phases and jitter all come from the seeded stream,
+    so without the (secret) seed no draw is predictable. Never reads the
+    original."""
 
-    def __init__(self, seed=DEFAULT_SEED):
+    def __init__(self, seed):
         self.rng = random.Random(seed)
+        r = self.rng
+        self.p = [r.uniform(20.0, 80.0) for _ in range(4)] + [r.uniform(0.0, 2 * math.pi) for _ in range(6)]
         self.n_rv = 0
         self.n_la = 0
 
     def rv(self):
         n = self.n_rv
         self.n_rv += 1
-        ang = 0.8 + 0.5 * math.sin(n / 37.0) + self.rng.uniform(-0.01, 0.01)
-        ax = (math.sin(n / 53.0), math.cos(n / 53.0), 0.4 + 0.1 * math.sin(n / 17.0))
+        p = self.p
+        ang = 0.8 + 0.5 * math.sin(n / p[0] + p[4]) + self.rng.uniform(-0.01, 0.01)
+        ax = (math.sin(n / p[1] + p[5]), math.cos(n / p[1] + p[5]), 0.4 + 0.1 * math.sin(n / p[2] + p[6]))
         norm = math.sqrt(sum(a * a for a in ax))
         s = math.sin(ang / 2.0) / norm
         q = (ax[0] * s, ax[1] * s, ax[2] * s, math.cos(ang / 2.0))
@@ -317,7 +332,10 @@ class SyntheticGen:
     def la(self):
         n = self.n_la
         self.n_la += 1
-        return [_q(0.15 * math.sin(n / 11.0 + ph) + self.rng.uniform(-0.03, 0.03), 8) for ph in (0.0, 2.1, 4.2)]
+        return [
+            _q(0.15 * math.sin(n / self.p[3] + ph) + self.rng.uniform(-0.03, 0.03), 8)
+            for ph in (self.p[7], self.p[8], self.p[9])
+        ]
 
     def byte(self):
         return self.rng.randrange(256)
@@ -353,10 +371,10 @@ def apply_scrub(ops, cls, gen):
             orig = bytes(bufs[p[0]][p[1]] for _, p in live)
             cand = bytes(new[j] for j, _ in live)
             while cand == orig:
-                # The draw equals the original at THIS position: re-draw.
+                # The draw equals the original at THIS position: a fresh draw
+                # from the secret stream (no fixed relation to the original).
                 redraws += 1
-                v = (int.from_bytes(cand, "little") + 1) % (1 << (8 * len(cand)))
-                cand = v.to_bytes(len(cand), "little")
+                cand = bytes(gen.byte() for _ in cand)
             for (_, p), b in zip(live, cand, strict=True):
                 bufs[p[0]][p[1]] = b
                 done.add(p)
@@ -464,15 +482,20 @@ def self_check(raw_records, scrubbed_records):
     meta = scrubbed_records[0] if scrubbed_records else {}
     if meta.get("op") != "meta" or not meta.get("scrubbed"):
         v.append("the scrubbed file has no scrubbed meta record")
+    elif meta["scrubbed"].get("seed") != "secret":
+        v.append("the scrubbed meta carries a seed value (review F6: the seed must stay secret)")
     return v
 
 
 # --------------------------------------------------------------------------
-def scrub(raw_records, seed=DEFAULT_SEED, oracle=None, stdout_pending=False, gen=None):
+def scrub(raw_records, seed=None, oracle=None, stdout_pending=False, gen=None):
+    """`seed=None` (the default) draws a secret one; it never reaches the output."""
     if not raw_records or raw_records[0].get("op") != "meta" or raw_records[0].get("format") != "imutx/1":
         raise ScrubError("not an imutx/1 file")
     if raw_records[0].get("scrubbed"):
         raise ScrubError("already scrubbed")
+    if seed is None:
+        seed = secrets.randbits(64)
     ops = ops_of(raw_records)
     cls = classify(ops)
     new_ops, redraws = apply_scrub(ops, cls, gen or SyntheticGen(seed))
@@ -488,7 +511,7 @@ def scrub(raw_records, seed=DEFAULT_SEED, oracle=None, stdout_pending=False, gen
         "redraws": redraws,
     }
     meta = dict(raw_records[0])
-    meta["scrubbed"] = {"tool": TOOL, "seed": seed, "stdout": stdout_state}
+    meta["scrubbed"] = {"tool": TOOL, "seed": "secret", "stdout": stdout_state}
     out = [meta] + body
     violations = self_check(raw_records, out)
     if not stdout_pending:
@@ -515,7 +538,8 @@ def main(argv=None):
     s = sub.add_parser("scrub")
     s.add_argument("raw")
     s.add_argument("-o", "--out", required=True)
-    s.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    s.add_argument("--seed", type=int, default=None, help="TESTS ONLY: a fixed seed (default: a secret one)")
+    s.add_argument("--seed-out", help="write the secret seed to this file (0600, in the PRIVATE dir only)")
     g = s.add_mutually_exclusive_group(required=True)
     g.add_argument("--oracle-cmd")
     g.add_argument("--stdout-pending", action="store_true")
@@ -533,12 +557,17 @@ def main(argv=None):
             print(line, file=sys.stderr)
         return 1 if v else 0
     oracle = command_oracle(a.oracle_cmd) if a.oracle_cmd else None
+    seed = secrets.randbits(64) if a.seed is None else a.seed
     try:
-        out, stats = scrub(_read(a.raw), a.seed, oracle, a.stdout_pending)
+        out, stats = scrub(_read(a.raw), seed, oracle, a.stdout_pending)
     except ScrubError as e:
         print(f"scrub-imutx: {e}", file=sys.stderr)
         return 3
     _write(a.out, out)
+    if a.seed_out:
+        fd = os.open(a.seed_out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"{seed}\n")
     print(json.dumps(stats, sort_keys=True))
     return 0
 

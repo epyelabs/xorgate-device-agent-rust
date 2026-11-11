@@ -6,10 +6,10 @@
     imutx.py stats FILE.imutx        # counts only: probe branch, packets/channel, init, zero seeds, cadence
 
 Reads a transcript written by `tools/imu/capture/bno085_read.py`
-(`strace -qq --seccomp-bpf -f -tt -r -T -xx -s 4096
--e trace=openat,ioctl,read,write`) and writes JSON lines:
+(`strace -q --seccomp-bpf -f -tt --relative-timestamps=ns -T -xx -s 4096
+-e trace=openat,ioctl,read,write,close`) and writes JSON lines:
 
-    {"op": "meta", "format": "imutx/1", "device": "/dev/i2c-1", "clock": "monotonic", ...}
+    {"op": "meta", "format": "imutx/1", "device": "/dev/i2c-1", "clock": "monotonic-ns", "counts": {..}}
     {"op": "open", "path": "/dev/i2c-1", "flags": "O_RDWR|O_CLOEXEC", "ret": 3, "errno": null, "t_us": .., ...}
     {"op": "ioctl", "req": 1795, "arg": 74, "ret": 0, "errno": null, "t_us": .., "dur_us": ..}
     {"op": "write", "len": 5, "hex": "0500010001", "ret": 5, "errno": null, "t_us": .., "dur_us": ..}
@@ -17,7 +17,8 @@ Reads a transcript written by `tools/imu/capture/bno085_read.py`
     {"op": "read",  "len": 4, "hex": "", "ret": -1, "errno": "EAGAIN", "t_us": .., "dur_us": ..}
     {"op": "stdout", "line": "{\"type\": \"ready\", \"address\": \"0x4a\"}", "t_us": ..}
     {"op": "signal", "sig": "SIGTERM", "t_us": ..}
-    {"op": "exit", "signal": "SIGTERM", "t_us": ..}
+    {"op": "exit", "signal": "SIGTERM", "t_us": ..}      (death by signal)
+    {"op": "exit", "code": 3, "t_us": ..}                 (normal exit, kept by -q)
 
 - KEPT: every op on a file descriptor that the MAIN tracee obtained by opening
   the device (failed opens of the device too: ENOENT/EACCES are scenarios),
@@ -28,15 +29,21 @@ Reads a transcript written by `tools/imu/capture/bno085_read.py`
 - `len` is the requested byte count; `ret` the syscall return (-1 on error,
   None for `= ?`); `hex` the bytes strace showed (`ret` bytes for a read, the
   buffer for a write); `trunc: true` marks a string strace cut at `-s 4096`.
-- `t_us`: microseconds since the first traced line, from the CUMULATIVE `-r`
-  (monotonic) deltas, at syscall ENTRY (a split `<unfinished ...>` /
-  `<... resumed>` pair takes the entry line's time). A wall-clock step during
-  the capture therefore cannot move `t_us`. Without `-r` the wall clock is
-  used (midnight-wrapped) and meta says `"clock": "wall"`.
+- `t_us`: microseconds since the first traced line: the CUMULATIVE
+  `--relative-timestamps=ns` (monotonic) deltas, summed in ns and rounded ONCE
+  per record (review F2: summing µs-truncated `-r` deltas loses ~0.57 µs per
+  line), at syscall ENTRY (a split `<unfinished ...>` / `<... resumed>` pair
+  takes the entry line's time). A wall-clock step cannot move `t_us`.
+- STRICT leader (review F5b): every line must carry BOTH the `-tt` wall time
+  and the ns `(+ delta)`. A `-r`-only, µs-delta, `-ttt` or `-tt`-only
+  transcript is REFUSED (exit 2), because it would yield wrong or
+  non-monotonic `t_us`.
 - `dur_us`: the `-T` duration.
-- `exit` records exist only for a death by signal: `-qq` suppresses
-  `+++ exited with N +++` (verified, strace 6.1), so an exit code is not in the
-  transcript; the stdout records (and the oracle) carry the exit class.
+- `exit {code}` comes from `+++ exited with N +++` (kept by `-q`, review F3);
+  `exit {signal}` from `+++ killed by SIG +++`.
+- `close` of the device fd ends the device mapping (counted as
+  `device_closes`, no op record); `fd_reuse` counts a device fd number that a
+  later `openat` reused without a traced close. Both counts land in meta.
 
 F18: after the output is written (temp file, fsync, rename, mode 0600) the RAW
 strace is DELETED unless `--keep-raw`. A parse failure keeps the raw file and
@@ -50,7 +57,7 @@ import sys
 import tempfile
 
 FORMAT = "imutx/1"
-TRACED = ("openat", "ioctl", "read", "write")
+TRACED = ("openat", "ioctl", "read", "write", "close")
 
 I2C_IOCTLS = {
     "I2C_RETRIES": 0x0701,
@@ -67,8 +74,8 @@ _IOC_DIRS = {"_IOC_NONE": 0, "_IOC_WRITE": 1, "_IOC_READ": 2, "_IOC_READ|_IOC_WR
 
 LEADER = re.compile(
     r"^(?:(?P<pid>\d+)\s+)?"
-    r"(?P<wall>\d{2}:\d{2}:\d{2}\.\d{6}|\d+\.\d{6})\s+"
-    r"(?:\(\+\s*(?P<rel>\d+\.\d{6})\)\s+)?"
+    r"(?P<wall>\d{2}:\d{2}:\d{2}\.\d{6})\s+"
+    r"\(\+\s*(?P<rel>\d+\.\d{9})\)\s+"
     r"(?P<body>.*)$"
 )
 UNFINISHED = re.compile(r"^(?P<name>\w+)\((?P<head>.*?)\s*<unfinished \.\.\.>$")
@@ -94,11 +101,9 @@ def _usec(text):
     return int(sec) * 1_000_000 + int(frac)
 
 
-def _wall_usec(text):
-    if ":" in text:
-        h, m, s = text.split(":")
-        return (int(h) * 3600 + int(m) * 60) * 1_000_000 + _usec(s)
-    return _usec(text)
+def _nsec(text):
+    sec, frac = text.split(".")
+    return int(sec) * 1_000_000_000 + int(frac)
 
 
 def split_args(text):
@@ -204,40 +209,26 @@ class Converter:
         self.pending = {}  # pid -> (name, head, t_us)
         self.stdout_buf = bytearray()
         self.stdout_t = None
-        self.t_rel = 0
-        self.saw_rel = False
-        self.origin = None
-        self.wall_prev = None
-        self.wall_wrap = 0
+        self.t_rel_ns = 0
+        self.origin_ns = None
         self.counts = {
             "lines": 0,
             "dropped_syscalls": 0,
             "foreign_pid_device_ops": 0,
             "fd_reuse": 0,
+            "device_closes": 0,
             "truncated_strings": 0,
             "other_pid_stdout_writes": 0,
         }
 
     # -- time -----------------------------------------------------------
     def _time(self, m):
-        if m.group("rel") is not None:
-            self.saw_rel = True
-            self.t_rel += _usec(m.group("rel"))
-            # The first line's delta is measured from strace's own start;
-            # t_us counts from the first traced line.
-            if self.origin is None:
-                self.origin = self.t_rel
-            return self.t_rel - self.origin
-        if self.saw_rel:
-            raise ParseError("a line without -r after lines with -r")
-        w = _wall_usec(m.group("wall"))
-        if self.wall_prev is not None and w + self.wall_wrap < self.wall_prev - 12 * 3600 * 1_000_000:
-            self.wall_wrap += 24 * 3600 * 1_000_000
-        w += self.wall_wrap
-        self.wall_prev = w
-        if self.origin is None:
-            self.origin = w
-        return w - self.origin
+        # Sum in ns and round once: the first line's delta (0 on strace 6.1)
+        # is part of the origin, so t_us counts from the first traced line.
+        self.t_rel_ns += _nsec(m.group("rel"))
+        if self.origin_ns is None:
+            self.origin_ns = self.t_rel_ns
+        return round((self.t_rel_ns - self.origin_ns) / 1000)
 
     # -- records --------------------------------------------------------
     def _emit(self, rec):
@@ -272,7 +263,8 @@ class Converter:
             "op": "meta",
             "format": FORMAT,
             "device": self.device,
-            "clock": "monotonic" if self.saw_rel else "wall",
+            "clock": "monotonic-ns",
+            "counts": dict(self.counts),
         }
         return [meta] + self.records
 
@@ -284,7 +276,10 @@ class Converter:
         self.counts["lines"] += 1
         m = LEADER.match(line)
         if not m:
-            raise ParseError(f"line {self.counts['lines']}: no strace leader")
+            raise ParseError(
+                f"line {self.counts['lines']}: no `PID HH:MM:SS.uuuuuu (+ S.nnnnnnnnn)` leader "
+                "(the capture must use -tt --relative-timestamps=ns)"
+            )
         pid = int(m.group("pid")) if m.group("pid") else 0
         if self.main_pid is None:
             self.main_pid = pid
@@ -364,6 +359,13 @@ class Converter:
             return
 
         fd = parse_int(args[0]) if args else None
+        if name == "close":
+            if self._is_device_fd(pid, fd):
+                self.i2c_fds[pid].discard(fd)
+                self.counts["device_closes"] += 1
+            else:
+                self.counts["dropped_syscalls"] += 1
+            return
         if name == "write" and fd == 1:
             if pid != self.main_pid:
                 self.counts["other_pid_stdout_writes"] += 1
@@ -459,6 +461,11 @@ def stats(records):
                 tail = "1-byte read " + (nxt["errno"] or "ok")
             probe = f"zero-length write {w0['errno']}, then {tail}"
     out["probe"] = probe
+    ex = next((r for r in records if r["op"] == "exit"), None)
+    out["exit_record"] = None if ex is None else (f"code {ex['code']}" if "code" in ex else f"signal {ex['signal']}")
+    meta_counts = (records[0].get("counts") or {}) if records and records[0].get("op") == "meta" else {}
+    out["converter_counts"] = {k: meta_counts.get(k) for k in ("fd_reuse", "device_closes", "truncated_strings",
+                                                               "foreign_pid_device_ops", "other_pid_stdout_writes")}
     per_channel = {}
     for _idx, _count, channel in classify(ops).full_reads:
         per_channel[str(channel)] = per_channel.get(str(channel), 0) + 1

@@ -7,16 +7,21 @@ points `XORGATE_PYTHON_DIR` at that directory. The agent runs
 `python3 <XORGATE_PYTHON_DIR>/bno085_read.py --address 0x4a`, so this file
 must be Python. It never touches the bus itself: it `execv`s
 
-    strace -qq --seccomp-bpf -f -tt -r -T -xx -s 4096
-           -e trace=openat,ioctl,read,write -o <out>/w0-<n>.strace
+    strace -q --seccomp-bpf -f -tt --relative-timestamps=ns -T -xx -s 4096
+           -e trace=openat,ioctl,read,write,close -o <out>/w0-<n>.strace
            python3 /opt/xorgate-rs/python/bno085_read.py <args>
 
-- `-qq`: no attach/exit chatter on stderr (the agent logs every stderr line
-  as an `[imu]` error).
+- `-q`: no attach/detach chatter. With `-o FILE` nothing reaches the helper's
+  stderr (the agent logs every stderr line as an `[imu]` error), and unlike
+  `-qq` the FILE keeps `+++ exited with N +++`, so the transcript carries the
+  exit code (review F3; verified on strace 6.1: stderr empty).
 - `--seccomp-bpf` (needs `-f`): the tracee stops only on the traced syscalls.
-- `-tt` wall clock AND `-r` monotonic deltas: the converter derives `t_us`
-  from the monotonic `-r` deltas, so an NTP step during the capture cannot
-  corrupt the replay clock (plan fix-check).
+- `-tt` wall clock (orientation only) AND `--relative-timestamps=ns`
+  monotonic deltas: the converter derives `t_us` from the summed ns deltas,
+  so an NTP step cannot corrupt the replay clock (plan fix-check) and µs
+  truncation does not accumulate (review F2: `-r` lost ~0.57 µs per line).
+- `close` is traced so the converter can end the device-fd mapping exactly
+  (review Q3).
 - `-T` syscall durations, `-xx` every string as hex, `-s 4096` up to 4 KiB.
 
 Process contract (verified with strace 6.1, the bookworm build):
@@ -52,17 +57,17 @@ PREFIX = "w0-"
 MAX_RUNS = 999
 
 STRACE_FLAGS = [
-    "-qq",
+    "-q",
     "--seccomp-bpf",
     "-f",
     "-tt",
-    "-r",
+    "--relative-timestamps=ns",
     "-T",
     "-xx",
     "-s",
     "4096",
     "-e",
-    "trace=openat,ioctl,read,write",
+    "trace=openat,ioctl,read,write,close",
 ]
 
 # Test seams only. The bench drop-in sets none of these, so the defaults above

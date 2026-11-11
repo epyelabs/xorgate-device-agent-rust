@@ -21,8 +21,8 @@ sys.path.insert(0, IMU)
 import bno085_read as W  # noqa: E402  (the wrapper, not the real helper)
 import imutx  # noqa: E402
 
-PLAN_FLAGS = ["-qq", "--seccomp-bpf", "-f", "-tt", "-r", "-T", "-xx", "-s", "4096",
-              "-e", "trace=openat,ioctl,read,write"]
+PLAN_FLAGS = ["-q", "--seccomp-bpf", "-f", "-tt", "--relative-timestamps=ns", "-T", "-xx", "-s", "4096",
+              "-e", "trace=openat,ioctl,read,write,close"]
 
 
 class Argv(unittest.TestCase):
@@ -70,6 +70,12 @@ class Safety(unittest.TestCase):
         link = os.path.join(self.d, "link")
         os.symlink(self.out, link)
         self.assertIn("not a directory", W.unsafe_reason(link, self.strace, self.helper))
+
+    @unittest.skipUnless(os.getuid() == 0, "needs root to chown (the test container)")
+    def test_dir_owned_by_another_uid(self):
+        # review F9 (R6)
+        os.chown(self.out, 65534, 65534)
+        self.assertIn("not owned by uid", W.unsafe_reason(self.out, self.strace, self.helper))
 
     def test_strace_not_executable(self):
         os.chmod(self.strace, 0o644)
@@ -191,7 +197,7 @@ class RealStrace(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertFalse(os.path.exists(raw))
         recs = imutx.read_records(out)
-        self.assertEqual(recs[0]["clock"], "monotonic")
+        self.assertEqual(recs[0]["clock"], "monotonic-ns")
         ops = [(r["op"], r.get("req"), r.get("len"), r.get("hex"), r.get("errno")) for r in recs[1:]]
         self.assertEqual(
             ops,
@@ -203,10 +209,37 @@ class RealStrace(unittest.TestCase):
                 ("read", None, 4, "05000100", None),  # reads back the bytes it wrote
                 ("stdout", None, None, None, None),
                 ("stdout", None, None, None, None),
+                ("exit", None, None, None, None),
             ],
         )
+        self.assertEqual(recs[-1]["code"], 3, "-q keeps `+++ exited with N +++` (review F3)")
         ts = [r["t_us"] for r in recs[1:]]
         self.assertEqual(ts, sorted(ts))
+
+    def test_relative_ns_drift_is_bounded(self):
+        # review F2: >= 50k traced lines over a few seconds; the converter's
+        # t_us (summed ns deltas) must track the -tt wall span within 1 ms.
+        loop = os.path.join(self.d, "loop.py")
+        with open(loop, "w") as f:
+            f.write("import os, sys\nfd = os.open(os.environ['FAKE_DEV'], os.O_RDONLY)\n"
+                    "for _ in range(60000):\n    os.read(fd, 1)\nsys.exit(0)\n")
+        env = dict(self.env, XORGATE_P7C_REAL_HELPER=loop)
+        p = subprocess.run([sys.executable, WRAPPER], env=env, capture_output=True, text=True, cwd=self.d)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        raw = os.path.join(self.out, "w0-1.strace")
+        with open(raw) as f:
+            lines = f.read().splitlines()
+        self.assertGreaterEqual(len(lines), 50000)
+
+        def wall_us(line):
+            h, m, sec = line.split()[1].split(":")
+            return (int(h) * 3600 + int(m) * 60) * 1_000_000 + round(float(sec) * 1_000_000)
+
+        span = wall_us(lines[-1]) - wall_us(lines[0])
+        self.assertGreater(span, 1_000_000, "the run should take more than a second")
+        recs, _ = imutx.convert_lines(lines, device=self.dev)
+        self.assertEqual(recs[-1]["op"], "exit")
+        self.assertLess(abs(recs[-1]["t_us"] - span), 1000, f"t_us {recs[-1]['t_us']} vs wall span {span}")
 
     def _start_loop(self):
         p = subprocess.Popen([sys.executable, WRAPPER, "--loop"], env=self.env, stdout=subprocess.PIPE,

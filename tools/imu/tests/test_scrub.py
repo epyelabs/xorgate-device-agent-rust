@@ -1,9 +1,13 @@
 """Scrubber tests on SYNTHETIC transcripts (tests/synth.py)."""
+import contextlib
 import copy
+import io
 import json
 import os
+import stat
 import struct
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -109,6 +113,22 @@ class Classify(unittest.TestCase):
         cls = S.classify(tx.ops())
         self.assertEqual(cls.roles[(f1, 13)], "rv")
         self.assertFalse(any(i == f2 and k >= 9 for (i, k) in cls.roles))
+
+    def test_short_read_after_a_valid_header_is_not_a_packet(self):
+        # review F9 (R5): H1/H2 announce 33 bytes but the read returns 20, so
+        # Blinka never builds a Packet; its bytes are tail-scrubbed instead.
+        tx = synth.Tx()
+        tx.probe()
+        tx.send(1, b"\x01")
+        body = synth.header(33, 3, 7) + synth.base_ts() + synth.rv_report(0, (1, 2, 3, 4), 5) + bytes(10)
+        tx.read(4, body[:4])
+        tx.read(4, body[:4])
+        tx.ioctl()
+        f = tx._op({"op": "read", "len": 33, "hex": body[:20].hex(), "ret": 20})
+        cls = S.classify(tx.ops())
+        self.assertEqual(cls.packets, 0)
+        self.assertEqual(cls.anomalous_reads, 1)
+        self.assertEqual({cls.roles[(f, k)] for k in range(4, 20)}, {"tail"})
 
     def test_large_read_replaces_the_buffer(self):
         tx = synth.Tx()
@@ -230,6 +250,43 @@ class Scrub(unittest.TestCase):
         out, stats = self.scrub(gen=Echo())
         self.assertEqual(S.self_check(self.raw, out), [])
         self.assertGreaterEqual(stats["redraws"], 3 * 8)
+
+    def test_delay_byte_equal_to_its_draw_is_redrawn(self):
+        # review F9 (R9): the redraw path on a 1-byte unit.
+        class EchoDelay(S.SyntheticGen):
+            def __init__(self):
+                super().__init__(1)
+                self.delays = [0x21]  # the first RV delay byte's original value
+
+            def byte(self):
+                return self.delays.pop(0) if self.delays else super().byte()
+
+        out, stats = self.scrub(gen=EchoDelay())
+        self.assertEqual(S.self_check(self.raw, out), [])
+        self.assertGreaterEqual(stats["redraws"], 1)
+
+    def test_seed_is_secret(self):
+        # review F6: no seed value in the output; default scrubs differ.
+        out, _ = self.scrub(seed=123456789)
+        self.assertEqual(out[0]["scrubbed"]["seed"], "secret")
+        self.assertNotIn("123456789", json.dumps(out))
+        a, _ = S.scrub(self.raw, stdout_pending=True)
+        b, _ = S.scrub(self.raw, stdout_pending=True)
+        self.assertNotEqual(a, b)
+        leaky = copy.deepcopy(out)
+        leaky[0]["scrubbed"]["seed"] = 123456789
+        self.assertIn("seed", " ".join(S.self_check(self.raw, leaky)))
+
+    def test_cli_seed_out_is_private_and_absent_from_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            raw, out, seed = (os.path.join(d, n) for n in ("raw.imutx", "out.imutx", "seed"))
+            S._write(raw, self.raw)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = S.main(["scrub", raw, "-o", out, "--stdout-pending", "--seed-out", seed])
+            self.assertEqual(rc, 0)
+            self.assertEqual(stat.S_IMODE(os.stat(seed).st_mode), 0o600)
+            with open(seed) as f, open(out) as g:
+                self.assertNotIn(f.read().strip(), g.read())
 
     def test_refuses_double_scrub_and_non_imutx(self):
         out, _ = self.scrub()

@@ -32,28 +32,28 @@ OUT1 = b'{"type": "ready", "address": "0x4a"}' + b"\n" + b'{"type": "sam'
 # first line = 0). Line 14 steps the WALL clock back one hour (an NTP step):
 # t_us must keep following the monotonic -r deltas.
 SAMPLE = [
-    f"4100  10:00:00.000100 (+     0.000000) openat(AT_FDCWD, {CPU}, O_RDONLY|O_CLOEXEC) = 3 <0.000010>",
-    f"4100  10:00:00.000200 (+     0.000100) read(3, {hx(b'Serial')}, 4096) = 6 <0.000005>",
-    f"4100  10:00:00.000300 (+     0.000100) openat(AT_FDCWD, {DEV}, O_RDWR|O_CLOEXEC) = 3 <0.000020>",
-    "4100  10:00:00.000400 (+     0.000100) ioctl(3, I2C_SLAVE, 0x4a) = 0 <0.000003>",
-    '4100  10:00:00.000500 (+     0.000100) write(3, "", 0) = 0 <0.000300>',
-    "4100  10:00:00.000600 (+     0.000100) ioctl(3, _IOC(_IOC_NONE, 0x7, 0x3, 0), 0x4a) = 0 <0.000002>",
-    f"4100  10:00:00.000700 (+     0.000100) write(3, {hx(bytes([5, 0, 1, 0, 1]))}, 5) = 5 <0.000400>",
-    f"4100  10:00:00.000800 (+     0.000100) openat(AT_FDCWD, {GPIO}, O_RDWR|O_CLOEXEC) = 4 <0.000010>",
-    f"4100  10:00:00.000900 (+     0.000100) read(4, {hx(bytes([0, 1]))}, 2) = 2 <0.000004>",
-    "4100  10:00:00.001000 (+     0.000100) ioctl(3, I2C_SLAVE, 0x4a) = 0 <0.000002>",
-    "4100  10:00:00.001100 (+     0.000100) read(3, 0x7f12345678, 4) = -1 EAGAIN (Resource temporarily unavailable) <0.000050>",
-    f"4100  10:00:00.001200 (+     0.000100) write(3, {hx(bytes([6, 0, 2, 0, 0xF9, 0]))}, 6) = -1 EIO (Input/output error) <0.000700>",
-    "4100  10:00:00.001300 (+     0.000100) read(3,  <unfinished ...>",
-    f"4101  09:00:00.001350 (+     0.000050) read(3, {hx(bytes([0x99]))}, 1) = 1 <0.000003>",
-    f"4100  09:00:00.001400 (+     0.000050) <... read resumed>{hx(bytes([0x14, 0, 3, 7]))}, 4) = 4 <0.000090>",
-    f"4100  09:00:00.001500 (+     0.000100) write(1, {hx(OUT1)}, {len(OUT1)}) = {len(OUT1)} <0.000006>",
-    f"4100  09:00:00.001600 (+     0.000100) write(1, {hx(OUT2)}, 6) = 6 <0.000004>",
-    f"4101  09:00:00.001700 (+     0.000100) write(1, {hx(OUT3)}, 2) = 2 <0.000004>",
-    f"4100  09:00:00.001800 (+     0.000100) read(3, {hx(bytes([1, 2]))}..., 8) = 8 <0.000004>",
-    f"4100  09:00:00.001900 (+     0.000100) write(4, {hx(bytes([7]))}, 1) = 1 <0.000004>",
-    "4100  09:00:00.002000 (+     0.000100) --- SIGTERM {si_signo=SIGTERM, si_code=SI_USER, si_pid=1, si_uid=0} ---",
-    "4100  09:00:00.002100 (+     0.000100) +++ killed by SIGTERM +++",
+    f"4100  10:00:00.000100 (+     0.000000000) openat(AT_FDCWD, {CPU}, O_RDONLY|O_CLOEXEC) = 3 <0.000010>",
+    f"4100  10:00:00.000200 (+     0.000100000) read(3, {hx(b'Serial')}, 4096) = 6 <0.000005>",
+    f"4100  10:00:00.000300 (+     0.000100000) openat(AT_FDCWD, {DEV}, O_RDWR|O_CLOEXEC) = 3 <0.000020>",
+    "4100  10:00:00.000400 (+     0.000100000) ioctl(3, I2C_SLAVE, 0x4a) = 0 <0.000003>",
+    '4100  10:00:00.000500 (+     0.000100000) write(3, "", 0) = 0 <0.000300>',
+    "4100  10:00:00.000600 (+     0.000100000) ioctl(3, _IOC(_IOC_NONE, 0x7, 0x3, 0), 0x4a) = 0 <0.000002>",
+    f"4100  10:00:00.000700 (+     0.000100000) write(3, {hx(bytes([5, 0, 1, 0, 1]))}, 5) = 5 <0.000400>",
+    f"4100  10:00:00.000800 (+     0.000100000) openat(AT_FDCWD, {GPIO}, O_RDWR|O_CLOEXEC) = 4 <0.000010>",
+    f"4100  10:00:00.000900 (+     0.000100000) read(4, {hx(bytes([0, 1]))}, 2) = 2 <0.000004>",
+    "4100  10:00:00.001000 (+     0.000100000) ioctl(3, I2C_SLAVE, 0x4a) = 0 <0.000002>",
+    "4100  10:00:00.001100 (+     0.000100000) read(3, 0x7f12345678, 4) = -1 EAGAIN (Resource temporarily unavailable) <0.000050>",
+    f"4100  10:00:00.001200 (+     0.000100000) write(3, {hx(bytes([6, 0, 2, 0, 0xF9, 0]))}, 6) = -1 EIO (Input/output error) <0.000700>",
+    "4100  10:00:00.001300 (+     0.000100000) read(3,  <unfinished ...>",
+    f"4101  09:00:00.001350 (+     0.000050000) read(3, {hx(bytes([0x99]))}, 1) = 1 <0.000003>",
+    f"4100  09:00:00.001400 (+     0.000050000) <... read resumed>{hx(bytes([0x14, 0, 3, 7]))}, 4) = 4 <0.000090>",
+    f"4100  09:00:00.001500 (+     0.000100000) write(1, {hx(OUT1)}, {len(OUT1)}) = {len(OUT1)} <0.000006>",
+    f"4100  09:00:00.001600 (+     0.000100000) write(1, {hx(OUT2)}, 6) = 6 <0.000004>",
+    f"4101  09:00:00.001700 (+     0.000100000) write(1, {hx(OUT3)}, 2) = 2 <0.000004>",
+    f"4100  09:00:00.001800 (+     0.000100000) read(3, {hx(bytes([1, 2]))}..., 8) = 8 <0.000004>",
+    f"4100  09:00:00.001900 (+     0.000100000) write(4, {hx(bytes([7]))}, 1) = 1 <0.000004>",
+    "4100  09:00:00.002000 (+     0.000100000) --- SIGTERM {si_signo=SIGTERM, si_code=SI_USER, si_pid=1, si_uid=0} ---",
+    "4100  09:00:00.002100 (+     0.000100000) +++ killed by SIGTERM +++",
 ]
 
 EXPECTED = [
@@ -81,7 +81,8 @@ class ConvertSample(unittest.TestCase):
     def test_meta(self):
         self.assertEqual(self.records[0]["op"], "meta")
         self.assertEqual(self.records[0]["format"], "imutx/1")
-        self.assertEqual(self.records[0]["clock"], "monotonic")
+        self.assertEqual(self.records[0]["clock"], "monotonic-ns")
+        self.assertEqual(self.records[0]["counts"]["other_pid_stdout_writes"], 1)
 
     def test_exact_records(self):
         self.assertEqual(self.records[1:], EXPECTED)
@@ -118,35 +119,81 @@ class ConvertSample(unittest.TestCase):
 class ConvertEdges(unittest.TestCase):
     def test_failed_device_open_is_kept(self):
         recs, _ = imutx.convert_lines(
-            [f"7 10:00:00.000000 (+     0.000000) openat(AT_FDCWD, {DEV}, O_RDWR|O_CLOEXEC) = -1 ENOENT (No such file or directory) <0.000010>"]
+            [f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR|O_CLOEXEC) = -1 ENOENT (No such file or directory) <0.000010>"]
         )
         self.assertEqual(recs[1]["op"], "open")
         self.assertEqual((recs[1]["ret"], recs[1]["errno"]), (-1, "ENOENT"))
 
     def test_fd_reuse_drops_the_device_mapping(self):
         lines = [
-            f"7 10:00:00.000000 (+     0.000000) openat(AT_FDCWD, {DEV}, O_RDWR|O_CLOEXEC) = 3 <0.000010>",
-            f"7 10:00:00.000100 (+     0.000100) openat(AT_FDCWD, {CPU}, O_RDONLY) = 3 <0.000010>",
-            f"7 10:00:00.000200 (+     0.000100) read(3, {hx(b'abc')}, 3) = 3 <0.000010>",
+            f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR|O_CLOEXEC) = 3 <0.000010>",
+            f"7 10:00:00.000100 (+     0.000100000) openat(AT_FDCWD, {CPU}, O_RDONLY) = 3 <0.000010>",
+            f"7 10:00:00.000200 (+     0.000100000) read(3, {hx(b'abc')}, 3) = 3 <0.000010>",
         ]
         recs, counts = imutx.convert_lines(lines)
         self.assertEqual([r["op"] for r in recs[1:]], ["open"])
         self.assertEqual(counts["fd_reuse"], 1)
 
-    def test_wall_clock_fallback_wraps_midnight(self):
+    def test_refuses_timestamp_modes_without_tt_and_ns_deltas(self):
+        # review F5b: each of these would give wrong or non-monotonic t_us.
+        bad = {
+            "-r only (the old B'' flags)": "438  0.100067 write(1, \"\", 0) = 0 <0.000001>",
+            "-tt only": f"7 23:59:59.999900 openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            "-tt -r (us deltas)": f"7 10:00:00.000000 (+     0.000100) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            "-ttt --relative-timestamps=ns": (
+                f"7 1794417877.552446 (+     0.000014000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>"
+            ),
+        }
+        for what, line in bad.items():
+            with self.subTest(what), self.assertRaises(imutx.ParseError):
+                imutx.convert_lines([line])
+
+    def test_ns_deltas_are_summed_before_rounding(self):
+        # 1000 lines 700 ns apart: 699.3 us of real time. Summing per-line
+        # rounded (or truncated) us would give 0 or 1000 us.
+        lines = [f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>"]
+        lines += ["7 10:00:00.000000 (+     0.000000700) ioctl(3, I2C_SLAVE, 0x4a) = 0 <0.000001>"] * 999
+        recs, _ = imutx.convert_lines(lines)
+        self.assertEqual(recs[-1]["t_us"], 699)
+        self.assertEqual(recs[2]["t_us"], 1)
+
+    def test_normal_exit_code_is_recorded(self):
         lines = [
-            f"7 23:59:59.999900 openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
-            "7 00:00:00.000100 ioctl(3, I2C_SLAVE, 0x4a) = 0 <0.000001>",
+            f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            "7 10:00:00.000100 (+     0.000100000) +++ exited with 3 +++",
         ]
         recs, _ = imutx.convert_lines(lines)
-        self.assertEqual(recs[0]["clock"], "wall")
-        self.assertEqual(recs[2]["t_us"], 200)
+        self.assertEqual(recs[-1], {"op": "exit", "code": 3, "t_us": 100})
+
+    def test_close_ends_the_device_mapping(self):
+        lines = [
+            f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            "7 10:00:00.000100 (+     0.000100000) close(3) = 0 <0.000002>",
+            f"7 10:00:00.000200 (+     0.000100000) read(3, {hx(b'abc')}, 3) = 3 <0.000010>",
+            "7 10:00:00.000300 (+     0.000100000) close(5) = 0 <0.000002>",
+        ]
+        recs, counts = imutx.convert_lines(lines)
+        self.assertEqual([r["op"] for r in recs[1:]], ["open"])
+        self.assertEqual(counts["device_closes"], 1)
+        self.assertEqual(counts["dropped_syscalls"], 2)
+
+    def test_foreign_pid_device_open_is_not_kept(self):
+        # pid 7 is the main tracee; pid 8 (a child or thread) opens the device.
+        lines = [
+            "7 10:00:00.000000 (+     0.000000000) ioctl(0, TCGETS, 0x7ff0) = -1 ENOTTY (Inappropriate ioctl for device) <0.000001>",
+            f"8 10:00:00.000100 (+     0.000100000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            f"8 10:00:00.000200 (+     0.000100000) read(3, {hx(b'abcd')}, 4) = 4 <0.000010>",
+            f"7 10:00:00.000300 (+     0.000100000) read(3, {hx(b'efgh')}, 4) = 4 <0.000010>",
+        ]
+        recs, counts = imutx.convert_lines(lines)
+        self.assertEqual([r["op"] for r in recs[1:]], [])
+        self.assertEqual(counts["foreign_pid_device_ops"], 1)
 
     def test_unfinished_at_end_is_kept_unresolved(self):
         lines = [
-            f"7 10:00:00.000000 (+     0.000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
-            "7 10:00:00.000100 (+     0.000100) read(3,  <unfinished ...>",
-            "7 10:00:00.000200 (+     0.000100) +++ killed by SIGKILL +++",
+            f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            "7 10:00:00.000100 (+     0.000100000) read(3,  <unfinished ...>",
+            "7 10:00:00.000200 (+     0.000100000) +++ killed by SIGKILL +++",
         ]
         recs, _ = imutx.convert_lines(lines)
         self.assertEqual(recs[-1]["op"], "read")
@@ -155,14 +202,14 @@ class ConvertEdges(unittest.TestCase):
 
     def test_unavailable_result(self):
         lines = [
-            f"7 10:00:00.000000 (+     0.000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
-            "7 10:00:00.000100 (+     0.000100) read(3, 0x1234, 4) = ? <unavailable>",
+            f"7 10:00:00.000000 (+     0.000000000) openat(AT_FDCWD, {DEV}, O_RDWR) = 3 <0.000010>",
+            "7 10:00:00.000100 (+     0.000100000) read(3, 0x1234, 4) = ? <unavailable>",
         ]
         recs, _ = imutx.convert_lines(lines)
         self.assertIsNone(recs[-1]["ret"])
 
     def test_partial_stdout_tail(self):
-        lines = [f"7 10:00:00.000000 (+     0.000000) write(1, {hx(b'no newline')}, 10) = 10 <0.000001>"]
+        lines = [f"7 10:00:00.000000 (+     0.000000000) write(1, {hx(b'no newline')}, 10) = 10 <0.000001>"]
         recs, _ = imutx.convert_lines(lines)
         self.assertEqual(recs[-1], {"op": "stdout", "line": "no newline", "t_us": 0, "partial": True})
 
@@ -211,6 +258,7 @@ class Stats(unittest.TestCase):
         tx, _ = synth.basic()
         st = imutx.stats(tx.recs)
         self.assertEqual(st["probe"], "zero-length write accepted")
+        self.assertIsNone(st["exit_record"])
         self.assertEqual(st["packets_per_channel"], {"0": 1, "2": 1, "3": 3})
         self.assertEqual(st["zero_seed_samples"], {"quat_all_zero": 0, "linaccel_all_zero": 3})
         self.assertEqual(st["stdout"]["sample"], 3)
