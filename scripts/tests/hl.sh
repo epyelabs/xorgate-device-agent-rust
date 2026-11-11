@@ -300,6 +300,8 @@ echo "== F5: wait never reports an older run's rc"
 HL_MIN_FREE_GB=100000 "$HL" run t1 test >/dev/null 2>&1
 out=$("$HL" wait t1 test 5 2>&1)
 case "$out" in "test rc=75 (REFUSED: "*) ok "after a refused run, wait reports 75 + the reason, not the old 0" ;; *) bad "wait after a refusal: $out" ;; esac
+out=$(HL_CPUS=4 HL_JOBS=2 "$HL" wait t1 nosuchjob 1 2>&1); rc=$?
+case "$out" in *FAILED*) bad "a pending wait / forwarded env printed a false FAILED: $out" ;; *"still running after 1s"*) [ $rc = 124 ] && ok "wait times out with rc 124 and no false 'FAILED' (bash 3.2 ERR quirks)" || bad "wait timeout rc $rc" ;; *) bad "wait timeout text: $out" ;; esac
 
 echo "== build-bins-in.sh = build-bins.sh (drift guard)"
 for pat in 'cargo build --profile $PROFILE -p xorgate-agent -p xorgate-replay && cp $TARGET_DIR/$OUTDIR/xorgate-rs $TARGET_DIR/$OUTDIR/xorgate-replay /src/tools/replay/.cache/bin/' \

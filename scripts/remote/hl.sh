@@ -79,10 +79,12 @@ need_tag() { hl_valid_tag "${1:-}" || die "bad tag '${1:-}' ([a-z0-9-], max 40; 
 job_sh() { printf '"$HOME"/%s/%s/bin/hl-job.sh' "$HL_ROOT_REL" "$1"; }
 # Forwarded environment, shell-quoted, for the remote command line.
 fwd_env() {
-  local v out=""
+  local v out="" isset
   for v in $HL_FORWARD_VARS; do
-    # bash 3.2: no ${!v+x}; set-but-empty is forwarded too.
-    if eval "[ \"\${$v+set}\" = set ]"; then out="$out $v=$(eval "printf '%q' \"\$$v\"")"; fi
+    # bash 3.2: no ${!v+x}; set-but-empty is forwarded too. (An assignment, not
+    # an `if eval [ … ]`: bash 3.2 fires the ERR trap inside eval in conditions.)
+    eval "isset=\${$v+set}"
+    if [ "$isset" = set ]; then out="$out $v=$(eval "printf '%q' \"\$$v\"")"; fi
   done
   printf 'env%s' "$out"
 }
@@ -190,16 +192,18 @@ cmd_run() {
 
 cmd_wait() {
   need_tag "${1:-}"; [ $# -ge 2 ] || usage
-  local tag=$1 name=$2 max=${3:-3600} t0 out
+  local tag=$1 name=$2 max=${3:-3600} t0 out left
   hl_valid_job "$name" || die "bad job name $name"
   t0=$(date +%s)
   while :; do
-    if out=$(rsh "cd $HL_ROOT_REL/$tag/logs && test -f $name.rc && printf '%s' \"\$(cat $name.rc)\" && { test -f $name.refused && printf ' (REFUSED: %s)' \"\$(cat $name.refused)\" || true; }"); then
+    # (a poll that finds no .rc yet is not a failure: no ERR trap in here)
+    if out=$(trap - ERR; rsh "cd $HL_ROOT_REL/$tag/logs && test -f $name.rc && printf '%s' \"\$(cat $name.rc)\" && { test -f $name.refused && printf ' (REFUSED: %s)' \"\$(cat $name.refused)\" || true; }"); then
       echo "$name rc=$out"
       return 0
     fi
-    [ $(( $(date +%s) - t0 )) -lt "$max" ] || { echo "hl: $tag/$name still running after ${max}s" >&2; return 124; }
-    sleep 30
+    left=$(( max - ($(date +%s) - t0) ))
+    [ "$left" -gt 0 ] || { echo "hl: $tag/$name still running after ${max}s" >&2; exit 124; }
+    sleep $(( left < 30 ? left : 30 ))
   done
 }
 
