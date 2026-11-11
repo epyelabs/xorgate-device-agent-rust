@@ -7,6 +7,7 @@
 //! xorgate-replay synth <scenario> -o <tape> [--duration-s N] [--fixtures DIR]
 //! xorgate-replay play  --tape T --out RUN --a js|rust --b js|rust [rig flags]   (inside the rig)
 //! xorgate-replay diff  RUN [--tolerances tools/replay/tolerances.toml] [-o RUN/diff.md]
+//! xorgate-replay imu-lockstep FILE.imutx… [--errno fixtures/imu_oracle/errno.json] [--verbose]
 //! ```
 #![allow(clippy::disallowed_methods)] // F-P6-ENV opt-out: NOT an agent spawn site (see clippy.toml)
 
@@ -14,6 +15,7 @@ mod aws;
 mod diff;
 mod diff_p4;
 mod handoff;
+mod imu_lockstep_cli;
 mod inspect;
 mod media;
 mod media_diff;
@@ -88,6 +90,9 @@ enum Cmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// Phase 7c C5(a)/C10b: replay `*.imutx` transcripts through the Rust
+    /// BNO085 client in lockstep (counts-only verdicts; exit 1 on any FAIL).
+    ImuLockstep(imu_lockstep_cli::ImuLockstepArgs),
 }
 
 fn main() -> Result<()> {
@@ -136,6 +141,11 @@ fn main() -> Result<()> {
             );
         }
         Cmd::RecordShared(args) => record::run(args)?,
+        Cmd::ImuLockstep(args) => {
+            if !imu_lockstep_cli::run(&args)? {
+                std::process::exit(1);
+            }
+        }
         Cmd::Play(args) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
