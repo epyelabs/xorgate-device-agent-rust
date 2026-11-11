@@ -402,8 +402,10 @@ def apply_scrub(ops, cls, gen):
             v_cur, tries = value, 0
             while cand == orig:
                 # The draw equals the original at THIS position: re-draw it ON
-                # the trend (same field, same index, fresh secret jitter), so the
-                # redraw is indistinguishable from any other draw (review X4).
+                # the trend (same field, same index, fresh secret jitter), so it
+                # passes a neighbour-outlier test (review X4). NOT unit-norm safe:
+                # an RV redraw breaks |q| = 1 and the original is recoverable
+                # (fix-check Y1). Never commit real-derived output (7c ruling).
                 # Where the jitter cannot move this unit (e.g. an axis component
                 # near 0), fall back after 8 tries to a +-1 LSB nudge with a
                 # secret sign (+-256 when only the high byte is live).
