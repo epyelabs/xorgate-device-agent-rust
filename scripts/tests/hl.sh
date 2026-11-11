@@ -533,11 +533,11 @@ STUB_DOCKER_RUN_RC=1 "$HL" run t2 build-bins >/dev/null 2>&1; grep -q 'kind=lto'
 echo "== fix-check M1: a REAL tmux server does not inherit the reservation lock"
 if [ -n "$REAL_TMUX" ]; then
   export TMUX_TMPDIR=$W/tmx; mkdir -p "$TMUX_TMPDIR"   # a private server: none runs before the first start
-  out1=$(STUB_REAL_TMUX=1 STUB_DOCKER_SLEEP=6 HL_JOB_NAME=rt1 "$HL" run t2 test 2>&1)
+  out1=$(STUB_REAL_TMUX=1 STUB_DOCKER_SLEEP=6 HL_CPUS=4 HL_MEM=4g HL_JOB_NAME=rt1 "$HL" run t2 test 2>&1)
   sleep 1
   spid=$(STUB_REAL_TMUX=1 tmux display -p -t hl_t2_rt1 '#{pid}' 2>/dev/null)
   nfd=0; for fd in /proc/"$spid"/fd/*; do case "$(readlink "$fd" 2>/dev/null)" in */res/.lock) nfd=$((nfd + 1)) ;; esac; done
-  out2=$(STUB_REAL_TMUX=1 HL_LOCK_WAIT=3 HL_JOB_NAME=rt2 "$HL" run t2 test 2>&1)
+  out2=$(STUB_REAL_TMUX=1 HL_LOCK_WAIT=3 HL_CPUS=4 HL_MEM=4g HL_JOB_NAME=rt2 "$HL" run t2 test 2>&1)
   case "$out1$out2" in *"started hl_t2_rt1"*"started hl_t2_rt2"*) [ -n "$spid" ] && [ "$nfd" = 0 ] \
       && ok "two sequential runs both start; the tmux server holds no lock fd (server pid $spid)" || bad "server lock fds: $nfd (pid $spid)" ;;
     *) bad "second run under a server spawned by the first: $out2" ;; esac
