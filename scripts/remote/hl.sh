@@ -28,6 +28,7 @@
 #   test         cargo test --locked --workspace --no-fail-fast only
 #   cargo ARGS   any cargo command line, e.g. `cargo test -p xorgate-agent --test capture_host`
 #   suites       every plain script suite, one fresh bookworm container each
+#                (HL_SUITES=<paths> for a subset; HL_MUTANTS=<ids> for scripts/remote/mutations.sh)
 #   systemd      the two systemd-252-as-PID-1 suites (privileged bookworm; refused if a
 #                suite would run a clock/RTC-setting tool)
 #   build-bins   the rig's release xorgate-rs + xorgate-replay + rig-statvfs.so (tools/replay/build-bins.sh's

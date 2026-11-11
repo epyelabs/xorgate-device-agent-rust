@@ -320,7 +320,7 @@ job_suites() {
   for t in $(suite_list); do
     n=$(echo "$t" | tr / _)
     docker run --rm --name "hl_${TAG}_suite-${n%.sh}" --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=$(jobl)" \
-      --cpus "$HL_SUITE_CPUS" --memory "$HL_SUITE_MEM" -v "$SRC:/src:ro" -v "$HERE:/hl/bin:ro" "$img" \
+      --cpus "$HL_SUITE_CPUS" --memory "$HL_SUITE_MEM" -v "$SRC:/src:ro" -v "$HERE:/hl/bin:ro" ${HL_MUTANTS:+-e "MUTANTS=$HL_MUTANTS"} "$img" \
       timeout 1800 bash /hl/bin/suite-in.sh "$t" > "$T/logs/suites/$n.log" 2>&1
     rc=$?
     [ $rc -eq 0 ] || fails=$((fails + 1))
