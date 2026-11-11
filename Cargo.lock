@@ -2985,9 +2985,11 @@ dependencies = [
 name = "xorgate-core"
 version = "0.0.1"
 dependencies = [
+ "hex",
  "indexmap",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
