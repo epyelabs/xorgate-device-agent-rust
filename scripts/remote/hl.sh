@@ -211,7 +211,7 @@ cmd_run() {
     set -- "inbox/$(basename "$1")"
   fi
   for a in "$@"; do q="$q $(printf '%q' "$a")"; done
-  if out=$(rsh "$(fwd_env) HL_RUN_ID=$RUNID $(job_sh "$tag") start $tag $(printf '%q' "$job")$q" 2>&1); then rc=0; else rc=$?; fi
+  if out=$(trap - ERR; rsh "$(fwd_env) HL_RUN_ID=$RUNID $(job_sh "$tag") start $tag $(printf '%q' "$job")$q" 2>&1); then rc=0; else rc=$?; fi
   [ -z "$out" ] || printf '%s\n' "$out"
   case $rc in
     0) set_state started ;;
