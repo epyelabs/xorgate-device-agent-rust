@@ -39,17 +39,16 @@ mod log_capture;
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::*;
 use serde_json::Value;
+use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use tokio::sync::mpsc;
 use xorgate_agent::collectors::imu::{ImuCollector, ImuIo, RealImuIo};
 use xorgate_agent::collectors::Collector;
 use xorgate_agent::ctx::{BoxFut, NoopHooks};
