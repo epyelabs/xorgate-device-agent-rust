@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015  # test assertions: `a && ok || bad`
+# shellcheck disable=SC2015,SC2016  # test assertions: `a && ok || bad`; the guard text is a literal (backticks)
 # review-wp3 F1 (phase 7c WP3 fix round): the TEST-ONLY `imu-test-bus` feature
 # of xorgate-agent (the IMU reader's socket test transport) must never reach a
 # shipped build. Checks, in the build image (needs cargo; the source stays
