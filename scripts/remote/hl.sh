@@ -24,7 +24,7 @@
 # <name>.rc = 75 and <name>.refused (the reason), so `wait` never reports an
 # older run's rc:
 #   gate         cargo-gate + suites + systemd, in that order
-#   cargo-gate   fmt --check, clippy -D warnings, test --workspace, cargo-deny, clippy-ban-probe
+#   cargo-gate   fmt --check, clippy -D warnings, test --workspace, cargo-deny, clippy-ban-probe, feature-gate
 #   test         cargo test --locked --workspace --no-fail-fast only
 #   cargo ARGS   any cargo command line, e.g. `cargo test -p xorgate-agent --test capture_host`
 #   suites       every plain script suite, one fresh bookworm container each

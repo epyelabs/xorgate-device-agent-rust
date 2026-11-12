@@ -217,6 +217,13 @@ pub trait ImuIo: Send + Sync + 'static {
     fn detect<'a>(&'a self, tape: &'a dyn TapeSink) -> BoxFut<'a, ImuDetect>;
     /// `runStream(spec…)`.
     fn spawn(&self, spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEvent>);
+    /// R9's input: the device tree's `compatible` list ([`DT_COMPATIBLE`]).
+    /// The collector reads it ONLY inside the SoC gate, i.e. only when the
+    /// `rust` backend is selected; the default path never calls this
+    /// (review-wp3 FC2, pinned in `tests/collectors_imu.rs`).
+    fn dt_compatible(&self) -> std::io::Result<Vec<u8>> {
+        std::fs::read(DT_COMPATIBLE)
+    }
 }
 
 /// Production: `i2cdetect -y 1` + a real child process.
@@ -345,7 +352,7 @@ impl Shared {
         let spec = reader_spec(
             std::env::var(IMU_BACKEND_ENV).ok().as_deref(),
             std::env::var(IMU_READER_BIN_ENV).ok().as_deref(),
-            &|| soc_allows_rust(std::fs::read(DT_COMPATIBLE), soc_check.as_deref()),
+            &|| soc_allows_rust(self.io.dt_compatible(), soc_check.as_deref()),
             &self.ctx.paths.python_dir,
             addr,
         );
