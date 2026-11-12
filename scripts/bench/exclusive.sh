@@ -157,6 +157,7 @@ status)
   printf '  %-22s %s\n' "$GATE_UNIT" "$(systemctl is-active "$GATE_UNIT" 2>/dev/null || true)" "$SOAK_UNIT" "$(systemctl is-active "$SOAK_UNIT" 2>/dev/null || true)"
   [ -f "$GATE_DROPIN" ] && echo "  gate seam drop-in present ($(cat "$GATE_MODE" 2>/dev/null || echo '?'))"
   echo "  filler sessions: $(filler_sessions | wc -l)   Rust media pids: $(rs_media_pids | tr '\n' ' ')"
+  imu_readers_report
   echo "  shm: $(shm_counts)"
   ;;
 begin)

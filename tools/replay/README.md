@@ -604,3 +604,14 @@ Plan: `plans/device-agent-js-to-rust/phase-6/evidence/P3a-takeover.md` §Design.
   - A live client is answered normally.
   - The sidecar re-PUT that follows is the TS's documented idempotent retry (`takeover/sidecar-reput`).
 - **Lanes:** `p3a-lanes.sh synth | matrix | run <id>:<tape>:<jr|rj|jj|rr>:<term|kill> | run-matrix`. Lanes run serially; before each one, a quiet-host preflight checks that no other `xorgate.agent` container runs and that the 1-min load is ≤ 8. The runner holds the Mac awake with `caffeinate -dims`.
+
+## Phase 7c WP3: the Rust IMU reader lane (`XORGATE_IMU_BACKEND=rust`)
+
+Plan: `plans/device-agent-js-to-rust/phase-7c-rust-imu.md` §Design 6 (R6: the relay lane is the plan of record); gate rows C6/C7.
+
+- **Default lanes are unchanged:** with the knob unset a Rust side spawns `python3 <XORGATE_PYTHON_DIR>/bno085_read.py --address 0x4a`, i.e. `fake-python/bno085_read.py`.
+- **The rust-backend lane:** `run-rig.sh <tape> --a js --b rust -- --env-b XORGATE_IMU_BACKEND=rust`. The player then sets that side's `XORGATE_IMU_READER_BIN` to ITS OWN binary (`/rig/cache/bin/xorgate-replay`; an explicit `--env-b XORGATE_IMU_READER_BIN=…` wins), and `XORGATE_IMU_SOC_CHECK=off` (the agent's R9 allow-list runs `rust` only on a BCM2712 device tree, which the rig lacks), whose hidden `__imu-reader` subcommand (`src/imu_relay.rs`) is the relay: the same socket protocol as the fake helper (`$RIG_IMU_SOCK`, the tape's lines verbatim, `__EXIT__ <code>`, SIGINT → 0).
+- **The relay asserts its own argv** (`["xorgate-imu", "__imu-reader", "--address", "0x4a"]`). On any mismatch, e.g. the agent dropped `arg0`, it prints `{"type": "error", "error": "init failed: rig argv [...]"}` and exits 3: the collector parks, and the park line fails the run. It is an ELF subcommand, not a script, because the kernel's `#!` handling replaces `argv[0]` with the script path, so a script relay could never see `xorgate-imu`.
+- **What it proves:** knob → `ChildSpec` (program, `arg0`, args) → spawn → supervision (Redetect/Park). It does NOT exercise the SHTP codec or client: those rest on C4 (oracle differential), C5 (W0 lockstep) and C10b (bench reverse lockstep).
+- **The IMU knobs are refused on a JS side** (and on a JS handoff incarnation), like the capture-host knobs.
+- **C7 tapes:** the IMU-bearing synthetic tapes `smoke`, `calibration`, `full`, `imu`.

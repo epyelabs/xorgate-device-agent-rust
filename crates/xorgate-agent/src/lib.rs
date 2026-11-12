@@ -16,6 +16,7 @@ pub mod command_plane;
 pub mod config_plane;
 pub mod ctx;
 pub mod env;
+pub mod imu_reader;
 pub mod logging;
 pub mod media;
 pub mod mqtt_plane;

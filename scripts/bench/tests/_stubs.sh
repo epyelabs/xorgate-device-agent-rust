@@ -46,7 +46,10 @@ case "$cmd" in
         if [ "$now" = 1 ]; then if [ "$cmd" = enable ]; then echo active > "$st/$u"; else echo inactive > "$st/$u"; fi; fi;;
   daemon-reload) [ -f "$st/FAIL_RELOAD" ] && { echo "stub: daemon-reload failed" >&2; exit 1; }; true;;
   show) u="$1"; shift
-        if [ "${1:-}" = -p ] && [ "${2:-}" = MainPID ]; then cat "$st/$u.mainpid" 2>/dev/null || echo 0; else echo ""; fi;;
+        if [ "${1:-}" = -p ] && [ "${2:-}" = MainPID ]; then cat "$st/$u.mainpid" 2>/dev/null || echo 0
+        # Phase 7c (review-wp3 F7): the effective Environment= (a fixture).
+        elif [ "${1:-}" = -p ] && [ "${2:-}" = Environment ]; then cat "$st/$u.environment" 2>/dev/null || echo ""
+        else echo ""; fi;;
   *) true;;
 esac
 S

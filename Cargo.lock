@@ -2953,6 +2953,7 @@ dependencies = [
  "tracing-journald",
  "tracing-subscriber",
  "unicode-width",
+ "xorgate-agent",
  "xorgate-cloud",
  "xorgate-core",
  "xorgate-hal",

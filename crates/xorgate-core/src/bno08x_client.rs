@@ -147,11 +147,22 @@ pub struct StdoutClosed;
 /// The reader's stdout: ONE `write` per call (what CPython's flush does).
 pub trait ImuSink {
     fn write_chunk(&mut self, chunk: &str) -> Result<(), StdoutClosed>;
+
+    /// Called ONCE, right after the `ready` line was written and before the
+    /// first loop iteration: the helper's `try:` around its loop
+    /// (`bno085_read.py:76`), from where a SIGINT means `return 0` instead of
+    /// a death by SIGINT. The WP3 reader blocks SIGINT here (plan §Design 1:
+    /// default disposition through init, taken at the interval wait from the
+    /// loop start on). Default: nothing (the lockstep runner, tests).
+    fn loop_starts(&mut self) {}
 }
 
 impl<T: ImuSink + ?Sized> ImuSink for &mut T {
     fn write_chunk(&mut self, chunk: &str) -> Result<(), StdoutClosed> {
         (**self).write_chunk(chunk)
+    }
+    fn loop_starts(&mut self) {
+        (**self).loop_starts()
     }
 }
 
@@ -581,6 +592,7 @@ fn run_inner<B: I2cOps, C: ImuClock, S: ImuSink>(
     if io.out.emit(&ready_line(args.address)).is_err() {
         return ReaderExit::StdoutClosed;
     }
+    io.out.sink.loop_starts();
     let max_errors = args.max_consecutive_errors();
     let mut consecutive: u32 = 0;
     loop {

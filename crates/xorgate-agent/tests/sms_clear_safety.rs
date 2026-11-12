@@ -398,6 +398,8 @@ fn unsafe_code_is_denied_except_at_todays_ffi_sites() {
             "xorgate-agent/src/capture_host/sys.rs thread_kill",
             "xorgate-agent/src/cli/manage/format.rs clock",
             "xorgate-agent/src/cli/sms.rs stdout_columns",
+            // Phase 7c WP3: the IMU reader's one timed signal wait.
+            "xorgate-agent/src/imu_reader/sys.rs wait_sigint",
             "xorgate-agent/src/recording/capture/backend.rs renice",
             "xorgate-hal/src/atomic_write.rs is_root",
             "xorgate-hal/src/atomic_write.rs preserve_ownership",
@@ -407,6 +409,11 @@ fn unsafe_code_is_denied_except_at_todays_ffi_sites() {
             "xorgate-hal/src/fragment_stat.rs hrtime_ns",
             "xorgate-hal/src/fs_watch.rs pump",
             "xorgate-hal/src/fs_watch.rs watch_dir",
+            // Phase 7c WP3: the i2c-dev transport (one libc call each).
+            "xorgate-hal/src/i2c_dev.rs read_once",
+            "xorgate-hal/src/i2c_dev.rs select_device",
+            "xorgate-hal/src/i2c_dev.rs strerror",
+            "xorgate-hal/src/i2c_dev.rs write_once",
             "xorgate-hal/src/ledger_file.rs is_root",
             "xorgate-hal/src/ledger_file.rs preserve_ownership",
             "xorgate-hal/src/nmea_tty.rs a_stuck_open_strands_at_most_one_thread",

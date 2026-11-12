@@ -17,7 +17,16 @@
 //! `updatedMono` by its change pattern (the TS clock was mocked; what the
 //! recorder keys on is "did the stamp move", CF18).
 //!
-//! ONE test function: PATH is process-global, so this binary holds nothing else.
+//! Phase 7c (WP3): every case runs TWICE, once per `XORGATE_IMU_BACKEND`.
+//! Under `rust` the same relay shim is the reader program
+//! (`XORGATE_IMU_READER_BIN=<bin>/xorgate-imu-reader`, args `__imu-reader
+//! --address 0x4a`) and there is no `python3` on PATH: the TS scenarios'
+//! `[imu]` lines — detection, `reader stream ended; will re-detect`, the
+//! verbatim park line, SIGKILL (`K`) → `Done(None)` → Redetect/Park — must be
+//! identical under both backends (only the spawn differs).
+//!
+//! ONE test function: PATH (and the IMU knobs) are process-global, so this
+//! binary holds nothing else.
 
 mod common;
 mod log_capture;
@@ -38,6 +47,23 @@ use xorgate_agent::ctx::NoopHooks;
 use xorgate_hal::io::null_tape;
 
 type Logs = Arc<Mutex<Vec<(String, String)>>>;
+
+/// The reader shim's file name under the `rust` backend.
+const RUST_READER: &str = "xorgate-imu-reader";
+
+/// Set (or clear) the IMU knobs for one backend (this binary only).
+fn set_backend(rust: bool, bin: &Path) {
+    if rust {
+        std::env::set_var("XORGATE_IMU_BACKEND", "rust");
+        std::env::set_var("XORGATE_IMU_READER_BIN", bin.join(RUST_READER));
+        // R9: no BCM2712 device tree in a test container (the rig override)
+        std::env::set_var("XORGATE_IMU_SOC_CHECK", "off");
+    } else {
+        std::env::remove_var("XORGATE_IMU_BACKEND");
+        std::env::remove_var("XORGATE_IMU_READER_BIN");
+        std::env::remove_var("XORGATE_IMU_SOC_CHECK");
+    }
+}
 
 struct Capture(Logs);
 struct Msg(String);
@@ -89,6 +115,7 @@ fn spawns(dir: &Path) -> u64 {
 fn rig(
     dir: &Path,
     input: &Value,
+    rust: bool,
 ) -> (
     std::path::PathBuf,
     std::path::PathBuf,
@@ -128,7 +155,7 @@ fn rig(
     }
     if input["python"].as_bool().unwrap() {
         shim(
-            &bin.join("python3"),
+            &bin.join(if rust { RUST_READER } else { "python3" }),
             &[
                 "#!/bin/sh".to_string(),
                 format!("D=\"{d}\""),
@@ -162,151 +189,164 @@ async fn imu_scenarios_match_the_ts_collector() {
     let _guard = log_capture::install(Capture(logs.clone()));
     let saved_path = std::env::var_os("PATH");
 
-    for (ci, case) in cases.iter().enumerate() {
-        let name = case["name"].as_str().unwrap();
-        let input = &case["input"];
-        let dir = scratch(&format!("imu-{ci}"));
-        let (bin, py, home, fifo) = rig(&dir, input);
-        std::env::set_var("PATH", &bin);
+    for rust in [false, true] {
+        let backend = if rust { "rust" } else { "python" };
+        for (ci, case) in cases.iter().enumerate() {
+            let name = format!("{backend}/{}", case["name"].as_str().unwrap());
+            let input = &case["input"];
+            let dir = scratch(&format!("imu-{backend}-{ci}"));
+            let (bin, py, home, fifo) = rig(&dir, input, rust);
+            std::env::set_var("PATH", &bin);
+            set_backend(rust, &bin);
 
-        let mut ctx = test_ctx(&home, "dev-wp2", Arc::new(NoopHooks), null_tape());
-        let mut paths = (*ctx.paths).clone();
-        paths.python_dir = py.clone();
-        ctx.paths = Arc::new(paths);
-        let settings = ctx.paths.settings.clone();
-        let c = ImuCollector::new(&ctx, Arc::new(RealImuIo::default()));
+            let mut ctx = test_ctx(&home, "dev-wp2", Arc::new(NoopHooks), null_tape());
+            let mut paths = (*ctx.paths).clone();
+            paths.python_dir = py.clone();
+            ctx.paths = Arc::new(paths);
+            let settings = ctx.paths.settings.clone();
+            let c = ImuCollector::new(&ctx, Arc::new(RealImuIo::default()));
 
-        let logs_from = logs.lock().unwrap().len();
-        let mut writer: Option<std::fs::File> = None;
-        // (fixture stamp, rust stamp) of the previous non-null sample
-        let mut prev_stamp: Option<(u64, tokio::time::Instant)> = None;
-        for (si, step) in case["steps"].as_array().unwrap().iter().enumerate() {
-            let at = format!("[{name}] step {si} {}", step["op"]);
-            match step["op"].as_str().unwrap() {
-                "read" => {
-                    let g = c.read().await;
-                    assert_eq!(
-                        serde_json::to_string(&g).unwrap(),
-                        serde_json::to_string(&step["result"]).unwrap(),
-                        "{at}"
-                    );
-                    sleep(30).await;
-                }
-                "sample" => {
-                    let s = c.sample().await;
-                    let want = &step["result"];
-                    match (&s, want.is_null()) {
-                        (None, true) => {}
-                        (Some(s), false) => {
-                            assert_eq!(
-                                serde_json::to_string(&s.fields).unwrap(),
-                                serde_json::to_string(&want["fields"]).unwrap(),
-                                "{at}: fields"
-                            );
-                            let ts = want["updatedMonoMs"].as_u64().unwrap();
-                            if let Some((pts, prs)) = prev_stamp {
+            let logs_from = logs.lock().unwrap().len();
+            let mut writer: Option<std::fs::File> = None;
+            // (fixture stamp, rust stamp) of the previous non-null sample
+            let mut prev_stamp: Option<(u64, tokio::time::Instant)> = None;
+            for (si, step) in case["steps"].as_array().unwrap().iter().enumerate() {
+                let at = format!("[{name}] step {si} {}", step["op"]);
+                match step["op"].as_str().unwrap() {
+                    "read" => {
+                        let g = c.read().await;
+                        assert_eq!(
+                            serde_json::to_string(&g).unwrap(),
+                            serde_json::to_string(&step["result"]).unwrap(),
+                            "{at}"
+                        );
+                        sleep(30).await;
+                    }
+                    "sample" => {
+                        let s = c.sample().await;
+                        let want = &step["result"];
+                        match (&s, want.is_null()) {
+                            (None, true) => {}
+                            (Some(s), false) => {
                                 assert_eq!(
-                                    ts == pts,
-                                    s.updated_mono == prs,
-                                    "{at}: updatedMono moved in one implementation only"
+                                    serde_json::to_string(&s.fields).unwrap(),
+                                    serde_json::to_string(&want["fields"]).unwrap(),
+                                    "{at}: fields"
                                 );
+                                let ts = want["updatedMonoMs"].as_u64().unwrap();
+                                if let Some((pts, prs)) = prev_stamp {
+                                    assert_eq!(
+                                        ts == pts,
+                                        s.updated_mono == prs,
+                                        "{at}: updatedMono moved in one implementation only"
+                                    );
+                                }
+                                prev_stamp = Some((ts, s.updated_mono));
                             }
-                            prev_stamp = Some((ts, s.updated_mono));
+                            (got, _) => panic!("{at}: got {got:?}, want {want}"),
                         }
-                        (got, _) => panic!("{at}: got {got:?}, want {want}"),
+                        sleep(30).await;
                     }
-                    sleep(30).await;
-                }
-                "waitSpawn" => {
-                    let n = step["n"].as_u64().unwrap();
-                    for _ in 0..500 {
-                        if spawns(&dir) >= n {
-                            break;
+                    "waitSpawn" => {
+                        let n = step["n"].as_u64().unwrap();
+                        for _ in 0..500 {
+                            if spawns(&dir) >= n {
+                                break;
+                            }
+                            sleep(10).await;
                         }
-                        sleep(10).await;
+                        assert_eq!(spawns(&dir), n, "{at}: spawn count");
+                        let _ = std::fs::remove_file(dir.join("exit.code"));
+                        let f = fifo.clone();
+                        writer = Some(
+                            tokio::task::spawn_blocking(move || {
+                                std::fs::OpenOptions::new().write(true).open(f).unwrap()
+                            })
+                            .await
+                            .unwrap(),
+                        );
+                        sleep(50).await;
                     }
-                    assert_eq!(spawns(&dir), n, "{at}: spawn count");
-                    let _ = std::fs::remove_file(dir.join("exit.code"));
-                    let f = fifo.clone();
-                    writer = Some(
-                        tokio::task::spawn_blocking(move || {
-                            std::fs::OpenOptions::new().write(true).open(f).unwrap()
-                        })
-                        .await
-                        .unwrap(),
-                    );
-                    sleep(50).await;
-                }
-                "line" => {
-                    let w = writer.as_mut().expect("open writer");
-                    w.write_all(format!("{}\n", step["text"].as_str().unwrap()).as_bytes())
-                        .unwrap();
-                    w.flush().unwrap();
-                    sleep(120).await;
-                }
-                "exit" => {
-                    std::fs::write(dir.join("exit.code"), step["code"].as_str().unwrap()).unwrap();
-                    writer = None;
-                    sleep(400).await;
-                }
-                "settings" => {
-                    if step["json"].is_null() {
-                        let _ = std::fs::remove_file(&settings);
-                    } else {
-                        std::fs::write(&settings, step["json"].to_string()).unwrap();
+                    "line" => {
+                        let w = writer.as_mut().expect("open writer");
+                        w.write_all(format!("{}\n", step["text"].as_str().unwrap()).as_bytes())
+                            .unwrap();
+                        w.flush().unwrap();
+                        sleep(120).await;
                     }
+                    "exit" => {
+                        std::fs::write(dir.join("exit.code"), step["code"].as_str().unwrap())
+                            .unwrap();
+                        writer = None;
+                        sleep(400).await;
+                    }
+                    "settings" => {
+                        if step["json"].is_null() {
+                            let _ = std::fs::remove_file(&settings);
+                        } else {
+                            std::fs::write(&settings, step["json"].to_string()).unwrap();
+                        }
+                    }
+                    "advance" => {}
+                    "settle" => sleep(400).await,
+                    other => panic!("{at}: unknown op {other}"),
                 }
-                "advance" => {}
-                "settle" => sleep(400).await,
-                other => panic!("{at}: unknown op {other}"),
             }
+            sleep(200).await;
+
+            // the [imu] lines, in order, with their console level
+            let want: Vec<(String, String)> = case["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| s["logs"].as_array().unwrap().iter())
+                .chain(case["logsAfterLastStep"].as_array().unwrap().iter())
+                .map(|l| {
+                    (
+                        l["level"].as_str().unwrap().to_string(),
+                        l["msg"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                logs.lock().unwrap()[logs_from..],
+                want[..],
+                "[{name}] [imu] lines"
+            );
+
+            // the helper's argv: `<python dir>/bno085_read.py --address 0x4a`
+            let argv: Vec<String> = std::fs::read_to_string(dir.join("argv.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect();
+            // (rust: `__imu-reader --address 0x4a`; argv[0] = xorgate-imu is
+            // lost through the shell shim's interpreter and pinned by the
+            // collector's unit test and the rig relay instead)
+            let script = if rust {
+                "__imu-reader".to_string()
+            } else {
+                format!("{}/bno085_read.py", py.display())
+            };
+            let want_args: Vec<String> = input["helperArgs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| format!("{script} {}", a.as_str().unwrap()))
+                .collect();
+            assert_eq!(argv, want_args, "[{name}] helper argv");
+            assert_eq!(
+                spawns(&dir),
+                input["spawnCount"].as_u64().unwrap(),
+                "[{name}]"
+            );
+            // every case ends with the helper gone, and its handle dropped (Park
+            // included), so `stop()` has nothing left to signal
+            assert_eq!(c.helper_pid(), None, "[{name}] no helper handle left");
+            c.stop();
         }
-        sleep(200).await;
-
-        // the [imu] lines, in order, with their console level
-        let want: Vec<(String, String)> = case["steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|s| s["logs"].as_array().unwrap().iter())
-            .chain(case["logsAfterLastStep"].as_array().unwrap().iter())
-            .map(|l| {
-                (
-                    l["level"].as_str().unwrap().to_string(),
-                    l["msg"].as_str().unwrap().to_string(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            logs.lock().unwrap()[logs_from..],
-            want[..],
-            "[{name}] [imu] lines"
-        );
-
-        // the helper's argv: `<python dir>/bno085_read.py --address 0x4a`
-        let argv: Vec<String> = std::fs::read_to_string(dir.join("argv.log"))
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect();
-        let script = format!("{}/bno085_read.py", py.display());
-        let want_args: Vec<String> = input["helperArgs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|a| format!("{script} {}", a.as_str().unwrap()))
-            .collect();
-        assert_eq!(argv, want_args, "[{name}] helper argv");
-        assert_eq!(
-            spawns(&dir),
-            input["spawnCount"].as_u64().unwrap(),
-            "[{name}]"
-        );
-        // every case ends with the helper gone, and its handle dropped (Park
-        // included), so `stop()` has nothing left to signal
-        assert_eq!(c.helper_pid(), None, "[{name}] no helper handle left");
-        c.stop();
     }
+    set_backend(false, Path::new("/"));
 
     // SHUTDOWN while the helper streams (orchestrator close-out b): the TS
     // logs nothing there (the process exits, execa's cleanup kills the
@@ -317,7 +357,7 @@ async fn imu_scenarios_match_the_ts_collector() {
         .find(|c| c["input"]["python"] == true && c["input"]["spawnCount"].as_u64() >= Some(1))
         .expect("a streaming case");
     let dir = scratch("imu-shutdown");
-    let (bin, py, home, fifo) = rig(&dir, &case["input"]);
+    let (bin, py, home, fifo) = rig(&dir, &case["input"], false);
     std::env::set_var("PATH", &bin);
     let mut ctx = test_ctx(&home, "dev-wp2", Arc::new(NoopHooks), null_tape());
     let mut paths = (*ctx.paths).clone();
