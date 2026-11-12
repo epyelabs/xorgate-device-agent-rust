@@ -554,6 +554,19 @@ echo "4 4 kind:lto" > "$RES/t9_c"
 out=$(HL_JOB_NAME=c3 "$HL" run t2 test 2>&1) && bad "test admitted beside a fat-LTO build" || { case "$out" in *"fat-LTO build"*) ok "a cargo job is refused while a fat-LTO build runs" ;; *) bad "lto text: $out" ;; esac; }
 sed -i '/^hl_t9_c$/d' "$LOG/sessions"; $REAL_RM -f "$RES/t9_c"
 STUB_DOCKER_RUN_RC=1 "$HL" run t2 build-bins >/dev/null 2>&1; grep -q 'kind=lto' "$T2/logs/build-bins.env" && ok "build-bins reserves kind:lto" || bad "build-bins kind"
+# Ruling on H2: fail CLOSED. A live reservation WITHOUT a kind (an older helper
+# copy) counts as a possible cargo job, so it blocks a fat-LTO build, by name.
+echo "hl_t9_old" >> "$LOG/sessions"; echo "8 8" > "$RES/t9_old"
+out=$(HL_JOB_NAME=bb2 "$HL" run t2 build-bins 2>&1) && bad "build-bins admitted beside a no-kind (legacy) reservation" \
+  || { case "$out" in *"without a kind"*t9_old*) ok "build-bins refused beside a live no-kind reservation, which is named" ;; *) bad "legacy text: $out" ;; esac; }
+HL_JOB_NAME=c4 "$HL" run t2 test >/dev/null 2>&1; [ ! -f "$T2/logs/c4.refused" ] && ok "a cargo job may still share the host with a no-kind reservation" || bad "cargo beside legacy refused"
+sed -i '/^hl_t9_old$/d' "$LOG/sessions"
+STUB_DOCKER_RUN_RC=1 HL_JOB_NAME=bb3 "$HL" run t2 build-bins >/dev/null 2>&1; [ ! -f "$T2/logs/bb3.refused" ] && ok "a STALE no-kind reservation (no session) does not block it" || bad "stale legacy blocked: $(cat "$T2/logs/bb3.refused")"
+$REAL_RM -f "$RES/t9_old"
+# This helper always writes a kind, so its own non-cargo jobs never look legacy.
+STUB_TMUX_NORUN=1 HL_JOB_NAME=kn "$HL" run t2 suites >/dev/null 2>&1
+[ "$(cat "$RES/t2_kn" 2>/dev/null)" = "4 4 kind:none" ] && ok "a non-cargo job reserves 'kind:none'" || bad "non-cargo reservation: $(cat "$RES/t2_kn" 2>/dev/null)"
+$REAL_RM -f "$RES/t2_kn"
 
 echo "== fix-check M1: a REAL tmux server does not inherit the reservation lock"
 if [ -n "$REAL_TMUX" ]; then

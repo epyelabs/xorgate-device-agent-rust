@@ -76,6 +76,9 @@ m35	hl-job.sh	  for v2 in $allhl; do envs="$envs -u $v2"; clean+=(-u "$v2"); don
 m36	hl-job.sh	  if [ -f "$exp" ] && ! cmp -s "$exp" "$T/logs/$name.hlenv"; then	  if false; then	M5: exec runs with an unexpected HL_* environment
 m37	hl-job.sh	  if ! env "${clean[@]}" tmux new-session	  if ! tmux new-session	M5: the tmux client (and a server it spawns) keeps HL_* in its env
 m38	hl-job.sh	'$1 == g && $3 !~ /^Z/ {	'$1 == g {	stop counts a zombie-only group as alive (waits, then KILLs)
+m39	hl-job.sh	  if [ "$kind" = lto ] && [ "${legacy:--}" != - ]; then	  if false; then	H2 ruling: a fat-LTO build beside a no-kind (legacy) reservation
+m40	hl-job.sh	      *) legacy="${legacy:+$legacy,}$(basename "$f")" ;;	      *) ;;	H2 ruling: a no-kind reservation is not counted as a possible cargo job
+m41	hl-job.sh	  echo "$cpus $gb kind:$kind" > "$SHARED/res/${TAG}_$NAME"	  if [ "$kind" = none ]; then echo "$cpus $gb"; else echo "$cpus $gb kind:$kind"; fi > "$SHARED/res/${TAG}_$NAME"	H2 ruling: a non-cargo job writes no kind (would look legacy)
 EOF
 }
 setup() { # <dir>: the suite's inputs only

@@ -95,21 +95,25 @@ tag_verified() { [ -f "$T/verified.fp" ] && [ -n "$(tree_fp)" ] && [ "$(cat "$T/
 # ------------------------------------------------------- reservations / caps
 # One file per running job: _shared/res/<tag>_<name> holds EXACTLY
 # "<cpus> <mem_gb>" (cpus: integer or 2 decimals; mem: whole GiB), optionally
-# followed by " kind:cargo" or " kind:lto" (the fat-LTO rule, hl_job_kind) and
-# by " pid:<n>" for work that is not a tmux job (js-cache).
+# followed by " kind:cargo|lto|none" (the fat-LTO rule, hl_job_kind; this
+# helper always writes one) and by " pid:<n>" for work that is not a tmux job
+# (js-cache).
+# - A reservation WITHOUT a kind was written by an older helper copy: it counts
+#   as a possible cargo job, so a fat-LTO build is refused while one is live
+#   (fail closed; orchestrator ruling on fix-check H2).
 # - A well-formed reservation counts while its tmux session hl_<tag>_<name>
 #   (or its pid) is alive; once that is gone it is stale and ignored.
 # - A MALFORMED one (e.g. "8 8g") counts as the full CPU cap, whatever its
 #   session: fail closed (review F2), with a message naming the file.
-res_line_ok() { [[ ${1:-} =~ ^[0-9]+(\.[0-9]{1,2})?\ [1-9][0-9]{0,5}(\ kind:(cargo|lto))?(\ pid:[0-9]+)?$ ]]; }
+res_line_ok() { [[ ${1:-} =~ ^[0-9]+(\.[0-9]{1,2})?\ [1-9][0-9]{0,5}(\ kind:(cargo|lto|none))?(\ pid:[0-9]+)?$ ]]; }
 res_live() { # <file> <line>
   case "$2" in
     *" pid:"*) kill -0 "${2##*pid:}" 2>/dev/null ;;
     *) command tmux has-session -t "=hl_$(basename "$1")" 2>/dev/null ;;
   esac
 }
-res_sum() { # -> "<cpus> <mem_gb> <live cargo jobs> <live lto jobs>"
-  local f line c m total_c=0 total_m=0 n_cargo=0 n_lto=0
+res_sum() { # -> "<cpus> <mem_gb> <live cargo jobs> <live lto jobs> <live no-kind reservations, comma-separated, or ->"
+  local f line c m total_c=0 total_m=0 n_cargo=0 n_lto=0 legacy=
   mkdir -p "$SHARED/res"
   for f in "$SHARED/res"/*; do
     [ -f "$f" ] || continue
@@ -123,9 +127,14 @@ res_sum() { # -> "<cpus> <mem_gb> <live cargo jobs> <live lto jobs>"
     read -r c m _ <<<"$line"
     total_c=$(awk -v a="$total_c" -v b="$c" 'BEGIN { print a + b }')
     total_m=$((total_m + m))
-    case "$line" in *" kind:cargo"*) n_cargo=$((n_cargo + 1)) ;; *" kind:lto"*) n_lto=$((n_lto + 1)) ;; esac
+    case "$line" in
+      *" kind:cargo"*) n_cargo=$((n_cargo + 1)) ;;
+      *" kind:lto"*) n_lto=$((n_lto + 1)) ;;
+      *" kind:none"*) ;;
+      *) legacy="${legacy:+$legacy,}$(basename "$f")" ;;
+    esac
   done
-  echo "$total_c $total_m $n_cargo $n_lto"
+  echo "$total_c $total_m $n_cargo $n_lto ${legacy:--}"
 }
 # Live (or malformed) reservations of OTHER tags, for the lanes' overlap record.
 res_others() { # <me> <peers csv>
@@ -161,13 +170,16 @@ check_limits() {
 # reserve <cpus> <gb>: under the caller's lock, check the budget against every
 # live reservation. Prints the refusal reason and returns 1 when over.
 budget_ok() { # <cpus> <gb> [kind]
-  local cpus=$1 gb=$2 kind=${3:-none} used_c used_m n_cargo n_lto avail sum
+  local cpus=$1 gb=$2 kind=${3:-none} used_c used_m n_cargo n_lto legacy avail sum
   sum=$(res_sum) || { echo "could not read the reservations"; return 1; }
-  read -r used_c used_m n_cargo n_lto <<<"$sum"
+  read -r used_c used_m n_cargo n_lto legacy <<<"$sum"
   if [ -z "${used_c:-}" ] || [ -z "${used_m:-}" ]; then echo "could not read the reservations"; return 1; fi
   # The fat-LTO rule (handbook; fix-check H2), host-wide, across EVERY tag.
   if [ "$kind" = lto ] && [ $((n_cargo + n_lto)) -gt 0 ]; then
     echo "a fat-LTO build (build-bins/release) runs ALONE: $n_cargo cargo + $n_lto fat-LTO job(s) of some tag are running"; return 1
+  fi
+  if [ "$kind" = lto ] && [ "${legacy:--}" != - ]; then
+    echo "a fat-LTO build (build-bins/release) runs ALONE: live reservation(s) without a kind (an older helper copy; counted as a possible cargo job): $legacy"; return 1
   fi
   if [ "$kind" = cargo ] && [ "$n_lto" -gt 0 ]; then
     echo "a fat-LTO build (build-bins/release) of some tag is running: no other cargo job until it ends"; return 1
@@ -228,7 +240,7 @@ cmd_start() {
     for v in $HL_FORWARD_VARS; do eval "[ \"\${$v+set}\" = set ]" && eval "echo \"$v=\${$v}\""; done
     cat "$T/source.txt"
   } > "$T/logs/$NAME.env"
-  if [ "$kind" = none ]; then echo "$cpus $gb"; else echo "$cpus $gb kind:$kind"; fi > "$SHARED/res/${TAG}_$NAME"
+  echo "$cpus $gb kind:$kind" > "$SHARED/res/${TAG}_$NAME"
   local q="" a
   for a in "$@"; do q="$q $(printf '%q' "$a")"; done
   # The tmux SERVER keeps the environment of the client that spawned it, and
@@ -763,7 +775,7 @@ cmd_js_cache() { # <tag> <ref>; tar on stdin
   why=$(check_limits) || die "refused: $why"
   res_lock || die "refused: could not take the reservation lock"
   why=$(budget_ok "$HL_JS_CPUS" "$gb") || die "refused: $why"
-  echo "$HL_JS_CPUS $gb pid:$$" > "$res"
+  echo "$HL_JS_CPUS $gb kind:none pid:$$" > "$res"
   exec 9>&-
   # shellcheck disable=SC2064  # expand $res now
   trap "rm -f '$res'" EXIT
