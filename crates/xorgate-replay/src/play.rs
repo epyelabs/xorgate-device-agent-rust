@@ -303,7 +303,8 @@ fn incarnation_env(
 /// `XORGATE_IMU_READER_BIN=<relay>` (the player's own binary, whose
 /// `__imu-reader` subcommand is the argv-asserting IMU relay; the agent
 /// would otherwise re-exec itself and open `/dev/i2c-1`) unless the caller
-/// set one.
+/// set one, and `XORGATE_IMU_SOC_CHECK=off` (no BCM2712 device tree in the
+/// rig; R9) unless the caller set one.
 pub fn rig_side_env(
     kind: AgentKind,
     extra: &[(String, String)],
@@ -322,6 +323,11 @@ pub fn rig_side_env(
             "XORGATE_IMU_READER_BIN".to_string(),
             relay.display().to_string(),
         ));
+    }
+    // R9: the rig container has no BCM2712 device tree; lift the agent's SoC
+    // allow-list for this side only (the override exists for exactly this).
+    if rust_imu && !extra.iter().any(|(k, _)| k == "XORGATE_IMU_SOC_CHECK") {
+        out.push(("XORGATE_IMU_SOC_CHECK".to_string(), "off".to_string()));
     }
     let host = extra
         .iter()
@@ -3933,10 +3939,7 @@ mod tests {
         assert_eq!((used * 10.0).round() / 10.0, 21.2);
     }
 
-    /// Phase 7a (WP3): `--env-a`/`--env-b` parse per side; a `host` side gets
-    /// the rig shim as its host program (never the agent's own re-exec, which
-    /// would run the real libcamerasrc); an explicit HOST_BIN is kept; the
-    /// capture-host knobs are refused on a JS side; a bad pair is refused.
+    /// Phase 7c (WP3): the relay path the IMU side-env tests pass.
     const RELAY_STR: &str = "/rig/cache/bin/xorgate-replay";
 
     /// Phase 7c (WP3): a `XORGATE_IMU_BACKEND=rust` side's reader program is
@@ -3958,6 +3961,7 @@ mod tests {
             vec![
                 kv("XORGATE_IMU_BACKEND", "rust"),
                 kv("XORGATE_IMU_READER_BIN", "/rig/cache/bin/xorgate-replay"),
+                kv("XORGATE_IMU_SOC_CHECK", "off"),
             ]
         );
         for v in ["python", "", "bogus"] {
@@ -3975,12 +3979,17 @@ mod tests {
         let own = [
             kv("XORGATE_IMU_BACKEND", "rust"),
             kv("XORGATE_IMU_READER_BIN", "/x"),
+            kv("XORGATE_IMU_SOC_CHECK", "on"),
         ];
         assert_eq!(
             rig_side_env(AgentKind::Rust, &own, bin, Path::new(RELAY_STR)).unwrap(),
             own.to_vec()
         );
-        for k in ["XORGATE_IMU_BACKEND", "XORGATE_IMU_READER_BIN"] {
+        for k in [
+            "XORGATE_IMU_BACKEND",
+            "XORGATE_IMU_READER_BIN",
+            "XORGATE_IMU_SOC_CHECK",
+        ] {
             let e = rig_side_env(AgentKind::Js, &[kv(k, "rust")], bin, Path::new(RELAY_STR))
                 .unwrap_err();
             assert!(e.to_string().contains(k), "{e}");
@@ -3990,6 +3999,10 @@ mod tests {
         }
     }
 
+    /// Phase 7a (WP3): `--env-a`/`--env-b` parse per side; a `host` side gets
+    /// the rig shim as its host program (never the agent's own re-exec, which
+    /// would run the real libcamerasrc); an explicit HOST_BIN is kept; the
+    /// capture-host knobs are refused on a JS side; a bad pair is refused.
     #[test]
     fn side_env_points_a_host_side_at_the_shim_and_refuses_js() {
         use clap::Parser;

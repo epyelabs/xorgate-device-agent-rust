@@ -57,6 +57,10 @@ for cut in XORGATE_IMU_BACKEND XORGATE_IMU_READER_BIN; do
   grep -q "missing: $cut=" "$LOGS/v-$cut.log" && grep -q "inputs: NOT SAFE" "$LOGS/v-$cut.log"; expect $? "inputs_safe fails without the $cut pin"
   cp "$LOGS/d.bak" "$D"
 done
+cp "$D" "$LOGS/d.bak"; echo "Environment=XORGATE_IMU_SOC_CHECK=off" >> "$D"
+bash "$B/exclusive.sh" status >"$LOGS/v-soc.log" 2>&1
+grep -q "UNSAFE: .*XORGATE_IMU_\* exactly twice" "$LOGS/v-soc.log" && grep -q "inputs: NOT SAFE" "$LOGS/v-soc.log"; expect $? "inputs_safe fails on the R9 override XORGATE_IMU_SOC_CHECK in the shared drop-in"
+cp "$LOGS/d.bak" "$D"
 cp "$D" "$LOGS/d.bak"; echo "Environment=XORGATE_IMU_BACKEND=rust" >> "$D"
 bash "$B/exclusive.sh" status >"$LOGS/v-extra.log" 2>&1
 grep -q "UNSAFE: .*XORGATE_IMU_\* exactly twice" "$LOGS/v-extra.log" && grep -q "inputs: NOT SAFE" "$LOGS/v-extra.log"; expect $? "inputs_safe fails on a later XORGATE_IMU_BACKEND=rust line"
@@ -74,7 +78,7 @@ grep -q "missing: shim .*xorgate-imu" "$LOGS/v-noshim.log"; expect $? "inputs_sa
 bash "$B/profile.sh" shared >"$LOGS/repair.log" 2>&1
 bash "$B/profile.sh" shared >"$LOGS/repair2.log" 2>&1
 grep -q "== done: 0 change(s)" "$LOGS/repair2.log" && [ -x "$SHIMS/xorgate-imu" ]; expect $? "profile.sh shared repairs the shim and is idempotent"
-for k in XORGATE_IMU_BACKEND=rust XORGATE_IMU_READER_BIN=/x XORGATE_IMU_FUTURE=1; do
+for k in XORGATE_IMU_BACKEND=rust XORGATE_IMU_READER_BIN=/x XORGATE_IMU_SOC_CHECK=off XORGATE_IMU_FUTURE=1; do
   cp "$RS_ENV" "$LOGS/env.bak"; echo "$k" >> "$RS_ENV"
   bash "$B/profile.sh" shared >"$LOGS/env-${k%%=*}.log" 2>&1; rc=$?
   [ "$rc" = 1 ] && grep -q "REFUSING: .*${k%%=*}" "$LOGS/env-${k%%=*}.log"; expect $? "profile.sh shared refuses $RS_ENV carrying ${k%%=*} (an EnvironmentFile beats the pins)"
@@ -82,6 +86,28 @@ for k in XORGATE_IMU_BACKEND=rust XORGATE_IMU_READER_BIN=/x XORGATE_IMU_FUTURE=1
   grep -q "inputs: NOT SAFE" "$LOGS/envst-${k%%=*}.log" && grep -q "XORGATE_IMU_\*" "$LOGS/envst-${k%%=*}.log"; expect $? "inputs_safe fails with ${k%%=*} in $RS_ENV"
   cp "$LOGS/env.bak" "$RS_ENV"
 done
+
+echo "== (4b) the verifier reads the EFFECTIVE unit env too (review-wp3 F7)"
+EFF="$STATE/xorgate-agent-rs.environment"
+pins="XORGATE_IMU_BACKEND=python XORGATE_IMU_READER_BIN=$SHIMS/xorgate-imu"
+bash "$B/exclusive.sh" status >"$LOGS/eff0.log" 2>&1
+grep -q "NOTE: the effective unit env is unavailable" "$LOGS/eff0.log" && grep -q "inputs: SAFE" "$LOGS/eff0.log"; expect $? "no effective env reported: NOTE, the drop-in checks decide (SAFE)"
+printf 'PATH=/x HOME=/var/lib/xorgate-rs %s "OTHER=a b"\n' "$pins" > "$EFF"
+bash "$B/exclusive.sh" status >"$LOGS/eff1.log" 2>&1
+grep -q "inputs: SAFE" "$LOGS/eff1.log" && ! grep -q "EFFECTIVE env" "$LOGS/eff1.log"; expect $? "effective env with exactly the two pins (any order of other keys, a quoted value): SAFE" || cat "$LOGS/eff1.log"
+printf 'XORGATE_IMU_READER_BIN=%s XORGATE_IMU_BACKEND=python\n' "$SHIMS/xorgate-imu" > "$EFF"
+bash "$B/exclusive.sh" status >"$LOGS/eff1b.log" 2>&1
+grep -q "inputs: SAFE" "$LOGS/eff1b.log"; expect $? "the pins in the other order: SAFE"
+for bad in "XORGATE_IMU_BACKEND=rust XORGATE_IMU_READER_BIN=$SHIMS/xorgate-imu" \
+           "XORGATE_IMU_BACKEND=rust XORGATE_IMU_READER_BIN=/var/lib/xorgate-rs/p7c/xorgate-imu-strace" \
+           "$pins XORGATE_IMU_SOC_CHECK=off" \
+           "XORGATE_IMU_BACKEND=python" \
+           "PATH=/x"; do
+  printf '%s\n' "$bad" > "$EFF"
+  bash "$B/exclusive.sh" status >"$LOGS/eff2.log" 2>&1
+  grep -q "UNSAFE: the EFFECTIVE env of xorgate-agent-rs" "$LOGS/eff2.log" && grep -q "inputs: NOT SAFE" "$LOGS/eff2.log"; expect $? "effective env [$bad] (a later drop-in won): NOT SAFE"
+done
+rm -f "$EFF"
 
 echo "== (5) the exclusive drop-in: the reader re-execs the packaged binary (no shim); the backend stays the pin"
 echo inactive > "$STATE/xorgate-agent"

@@ -43,6 +43,15 @@ mod sys;
 #[cfg(feature = "imu-test-bus")]
 mod test_bus;
 
+// review-wp3 F1: the test bus must never ship. Only `cargo test` builds
+// (debug) carry the feature; a release/tarball build that has it refuses to
+// compile. `scripts/tests/cargo/feature-gate.sh` pins the other half: no
+// normal (non-dev) edge enables it.
+#[cfg(all(feature = "imu-test-bus", not(debug_assertions)))]
+compile_error!(
+    "the `imu-test-bus` feature is TEST-ONLY (phase 7c review-wp3 F1): it must never be in a release, rig or tarball build"
+);
+
 use std::ffi::{CStr, OsString};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};

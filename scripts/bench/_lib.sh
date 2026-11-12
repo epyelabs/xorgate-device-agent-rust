@@ -288,6 +288,9 @@ UnsetEnvironment=XORGATE_CAPTURE_HOST_BIN
 # binary (no shim in the window); the backend stays the shared pin (python),
 # and a 7c window turns `rust` on in /run/xorgate-agent-rs-exclusive.env.
 UnsetEnvironment=XORGATE_IMU_READER_BIN
+# (scope, review-wp3 F7: systemd applies UnsetEnvironment= LAST, so this also
+# drops a READER_BIN from the exclusive env file or any other drop-in: a
+# B''-style strace reader cannot run inside an exclusive-profile window.)
 # EnvironmentFile= wins over Environment=, and a later file over an earlier
 # one: this one (last drop-in) points HARDWARE_MANIFEST at the real IMU block
 # and KVS_MANIFEST at the channels-on DEV manifest (beats agent-rs-dev.env).
@@ -1035,6 +1038,21 @@ p7c_inputs_safe() {
   grep -qx "Environment=XORGATE_IMU_BACKEND=python" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_IMU_BACKEND=python in $INPUTS_DROPIN (Phase 7c)"; ok=1; }
   grep -qx "Environment=XORGATE_IMU_READER_BIN=$IMU_SHIM" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_IMU_READER_BIN=$IMU_SHIM in $INPUTS_DROPIN (Phase 7c)"; ok=1; }
   if [ "$(grep -c '^Environment=XORGATE_IMU_' "$INPUTS_DROPIN" 2>/dev/null)" != 2 ]; then echo "  UNSAFE: $INPUTS_DROPIN must set XORGATE_IMU_* exactly twice (the two pins)"; ok=1; fi
+  # review-wp3 F7: the drop-in files are not the whole story — a later drop-in
+  # (e.g. a leftover /run/…/97-p7c-knobs.conf) overrides both pins. When
+  # systemd reports the unit's EFFECTIVE environment, it must carry the two
+  # pins exactly and no other XORGATE_IMU_* (the R9 override
+  # XORGATE_IMU_SOC_CHECK included: it is for the rig, never a device).
+  local eff kv
+  eff=$(systemctl show "$UNIT" -p Environment --value 2>/dev/null || true)
+  if [ -z "$eff" ]; then
+    echo "  NOTE: the effective unit env is unavailable (systemctl show); the drop-ins were checked"
+  else
+    kv=$(python3 -c 'import shlex,sys; print("\n".join(sorted(a for a in shlex.split(sys.argv[1]) if a.startswith("XORGATE_IMU_"))))' "$eff" 2>/dev/null) \
+      || { echo "  UNSAFE: cannot parse the effective unit env"; return 1; }
+    [ "$kv" = "$(printf 'XORGATE_IMU_BACKEND=python\nXORGATE_IMU_READER_BIN=%s' "$IMU_SHIM")" ] \
+      || { echo "  UNSAFE: the EFFECTIVE env of $UNIT has XORGATE_IMU_* = [$(echo "$kv" | tr '\n' ' ')] (want only the two pins: a later drop-in overrides them)"; ok=1; }
+  fi
   return $ok
 }
 # The live SHTP clients on this host (WP4: <= 1 at every switch): python IMU

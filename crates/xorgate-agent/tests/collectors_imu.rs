@@ -56,9 +56,12 @@ fn set_backend(rust: bool, bin: &Path) {
     if rust {
         std::env::set_var("XORGATE_IMU_BACKEND", "rust");
         std::env::set_var("XORGATE_IMU_READER_BIN", bin.join(RUST_READER));
+        // R9: no BCM2712 device tree in a test container (the rig override)
+        std::env::set_var("XORGATE_IMU_SOC_CHECK", "off");
     } else {
         std::env::remove_var("XORGATE_IMU_BACKEND");
         std::env::remove_var("XORGATE_IMU_READER_BIN");
+        std::env::remove_var("XORGATE_IMU_SOC_CHECK");
     }
 }
 

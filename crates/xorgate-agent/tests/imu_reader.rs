@@ -100,6 +100,10 @@ struct Outcome {
     closed: bool,
     /// stdout the reader had written when it asked to close the bus.
     stdout_at_close: Option<Vec<u8>>,
+    /// The reader's stdout as its `write(2)` packets, and how many had
+    /// arrived when it asked to close the bus.
+    packets: Vec<Vec<u8>>,
+    packets_at_close: Option<usize>,
     signals_sent: Vec<&'static str>,
     identity: Option<(String, String)>,
 }
@@ -124,6 +128,7 @@ struct Server<'a> {
     killed: bool,
     sigint_in_init: bool,
     stdout: Arc<Mutex<Vec<u8>>>,
+    packets: Arc<Mutex<Vec<Vec<u8>>>>,
     first_loop_op: Option<usize>,
     sent_early_sigint: bool,
     /// A perturbed run: the reader may close the bus at any point (its
@@ -267,6 +272,7 @@ impl Server<'_> {
                 std::thread::sleep(Duration::from_millis(300));
                 let got = self.stdout.lock().unwrap().clone();
                 self.out.stdout_at_close = Some(got.clone());
+                self.out.packets_at_close = Some(self.packets.lock().unwrap().len());
                 if got != want {
                     return Err(format!(
                         "stdout at close: {} bytes, oracle {} bytes before its close",
@@ -363,16 +369,22 @@ fn wanted_stdout(recs: &[Value]) -> Vec<u8> {
         .collect()
 }
 
-fn spawn_reader(sock: &Path) -> Child {
+/// Spawn the reader with its stdout on a PACKET-mode pipe (`O_DIRECT`,
+/// pipe(7)): every `write(2)` the reader makes arrives as ONE packet, so the
+/// test sees the reader's write boundaries, not just its bytes (review-wp3 F5).
+fn spawn_reader(sock: &Path) -> (Child, std::fs::File) {
+    let (r, w) = nix::unistd::pipe2(nix::fcntl::OFlag::O_DIRECT | nix::fcntl::OFlag::O_CLOEXEC)
+        .expect("pipe2(O_DIRECT)");
     let mut cmd = xorgate_hal::child::std_command(BIN);
     cmd.arg0("xorgate-imu")
         .args(["__imu-reader", "--address", "0x4a"])
         .env(ENV, sock)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(w))
         .stderr(Stdio::piped())
         .process_group(0);
-    cmd.spawn().expect("spawn xorgate-rs")
+    let child = cmd.spawn().expect("spawn xorgate-rs");
+    (child, std::fs::File::from(r))
 }
 
 /// Run the real reader against one transcript.
@@ -382,23 +394,29 @@ fn run_one(recs: &[Value], errno: &BTreeMap<String, i32>, opts: Opts) -> Outcome
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let mut child = spawn_reader(&sock);
+    let (mut child, out_pipe) = spawn_reader(&sock);
     let pid = Pid::from_raw(child.id() as i32);
     let stdout = Arc::new(Mutex::new(Vec::new()));
+    let packets: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
     let out_reader = {
-        let pipe = child.stdout.take().unwrap();
+        let pipe = out_pipe;
         if opts.close_stdout {
             drop(pipe);
             None
         } else {
-            let buf = stdout.clone();
+            let (buf, pk) = (stdout.clone(), packets.clone());
             Some(std::thread::spawn(move || {
                 let mut pipe = pipe;
-                let mut chunk = [0u8; 4096];
+                // larger than any packet: one read = one write(2) of the reader
+                let mut chunk = vec![0u8; 65536];
                 loop {
                     match pipe.read(&mut chunk) {
                         Ok(0) | Err(_) => break,
-                        Ok(k) => buf.lock().unwrap().extend_from_slice(&chunk[..k]),
+                        Ok(k) => {
+                            let mut b = buf.lock().unwrap();
+                            b.extend_from_slice(&chunk[..k]);
+                            pk.lock().unwrap().push(chunk[..k].to_vec());
+                        }
                     }
                 }
             }))
@@ -430,6 +448,7 @@ fn run_one(recs: &[Value], errno: &BTreeMap<String, i32>, opts: Opts) -> Outcome
         killed: false,
         sigint_in_init: false,
         stdout: stdout.clone(),
+        packets: packets.clone(),
         first_loop_op,
         sent_early_sigint: false,
         relaxed: opts.close_stdout || opts.sigint_at_first_loop_op,
@@ -506,6 +525,7 @@ fn run_one(recs: &[Value], errno: &BTreeMap<String, i32>, opts: Opts) -> Outcome
     }
     srv.out.stderr = err_reader.join().unwrap();
     srv.out.stdout = stdout.lock().unwrap().clone();
+    srv.out.packets = packets.lock().unwrap().clone();
     srv.out.code = status.code();
     srv.out.signal = status.signal();
     let relaxed = opts.close_stdout || opts.sigint_at_first_loop_op;
@@ -636,6 +656,16 @@ fn close_then_flush_then_exit() {
         all.ends_with("Byte count is 0x7FFF/0xFFFF; Error?\nSequence number is 0xFF; Error?\n"),
         "{all}"
     );
+    // review-wp3 F5: the teardown text is ONE write(2) (one packet), after
+    // the close, and it is the last thing written.
+    let at = o.packets_at_close.unwrap();
+    assert_eq!(
+        o.packets[at..],
+        [b"Byte count is 0x7FFF/0xFFFF; Error?\nSequence number is 0xFF; Error?\n".to_vec()],
+        "packets after the close"
+    );
+    // and every earlier flush is one write of whole lines
+    assert!(o.packets.iter().all(|p| p.ends_with(b"\n")));
     assert_eq!(o.code, Some(0));
 }
 
@@ -753,4 +783,37 @@ fn argparse_exits() {
         String::from_utf8_lossy(&o.stderr),
         "ValueError: invalid literal for int() with base 10: 'zz'\n"
     );
+}
+
+/// review-wp3 F3: only argv[1] dispatches the reader. A CLI verb that merely
+/// CARRIES the token (`xorgate-rs status __imu-reader`, `--version
+/// __imu-reader`) must run the CLI, never a reader: here the test-bus env
+/// points at a dead socket, so a reader would panic `test bus: connect` (exit
+/// 101); with a real bus it would be a second SHTP client.
+#[test]
+fn a_cli_verb_carrying_the_token_never_starts_a_reader() {
+    let home = std::env::temp_dir().join(format!("xg-imu-cli-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&home);
+    for args in [
+        &["status", "__imu-reader"][..],
+        &["--version", "__imu-reader"][..],
+        &["status", "__imu-reader", "--address", "0x4a"][..],
+    ] {
+        let mut cmd = xorgate_hal::child::std_command(BIN);
+        cmd.args(args)
+            .env(ENV, "/nonexistent/xg-imu-dead.sock")
+            .env("XORGATE_HOME", &home)
+            .stdin(Stdio::null());
+        let o = cmd.output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert_ne!(o.status.code(), Some(101), "{args:?}: {err}");
+        assert!(!err.contains("test bus"), "{args:?}: a reader ran: {err}");
+        assert!(!err.contains("usage: xorgate-imu"), "{args:?}: {err}");
+        assert!(
+            !out.contains("\"type\": "),
+            "{args:?}: reader output: {out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&home);
 }
