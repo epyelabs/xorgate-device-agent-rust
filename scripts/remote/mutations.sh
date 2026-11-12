@@ -4,7 +4,7 @@
 # suite must go RED for every one.
 #   m1-m20   the review's ten (re-expressed on the fixed code) + one per F1-F8 fix;
 #   n1-n10   the fix-check reviewer's mutants (re-expressed where the code moved);
-#   m21-m35  one per fix-check fix (M1-M4, H2, S1-S3, S5, S7, S9) + the tmux env bleed.
+#   m21-m37  one per fix-check fix (M1-M4, H2, S1-S3, S5, S7, S9) + M5 (tmux env bleed).
 # Run it in a throwaway Linux container like the suite itself (it needs GNU
 # userland, procps and, for m21, tmux; the helper's script-tests image has all):
 #   docker run --rm -v "$PWD:/src:ro" -w /src <script-tests image> bash scripts/remote/mutations.sh
@@ -72,7 +72,9 @@ m31	hl.sh	      if [ -z "$rid" ] || [ "$rcid" = "$rid" ]; then	      if true; th
 m32	hl.sh	then set_state refused-local "$*"; fi; exit 2; }	then :; fi; exit 2; }	S1: a run refused on the Mac is not recorded
 m33	clock-guard.py	    if INDIRECT_WORD.match(w[0]):	    if False:	S5: indirect exec through a variable not refused
 m34	hl-job.sh	  ids=$(docker ps -aq --filter "label=xorgate.agent=$TAG" --filter label=xorgate.hl=1)	  ids=$(docker ps -aq --filter "label=xorgate.agent=$TAG")	S7: clean removes hand-rolled containers of the tag's name
-m35	hl-job.sh	for v2 in $HL_FORWARD_VARS HL_JOB_NAME HL_RUN_ID HL_GUARD_TESTING HL_TEST_MEMAVAIL_GB; do envs="$envs -u $v2"; done	true	env bleed: a knob of the job that spawned the tmux server leaks into later jobs
+m35	hl-job.sh	  for v2 in $allhl; do envs="$envs -u $v2"; clean+=(-u "$v2"); done	  for v2 in $allhl; do clean+=(-u "$v2"); done	M5: the job command does not unset foreign HL_* knobs
+m36	hl-job.sh	  if [ -f "$exp" ] && ! cmp -s "$exp" "$T/logs/$name.hlenv"; then	  if false; then	M5: exec runs with an unexpected HL_* environment
+m37	hl-job.sh	  if ! env "${clean[@]}" tmux new-session	  if ! tmux new-session	M5: the tmux client (and a server it spawns) keeps HL_* in its env
 EOF
 }
 setup() { # <dir>: the suite's inputs only

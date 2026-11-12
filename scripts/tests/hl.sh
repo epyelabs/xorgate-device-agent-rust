@@ -130,7 +130,12 @@ case "$1" in
   ls) cat "$STUB_LOG/sessions" 2>/dev/null ;;
   list-panes) cat "$STUB_LOG/pane.${3#=}" 2>/dev/null ;;
   kill-session) echo "killed ${3#=}" >> "$STUB_LOG/killed" ;;
-  new-session) [ "${STUB_TMUX_NORUN:-0}" = 1 ] && exit 0; shift 4; bash -c "$*"; exit 0 ;;   # new-session -d -s <name> <cmd>: run the job synchronously (tmux itself returns 0)
+  new-session) # new-session -d -s <name> [-e VAR=val]… <cmd>: run the job synchronously (tmux itself returns 0)
+    [ "${STUB_TMUX_NORUN:-0}" = 1 ] && exit 0
+    shift; while [ $# -gt 1 ]; do case "$1" in -d) shift ;; -s|-e) shift 2 ;; *) break ;; esac; done
+    # STUB_TMUX_INJECT=VAR=val: a variable the server's environment would add (fix-check M5)
+    if [ -n "${STUB_TMUX_INJECT:-}" ]; then env "$STUB_TMUX_INJECT" bash -c "$1"; else bash -c "$1"; fi
+    exit 0 ;;
 esac
 EOF
 REAL_TOUCH=$(command -v touch)
@@ -527,6 +532,14 @@ HL_JOB_NAME=sweep "$HL" run t2 test >/dev/null 2>&1
 out=$("$HL" wait t2 sweep 3 2>&1); case "$out" in *"REFUSED: "*"already running"*) ok "a remote refusal before the rc file: wait says REFUSED" ;; *) bad "remote die: $out" ;; esac
 sed -i '/^hl_t2_sweep$/d' "$LOG/sessions"
 
+echo "== fix-check M5: a job refuses to run with an HL_* variable its start did not pass"
+STUB_TMUX_INJECT=HL_FOREIGN_KNOB=1 HL_JOB_NAME=inj "$HL" run t2 test >/dev/null 2>&1
+[ "$(cat "$T2/logs/inj.rc")" = 75 ] && grep -q 'unexpected HL_\* environment (differs in: HL_FOREIGN_KNOB' "$T2/logs/inj.refused" \
+  && grep -q '^HL_FOREIGN_KNOB=1$' "$T2/logs/inj.hlenv" && ok "an injected HL_* variable: the job is refused (rc 75) and its HL_* env is on record" || bad "M5 injection: rc $(cat "$T2/logs/inj.rc"), $(cat "$T2/logs/inj.refused" 2>/dev/null)"
+out=$("$HL" wait t2 inj 3 2>&1); case "$out" in *"REFUSED: unexpected HL_"*) ok "…and wait reports it" ;; *) bad "wait after an env refusal: $out" ;; esac
+HL_JOB_NAME=inj2 "$HL" run t2 test >/dev/null 2>&1
+cmp -s "$T2/logs/inj2.hlenv" "$T2/logs/inj2.hlenv.expected" && [ "$(cat "$T2/logs/inj2.rc")" = 0 ] && ok "a clean job's recorded HL_* env equals what its start passed" || bad "clean job hlenv mismatch"
+
 echo "== fix-check S2: zero caps are refused (docker reads 0 as no limit)"
 for kv in HL_MEM=0g HL_SUITE_CPUS=0 HL_RIG_MEM=0m HL_SUITE_MEM=0g HL_JS_CPUS=0 HL_RIG_CPUS=0; do
   out=$(env "$kv" HL_JOB_NAME=z "$HL" run t2 test 2>&1) && bad "$kv admitted" || { case "$out" in *"bad ${kv%%=*}"*) ok "$kv refused" ;; *) bad "$kv text: $out" ;; esac; }
@@ -563,6 +576,16 @@ if [ -n "$REAL_TMUX" ]; then
   grep -q bleed-check "$T2/logs/rt3.log" && ! grep -q bleed-check "$T2/logs/rt4.log" \
     && ok "a knob set for one job (HL_SUITES) does not leak into a later job through the tmux server's environment" \
     || bad "env bleed: rt4 ran $(grep -c bleed-check "$T2/logs/rt4.log") bleed-check suite(s)"
+  # Another TAG's session, started while a t2 job with HL_SUITES/HL_MUTANTS runs:
+  STUB_REAL_TMUX=1 STUB_DOCKER_SLEEP=6 HL_CPUS=4 HL_MEM=4g HL_SUITES=scripts/tests/bleed-check.sh HL_MUTANTS=m1 HL_JOB_NAME=rt6 "$HL" run t2 suites >/dev/null 2>&1
+  STUB_REAL_TMUX=1 STUB_DOCKER_SLEEP=4 HL_CPUS=4 HL_MEM=4g HL_JOB_NAME=rt7 "$HL" run t1 test >/dev/null 2>&1
+  sleep 1
+  g=$(STUB_REAL_TMUX=1 tmux show-environment -g 2>/dev/null | grep -c '^HL_')
+  se=$(STUB_REAL_TMUX=1 tmux show-environment -t hl_t1_rt7 2>/dev/null | grep -cE '^HL_(SUITES|MUTANTS)=')
+  for _ in $(seq 30); do [ -f "$T1/logs/rt7.rc" ] && [ -f "$T2/logs/rt6.rc" ] && break; sleep 1; done
+  [ "$g" = 0 ] && [ "$se" = 0 ] && ! grep -qE '^HL_(SUITES|MUTANTS)=' "$T1/logs/rt7.hlenv" && [ "$(cat "$T1/logs/rt7.rc")" = 0 ] \
+    && ok "the tmux GLOBAL env holds no HL_*, and another tag's session/job sees none of t2's knobs (hlenv recorded)" \
+    || bad "env bleed across tags: global HL_*=$g, t1 session HL_SUITES/MUTANTS=$se, rt7 rc $(cat "$T1/logs/rt7.rc" 2>/dev/null)"
   STUB_REAL_TMUX=1 tmux kill-server 2>/dev/null; unset TMUX_TMPDIR
 else echo "NOTE: no tmux here: the real-tmux lock test needs it (the helper's script-tests image has it)"; fi
 

@@ -232,18 +232,30 @@ cmd_start() {
   local q="" a
   for a in "$@"; do q="$q $(printf '%q' "$a")"; done
   # The tmux SERVER keeps the environment of the client that spawned it, and
-  # every session inherits it: a knob another start set (HL_SUITES, HL_CPUS,
-  # HL_MUTANTS, …) would leak into this job. So unset EVERY helper knob first,
-  # then set only the ones THIS start was given.
-  local envs="" v2
-  for v2 in $HL_FORWARD_VARS HL_JOB_NAME HL_RUN_ID HL_GUARD_TESTING HL_TEST_MEMAVAIL_GB; do envs="$envs -u $v2"; done
+  # every session inherits it (fix-check round 2, M5). So:
+  #  1. the tmux CLIENT runs with every HL_* variable removed: a server it
+  #     spawns has none in its GLOBAL environment;
+  #  2. this job's knobs go into the SESSION only (`new-session -e`) and into
+  #     the command, which first unsets every HL_* name, then sets its own;
+  #  3. the expected HL_* set is recorded; `exec` refuses to run with any other.
+  local envs="" v2 val allhl clean=() setargs=()
+  # shellcheck disable=SC2086  # the knob list is a word list
+  allhl=$( { compgen -v | grep '^HL_'; printf '%s\n' $HL_FORWARD_VARS HL_JOB_NAME HL_RUN_ID HL_GUARD_TESTING HL_TEST_MEMAVAIL_GB; } | LC_ALL=C sort -u)
+  for v2 in $allhl; do envs="$envs -u $v2"; clean+=(-u "$v2"); done
+  : > "$T/logs/$NAME.hlenv.expected.tmp"
   for v2 in $HL_FORWARD_VARS HL_GUARD_TESTING HL_TEST_MEMAVAIL_GB; do
     [ "$v2" = HL_JOB_NAME ] && continue
-    if eval "[ \"\${$v2+set}\" = set ]"; then envs="$envs $v2=$(eval "printf '%q' \"\$$v2\"")"; fi
+    if eval "[ \"\${$v2+set}\" = set ]"; then
+      val=$(eval "printf '%s' \"\$$v2\"")
+      envs="$envs $v2=$(printf '%q' "$val")"; setargs+=(-e "$v2=$val"); printf '%s=%s\n' "$v2" "$val" >> "$T/logs/$NAME.hlenv.expected.tmp"
+    fi
   done
+  printf 'HL_JOB_NAME=%s\nHL_RUN_ID=%s\n' "$NAME" "$RUNID" >> "$T/logs/$NAME.hlenv.expected.tmp"
+  LC_ALL=C sort "$T/logs/$NAME.hlenv.expected.tmp" > "$T/logs/$NAME.hlenv.expected"; rm -f "$T/logs/$NAME.hlenv.expected.tmp"
+  setargs+=(-e "HL_JOB_NAME=$NAME" -e "HL_RUN_ID=$RUNID")
   # 9>&-: a tmux SERVER spawned here must not inherit the lock fd, or it holds
   # the reservation lock for its whole life (fix-check M1).
-  if ! tmux new-session -d -s "$s" "env$envs HL_JOB_NAME=$NAME HL_RUN_ID=$RUNID bash $(printf '%q' "$HERE/hl-job.sh") exec $TAG $job$q > $(printf '%q' "$T/logs/$NAME.log") 2>&1" 9>&-; then
+  if ! env "${clean[@]}" tmux new-session -d -s "$s" "${setargs[@]}" "env$envs HL_JOB_NAME=$NAME HL_RUN_ID=$RUNID bash $(printf '%q' "$HERE/hl-job.sh") exec $TAG $job$q > $(printf '%q' "$T/logs/$NAME.log") 2>&1" 9>&-; then
     rm -f "$SHARED/res/${TAG}_$NAME"
     refuse "tmux could not start session $s"
   fi
@@ -560,7 +572,18 @@ job_images() {
 
 cmd_exec() {
   tagdir "$1"; local job=$2; shift 2
-  local name=${HL_JOB_NAME:-$job} rc=0
+  local name=${HL_JOB_NAME:-$job} rc=0 exp extra
+  # The job's own HL_* environment is recorded, and must be EXACTLY what its
+  # start passed (fix-check round 2, M5): an HL_* variable from anywhere else
+  # (a tmux server's global env, a stale shell) refuses the job.
+  exp=$T/logs/$name.hlenv.expected
+  env | grep '^HL_' | LC_ALL=C sort > "$T/logs/$name.hlenv"
+  if [ -f "$exp" ] && ! cmp -s "$exp" "$T/logs/$name.hlenv"; then
+    extra=$(LC_ALL=C comm -3 "$exp" "$T/logs/$name.hlenv" | sed 's/^[[:space:]]*//; s/=.*//' | sort -u | tr '\n' ' ')
+    echo "${HL_RUN_ID:-none}" > "$T/logs/$name.rcid"; echo "unexpected HL_* environment (differs in: $extra): refusing to run" > "$T/logs/$name.refused"
+    echo 75 > "$T/logs/$name.rc"; rm -f "$SHARED/res/${TAG}_$name"
+    echo "hl-job: refused: unexpected HL_* environment (differs in: $extra)"; return 75
+  fi
   echo "== $(ts) $job $* (tag $TAG, $(sed -n 's/^head=//p' "$T/source.txt"), caps ${HL_CPUS} CPUs/${HL_MEM})"
   date -u +%s > "$T/logs/$name.start"
   # A subshell: a job's `die` ends the job, never the bookkeeping below.
