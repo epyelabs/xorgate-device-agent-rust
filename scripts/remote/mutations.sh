@@ -56,7 +56,7 @@ n5	hl-job.sh	[ "$bfp" = "$(cat "$ROOT/$from/verified.fp" 2>/dev/null)" ] || die	
 n6	hl-job.sh	if (q == root) print pg[p]	print pg[p]	F4/M3: stop TERMs EVERY timeout process group on the host
 n7	hl-job.sh	filt=(--filter "label=xorgate.agent=$TAG" --filter label=xorgate.hl=1)	filt=(--filter "label=xorgate.agent" --filter label=xorgate.hl=1)	F4/M3: stop removes every tag's containers
 n8	hl-job.sh	sessions=$(command tmux ls -F '#{session_name}' 2>/dev/null | grep "^hl_${TAG}_" || true)	sessions=$(command tmux ls -F '#{session_name}' 2>/dev/null | grep "^hl_${TAG}" || true)	F4/M3: stop <tag> also kills hl_<tag>1_* / hl_<tag>-x_* sessions
-n9	hl.sh	for a in "$@"; do q="$q $(printf '%q' "$a")"; done\n  if out=$(rsh	for a in "$@"; do q="$q $a"; done\n  if out=$(rsh	F12: run args reach the remote shell unquoted
+n9	hl.sh	for a in "$@"; do q="$q $(printf '%q' "$a")"; done	for a in "$@"; do q="$q $a"; done	F12: run args reach the remote shell unquoted
 n10	hl-job.sh	(\ pid:[0-9]+)?$ ]]; }	(\ pid:[0-9]+)? ]]; }	F2 (control): reservation regex loses its end anchor
 m21	hl-job.sh	 > $(printf '%q' "$T/logs/$NAME.log") 2>&1" 9>&-; then	 > $(printf '%q' "$T/logs/$NAME.log") 2>&1"; then	M1: the tmux server inherits the reservation lock fd
 m22	hl-job.sh	    rm -f -- "${SRC:?}/$f" || die "could not remove stale $f from $TAG/src (root-owned?): sync FAILED"\n    [ ! -e "$SRC/$f" ] || die "stale $f is still in $TAG/src: sync FAILED"	    rm -f -- "${SRC:?}/$f" || true	M4/P2: a prune that fails is ignored

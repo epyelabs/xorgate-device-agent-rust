@@ -586,6 +586,27 @@ if [ -n "$REAL_TMUX" ]; then
   [ "$g" = 0 ] && [ "$se" = 0 ] && ! grep -qE '^HL_(SUITES|MUTANTS)=' "$T1/logs/rt7.hlenv" && [ "$(cat "$T1/logs/rt7.rc")" = 0 ] \
     && ok "the tmux GLOBAL env holds no HL_*, and another tag's session/job sees none of t2's knobs (hlenv recorded)" \
     || bad "env bleed across tags: global HL_*=$g, t1 session HL_SUITES/MUTANTS=$se, rt7 rc $(cat "$T1/logs/rt7.rc" 2>/dev/null)"
+  # A server spawned by an OLDER (leaky) helper, or by another agent's, may
+  # already hold helper knobs in its GLOBAL env: a session inherits them, so the
+  # job command must unset every helper knob itself (m35), and exec refuses any
+  # HL_* name it was not given (fail closed: an unknown name cannot be unset).
+  # (a holder session keeps the server alive: it exits with its last session)
+  (for v in $(compgen -v | grep '^HL_'); do unset "$v"; done; cd "$FH" && HOME=$FH PATH="$STUB:$PATH" exec "$REAL_TMUX" new-session -d -s holder "sleep 300")
+  STUB_REAL_TMUX=1 tmux set-environment -g HL_SUITES scripts/tests/bleed-check.sh
+  [ "$(STUB_REAL_TMUX=1 tmux show-environment -g HL_SUITES 2>/dev/null)" = HL_SUITES=scripts/tests/bleed-check.sh ] \
+    && ok "(setup) the server's GLOBAL env holds a planted HL_SUITES" || bad "(setup) could not plant HL_SUITES in the global env"
+  STUB_REAL_TMUX=1 STUB_DOCKER_SLEEP=2 HL_CPUS=4 HL_MEM=4g HL_JOB_NAME=rt8 "$HL" run t1 suites >/dev/null 2>&1
+  for _ in $(seq 30); do [ -f "$T1/logs/rt8.rc" ] && break; sleep 1; done
+  [ "$(cat "$T1/logs/rt8.rc" 2>/dev/null)" = 0 ] && ! grep -q '^HL_SUITES=' "$T1/logs/rt8.hlenv" && ! grep -q bleed-check "$T1/logs/rt8.log" \
+    && ok "a knob already in a (leaky) server's GLOBAL env is unset for the job: it runs, without it" \
+    || bad "global-env knob reached the job: rt8 rc $(cat "$T1/logs/rt8.rc" 2>/dev/null), $(cat "$T1/logs/rt8.refused" 2>/dev/null), log: $(tail -3 "$T1/logs/rt8.log" 2>/dev/null)"
+  STUB_REAL_TMUX=1 tmux set-environment -g -u HL_SUITES; STUB_REAL_TMUX=1 tmux set-environment -g HL_ZZ_FOREIGN 1
+  STUB_REAL_TMUX=1 HL_CPUS=4 HL_MEM=4g HL_JOB_NAME=rt9 "$HL" run t1 test >/dev/null 2>&1
+  for _ in $(seq 30); do [ -f "$T1/logs/rt9.rc" ] && break; sleep 1; done
+  [ "$(cat "$T1/logs/rt9.rc" 2>/dev/null)" = 75 ] && grep -q 'HL_ZZ_FOREIGN' "$T1/logs/rt9.refused" \
+    && ok "an unknown HL_* name in the job's env is refused (rc 75, named in .refused)" \
+    || bad "unknown HL_* name: rt9 rc $(cat "$T1/logs/rt9.rc" 2>/dev/null)"
+  STUB_REAL_TMUX=1 tmux set-environment -g -u HL_ZZ_FOREIGN; STUB_REAL_TMUX=1 tmux kill-session -t holder 2>/dev/null
   STUB_REAL_TMUX=1 tmux kill-server 2>/dev/null; unset TMUX_TMPDIR
 else echo "NOTE: no tmux here: the real-tmux lock test needs it (the helper's script-tests image has it)"; fi
 
