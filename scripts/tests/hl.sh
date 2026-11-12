@@ -144,6 +144,7 @@ chmod +x "$STUB"/*
 export PATH="$STUB:$PATH"
 : > "$LOG/sessions"
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+REAL_RM_EARLY=$(PATH=/usr/bin:/bin command -v rm)
 
 # ---- a tree to ship
 R=$W/repo
@@ -174,9 +175,9 @@ for t in Hl a_b _shared ../x "$(printf 'a%.0s' $(seq 41))" "" rig hl-shared p7e 
   "$HL" sync "$t" "$R" >/dev/null 2>&1 && bad "tag '$t' accepted" || ok "tag '$t' refused"
 done
 : > "$LOG/ssh.log"
-"$HL" run t1 'test; touch /tmp/hl-pwned' >/dev/null 2>&1 && bad "job word with ';' accepted" || ok "job word with ';' refused"
+"$HL" run t1 "test; touch $W/pwned" >/dev/null 2>&1 && bad "job word with ';' accepted" || ok "job word with ';' refused"
 "$HL" run t1 rm-everything >/dev/null 2>&1 && bad "unknown job accepted" || ok "unknown job refused"
-[ ! -s "$LOG/ssh.log" ] && [ ! -e /tmp/hl-pwned ] && ok "an invalid job word never reaches the remote shell (F12)" || bad "remote called for an invalid job word"
+[ ! -s "$LOG/ssh.log" ] && [ ! -e "$W/pwned" ] && ok "an invalid job word never reaches the remote shell (F12)" || bad "remote called for an invalid job word"
 out=$("$HL" run t1 pack 2>&1); case "$out" in *aarch64-only*) ok "pack refused (aarch64-only)" ;; *) bad "pack not refused: $out" ;; esac
 
 echo "== sync"
@@ -468,12 +469,22 @@ git -C "$R" checkout -q -- crates/a/src/main.rs; "$HL" sync t2 "$R" >/dev/null 2
 ( exec 8>>"$RES/.lock"; flock 8; sleep 3 ) & lp=$!
 sleep 0.5
 echo 'fn main() { /* lock */ }' > "$R/crates/a/src/main.rs"
-( "$HL" sync t2 "$R" > "$W/lsync.out" 2>&1; echo $? > "$W/lsync.rc" ) & sp=$!
+( HL_RSYNC=$W/slowrsync "$HL" sync t2 "$R" > "$W/lsync.out" 2>&1; echo $? > "$W/lsync.rc" ) & sp=$!
 sleep 1.5
 [ -e "$T2/verified.fp" ] && ok "sync prep waits for the reservation lock before it invalidates the tag" || bad "sync prep invalidated the tag without the lock"
 wait "$lp"; wait "$sp"
 [ "$(cat "$W/lsync.rc")" = 0 ] && ok "…and completes once the lock is free" || bad "sync after the lock: $(tail -2 "$W/lsync.out")"
 git -C "$R" checkout -q -- crates/a/src/main.rs; "$HL" sync t2 "$R" >/dev/null 2>&1
+
+( exec 8>>"$RES/.lock"; flock 8; sleep 3 ) & lp=$!
+sleep 0.5
+( HL_LOCK_WAIT=30 HL_JOB_NAME=p1b "$HL" run t2 test > "$W/p1b.out" 2>&1 ) & rp=$!
+sleep 1
+cp "$T2/verified.fp" "$W/vf.save"; $REAL_RM_EARLY -f "$T2/verified.fp"   # what sync prep does, while the run waits on the lock
+wait "$lp"; wait "$rp"
+grep -q 'checked under the lock' "$W/p1b.out" && [ "$(cat "$T2/logs/p1b.rc")" = 75 ] && ok "a run that passed the first check but waited on the lock re-checks verified.fp under it (refused)" \
+  || bad "a run started on a tag invalidated while it waited for the lock: $(tail -1 "$W/p1b.out")"
+cp "$W/vf.save" "$T2/verified.fp"
 
 echo "== fix-check M4/P2: a prune that fails fails the sync; verify-src rejects extra files"
 mkdir -p "$R/crates/a/tests" && echo '#[test] fn stale() {}' > "$R/crates/a/tests/stuck.rs" && git -C "$R" add crates/a/tests/stuck.rs && git -C "$R" commit -qm stuck
@@ -508,6 +519,7 @@ printf '#!/bin/sh\necho "ssh: connect to host homelab: No route to host" >&2\nex
 HL_SSH=$W/sshfail HL_JOB_NAME=sweep "$HL" run t2 test >/dev/null 2>&1
 out=$("$HL" wait t2 sweep 3 2>&1); case "$out" in "sweep rc=75 (NOT STARTED: ssh failed"*) ok "a run lost to ssh: wait says NOT STARTED" ;; *) bad "ssh failure: $out" ;; esac
 STUB_TMUX_NORUN=1 HL_JOB_NAME=sweep "$HL" run t2 test >/dev/null 2>&1
+echo 0 > "$T2/logs/sweep.rc"; echo older-run > "$T2/logs/sweep.rcid"   # an rc of ANOTHER run, still on disk
 out=$("$HL" wait t2 sweep 2 2>&1); rc=$?
 [ $rc = 124 ] && ok "a started job with no rc yet: wait does not report the previous rc (n1)" || bad "wait while the job runs: rc $rc, $out"
 echo "hl_t2_sweep" >> "$LOG/sessions"
@@ -589,9 +601,9 @@ HL_PREFLIGHT=none HL_JOB_NAME=k1 "$HL" run t2 lanes "$W/items-k.txt" >/dev/null 
 printf '\177ELF-2' > "$B2/xorgate-rs"
 HL_PREFLIGHT=none HL_JOB_NAME=k2 "$HL" run t2 lanes "$W/items-k.txt" >/dev/null 2>&1
 [ "$(grep -l '^K1	' "$T2"/out/lanes/*/q.tsv 2>/dev/null | wc -l)" = 2 ] && ok "a rebuilt xorgate-rs on the same tree gets its own lanes dir (K1 ran twice)" || bad "rebuilt agent reused the old lanes rows"
-"$HL" run t2 cargo 'test; touch /tmp/hl-pwned-cargo' >/dev/null 2>&1
-HL_JOB_NAME=it "$HL" run t2 import-tapes t2 '$(touch /tmp/hl-pwned-tape)' >/dev/null 2>&1
-[ ! -e /tmp/hl-pwned-cargo ] && [ ! -e /tmp/hl-pwned-tape ] && ok "cargo args / tape names with shell syntax are never executed" || bad "an argument was executed"
+"$HL" run t2 cargo "test; touch $W/pwned-cargo" >/dev/null 2>&1
+HL_JOB_NAME=it "$HL" run t2 import-tapes t2 "\$(touch $W/pwned-tape)" >/dev/null 2>&1
+[ ! -e "$W/pwned-cargo" ] && [ ! -e "$W/pwned-tape" ] && ok "cargo args / tape names with shell syntax are never executed" || bad "an argument was executed"
 
 echo "== fix-check S9: the lane record covers the whole run (other containers / reservations)"
 cat > "$T2/src/tools/replay/run-rig.sh" <<'EOS'
