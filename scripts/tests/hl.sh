@@ -708,6 +708,17 @@ sed -i '/^hl_t2_lanesx$/d' "$LOG/sessions"; echo "hl_t2_other" >> "$LOG/sessions
 HL_STOP_WAIT=2 "$HL" stop t2 >/dev/null 2>&1
 [ "$(cat "$LOG/killed")" = "killed hl_t2_other" ] && ok "stop <tag>: only hl_t2_* sessions (hl_t21_y, hl_t2-1_z survive: n8)" || bad "stop <tag> sessions: $(tr '\n' ' ' < "$LOG/killed")"
 grep -q '^docker rm -f c-lx c-other$' "$LOG/docker.log" && ok "stop <tag>: all of t2's helper containers, none of t21's, no hand-rolled one" || bad "stop <tag> containers: $(grep 'rm -f' "$LOG/docker.log")"
+# A TERMed group whose last member is a ZOMBIE (exited, not yet reaped: e.g. a
+# rig child orphaned to a PID 1 that does not reap) is dead: no wait, no KILL.
+perl -e '$p = fork(); if (!$p) { exec "timeout", "5", "true" } sleep 20' & zp=$!
+sleep 1; zt=$(ps -o pid= --ppid "$zp" | tr -d ' ' | head -1)
+echo hl_t2_zomb >> "$LOG/sessions"; echo "$zp" > "$LOG/pane.hl_t2_zomb"
+if [ "$(ps -o stat= -p "$zt" | cut -c1)" = Z ]; then
+  t0=$(date +%s); out=$(HL_STOP_WAIT=10 "$HL" stop t2 zomb 2>&1); dt=$(( $(date +%s) - t0 ))
+  printf '%s\n' "$out" | grep -q "TERM process group $zt" && ! printf '%s\n' "$out" | grep -q KILL && [ "$dt" -lt 8 ] \
+    && ok "stop: a group with only a zombie left counts as gone (no ${dt}s wait, no KILL)" || bad "zombie group: ${dt}s, $out"
+else bad "(setup) the timeout child is not a zombie: $(ps -o stat= -p "$zt")"; fi
+kill "$zp" 2>/dev/null; wait "$zp" 2>/dev/null; sed -i '/^hl_t2_zomb$/d' "$LOG/sessions"
 printf '' > "$LOG/sessions"; : > "$LOG/ps.tab"
 
 echo "== systemd suites: clock guard (F10 + fix-check S5)"

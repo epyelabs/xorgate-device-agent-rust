@@ -342,7 +342,9 @@ job_suites() {
   for t in $(suite_list); do
     echo "-- $t"
     n=$(echo "$t" | tr / _)
-    docker run --rm --name "hl_${TAG}_$(jobl)-${n%.sh}" --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=$(jobl)" \
+    # --init: PID 1 reaps orphans (a bare `timeout` as PID 1 does not, so a TERMed
+    # test group could linger as a zombie: the stop test's old flake)
+    docker run --rm --init --name "hl_${TAG}_$(jobl)-${n%.sh}" --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=$(jobl)" \
       --cpus "$HL_SUITE_CPUS" --memory "$HL_SUITE_MEM" -v "$SRC:/src:ro" -v "$HERE:/hl/bin:ro" ${HL_MUTANTS:+-e "MUTANTS=$HL_MUTANTS"} "$img" \
       timeout "${HL_SUITE_TIMEOUT:-1800}" bash /hl/bin/suite-in.sh "$t" > "$LD/$n.log" 2>&1
     rc=$?
@@ -692,6 +694,15 @@ timeout_pgids() { # <root pid>: process groups of the `timeout` processes below 
       }
     }' | sort -u
 }
+# pg_live <pgid> [list]: does the group have a member that is not a zombie? (A
+# zombie has exited and only waits for its parent to reap it: `kill -0` still
+# counts it, so a TERMed group whose last member is a zombie would be KILLed
+# for nothing.) With `list`, print the live members (pid:stat:comm).
+pg_live() {
+  local m; m=$(ps -e -o pgid=,pid=,stat=,comm= | awk -v g="$1" '$1 == g && $3 !~ /^Z/ { printf "%s:%s:%s ", $2, $3, $4 }')
+  if [ "${2:-}" = list ]; then printf '%s' "${m% }"; fi
+  [ -n "$m" ]
+}
 # stop <tag> [name]: only that tag's helper jobs (sessions hl_<tag>_*, exactly
 # hl_<tag>_<name> with a name), only process groups UNDER those sessions, and
 # only containers labelled BOTH xorgate.agent=<tag> and xorgate.hl=1 (plus
@@ -710,8 +721,11 @@ cmd_stop() { # <tag> [name]
     for pg in $pgs; do echo "TERM process group $pg"; kill -TERM -- "-$pg" 2>/dev/null || true; done
     waited=0
     for pg in $pgs; do
-      while kill -0 -- "-$pg" 2>/dev/null && [ "$waited" -lt "$HL_STOP_WAIT" ]; do sleep 2; waited=$((waited + 2)); done
-      if kill -0 -- "-$pg" 2>/dev/null; then echo "process group $pg still alive after ${HL_STOP_WAIT}s: KILL"; kill -KILL -- "-$pg" 2>/dev/null || true; fi
+      while pg_live "$pg" && [ "$waited" -lt "$HL_STOP_WAIT" ]; do sleep 1; waited=$((waited + 1)); done
+      if pg_live "$pg"; then
+        echo "process group $pg still alive after ${HL_STOP_WAIT}s: KILL (members: $(pg_live "$pg" list))"
+        kill -KILL -- "-$pg" 2>/dev/null || true
+      fi
     done
     n=${s#"hl_${TAG}_"}
     if [ ! -f "$T/logs/$n.rc" ]; then

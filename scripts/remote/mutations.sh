@@ -75,6 +75,7 @@ m34	hl-job.sh	  ids=$(docker ps -aq --filter "label=xorgate.agent=$TAG" --filter
 m35	hl-job.sh	  for v2 in $allhl; do envs="$envs -u $v2"; clean+=(-u "$v2"); done	  for v2 in $allhl; do clean+=(-u "$v2"); done	M5: the job command does not unset foreign HL_* knobs
 m36	hl-job.sh	  if [ -f "$exp" ] && ! cmp -s "$exp" "$T/logs/$name.hlenv"; then	  if false; then	M5: exec runs with an unexpected HL_* environment
 m37	hl-job.sh	  if ! env "${clean[@]}" tmux new-session	  if ! tmux new-session	M5: the tmux client (and a server it spawns) keeps HL_* in its env
+m38	hl-job.sh	'$1 == g && $3 !~ /^Z/ {	'$1 == g {	stop counts a zombie-only group as alive (waits, then KILLs)
 EOF
 }
 setup() { # <dir>: the suite's inputs only
