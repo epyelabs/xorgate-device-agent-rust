@@ -1,0 +1,8 @@
+# The plain script suites' image for hl.sh `suites` (the Mac gates used the same
+# list as xorgate-p7a-script-tests:bookworm). Tagged by hl-job.sh as
+# xorgate-rs-script-tests:bookworm-<sha256 of this file, 12>.
+FROM debian:bookworm
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 shellcheck sudo git curl procps ca-certificates util-linux tmux \
+ && rm -rf /var/lib/apt/lists/*
+RUN git config --global --add safe.directory '*'
