@@ -25,6 +25,12 @@
 //! verbatim park line, SIGKILL (`K`) → `Done(None)` → Redetect/Park — must be
 //! identical under both backends (only the spawn differs).
 //!
+//! Phase 7c (review-wp3 FC2): the collector reads the device tree (R9's SoC
+//! gate) ONLY under `rust`. Every case runs through [`DtCounting`], which
+//! counts `ImuIo::dt_compatible` calls: 0 on every python case (mutant N2, an
+//! eager read on every reader start, is RED), and > 0 over the rust cases
+//! (the positive control: the gate really reads through the seam).
+//!
 //! ONE test function: PATH (and the IMU knobs) are process-global, so this
 //! binary holds nothing else.
 
@@ -41,10 +47,15 @@ use serde_json::Value;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
-use xorgate_agent::collectors::imu::{ImuCollector, RealImuIo};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tokio::sync::mpsc;
+use xorgate_agent::collectors::imu::{ImuCollector, ImuIo, RealImuIo};
 use xorgate_agent::collectors::Collector;
-use xorgate_agent::ctx::NoopHooks;
-use xorgate_hal::io::null_tape;
+use xorgate_agent::ctx::{BoxFut, NoopHooks};
+use xorgate_core::imu::ImuDetect;
+use xorgate_hal::child::{ChildEvent, ChildHandle, ChildSpec};
+use xorgate_hal::io::{null_tape, TapeSink};
 
 type Logs = Arc<Mutex<Vec<(String, String)>>>;
 
@@ -62,6 +73,25 @@ fn set_backend(rust: bool, bin: &Path) {
         std::env::remove_var("XORGATE_IMU_BACKEND");
         std::env::remove_var("XORGATE_IMU_READER_BIN");
         std::env::remove_var("XORGATE_IMU_SOC_CHECK");
+    }
+}
+
+/// The REAL detection + child edges, with the device-tree read counted (FC2).
+#[derive(Default)]
+struct DtCounting {
+    real: RealImuIo,
+    dt_reads: AtomicUsize,
+}
+impl ImuIo for DtCounting {
+    fn detect<'a>(&'a self, tape: &'a dyn TapeSink) -> BoxFut<'a, ImuDetect> {
+        self.real.detect(tape)
+    }
+    fn spawn(&self, spec: &ChildSpec) -> (ChildHandle, mpsc::UnboundedReceiver<ChildEvent>) {
+        self.real.spawn(spec)
+    }
+    fn dt_compatible(&self) -> std::io::Result<Vec<u8>> {
+        self.dt_reads.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
     }
 }
 
@@ -188,6 +218,7 @@ async fn imu_scenarios_match_the_ts_collector() {
     let logs: Logs = Arc::default();
     let _guard = log_capture::install(Capture(logs.clone()));
     let saved_path = std::env::var_os("PATH");
+    let mut rust_dt_reads = 0;
 
     for rust in [false, true] {
         let backend = if rust { "rust" } else { "python" };
@@ -204,7 +235,8 @@ async fn imu_scenarios_match_the_ts_collector() {
             paths.python_dir = py.clone();
             ctx.paths = Arc::new(paths);
             let settings = ctx.paths.settings.clone();
-            let c = ImuCollector::new(&ctx, Arc::new(RealImuIo::default()));
+            let io = Arc::new(DtCounting::default());
+            let c = ImuCollector::new(&ctx, io.clone());
 
             let logs_from = logs.lock().unwrap().len();
             let mut writer: Option<std::fs::File> = None;
@@ -344,9 +376,20 @@ async fn imu_scenarios_match_the_ts_collector() {
             // included), so `stop()` has nothing left to signal
             assert_eq!(c.helper_pid(), None, "[{name}] no helper handle left");
             c.stop();
+            // FC2: the python path never consults the device tree
+            let dt_reads = io.dt_reads.load(Ordering::SeqCst);
+            if rust {
+                rust_dt_reads += dt_reads;
+            } else {
+                assert_eq!(dt_reads, 0, "[{name}] the python path read the DT");
+            }
         }
     }
     set_backend(false, Path::new("/"));
+    assert!(
+        rust_dt_reads > 0,
+        "control: the rust cases never read the DT through ImuIo::dt_compatible"
+    );
 
     // SHUTDOWN while the helper streams (orchestrator close-out b): the TS
     // logs nothing there (the process exits, execa's cleanup kills the

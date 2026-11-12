@@ -2,7 +2,7 @@
 # hl.sh `cargo-gate` / `test`, INSIDE the amd64 build image (cwd /src = the
 # synced tree, CARGO_TARGET_DIR=/target/<tag>). The same steps as the Mac
 # gates' gate.sh (phase-7e f-p2-round): fmt, clippy -D warnings, test
-# --workspace, cargo-deny, clippy-ban-probe. Logs: /logs/<job>/.
+# --workspace, cargo-deny, clippy-ban-probe, feature-gate. Logs: /logs/<job>/.
 #   gate-in.sh full|test
 set -u
 mode=${1:-full}
@@ -36,6 +36,9 @@ if [ "$mode" = full ]; then
   else echo "deny SKIPPED: no cargo-deny binary (run the images job)"; rc=1; fi
   step ban-probe bash scripts/tests/clippy-ban-probe.sh
   tail -1 "$L/ban-probe.log" | sed 's/^/   /'
+  # phase 7c review-wp3 FC1: imu-test-bus never on a shipped build (also in CI)
+  step feature-gate bash scripts/tests/cargo/feature-gate.sh
+  tail -1 "$L/feature-gate.log" | sed 's/^/   /'
 fi
 echo "GATE_DONE rc=$rc"
 exit $rc
