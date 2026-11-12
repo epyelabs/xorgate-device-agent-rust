@@ -554,6 +554,15 @@ if [ -n "$REAL_TMUX" ]; then
       && ok "two sequential runs both start; the tmux server holds no lock fd (server pid $spid)" || bad "server lock fds: $nfd (pid $spid)" ;;
     *) bad "second run under a server spawned by the first: $out2" ;; esac
   for _ in $(seq 40); do [ -f "$T2/logs/rt1.rc" ] && [ -f "$T2/logs/rt2.rc" ] && break; sleep 1; done
+  # The server keeps the env of the client that spawned it: a knob set for ONE
+  # job (here HL_SUITES) must not leak into a later job that did not set it.
+  STUB_REAL_TMUX=1 STUB_DOCKER_SLEEP=6 HL_CPUS=4 HL_MEM=4g HL_SUITES=scripts/tests/bleed-check.sh HL_JOB_NAME=rt3 "$HL" run t2 suites >/dev/null 2>&1
+  sleep 1
+  STUB_REAL_TMUX=1 HL_CPUS=4 HL_MEM=4g HL_JOB_NAME=rt4 "$HL" run t2 suites >/dev/null 2>&1
+  for _ in $(seq 40); do [ -f "$T2/logs/rt3.rc" ] && [ -f "$T2/logs/rt4.rc" ] && break; sleep 1; done
+  grep -q bleed-check "$T2/logs/rt3.log" && ! grep -q bleed-check "$T2/logs/rt4.log" \
+    && ok "a knob set for one job (HL_SUITES) does not leak into a later job through the tmux server's environment" \
+    || bad "env bleed: rt4 ran $(grep -c bleed-check "$T2/logs/rt4.log") bleed-check suite(s)"
   STUB_REAL_TMUX=1 tmux kill-server 2>/dev/null; unset TMUX_TMPDIR
 else echo "NOTE: no tmux here: the real-tmux lock test needs it (the helper's script-tests image has it)"; fi
 

@@ -231,8 +231,14 @@ cmd_start() {
   if [ "$kind" = none ]; then echo "$cpus $gb"; else echo "$cpus $gb kind:$kind"; fi > "$SHARED/res/${TAG}_$NAME"
   local q="" a
   for a in "$@"; do q="$q $(printf '%q' "$a")"; done
+  # The tmux SERVER keeps the environment of the client that spawned it, and
+  # every session inherits it: a knob another start set (HL_SUITES, HL_CPUS,
+  # HL_MUTANTS, …) would leak into this job. So unset EVERY helper knob first,
+  # then set only the ones THIS start was given.
   local envs="" v2
-  for v2 in $HL_FORWARD_VARS; do
+  for v2 in $HL_FORWARD_VARS HL_JOB_NAME HL_RUN_ID HL_GUARD_TESTING HL_TEST_MEMAVAIL_GB; do envs="$envs -u $v2"; done
+  for v2 in $HL_FORWARD_VARS HL_GUARD_TESTING HL_TEST_MEMAVAIL_GB; do
+    [ "$v2" = HL_JOB_NAME ] && continue
     if eval "[ \"\${$v2+set}\" = set ]"; then envs="$envs $v2=$(eval "printf '%q' \"\$$v2\"")"; fi
   done
   # 9>&-: a tmux SERVER spawned here must not inherit the lock fd, or it holds
@@ -322,6 +328,7 @@ job_suites() {
   mkdir -p "$LD"
   echo "== suites on $(sed -n 's/^head=//p' "$T/source.txt") $(ts) image $img"
   for t in $(suite_list); do
+    echo "-- $t"
     n=$(echo "$t" | tr / _)
     docker run --rm --name "hl_${TAG}_$(jobl)-${n%.sh}" --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=$(jobl)" \
       --cpus "$HL_SUITE_CPUS" --memory "$HL_SUITE_MEM" -v "$SRC:/src:ro" -v "$HERE:/hl/bin:ro" ${HL_MUTANTS:+-e "MUTANTS=$HL_MUTANTS"} "$img" \
