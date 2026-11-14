@@ -79,8 +79,8 @@ pub const IMU_BACKEND_ENV: &str = "XORGATE_IMU_BACKEND";
 pub const IMU_READER_BIN_ENV: &str = "XORGATE_IMU_READER_BIN";
 /// What the `rust` backend executes by default: the running binary's own
 /// inode, so a re-exec still works after `xorgate-rs update` replaced the
-/// file on disk (7a's capture-host rule).
-pub use crate::recording::capture::backend::SELF_EXE;
+/// file on disk.
+pub const SELF_EXE: &str = "/proc/self/exe";
 /// Phase 7c R9 (Q-C4; review-wp3 F4): the `rust` backend is certified on
 /// BCM2712 (CM5) only, so it takes effect only when the device tree's
 /// `compatible` list names this SoC — an ALLOW-list: an unknown board or an
@@ -202,9 +202,8 @@ pub fn reader_spec(
 }
 
 /// The argv the tape's `imu_spawn` records: `argv[0]` as the child sees it
-/// (`arg0` when set: `xorgate-imu`), then the args — as 7a records
-/// `xorgate-capture`. For the python backend this is exactly
-/// [`ChildSpec::argv`] (`python3 …`), unchanged.
+/// (`arg0` when set: `xorgate-imu`), then the args. For the python backend
+/// this is exactly [`ChildSpec::argv`] (`python3 …`), unchanged.
 pub fn tape_argv(spec: &ChildSpec) -> Vec<String> {
     std::iter::once(spec.arg0.clone().unwrap_or_else(|| spec.program.clone()))
         .chain(spec.args.iter().cloned())

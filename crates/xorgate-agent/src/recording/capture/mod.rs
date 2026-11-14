@@ -21,13 +21,7 @@
 //! fsynced on every sweep; 0-byte fragments are dropped only by the final
 //! sweep at child exit. `startTs` is the fragment's birth time, so the
 //! ~2.1 s splitmuxsink GOP lag is REPRODUCED (memory
-//! `video-sidecar-gop-latency`). Phase 7a: with `XORGATE_SIDECAR_TIMING=exact`
-//! (and the capture host) the host's `XG-FRAGMENT*` stdout lines fill the
-//! run's timing table (cleared per spawn), each line triggers a sweep, and
-//! the sweeps take `startTs` from those stamps (anchor `"pts"`), deferring a
-//! fragment whose stamp may still be in flight for at most one poll period
-//! (a one-shot timer guarantees the sweep); the final sweep never defers.
-//! `legacy` (the default) is byte for byte today's behaviour.
+//! `video-sidecar-gop-latency`; Phase 7 fixes it).
 //!
 //! Runtime model (deliberate, no observable change): the TS runs on one
 //! event loop; here the state is one mutex, timers are tokio tasks guarded
@@ -63,7 +57,6 @@
 pub mod backend;
 pub mod recover;
 pub mod sweep;
-pub mod timing;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -74,7 +67,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
-use tracing::{error, warn};
+use tracing::error;
 use xorgate_core::capture_ladder::{
     camera_disabled_event, exit_verdict, is_recording, progress_verdict, spawn_event,
     stagger_delay_ms, stall_event, stderr_log_line, CaptureState, ExitInput, LadderCounters,
@@ -84,9 +77,7 @@ use xorgate_core::capture_ladder::{
 use xorgate_core::clock::Clock;
 use xorgate_core::hardware_block::EncoderToken;
 use xorgate_core::session::mint_session_id;
-use xorgate_core::sidecar::{
-    stamp_rejected_warning, ClockPair, ExactSweep, SessionManifest, VideoSessionManifest,
-};
+use xorgate_core::sidecar::{ClockPair, SessionManifest, VideoSessionManifest};
 use xorgate_core::telemetry::ActivityLevel;
 use xorgate_core::types::TimeSource;
 use xorgate_core::video_capture::{
@@ -98,13 +89,9 @@ use xorgate_hal::fragment_stat::{hrtime_ns, monotonic_ms, size_or_zero};
 use xorgate_hal::io::{null_tape, ChildExitRec, ChildSpawnRec, FsOp, TapeSink, ROLE_CAPTURE};
 use xorgate_hal::{fs_watch, shm_reaper};
 
-pub use backend::{backend_from_env, CaptureBackend, CaptureChild, GstLaunchBackend, HostBackend};
+pub use backend::{CaptureBackend, CaptureChild, GstLaunchBackend};
 pub use recover::{recover_orphan_video_sessions, RecoverOpts, RecoverResult};
-pub use sweep::{
-    sweep_session_dir, sweep_session_dir_timed, write_session_manifest, SweepIo, SweepOutcome,
-};
-use timing::{parse_timing_line, RunTiming};
-pub use timing::{sidecar_timing_from_env, SidecarTiming, SIDECAR_TIMING_ENV};
+pub use sweep::{sweep_session_dir, write_session_manifest, SweepIo, SweepOutcome};
 pub use xorgate_core::video_capture::CaptureCamera;
 
 /// Period of the tape's `shm` audit record while a tape is open
@@ -202,9 +189,6 @@ pub struct VideoCaptureOpts {
     pub fs_watch: bool,
     /// Replay mode only (Phase 7e); `None` = real mode, unchanged behaviour.
     pub replay: Option<Arc<dyn ReplayCaptureHooks>>,
-    /// Phase 7a `XORGATE_SIDECAR_TIMING` as resolved for `backend`
-    /// ([`sidecar_timing_from_env`]); default `Legacy` = today's sidecars.
-    pub sidecar_timing: SidecarTiming,
 }
 
 impl VideoCaptureOpts {
@@ -251,7 +235,6 @@ impl VideoCaptureOpts {
             shm_segment_dir: PathBuf::from(SHM_SEGMENT_DIR),
             fs_watch: true,
             replay: None,
-            sidecar_timing: SidecarTiming::Legacy,
         }
     }
 }
@@ -326,10 +309,6 @@ struct Run {
     /// The active fragment last reported to the tape (`fs_out create` once
     /// per fragment). Tape bookkeeping only.
     tape_active: Option<PathBuf>,
-    /// Phase 7a `exact`: this spawn's fragment stamps + deferral state.
-    timing: RunTiming,
-    /// The one-shot sweep that ends the earliest deferral (`exact` only).
-    defer_timer: Option<Timer>,
 }
 
 impl Run {
@@ -360,8 +339,6 @@ impl Run {
             eos_seen: false,
             playing_reported: false,
             tape_active: None,
-            timing: RunTiming::default(),
-            defer_timer: None,
         }
     }
 
@@ -370,7 +347,6 @@ impl Run {
             pump.abort(); // dropping `_w` ends the inotify thread
         }
         cancel(&mut self.sweep_timer);
-        cancel(&mut self.defer_timer);
         self.watch_gen = None;
     }
 }
@@ -873,10 +849,7 @@ impl Shared {
         let (Some(dir), Some(manifest)) = (&run.session_dir, &run.manifest) else {
             return;
         };
-        // Phase 7a: the final sweep never defers (`include_newest`); a
-        // missing stamp is the legacy derivation for that fragment only.
-        let exact = self.exact_sweep(run);
-        let res = sweep_session_dir_timed(
+        let res = sweep_session_dir(
             dir,
             manifest,
             &SweepIo {
@@ -885,27 +858,11 @@ impl Shared {
                 time_source: Some((self.opts.time_source)()),
                 clock_pair: self.clock_pair(),
             },
-            exact.as_ref(),
         );
         self.tape_sweep(&res.closed, &res.reaped);
         for mp4 in res.closed {
             out.fx.push(Fx::Closed(mp4));
         }
-    }
-
-    /// The run's exact timing for one sweep (`None` in `legacy`).
-    fn exact_sweep<'a>(&self, run: &'a Run) -> Option<ExactSweep<'a>> {
-        (self.opts.sidecar_timing == SidecarTiming::Exact).then(|| ExactSweep {
-            table: &run.timing.table,
-            deferred_since: &run.timing.deferred_since,
-            now_ms: self.opts.clock.mono_ms() as f64,
-            defer_max_ms: self.defer_max_ms(),
-        })
-    }
-
-    /// §8.5: a deferral lasts at most one sweep-poll period.
-    fn defer_max_ms(&self) -> f64 {
-        self.opts.sweep_poll_ms.max(1) as f64
     }
 }
 
@@ -1224,9 +1181,6 @@ fn spawn_locked(s: &Arc<Shared>, g: &mut Inner, key: &str, out: &mut Out) {
     run.eos_seen = false;
     run.playing_reported = false;
     run.tape_active = None;
-    // Phase 7a: a new session dir per spawn, so the stamps start over.
-    run.timing = RunTiming::default();
-    cancel(&mut run.defer_timer);
 
     // A socket file left by a killed predecessor makes the new shmsink
     // accept nothing ("Connection refused" on the KVS side).
@@ -1292,8 +1246,7 @@ async fn consume(
         match ev {
             // gst-launch's progress lines ride stdout: consumed always (an
             // unread pipe could block a chatty child); acted on only by the
-            // replay hooks, which a real device never installs, and (7a) by
-            // the `exact` timing table, which only the capture host feeds.
+            // replay hooks, which a real device never installs.
             ChildEvent::Stdout(line) => {
                 s.opts.tape.child_line(ROLE_CAPTURE, &key, 1, &line);
                 // ACTED on only by the replay hooks (`video-capture.ts:676-683`).
@@ -1301,9 +1254,6 @@ async fn consume(
                     if let Some(wall) = s.note_stdout(&key, child_id, &line) {
                         h.on_playing(&key, wall);
                     }
-                }
-                if s.opts.sidecar_timing == SidecarTiming::Exact {
-                    on_timing_line(&s, &key, child_id, &line);
                 }
             }
             ChildEvent::Stderr(line) => {
@@ -1320,88 +1270,6 @@ async fn consume(
     }
     on_exit(&s, &key, child_id, &done.unwrap_or_default());
     let _ = done_tx.send(true);
-}
-
-/// Phase 7a `exact`: one host stdout line. A timing line (§8.3, WP1's
-/// `capture_timing` format) of THIS child goes into its run's table — a bad
-/// or rejected one warns once per session and leaves its fragment on the
-/// legacy anchors — and then triggers a sweep (§8.5: the line may be what a
-/// deferred fragment is waiting for).
-/// Phase 7a WP3: the tape's `capture_timing` record of one parsed host
-/// timing line (`XG-FRAGMENT` → lagMs + startTs, `XG-FRAGMENT-END` →
-/// endTs) and whether the run's table accepted it.
-fn capture_timing_rec(
-    key: &str,
-    pid: u32,
-    sid: &str,
-    l: &xorgate_core::capture_timing::TimingLine,
-    accepted: bool,
-) -> xorgate_hal::tape::CaptureTimingRec {
-    use xorgate_core::capture_timing::TimingLine;
-    let (lag_ms, start_ts, end_ts) = match l {
-        TimingLine::Start(f) => (Some(f.lag_ms), Some(f.start_ts), None),
-        TimingLine::End(e) => (None, None, Some(e.end_ts)),
-    };
-    xorgate_hal::tape::CaptureTimingRec {
-        key: key.to_string(),
-        pid,
-        sid: sid.to_string(),
-        id: l.id(),
-        lag_ms,
-        start_ts,
-        end_ts,
-        accepted,
-    }
-}
-
-fn on_timing_line(s: &Arc<Shared>, key: &str, child_id: u64, line: &str) {
-    let Some(parsed) = parse_timing_line(line) else {
-        return;
-    };
-    let (warning, target, rec) = {
-        let mut g = s.lock();
-        let Some(run) = g.runs.get_mut(key) else {
-            return;
-        };
-        if run.child.as_ref().map(|c| c.id) != Some(child_id) {
-            return; // a previous child's straggler: never another session's stamp
-        }
-        let res = match &parsed {
-            Ok(l) => run
-                .timing
-                .apply(l)
-                .map_err(|e| stamp_rejected_warning(key, u64::from(l.id()), &e)),
-            Err(e) => Err(format!(
-                "[video-capture {key}] unusable timing line ({e:?}); legacy anchors for its fragment"
-            )),
-        };
-        // Phase 7a WP3 (Rig form): the rig-only `capture_timing` record of
-        // a parsed line, with this table's verdict (never on the wire). Built
-        // under the lock, WRITTEN after it (review-wp3 F9: a FileTape write
-        // is gz I/O), before the sweep it may trigger.
-        let rec = parsed.as_ref().ok().map(|l| {
-            capture_timing_rec(
-                key,
-                run.child.as_ref().and_then(|c| c.pid).unwrap_or(0),
-                run.session_id.as_deref().unwrap_or(""),
-                l,
-                res.is_ok(),
-            )
-        });
-        let warning = res
-            .err()
-            .filter(|_| !std::mem::replace(&mut run.timing.warned, true));
-        (warning, run.watch_gen.map(|gen| (run.id, gen)), rec)
-    };
-    if let Some(r) = rec {
-        s.opts.tape.capture_timing(&r);
-    }
-    if let Some(w) = warning {
-        warn!("{w}");
-    }
-    if let Some((run_id, gen)) = target {
-        sweep(s, key, run_id, gen);
-    }
 }
 
 /// `onExit(streamKey, exitCode, notFound)` (`video-capture.ts:722-856`).
@@ -1621,8 +1489,7 @@ fn sweep(s: &Arc<Shared>, key: &str, run_id: u64, gen: u64) {
     {
         let mut g = s.lock();
         let stopped = g.stopped;
-        let Inner { runs, counter, .. } = &mut *g;
-        let Some(run) = runs.get_mut(key) else {
+        let Some(run) = g.runs.get_mut(key) else {
             return;
         };
         if run.id != run_id || run.watch_gen != Some(gen) {
@@ -1631,8 +1498,7 @@ fn sweep(s: &Arc<Shared>, key: &str, run_id: u64, gen: u64) {
         let (Some(dir), Some(manifest)) = (&run.session_dir, &run.manifest) else {
             return;
         };
-        let exact = s.exact_sweep(run);
-        let res = sweep_session_dir_timed(
+        let res = sweep_session_dir(
             dir,
             manifest,
             &SweepIo {
@@ -1641,12 +1507,7 @@ fn sweep(s: &Arc<Shared>, key: &str, run_id: u64, gen: u64) {
                 time_source: Some((o.time_source)()),
                 clock_pair: s.clock_pair(),
             },
-            exact.as_ref(),
         );
-        if let Some(now) = exact.map(|x| x.now_ms) {
-            run.timing.note_deferred(&res.deferred, now);
-            arm_deferral(s, counter, key, run, gen, now);
-        }
         if o.tape.enabled() {
             s.tape_sweep(&res.closed, &res.reaped);
             if let Some(p) = &res.active_path {
@@ -1669,42 +1530,6 @@ fn sweep(s: &Arc<Shared>, key: &str, run_id: u64, gen: u64) {
         check_progress(s, stopped, key, run, res.active_path.as_deref(), &mut out);
     }
     s.flush(out);
-}
-
-/// §8.5 bound: while a fragment is deferred, keep ONE one-shot sweep armed
-/// for the earliest deferral's deadline (`deferred_since + one poll
-/// period`), so no sidecar waits longer than that even when the poll's phase
-/// would put the next tick almost a period later. The line that ends a
-/// deferral normally arrives first and sweeps by itself.
-fn arm_deferral(s: &Arc<Shared>, counter: &mut u64, key: &str, run: &mut Run, gen: u64, now: f64) {
-    let Some(deadline) = run.timing.next_deadline(s.defer_max_ms()) else {
-        cancel(&mut run.defer_timer);
-        return;
-    };
-    if run.defer_timer.is_some() {
-        return; // armed for an earlier (or the same) deadline
-    }
-    let tgen = next(counter);
-    let wait = Duration::from_millis(((deadline - now).ceil() as u64).max(1));
-    let weak = Arc::downgrade(s);
-    let (k, run_id) = (key.to_string(), run.id);
-    let task = tokio::spawn(async move {
-        tokio::time::sleep(wait).await;
-        let Some(s) = weak.upgrade() else { return };
-        {
-            let mut g = s.lock();
-            let Some(r) = g.runs.get_mut(&k) else { return };
-            if r.defer_timer.as_ref().map(|t| t.gen) != Some(tgen) {
-                return;
-            }
-            r.defer_timer = None;
-        }
-        sweep(&s, &k, run_id, gen);
-    });
-    run.defer_timer = Some(Timer {
-        gen: tgen,
-        abort: task.abort_handle(),
-    });
 }
 
 /// `checkProgress(run, activePath)` (`video-capture.ts:963-1007`): no growth

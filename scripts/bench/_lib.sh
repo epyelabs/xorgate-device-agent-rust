@@ -135,7 +135,7 @@ PY
 # absent file (masters never start), the exclusive one at the packaged runtime.
 env_file_guard() {
   local bad
-  bad=$(grep -E "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7A_KNOBS_RE|$P7C_KNOBS_RE)=" "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
+  bad=$(grep -E "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7C_KNOBS_RE)=" "$RS_ENV" 2>/dev/null | sed 's/=.*//' || true)
   if [ -n "$bad" ]; then
     echo "REFUSING: $RS_ENV sets $(echo "$bad" | tr '\n' ' ')— an EnvironmentFile overrides the profile drop-ins; remove those keys by hand"
     exit 1
@@ -164,13 +164,12 @@ inputs_safe() {
   grep -qx 'Environment=GPS_NMEA_PORT=/run/xorgate-rs-no-gps' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: GPS_NMEA_PORT=/run/xorgate-rs-no-gps in $INPUTS_DROPIN"; ok=1; }
   grep -qx 'Environment=XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python' "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_PYTHON_DIR=/var/lib/xorgate-rs/no-python in $INPUTS_DROPIN"; ok=1; }
   grep -qx "HARDWARE_MANIFEST=$HW_SHARED" "$RS_ENV" 2>/dev/null || { echo "  missing: HARDWARE_MANIFEST=$HW_SHARED in $RS_ENV (dev-manifests.sh)"; ok=1; }
-  if grep -qE "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7A_KNOBS_RE|$P7C_KNOBS_RE)=" "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN/XORGATE_LED_*/XORGATE_SMS_PORT/XORGATE_OBD_*/XORGATE_CAPTURE_*/XORGATE_SIDECAR_TIMING/XORGATE_IMU_*"; ok=1; fi
+  if grep -qE "^(GPS_NMEA_PORT|XORGATE_PYTHON_DIR|PATH|KVS_RUNTIME_BIN|$P4_KNOBS_RE|$P7C_KNOBS_RE)=" "$RS_ENV" 2>/dev/null; then echo "  UNSAFE: $RS_ENV carries GPS_NMEA_PORT/XORGATE_PYTHON_DIR/PATH/KVS_RUNTIME_BIN/XORGATE_LED_*/XORGATE_SMS_PORT/XORGATE_OBD_*/XORGATE_IMU_*"; ok=1; fi
   if [ -f "/etc/xorgate/hardware.json" ]; then
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("imu"))' "$HW_SHARED" 2>/dev/null)" = None ] || { echo "  missing: imu: null in $HW_SHARED (dev-manifests.sh / profile.sh shared)"; ok=1; }
   fi
   p4_inputs_safe || ok=1
   p5b_inputs_safe || ok=1
-  p7a_inputs_safe || ok=1
   p7c_inputs_safe || ok=1
   return $ok
 }
@@ -227,13 +226,6 @@ Environment=KVS_RUNTIME_BIN=/var/lib/xorgate-rs/no-kvs
 # live in different homes on the bench and would not interlock).
 Environment=XORGATE_LED_GPIOCHIP=/run/xorgate-rs-no-gpio
 Environment=XORGATE_SMS_PORT=/run/xorgate-rs-no-sms
-# Phase 7a (WP3, §Design 10): capture stays on gst-launch, whose shim above
-# blocks it; and, as a second guard, the capture host's program is the
-# blocking shared-shims/xorgate-capture (exit 1), so a stray
-# XORGATE_CAPTURE_BACKEND=host still captures nothing. The env file may not
-# carry either knob (env_file_guard: an EnvironmentFile beats these).
-Environment=XORGATE_CAPTURE_BACKEND=gst-launch
-Environment=XORGATE_CAPTURE_HOST_BIN=/var/lib/xorgate-rs/shared-shims/xorgate-capture
 # Phase 7c (WP3, §Design 3): the JS prod agent owns the BNO085, and two SHTP
 # clients break the sensor. The `rust` IMU backend IGNORES
 # XORGATE_PYTHON_DIR=no-python above, so one guard would be one mistake away
@@ -278,14 +270,8 @@ Environment=KVS_RUNTIME_BIN=/opt/xorgate-rs/media/xorgate-kvs-webrtc
 # USB identity (interface 05, never /dev/ttyUSB2), the real pinctrl + sudo
 # (full PATH above has no shared-shims): drop the shared profile's knobs.
 UnsetEnvironment=XORGATE_LED_GPIOCHIP XORGATE_SMS_PORT XORGATE_LED_WRITER
-# Phase 7a (WP3): the capture host re-executes the packaged agent binary (no
-# shim in the window). The backend stays the shared pin (gst-launch); the 7a
-# bench window turns the host on with XORGATE_CAPTURE_BACKEND=host (and
-# XORGATE_SIDECAR_TIMING) in /run/xorgate-agent-rs-exclusive.env (an
-# EnvironmentFile beats Environment=).
-UnsetEnvironment=XORGATE_CAPTURE_HOST_BIN
-# Phase 7c (WP3): likewise the Rust IMU reader re-executes the packaged agent
-# binary (no shim in the window); the backend stays the shared pin (python),
+# Phase 7c (WP3): the Rust IMU reader re-executes the packaged agent binary
+# (no shim in the window); the backend stays the shared pin (python),
 # and a 7c window turns `rust` on in /run/xorgate-agent-rs-exclusive.env.
 UnsetEnvironment=XORGATE_IMU_READER_BIN
 # (scope, review-wp3 F7: systemd applies UnsetEnvironment= LAST, so this also
@@ -352,7 +338,7 @@ c15_check() {
 # Phase 3 (WP6) additions — media-off shared profile, window helpers
 # (plan phase-3-recording-media.md §Bench recipe, P3/P7/P13). Appended only.
 SHIMS_DIR=$RS_HOME/shared-shims
-SHIM_NAMES="rpicam-hello gst-launch-1.0 pinctrl xorgate-capture xorgate-imu"
+SHIM_NAMES="rpicam-hello gst-launch-1.0 pinctrl xorgate-imu"
 SHARED_PATH=$SHIMS_DIR:/usr/local/bin:/usr/bin:/bin
 NO_KVS=$RS_HOME/no-kvs
 KVS_SHARED=$RS_ETC/kvs.json
@@ -422,10 +408,7 @@ proc_name() {
   [ -n "$a" ] || return 1
   basename -- "$a"
 }
-# Phase 7a: `xorgate-capture` = the Rust capture host (`xorgate-rs
-# __capture-host`, argv[0] and comm both name it), a capture child like
-# gst-launch-1.0.
-is_media_name() { case "$1" in gst-launch-1.0|xorgate-capture|xorgate-kvs-webrtc) return 0 ;; *) return 1 ;; esac; }
+is_media_name() { case "$1" in gst-launch-1.0|xorgate-kvs-webrtc) return 0 ;; *) return 1 ;; esac; }
 # Pids whose cgroup is <unit>.service (or below it).
 pids_in_unit() {
   local f p
@@ -470,8 +453,7 @@ js_media_pids() {
     if is_media_name "$n"; then echo "$p"; fi
   done
 }
-# Rust capture/master pids: every live gst-launch-1.0 / xorgate-capture /
-# xorgate-kvs-webrtc that
+# Rust capture/master pids: every live gst-launch-1.0 / xorgate-kvs-webrtc that
 # is in (or descends from) the Rust unit, plus escapees outside both units whose
 # argv/exe names the Rust tree (/var/lib/xorgate-rs/, /opt/xorgate-rs/).
 # NEVER a pid of the JS unit.
@@ -502,7 +484,7 @@ kill_rs_media() {
     if [ "$(pid_owner "$p")" = JS ]; then echo "  ! pid $p belongs to $JS_UNIT — NOT signalled"; continue; fi
     targets="$targets $p"
   done
-  if [ -z "$targets" ]; then echo "  = no Rust gst-launch-1.0/xorgate-capture/xorgate-kvs-webrtc alive"; return 0; fi
+  if [ -z "$targets" ]; then echo "  = no Rust gst-launch-1.0/xorgate-kvs-webrtc alive"; return 0; fi
   for p in $targets; do
     note "SIGINT -> Rust $(proc_name "$p" 2>/dev/null || echo '?') pid $p"
     act kill -INT "$p" || true
@@ -525,7 +507,7 @@ kill_rs_media() {
 # TSV rows: shm<TAB>name<TAB>size<TAB>pid<TAB>owner | sock<TAB>path<TAB>size<TAB>-<TAB>home
 # shmsink names its segments "shmpipe.%5d.%5d" (pid, counter; space padded).
 shm_audit_rows() {
-  local f name pid size owner prog
+  local f name pid size owner
   _main_pids_refresh
   for f in /dev/shm/shmpipe.*; do
     [ -e "$f" ] || continue
@@ -533,16 +515,12 @@ shm_audit_rows() {
     pid=${name#shmpipe.}; pid=${pid%%.*}; pid=${pid// /}
     size=$(stat -c %s "$f" 2>/dev/null || echo 0)
     case "$pid" in ''|*[!0-9]*) owner=UNPARSED ;; *) owner=$(pid_owner "$pid") ;; esac
-    # Phase 7a: the owner's program (gst-launch-1.0 / xorgate-capture / …;
-    # "-" when dead), so a RUST row says which capture backend made it.
-    prog=-
-    case "$owner" in DEAD|UNPARSED) ;; *) prog=$(proc_name "$pid" 2>/dev/null || echo -) ;; esac
-    printf 'shm\t%s\t%s\t%s\t%s\t%s\n' "$name" "$size" "$pid" "$owner" "$prog"
+    printf 'shm\t%s\t%s\t%s\t%s\n' "$name" "$size" "$pid" "$owner"
   done
   for f in "$RS_HOME"/shm/*.sock "$JS_HOME"/shm/*.sock; do
     [ -e "$f" ] || continue
     case "$f" in "$RS_HOME"/*) owner=rust_home ;; *) owner=js_home ;; esac
-    printf 'sock\t%s\t%s\t-\t%s\t-\n' "$f" "$(stat -c %s "$f" 2>/dev/null || echo 0)" "$owner"
+    printf 'sock\t%s\t%s\t-\t%s\n' "$f" "$(stat -c %s "$f" 2>/dev/null || echo 0)" "$owner"
   done
 }
 # "js=N rust=N other=N dead=N" for the shmpipe rows.
@@ -561,9 +539,9 @@ shm, socks, c = [], [], {"JS": 0, "RUST": 0, "OTHER-LIVE": 0, "DEAD": 0, "UNPARS
 for line in sys.stdin.read().splitlines():
     if not line.strip():
         continue
-    k, name, size, pid, owner, prog = line.split("\t")
+    k, name, size, pid, owner = line.split("\t")
     if k == "shm":
-        shm.append({"name": name, "size": int(size), "pid": int(pid) if pid.isdigit() else None, "owner": owner, "program": None if prog == "-" else prog})
+        shm.append({"name": name, "size": int(size), "pid": int(pid) if pid.isdigit() else None, "owner": owner})
         c[owner] = c.get(owner, 0) + 1
     else:
         socks.append({"path": name, "size": int(size), "home": owner})
@@ -573,7 +551,7 @@ print(json.dumps({"shm": shm, "sockets": socks, "summary": {"shm": len(shm), "js
   fi
   echo "  /dev/shm/shmpipe.* (owner: JS = xorgate-agent child, RUST = xorgate-agent-rs child, DEAD = no such pid):"
   if grep -q '^shm' <<<"$rows"; then
-    awk -F'\t' '$1=="shm"{printf "    %-10s pid=%-8s size=%-10s %s prog=%s\n", $5, $4, $3, "\x27" $2 "\x27", $6}' <<<"$rows"
+    awk -F'\t' '$1=="shm"{printf "    %-10s pid=%-8s size=%-10s %s\n", $5, $4, $3, "\x27" $2 "\x27"}' <<<"$rows"
   else
     echo "    (none)"
   fi
@@ -1006,22 +984,6 @@ rs_bench_dropin_ok() {
   echo "!!!! REFUSING: $RS_DROPIN_REFUSAL" >&2
   echo "  REFUSING: $RS_DROPIN_REFUSAL"
   return 1
-}
-# ---------------------------------------------------------------------------
-# Phase 7a (WP3, phase-7a-inprocess-gstreamer.md §Design 10) — the capture
-# host. The knobs live ONLY in the shared drop-in (pins) and, in a 7a window,
-# the exclusive env file; never in $RS_ENV.
-P7A_KNOBS_RE='XORGATE_CAPTURE_BACKEND|XORGATE_CAPTURE_HOST_BIN|XORGATE_SIDECAR_TIMING'
-HOST_SHIM=$SHIMS_DIR/xorgate-capture
-# 0 when the Phase 7a half of the shared profile is in force: BOTH pins in
-# the shared drop-in (the shim itself is checked with the other SHIM_NAMES:
-# present, exits 1).
-p7a_inputs_safe() {
-  local ok=0
-  grep -qx "Environment=XORGATE_CAPTURE_BACKEND=gst-launch" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_CAPTURE_BACKEND=gst-launch in $INPUTS_DROPIN (Phase 7a)"; ok=1; }
-  grep -qx "Environment=XORGATE_CAPTURE_HOST_BIN=$HOST_SHIM" "$INPUTS_DROPIN" 2>/dev/null || { echo "  missing: XORGATE_CAPTURE_HOST_BIN=$HOST_SHIM in $INPUTS_DROPIN (Phase 7a)"; ok=1; }
-  if [ "$(grep -c '^Environment=XORGATE_CAPTURE_' "$INPUTS_DROPIN" 2>/dev/null)" != 2 ]; then echo "  UNSAFE: $INPUTS_DROPIN must set XORGATE_CAPTURE_* exactly twice (the two pins)"; ok=1; fi
-  return $ok
 }
 # ---------------------------------------------------------------------------
 # Phase 7c (WP3, phase-7c-rust-imu.md §Design 3) — the Rust IMU reader

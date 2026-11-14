@@ -12,9 +12,8 @@
 #     ts, uptime_s; the Rust MainPID with VmRSS kB, utime+stime ticks from
 #     /proc/<pid>/stat and cpu_pct = the tick DELTA since the previous row /
 #     (CLK_TCK x elapsed uptime) (never ps %CPU); every other pid of the Rust
-#     unit's cgroup (gst-launch-1.0 or the Phase 7a capture host
-#     xorgate-capture, xorgate-kvs-webrtc, python3, the Phase 7c IMU reader
-#     xorgate-imu, …) as
+#     unit's cgroup (gst-launch-1.0, xorgate-kvs-webrtc, python3, the Phase 7c
+#     IMU reader xorgate-imu, …) as
 #     name:pid:rss_kb:ticks:cpu_pct (comma-separated); the shm audit counts
 #     (js/rust/other/dead, see shm-audit.sh); recordings backlog bytes
 #     (du -sb /var/lib/xorgate-rs/recordings); zero_closed = *.mp4 of size 0

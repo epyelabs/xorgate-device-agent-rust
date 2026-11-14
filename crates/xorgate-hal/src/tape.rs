@@ -205,10 +205,8 @@ pub const CHILD_ENV_KEYS: &[&str] = &[
 
 /// Capture stdout/stderr lines the tape keeps (phase file §Record/replay:
 /// "capture: only `New clock:`/`Got EOS`/`ERROR` lines"); a line is kept when
-/// it CONTAINS one of these. Phase 7a (Rig form): the capture host's
-/// `XG-FRAGMENT {…}` / `XG-FRAGMENT-END {…}` timing lines are kept beside
-/// them (`gst-launch-1.0` never prints one, so a gst-launch tape is unchanged).
-pub const CAPTURE_LINE_MARKERS: &[&str] = &["New clock:", "Got EOS", "ERROR", "XG-FRAGMENT"];
+/// it CONTAINS one of these.
+pub const CAPTURE_LINE_MARKERS: &[&str] = &["New clock:", "Got EOS", "ERROR"];
 
 /// KVS master lines are not taped one by one: the writer counts them per
 /// `(key, fd)` and writes one `child_line {count}` per window of this length.
@@ -248,33 +246,6 @@ pub struct ChildExitRec {
     /// EOF, external kill): the player re-enacts these at tape time.
     #[serde(default)]
     pub external: bool,
-}
-
-/// Phase 7a `capture_timing` (rig-only, never on the wire; Rig form): one
-/// capture-host timing line the supervisor parsed in `XORGATE_SIDECAR_TIMING
-/// =exact` — `XG-FRAGMENT` gives `lagMs` + `startTs`, `XG-FRAGMENT-END` gives
-/// `endTs` — with the agent's own verdict (`accepted` = its timing table took
-/// the stamp; `false` = refused, so that fragment keeps the legacy anchors).
-/// `sid` is the session the line belongs to (the run's session dir name), so
-/// the rig's exact-timing matcher (D51) can pair it with that session's
-/// sidecar `id` without trusting any other join.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct CaptureTimingRec {
-    /// Camera key (`cam0`, …).
-    pub key: String,
-    /// The capture child's pid (`0` = unknown).
-    pub pid: u32,
-    /// The session id (`<sid>` dir name; empty = unknown).
-    pub sid: String,
-    /// splitmuxsink's fragment id (= the `%05d` file sequence).
-    pub id: u32,
-    #[serde(rename = "lagMs", default, skip_serializing_if = "Option::is_none")]
-    pub lag_ms: Option<u64>,
-    #[serde(rename = "startTs", default, skip_serializing_if = "Option::is_none")]
-    pub start_ts: Option<u64>,
-    #[serde(rename = "endTs", default, skip_serializing_if = "Option::is_none")]
-    pub end_ts: Option<u64>,
-    pub accepted: bool,
 }
 
 /// `fs_out` operation (`create`/`close`/`sidecar`/`delete`/`gz`).
@@ -473,9 +444,6 @@ pub enum TapeEvent {
     /// The clock stepper's NTP probe verdict (`timedatectl show -p
     /// NTPSynchronized --value`, `clock-step.ts` `probeNtp`).
     NtpProbe { synced: bool },
-    // ---- Phase 7a (Rig form) ----
-    /// One capture-host timing line taken in `exact` mode (rig-only).
-    CaptureTiming(CaptureTimingRec),
 }
 
 impl TapeEvent {
@@ -507,7 +475,6 @@ impl TapeEvent {
             TapeEvent::Gpio { .. } => "gpio",
             TapeEvent::Sudo { .. } => "sudo",
             TapeEvent::NtpProbe { .. } => "ntp_probe",
-            TapeEvent::CaptureTiming(_) => "capture_timing",
         }
     }
 
@@ -539,7 +506,6 @@ impl TapeEvent {
         "gpio",
         "sudo",
         "ntp_probe",
-        "capture_timing",
     ];
 
     /// `at_rx` from the raw chunk read off the port.
@@ -1166,11 +1132,6 @@ impl<W: Write + Send> TapeWriter<W> {
         self.record(TapeEvent::NtpProbe { synced });
     }
 
-    /// One capture-host timing line taken in `exact` mode (Phase 7a).
-    pub fn capture_timing(&self, r: &CaptureTimingRec) {
-        self.record(TapeEvent::CaptureTiming(r.clone()));
-    }
-
     /// Stop writing and hand back the sink (flushed). `None` if it failed.
     pub fn into_inner(self) -> Option<W> {
         if let Ok(mut st) = self.state.lock() {
@@ -1354,9 +1315,6 @@ impl crate::io::TapeSink for FileTape {
     }
     fn ntp_probe(&self, synced: bool) {
         self.inner.ntp_probe(synced);
-    }
-    fn capture_timing(&self, r: &CaptureTimingRec) {
-        self.inner.capture_timing(r);
     }
     fn close(&self) {
         if let Err(e) = FileTape::close(self) {
@@ -2452,95 +2410,6 @@ mod tests {
         tape.write(&b, true).unwrap();
         assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
         assert_eq!(Tape::read(&a).unwrap().records, tape.records);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Phase 7a (Rig form): the rig-only `capture_timing` record — its exact
-    /// JSON shape (start and END variants), a round trip, `kind()`/`KINDS`,
-    /// the sink routing — and the capture-line filter keeping the host's
-    /// `XG-FRAGMENT*` lines beside `New clock:` while dropping other chatter.
-    #[test]
-    fn capture_timing_record_and_host_timing_lines_are_kept() {
-        use crate::io::TapeSink;
-        let line = |ev: TapeEvent| serde_json::to_string(&TapeRecord { t: 1, w: 2, ev }).unwrap();
-        let start = CaptureTimingRec {
-            key: "cam0".into(),
-            pid: 4242,
-            sid: "0e9b7f3c-0000-4000-8000-000000000001".into(),
-            id: 3,
-            lag_ms: Some(2012),
-            start_ts: Some(1_762_399_997_900),
-            end_ts: None,
-            accepted: true,
-        };
-        assert_eq!(
-            line(TapeEvent::CaptureTiming(start.clone())),
-            r#"{"t":1,"w":2,"k":"capture_timing","key":"cam0","pid":4242,"sid":"0e9b7f3c-0000-4000-8000-000000000001","id":3,"lagMs":2012,"startTs":1762399997900,"accepted":true}"#
-        );
-        let end = CaptureTimingRec {
-            id: 5,
-            lag_ms: None,
-            start_ts: None,
-            end_ts: Some(1_762_400_009_960),
-            accepted: false,
-            ..start.clone()
-        };
-        assert_eq!(
-            line(TapeEvent::CaptureTiming(end.clone())),
-            r#"{"t":1,"w":2,"k":"capture_timing","key":"cam0","pid":4242,"sid":"0e9b7f3c-0000-4000-8000-000000000001","id":5,"endTs":1762400009960,"accepted":false}"#
-        );
-        for ev in [
-            TapeEvent::CaptureTiming(start.clone()),
-            TapeEvent::CaptureTiming(end.clone()),
-        ] {
-            let rec = TapeRecord { t: 3, w: 4, ev };
-            let s = serde_json::to_string(&rec).unwrap();
-            let back: TapeRecord = serde_json::from_str(&s).unwrap();
-            assert_eq!(back, rec, "{s}");
-            assert_eq!(rec.ev.kind(), "capture_timing");
-            assert!(TapeEvent::KINDS.contains(&"capture_timing"));
-        }
-
-        let dir = std::env::temp_dir().join(format!("xorgate-tape-p7a-{}", std::process::id()));
-        let path = dir.join("t.ndjson.gz");
-        let (clock, _t) = manual(1_760_000_000_000);
-        let meta = TapeMeta::new("dev", "test", 1_760_000_000_000);
-        let frag = r#"XG-FRAGMENT {"v":1,"id":3,"frameMonoNs":1,"cbMonoNs":2,"cbWallMs":3,"lagMs":0,"startTs":3}"#;
-        let frag_end =
-            r#"XG-FRAGMENT-END {"v":1,"id":3,"endMonoNs":1,"cbMonoNs":2,"cbWallMs":3,"endTs":3}"#;
-        {
-            let tape = FileTape::create_with_clock(&path, &meta, clock).unwrap();
-            let sink: &dyn TapeSink = &tape;
-            sink.child_line(ROLE_CAPTURE, "cam0", 1, "Setting pipeline to PLAYING ...");
-            sink.child_line(ROLE_CAPTURE, "cam0", 1, "New clock: GstSystemClock");
-            sink.child_line(ROLE_CAPTURE, "cam0", 1, frag);
-            sink.child_line(ROLE_CAPTURE, "cam0", 1, "Redistribute latency...");
-            sink.child_line(ROLE_CAPTURE, "cam0", 1, frag_end);
-            sink.capture_timing(&start);
-            sink.capture_timing(&end);
-            sink.close();
-        }
-        let read = Tape::read(&path).unwrap();
-        let got: Vec<TapeEvent> = read.records.iter().map(|r| r.ev.clone()).collect();
-        let cl = |l: &str| TapeEvent::ChildLine {
-            role: ROLE_CAPTURE.into(),
-            key: "cam0".into(),
-            fd: 1,
-            line: Some(l.into()),
-            count: None,
-        };
-        assert_eq!(
-            got,
-            vec![
-                cl("New clock: GstSystemClock"),
-                cl(frag),
-                cl(frag_end),
-                TapeEvent::CaptureTiming(start),
-                TapeEvent::CaptureTiming(end),
-            ]
-        );
-        // The default sink ignores it (no tape = nothing recorded, no panic).
-        crate::io::NullTape.capture_timing(&CaptureTimingRec::default());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

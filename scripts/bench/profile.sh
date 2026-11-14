@@ -16,9 +16,8 @@
 #             "imu": null (no i2cdetect probe of bus 1); removes the runtime exclusive
 #             drop-in + env file. REFUSES unless agent-rs-dev.env has
 #             KVS_MANIFEST=/var/lib/xorgate-rs/etc/kvs.json (the channels-[] copy).
-#             Phase 7a/7c pins: XORGATE_CAPTURE_BACKEND=gst-launch + XORGATE_CAPTURE_HOST_BIN
-#             and XORGATE_IMU_BACKEND=python + XORGATE_IMU_READER_BIN, each program a
-#             blocking shim (shared-shims/xorgate-capture, shared-shims/xorgate-imu).
+#             Phase 7c pins: XORGATE_IMU_BACKEND=python + XORGATE_IMU_READER_BIN, the
+#             program a blocking shim (shared-shims/xorgate-imu).
 #   exclusive (RUNTIME, media-on) /run/systemd/system/xorgate-agent-rs.service.d/99-exclusive.conf:
 #             explicit full PATH (no shims), GPS_NMEA_PORT=/dev/ttyUSB1, XORGATE_PYTHON_DIR=/opt/xorgate-rs/python,
 #             KVS_RUNTIME_BIN=/opt/xorgate-rs/media/xorgate-kvs-webrtc;
@@ -28,7 +27,7 @@
 #             exclusive.sh begin, which stops it first.
 #   Both refuse if /etc/xorgate/agent-rs-dev.env (an EnvironmentFile, which beats the
 #   drop-ins) sets GPS_NMEA_PORT, XORGATE_PYTHON_DIR, PATH or KVS_RUNTIME_BIN (and the
-#   Phase 4/7a/7c knobs: XORGATE_LED_*/SMS/OBD, XORGATE_CAPTURE_*, XORGATE_IMU_*).
+#   Phase 4/7c knobs: XORGATE_LED_*/SMS/OBD, XORGATE_IMU_*).
 # Never touches xorgate-agent.service, sim7600-lte or anything of the JS agent.
 set -euo pipefail
 # shellcheck source=scripts/bench/_lib.sh
