@@ -10,7 +10,7 @@ instead of `node dist/worker.js`.
 | Env | `IOT_DATA_ENDPOINT` (required), `DEVICE_ID` (default: `kvs.json`'s), `XORGATE_UPLOAD_BUCKET`, `SCENARIO`, `MODE` (default `replay`), `AWS_KVS_LOG_LEVEL` |
 | Exit codes | `reboot` → 0 (Docker restarts it), `power_off` → 3 + `/state/power-off` (every later start parks until the marker is removed), `docker stop` → the agent's own code after its graceful shutdown (D74) |
 | Health | `/state/state.json` `{connection, lastWriteAt, lastError, published}` (the sim host's proof of life) |
-| Identity | `effective.agent.build` = the honest Rust build-info: `version` = short git sha, `channel` (`bench` for a hand build, `ci` from the workflow), `packageVersion` = the workspace version (7e Q-E3) |
+| Identity | `effective.agent.build` = the honest Rust build-info: `version` = short git sha, `channel` (`bench` for a hand build, `ci` from the workflow), `packageVersion` = the workspace version (7e Q-E3); `effective.agent.runtime` = `"rust"` (D85, Phase 8), so the cloud records a sim as a Rust device |
 
 ## Build
 

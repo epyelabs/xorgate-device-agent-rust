@@ -363,6 +363,17 @@ mod tests {
                 .as_deref(),
             Some("T8/build")
         );
+        // D85 (Phase 8): the Rust-only report marker, a presence difference.
+        assert_eq!(
+            t.excluded("report", "effective.agent.runtime").as_deref(),
+            Some("T8/D85")
+        );
+        assert!(
+            !t.decision_row("D85").unwrap().1.values_only,
+            "D85 is a one-sided key"
+        );
+        assert_eq!(t.excluded("report", "effective.agent.mode"), None);
+        assert_eq!(t.excluded("report", "effective.agent.capabilities"), None);
         assert_eq!(t.excluded("telemetry", "metrics.gps.lat.value"), None);
         assert_eq!(
             t.numeric("telemetry", "metrics.system.cpu_usage.value"),

@@ -6299,6 +6299,40 @@ mod tests {
             "{got:?}"
         );
 
+        // D85 (Phase 8): the Rust-only `effective.agent.runtime` marker, the
+        // agent block's LAST key, is a tolerated one-sided key; the rest of
+        // the block (incl. the shared keys' order) is still compared.
+        let rep_r = |agent: Value| serde_json::json!({"v":1,"origin":"boot","rev":1,"effective":{"agent":agent}});
+        let agent_tols = |ja: Value, ra: Value| {
+            let a = cap("js", vec![msg(1_000, "config/reported", rep_r(ja))]);
+            let b = cap("rust", vec![msg(1_000, "config/reported", rep_r(ra))]);
+            diff(&a, &b, &PlayInfo::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("effective.agent"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let js_agent = serde_json::json!({"mode":"real","capabilities":["sms.read"]});
+        let got = agent_tols(
+            js_agent.clone(),
+            serde_json::json!({"mode":"real","capabilities":["sms.read"],"runtime":"rust"}),
+        );
+        assert_eq!(
+            got,
+            vec![("effective.agent.runtime".to_string(), "T8/D85".to_string())]
+        );
+        // A different shared value is NOT covered by D85.
+        let got = agent_tols(
+            js_agent,
+            serde_json::json!({"mode":"sim","capabilities":["sms.read"],"runtime":"rust"}),
+        );
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "effective.agent.mode" && t == UNTOLERATED),
+            "{got:?}"
+        );
+
         // O2: only the mono-derived observables near a wall step.
         let step = PlayInfo {
             start_wall: 0,

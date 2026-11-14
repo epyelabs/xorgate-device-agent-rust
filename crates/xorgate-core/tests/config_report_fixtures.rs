@@ -61,11 +61,35 @@ fn desired_from(payload: Option<&Value>) -> Option<DesiredSnapshot> {
     })
 }
 
+/// D85 (Phase 8 D9; `accepted-divergences.md`): the Rust agent appends
+/// `"runtime":"rust"` as the LAST key of every `effective.agent` block; the JS
+/// goldens carry no such key. Assert it sits exactly there (once per `agent`
+/// block, nowhere else) and remove it, so everything else is still compared
+/// byte for byte with the JS. Returns the stripped text and the strip count.
+fn strip_d85(got: &str) -> (String, usize) {
+    let caps = serde_json::to_string(AGENT_CAPABILITIES).unwrap();
+    let with = format!(r#""capabilities":{caps},"runtime":"rust"}}"#);
+    let without = format!(r#""capabilities":{caps}}}"#);
+    let n = got.matches(&with).count();
+    assert_eq!(
+        n,
+        got.matches(r#""agent":{"#).count(),
+        "D85: one marker per agent block: {got}"
+    );
+    assert_eq!(
+        n,
+        got.matches(r#""runtime""#).count(),
+        "D85: no marker elsewhere: {got}"
+    );
+    (got.replace(&with, &without), n)
+}
+
 #[test]
 fn config_report_suites() {
     let f = common::fixture::<Case>("config_report/config-report.json");
     let build: BuildInfo = from(f.extra["build"].clone());
     let mut ops: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut d85 = 0;
     for c in &f.cases {
         *ops.entry(c.op.clone()).or_default() += 1;
         let i = &c.input;
@@ -206,8 +230,18 @@ fn config_report_suites() {
             }
             other => panic!("unknown op {other}"),
         };
+        let got = match c.op.as_str() {
+            "buildEffective" | "buildConfigReport" => got.map(|g| {
+                let (g, n) = strip_d85(&g);
+                d85 += n;
+                g
+            }),
+            _ => got,
+        };
         assert_eq!(got, c.expected_json, "{}", c.name);
     }
+    // Every JS golden `agent` block (12 at 09da38d) got the D85 marker.
+    assert_eq!(d85, 12, "D85 markers stripped");
     // Phase 1's 155 cases (re-evaluated @ 09da38d) + the [p5b] ones.
     assert_eq!(f.cases.len(), 155 + 39, "{}", f.cases.len());
     assert!(ops["buildEffective"] >= 26 + 3);

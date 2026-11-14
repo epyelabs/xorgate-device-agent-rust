@@ -878,6 +878,16 @@ pub struct ReportHints {
 /// `peripherals.obd`; the cloud gates on that, not here).
 pub const AGENT_CAPABILITIES: &[&str] = &["sms.read", "sms.clear", "obd.scan", "obd.forget"];
 
+/// D85 (Phase 8 D9, Q-8.3; `phase-1/evidence/accepted-divergences.md`): the
+/// Rust agent's own report marker, `effective.agent.runtime`, the LAST key of
+/// the `agent` block (after `capabilities`). The JS agent @ 09da38d sends no
+/// such key, so the cloud could not tell the two agents apart from a report
+/// (Phase 8 plan-notes X6). The backend mirrors it POSITIVE-ONLY: `"rust"` →
+/// `devices.agent = 'rust'`; an absent key leaves the column untouched (it
+/// never demotes). An Appendix A amendment: the cloud stores `effective` as an
+/// opaque `z.record(z.string(), z.unknown())`, so the extra key is tolerated.
+pub const AGENT_RUNTIME: &str = "rust";
+
 /// `buildEffective` (`config-sync.ts:597`): what settings.json actually holds
 /// right now, with `gnssAntBias` / `cellular.apn` / `cameraMount` overridden
 /// by what is IN FORCE, plus the reported-only blocks (`agent`,
@@ -936,6 +946,8 @@ pub fn build_effective(
                     .collect(),
             ),
         );
+        // D85: Rust-only, after every JS key, so the JS key order is kept.
+        agent.insert("runtime".into(), Value::String(AGENT_RUNTIME.to_string()));
         out.insert("agent".into(), Value::Object(agent));
     }
     if let Some(ts) = telemetry_scope {
@@ -1681,6 +1693,64 @@ mod tests {
             ["sms.read", "sms.clear", "obd.scan", "obd.forget"]
         );
         assert_eq!(MODEM_TELEMETRY_STALE_MS, 180_000);
+    }
+
+    /// D85 (Phase 8 D9, Q-8.3): the Rust agent's report marker. Positive
+    /// evidence for the backend's mirror (`runtime === "rust"` →
+    /// `devices.agent = 'rust'`), so it must be exactly `"rust"`, ride in
+    /// EVERY `agent` block, and come LAST (after the JS keys, whose order the
+    /// JS goldens pin in `tests/config_report_fixtures.rs`). No `agent` block
+    /// (no mode) → no marker, as JS has no block then either.
+    #[test]
+    fn d85_effective_agent_reports_runtime_rust_last() {
+        assert_eq!(AGENT_RUNTIME, "rust");
+        let build = BuildInfo {
+            version: "abc1234".into(),
+            channel: "dev".into(),
+            built_at: None,
+            package_version: "0.1.0".into(),
+        };
+        let settings = AgentSettings::default();
+        let modem = ModemBiasSample::default();
+        for mode in ["real", "sim", "replay"] {
+            let eff = build_effective(&settings, &modem, Some(mode), None, None, None, &build);
+            let agent = eff["agent"].as_object().expect("agent block");
+            assert_eq!(
+                agent.keys().map(String::as_str).collect::<Vec<_>>(),
+                ["mode", "build", "capabilities", "runtime"],
+                "{mode}"
+            );
+            assert_eq!(agent["runtime"], Value::String("rust".into()), "{mode}");
+            assert_eq!(
+                js::map_to_json_string(&eff),
+                format!(
+                    r#"{{"agent":{{"mode":"{mode}","build":{{"version":"abc1234","channel":"dev","builtAt":null,"packageVersion":"0.1.0"}},"capabilities":["sms.read","sms.clear","obd.scan","obd.forget"],"runtime":"rust"}}}}"#
+                )
+            );
+        }
+        let eff = build_effective(&settings, &modem, None, None, None, None, &build);
+        assert!(!eff.contains_key("agent"));
+        assert!(!js::map_to_json_string(&eff).contains("runtime"));
+        // ...and on the wire, inside the whole report.
+        let input = ReportInput {
+            device_id: "dev-1".into(),
+            ts: 1_700_000_000_000,
+            origin: ReportOrigin::Boot,
+            last_applied_rev: 0,
+            settings,
+            modem,
+            desired: None,
+            hints: None,
+            mode: Some("real".into()),
+            camera_mount: None,
+            telemetry_scope: None,
+            changed: None,
+            obd: None,
+        };
+        let wire = build_config_report(&input, &build).to_wire();
+        let v: Value = serde_json::from_str(&wire).unwrap();
+        assert_eq!(v["effective"]["agent"]["runtime"], "rust");
+        assert_eq!(wire.matches(r#""runtime":"rust""#).count(), 1, "{wire}");
     }
 
     #[test]

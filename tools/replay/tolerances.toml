@@ -413,6 +413,13 @@ kind = "decisions"
   values_only = true
 
   [[rule.row]]
+  id = "D85"
+  what = "D85 (phase-1/evidence/accepted-divergences.md; Phase 8 D9, Q-8.3 ACCEPTED by the user): the Rust agent's report marker `effective.agent.runtime: \"rust\"`, appended as the LAST key of the agent block (config_report.rs AGENT_RUNTIME); the JS @09da38d sends no such key, so a JS-vs-Rust report differs by this one key's PRESENCE. Only this path is covered; the agent block's other keys, their order (the key-order check compares only shared keys) and every value stay compared. Rust-vs-Rust: both sides carry `\"rust\"`, compared exactly (an equal pair never reaches this row). The value itself is pinned by the Rust tests, not here"
+  streams = ["report"]
+  paths = ["effective.agent.runtime"]
+  pinned_by = "D85 (accepted-divergences.md); config_report::tests::d85_effective_agent_reports_runtime_rust_last; tests/config_report_fixtures.rs strip_d85 (12 JS-golden agent blocks)"
+
+  [[rule.row]]
   id = "cli-banner"
   what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the Rust usage (cli.rs usage(): this binary's verbs, the systemd hint for start/stop/restart, `manage` without daemon control — Q10/D35) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
   streams = ["cli"]
