@@ -21,9 +21,7 @@ use serde_json::{Map, Value};
 /// Phase 4 record type (I9).
 pub use crate::tape::GpioVia;
 /// Phase 3 record types (P16); serde + writer live in [`crate::tape`].
-pub use crate::tape::{
-    CaptureTimingRec, ChildExitRec, ChildSpawnRec, FsOp, S3PutRec, ROLE_CAPTURE, ROLE_KVS,
-};
+pub use crate::tape::{ChildExitRec, ChildSpawnRec, FsOp, S3PutRec, ROLE_CAPTURE, ROLE_KVS};
 
 /// The record/replay sink. Default methods are no-ops so a sink implements
 /// only what it records; [`NullTape`] implements nothing.
@@ -127,9 +125,6 @@ pub trait TapeSink: Send + Sync + 'static {
     fn sudo(&self, _argv: &[&str], _res: &crate::exec::RunResult) {}
     /// Phase 4: one clock-stepper NTP probe verdict.
     fn ntp_probe(&self, _synced: bool) {}
-    /// Phase 7a: one capture-host timing line taken in `exact` mode
-    /// (rig-only `capture_timing`).
-    fn capture_timing(&self, _r: &CaptureTimingRec) {}
     /// Flush and close (graceful shutdown). Idempotent.
     fn close(&self) {}
 }

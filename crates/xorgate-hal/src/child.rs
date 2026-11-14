@@ -47,8 +47,8 @@ pub struct ChildSpec {
     /// Extra environment, MERGED onto the inherited one (execa's default).
     pub env: Vec<(String, String)>,
     pub cwd: Option<PathBuf>,
-    /// `argv[0]` when it must differ from `program` (Phase 7a: the agent
-    /// re-execs itself as `xorgate-capture`); `None` = `program` (execa).
+    /// `argv[0]` when it must differ from `program` (Phase 7c: the agent
+    /// re-execs itself as `xorgate-imu`); `None` = `program` (execa).
     pub arg0: Option<String>,
 }
 

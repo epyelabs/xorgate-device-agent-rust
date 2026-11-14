@@ -9,19 +9,16 @@
 //!
 //! `startTs` comes from the fragment's birth time (`xorgate_hal::fragment_stat`,
 //! P10) — the ~2.1 s splitmuxsink GOP lag is REPRODUCED, not corrected (memory
-//! `video-sidecar-gop-latency`). Phase 7a: [`sweep_session_dir_timed`] with
-//! the run's exact timing (`XORGATE_SIDECAR_TIMING=exact`) takes `startTs`
-//! from the capture host's stamps instead (core `plan_sweep_timed`); the
-//! stats, the listing and the execution order are the same.
+//! `video-sidecar-gop-latency`; Phase 7 fixes it).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use tracing::{error, warn};
 use xorgate_core::sidecar::{
-    dropped_empty_fragment_warning, plan_sweep_recovering_lazy, plan_sweep_timed, segment_seq,
-    sidecar_path_for, sidecar_write_failed_error, ClockPair, DirEntry, ExactSweep, PtsSample,
-    SessionManifest, SweepOpts, SweepPlan, VideoSessionManifest, SESSION_MANIFEST_NAME,
+    dropped_empty_fragment_warning, plan_sweep, segment_seq, sidecar_path_for,
+    sidecar_write_failed_error, ClockPair, DirEntry, SessionManifest, SweepOpts,
+    VideoSessionManifest, SESSION_MANIFEST_NAME,
 };
 use xorgate_core::types::TimeSource;
 use xorgate_hal::atomic_write::{atomic_write_bytes_traced, atomic_write_json};
@@ -54,9 +51,6 @@ pub struct SweepOutcome {
     pub active_path: Option<PathBuf>,
     /// 0-byte fragments unlinked (final sweeps only).
     pub reaped: Vec<PathBuf>,
-    /// Phase 7a, `exact` only: closed fragments (seq) deferred this pass
-    /// (core `SweepPlan::deferred`); always empty in legacy.
-    pub deferred: Vec<u64>,
 }
 
 /// The directory as a `String` for the core plan (paths the agent builds are UTF-8).
@@ -71,44 +65,6 @@ fn dir_str(dir: &Path) -> String {
 /// (`:281-288`). A stat that throws leaves the entry without one (`raced an
 /// eviction — skip`).
 pub fn sweep_session_dir(dir: &Path, manifest: &SessionManifest, opts: &SweepIo) -> SweepOutcome {
-    sweep_session_dir_timed(dir, manifest, opts, None)
-}
-
-/// [`sweep_session_dir`] with the run's exact timing (phase-7a); `None` is
-/// the legacy sweep, byte for byte.
-pub fn sweep_session_dir_timed(
-    dir: &Path,
-    manifest: &SessionManifest,
-    opts: &SweepIo,
-    exact: Option<&ExactSweep<'_>>,
-) -> SweepOutcome {
-    sweep_with(dir, opts, |d, entries, o| {
-        plan_sweep_timed(d, manifest, entries, o, exact)
-    })
-}
-
-/// Crash recovery's sweep with the R-WP2R3-2 / R-WP2R4-1 shift (core
-/// `plan_sweep_recovering_lazy`): `samples(K)` (the session's
-/// `anchor:"pts"` sidecars, K = the first recovered seq) is called ONLY when
-/// the recovery plan writes at least one sidecar (R-WP2R4-4); no usable
-/// sample = [`sweep_session_dir`], byte for byte.
-pub fn sweep_session_dir_recovering(
-    dir: &Path,
-    manifest: &SessionManifest,
-    opts: &SweepIo,
-    samples: impl FnOnce(f64) -> Vec<PtsSample>,
-) -> SweepOutcome {
-    sweep_with(dir, opts, |d, entries, o| {
-        plan_sweep_recovering_lazy(d, manifest, entries, o, samples)
-    })
-}
-
-/// List + stat exactly as the TS does, plan with `plan`, execute in order.
-fn sweep_with(
-    dir: &Path,
-    opts: &SweepIo,
-    plan: impl FnOnce(&str, &[DirEntry], &SweepOpts) -> SweepPlan,
-) -> SweepOutcome {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return SweepOutcome::default();
     };
@@ -150,8 +106,9 @@ fn sweep_with(
             },
         })
         .collect();
-    let plan = plan(
+    let plan = plan_sweep(
         &dir_str(dir),
+        manifest,
         &entries,
         &SweepOpts {
             include_newest: opts.include_newest,
@@ -178,7 +135,6 @@ fn sweep_with(
     acts.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("finite seq"));
     let mut out = SweepOutcome {
         active_path: plan.active_path.as_deref().map(PathBuf::from),
-        deferred: plan.deferred.clone(),
         ..SweepOutcome::default()
     };
     for (_, act) in acts {

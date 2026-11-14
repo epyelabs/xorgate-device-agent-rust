@@ -15,8 +15,5 @@
 *.ndjson.gz
 !/fixtures/replay/smoke.ndjson.gz
 
-# Phase 7a capture-host harness cache (binary, run outputs).
-/tools/capture-host/.cache/
-/tools/capture-host/__pycache__/
-# Phase 7a WP3: python tests of the rig tools (timing_truth) write bytecode next to them
+# Python tests (python/tests, tools/imu/tests) write bytecode next to them
 __pycache__/
