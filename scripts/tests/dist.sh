@@ -17,7 +17,9 @@
 #   4. the workflow YAML: triggers unchanged (no push/PR/schedule added; ci.yml
 #      manual-only), the Q9 path filter, secrets = the AWS pair only, the prod
 #      account guard, every `aws s3 cp` behind dist-guard, the §6 upload order,
-#      cache headers, the post-upload dist-check step.
+#      cache headers, the post-upload dist-check step; and (Phase 8 WP-R2) the
+#      gate parity: both deploy workflows run the same gate steps (fmt, clippy,
+#      feature-gate.sh, test) in the same order, with negative controls.
 #   5. the workflows' upload step itself, extracted from the YAML and run with a
 #      stubbed `aws` into a local bucket (two scripts/pack.sh tarballs, v1 then
 #      v2), served by python3 with ETags; refusals write nothing.
@@ -220,6 +222,68 @@ for ch, trig in (("dev", {"push", "workflow_dispatch"}), ("prod", {"release", "w
     chk(len(pre) == 1, "%s: the JS latest.json ETag is captured BEFORE the upload" % ch)
     res = next(s for s in steps if s.get("id") == "bucket")
     chk("DeviceDistBucketUrl" in res["run"] and "url=$URL" in res["run"], "%s: device-facing URL from the stack output DeviceDistBucketUrl" % ch)
+# Phase 8 WP-R2 (plan-notes X8): both deploy workflows run the SAME gate
+# steps in the SAME order (deploy-prod lacked feature-gate.sh until WP-R2).
+# The gate = every step from `cargo fmt` up to (not incl.) `cargo build
+# --release`, each step compared whole (name, run, shell, env, if, ...); a gate
+# command anywhere else in the job is refused.
+import copy
+GATE_WANT = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets -- -D warnings",
+             "bash scripts/tests/cargo/feature-gate.sh", "cargo test --workspace"]
+GATE_CMD = re.compile(r"cargo (fmt|clippy|test)\b|scripts/tests/")
+def gate_steps(steps):
+    runs = [s_.get("run", "").strip() for s_ in steps]
+    i = next((k for k, r in enumerate(runs) if r.startswith("cargo fmt")), None)
+    j = next((k for k, r in enumerate(runs) if r.startswith("cargo build --release")), None)
+    if i is None or j is None or j < i:
+        return None, "no fmt..build --release span"
+    rest = [r for k, r in enumerate(runs) if not i <= k < j and GATE_CMD.search(r)]
+    if rest:
+        return None, "a gate command outside the gate span: %r" % rest
+    return [dict(s_) for s_ in steps[i:j]], None
+def gate_parity(dsteps, psteps):
+    """[] when both gates are equal and in the wanted order, else the problems."""
+    (dg, de), (pg, pe) = gate_steps(dsteps), gate_steps(psteps)
+    if de or pe:
+        return [m for m in ("dev: %s" % de if de else None, "prod: %s" % pe if pe else None) if m]
+    probs = []
+    if [g.get("run", "").strip() for g in dg] != GATE_WANT:
+        probs.append("dev gate order %r" % [g.get("run", "").strip() for g in dg])
+    if dg != pg:
+        probs.append("dev %r != prod %r" % ([g.get("name") for g in dg], [g.get("name") for g in pg]))
+    return probs
+dsteps = load("device-rs-deploy-dev.yml")[0]["jobs"]["build-and-publish"]["steps"]
+psteps = load("device-rs-deploy-prod.yml")[0]["jobs"]["build-and-publish"]["steps"]
+probs = gate_parity(dsteps, psteps)
+chk(probs == [], "gate parity: deploy-dev and deploy-prod run the same gate steps in the same order (fmt, clippy, feature-gate, test) %s" % probs)
+pg = gate_steps(psteps)[0] or []
+chk([g.get("name") for g in pg][1:3] == ["cargo clippy", "Feature gate (imu-test-bus is test-only)"],
+    "prod: feature-gate.sh runs right after clippy")
+# Negative controls: the parity check must FAIL on each broken variant.
+def without_fg(st):
+    return [x for x in st if "feature-gate.sh" not in x.get("run", "")]
+def swapped(st):
+    st = copy.deepcopy(st)
+    a = next(k for k, x in enumerate(st) if x.get("run", "").startswith("cargo clippy"))
+    st[a], st[a + 1] = st[a + 1], st[a]
+    return st
+def edited(st):
+    st = copy.deepcopy(st)
+    next(x for x in st if "feature-gate.sh" in x.get("run", ""))["run"] += " || true"
+    return st
+def moved_late(st):
+    st = copy.deepcopy(st)
+    fg = next(x for x in st if "feature-gate.sh" in x.get("run", ""))
+    st.remove(fg)
+    st.append(fg)
+    return st
+for label, d_, p_ in (("prod without feature-gate (as on main 14413e0)", dsteps, without_fg(psteps)),
+                      ("both without feature-gate", without_fg(dsteps), without_fg(psteps)),
+                      ("prod clippy/feature-gate swapped", dsteps, swapped(psteps)),
+                      ("both swapped", swapped(dsteps), swapped(psteps)),
+                      ("prod feature-gate run edited", dsteps, edited(psteps)),
+                      ("prod feature-gate moved after the build", dsteps, moved_late(psteps))):
+    chk(gate_parity(d_, p_) != [], "gate parity control: %s is caught" % label)
 print("YAML-FAILS=%d" % len(bad))
 PY
 cat "$T/yaml.out"

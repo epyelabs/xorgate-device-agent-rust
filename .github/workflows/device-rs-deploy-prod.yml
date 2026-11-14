@@ -99,6 +99,14 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Phase 7c review-wp3 FC1: the TEST-ONLY `imu-test-bus` feature (the IMU
+      # reader's socket test transport) must never reach a shipped build:
+      # `cargo tree` for both shipped targets (aarch64 device, x86_64 simulator;
+      # neither target's std is needed), a dev-edge control, and the release
+      # `compile_error!` guard (a `cargo check --release` that must FAIL).
+      - name: Feature gate (imu-test-bus is test-only)
+        run: bash scripts/tests/cargo/feature-gate.sh
+
       - name: cargo test
         run: cargo test --workspace
 
