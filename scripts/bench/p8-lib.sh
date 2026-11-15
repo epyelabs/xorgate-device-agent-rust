@@ -78,7 +78,7 @@ p8_check_window() {
   local w=$1 m o
   [ -n "$w" ] || p8_die "no window dir (pass --window /root/p8-<ts>)"
   case $w in "$P8_ROOT"/root/p8-*) ;; *) p8_die "window dir must be $P8_ROOT/root/p8-<ts>: $w" ;; esac
-  [ -d "$w" ] && [ ! -L "$w" ] || p8_die "window dir $w missing"
+  { [ -d "$w" ] && [ ! -L "$w" ]; } || p8_die "window dir $w missing"
   m=$(stat -c %a "$w"); o=$(stat -c %u "$w")
   [ "$m" = 700 ] || p8_die "window dir $w is mode $m, not 0700"
   [ "$o" = 0 ] || [ -n "$P8_ROOT" ] || p8_die "window dir $w is not root-owned"

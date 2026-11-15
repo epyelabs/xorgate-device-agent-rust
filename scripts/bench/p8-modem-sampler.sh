@@ -162,7 +162,7 @@ case $cmd in
     [[ $LABEL =~ ^[a-z0-9-]+$ ]] || { echo "bad label" >&2; exit 2; }
     [ "$(p8_active "$P8_SAMPLER_UNIT")" != active ] || { echo "sampler already running"; exit 0; }
     systemctl reset-failed "$P8_SAMPLER_UNIT" >/dev/null 2>&1 || true
-    systemd-run --unit="$P8_SAMPLER_UNIT" --collect -p Nice=10 -p MemoryMax=64M \
+    systemd-run --quiet --unit="$P8_SAMPLER_UNIT" --collect -p Nice=10 -p MemoryMax=64M \
       /bin/bash "${HERE#"$P8_ROOT"}/p8-modem-sampler.sh" run --out "${W#"$P8_ROOT"}/modem-$LABEL.tsv" --baseline "${W#"$P8_ROOT"}/baseline.env" >/dev/null
     echo "sampler: $P8_SAMPLER_UNIT -> ${W#"$P8_ROOT"}/modem-$LABEL.tsv" ;;
   stop) systemctl stop "$P8_SAMPLER_UNIT" >/dev/null 2>&1 || true; echo "sampler: stopped" ;;

@@ -79,7 +79,7 @@ cmd_stage() {
 
 cmd_pull() {
   local ts dest f rsha lsha rcount lcount
-  [ -n "$HOST" ] && [ -n "$W" ] || usage
+  if [ -z "$HOST" ] || [ -z "$W" ]; then usage; fi
   ts=${W##*/p8-}
   [[ $ts =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || { echo "bad window $W" >&2; exit 2; }
   dest=$P8_PRIVATE/$ts
@@ -164,7 +164,7 @@ cmd_aside() {
   p8_need_root; p8_check_window "$W"
   export P8_LOGFILE=$W/aside.log
   L=$W/aside.list
-  [ -f "$W/pre.manifest" ] && [ -f "$W/backup.tgz" ] && [ -f "$W/seed-settings.json" ] || P8_DIE_RC=3 p8_die "no backup in $W (run backup)"
+  if [ ! -f "$W/pre.manifest" ] || [ ! -f "$W/backup.tgz" ] || [ ! -f "$W/seed-settings.json" ]; then P8_DIE_RC=3 p8_die "no backup in $W (run backup)"; fi
   [ "$(p8_sha "$W/backup.tgz")" = "$(cut -c1-64 "$W/backup.sha256")" ] || P8_DIE_RC=3 p8_die "backup.tgz does not match backup.sha256"
   [ "$NO_PULL" = 1 ] || [ "$(cut -c1-64 "$W/pulled.ok" 2>/dev/null)" = "$(cut -c1-64 "$W/backup.sha256")" ] \
     || P8_DIE_RC=3 p8_die "the Mac copy is not verified ($W/pulled.ok): run 'p8-backup.sh pull' first"

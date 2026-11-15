@@ -97,14 +97,14 @@ arm() {
   p8_need_root
   p8_check_window "$w"
   [[ $label =~ ^[a-z0-9-]+$ ]] || P8_DIE_RC=2 p8_die "bad --label $label"
-  [ -x "$w/bin/p8-restore.sh" ] && [ -f "$w/bin/p8-lib.sh" ] || p8_die "$w/bin has no p8-restore.sh/p8-lib.sh (run p8-backup.sh stage)"
+  { [ -x "$w/bin/p8-restore.sh" ] && [ -f "$w/bin/p8-lib.sh" ]; } || p8_die "$w/bin has no p8-restore.sh/p8-lib.sh (run p8-backup.sh stage)"
   [ ! -e "$P8_MARKER" ] || P8_DIE_RC=3 p8_die "already armed ($(p8_marker_get window)): disarm or restore first"
   now=$(date -u +%s)
   if [ -n "$in_s" ]; then
-    [[ $in_s =~ ^[0-9]+$ ]] && [ "$in_s" -ge 5 ] || P8_DIE_RC=2 p8_die "--deadline-in-s must be >= 5"
+    { [[ $in_s =~ ^[0-9]+$ ]] && [ "$in_s" -ge 5 ]; } || P8_DIE_RC=2 p8_die "--deadline-in-s must be >= 5"
     dl=$((now + in_s))
   else
-    [[ $cap =~ ^[0-9]+$ ]] && [ "$cap" -ge 15 ] && [ "$cap" -le 120 ] || P8_DIE_RC=2 p8_die "--cap-min must be 15..120 (the window's hard cap)"
+    { [[ $cap =~ ^[0-9]+$ ]] && [ "$cap" -ge 15 ] && [ "$cap" -le 120 ]; } || P8_DIE_RC=2 p8_die "--cap-min must be 15..120 (the window's hard cap)"
     dl=$((now + (cap - 10) * 60))    # F5: cap - 10 min
   fi
   write_units "$w" "$dl"

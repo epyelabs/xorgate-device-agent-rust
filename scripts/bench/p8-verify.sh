@@ -338,7 +338,7 @@ cmd_cam0() {
 
 cmd_da15() {
   local out rc=0
-  [ -n "$HOST" ] && [ -n "$W" ] || { echo "da15 --host H --window W --device ID --baseline F" >&2; exit 2; }
+  { [ -n "$HOST" ] && [ -n "$W" ]; } || { echo "da15 --host H --window W --device ID --baseline F" >&2; exit 2; }
   echo "== DA15 pre-start (from the restore's own run)"
   out=$("$P8_SSH" -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "sudo -n cat $W/verify-pre.out" 2>/dev/null || echo "FAIL no verify-pre.out")
   printf '%s\n' "$out" | p8_redact
