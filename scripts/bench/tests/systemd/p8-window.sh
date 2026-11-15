@@ -439,8 +439,8 @@ rm -f /var/tmp/p8prov.refused /var/tmp/p8m2l.held /var/tmp/p8prov.first
 touch /var/tmp/p8m2l.go; rs=$(date +%s)
 { for _ in $(seq 600); do
     if [ -e "$W/units-stopped.epoch" ]; then
+      [ -e /run/xorgate-provision-rs.lock ] && ! flock -n /run/xorgate-provision-rs.lock true && echo held > /var/tmp/p8m2l.held
       systemd-run --unit=xorgate-provision-rs-mid --collect --quiet --no-block /bin/bash /root/fake-provision.sh term
-      sleep 0.5; [ -e /run/xorgate-provision-rs.lock ] && ! flock -n /run/xorgate-provision-rs.lock true && echo held > /var/tmp/p8m2l.held
       break
     fi; sleep 0.05
   done; } & pp=$!
@@ -450,7 +450,8 @@ w=$(sed -n 's/.*F3: dpkg locks free (waited \([0-9]*\)s).*/\1/p' "$W/restore.log
 python3 -I -c 'import sys; sys.exit(0 if float(open(sys.argv[1]).read()) >= float(sys.argv[2]) + 5 else 1)' /var/tmp/p8prov.first "$rs" && [ "${w:-0}" -ge 10 ] \
   && ok "M2L: the provisioner was handed off ~7 s INTO the restore's dpkg wait (waited ${w}s), after the first unit listing" || bad "M2L: hand-off timing (waited '${w}')"
 must2_check M2L w2
-[ -e /var/tmp/p8m2l.held ] && grep -q refused /var/tmp/p8prov.refused 2>/dev/null && ok "M2L: the restore held the provisioner lock: a provisioner started mid-restore REFUSED" || bad "M2L: the mid-restore provisioner was not refused"
+[ -e /var/tmp/p8m2l.held ] && ok "M2L: the provisioner lock was held by the restore right after the units were stopped" || bad "M2L: the lock was not held after the stop"
+grep -q refused /var/tmp/p8prov.refused 2>/dev/null && ! systemctl is-active --quiet xorgate-provision-rs-mid && ok "M2L: a provisioner started mid-restore REFUSED on the held lock (and never ran)" || bad "M2L: the mid-restore provisioner was not refused"
 [ ! -e /run/xorgate-provision-rs.lock ] && ok "M2L: the lock is released and removed at the restore's exit" || bad "M2L: lock left"
 rm -f /var/tmp/p8prov.refused /var/tmp/p8m2l.held /var/tmp/p8m2l.go /var/tmp/p8prov.first
 bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
