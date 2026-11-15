@@ -211,8 +211,12 @@ systemctl stop xorgate-agent; systemctl start multi-user.target; sleep 3
 [ "$(systemctl is-active xorgate-agent)/$(systemctl is-active xorgate-agent-rs)" = active/inactive ] && ok "next 'boot': JS active, Rust inactive" \
   || { bad "next 'boot': JS $(systemctl is-active xorgate-agent), Rust $(systemctl is-active xorgate-agent-rs)"; journalctl -n 15 --no-pager | sed 's/^/    | /'; }
 systemctl start xorgate-agent-rs 2>/dev/null; sleep 1
-[ "$(systemctl show -p ConditionResult --value xorgate-agent-rs)" = no ] && [ "$(systemctl is-active xorgate-agent)" = active ] \
-  && ok "a direct Rust start is skipped by ConditionPathExists=!/opt/xorgate, JS keeps running" || bad "Rust condition: $(systemctl show -p ConditionResult --value xorgate-agent-rs), JS $(systemctl is-active xorgate-agent)"
+[ "$(systemctl show -p ConditionResult --value xorgate-agent-rs)" = no ] && [ "$(systemctl is-active xorgate-agent-rs)" = inactive ] \
+  && ok "a hand-run Rust start is skipped by ConditionPathExists=!/opt/xorgate" || bad "Rust condition: $(systemctl show -p ConditionResult --value xorgate-agent-rs)"
+# The documented hazard (docs/provision.md): that hand-run start still stops JS
+# through Conflicts= before the condition skips Rust. Pinned so a change shows.
+[ "$(systemctl is-active xorgate-agent)" = inactive ] && ok "(hazard pinned: it also stopped JS via Conflicts=; documented)" || bad "hazard changed: JS $(systemctl is-active xorgate-agent)"
+systemctl start xorgate-agent; active_wait xorgate-agent active 10
 KEEP=$(snap --no-inode | grep -E ' /(etc/xorgate|usr/local/bin/sim7600|etc/sudoers.d/02[0-3]|etc/udev|etc/NetworkManager|etc/systemd/system/xorgate-agent\.service)')
 env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 0 "--uninstall"
 for p in /opt/xorgate-rs /usr/local/bin/xorgate-rs "$RS_UNIT_PATH" "$RS_UNIT_PATH.d" /etc/systemd/system/xorgate-updater-rs.service \
