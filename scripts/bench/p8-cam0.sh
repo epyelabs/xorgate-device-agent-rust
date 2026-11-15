@@ -30,7 +30,8 @@
 # (58b51737), P8_DEV_DEVICE, P8_DEV_ORG/P8_DEV_WS (Acme / Crazy Project), P8_CAM0_LABEL
 # (cam0; the first tile if none carries it), P8_CAM0_WAIT_S (90), P8_CAM0_FAST_S (25,
 # the fail-fast budget for the console's device + channel GETs), P8_CHROME.
-# TESTS ONLY (P8_CAM0_TEST=1): P8_CAM0_CONSOLE / P8_CAM0_API_BASE point at a local fake.
+# TESTS ONLY (P8_CAM0_TEST=1): P8_CAM0_CONSOLE / P8_CAM0_API_BASE point at a local fake;
+#   BOTH must be 127.0.0.1/localhost (else REFUSED), and every *.xorgate.io request is aborted.
 #   P8_CAM0_SELFTEST=1   runs the request policy over a fixed table (no browser, no network).
 # Output: one JSON verdict line, no token. Exit: 0 PASS; 1 FAIL (incl. any error); 2 config/refused.
 set -euo pipefail
@@ -49,10 +50,13 @@ const CONSOLE = (TEST && env.P8_CAM0_CONSOLE) || (STAGE === "dev" ? "https://" +
 const API_BASE = (TEST && env.P8_CAM0_API_BASE) || "https://" + (STAGE === "dev" ? DEV_API : PROD_API);
 const API = new URL(API_BASE).host;
 // The request policy (pure; P8_CAM0_SELFTEST runs it over a table).
-function decide(method, url, api = API, stage = STAGE) {
+function decide(method, url, api = API, stage = STAGE, test = TEST) {
   const u = new URL(url);
+  // Test mode never talks to a real xorgate host (review bench-tools-r3 SHOULD).
+  if (test && (u.hostname === "xorgate.io" || u.hostname.endsWith(".xorgate.io"))) return "abort";
   if (stage === "dev" && u.host === PROD_API) return "abort";
-  if (u.host !== api) return "allow";
+  // The allow-list ALWAYS applies to the PROD API, not only to the configured one.
+  if (u.host !== api && u.host !== PROD_API) return "allow";
   if (["GET", "HEAD", "OPTIONS"].includes(method)) return "allow";
   if (method === "POST" && u.pathname === "/v1/live/access") return "allow-live";
   return "abort";
@@ -74,8 +78,8 @@ if (env.P8_CAM0_MODE === "selftest") {
     ["POST", "https://cognito-idp.us-east-1.amazonaws.com/", "allow"]];
   const T = STAGE === "dev" ? D : P, api = STAGE === "dev" ? DEV_API : PROD_API;
   let bad = 0;
-  for (const [m, u, want] of T) { const got = decide(m, u, api); if (got !== want) bad++; console.log((got === want ? "PASS" : "FAIL") + " " + STAGE + " " + m + " " + u + " -> " + got); }
-  const passing = T.filter(([m, u]) => !["GET", "HEAD", "OPTIONS"].includes(m) && new URL(u).host === api && decide(m, u, api) !== "abort");
+  for (const [m, u, want] of T) { const got = decide(m, u, api, STAGE, false); if (got !== want) bad++; console.log((got === want ? "PASS" : "FAIL") + " " + STAGE + " " + m + " " + u + " -> " + got); }
+  const passing = T.filter(([m, u]) => !["GET", "HEAD", "OPTIONS"].includes(m) && new URL(u).host === api && decide(m, u, api, STAGE, false) !== "abort");
   const only = passing.every(([m, u]) => m === "POST" && new URL(u).pathname === "/v1/live/access");
   console.log((only ? "PASS" : "FAIL") + " " + STAGE + ": the only non-GET that passes is POST /v1/live/access");
   process.exit(bad || !only ? 1 : 0);
@@ -85,6 +89,10 @@ const done = (code) => { console.log(JSON.stringify(out)); process.exit(code); }
 // Host guards: the console/API must be the stage s own (the DEV variant never runs against PROD).
 const ch = new URL(CONSOLE).host;
 if (STAGE === "dev" && ([ch, API].includes(PROD_CONSOLE) || [ch, API].includes(PROD_API))) { out.why = "REFUSED: the DEV check against a PROD host"; done(2); }
+// Test mode: BOTH the console and the API must be local (no partial override can
+// leave a real host in play).
+const local = (h) => ["127.0.0.1", "localhost"].includes(h.replace(/:[0-9]+$/, ""));
+if (TEST && !(local(ch) && local(API))) { out.why = "REFUSED: test mode needs BOTH the console and the API on 127.0.0.1/localhost"; done(2); }
 if (!TEST && !(STAGE === "dev" ? ch === DEV_CONSOLE && API === DEV_API : ch === PROD_CONSOLE && API === PROD_API)) { out.why = "REFUSED: unexpected console/API host"; done(2); }
 const { chromium } = require("playwright");
 const ORG = STAGE === "dev" ? (env.P8_DEV_ORG || "b1da47d8-c51e-4e4c-bb21-e3383765d0f3") : (env.P8_PROD_ORG || "cb1e1710-3ee5-49ad-b3d3-32b2290f6e19");
@@ -141,8 +149,12 @@ const WAIT = 1000 * Number(env.P8_CAM0_WAIT_S || 90), FAST = 1000 * Number(env.P
       if (u.host !== API || req.method() !== "GET") return;
       if (u.pathname === devPath) { seen.dev = res.status(); seen.devOrg = (req.headers()["x-organization-id"] || "").slice(0, 8); }
       if (u.pathname === chPath) {
-        seen.ch = res.status();
-        if (res.ok()) { const b = await res.json(); const l = Array.isArray(b) ? b : (b.channels || b.videoChannels || b.items || b.data || []); seen.chLen = Array.isArray(l) ? l.length : 0; }
+        // seen.ch only AFTER the body parsed (review NIT): never a premature "no channels"
+        if (!res.ok()) { seen.ch = res.status(); return; }
+        let b;
+        try { b = await res.json(); } catch (e) { seen.ch = "an unparsable body"; return; }
+        const l = Array.isArray(b) ? b : (b.channels || b.videoChannels || b.items || b.data || []);
+        seen.chLen = Array.isArray(l) ? l.length : 0; seen.ch = res.status();
       }
     } catch (e) {}
   });

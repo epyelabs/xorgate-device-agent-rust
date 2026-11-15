@@ -757,6 +757,10 @@ if command -v node >/dev/null; then
   [ $rc = 2 ] && printf '%s' "$out" | grep -q 'REFUSED: the DEV check against a PROD host' && ok "devcam0: REFUSES a PROD host before any browser starts" || { bad "devcam0 PROD refusal: rc=$rc $out"; }
   out=$(XG_USER=u XG_PASS=p P8_PLAYWRIGHT_NODE_PATH=/tmp P8_CAM0_TEST=1 P8_CAM0_API_BASE=https://api.xorgate.io P8_DEV_DEVICE=58b51737-0000-0000-0000-000000000001 bash "$B/p8-devcam0.sh" 2>&1); rc=$?
   [ $rc = 2 ] && printf '%s' "$out" | grep -q 'REFUSED' && ok "devcam0: REFUSES the PROD API host too" || bad "devcam0 PROD API refusal: rc=$rc"
+  for o in "P8_CAM0_API_BASE=http://127.0.0.1:1" "P8_CAM0_CONSOLE=http://127.0.0.1:1"; do
+    out=$(env XG_USER=u XG_PASS=p P8_PLAYWRIGHT_NODE_PATH=/tmp P8_CAM0_TEST=1 "$o" bash "$B/p8-cam0.sh" 2>&1); rc=$?
+    [ $rc = 2 ] && printf '%s' "$out" | grep -q 'REFUSED: test mode needs BOTH' && ok "cam0 test mode with only ${o%%=*} overridden: REFUSED before any navigation" || bad "cam0 partial override ${o%%=*}: rc=$rc $out"
+  done
   rmdir /tmp/playwright 2>/dev/null || true
   grep -q 'serviceWorkers: "block"' "$B/p8-cam0.sh" && ok "cam0: service workers blocked" || bad "cam0: no serviceWorkers block"
 else bad "cam0 policy: no node (could not install nodejs)"; fi

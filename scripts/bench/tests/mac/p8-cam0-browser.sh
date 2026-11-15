@@ -124,6 +124,8 @@ run devcam0 "$T/s4b.json" P8_DEV_ORG=$ORGB P8_DEV_WS=wsb P8_DEV_DEVICE=58b51737-
 grep -q '"result":"PASS"' "$T/s4b.json" && [ $rc = 0 ] && ok "S4b: DEV, a device in the second org passes" || { bad "S4b"; cat "$T/s4b.json"; }
 env XG_USER=u XG_PASS=p P8_CAM0_TEST=1 P8_CAM0_CONSOLE=https://console.xorgate.io P8_DEV_DEVICE=58b51737-0000-0000-0000-000000000001 bash "$B/p8-devcam0.sh" > "$T/s5.json" 2>&1; rc=$?
 [ $rc = 2 ] && grep -q 'REFUSED: the DEV check against a PROD host' "$T/s5.json" && ok "S5: the DEV variant REFUSES a PROD console host" || { bad "S5"; cat "$T/s5.json"; }
+env XG_USER=u XG_PASS=p P8_CAM0_TEST=1 P8_CAM0_API_BASE="$BASE" P8_PROD_DEVICE_PREFIX=58b51737-0000-0000-0000-000000000001 P8_PLAYWRIGHT_NODE_PATH="$P8_PLAYWRIGHT_NODE_PATH" bash "$B/p8-cam0.sh" > "$T/s7.json" 2>&1; rc=$?
+[ $rc = 2 ] && grep -q 'REFUSED: test mode needs BOTH' "$T/s7.json" && ! grep -q 'consoleDeviceGet' "$T/s7.json" && ok "S7: test mode with only the API overridden is REFUSED before any navigation (the real console never loads)" || { bad "S7"; cat "$T/s7.json"; }
 # (No "override outside test mode" case: without P8_CAM0_TEST=1 the overrides are
 # simply ignored and the real host would be used; a test must never reach it.)
 kill "$SP" 2>/dev/null; wait "$SP" 2>/dev/null; rm -rf "$T"
