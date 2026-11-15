@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015  # test assertions: `a && ok || bad`
+# shellcheck disable=SC2015,SC2119  # test assertions: `a && ok || bad`; run_* take optional args
 # Phase 8 WP-R1 DA6: the backend's Rust bootstrap (the vendored golden, run
 # UNMODIFIED) -> scripts/provision-rs.sh from a scripts/pack.sh tarball, on a
 # fresh bookworm "device" under a REAL systemd 252, against a fake dist bucket
@@ -172,13 +172,55 @@ printf 'dtparam=i2c_arm=on\ncamera_auto_detect=0\ndtoverlay=imx290,cam0\ndtoverl
 cp /boot/firmware/config.txt /boot/firmware/config.txt.bak-xorgate
 systemctl daemon-reload; systemctl enable --now sim7600-lte >/dev/null 2>&1
 MPID=$(systemctl show -p MainPID --value sim7600-lte); MTS=$(systemctl show -p ActiveEnterTimestampMonotonic --value sim7600-lte)
-BENCH=$(snap | grep -E ' /(usr/local/bin/(sim7600|xorgate-c)|etc/(udev|NetworkManager)|boot/)')
+bench_files() { snap | grep '^f ' | grep -E ' /(usr/local/bin/(sim7600|xorgate-c)|etc/udev/|etc/NetworkManager/conf.d/99|boot/)'; }
+BENCH=$(bench_files)
 CFG_INODE=$(stat -c %i /boot/firmware/config.txt)
 run_boot; expect_rc 0 "bench-shaped"
-[ "$(snap | grep -E ' /(usr/local/bin/(sim7600|xorgate-c)|etc/(udev|NetworkManager/conf.d/99)|boot/)')" = "$(echo "$BENCH" | grep -v '10-uplink')" ] \
-  && ok "bench: identical modem/system/NM/config.txt files never rewritten (same inodes)" || { bad "bench: files rewritten"; diff <(echo "$BENCH") <(snap | grep -E ' /(usr/local/bin/(sim7600|xorgate-c)|etc/(udev|NetworkManager)|boot/)') | head; }
+[ "$(bench_files)" = "$BENCH" ] && [ -n "$BENCH" ] \
+  && ok "bench: identical modem/system/NM/config.txt files never rewritten (same inodes)" || { bad "bench: files rewritten"; diff <(echo "$BENCH") <(bench_files) | head; }
 [ "$(stat -c %i /boot/firmware/config.txt)" = "$CFG_INODE" ] && grep -q 'overlays already present' "$OUT" && ok "bench: config.txt untouched, no REBOOT notice" || bad "bench: config.txt"
 [ "$(systemctl show -p MainPID --value sim7600-lte)" = "$MPID" ] && [ "$(systemctl show -p ActiveEnterTimestampMonotonic --value sim7600-lte)" = "$MTS" ] \
   && ok "bench: the active modem daemon was never restarted" || bad "bench: modem daemon restarted"
 [ "$(wc -l < "$E/nm-reloads")" = 1 ] && ok "bench: NM reloaded once (only for the new uplink conf; the unmanaged conf skipped by the bootstrap and step 7)" || bad "bench: NM reloads $(wc -l < "$E/nm-reloads")"
 ! grep -q 'udevadm' "$E/calls.log" && ok "bench: udev rules unchanged, no udevadm reload" || bad "bench: udevadm called"
+
+echo "== --uninstall refusals + usage"
+reset_device; run_boot; expect_rc 0 "native device (setup)"
+B=$(snap --no-inode)
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 3 "--uninstall with no JS agent installed"
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall --reprovision > "$OUT" 2>&1; RC=$?; expect_rc 2 "--uninstall + another argument"
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --reg-code c --api-base http://x/v1 --from https://d --tarball /x > "$OUT" 2>&1; RC=$?; expect_rc 2 "http:// api base"
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --reg-code c > "$OUT" 2>&1; RC=$?; expect_rc 2 "missing arguments"
+[ "$(snap --no-inode)" = "$B" ] && [ "$(systemctl is-active xorgate-agent-rs)" = active ] && ok "refusals and usage errors changed nothing" || bad "a refusal changed something"
+
+echo "== the JS installer over a native device: JS alone from the next boot (20-native.conf), then --uninstall"
+# What the JS install.sh does to the unit surface (its step 6): /opt/xorgate,
+# its unit + 10-user.conf, enable --now (Conflicts= stops the Rust agent).
+mkdir -p /opt/xorgate/dist /etc/systemd/system/xorgate-agent.service.d
+printf '[Unit]\nDescription=JS agent stand-in\n[Service]\nType=simple\nExecStart=/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/xorgate-agent.service
+printf '[Service]\nUser=pi\nGroup=pi\n' > /etc/systemd/system/xorgate-agent.service.d/10-user.conf
+systemctl daemon-reload; systemctl enable --now xorgate-agent >/dev/null 2>&1
+active_wait xorgate-agent active 10
+[ "$(systemctl is-active xorgate-agent)/$(systemctl is-active xorgate-agent-rs)" = active/inactive ] && ok "JS enable --now stopped Rust (Conflicts=)" || bad "after the JS install: $(systemctl is-active xorgate-agent)/$(systemctl is-active xorgate-agent-rs)"
+[ "$(systemctl is-enabled xorgate-agent-rs)" = enabled ] && ok "(both units enabled, as the JS script leaves them)" || bad "rust not enabled"
+# The next boot: both start jobs in ONE transaction, as at boot.
+systemctl stop xorgate-agent; systemctl start multi-user.target; sleep 3
+[ "$(systemctl is-active xorgate-agent)/$(systemctl is-active xorgate-agent-rs)" = active/inactive ] && ok "next 'boot': JS active, Rust inactive" \
+  || { bad "next 'boot': JS $(systemctl is-active xorgate-agent), Rust $(systemctl is-active xorgate-agent-rs)"; journalctl -n 15 --no-pager | sed 's/^/    | /'; }
+systemctl start xorgate-agent-rs 2>/dev/null; sleep 1
+[ "$(systemctl show -p ConditionResult --value xorgate-agent-rs)" = no ] && [ "$(systemctl is-active xorgate-agent)" = active ] \
+  && ok "a direct Rust start is skipped by ConditionPathExists=!/opt/xorgate, JS keeps running" || bad "Rust condition: $(systemctl show -p ConditionResult --value xorgate-agent-rs), JS $(systemctl is-active xorgate-agent)"
+KEEP=$(snap --no-inode | grep -E ' /(etc/xorgate|usr/local/bin/sim7600|etc/sudoers.d/02[0-3]|etc/udev|etc/NetworkManager|etc/systemd/system/xorgate-agent\.service)')
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 0 "--uninstall"
+for p in /opt/xorgate-rs /usr/local/bin/xorgate-rs "$RS_UNIT_PATH" "$RS_UNIT_PATH.d" /etc/systemd/system/xorgate-updater-rs.service \
+  /etc/systemd/system/xorgate-updater-rs.service.d /etc/sudoers.d/024_xorgate-update-rs /etc/systemd/system/multi-user.target.wants/xorgate-agent-rs.service; do absent "$p"; done
+[ "$(snap --no-inode | grep -E ' /(etc/xorgate|usr/local/bin/sim7600|etc/sudoers.d/02[0-3]|etc/udev|etc/NetworkManager|etc/systemd/system/xorgate-agent\.service)')" = "$KEEP" ] \
+  && ok "--uninstall kept /etc/xorgate, the modem/NM/udev assets, 020-023 and the JS unit, byte for byte" || bad "--uninstall touched a kept path"
+[ "$(systemctl is-active xorgate-agent)" = active ] && ok "the JS agent still runs" || bad "JS not active after --uninstall"
+ls /tmp/provision-rs.* >/dev/null 2>&1 && bad "--uninstall left its private copy" || ok "--uninstall removed its private copy"
+reset_device >/dev/null 2>&1; run_boot >/dev/null; mkdir -p /opt/xorgate /var/lib/xorgate-rs-install; : > /var/lib/xorgate-rs-install/record; cp /etc/systemd/system/xorgate-agent-rs.service /etc/systemd/system/xorgate-agent.service
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 3 "--uninstall on a CONVERTED device (install-rs.sh record)"
+
+reset_device
+echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
+exit $fail

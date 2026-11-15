@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015,SC2034  # assertions `a && ok || bad`; the variables are the sourcing suite's
 # tools/provision-e2e/lib.sh: the shared harness of the two real-systemd suites
 # scripts/tests/provision-e2e.sh (DA6) and scripts/tests/provision-rs-systemd.sh
 # (DA7), Phase 8 WP-R1. Sourced, never run. It runs ONLY inside a throwaway
@@ -45,7 +46,7 @@ e2e_guard() {
   [ -f /.dockerenv ] || { echo "FAIL: not a docker container: refusing to provision this host"; exit 2; }
   [ "$(id -u)" = 0 ] || { echo "FAIL: needs root"; exit 2; }
   local t
-  for t in python3 jq curl openssl visudo flock; do command -v "$t" >/dev/null || { echo "FAIL: $t missing (see the suite header)"; exit 2; }; done
+  for t in python3 jq curl openssl visudo flock; do type -P "$t" >/dev/null || { echo "FAIL: $t missing (see the suite header)"; exit 2; }; done
   for t in /opt/xorgate /opt/xorgate-rs /etc/xorgate; do [ ! -e "$t" ] || { echo "FAIL: $t exists before setup: not a fresh container"; exit 2; }; done
 }
 
