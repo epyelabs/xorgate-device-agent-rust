@@ -57,7 +57,8 @@ STATE_DIR=/var/lib/xorgate
 CONVERT_RECORD=/var/lib/xorgate-rs-install/record
 LOCK=/run/xorgate-provision-rs.lock
 # review-wp-r1 N2: the work after the pre-claim refusals runs as this
-# transient unit, so a dropped ssh session cannot cut a run in half.
+# transient unit, so a dropped ssh session cannot cut a run in half. The log
+# is append-only (a header per run); each run's exit code is PROV_RC.<run id>.
 PROV_UNIT=xorgate-provision-rs
 PROV_LOG=/var/log/xorgate-provision-rs.log
 PROV_RC=/run/xorgate-provision-rs.rc
@@ -408,25 +409,40 @@ apt_hard() { # <step label> <pkgs…>: failure = exit 1 (nothing claimed)
 # session (SIGHUP) can no longer stop it between the claim and P9 and leave a
 # half-provisioned device. `systemd-run --no-block` only queues the unit
 # (`--wait` would stop it on the client's SIGINT); this session then polls the
-# unit, prints its log and returns the exit code the unit wrote. If this
-# session is interrupted, hung up or loses its output pipe, the unit carries
-# on and the log says how it ended. Where systemd is not running (a container), the run
-# stays in this session: keep that session alive (tmux).
+# unit, prints its part of the log and returns the exit code the unit wrote.
+# If this session is interrupted, hung up or loses its output pipe, it
+# detaches at once and the unit carries on; the log says how it ended.
+# Where systemd is not running (a container), or when the caller is ALREADY a
+# systemd service (fix-check MUST-2: e.g. the bench window's p8-install-*
+# unit, whose stop must stop the provisioner too), the run stays in-process.
+# The log is append-only with one header per run and the exit code goes to a
+# per-run file, so a second run can never truncate or delete the first's
+# (fix-check NIT-c).
 ORIG_ARGS=()
+RUN_ID=""
+RUN_RC=""
 on_detach() {
-  trap '' HUP INT TERM
-  { echo "[xorgate] this session stopped following; provisioning CONTINUES in $PROV_UNIT"
-    echo "[xorgate]   follow it: sudo tail -f $PROV_LOG   (systemctl status $PROV_UNIT; exit code in $PROV_RC)"; } 2>/dev/null
+  trap '' HUP INT TERM PIPE
+  { echo "[xorgate] this session stopped following; provisioning CONTINUES in $PROV_UNIT (run $RUN_ID)"
+    echo "[xorgate]   follow it: sudo tail -f $PROV_LOG   (systemctl status $PROV_UNIT; exit code in $RUN_RC)"; } 2>/dev/null
   FINISHED=1
   exit "$1"
 }
-follow_log() { # <offset var name>: print what the log gained since the offset
+follow_log() { # <offset var name>: print what the log gained since the offset; fails if the output is gone
   local n off=${!1}
   n=$(stat -c %s "$PROV_LOG" 2>/dev/null || echo 0)
-  if [ "$n" -gt "$off" ]; then tail -c +"$((off + 1))" "$PROV_LOG" | head -c "$((n - off))"; printf -v "$1" '%s' "$n"; fi
+  if [ "$n" -gt "$off" ]; then
+    tail -c +"$((off + 1))" "$PROV_LOG" | head -c "$((n - off))" || return 1
+    printf -v "$1" '%s' "$n"
+  fi
+  return 0
 }
 handoff_to_unit() {
-  local self rc off=0 i=0 st
+  local self rc off start i=0 st mine
+  if [ -n "${INVOCATION_ID:-}" ]; then
+    log "NOTE: already running as a systemd service (INVOCATION_ID set): provisioning inside it, so stopping that unit stops this run"
+    return 0
+  fi
   if [ ! -d /run/systemd/system ] || ! command -v systemd-run >/dev/null 2>&1; then
     log "NOTE: systemd is not running here: provisioning in THIS session. Keep it alive (tmux): a session that drops after the claim leaves a half-provisioned device"
     return 0
@@ -436,33 +452,49 @@ handoff_to_unit() {
   esac
   systemctl reset-failed "$PROV_UNIT" >/dev/null 2>&1 || true
   self=$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")
-  rm -f "$PROV_RC"
-  install -m 0600 /dev/null "$PROV_LOG"
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  RUN_RC="$PROV_RC.$RUN_ID"
+  [ -e "$PROV_LOG" ] || install -m 0600 /dev/null "$PROV_LOG"
+  start=$(stat -c %s "$PROV_LOG"); off=$start
+  printf '[xorgate] ===== run %s (%s) =====\n' "$RUN_ID" "$(date -u +%FT%TZ)" >> "$PROV_LOG"
   exec 9>&-   # the unit takes the lock itself
   log "continuing as the transient unit $PROV_UNIT (a dropped ssh session no longer stops it)"
-  log "  log: $PROV_LOG"
+  log "  log: $PROV_LOG (run $RUN_ID)"
   HANDED_OFF=1
   trap 'on_detach 129' HUP; trap 'on_detach 130' INT; trap 'on_detach 143' TERM; trap 'on_detach 141' PIPE
   systemd-run --unit="$PROV_UNIT" --description="xorgate native Rust provisioning" --no-block --collect --quiet \
     -p StandardOutput="append:$PROV_LOG" -p StandardError="append:$PROV_LOG" \
-    --setenv=XORGATE_PROVISION_IN_UNIT=1 --setenv=XORGATE_PROVISION_RCFILE="$PROV_RC" \
+    --setenv=XORGATE_PROVISION_IN_UNIT=1 --setenv=XORGATE_PROVISION_RCFILE="$RUN_RC" \
     --setenv=SUDO_USER="${SUDO_USER:-}" --setenv=PATH="$PATH" --setenv=HOME=/root \
     bash "$self" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"} < /dev/null || { HANDED_OFF=0; fail 1 "systemd-run could not start $PROV_UNIT"; }
   # Until the unit has written its exit code; a unit that is gone (or never
   # left the queue) for 10 s without one has died.
-  while [ ! -s "$PROV_RC" ]; do
-    follow_log off
+  while [ ! -s "$RUN_RC" ]; do
+    follow_log off || on_detach 141
     st=$(unit_active "$PROV_UNIT")
     case $st in active | activating | deactivating | reloading) i=0 ;; *) i=$((i + 1)) ;; esac
     [ "$i" -lt 10 ] || break
     sleep 1
   done
-  sleep 0.2; follow_log off
-  if [ -s "$PROV_RC" ]; then
-    rc=$(cat "$PROV_RC")
+  sleep 0.2; follow_log off || on_detach 141
+  if [ -s "$RUN_RC" ]; then
+    rc=$(cat "$RUN_RC"); rm -f "$RUN_RC"
   else
-    echo "[xorgate] ERROR: $PROV_UNIT ended without an exit code ($st); see $PROV_LOG and journalctl -u $PROV_UNIT" >&2
-    rc=1
+    # Killed or timed out without writing its exit code (fix-check NIT-b): how
+    # far THIS run got is in its part of the log.
+    mine=$(tail -c +"$((start + 1))" "$PROV_LOG" 2>/dev/null)
+    if grep -q '^\[xorgate\] claimed: device' <<<"$mine"; then
+      echo "[xorgate] ERROR: $PROV_UNIT ended without an exit code ($st) AFTER the claim: claim done, install state UNKNOWN" >&2
+      DEVICE_ID=$(sed -n 's/^\[xorgate\] claimed: device //p' <<<"$mine" | head -n1)
+      recovery
+      rc=4
+    elif grep -q '^\[xorgate\] claiming registration code' <<<"$mine"; then
+      echo "[xorgate] ERROR: $PROV_UNIT ended without an exit code ($st) during the claim: claim state UNKNOWN. If the console lists this device, delete it and register again; otherwise run the same command again" >&2
+      rc=5
+    else
+      echo "[xorgate] ERROR: $PROV_UNIT ended without an exit code ($st) before the claim; nothing was claimed. See $PROV_LOG and journalctl -u $PROV_UNIT" >&2
+      rc=1
+    fi
   fi
   FINISHED=1
   exit "$rc"
@@ -906,6 +938,11 @@ uninstall_main() {
 }
 
 # ---------------------------------------------------------------------------
+abs_path() { # <path> -> the same path, absolute (its directory resolved)
+  local d
+  d=$(cd "$(dirname -- "$1")" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s' "$d" "$(basename -- "$1")"
+}
 # --cleanup: only a temp dir that holds the tarball (never a path that happens
 # to be passed by mistake).
 set_cleanup() {
@@ -923,7 +960,6 @@ set_cleanup() {
 }
 main() {
   local mode=provision n=$# a prev=""
-  ORIG_ARGS=("$@")
   # N6 (review-wp-r1): learn --cleanup/--tarball first, so a usage error
   # (exit 2) still removes the bootstrap's temp dir (and the tarball in it).
   for a in "$@"; do
@@ -957,6 +993,14 @@ main() {
   case $API_BASE in https://*) ;; *) usage_error "--api-base must be an https:// URL" ;; esac
   case $FROM in https://*) ;; *) usage_error "--from must be an https:// URL" ;; esac
   API_BASE=${API_BASE%/}; FROM=${FROM%/}
+  # Fix-check NIT-a: the hand-off runs in `/`, so a relative --tarball or
+  # --cleanup is made absolute here (before anything is claimed); one that
+  # does not resolve is a usage error.
+  TARBALL=$(abs_path "$TARBALL") || usage_error "--tarball: cannot resolve the path (its directory does not exist)"
+  [ -z "$CLEANUP" ] || CLEANUP_ARG=$CLEANUP   # set_cleanup's canonical dir
+  ORIG_ARGS=(--reg-code "$REG_CODE" --api-base "$API_BASE" --from "$FROM" --tarball "$TARBALL")
+  [ -z "$CLEANUP" ] || ORIG_ARGS+=(--cleanup "$CLEANUP")
+  [ "$REPROVISION" = 0 ] || ORIG_ARGS+=(--reprovision)
   provision_main
 }
 
