@@ -372,17 +372,24 @@ job_suites() {
 # indirectly (a variable, eval, sh -c, …: fail closed), unless the line is
 # marked `hl-clock-mocked` (reviewed: it only drives a stub).
 clock_guard() { python3 -I "$HERE/clock-guard.py" "$@"; }
+# Phase 8 WP-T: the bench-window suite lives under scripts/bench/ (outside the
+# deploy-dev filter); it joins the pair only when the tree carries it.
+P8_SD_SUITE=scripts/bench/tests/systemd/p8-window.sh
+sd_suite_path() { case $1 in p8-window) echo "$P8_SD_SUITE" ;; *) echo "scripts/tests/$1.sh" ;; esac; }
 job_systemd() {
-  local pair name suite pkgs rc fails=0
+  local pair name suite pkgs rc fails=0 pairs guarded
   mkdir -p "$T/logs/suites"
-  # Phase 8 WP-R1: the two provision suites source tools/provision-e2e/lib.sh,
+  pairs=("unit-ordering:systemd" "install-rs-systemd:systemd python3 sudo")
+  guarded=("$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh")
+  if [ -f "$SRC/$P8_SD_SUITE" ]; then pairs+=("p8-window:systemd python3 sudo iproute2"); guarded+=("$SRC/$P8_SD_SUITE"); fi
+  # Phase 8 WP-R1: the two provision suites; they source tools/provision-e2e/lib.sh,
   # which the guard reads too (it is part of what runs privileged).
-  local guarded=("$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh")
-  [ ! -f "$SRC/scripts/tests/provision-e2e.sh" ] || guarded+=("$SRC/scripts/tests/provision-e2e.sh" "$SRC/scripts/tests/provision-rs-systemd.sh" "$SRC/tools/provision-e2e/lib.sh")
+  if [ -f "$SRC/scripts/tests/provision-e2e.sh" ]; then
+    pairs+=("provision-e2e:systemd python3 sudo jq curl openssl ca-certificates"
+      "provision-rs-systemd:systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0")
+    guarded+=("$SRC/scripts/tests/provision-e2e.sh" "$SRC/scripts/tests/provision-rs-systemd.sh" "$SRC/tools/provision-e2e/lib.sh")
+  fi
   clock_guard "${guarded[@]}" || { echo "SYSTEMD_DONE fails=REFUSED"; return 1; }
-  local pairs=("unit-ordering:systemd" "install-rs-systemd:systemd python3 sudo")
-  [ ! -f "$SRC/scripts/tests/provision-e2e.sh" ] || pairs+=("provision-e2e:systemd python3 sudo jq curl openssl ca-certificates"
-    "provision-rs-systemd:systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0")
   for pair in "${pairs[@]}"; do
     suite=${pair%%:*}; pkgs=${pair#*:}; name=hl_${TAG}_sd-$suite
     # Recipe = each suite's header (systemd 252 as PID 1, privileged, private cgroupns).
@@ -395,7 +402,7 @@ job_systemd() {
       [ "${HL_DRYRUN:-0}" = 1 ] && break
       sleep 5
     done
-    docker exec "$name" timeout 1200 bash "/src/scripts/tests/$suite.sh" > "$T/logs/suites/systemd-$suite.log" 2>&1
+    docker exec "$name" timeout 1200 bash "/src/$(sd_suite_path "$suite")" > "$T/logs/suites/systemd-$suite.log" 2>&1
     rc=$?
     [ $rc -eq 0 ] || fails=$((fails + 1))
     echo "$suite rc=$rc pass=$(grep -c '^PASS' "$T/logs/suites/systemd-$suite.log") fail=$(grep -c '^FAIL' "$T/logs/suites/systemd-$suite.log") | $(tail -1 "$T/logs/suites/systemd-$suite.log")"

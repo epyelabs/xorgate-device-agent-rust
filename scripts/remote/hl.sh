@@ -29,8 +29,9 @@
 #   cargo ARGS   any cargo command line, e.g. `cargo test -p xorgate-agent --test imu_reader`
 #   suites       every plain script suite, one fresh bookworm container each
 #                (HL_SUITES=<paths> for a subset; HL_MUTANTS=<ids> for scripts/remote/mutations.sh)
-#   systemd      the two systemd-252-as-PID-1 suites (privileged bookworm; refused if a
-#                suite would run a clock/RTC-setting tool)
+#   systemd      the systemd-252-as-PID-1 suites (privileged bookworm; refused if a
+#                suite would run a clock/RTC-setting tool): unit-ordering, install-rs-systemd,
+#                and scripts/bench/tests/systemd/p8-window.sh when the tree has it
 #   build-bins   the rig's release xorgate-rs + xorgate-replay + rig-statvfs.so (tools/replay/build-bins.sh's
 #                cargo line, amd64) -> the tree's tools/replay/.cache/bin and out/bins/ (+ SHA256SUMS,
 #                HEAD with tree_fp/dirty); the old bins are removed FIRST
@@ -66,7 +67,7 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o Ser
 # Review F1: no step may fail silently.
 trap 'echo "hl: FAILED (rc $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
 
-usage() { sed -n '2,57p' "$0"; exit 2; }
+usage() { sed -n '2,59p' "$0"; exit 2; }
 die() { echo "hl: $*" >&2; if [ "${STATE_PENDING_OK:-1}" = 1 ] && [ -n "${STATEF:-}" ] && grep -q '^state=pending$' "$STATEF" 2>/dev/null; then set_state refused-local "$*"; fi; exit 2; }
 rsh() { "$SSH" "${SSH_OPTS[@]}" "$HL_HOST" "$@"; }
 # stdin -> its sha256 (64 hex).
