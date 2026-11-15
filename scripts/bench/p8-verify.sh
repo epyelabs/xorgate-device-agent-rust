@@ -227,7 +227,7 @@ PY
 }
 
 cmd_post() {
-  local pid exe k n
+  local pid exe k n ae rs
   p8_need_root; p8_check_window "$W"
   [ -f "$W/baseline.env" ] || { fail "baseline.env exists"; verdict post; return; }
   measure > "$W/post.env"
@@ -236,6 +236,18 @@ cmd_post() {
   check "$P8_PROD_UNIT active" "$(p8_active "$P8_PROD_UNIT")" active
   pid=$(p8_prop "$P8_PROD_UNIT" MainPID); exe=$(readlink "$P8_ROOT/proc/${pid:-0}/exe" 2>/dev/null || echo none)
   check "$P8_PROD_UNIT runs /opt/xorgate-rs/bin/xorgate-rs" "$exe" /opt/xorgate-rs/bin/xorgate-rs
+  # W2 brief review MUST-1: the running PROD agent is the restored, certified binary, started by this restore
+  check "$P8_PROD_UNIT runs /opt/xorgate-rs/bin/xorgate-rs with the certified sha (the live exe)" \
+    "$(sha256sum "$P8_ROOT/proc/${pid:-0}/exe" 2>/dev/null | cut -c1-64 || echo none)" "$P8_CERT_BIN_SHA"
+  ae=$(p8_prop "$P8_PROD_UNIT" ActiveEnterTimestamp); ae=$(date -d "$ae" +%s 2>/dev/null || echo 0); rs=$(cat "$W/restore.start.epoch" 2>/dev/null || echo 9999999999)
+  if [ "$ae" -ge "$rs" ]; then pass "$P8_PROD_UNIT started after the restore started (ActiveEnterTimestamp)"; else fail "$P8_PROD_UNIT ActiveEnterTimestamp is before the restore start (a pre-restore process?)"; fi
+  # Fix-check b8d7e44 SHOULD 2: a dead-man that failed, survived or retried is NOT GREEN, even if a later restore fixed it
+  check "no W/REBOOT-NEEDED" "$([ -e "$W/REBOOT-NEEDED" ] && echo present || echo absent)" absent
+  check "no dead-man survivor retry (W/survivor.retries)" "$(cat "$W/survivor.retries" 2>/dev/null || echo 0)" 0
+  check "no FATAL in a dead-man restore run (restore.log)" "$({ cat "$W/restore.log" 2>/dev/null || true; } | awk '/restore start: /{dm = ($0 ~ /self=p8-deadman/)} dm && /FATAL/ {n++} END {print n + 0}')" 0
+  check "every dead-man restore ended rc=0 (restore.rc.log)" "$({ cat "$W/restore.rc.log" 2>/dev/null || true; } | awk '/self=p8-deadman/ && !/rc=0$/ {n++} END {print n + 0}')" 0
+  check "/etc/systemd/system-generators as at backup ($(sed -n 's/^generators_dir=//p' "$W/bench-id.env" 2>/dev/null))" \
+    "$([ -d "$P8_ROOT/etc/systemd/system-generators" ] && echo present || echo absent)" "$(sed -n 's/^generators_dir=//p' "$W/bench-id.env" 2>/dev/null || echo unknown)"
   check "certified binary sha256" "$(pk bin_sha)" "$P8_CERT_BIN_SHA"
   check "build-info version" "$(pk build_version)" "$P8_CERT_VERSION"
   check "JS agent inactive" "$(pk js_active)" inactive

@@ -68,7 +68,7 @@ if [ -z "${P8_SELF_UNIT:-}" ] && [ -z "$P8_ROOT" ]; then
   [[ $ts =~ ^[0-9A-Za-z]+$ ]] || p8_die "bad window $ww"
   u=p8-restore-$ts
   envs=(--setenv=HOME=/root --setenv="P8_SELF_UNIT=$u.service")
-  for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_UNIT_STOP_WAIT_S P8_SURVIVOR_RETRY_MIN P8_SURVIVOR_RETRIES P8_CERT_BIN_SHA P8_CERT_VERSION; do
+  for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_UNIT_STOP_WAIT_S P8_UPDATER_STOP_WAIT_S P8_SURVIVOR_RETRY_MIN P8_SURVIVOR_RETRIES P8_CERT_BIN_SHA P8_CERT_VERSION; do
     [ -z "${!v:-}" ] || envs+=(--setenv="$v=${!v}")
   done
   # Fix-check ab4420d: NOT --wait (a Ctrl-C on a --wait client stops the
@@ -109,7 +109,8 @@ echo "$LABEL" > "$W/label"
 export P8_LOGFILE=$W/restore.log
 TD=$W/test-$LABEL
 # The unit's result for its detached client (and for the record).
-trap 'r=$?; p8_release_prov_lock; echo "$r" > "$W/restore.rc"' EXIT
+# Fix-check b8d7e44 NIT: a history (restore.rc.log), restore.rc = the latest.
+trap 'r=$?; p8_release_prov_lock; echo "$r" > "$W/restore.rc"; echo "$(p8_ts) self=${P8_SELF_UNIT:-shell} rc=$r" >> "$W/restore.rc.log"' EXIT
 if [ -f "$W/restore.done" ]; then
   if [ "$AGAIN" = 0 ]; then
     p8_log "restore already finished ($(cat "$W/restore.done")): nothing to do"
@@ -131,6 +132,7 @@ if [ -f "$W/aside.restored" ] && [ "$(p8_active "$P8_PROD_UNIT")" = active ] && 
   [ "$v" = PASS ]; exit $?
 fi
 p8_log "restore start: window=${W#"$P8_ROOT"} label=$LABEL auto=$AUTO boot=$BOOT self=${P8_SELF_UNIT:-shell}"
+date +%s > "$W/restore.start.epoch"   # DA15 post: the PROD agent must have started after this
 rc=0
 
 # 1. F1
@@ -138,7 +140,21 @@ p8_cancel_agent_jobs
 # 2. F3 + MUST-2: dpkg lock first, then EVERY window unit (the provisioner
 #    xorgate-provision-rs first, then p8-install-*), verified inactive, then
 #    the repair. If one survives, NOTHING is moved back.
-if ! p8_stop_installers; then
+# W2 brief review MUST-1: a running update rail ends with `systemctl restart
+# xorgate-agent-rs`, so the UPDATERS go first (each verified inactive: <= 120 s,
+# then SIGKILL), then any queued agent job is cancelled, then the agents are
+# stopped and verified. Only while the surface is still the test one.
+stop_updaters_agents() {
+  local u
+  { [ -f "$W/aside.list" ] && [ ! -f "$W/aside.restored" ]; } || return 0
+  for u in xorgate-updater-rs.service xorgate-updater.service; do
+    P8_UNIT_STOP_WAIT_S=${P8_UPDATER_STOP_WAIT_S:-120} p8_stop_unit "$u" || return 1
+  done
+  p8_cancel_agent_jobs
+  for u in xorgate-agent-rs.service xorgate-agent.service; do p8_stop_unit "$u" || return 1; done
+  p8_cancel_agent_jobs
+}
+if ! { p8_stop_installers && stop_updaters_agents; }; then
   # Review (bench-tools-r1) survivor: a unit alive after SIGKILL (D state).
   # Never move back under a live writer. Unattended, re-arm a +5 min retry
   # (up to 3), then say plainly that a reboot is needed.
@@ -151,7 +167,7 @@ if ! p8_stop_installers; then
       echo "$(p8_ts) REBOOT NEEDED, PROD still aside (a window unit survives SIGKILL)" > "$W/REBOOT-NEEDED"
     fi
   fi
-  p8_die "a window unit (xorgate-provision-rs / p8-install-*) could not be stopped: moving NOTHING back (see the log)"
+  p8_die "a window unit (xorgate-provision-rs / p8-install-* / an updater / an agent) could not be stopped: moving NOTHING back (see the log)"
 fi
 date +%s.%N > "$W/units-stopped.epoch"
 if [ -e "$P8_PROV_LOG" ]; then   # a window artifact: kept as evidence in the test dir, never left behind
@@ -163,11 +179,6 @@ fi
 # 3-5. the agent surface
 L=$W/aside.list
 if [ -f "$L" ] && [ ! -f "$W/aside.restored" ]; then
-  for u in $P8_AGENT_UNITS; do
-    if [ "$(p8_active "$u")" = active ] || [ "$(p8_active "$u")" = activating ]; then
-      p8_log "stopping test unit $u"; timeout 180 systemctl stop "$u" || p8_log "stop $u failed"
-    fi
-  done
   install -d -m 0700 "$TD"
   # Which surface paths the window owns: moved, absent, or mid-move AND found
   # in W/aside. Anything else was never moved (a partial aside): untouched.
@@ -296,6 +307,13 @@ if [ -f "$W/pre.manifest" ] && [ -f "$W/backup.tgz" ]; then
         esac ;;
     esac
   done < "$W/restore.diff"
+fi
+
+# W2 brief review SHOULD-3: the provisioner may CREATE the generators dir; it
+# goes again (after step 6, which may sweep a new child into extra/) when it was absent at backup and is empty now.
+if [ "$(sed -n 's/^generators_dir=//p' "$W/bench-id.env" 2>/dev/null)" = absent ] && [ -d "$P8_ROOT/etc/systemd/system-generators" ] \
+   && [ -z "$(ls -A "$P8_ROOT/etc/systemd/system-generators")" ]; then
+  rmdir "$P8_ROOT/etc/systemd/system-generators" && p8_log "removed the window-created empty /etc/systemd/system-generators"
 fi
 
 # Review T2: a manual restore that does NOT start PROD re-arms a short --auto
