@@ -20,6 +20,7 @@ trap 'rm -rf "$FAKE" "$SHIMS" "$LOGS"' EXIT
 mkdir -p "$FAKE/scripts" "$FAKE/systemd/bench" "$FAKE/python" "$FAKE/target/pack" "$FAKE/bin"
 cp "$REPO/scripts/pack.sh" "$FAKE/scripts/pack.sh"
 printf '#!/usr/bin/env bash\necho fake converter\n' > "$FAKE/scripts/install-rs.sh"; chmod 0644 "$FAKE/scripts/install-rs.sh"
+printf '#!/usr/bin/env bash\necho fake provisioner\n' > "$FAKE/scripts/provision-rs.sh"; chmod 0644 "$FAKE/scripts/provision-rs.sh"   # Phase 8 WP-R1
 printf '#!/bin/sh\necho fake\n' > "$FAKE/bin/xorgate-rs"
 echo '[Unit]' > "$FAKE/systemd/xorgate-agent-rs.service"
 echo '[Unit]' > "$FAKE/systemd/xorgate-updater-rs.service"

@@ -752,7 +752,9 @@ done
 printf '[ "$(date +%%s)" -gt 0 ] && echo ok\nfoo=$(date -u +%%FT%%TZ)\necho "$x" | grep -q y\nsystemctl start x\n' > "$W/cg.sh"
 python3 -I "$CG" "$W/cg.sh" >/dev/null && ok "clock guard passes plain date reads, assignments and named commands" || bad "clock guard false positive: $(python3 -I "$CG" "$W/cg.sh")"
 if [ -f "$SRC/scripts/tests/unit-ordering.sh" ]; then
-  python3 -I "$CG" "$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh" >/dev/null && ok "the real systemd suites pass the clock guard" || bad "real suites: $(python3 -I "$CG" "$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh")"
+  RS=("$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh")
+  [ ! -f "$SRC/scripts/tests/provision-e2e.sh" ] || RS+=("$SRC/scripts/tests/provision-e2e.sh" "$SRC/scripts/tests/provision-rs-systemd.sh" "$SRC/tools/provision-e2e/lib.sh")
+  python3 -I "$CG" "${RS[@]}" >/dev/null && ok "the real systemd suites pass the clock guard (${#RS[@]} files)" || bad "real suites: $(python3 -I "$CG" "${RS[@]}")"
 fi
 
 echo "== fix-check S6: no build rewrites Cargo.lock"

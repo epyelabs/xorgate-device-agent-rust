@@ -339,7 +339,7 @@ job_cargo() {
 suite_list() {
   if [ -n "${HL_SUITES:-}" ]; then printf '%s\n' "$HL_SUITES" | tr ' ' '\n' | sed '/^$/d'; return; fi
   (cd "$SRC" && ls scripts/tests/*.sh scripts/bench/tests/*.sh tools/replay/tests/*.sh 2>/dev/null) \
-    | grep -vE '/(_stubs|clippy-ban-probe|unit-ordering|install-rs-systemd)\.sh$'
+    | grep -vE '/(_stubs|clippy-ban-probe|unit-ordering|install-rs-systemd|provision-e2e|provision-rs-systemd)\.sh$'
 }
 job_suites() {
   local img t n rc fails=0
@@ -382,6 +382,13 @@ job_systemd() {
   pairs=("unit-ordering:systemd" "install-rs-systemd:systemd python3 sudo")
   guarded=("$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh")
   if [ -f "$SRC/$P8_SD_SUITE" ]; then pairs+=("p8-window:systemd python3 sudo iproute2"); guarded+=("$SRC/$P8_SD_SUITE"); fi
+  # Phase 8 WP-R1: the two provision suites; they source tools/provision-e2e/lib.sh,
+  # which the guard reads too (it is part of what runs privileged).
+  if [ -f "$SRC/scripts/tests/provision-e2e.sh" ]; then
+    pairs+=("provision-e2e:systemd python3 sudo jq curl openssl ca-certificates"
+      "provision-rs-systemd:systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0")
+    guarded+=("$SRC/scripts/tests/provision-e2e.sh" "$SRC/scripts/tests/provision-rs-systemd.sh" "$SRC/tools/provision-e2e/lib.sh")
+  fi
   clock_guard "${guarded[@]}" || { echo "SYSTEMD_DONE fails=REFUSED"; return 1; }
   for pair in "${pairs[@]}"; do
     suite=${pair%%:*}; pkgs=${pair#*:}; name=hl_${TAG}_sd-$suite

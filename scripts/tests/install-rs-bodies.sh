@@ -16,9 +16,15 @@ failc() { echo "FAIL $*"; fail=1; }
 
 # The value of `"<key>": "<json string>"` (one per line) decoded; the golden
 # uses only the escapes \n and \" (anything else is refused, not guessed).
+# <key> is a top-level key, or <object>.<user> for a per-user object
+# (`"<object>": {` ... `},` with one `"<user>": "…"` line each; Phase 8 WP-R1).
 golden() {
   local raw rest
-  raw=$(sed -n "s/^[[:space:]]*\"$1\": \"\(.*\)\",\{0,1\}\$/\1/p" "$GOLDEN")
+  case $1 in
+    *.*) raw=$(sed -n "/^  \"${1%%.*}\": {\$/,/^  },\{0,1\}\$/p" "$GOLDEN" \
+           | sed -n "s/^    \"${1#*.}\": \"\(.*\)\",\{0,1\}\$/\1/p") ;;
+    *) raw=$(sed -n "s/^  \"$1\": \"\(.*\)\",\{0,1\}\$/\1/p" "$GOLDEN") ;;
+  esac
   [ "$(printf '%s\n' "$raw" | wc -l)" = 1 ] && [ -n "$raw" ] || { echo "golden: no single \"$1\" line" >&2; return 1; }
   rest=${raw//\\n/}; rest=${rest//\\\"/}
   case $rest in *\\*) printf 'golden: "%s" uses an escape other than \\n or \\"\n' "$1" >&2; return 1 ;; esac
@@ -48,7 +54,7 @@ LIBFN=$(sed -n '/^update_sudoers_body() {$/,/^}$/p' "$REPO/scripts/bench/_lib.sh
 [ -n "$LIBFN" ] && eval "$LIBFN" && pass "scripts/bench/_lib.sh update_sudoers_body extracted" || failc "scripts/bench/_lib.sh update_sudoers_body not found"
 
 for u in pi operator; do
-  G=$(golden "$u"; echo X) || failc "golden updaterSudoers.$u unreadable"
+  G=$(golden "updaterSudoers.$u"; echo X) || failc "golden updaterSudoers.$u unreadable"
   same "install-rs.sh rs_update_sudoers_body $u == golden (update_plan::updater_sudoers_body)" "$G" "$(rs_update_sudoers_body "$u"; echo X)"
   same "_lib.sh update_sudoers_body $u == golden (update_plan::updater_sudoers_body)" "$G" "$(update_sudoers_body "$u"; echo X)"
 done
