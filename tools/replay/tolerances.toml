@@ -413,6 +413,14 @@ kind = "decisions"
   values_only = true
 
   [[rule.row]]
+  id = "D85"
+  what = "D85 (phase-1/evidence/accepted-divergences.md; Phase 8 D9, Q-8.3 ACCEPTED by the user): the Rust agent's report marker `effective.agent.runtime: \"rust\"`, appended as the LAST key of the agent block (config_report.rs AGENT_RUNTIME); the JS @09da38d sends no such key. PRESENCE-ONLY (review-wp-r2 SHOULD-1; `rust_only_value`, diff.rs cmp): tolerated ONLY on a JS-vs-Rust pair where the JS side lacks the path and the Rust side holds exactly \"rust\". A changed value, a Rust side without the marker, any Rust-vs-Rust or JS-vs-JS difference stays UNTOLERATED. Only this path is covered; the agent block's other keys, their order (the key-order check compares only shared keys) and every value stay compared"
+  streams = ["report"]
+  paths = ["effective.agent.runtime"]
+  rust_only_value = "rust"
+  pinned_by = "D85 (accepted-divergences.md); config_report::tests::d85_effective_agent_reports_runtime_rust_last; tests/config_report_fixtures.rs strip_d85 (12 JS-golden agent blocks); diff::tests::should_narrowings_host_sign_build_o2_end_snapshot (presence-only arms)"
+
+  [[rule.row]]
   id = "cli-banner"
   what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the Rust usage (cli.rs usage(): this binary's verbs, the systemd hint for start/stop/restart, `manage` without daemon control — Q10/D35) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
   streams = ["cli"]

@@ -124,6 +124,13 @@ pub struct Row {
     /// a presence mismatch.
     #[serde(default)]
     pub values_only: bool,
+    /// PRESENCE-ONLY (T8/D85): the row's `paths` are tolerated ONLY on a
+    /// JS-vs-Rust pair where the JS side LACKS the path and the Rust side
+    /// holds exactly this value. Any other difference (a changed value, the
+    /// marker missing on a Rust side, Rust-vs-Rust, JS-vs-JS) is compared as
+    /// if the row did not exist.
+    #[serde(default)]
+    pub rust_only_value: Option<serde_json::Value>,
     /// Largest allowed |A − B| of a measured duration (T8 `sms-duration`).
     #[serde(default)]
     pub max_delta_ms: Option<u64>,
@@ -363,6 +370,16 @@ mod tests {
                 .as_deref(),
             Some("T8/build")
         );
+        // D85 (Phase 8): the Rust-only report marker, a presence difference.
+        assert_eq!(
+            t.excluded("report", "effective.agent.runtime").as_deref(),
+            Some("T8/D85")
+        );
+        let d85 = t.decision_row("D85").unwrap().1;
+        assert!(!d85.values_only, "D85 is a one-sided key");
+        assert_eq!(d85.rust_only_value, Some(serde_json::json!("rust")));
+        assert_eq!(t.excluded("report", "effective.agent.mode"), None);
+        assert_eq!(t.excluded("report", "effective.agent.capabilities"), None);
         assert_eq!(t.excluded("telemetry", "metrics.gps.lat.value"), None);
         assert_eq!(
             t.numeric("telemetry", "metrics.system.cpu_usage.value"),

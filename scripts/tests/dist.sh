@@ -17,7 +17,10 @@
 #   4. the workflow YAML: triggers unchanged (no push/PR/schedule added; ci.yml
 #      manual-only), the Q9 path filter, secrets = the AWS pair only, the prod
 #      account guard, every `aws s3 cp` behind dist-guard, the §6 upload order,
-#      cache headers, the post-upload dist-check step.
+#      cache headers, the post-upload dist-check step; and (Phase 8 WP-R2) the
+#      gate parity: both deploy workflows run the same gate steps (fmt, clippy,
+#      feature-gate.sh, test) in the same order, none of them (nor the job)
+#      neutered by continue-on-error / if:, with negative controls.
 #   5. the workflows' upload step itself, extracted from the YAML and run with a
 #      stubbed `aws` into a local bucket (two scripts/pack.sh tarballs, v1 then
 #      v2), served by python3 with ETags; refusals write nothing.
@@ -220,6 +223,131 @@ for ch, trig in (("dev", {"push", "workflow_dispatch"}), ("prod", {"release", "w
     chk(len(pre) == 1, "%s: the JS latest.json ETag is captured BEFORE the upload" % ch)
     res = next(s for s in steps if s.get("id") == "bucket")
     chk("DeviceDistBucketUrl" in res["run"] and "url=$URL" in res["run"], "%s: device-facing URL from the stack output DeviceDistBucketUrl" % ch)
+# Phase 8 WP-R2 (plan-notes X8): both deploy workflows run the SAME gate
+# steps in the SAME order (deploy-prod lacked feature-gate.sh until WP-R2).
+# The gate = every step from `cargo fmt` up to (not incl.) `cargo build
+# --release`, each step compared whole (name, run, shell, env, if, ...); a gate
+# command anywhere else in the job is refused.
+import copy
+GATE_WANT = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets -- -D warnings",
+             "bash scripts/tests/cargo/feature-gate.sh", "cargo test --workspace"]
+GATE_CMD = re.compile(r"cargo (fmt|clippy|test)\b|scripts/tests/")
+def gate_steps(steps):
+    runs = [s_.get("run", "").strip() for s_ in steps]
+    i = next((k for k, r in enumerate(runs) if r.startswith("cargo fmt")), None)
+    j = next((k for k, r in enumerate(runs) if r.startswith("cargo build --release")), None)
+    if i is None or j is None or j < i:
+        return None, "no fmt..build --release span"
+    rest = [r for k, r in enumerate(runs) if not i <= k < j and GATE_CMD.search(r)]
+    if rest:
+        return None, "a gate command outside the gate span: %r" % rest
+    return [dict(s_) for s_ in steps[i:j]], None
+def neutered(job):
+    """The gate steps (and the job) must not be able to pass while failing
+    (review-wp-r2 NIT-2): no `continue-on-error` on the job or on a gate step,
+    and no `if:` on a gate step. Checked on EACH workflow, so a gate neutered
+    identically in both is caught too."""
+    probs = []
+    if "continue-on-error" in job:
+        probs.append("job continue-on-error=%r" % job["continue-on-error"])
+    g, _ = gate_steps(job.get("steps", []))
+    for st in g or []:
+        for k in ("continue-on-error", "if"):
+            if k in st:
+                probs.append("step %r %s=%r" % (st.get("name"), k, st[k]))
+    return probs
+def gate_parity(djob, pjob):
+    """[] when both gates are equal, in the wanted order and not neutered, else the problems."""
+    dsteps, psteps = djob.get("steps", []), pjob.get("steps", [])
+    (dg, de), (pg, pe) = gate_steps(dsteps), gate_steps(psteps)
+    if de or pe:
+        return [m for m in ("dev: %s" % de if de else None, "prod: %s" % pe if pe else None) if m]
+    probs = []
+    if [g.get("run", "").strip() for g in dg] != GATE_WANT:
+        probs.append("dev gate order %r" % [g.get("run", "").strip() for g in dg])
+    if dg != pg:
+        probs.append("dev %r != prod %r" % ([g.get("name") for g in dg], [g.get("name") for g in pg]))
+    probs += ["dev: %s" % m for m in neutered(djob)] + ["prod: %s" % m for m in neutered(pjob)]
+    return probs
+djob = load("device-rs-deploy-dev.yml")[0]["jobs"]["build-and-publish"]
+pjob = load("device-rs-deploy-prod.yml")[0]["jobs"]["build-and-publish"]
+probs = gate_parity(djob, pjob)
+chk(probs == [], "gate parity: deploy-dev and deploy-prod run the same gate steps in the same order (fmt, clippy, feature-gate, test), none neutered %s" % probs)
+pg = gate_steps(pjob["steps"])[0] or []
+chk([g.get("name") for g in pg][1:3] == ["cargo clippy", "Feature gate (imu-test-bus is test-only)"],
+    "prod: feature-gate.sh runs right after clippy")
+# Negative controls: the parity check must FAIL on each broken variant. A
+# mutator returns None when the workflow lacks the step it mutates; that is a
+# named FAIL, never a traceback (review-wp-r2 NIT-1).
+def find(st, pred):
+    return next((k for k, x in enumerate(st) if pred(x.get("run", ""))), None)
+def is_fg(r):
+    return "feature-gate.sh" in r
+def on_steps(f):
+    def m(job):
+        job = copy.deepcopy(job)
+        st = f(job["steps"])
+        if st is None:
+            return None
+        job["steps"] = st
+        return job
+    return m
+@on_steps
+def without_fg(st):
+    return [x for x in st if not is_fg(x.get("run", ""))]
+@on_steps
+def swapped(st):
+    a = find(st, lambda r: r.startswith("cargo clippy"))
+    if a is None or a + 1 >= len(st):
+        return None
+    st[a], st[a + 1] = st[a + 1], st[a]
+    return st
+@on_steps
+def edited(st):
+    a = find(st, is_fg)
+    if a is None:
+        return None
+    st[a]["run"] += " || true"
+    return st
+@on_steps
+def moved_late(st):
+    a = find(st, is_fg)
+    if a is None:
+        return None
+    st.append(st.pop(a))
+    return st
+@on_steps
+def fg_continue(st):
+    a = find(st, is_fg)
+    if a is None:
+        return None
+    st[a]["continue-on-error"] = True
+    return st
+@on_steps
+def test_if_false(st):
+    a = find(st, lambda r: r.startswith("cargo test"))
+    if a is None:
+        return None
+    st[a]["if"] = False
+    return st
+def job_continue(job):
+    job = copy.deepcopy(job)
+    job["continue-on-error"] = True
+    return job
+for label, mk in (("prod without feature-gate (as on main 14413e0)", lambda: (djob, without_fg(pjob))),
+                  ("both without feature-gate", lambda: (without_fg(djob), without_fg(pjob))),
+                  ("prod clippy/feature-gate swapped", lambda: (djob, swapped(pjob))),
+                  ("both swapped", lambda: (swapped(djob), swapped(pjob))),
+                  ("prod feature-gate run edited", lambda: (djob, edited(pjob))),
+                  ("prod feature-gate moved after the build", lambda: (djob, moved_late(pjob))),
+                  ("feature-gate continue-on-error in BOTH", lambda: (fg_continue(djob), fg_continue(pjob))),
+                  ("cargo test if: false in BOTH", lambda: (test_if_false(djob), test_if_false(pjob))),
+                  ("job-level continue-on-error in BOTH", lambda: (job_continue(djob), job_continue(pjob)))):
+    d_, p_ = mk()
+    if d_ is None or p_ is None:
+        chk(False, "gate parity control: %s cannot be built (a workflow lacks the step it mutates)" % label)
+        continue
+    chk(gate_parity(d_, p_) != [], "gate parity control: %s is caught" % label)
 print("YAML-FAILS=%d" % len(bad))
 PY
 cat "$T/yaml.out"

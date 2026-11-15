@@ -112,8 +112,12 @@ Value rules:
   anything else. Key names are wire names and are never renamed: the modem daemon reads the file by
   exact key path.
 - Some report blocks are reported-only (the cloud never sets them): `agent` (mode, build,
-  capabilities), `telemetryScope`, `sim`, `uplink`, `apn`, and the camera-mount state. Status
+  capabilities, runtime), `telemetryScope`, `sim`, `uplink`, `apn`, and the camera-mount state. Status
   `detail` and `reason` texts are part of the contract, word for word.
+- **One deliberate addition (D85, Phase 8):** `effective.agent.runtime` is `"rust"`, the last key of
+  the `agent` block (`config_report.rs` `AGENT_RUNTIME`). The JS agent sends no such key. The backend
+  mirrors it positive-only (`"rust"` sets `devices.agent = 'rust'`; an absent key leaves the column
+  alone), and it stores `effective` as an opaque record, so the extra key passes its schema.
 
 ### Commands
 

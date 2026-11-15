@@ -1628,11 +1628,24 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
         return;
     }
     if let Some(id) = cx.table.excluded(&cx.stream, path) {
-        let values_only = id
+        let row = id
             .split_once('/')
             .and_then(|(_, row)| cx.table.decision_row(row))
-            .is_some_and(|(_, r)| r.values_only);
-        if !values_only || (a.is_some() && b.is_some()) {
+            .map(|(_, r)| r);
+        let values_only = row.is_some_and(|r| r.values_only);
+        if let Some(want) = row.and_then(|r| r.rust_only_value.as_ref()) {
+            // Presence-only (T8/D85): JS absent, Rust exactly `want`; anything
+            // else falls through to the plain comparison (UNTOLERATED).
+            let (js, rs) = match cx.js_a {
+                Some(true) => (a, b),
+                Some(false) => (b, a),
+                None => (Some(&Value::Null), None),
+            };
+            if js.is_none() && rs == Some(want) {
+                out.push(cx.mismatch(path, a, b, id));
+                return;
+            }
+        } else if !values_only || (a.is_some() && b.is_some()) {
             out.push(cx.mismatch(path, a, b, id));
             return;
         }
@@ -6296,6 +6309,87 @@ mod tests {
         assert!(
             got.iter()
                 .any(|(p, t)| p == "effective.agent.build.packageVersion" && t == UNTOLERATED),
+            "{got:?}"
+        );
+
+        // D85 (Phase 8): the Rust-only `effective.agent.runtime` marker, the
+        // agent block's LAST key, is a tolerated one-sided key; the rest of
+        // the block (incl. the shared keys' order) is still compared.
+        let rep_r = |agent: Value| serde_json::json!({"v":1,"origin":"boot","rev":1,"effective":{"agent":agent}});
+        let pair_tols = |ka: &str, aa: Value, kb: &str, ba: Value| {
+            let a = cap(ka, vec![msg(1_000, "config/reported", rep_r(aa))]);
+            let b = cap(kb, vec![msg(1_000, "config/reported", rep_r(ba))]);
+            diff(&a, &b, &PlayInfo::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("effective.agent"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let marked = |v: &str| serde_json::json!({"mode":"real","runtime":v});
+        let bare = serde_json::json!({"mode":"real"});
+        let rt = |tol: &str| vec![("effective.agent.runtime".to_string(), tol.to_string())];
+        // PRESENCE-ONLY (review-wp-r2 SHOULD-1): JS absent + Rust "rust", either side order.
+        assert_eq!(
+            pair_tols("js", bare.clone(), "rust", marked("rust")),
+            rt("T8/D85")
+        );
+        assert_eq!(
+            pair_tols("rust", marked("rust"), "js", bare.clone()),
+            rt("T8/D85")
+        );
+        // A changed value is NOT covered: JS-vs-Rust and Rust-vs-Rust.
+        assert_eq!(
+            pair_tols("js", bare.clone(), "rust", marked("js")),
+            rt(UNTOLERATED)
+        );
+        assert_eq!(
+            pair_tols("rust", marked("rust"), "rust", marked("js")),
+            rt(UNTOLERATED)
+        );
+        // A Rust side missing the marker is NOT covered (Rust-vs-Rust, and a
+        // JS side that carries one while the Rust side does not).
+        assert_eq!(
+            pair_tols("rust", marked("rust"), "rust", bare.clone()),
+            rt(UNTOLERATED)
+        );
+        assert_eq!(
+            pair_tols("rust", bare.clone(), "rust", marked("rust")),
+            rt(UNTOLERATED)
+        );
+        assert_eq!(
+            pair_tols("js", marked("rust"), "rust", bare.clone()),
+            rt(UNTOLERATED)
+        );
+        // JS-vs-JS: one side with a marker is untolerated too.
+        assert_eq!(pair_tols("js", bare, "js", marked("rust")), rt(UNTOLERATED));
+        let agent_tols = |ja: Value, ra: Value| {
+            let a = cap("js", vec![msg(1_000, "config/reported", rep_r(ja))]);
+            let b = cap("rust", vec![msg(1_000, "config/reported", rep_r(ra))]);
+            diff(&a, &b, &PlayInfo::default(), &[], &t)
+                .mismatches
+                .into_iter()
+                .filter(|m| m.path.starts_with("effective.agent"))
+                .map(|m| (m.path, m.tol))
+                .collect::<Vec<_>>()
+        };
+        let js_agent = serde_json::json!({"mode":"real","capabilities":["sms.read"]});
+        let got = agent_tols(
+            js_agent.clone(),
+            serde_json::json!({"mode":"real","capabilities":["sms.read"],"runtime":"rust"}),
+        );
+        assert_eq!(
+            got,
+            vec![("effective.agent.runtime".to_string(), "T8/D85".to_string())]
+        );
+        // A different shared value is NOT covered by D85.
+        let got = agent_tols(
+            js_agent,
+            serde_json::json!({"mode":"sim","capabilities":["sms.read"],"runtime":"rust"}),
+        );
+        assert!(
+            got.iter()
+                .any(|(p, t)| p == "effective.agent.mode" && t == UNTOLERATED),
             "{got:?}"
         );
 
