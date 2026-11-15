@@ -46,6 +46,8 @@ case $(sp DropInPaths $U) in *10-user.conf*20-native.conf*) ok "drop-ins 10-user
 [ "$(sp LoadState xorgate-agent)" = not-found ] && case "$(sp Conflicts $U) $(sp After $U)" in *xorgate-agent.service*) true ;; *) false ;; esac \
   && ok "Conflicts=/After=xorgate-agent.service present and inert (no such unit)" || bad "JS unit state $(sp LoadState xorgate-agent)"
 
+(cd / && sh /etc/systemd/system-generators/xorgate-agent-rs-native) && [ ! -e /multi-user.target.wants ] && ok "the generator run by hand with no output dir does nothing (N3)" || { bad "the generator wrote outside a generator dir"; rm -rf /multi-user.target.wants; }
+
 echo "== 20-native.conf"
 mkdir /opt/xorgate; systemctl restart $U 2>/dev/null; sleep 1
 [ "$(systemctl is-active $U)" = inactive ] && [ "$(sp ConditionResult $U)" = no ] && ok "with /opt/xorgate present the start is skipped (ConditionPathExists=!/opt/xorgate)" || bad "with /opt/xorgate: $(systemctl is-active $U), condition $(sp ConditionResult $U)"

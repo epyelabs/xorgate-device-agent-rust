@@ -19,6 +19,10 @@
 # The fake bucket + claim API (fake-dist-api.py) answers on 127.0.0.1:443 for
 # the golden's two PROD hostnames and two .invalid ones via /etc/hosts and a
 # test CA; setup refuses to go on unless every name resolves to 127.0.0.1.
+# raspi-config is absent here, so the modprobe path runs. On a real Pi
+# `raspi-config nonint do_i2c 0` rewrites config.txt through .bak + mv (as the
+# JS installer does): the same bytes, a NEW inode. The bench-shaped case
+# therefore compares config.txt by sha only, and so must W1/W2 (review N4).
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SRC=$(cd "$HERE/../.." && pwd)
 E=/var/lib/e2e
@@ -226,13 +230,14 @@ e2e_setup() {
 # Back to a fresh device between cases (the container is the device).
 reset_device() {
   local u
-  for u in xorgate-agent-rs xorgate-agent xorgate-updater-rs sim7600-lte; do systemctl stop "$u" >/dev/null 2>&1; systemctl disable "$u" >/dev/null 2>&1; done
+  for u in xorgate-provision-rs xorgate-agent-rs xorgate-agent xorgate-updater-rs sim7600-lte; do systemctl stop "$u" >/dev/null 2>&1; systemctl disable "$u" >/dev/null 2>&1; done
   rm -rf /etc/xorgate /opt/xorgate /opt/xorgate-rs /opt/xorgate-rs.new /opt/xorgate-rs.old /var/lib/xorgate /var/lib/xorgate-rs-install \
     /usr/local/bin/xorgate /usr/local/bin/xorgate-* /usr/local/bin/sim7600-lte.sh \
     /etc/systemd/system/xorgate-* /etc/systemd/system/sim7600-lte.service /etc/systemd/system/multi-user.target.wants/xorgate-* \
     /etc/systemd/system/multi-user.target.wants/sim7600-lte.service /etc/sudoers.d/02*_xorgate-* /etc/cron.d/xorgate-* \
     /etc/udev/rules.d/99-sim7600-lte.rules /etc/systemd/system-generators/xorgate-* /etc/NetworkManager/conf.d/* /etc/systemd/logind.conf.d \
-    /etc/apt/apt.conf.d/99xorgate-* /etc/apt/apt.conf.d/00p8-* /run/xorgate-provision-rs.lock /tmp/tmp.* /tmp/provision-rs.*
+    /etc/apt/apt.conf.d/99xorgate-* /etc/apt/apt.conf.d/00p8-* /run/xorgate-provision-rs.lock /tmp/tmp.* /tmp/provision-rs.* \
+    /var/log/xorgate-provision-rs.log /run/xorgate-provision-rs.rc
   printf 'dtparam=i2c_arm=on\n' > /boot/firmware/config.txt; rm -f /boot/firmware/config.txt.bak-xorgate
   cp "$W/group.base" /etc/group; cp "$W/gshadow.base" /etc/gshadow
   rm -rf "$E/apt/installed" && mkdir -p "$E/apt/installed"
@@ -259,6 +264,19 @@ run_prov() { # <provision-rs.sh> [extra args…]
   echo "    provision-rs.sh $* -> exit $RC: $(tail -n1 "$OUT")"
 }
 claims() { wc -l < "$E/claims.log" | tr -d ' '; }
+# The bootstrap as a background "ssh session" whose SIGINT is NOT ignored
+# (bash starts async children with SIGINT ignored, and an ignored signal
+# cannot be trapped): python resets it to the default, then execs bash.
+boot_bg() { # <out file>: sets BG_PID
+  env -C /home/pi PATH="$P" SUDO_USER=pi python3 -I "$HERE/sigdfl.py" bash "$BOOT" > "$1" 2>&1 < /dev/null &
+  BG_PID=$!   # env -> python -> bash -> provision-rs.sh: one pid (each execs)
+}
+wait_log() { # <ERE> <secs>: the provisioning unit's log shows it
+  local i; for i in $(seq "$2"); do grep -qE "$1" /var/log/xorgate-provision-rs.log 2>/dev/null && return 0; sleep 1; done; return 1
+}
+wait_rc() { # <secs>: the unit's exit code -> $UNIT_RC
+  local i; UNIT_RC=""; for i in $(seq "$1"); do [ -s /run/xorgate-provision-rs.rc ] && { UNIT_RC=$(cat /run/xorgate-provision-rs.rc); return 0; }; sleep 1; done; return 1
+}
 show_out() { sed 's/^/    > /' "$OUT"; }
 expect_rc() { # <want> <label>
   if [ "$RC" = "$1" ]; then ok "$2 (exit $RC)"; else bad "$2: exit $RC, want $1"; show_out; fi

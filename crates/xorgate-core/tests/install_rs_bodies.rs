@@ -152,6 +152,8 @@ fn golden_is_bash_readable() {
         .ends_with("[Unit]\nConditionPathExists=!/opt/xorgate\n"));
     // The boot-time enablement (WP-R1): wanted only while /opt/xorgate is absent.
     assert!(g.native_generator.starts_with("#!/bin/sh\n"));
+    // review-wp-r1 N3: run by hand with no output dir it does nothing.
+    assert!(g.native_generator.contains("\n[ -n \"$1\" ] || exit 0\n"));
     assert!(g
         .native_generator
         .contains("\n[ -e /opt/xorgate ] && exit 0\nmkdir -p \"$1/multi-user.target.wants\""));

@@ -11,7 +11,10 @@
 # JS-provisioned host (exit 3, also with --reprovision), a root service user,
 # a bench-shaped device (identical files never rewritten, NM not reloaded, an
 # active modem daemon never restarted), the JS installer over a native device
-# (JS alone from the next boot) + --uninstall, usage errors.
+# (JS alone from the next boot) + --uninstall (+ its refusals), usage errors
+# (the temp dir still removed), and the run surviving its session: SIGINT,
+# SIGHUP and a closed output pipe to the client leave the transient
+# provisioning unit running to the end.
 # Run (systemd must be PID 1; ~6 min), as hl.sh `systemd` does:
 #   docker run -d --name xg-pe2e --label xorgate.agent=<tag> --privileged --cgroupns=private \
 #     --tmpfs /run --tmpfs /run/lock -v "$PWD:/src:ro" debian:bookworm \
@@ -175,13 +178,15 @@ printf 'dtparam=i2c_arm=on\ncamera_auto_detect=0\ndtoverlay=imx290,cam0\ndtoverl
 cp /boot/firmware/config.txt /boot/firmware/config.txt.bak-xorgate
 systemctl daemon-reload; systemctl enable --now sim7600-lte >/dev/null 2>&1
 MPID=$(systemctl show -p MainPID --value sim7600-lte); MTS=$(systemctl show -p ActiveEnterTimestampMonotonic --value sim7600-lte)
-bench_files() { snap | grep '^f ' | grep -E ' /(usr/local/bin/(sim7600|xorgate-c)|etc/udev/|etc/NetworkManager/conf.d/99|boot/)'; }
+# Inodes for the modem/system/NM/udev files; config.txt by sha only (N4: on a
+# Pi raspi-config rewrites it through mv, same bytes, a new inode).
+bench_files() { snap | grep '^f ' | grep -E ' /(usr/local/bin/(sim7600|xorgate-c)|etc/udev/|etc/NetworkManager/conf.d/99)'; snap --no-inode | grep '^f ' | grep ' /boot/'; }
 BENCH=$(bench_files)
-CFG_INODE=$(stat -c %i /boot/firmware/config.txt)
+CFG_SHA=$(sha256sum < /boot/firmware/config.txt)
 run_boot; expect_rc 0 "bench-shaped"
 [ "$(bench_files)" = "$BENCH" ] && [ -n "$BENCH" ] \
   && ok "bench: identical modem/system/NM/config.txt files never rewritten (same inodes)" || { bad "bench: files rewritten"; diff <(echo "$BENCH") <(bench_files) | head; }
-[ "$(stat -c %i /boot/firmware/config.txt)" = "$CFG_INODE" ] && grep -q 'overlays already present' "$OUT" && ok "bench: config.txt untouched, no REBOOT notice" || bad "bench: config.txt"
+[ "$(sha256sum < /boot/firmware/config.txt)" = "$CFG_SHA" ] && grep -q 'overlays already present' "$OUT" && ok "bench: config.txt bytes unchanged (by sha), no REBOOT notice" || bad "bench: config.txt"
 [ "$(systemctl show -p MainPID --value sim7600-lte)" = "$MPID" ] && [ "$(systemctl show -p ActiveEnterTimestampMonotonic --value sim7600-lte)" = "$MTS" ] \
   && ok "bench: the active modem daemon was never restarted" || bad "bench: modem daemon restarted"
 [ "$(wc -l < "$E/nm-reloads")" = 1 ] && ok "bench: NM reloaded once (only for the new uplink conf; the unmanaged conf skipped by the bootstrap and step 7)" || bad "bench: NM reloads $(wc -l < "$E/nm-reloads")"
@@ -228,6 +233,44 @@ for p in /opt/xorgate-rs /usr/local/bin/xorgate-rs "$RS_UNIT_PATH" "$RS_UNIT_PAT
 ls /tmp/provision-rs.* >/dev/null 2>&1 && bad "--uninstall left its private copy" || ok "--uninstall removed its private copy"
 reset_device >/dev/null 2>&1; run_boot >/dev/null; mkdir -p /opt/xorgate /var/lib/xorgate-rs-install; : > /var/lib/xorgate-rs-install/record; cp /etc/systemd/system/xorgate-agent-rs.service /etc/systemd/system/xorgate-agent.service
 env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 3 "--uninstall on a CONVERTED device (install-rs.sh record)"
+
+echo "== --uninstall refuses a converted device WITHOUT a record (review S1)"
+reset_device >/dev/null 2>&1; run_boot >/dev/null; rm -f /etc/systemd/system-generators/xorgate-agent-rs-native "$RS_UNIT_PATH.d/20-native.conf"
+mkdir -p /opt/xorgate; cp "$RS_UNIT_PATH" /etc/systemd/system/xorgate-agent.service; systemctl daemon-reload
+B=$(snap --no-inode)
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 3 "--uninstall: no native marker (generator / 20-native.conf)"
+grep -q 'not a native Rust install' "$OUT" && [ "$(snap --no-inode)" = "$B" ] && ok "…named, and nothing changed" || bad "S1 marker refusal"
+reset_device >/dev/null 2>&1; run_boot >/dev/null; mkdir -p /opt/xorgate
+printf '[Service]\nExecStart=/bin/sleep infinity\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/xorgate-agent.service; systemctl daemon-reload
+env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 3 "--uninstall: native, but xorgate-agent not enabled"
+grep -q 'is not enabled' "$OUT" && [ -e /opt/xorgate-rs ] && ok "…named, Rust kept" || bad "S1 enabled refusal"
+
+echo "== a usage error still removes the bootstrap's temp dir (review N6)"
+reset_device; d=$(mktemp -d); cp "$BUCKET/$TGZ" "$BUCKET/$TGZ.sha256" "$d/"; tar -xzf "$d/$TGZ" -C "$W" provision-rs.sh
+env PATH="$P" bash "$W/provision-rs.sh" --tarball "$d/$TGZ" --cleanup "$d" --bogus > "$OUT" 2>&1; RC=$?; expect_rc 2 "usage error"
+[ ! -e "$d" ] && ok "…and its --cleanup dir (with the tarball) is gone" || { bad "usage error leaked $d"; rm -rf "$d"; }
+
+echo "== the run survives its session (review N2): SIGINT, SIGHUP, a closed output pipe"
+for sig in INT HUP PIPE; do
+  reset_device
+  if [ $sig = PIPE ]; then
+    # The session's reader goes away after 6 lines (just after the hand-off).
+    env -C /home/pi PATH="$P" SUDO_USER=pi python3 -I "$HERE/sigdfl.py" bash "$BOOT" < /dev/null | head -n 6 > "$W/bg.out" &
+  else
+    boot_bg "$W/bg.out"
+  fi
+  wait_log 'installing apt dependencies' 60 || bad "$sig: the unit never started"
+  if [ $sig != PIPE ]; then
+    kill -"$sig" "$BG_PID"
+    for _ in $(seq 20); do kill -0 "$BG_PID" 2>/dev/null || break; sleep 1; done
+    kill -0 "$BG_PID" 2>/dev/null && bad "$sig: the client did not exit" || ok "$sig: the client (session) is gone"
+  fi
+  wait_rc 180; [ "$UNIT_RC" = 0 ] && ok "$sig: the provisioning unit ran to the end anyway (exit 0)" || { bad "$sig: unit exit '${UNIT_RC}'"; tail -20 /var/log/xorgate-provision-rs.log | sed 's/^/    | /'; }
+  [ "$(systemctl is-active xorgate-agent-rs)" = active ] && [ "$(claims)" = 1 ] && grep -q '\[xorgate\] registered device' /var/log/xorgate-provision-rs.log \
+    && ok "$sig: one claim, the agent active, the log says registered" || bad "$sig: $(systemctl is-active xorgate-agent-rs), $(claims) claim(s)"
+  if [ $sig != PIPE ]; then grep -q 'provisioning CONTINUES' "$W/bg.out" && ok "$sig: the session was told where to follow it" || bad "$sig: no detach notice"; fi
+  wait 2>/dev/null
+done
 
 reset_device
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"

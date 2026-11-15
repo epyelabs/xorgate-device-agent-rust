@@ -56,6 +56,11 @@ SUDOERS_024=$SUDOERS_D/024_xorgate-update-rs
 STATE_DIR=/var/lib/xorgate
 CONVERT_RECORD=/var/lib/xorgate-rs-install/record
 LOCK=/run/xorgate-provision-rs.lock
+# review-wp-r1 N2: the work after the pre-claim refusals runs as this
+# transient unit, so a dropped ssh session cannot cut a run in half.
+PROV_UNIT=xorgate-provision-rs
+PROV_LOG=/var/log/xorgate-provision-rs.log
+PROV_RC=/run/xorgate-provision-rs.rc
 # What a staged build must carry (install-rs.sh REQUIRED_MEMBERS + this file).
 REQUIRED_MEMBERS=(bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service systemd/xorgate-updater-rs.service
   install-rs.sh provision-rs.sh)
@@ -146,6 +151,7 @@ native_generator_body() {
     '# at boot only while the JS agent is not installed (/opt/xorgate absent), so' \
     '# a later JS install wins cleanly from the next boot. Remove with:' \
     '# sudo /opt/xorgate-rs/provision-rs.sh --uninstall' \
+    '[ -n "$1" ] || exit 0' \
     '[ -e /opt/xorgate ] && exit 0' \
     'mkdir -p "$1/multi-user.target.wants" || exit 0' \
     'ln -sf /etc/systemd/system/xorgate-agent-rs.service "$1/multi-user.target.wants/xorgate-agent-rs.service"'
@@ -269,7 +275,8 @@ EOF
 # Output, failure handling.
 log()  { echo "[xorgate] $*"; }
 warn() { echo "[xorgate] WARN: $*"; }
-PHASE=pre          # pre (nothing claimed) | claimed
+PHASE=pre          # pre (nothing claimed) | claiming (the POST in flight: state unknown) | claimed
+HANDED_OFF=0       # 1 = the transient unit owns the run (N2)
 FINISHED=0
 PRIV=""            # private 0700 scratch (claim response, drafts)
 CLEANUP=""
@@ -292,15 +299,23 @@ on_exit() {
   local rc=$?
   set +e
   trap - EXIT
+  if [ "$HANDED_OFF" = 1 ]; then   # the unit owns the staging, the cleanup dir and the outcome
+    [ -z "$PRIV" ] || rm -rf "$PRIV"
+    exit "$rc"
+  fi
   if [ "$FINISHED" != 1 ] && [ "$rc" != 0 ]; then
     echo "[xorgate] ERROR: unexpected failure (exit $rc)" >&2
-    if [ "$PHASE" = claimed ]; then rc=4; else rc=1; fi
+    case $PHASE in claimed) rc=4 ;; claiming) rc=5 ;; *) rc=1 ;; esac
   fi
-  if [ "$PHASE" = pre ] && [ "$STAGED" = 1 ]; then rm -rf "$STAGING"; fi
+  if [ "$PHASE" != claimed ] && [ "$STAGED" = 1 ]; then rm -rf "$STAGING"; fi
   if [ "$PHASE" = pre ] && [ "$rc" = 1 ]; then echo "[xorgate] nothing was claimed: the registration code is still usable" >&2; fi
+  if [ "$PHASE" = claiming ]; then
+    echo "[xorgate] claim state UNKNOWN: the claim request may have reached the API. If the console lists this device, delete it and register again; otherwise run the same command again" >&2
+  fi
   if [ "$PHASE" = claimed ] && [ "$rc" = 4 ]; then recovery; fi
   [ -z "$PRIV" ] || rm -rf "$PRIV"
   [ -z "$CLEANUP" ] || rm -rf "$CLEANUP"
+  if [ -n "${XORGATE_PROVISION_RCFILE:-}" ]; then echo "$rc" > "$XORGATE_PROVISION_RCFILE" 2>/dev/null; fi
   exit "$rc"
 }
 on_signal() { trap '' HUP INT TERM; echo "[xorgate] interrupted" >&2; exit "$1"; }
@@ -388,6 +403,71 @@ apt_hard() { # <step label> <pkgs…>: failure = exit 1 (nothing claimed)
   apt-get install -y -qq "$@" || fail 1 "apt-get install $* failed ($what); nothing was claimed. Re-run the same command once apt works (sudo apt-get update)"
 }
 
+# N2 (review-wp-r1): once the refusals have passed, the rest of the run
+# (apt, claim, install, start) is a transient systemd unit, so a dropped ssh
+# session (SIGHUP) can no longer stop it between the claim and P9 and leave a
+# half-provisioned device. `systemd-run --no-block` only queues the unit
+# (`--wait` would stop it on the client's SIGINT); this session then polls the
+# unit, prints its log and returns the exit code the unit wrote. If this
+# session is interrupted, hung up or loses its output pipe, the unit carries
+# on and the log says how it ended. Where systemd is not running (a container), the run
+# stays in this session: keep that session alive (tmux).
+ORIG_ARGS=()
+on_detach() {
+  trap '' HUP INT TERM
+  { echo "[xorgate] this session stopped following; provisioning CONTINUES in $PROV_UNIT"
+    echo "[xorgate]   follow it: sudo tail -f $PROV_LOG   (systemctl status $PROV_UNIT; exit code in $PROV_RC)"; } 2>/dev/null
+  FINISHED=1
+  exit "$1"
+}
+follow_log() { # <offset var name>: print what the log gained since the offset
+  local n off=${!1}
+  n=$(stat -c %s "$PROV_LOG" 2>/dev/null || echo 0)
+  if [ "$n" -gt "$off" ]; then tail -c +"$((off + 1))" "$PROV_LOG" | head -c "$((n - off))"; printf -v "$1" '%s' "$n"; fi
+}
+handoff_to_unit() {
+  local self rc off=0 i=0 st
+  if [ ! -d /run/systemd/system ] || ! command -v systemd-run >/dev/null 2>&1; then
+    log "NOTE: systemd is not running here: provisioning in THIS session. Keep it alive (tmux): a session that drops after the claim leaves a half-provisioned device"
+    return 0
+  fi
+  case $(unit_active "$PROV_UNIT") in
+    active | activating | deactivating) refuse "a provisioning run is already in progress ($PROV_UNIT)" ;;
+  esac
+  systemctl reset-failed "$PROV_UNIT" >/dev/null 2>&1 || true
+  self=$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")
+  rm -f "$PROV_RC"
+  install -m 0600 /dev/null "$PROV_LOG"
+  exec 9>&-   # the unit takes the lock itself
+  log "continuing as the transient unit $PROV_UNIT (a dropped ssh session no longer stops it)"
+  log "  log: $PROV_LOG"
+  HANDED_OFF=1
+  trap 'on_detach 129' HUP; trap 'on_detach 130' INT; trap 'on_detach 143' TERM; trap 'on_detach 141' PIPE
+  systemd-run --unit="$PROV_UNIT" --description="xorgate native Rust provisioning" --no-block --collect --quiet \
+    -p StandardOutput="append:$PROV_LOG" -p StandardError="append:$PROV_LOG" \
+    --setenv=XORGATE_PROVISION_IN_UNIT=1 --setenv=XORGATE_PROVISION_RCFILE="$PROV_RC" \
+    --setenv=SUDO_USER="${SUDO_USER:-}" --setenv=PATH="$PATH" --setenv=HOME=/root \
+    bash "$self" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"} < /dev/null || { HANDED_OFF=0; fail 1 "systemd-run could not start $PROV_UNIT"; }
+  # Until the unit has written its exit code; a unit that is gone (or never
+  # left the queue) for 10 s without one has died.
+  while [ ! -s "$PROV_RC" ]; do
+    follow_log off
+    st=$(unit_active "$PROV_UNIT")
+    case $st in active | activating | deactivating | reloading) i=0 ;; *) i=$((i + 1)) ;; esac
+    [ "$i" -lt 10 ] || break
+    sleep 1
+  done
+  sleep 0.2; follow_log off
+  if [ -s "$PROV_RC" ]; then
+    rc=$(cat "$PROV_RC")
+  else
+    echo "[xorgate] ERROR: $PROV_UNIT ended without an exit code ($st); see $PROV_LOG and journalctl -u $PROV_UNIT" >&2
+    rc=1
+  fi
+  FINISHED=1
+  exit "$rc"
+}
+
 provision_main() {
   local m out rc status msg
 
@@ -416,6 +496,9 @@ provision_main() {
   [ -f "$TARBALL" ] || fail 1 "no such tarball: $TARBALL"
   exec 9>"$LOCK"
   flock -n 9 || refuse "another provision-rs.sh is running ($LOCK)"
+  # N2: everything after the refusals runs as a transient unit (returns only
+  # where systemd is not running, e.g. a container).
+  if [ -z "${XORGATE_PROVISION_IN_UNIT:-}" ]; then handoff_to_unit; fi
   trap 'on_signal 129' HUP; trap 'on_signal 130' INT; trap 'on_signal 143' TERM
   PRIV=$(mktemp -d)
   chmod 0700 "$PRIV"
@@ -516,16 +599,18 @@ provision_main() {
         '{serial:$s, hostname:$h, platform:$p, dtModel:$d, cameras:$c, agent:"rust"}')
   log "claiming registration code via $API_BASE (model: $DT_MODEL, cameras: $CAM_COUNT)"
   local RESP=$PRIV/claim.json
+  PHASE=claiming   # N1: from here until an HTTP answer, the claim state is unknown
   status=$(curl -sS --proto =https --retry 3 --retry-delay 2 \
     -X POST -H 'Content-Type: application/json' -d "$body" \
     -o "$RESP" -w '%{http_code}' "$API_BASE/device-registrations/$REG_CODE/claim" 2> "$PRIV/claim.err") || status=000
+  if [ "$status" != 200 ] && [ "$status" != 000 ]; then PHASE=pre; fi   # a definite answer: not claimed
   if [ "$status" != 200 ]; then
     msg=$(jq -r '.message // .error.message // .error // empty' "$RESP" 2>/dev/null | head -c 300 || true)
     msg=${msg%.}
     case $status in
       409) fail 5 "claim refused (409): ${msg:-a device with this serial is already registered in the workspace}. Delete it in the console, then run this same command again (the code is unused)" ;;
       404) fail 5 "claim refused (404): ${msg:-registration code not found, already used, or expired}. Mint a new code in the console" ;;
-      000) fail 5 "claim failed: $(tr -s '\n' ' ' < "$PRIV/claim.err")(no HTTP response). If the console shows the device, delete it; then register again" ;;
+      000) fail 5 "claim failed: $(tr -s '\n' ' ' < "$PRIV/claim.err")(no HTTP response)" ;;
       *) fail 5 "claim refused (HTTP $status)${msg:+: $msg}" ;;
     esac
   fi
@@ -776,6 +861,15 @@ uninstall_main() {
   if [ ! -e "$JS_PREFIX" ] || [ ! -e "$JS_UNIT" ]; then
     refuse "the JS agent is not installed ($JS_PREFIX + $JS_UNIT): removing the Rust agent would leave this device with no agent"
   fi
+  # review-wp-r1 S1: only a NATIVE install (its generator or 20-native.conf)
+  # that the JS installer has since taken over (JS enabled). A device converted
+  # by hand, or whose convert record is gone, has neither marker.
+  if [ ! -e "$GENERATOR" ] && [ ! -e "$RS_UNIT_D/20-native.conf" ]; then
+    refuse "this is not a native Rust install ($GENERATOR and $RS_UNIT_D/20-native.conf are absent): a converted device is reverted with sudo /opt/xorgate-rs/install-rs.sh --revert"
+  fi
+  if [ "$(unit_enabled xorgate-agent)" != enabled ]; then
+    refuse "xorgate-agent (JS) is not enabled ($(unit_enabled xorgate-agent)): removing the Rust agent would leave this device with no agent at boot"
+  fi
   exec 9>"$LOCK"
   flock -n 9 || refuse "another provision-rs.sh is running ($LOCK)"
   # This file is inside the tree it removes: carry on from a private copy.
@@ -812,8 +906,31 @@ uninstall_main() {
 }
 
 # ---------------------------------------------------------------------------
+# --cleanup: only a temp dir that holds the tarball (never a path that happens
+# to be passed by mistake).
+set_cleanup() {
+  local cdir tdir
+  if [ -n "${CLEANUP_ARG:-}" ]; then
+    cdir=$(cd "$CLEANUP_ARG" 2>/dev/null && pwd -P) || cdir=""
+    tdir=$(cd "$(dirname -- "$TARBALL")" 2>/dev/null && pwd -P) || tdir=""
+    case $cdir in
+      /tmp/?* | "${TMPDIR:-/tmp}"/?*)
+        if [ -n "$tdir" ] && [ "$tdir" = "$cdir" ] || [ "${tdir#"$cdir"/}" != "$tdir" ]; then CLEANUP=$cdir
+        else log "NOTE: --cleanup $CLEANUP_ARG does not hold the tarball: not removed"; fi ;;
+      *) log "NOTE: --cleanup $CLEANUP_ARG is not a temp dir: not removed" ;;
+    esac
+  fi
+}
 main() {
-  local mode=provision n=$#
+  local mode=provision n=$# a prev=""
+  ORIG_ARGS=("$@")
+  # N6 (review-wp-r1): learn --cleanup/--tarball first, so a usage error
+  # (exit 2) still removes the bootstrap's temp dir (and the tarball in it).
+  for a in "$@"; do
+    case $prev in --cleanup) CLEANUP_ARG=$a ;; --tarball) TARBALL=$a ;; esac
+    prev=$a
+  done
+  set_cleanup
   while [ $# -gt 0 ]; do
     case $1 in
       --reg-code | --api-base | --from | --tarball | --cleanup)
@@ -840,19 +957,6 @@ main() {
   case $API_BASE in https://*) ;; *) usage_error "--api-base must be an https:// URL" ;; esac
   case $FROM in https://*) ;; *) usage_error "--from must be an https:// URL" ;; esac
   API_BASE=${API_BASE%/}; FROM=${FROM%/}
-  # --cleanup: only a temp dir that holds the tarball (never a path that
-  # happens to be passed by mistake).
-  if [ -n "${CLEANUP_ARG:-}" ]; then
-    local cdir tdir
-    cdir=$(cd "$CLEANUP_ARG" 2>/dev/null && pwd -P) || cdir=""
-    tdir=$(cd "$(dirname -- "$TARBALL")" 2>/dev/null && pwd -P) || tdir=""
-    case $cdir in
-      /tmp/?* | "${TMPDIR:-/tmp}"/?*)
-        if [ -n "$tdir" ] && [ "$tdir" = "$cdir" ] || [ "${tdir#"$cdir"/}" != "$tdir" ]; then CLEANUP=$cdir
-        else log "NOTE: --cleanup $CLEANUP_ARG does not hold the tarball: not removed"; fi ;;
-      *) log "NOTE: --cleanup $CLEANUP_ARG is not a temp dir: not removed" ;;
-    esac
-  fi
   provision_main
 }
 

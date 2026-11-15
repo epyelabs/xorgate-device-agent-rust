@@ -58,14 +58,29 @@ B)
   ldd /opt/xorgate-rs.new/bin/xorgate-rs >/dev/null 2>&1 && bad "the staging dir survived the exit-5 path" || ok "/opt/xorgate-rs.new removed on exit 5"
   for p in /opt/xorgate-rs /etc/xorgate /etc/systemd/system/xorgate-agent-rs.service; do [ ! -e $p ] || bad "$p exists after exit 5"; done
   pip_list=$(python3 -m pip list 2>/dev/null | grep -iE '^(adafruit-circuitpython-bno08x|adafruit-blinka) ' | tr -s ' ' | tr '\n' ';'); echo "  pip: $pip_list"
-  echo "== B2: a re-run under a window-only APT::Get::Upgrade \"false\" (the bench mechanism)"
-  dpkg-query -W > /tmp/dpkg.before
+  # review-wp-r1 N5: make the no-upgrade row discriminate. jq (a named
+  # package of call 1) is re-installed as a LOWER local version, so the
+  # archive's jq is an upgrade candidate. B2: the window-only conf keeps it;
+  # B3 (the control): without the conf the same run upgrades it.
+  echo "== B2/B3: APT::Get::Upgrade \"false\" (the bench mechanism) with an upgradable named package"
+  JQV=$(dpkg-query -W -f='${Version}' jq)
+  mkdir -p /tmp/jq && cd /tmp/jq && apt-get download -qq jq >/dev/null 2>&1 && dpkg-deb -R jq_*.deb x \
+    && sed -i "s/^Version: .*/Version: ${JQV%-*}-0~da8/" x/DEBIAN/control && dpkg-deb -b x jq-old.deb >/dev/null && dpkg -i jq-old.deb >/dev/null 2>&1
+  cd "$S" || exit 1
+  OLDV=$(dpkg-query -W -f='${Version}' jq)
+  [ "$OLDV" != "$JQV" ] && apt-get -s install jq 2>/dev/null | grep -q '^Inst jq ' && ok "setup: jq $OLDV installed, the archive's $JQV is an upgrade" || bad "setup: jq $OLDV (archive $JQV) not upgradable"
   echo 'APT::Get::Upgrade "false";' > /etc/apt/apt.conf.d/00p8-no-upgrade
+  dpkg-query -W > /tmp/dpkg.before
   rm -f claims.log; SUDO_USER=pi bash /t/provision-rs.sh --reg-code da8code --api-base https://api.e2e.invalid/v1 --from https://dist.e2e.invalid \
     --tarball "/tmp/d/$TGZ" > /tmp/run2.log 2>&1; rc=$?
-  [ $rc = 5 ] && ok "run 2: exit 5 again" || bad "run 2: exit $rc"
+  [ $rc = 5 ] && ok "B2: exit 5 again" || bad "B2: exit $rc"
   dpkg-query -W > /tmp/dpkg.after
-  cmp -s /tmp/dpkg.before /tmp/dpkg.after && ok "run 2 changed no package version ($(wc -l < /tmp/dpkg.after) packages)" || { bad "run 2 changed packages"; diff /tmp/dpkg.before /tmp/dpkg.after | head; }
+  [ "$(dpkg-query -W -f='${Version}' jq)" = "$OLDV" ] && cmp -s /tmp/dpkg.before /tmp/dpkg.after \
+    && ok "B2: under the conf the upgradable jq stays $OLDV and no package changes ($(wc -l < /tmp/dpkg.after))" || { bad "B2: packages changed"; diff /tmp/dpkg.before /tmp/dpkg.after | head; }
+  rm -f /etc/apt/apt.conf.d/00p8-no-upgrade claims.log
+  SUDO_USER=pi bash /t/provision-rs.sh --reg-code da8code --api-base https://api.e2e.invalid/v1 --from https://dist.e2e.invalid \
+    --tarball "/tmp/d/$TGZ" > /tmp/run3.log 2>&1; rc=$?
+  [ $rc = 5 ] && [ "$(dpkg-query -W -f='${Version}' jq)" = "$JQV" ] && ok "B3 (control): without the conf the same run upgrades jq to $JQV, so B2 discriminates" || bad "B3: exit $rc, jq $(dpkg-query -W -f='${Version}' jq)"
   ;;
 esac
 echo "== result $1: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"

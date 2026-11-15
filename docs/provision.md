@@ -41,7 +41,7 @@
 | 2 | usage | fix the command |
 | 3 | refused, nothing changed: not root, not aarch64, not Debian, a JS-provisioned device, or already provisioned without `--reprovision` | follow the message |
 | 4 | claimed, but the agent did not become active within 90 s (or a post-claim step failed) | follow the printed RECOVERY: delete the device in the console, register again, run `sudo bash install.sh --reprovision` |
-| 5 | claim refused (409 duplicate serial, 404 used/expired code); only the dependencies are installed | 409: delete the old device row, then the same command; 404: mint a new code |
+| 5 | claim refused (409 duplicate serial, 404 used/expired code), or the claim state is UNKNOWN (no HTTP answer, or interrupted during the request; the message says so); only the dependencies are installed | 409: delete the old device row, then the same command; 404: mint a new code; unknown: if the console lists the device delete it and register again, else the same command |
 
 ## The step table (D1.4): JS `install.sh` → `provision-rs.sh`
 
@@ -52,7 +52,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 | 0a | NM usb0 unmanaged conf, always rewritten, NM reloaded | the **bootstrap** writes it only if absent; step 7 installs the tarball's full copy cmp-before-write and reloads NM only if it changed |
 | 0 | `SVC_USER`/`SVC_GROUP` from `$SUDO_USER`, else root | same |
 | — | — | **P0** preconditions (exit 3): root, aarch64, Debian/Ubuntu; refuse a JS device (`/opt/xorgate` or `xorgate-agent.service`), even with `--reprovision`; refuse an already-provisioned device (`/etc/xorgate/agent.env`, `/opt/xorgate-rs` or the unit) without `--reprovision`; a lock; a `bcm2711` warning (D7) |
-| — | — | **P1** the tarball's sidecar is re-checked (exit 1) |
+| — | — | **P1** the hand-off to the transient unit `xorgate-provision-rs` (see "A dropped ssh session"); the tarball's sidecar is re-checked (exit 1) |
 | 1 | apt lock timeout; `apt-get update`; `curl ca-certificates jq build-essential python3`; NodeSource + `nodejs` | the same lock conf (cmp-before-write), `update` and call; **no** NodeSource/`nodejs`. A window-only `APT::Get::Upgrade "false"` is honoured, because no call overrides apt's configuration |
 | 1b | IMU: `i2c-tools python3-pip python3-dev` (WARN), pip `adafruit-circuitpython-bno08x adafruit-blinka` (WARN), `raspi-config do_i2c` or `modprobe i2c-dev`, group `i2c` | identical; `usermod` only if the user is not already in the group |
 | — | (JS installs GStreamer in its step 8, WARN only) | **1c** before the claim: `libglib2.0-0 libgstreamer1.0-0` are **fatal** (they provide the binary's NEEDED `libglib-2.0.so.0` and `libgstreamer-1.0.so.0`; `libgcc_s`/`libm`/`libc` are Essential); the rest of the JS GStreamer set WARNs, and so does `gstreamer1.0-libcamera` |
@@ -79,7 +79,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 
 - the wrapper, 024, 021, 023 — tied to `update_plan` by `crates/xorgate-core/tests/install_rs_bodies.rs`, so the first `xorgate-rs update` rewrites nothing;
 - 020, `10-user.conf`, logind, uplink, the apt lock — tied to the JS golden's heredocs by `scripts/tests/provision-rs-bodies.sh`;
-- `20-native.conf`, the native `10-dist.conf`.
+- `20-native.conf`, the native `10-dist.conf`, the boot generator (`nativeGenerator`): pinned to the script by `provision-rs-bodies.sh` and checked for its guards by `install_rs_bodies.rs`. The generator is **not on the update rail**: changing its body later needs a `--reprovision` (or a future update-rail step).
 
 `provision-rs-bodies.sh` also pins `agent.env` against the JS heredoc under a fixed mapping, and the apt package set (= JS's minus `nodejs`). `scripts/tests/install-rs-bodies.sh` keeps the converter's copies equal to the same golden.
 
@@ -88,7 +88,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 - **Rust → Rust (re-register):** register again (agent: Rust), then run line 2 as `sudo bash install.sh --reprovision`. This mints a new identity, swaps the build, restarts the agent and deletes `config-sync.json`. Delete the old device row first, or the claim returns 409.
 - **Rust installer on a JS device:** refused (exit 3). Convert it with `install-rs.sh`, or re-register it with the JS installer.
 - **JS installer on a native Rust device:** its `enable --now xorgate-agent` stops Rust through `Conflicts=`. From the next boot JS alone runs, because a native install never `systemctl enable`s the Rust unit. Its generator wants it only while `/opt/xorgate` is absent.
-  - **Why not plain `enable` + `20-native.conf` (the plan's D1.3):** the real-systemd e2e showed that with both units enabled, the boot transaction holds both start jobs. The Rust unit's `Conflicts=` adds a JS *stop* job that matters to the anchor, while JS's `Wants=`-pulled start does not. systemd therefore drops the JS start, `20-native.conf` then skips Rust, and **no agent runs**.
+  - **Why not plain `enable` + `20-native.conf` (the plan's D1.3):** the real-systemd e2e showed that with both units enabled, the boot transaction holds both start jobs. Neither start job matters to the anchor, but the Rust unit's `Conflicts=` adds a JS *stop* job, and systemd's tie-break for a start and a stop on the same unit deletes the start. JS is dropped, `20-native.conf` then skips Rust, and **no agent runs**.
   - The generator decides before any transaction. `20-native.conf` stays as the belt for a hand-run start.
   - A hand-run `systemctl start xorgate-agent-rs` on such a device still stops JS through `Conflicts=` before the condition skips Rust; do not do that.
 - Then remove the inert Rust files:
@@ -99,6 +99,38 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 
   `--uninstall` stops the Rust unit and removes the generator, `/opt/xorgate-rs{,.new,.old}`, both Rust units and their drop-ins, the wrapper and 024. It never touches `/etc/xorgate`, `/var/lib/xorgate`, the modem/system assets or 020–023. It refuses (exit 3) when the JS agent is not installed (the device would be left with no agent), and on a device converted by `install-rs.sh` (use its `--revert`).
 - **Do not run `install-rs.sh` on a JS-over-native device before `--uninstall`.** Its foreign-drop-in rule keeps `20-native.conf`, so the converted Rust unit would not start and the converter would auto-revert.
+
+## Stopping the agent from starting at boot (native devices)
+
+A native device is wanted at boot by the generator, not by an `/etc` wants link. `systemctl is-enabled xorgate-agent-rs` says `enabled-runtime` on systemd 252, and `generated` on newer versions. So:
+
+- `systemctl disable xorgate-agent-rs` is a **no-op at the next boot**: there is no `/etc` link to remove, and the generator re-creates its runtime link on every boot and `daemon-reload`.
+- `systemctl mask xorgate-agent-rs` **fails**: the unit file itself lives in `/etc/systemd/system`, where the mask symlink would go.
+
+To keep the agent from starting at boot, move the generator aside:
+
+```
+sudo mv /etc/systemd/system-generators/xorgate-agent-rs-native /root/xorgate-agent-rs-native.off
+sudo systemctl daemon-reload
+sudo systemctl stop xorgate-agent-rs
+```
+
+`systemctl is-enabled xorgate-agent-rs` then says `disabled`. To undo it, move the file back (mode 0755, root), then `daemon-reload` and `start`.
+
+`--uninstall` removes the generator for good, but only on a device that the JS installer has taken over.
+
+## A dropped ssh session (review N2)
+
+Once the refusals have passed, `provision-rs.sh` hands the rest of the run to the transient systemd unit `xorgate-provision-rs`:
+
+```
+systemd-run --no-block --collect --unit=xorgate-provision-rs …
+```
+
+- **Where it writes:** output goes to `/var/log/xorgate-provision-rs.log`, and the exit code to `/run/xorgate-provision-rs.rc`. The ssh session only polls the unit, prints the log, and returns the unit's exit code.
+- **Why not `--wait`:** it would stop the unit when the client is interrupted. With `--no-block`, a Ctrl-C, a hang-up or a closed output pipe ends only the session. The run continues, and the session prints where to follow it.
+- **Why it matters:** after the claim, an interrupted run would leave a half-provisioned device with the code already used.
+- **Without systemd** (a container): the run stays in the session, with a NOTE. Keep that session alive (`tmux`).
 
 ## Updates on a native device (D4)
 
@@ -120,6 +152,13 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 - **Real:** systemd, curl + TLS, `jq`, `visudo`, `pack.sh`, the bootstrap golden.
 - **Stubbed:** apt and pip (a fake dpkg state), `uname -m`, `modprobe`/`udevadm`, and the agent binary (a Type=notify stand-in). The modem daemon and the `system/` helpers in the test tarball are inert stubs.
 - **The fake API** answers for the golden's PROD hostnames only through `/etc/hosts` and a test CA. Setup refuses to run unless each name resolves to 127.0.0.1.
+
+**W2 / DA13 on hardware:**
+
+- expect `systemctl is-enabled xorgate-agent-rs` = `enabled-runtime` (systemd 252);
+- the generator present;
+- **no** `/etc/systemd/system/multi-user.target.wants/xorgate-agent-rs.service`;
+- compare `config.txt` by sha: `raspi-config` gives it a new inode.
 
 **Not proven here:**
 
