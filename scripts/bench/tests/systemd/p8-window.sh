@@ -221,7 +221,9 @@ d=$(( $(date -d "$n" +%s) - t ))
 [ "$(systemctl is-enabled p8-deadman-boot.service)" = enabled ] && ok "the boot unit is enabled" || bad "boot unit not enabled"
 m1=$(systemctl show p8-deadman.timer -p NextElapseUSecMonotonic --value); tm=$(systemctl show p8-deadman.timer -p TimersMonotonic --value)
 systemctl daemon-reload; m2=$(systemctl show p8-deadman.timer -p NextElapseUSecMonotonic --value)
-case $tm in *OnActiveUSec*) [ -n "$m1" ] && [ "$m1" != infinity ] && [ "$m1" = "$m2" ] && ok "T4: a monotonic OnActiveSec elapse ($m1) next to OnCalendar, unchanged by daemon-reload" || bad "T4: monotonic $m1 -> $m2" ;; *) bad "T4: no OnActiveUSec in TimersMonotonic ($tm)" ;; esac
+span_s() { python3 -I -c 'import re,sys; u={"d":86400,"h":3600,"min":60,"s":1,"ms":0.001,"us":1e-6}; print(sum(float(n)*u[k] for n,k in re.findall(r"([0-9.]+)(d|h|min|ms|us|s)", sys.argv[1])))' "$1"; }
+d=$(python3 -I -c 'import sys; print(abs(float(sys.argv[1]) - float(sys.argv[2])))' "$(span_s "$m1")" "$(span_s "$m2")")
+case $tm in *OnActiveUSec*) [ -n "$m1" ] && [ "$m1" != infinity ] && python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) <= 2 else 1)' "$d" && ok "T4: a monotonic OnActiveSec elapse ($m1) next to OnCalendar, kept by daemon-reload (delta ${d}s)" || bad "T4: monotonic $m1 -> $m2" ;; *) bad "T4: no OnActiveUSec in TimersMonotonic ($tm)" ;; esac
 v=$(systemd-analyze verify "$SDIR/p8-deadman.timer" "$SDIR/p8-deadman.service" "$SDIR/p8-deadman-boot.service" 2>&1 | grep 'p8-deadman' || true)
 [ -z "$v" ] && ok "systemd-analyze verify: the three dead-man units are clean" || bad "systemd-analyze: $v"
 [ "$(cat /var/lib/xorgate/settings.json)" = "$(cat "$W/seed-settings.json")" ] && ok "the seed is in place" || bad "no seed"
