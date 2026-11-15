@@ -332,6 +332,13 @@ cp "$W/test-w1/etc/xorgate/device.key.pem" "$R/tmp-devkey.pem" 2>/dev/null || { 
 mkdir -p "$R/home/pi"; cp "$W/test-w1/etc/xorgate/device.key.pem" "$R/home/pi/stray.pem"
 vo post --window "$W" | grep -q '^FAIL no DEV key/cert outside' && ok "post FAILs on a DEV key copy outside W/test-*" || bad "DEV key copy not found"
 rm -f "$R/home/pi/stray.pem" "$R/tmp-devkey.pem" "$R/tmp/devkey.pem"
+# W1 attempt 2: a PUBLIC CA bundle (the KVS SDK's media/cert.pem) in the test tree AND in PROD is not a DEV key
+mkdir -p "$W/test-w1/opt/xorgate/media" "$R/opt/xorgate-rs/media"; printf 'PUBLIC CA BUNDLE\n' > "$W/test-w1/opt/xorgate/media/cert.pem"; cp "$W/test-w1/opt/xorgate/media/cert.pem" "$R/opt/xorgate-rs/media/cert.pem"
+vo post --window "$W" | grep -q '^PASS no DEV key/cert outside' && ok "a public cert.pem (KVS CA bundle) in the test tree and PROD does NOT trip the DEV-key row" || bad "cert.pem false positive: $(vo post --window "$W" | grep 'DEV key')"
+mkdir -p "$R/var/tmp"; cp "$W/test-w1/etc/xorgate/device.key.pem" "$R/var/tmp/stray"
+vo post --window "$W" | grep -q '^FAIL no DEV key/cert outside' && ok "a stray DEV device.key.pem (any name, anywhere scanned) trips it" || bad "stray DEV key not found"
+rm -rf "$R/var/tmp/stray" "$R/opt/xorgate-rs/media/cert.pem" "$W/test-w1/opt/xorgate/media"
+rm -f "$R/home/pi/stray.pem" "$R/tmp-devkey.pem" "$R/tmp/devkey.pem"
 touch "$R/var/lib/systemd/timers/stamp-p8-deadman.timer"
 vo pre --window "$W" | grep -q '^FAIL no window artifact' && ok "pre FAILs on a leftover timer stamp (nit)" || bad "stamp not caught"
 rm -f "$R/var/lib/systemd/timers/stamp-p8-deadman.timer"

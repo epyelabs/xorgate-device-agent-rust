@@ -183,17 +183,31 @@ cmd_pre() {
   verdict pre
 }
 
-dev_keys_outside() { # prints the number of DEV key/cert copies outside W/test-*
+# W1 attempt 2 false positive: every *.pem counted, incl. the KVS SDK's PUBLIC
+# CA bundle media/cert.pem. Only the DEV device IDENTITY counts: the
+# device.key.pem / device.cert.pem a test install wrote (root-ca.pem is the
+# public AWS root, not identity), minus anything byte-equal to a PROD file.
+dev_keys_outside() { # prints "<DEV identity files known> <copies outside W/test-*>"
   python3 -I - "$W" "$P8_ROOT" <<'PY'
 import glob, hashlib, os, sys
 w, root = sys.argv[1], sys.argv[2]
 def h(p):
     with open(p, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+IDENTITY = {"device.key.pem", "device.cert.pem"}
+prod = set()
+try:
+    for line in open(w + "/pre.manifest"):
+        c = line.rstrip("\n").split("\t")
+        if len(c) == 6 and c[1] == "f":
+            prod.add(c[5])
+except OSError:
+    pass
 keys = set()
 for p in glob.glob(w + "/test-*/**", recursive=True):
-    if os.path.isfile(p) and not os.path.islink(p) and (p.endswith(".pem") or p.endswith(".key")) and "root-ca" not in os.path.basename(p):
+    if os.path.basename(p) in IDENTITY and os.path.isfile(p) and not os.path.islink(p):
         keys.add(h(p))
+keys -= prod
 hits = 0
 for top in ["/etc", "/opt", "/var/lib", "/usr/local", "/home", "/root", "/tmp", "/var/tmp"]:
     for dp, dn, fn in os.walk(root + top):
