@@ -255,26 +255,75 @@ env PATH="$P" bash "$W/provision-rs.sh" --tarball "$d/$TGZ" --cleanup "$d" --bog
 [ ! -e "$d" ] && ok "…and its --cleanup dir (with the tarball) is gone" || { bad "usage error leaked $d"; rm -rf "$d"; }
 
 echo "== the run survives its session (review N2): SIGINT, SIGHUP, a closed output pipe"
+# The claim's CA fetch is held 15 s (ca-delay), so the unit is provably still
+# running when the client is gone: a client that took the unit down with it
+# fails "the unit is still active" (fix-check NIT-d).
 for sig in INT HUP PIPE; do
-  reset_device
+  reset_device; echo 15 > "$E/ca-delay"
   if [ $sig = PIPE ]; then
-    # The session's reader goes away after 6 lines (just after the hand-off).
-    env -C /home/pi PATH="$P" SUDO_USER=pi python3 -I "$HERE/sigdfl.py" bash "$BOOT" < /dev/null | head -n 6 > "$W/bg.out" &
+    # The session's reader goes away after 6 lines (just after the hand-off);
+    # through a fifo, so BG_PID is the client itself.
+    rm -f "$W/pipe"; mkfifo "$W/pipe"
+    head -n 6 < "$W/pipe" > "$W/bg.out" &
+    env -C /home/pi PATH="$P" SUDO_USER=pi python3 -I "$HERE/sigdfl.py" bash "$BOOT" < /dev/null > "$W/pipe" 2>&1 &
+    BG_PID=$!
   else
     boot_bg "$W/bg.out"
   fi
-  wait_log 'installing apt dependencies' 60 || bad "$sig: the unit never started"
-  if [ $sig != PIPE ]; then
-    kill -"$sig" "$BG_PID"
-    for _ in $(seq 20); do kill -0 "$BG_PID" 2>/dev/null || break; sleep 1; done
-    kill -0 "$BG_PID" 2>/dev/null && bad "$sig: the client did not exit" || ok "$sig: the client (session) is gone"
-  fi
+  wait_log 'claimed: device' 60 || bad "$sig: the unit never reached the claim"
+  [ $sig = PIPE ] || kill -"$sig" "$BG_PID"
+  for _ in $(seq 12); do kill -0 "$BG_PID" 2>/dev/null || break; sleep 1; done
+  kill -0 "$BG_PID" 2>/dev/null && bad "$sig: the client did not exit" || ok "$sig: the client (session) is gone"
+  [ "$(systemctl is-active xorgate-provision-rs)" = active ] && ok "$sig: …while the provisioning unit is still active (it detached, nothing stopped the unit)" || bad "$sig: the unit is $(systemctl is-active xorgate-provision-rs) right after the client left"
   wait_rc 180; [ "$UNIT_RC" = 0 ] && ok "$sig: the provisioning unit ran to the end anyway (exit 0)" || { bad "$sig: unit exit '${UNIT_RC}'"; tail -20 /var/log/xorgate-provision-rs.log | sed 's/^/    | /'; }
   [ "$(systemctl is-active xorgate-agent-rs)" = active ] && [ "$(claims)" = 1 ] && grep -q '\[xorgate\] registered device' /var/log/xorgate-provision-rs.log \
     && ok "$sig: one claim, the agent active, the log says registered" || bad "$sig: $(systemctl is-active xorgate-agent-rs), $(claims) claim(s)"
   if [ $sig != PIPE ]; then grep -q 'provisioning CONTINUES' "$W/bg.out" && ok "$sig: the session was told where to follow it" || bad "$sig: no detach notice"; fi
   wait 2>/dev/null
 done
+
+echo "== a second run never touches the first run's log (fix-check NIT-c)"
+reset_device; echo 15 > "$E/ca-delay"; boot_bg "$W/bg.out"
+wait_log 'claimed: device' 60 || bad "NIT-c: run 1 never reached the claim"
+H1=$(grep -c '===== run ' /var/log/xorgate-provision-rs.log)
+L1=$(stat -c %s /var/log/xorgate-provision-rs.log)
+env -C /home/pi PATH="$P" SUDO_USER=pi bash "$BOOT" > "$W/run2.out" 2>&1 < /dev/null; RC=$?
+expect_rc 3 "NIT-c: a second run while the first is active"
+L2=$(stat -c %s /var/log/xorgate-provision-rs.log)
+[ "$L2" -ge "$L1" ] && [ "$(grep -c '===== run ' /var/log/xorgate-provision-rs.log)" = "$H1" ] && grep -q 'claimed: device' /var/log/xorgate-provision-rs.log \
+  && ok "NIT-c: the first run's log is intact (not truncated, no second header)" || bad "NIT-c: log $L1 -> $L2 bytes"
+wait_rc 120; [ "$UNIT_RC" = 0 ] && [ "$(claims)" = 1 ] && ok "NIT-c: the first run still ends 0 with one claim" || bad "NIT-c: run 1 exit '${UNIT_RC}', $(claims) claim(s)"
+wait 2>/dev/null
+
+echo "== the unit KILLED after the claim: 'claim done, install state UNKNOWN', exit 4, never 1 (fix-check NIT-b)"
+reset_device; echo 15 > "$E/ca-delay"; boot_bg "$W/bg.out"
+wait_log 'claimed: device' 60 || bad "NIT-b: never reached the claim"
+systemctl kill --signal=KILL xorgate-provision-rs
+wait "$BG_PID"; RC=$?
+cp "$W/bg.out" "$OUT"; expect_rc 4 "NIT-b: the client's exit after a SIGKILLed unit"
+grep -q 'claim done, install state UNKNOWN' "$OUT" && grep -q 'RECOVERY' "$OUT" && ! grep -q 'nothing was claimed' "$OUT" \
+  && ok "NIT-b: says claim done / install state unknown + RECOVERY" || bad "NIT-b wording"
+
+echo "== under an existing systemd service the run stays IN it: stopping that unit stops the run (fix-check MUST-2)"
+reset_device; echo 20 > "$E/ca-delay"
+systemd-run --quiet --unit=e2e-install -p StandardOutput="file:$W/inst.log" -p StandardError="file:$W/inst.log" \
+  --setenv=PATH="$P" --setenv=SUDO_USER=pi --working-directory=/home/pi bash "$BOOT"
+for _ in $(seq 60); do grep -q 'claimed: device' "$W/inst.log" 2>/dev/null && break; sleep 1; done
+grep -q 'claimed: device' "$W/inst.log" && ok "MUST-2: the run claimed inside e2e-install" || { bad "MUST-2: no claim in e2e-install"; sed 's/^/    | /' "$W/inst.log" | tail -15; }
+grep -q 'already running as a systemd service' "$W/inst.log" && ! grep -q 'continuing as the transient unit' "$W/inst.log" \
+  && ok "MUST-2: no hand-off (INVOCATION_ID set)" || bad "MUST-2: it handed off"
+systemctl stop e2e-install
+[ "$(systemctl is-active xorgate-provision-rs)" != active ] && ! systemctl list-units --no-legend --state=active,activating,deactivating 'xorgate-provision-rs*' | grep -q . \
+  && ok "MUST-2: no xorgate-provision-rs unit left running after the stop" || bad "MUST-2: $(systemctl list-units --all --no-legend 'xorgate-provision-rs*')"
+S1=$(snap --no-inode); sleep 25; S2=$(snap --no-inode)
+[ "$S1" = "$S2" ] && [ ! -e /opt/xorgate-rs ] && [ ! -e /etc/xorgate/agent.env ] && [ "$(systemctl is-active xorgate-agent-rs)" != active ] \
+  && ok "MUST-2: no file write after the stop (25 s, past the held CA fetch); no tree, no agent.env, no agent" || { bad "MUST-2: writes after the stop"; diff <(echo "$S1") <(echo "$S2") | head; }
+
+echo "== relative --tarball/--cleanup are made absolute before the hand-off (fix-check NIT-a)"
+reset_device; d=$(mktemp -d); cp "$BUCKET/$TGZ" "$BUCKET/$TGZ.sha256" "$d/"; tar -xzf "$d/$TGZ" -C "$d" provision-rs.sh
+(cd "$d" && env PATH="$P" SUDO_USER=pi bash ./provision-rs.sh --reg-code relcode1 --api-base "$API_TEST" --from "$DIST_TEST" --tarball "./$TGZ" --cleanup .) > "$OUT" 2>&1 < /dev/null; RC=$?
+expect_rc 0 "NIT-a: relative paths from the caller's cwd"
+[ ! -e "$d" ] && [ "$(systemctl is-active xorgate-agent-rs)" = active ] && ok "NIT-a: provisioned, and the relative --cleanup dir removed" || bad "NIT-a: $d $(systemctl is-active xorgate-agent-rs)"
 
 echo "== interrupted DURING the claim request: claim state unknown, never 'nothing was claimed' (review N1)"
 reset_device; echo slow > "$E/claim-mode"; boot_bg "$W/bg.out"

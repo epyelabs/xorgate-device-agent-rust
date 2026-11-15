@@ -230,14 +230,14 @@ e2e_setup() {
 # Back to a fresh device between cases (the container is the device).
 reset_device() {
   local u
-  for u in xorgate-provision-rs xorgate-agent-rs xorgate-agent xorgate-updater-rs sim7600-lte; do systemctl stop "$u" >/dev/null 2>&1; systemctl disable "$u" >/dev/null 2>&1; done
+  for u in e2e-install xorgate-provision-rs xorgate-agent-rs xorgate-agent xorgate-updater-rs sim7600-lte; do systemctl stop "$u" >/dev/null 2>&1; systemctl disable "$u" >/dev/null 2>&1; done
   rm -rf /etc/xorgate /opt/xorgate /opt/xorgate-rs /opt/xorgate-rs.new /opt/xorgate-rs.old /var/lib/xorgate /var/lib/xorgate-rs-install \
     /usr/local/bin/xorgate /usr/local/bin/xorgate-* /usr/local/bin/sim7600-lte.sh \
     /etc/systemd/system/xorgate-* /etc/systemd/system/sim7600-lte.service /etc/systemd/system/multi-user.target.wants/xorgate-* \
     /etc/systemd/system/multi-user.target.wants/sim7600-lte.service /etc/sudoers.d/02*_xorgate-* /etc/cron.d/xorgate-* \
     /etc/udev/rules.d/99-sim7600-lte.rules /etc/systemd/system-generators/xorgate-* /etc/NetworkManager/conf.d/* /etc/systemd/logind.conf.d \
     /etc/apt/apt.conf.d/99xorgate-* /etc/apt/apt.conf.d/00p8-* /run/xorgate-provision-rs.lock /tmp/tmp.* /tmp/provision-rs.* \
-    /var/log/xorgate-provision-rs.log /run/xorgate-provision-rs.rc
+    /var/log/xorgate-provision-rs.log /run/xorgate-provision-rs.rc* "$E/ca-delay"
   printf 'dtparam=i2c_arm=on\n' > /boot/firmware/config.txt; rm -f /boot/firmware/config.txt.bak-xorgate
   cp "$W/group.base" /etc/group; cp "$W/gshadow.base" /etc/gshadow
   rm -rf "$E/apt/installed" && mkdir -p "$E/apt/installed"
@@ -274,8 +274,12 @@ boot_bg() { # <out file>: sets BG_PID
 wait_log() { # <ERE> <secs>: the provisioning unit's log shows it
   local i; for i in $(seq "$2"); do grep -qE "$1" /var/log/xorgate-provision-rs.log 2>/dev/null && return 0; sleep 1; done; return 1
 }
-wait_rc() { # <secs>: the unit's exit code -> $UNIT_RC
-  local i; UNIT_RC=""; for i in $(seq "$1"); do [ -s /run/xorgate-provision-rs.rc ] && { UNIT_RC=$(cat /run/xorgate-provision-rs.rc); return 0; }; sleep 1; done; return 1
+wait_rc() { # <secs>: the provisioning unit's exit code (its last log line) -> $UNIT_RC
+  local i; UNIT_RC=""
+  for i in $(seq "$1"); do
+    UNIT_RC=$(sed -n 's/^\[xorgate\] (provisioning unit) exit code //p' /var/log/xorgate-provision-rs.log 2>/dev/null | tail -n1)
+    [ -z "$UNIT_RC" ] || return 0; sleep 1
+  done; return 1
 }
 show_out() { sed 's/^/    > /' "$OUT"; }
 expect_rc() { # <want> <label>

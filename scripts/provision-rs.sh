@@ -316,7 +316,10 @@ on_exit() {
   if [ "$PHASE" = claimed ] && [ "$rc" = 4 ]; then recovery; fi
   [ -z "$PRIV" ] || rm -rf "$PRIV"
   [ -z "$CLEANUP" ] || rm -rf "$CLEANUP"
-  if [ -n "${XORGATE_PROVISION_RCFILE:-}" ]; then echo "$rc" > "$XORGATE_PROVISION_RCFILE" 2>/dev/null; fi
+  if [ -n "${XORGATE_PROVISION_RCFILE:-}" ]; then
+    echo "[xorgate] (provisioning unit) exit code $rc"
+    echo "$rc" > "$XORGATE_PROVISION_RCFILE" 2>/dev/null
+  fi
   exit "$rc"
 }
 on_signal() { trap '' HUP INT TERM; echo "[xorgate] interrupted" >&2; exit "$1"; }

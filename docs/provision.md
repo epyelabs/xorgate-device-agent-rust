@@ -127,10 +127,26 @@ Once the refusals have passed, `provision-rs.sh` hands the rest of the run to th
 systemd-run --no-block --collect --unit=xorgate-provision-rs …
 ```
 
-- **Where it writes:** output goes to `/var/log/xorgate-provision-rs.log`, and the exit code to `/run/xorgate-provision-rs.rc`. The ssh session only polls the unit, prints the log, and returns the unit's exit code.
-- **Why not `--wait`:** it would stop the unit when the client is interrupted. With `--no-block`, a Ctrl-C, a hang-up or a closed output pipe ends only the session. The run continues, and the session prints where to follow it.
-- **Why it matters:** after the claim, an interrupted run would leave a half-provisioned device with the code already used.
-- **Without systemd** (a container): the run stays in the session, with a NOTE. Keep that session alive (`tmux`).
+**The ssh session only follows.**
+- It polls the unit and prints its run's part of `/var/log/xorgate-provision-rs.log`.
+- It returns the exit code the unit writes to `/run/xorgate-provision-rs.rc.<run id>`.
+- The log is append-only, with a `===== run <id>` header per run, so a second run can never truncate or delete the first's. A second run refuses (3) anyway, on the lock or because the unit is active.
+
+**Why not `--wait`:** it would stop the unit when the client is interrupted. With `--no-block`, a Ctrl-C, a hang-up or a closed output pipe makes the session detach at once, and the run continues. That matters after the claim, where an interrupted run would leave a half-provisioned device with the code used.
+
+**If the unit dies without an exit code** (SIGKILL, a timeout), the session reads how far that run got from its part of the log:
+
+| The log reached | Result |
+|---|---|
+| before the claim | exit 1 |
+| during the claim | exit 5, "claim state UNKNOWN" |
+| after the claim | exit 4, "claim done, install state UNKNOWN" + RECOVERY |
+
+**No hand-off happens in two cases. The run stays in-process:**
+- **The caller is already a systemd service** (`INVOCATION_ID` is set; `sudo` from ssh strips it). The caller's unit then owns the run, so stopping it stops the provisioner too. Example: the bench window's `systemd-run --unit=p8-install-…` (fix-check MUST-2).
+- **systemd is not running** (a container): there is a NOTE. Keep that session alive (`tmux`).
+
+**Relative paths:** `--tarball`/`--cleanup` are made absolute before the hand-off (the unit runs in `/`).
 
 ## Updates on a native device (D4)
 

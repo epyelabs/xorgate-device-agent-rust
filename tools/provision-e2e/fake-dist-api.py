@@ -18,7 +18,8 @@ trusts). Stdlib only.
           (a 504 after 30 s, the code left unclaimed).
           A code may be claimed once (a second claim of it is 404, as the
           backend's pending -> claimed flip).
-      GET /ca.pem   the Amazon root CA stand-in (the claim's caUrl).
+      GET /ca.pem   the Amazon root CA stand-in (the claim's caUrl); <state>/ca-delay
+          (seconds) delays it, which holds a run just after its claim.
 Every request goes to <state>/requests.log (method host path status).
 """
 import http.server
@@ -87,6 +88,10 @@ class H(http.server.BaseHTTPRequestHandler):
             with open(p, "rb") as f:
                 return self.send(200, f.read(), "application/octet-stream")
         if h in hosts("api-hosts") and self.path == "/ca.pem":
+            delay = read("ca-delay")   # holds a run just AFTER its claim
+            if delay:
+                import time
+                time.sleep(float(delay))
             with open(os.path.join(STATE, "root-ca.pem"), "rb") as f:
                 return self.send(200, f.read(), "application/x-pem-file")
         self.send(404, '{"message":"not found"}')
