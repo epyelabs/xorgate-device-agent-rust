@@ -232,7 +232,10 @@ cat > /root/fake-agent-stop.sh <<'EOF'
 # F-P8-T-LOOP: the DEV agent, while being stopped, starts a NEW updater (once).
 [ -e /var/tmp/p8loop.once ] && exit 0
 touch /var/tmp/p8loop.once
-systemctl start --no-block xorgate-updater-rs
+# synchronous (the updater is Type=simple): it is ACTIVE before the restore's job
+# cancel runs, so only the next pass can catch it (a --no-block start would be a
+# queued job that the cancel layer removes; seen on the homelab, 20261115T215908Z)
+systemctl start xorgate-updater-rs
 echo "agent-stop started an updater $(date +%s.%N)" >> /var/log/p8sd.log
 EOF
 chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh /root/fake-install-late.sh /root/fake-updater.sh /root/fake-agent-stop.sh
@@ -500,7 +503,7 @@ bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "U1: ve
 echo "== L1: F-P8-T-LOOP, the DEV agent starts a NEW updater while it is being stopped"
 open_window 20261114T000014Z w2 --cap-min 75
 bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-rs.sh > "$W/ri.out" 2>&1 || bad "L1 install"
-printf '[Service]\nType=oneshot\nExecStart=/usr/bin/sleep 120\nTimeoutStartSec=10min\n' > "$SDIR/xorgate-updater-rs.service"
+printf '[Service]\nType=simple\nExecStart=/usr/bin/sleep 120\n' > "$SDIR/xorgate-updater-rs.service"
 printf '[Service]\nExecStop=/root/fake-agent-stop.sh\n' > "$SDIR/xorgate-agent-rs.service.d/30-loop.conf"
 touch /var/tmp/p8loop.once; systemctl daemon-reload; systemctl restart xorgate-agent-rs; rm -f /var/tmp/p8loop.once   # armed only for the restore's stop
 systemctl is-active --quiet xorgate-updater-rs && bad "L1: an updater already runs" || ok "L1: no updater runs before the restore"
