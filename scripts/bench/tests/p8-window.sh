@@ -137,6 +137,7 @@ mkbench() {
   echo enabled > "$SD/enabled.sim7600-lte"; echo active > "$SD/active.sim7600-lte"; echo enabled > "$SD/enabled.NetworkManager"
   echo active > "$SD/active.xorgate-drive-blackbox"; echo enabled > "$SD/enabled.xorgate-drive-blackbox"
   echo "Thu 2026-11-12 19:26:41 UTC" > "$SD/prop.sim7600-lte.ActiveEnterTimestamp"; echo 0 > "$SD/prop.sim7600-lte.NRestarts"
+  echo "Tue 2030-01-01 00:00:00 UTC" > "$SD/prop.xorgate-agent-rs.ActiveEnterTimestamp"   # "started after the restore"
   export P8_CERT_BIN_SHA; P8_CERT_BIN_SHA=$(sha256sum "$R/opt/xorgate-rs/bin/xorgate-rs" | cut -c1-64)
   W=$R/root/p8-20261114T120000Z
   install -d -m 0700 "$W" "$W/bin"; install -m 0700 "$B"/p8-*.sh "$W/bin/"
@@ -443,8 +444,9 @@ grep -q 'logind.conf.d' "$TMP/mbin/p8-lib.sh" && bad "T6 mutant not applied" || 
 ( . "$TMP/mbin/p8-lib.sh"; p8_manifest "$TMP/gold-m.m" )
 [ "$(gold_missing "$TMP/gold-m.m" 2>/dev/null)" != 0 ] && ok "T6 mutant (logind glob dropped) CAUGHT by the golden list" || bad "T6 mutant not caught"
 
-ready() { # a fresh sandbox window with the surface aside (label $1)
+ready() { # a fresh sandbox window with the surface aside (label $1); NOGEN=1: no /etc generators dir on "PROD"
   mkbench
+  [ "${NOGEN:-0}" = 1 ] && rm -rf "$R/etc/systemd/system-generators"
   run p8-verify.sh baseline --window "$W" >/dev/null 2>&1 || bad "ready: baseline"
   run p8-deadman.sh arm --window "$W" --cap-min 60 --label "${1:-w1}" >/dev/null 2>&1 || bad "ready: arm"
   echo inactive > "$SD/active.xorgate-agent-rs"
@@ -694,6 +696,40 @@ mkbench; run p8-verify.sh baseline --window "$W" >/dev/null 2>&1; echo inactive 
 mkdir -p "$R/run"; touch "$R/run/xorgate-provision-rs.rc.20261115T2"
 vo pre --window "$W" | grep -q '^FAIL no window artifact.*xorgate-provision-rs.rc.20261115T2' && ok "verify: a leftover per-run xorgate-provision-rs.rc.<id> is caught (glob)" || bad "rc.<id> leftover not caught"
 rm -f "$R/run/xorgate-provision-rs.rc.20261115T2"
+
+echo "== bench-tools-r2 MUST-1: the UPDATERS are stopped (verified) before the agents"
+ready w2; fake_js_install
+echo active > "$SD/active.xorgate-updater-rs"; echo active > "$SD/active.xorgate-agent-rs"
+: > "$SD/log"; run p8-restore.sh --window "$W" >/dev/null 2>&1
+lu=$(grep -n 'stopping window unit xorgate-updater-rs.service' "$W/restore.log" | head -1 | cut -d: -f1)
+la=$(grep -n 'stopping window unit xorgate-agent-rs.service' "$W/restore.log" | head -1 | cut -d: -f1)
+lb=$(grep -n 'PROD back:' "$W/restore.log" | head -1 | cut -d: -f1)
+[ -n "$lu" ] && [ -n "$la" ] && [ -n "$lb" ] && [ "$lu" -lt "$la" ] && [ "$la" -lt "$lb" ] && grep -q 'window unit xorgate-updater-rs.service inactive (verified)' "$W/restore.log" \
+  && ok "the updater is stopped + verified BEFORE the agent, both before the first move back" || bad "MUST-1 order: upd=$lu agent=$la back=$lb"
+echo "== bench-tools-r2 SHOULD-3: a window-created empty /etc/systemd/system-generators goes; DA15 checks it"
+NOGEN=1 ready w2
+grep -qx 'generators_dir=absent' "$W/bench-id.env" && ok "backup recorded generators_dir=absent" || bad "bench-id generators_dir"
+fake_js_install; mkdir -p "$R/etc/systemd/system-generators"
+printf '#!/bin/sh\n' > "$R/etc/systemd/system-generators/xorgate-agent-rs-native"
+run p8-restore.sh --window "$W" >/dev/null 2>&1
+[ ! -e "$R/etc/systemd/system-generators" ] && grep -q 'removed the window-created empty /etc/systemd/system-generators' "$W/restore.log" && ok "the generators dir (absent at backup) is removed once emptied" || bad "SHOULD-3 rmdir"
+echo 1 > "$SD/prop.xorgate-agent-rs.MainPID"
+vo post --window "$W" | grep -q '^PASS /etc/systemd/system-generators as at backup (absent)' && ok "DA15 post: the generators dir matches the backup" || bad "SHOULD-3 post row"
+mkdir -p "$R/etc/systemd/system-generators"
+vo post --window "$W" | grep -q '^FAIL /etc/systemd/system-generators as at backup' && ok "DA15 post: a left-over generators dir FAILs" || bad "SHOULD-3 post FAIL row"
+rmdir "$R/etc/systemd/system-generators"
+echo "== fix-check b8d7e44 SHOULD 2: a failed / retried dead-man is NOT GREEN in post, even after a later fix"
+echo "Tue 2030-01-01 00:00:00 UTC" > "$SD/prop.xorgate-agent-rs.ActiveEnterTimestamp"
+vo post --window "$W" | grep -qE '^FAIL (no W/REBOOT-NEEDED|no dead-man|no FATAL|every dead-man)' && bad "post flags dead-man rows on a clean window" || ok "a clean window: no dead-man row FAILs"
+echo "x REBOOT NEEDED" > "$W/REBOOT-NEEDED"; echo 2 > "$W/survivor.retries"
+printf '[p8 t] restore start: window=x label=w2 auto=1 boot=0 self=p8-deadman.service\n[p8 t] FATAL: a window unit could not be stopped\n' >> "$W/restore.log"
+echo "t self=p8-deadman.service rc=1" >> "$W/restore.rc.log"
+o=$(vo post --window "$W")
+for r in 'no W/REBOOT-NEEDED' 'no dead-man survivor retry' 'no FATAL in a dead-man restore run' 'every dead-man restore ended rc=0'; do
+  printf '%s\n' "$o" | grep -q "^FAIL $r" && ok "post FAILs: $r" || bad "post did not flag: $r"
+done
+grep -q 'self=shell rc=' "$W/restore.rc.log" && [ "$(grep -c 'rc=' "$W/restore.rc.log")" -ge 2 ] && ok "restore.rc.log keeps a history (one line per run)" || bad "no restore.rc history"
+rm -f "$W/REBOOT-NEEDED" "$W/survivor.retries"
 
 echo "== cam0 hook policy (mocked: the policy function over a request table)"
 command -v node >/dev/null || { /usr/bin/apt-get update -qq >/dev/null 2>&1; /usr/bin/apt-get install -y -qq nodejs >/dev/null 2>&1; }  # the real apt-get: $STUB has a fake one

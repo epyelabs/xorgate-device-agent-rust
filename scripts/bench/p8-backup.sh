@@ -145,6 +145,7 @@ bench_id() {
     v=$(tr -d '\n' < "$P8_ROOT/etc/machine-id" 2>/dev/null || true); echo "serial_sha_machineid=$([ -n "$v" ] && printf '%s' "$v" | p8_sha_stdin)"
     v=$(tr -d '\0' < "$P8_ROOT/proc/device-tree/serial-number" 2>/dev/null || true); echo "serial_sha_dt=$([ -n "$v" ] && printf '%s' "$v" | p8_sha_stdin)"
     v=${P8_HOSTNAME:-$(hostname 2>/dev/null || true)}; echo "hostname_sha=$([ -n "$v" ] && printf '%s' "$v" | p8_sha_stdin)"
+    echo "generators_dir=$([ -d "$P8_ROOT/etc/systemd/system-generators" ] && echo present || echo absent)"
   } > "$W/bench-id.env"
   chmod 0600 "$W/bench-id.env"
 }

@@ -219,7 +219,15 @@ while :; do
   case $(systemctl is-active xorgate-provision-rs 2>/dev/null) in active | activating | deactivating) sleep 1 ;; *) break ;; esac
 done
 EOF
-chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh /root/fake-install-late.sh
+cat > /root/fake-updater.sh <<'EOF'
+#!/bin/bash
+# W2 brief review MUST-1 stand-in: an update rail that keeps restarting the
+# agent (the real one ends with `systemctl restart xorgate-agent-rs`); it
+# ignores SIGTERM, so only the restore's SIGKILL ends it.
+trap '' TERM
+while :; do systemctl restart --no-block xorgate-agent-rs; echo "upd restart $(date +%s.%N)" >> /var/log/p8sd.log; sleep 1; done
+EOF
+chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh /root/fake-install-late.sh /root/fake-updater.sh
 
 # ------------------------------------------------------------- window helpers
 W=""
@@ -456,6 +464,28 @@ grep -q refused /var/tmp/p8prov.refused 2>/dev/null && ! systemctl is-active --q
 rm -f /var/tmp/p8prov.refused /var/tmp/p8m2l.held /var/tmp/p8m2l.go /var/tmp/p8prov.first
 bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
 bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "M2L: verify post PASS" || { bad "M2L: verify post"; grep FAIL "$W/post.out"; }
+
+echo "== U1: W2 MUST-1, an updater keeps restarting the DEV agent during a manual restore"
+open_window 20261114T000013Z w2 --cap-min 75
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-rs.sh > "$W/ri.out" 2>&1 || bad "U1 install"
+printf '[Service]\nType=oneshot\nExecStart=/root/fake-updater.sh\nTimeoutStartSec=10min\n' > "$SDIR/xorgate-updater-rs.service"; systemctl daemon-reload
+systemctl start --no-block xorgate-updater-rs
+wait_grep "$LOG" 'upd restart' 20 && sleep 2 && ok "U1: the fake updater is restarting the test agent" || bad "U1: updater not running"
+P8_UPDATER_STOP_WAIT_S=6 bash "$W/bin/p8-restore.sh" --window "$W" > "$W/restore.out" 2>&1 && ok "U1: the manual restore exit 0" || { bad "U1: restore"; tail -8 "$W/restore.out"; }
+lu=$(grep -n 'window unit xorgate-updater-rs.service inactive (verified)' "$W/restore.log" | head -1 | cut -d: -f1)
+la=$(grep -n 'window unit xorgate-agent-rs.service inactive (verified)' "$W/restore.log" | head -1 | cut -d: -f1)
+lb=$(grep -n 'PROD back:' "$W/restore.log" | head -1 | cut -d: -f1)
+[ -n "$lu" ] && [ -n "$la" ] && [ -n "$lb" ] && [ "$lu" -lt "$la" ] && [ "$la" -lt "$lb" ] && ok "U1: updater verified inactive (line $lu) before the agent (line $la), both before the first move back (line $lb)" || bad "U1: order upd=$lu agent=$la back=$lb"
+grep -q 'xorgate-updater-rs.service still running after 6s: SIGKILL' "$W/restore.log" && ok "U1: the SIGTERM-ignoring updater was SIGKILLed" || bad "U1: no SIGKILL of the updater"
+sleep 3
+systemctl is-active --quiet xorgate-updater-rs && bad "U1: the updater is still active" || ok "U1: the updater is inactive"
+pid=$(systemctl show -p MainPID --value xorgate-agent-rs)
+systemctl is-active --quiet xorgate-agent-rs && [ "$(readlink "/proc/$pid/exe")" = /opt/xorgate-rs/bin/xorgate-rs ] && [ "$(sha256sum "/proc/$pid/exe" | cut -c1-64)" = "$CERT" ] \
+  && ok "U1: the running agent is PROD's (exe /opt/xorgate-rs/bin/xorgate-rs, the certified sha)" || bad "U1: the running agent is not PROD's"
+[ "$(grep -E '^(test|prod)-rs start' "$LOG" | tail -1 | cut -d' ' -f1)" = prod-rs ] && ok "U1: no DEV agent start after PROD's" || bad "U1: a DEV agent started last"
+bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "U1: verify post PASS (incl. started after the restore, live exe sha)" || { bad "U1: verify post"; grep FAIL "$W/post.out"; }
+[ "$([ -d /etc/systemd/system-generators ] && echo present || echo absent)" = "$(sed -n 's/^generators_dir=//p' "$W/bench-id.env")" ] && ok "U1: /etc/systemd/system-generators is as at backup" || bad "U1: generators dir differs from the backup"
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail
