@@ -500,6 +500,7 @@ provision_main() {
     -o "$RESP" -w '%{http_code}' "$API_BASE/device-registrations/$REG_CODE/claim" 2> "$PRIV/claim.err") || status=000
   if [ "$status" != 200 ]; then
     msg=$(jq -r '.message // .error.message // .error // empty' "$RESP" 2>/dev/null | head -c 300 || true)
+    msg=${msg%.}
     case $status in
       409) fail 5 "claim refused (409): ${msg:-a device with this serial is already registered in the workspace}. Delete it in the console, then run this same command again (the code is unused)" ;;
       404) fail 5 "claim refused (404): ${msg:-registration code not found, already used, or expired}. Mint a new code in the console" ;;
