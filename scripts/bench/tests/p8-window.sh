@@ -39,7 +39,7 @@ case $cmd in
   list-units) [ ${#args[@]} -gt 0 ] || args=('*'); while read -r l; do u=${l%% *}; for pat in "${args[@]}"; do case $u in $pat) echo "$l"; break ;; esac; done; done < <(cat "$SD/units" 2>/dev/null) ;;
   list-jobs) cat "$SD/jobs" 2>/dev/null; : > "$SD/jobs" ;;
   cancel) echo "${args[0]}" >> "$SD/cancelled" ;;
-  stop) for u in "${args[@]}"; do [ -f "$SD/ON_STOP_ADD.$(n "$u")" ] && { cat "$SD/ON_STOP_ADD.$(n "$u")" >> "$SD/units"; echo active > "$SD/active.xorgate-provision-rs"; rm -f "$SD/ON_STOP_ADD.$(n "$u")"; }; [ -f "$SD/STOPFAIL.$(n "$u")" ] && continue; echo inactive > "$SD/active.$(n "$u")"; sed -i "/^${u%.service}\(\.service\)\? /d" "$SD/units" 2>/dev/null; done ;;
+  stop) for u in "${args[@]}"; do [ -f "$SD/ON_STOP_ACTIVATE.$(n "$u")" ] && { echo active > "$SD/active.$(cat "$SD/ON_STOP_ACTIVATE.$(n "$u")")"; rm -f "$SD/ON_STOP_ACTIVATE.$(n "$u")"; }; [ -f "$SD/ON_STOP_ADD.$(n "$u")" ] && { cat "$SD/ON_STOP_ADD.$(n "$u")" >> "$SD/units"; echo active > "$SD/active.xorgate-provision-rs"; rm -f "$SD/ON_STOP_ADD.$(n "$u")"; }; [ -f "$SD/STOPFAIL.$(n "$u")" ] && continue; echo inactive > "$SD/active.$(n "$u")"; sed -i "/^${u%.service}\(\.service\)\? /d" "$SD/units" 2>/dev/null; done ;;
   kill) for u in "${args[@]}"; do [ -f "$SD/KILLFAIL.$(n "$u")" ] && continue; echo inactive > "$SD/active.$(n "$u")"; sed -i "/^${u%.service}\(\.service\)\? /d" "$SD/units" 2>/dev/null; done ;;
   start|restart) for u in "${args[@]}"; do echo active > "$SD/active.$(n "$u")"; done ;;
   enable|disable) for u in "${args[@]}"; do echo "${cmd}d" > "$SD/enabled.$(n "$u")"; [ "$now" = 1 ] && { [ "$cmd" = enable ] && echo active || echo inactive; } > "$SD/active.$(n "$u")"; done; true ;;
@@ -731,12 +731,33 @@ done
 grep -q 'self=shell rc=' "$W/restore.rc.log" && [ "$(grep -c 'rc=' "$W/restore.rc.log")" -ge 2 ] && ok "restore.rc.log keeps a history (one line per run)" || bad "no restore.rc history"
 rm -f "$W/REBOOT-NEEDED" "$W/survivor.retries"
 
+echo "== F-P8-T-LOOP: the updater/agent stop loops until ONE pass finds all four inactive"
+ready w2; fake_js_install
+echo active > "$SD/active.xorgate-agent-rs"; echo xorgate-updater-rs > "$SD/ON_STOP_ACTIVATE.xorgate-agent-rs"   # stopping the DEV agent starts a NEW updater
+: > "$SD/log"; run p8-restore.sh --window "$W" >/dev/null 2>&1
+grep -q 'updater/agent pass 2: still running: xorgate-updater-rs.service' "$W/restore.log" && grep -q 'updater/agent pass 3: all four inactive' "$W/restore.log" \
+  && [ "$(grep -n 'window unit xorgate-updater-rs.service inactive (verified)' "$W/restore.log" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'PROD back:' "$W/restore.log" | head -1 | cut -d: -f1)" ] \
+  && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" && ok "an updater started by the stopping agent is caught by pass 2; pass 3 finds all four inactive, before any move back" || { bad "F-P8-T-LOOP"; grep 'updater/agent' "$W/restore.log"; }
+echo "== F-P8-T-DELTEST: a deleted-but-running binary fails the live-exe check"
+mkdir -p "$R/proc/1"; ln -sfn "/opt/xorgate-rs/bin/xorgate-rs (deleted)" "$R/proc/1/exe"; echo 1 > "$SD/prop.xorgate-agent-rs.MainPID"
+vo post --window "$W" | grep -q '^FAIL xorgate-agent-rs runs a DELETED binary' && ok "a '(deleted)' /proc/<pid>/exe FAILs with its own reason" || bad "DELTEST: deleted exe not flagged"
+rm -rf "$R/proc/1"
+
 echo "== cam0 hook policy (mocked: the policy function over a request table)"
 command -v node >/dev/null || { /usr/bin/apt-get update -qq >/dev/null 2>&1; /usr/bin/apt-get install -y -qq nodejs >/dev/null 2>&1; }  # the real apt-get: $STUB has a fake one
 if command -v node >/dev/null; then
   out=$(P8_CAM0_SELFTEST=1 bash "$B/p8-cam0.sh" 2>&1); rc=$?
-  [ $rc = 0 ] && ! printf '%s' "$out" | grep -q '^FAIL' && printf '%s' "$out" | grep -q '^PASS the only non-GET that passes is POST /v1/live/access' \
-    && printf '%s' "$out" | grep -q '^PASS DELETE https://api.xorgate.io/v1/live/access -> abort' && ok "cam0: only POST /v1/live/access passes; DELETE of it and every other write abort ($(printf '%s' "$out" | grep -c '^PASS') rows)" || { bad "cam0 policy"; printf '%s\n' "$out"; }
+  [ $rc = 0 ] && ! printf '%s' "$out" | grep -q '^FAIL' && printf '%s' "$out" | grep -q '^PASS prod: the only non-GET that passes is POST /v1/live/access' \
+    && printf '%s' "$out" | grep -q '^PASS prod DELETE https://api.xorgate.io/v1/live/access -> abort' && ok "cam0 (PROD): only POST /v1/live/access passes; DELETE of it and every other write abort ($(printf '%s' "$out" | grep -c '^PASS') rows)" || { bad "cam0 policy"; printf '%s\n' "$out"; }
+  out=$(P8_CAM0_SELFTEST=1 bash "$B/p8-devcam0.sh" 2>&1); rc=$?
+  [ $rc = 0 ] && ! printf '%s' "$out" | grep -q '^FAIL' && printf '%s' "$out" | grep -q '^PASS dev GET https://api.xorgate.io/v1/devices -> abort' \
+    && printf '%s' "$out" | grep -q '^PASS dev: the only non-GET that passes is POST /v1/live/access' && ok "devcam0 (DEV): every PROD request aborts; on DEV only POST /v1/live/access passes ($(printf '%s' "$out" | grep -c '^PASS') rows)" || { bad "devcam0 policy"; printf '%s\n' "$out"; }
+  mkdir -p /tmp/playwright 2>/dev/null
+  out=$(XG_USER=u XG_PASS=p P8_PLAYWRIGHT_NODE_PATH=/tmp P8_CAM0_TEST=1 P8_CAM0_CONSOLE=https://console.xorgate.io P8_DEV_DEVICE=58b51737-0000-0000-0000-000000000001 bash "$B/p8-devcam0.sh" 2>&1); rc=$?
+  [ $rc = 2 ] && printf '%s' "$out" | grep -q 'REFUSED: the DEV check against a PROD host' && ok "devcam0: REFUSES a PROD host before any browser starts" || { bad "devcam0 PROD refusal: rc=$rc $out"; }
+  out=$(XG_USER=u XG_PASS=p P8_PLAYWRIGHT_NODE_PATH=/tmp P8_CAM0_TEST=1 P8_CAM0_API_BASE=https://api.xorgate.io P8_DEV_DEVICE=58b51737-0000-0000-0000-000000000001 bash "$B/p8-devcam0.sh" 2>&1); rc=$?
+  [ $rc = 2 ] && printf '%s' "$out" | grep -q 'REFUSED' && ok "devcam0: REFUSES the PROD API host too" || bad "devcam0 PROD API refusal: rc=$rc"
+  rmdir /tmp/playwright 2>/dev/null || true
   grep -q 'serviceWorkers: "block"' "$B/p8-cam0.sh" && ok "cam0: service workers blocked" || bad "cam0: no serviceWorkers block"
 else bad "cam0 policy: no node (could not install nodejs)"; fi
 

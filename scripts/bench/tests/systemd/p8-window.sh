@@ -227,7 +227,15 @@ cat > /root/fake-updater.sh <<'EOF'
 trap '' TERM
 while :; do systemctl restart --no-block xorgate-agent-rs; echo "upd restart $(date +%s.%N)" >> /var/log/p8sd.log; sleep 1; done
 EOF
-chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh /root/fake-install-late.sh /root/fake-updater.sh
+cat > /root/fake-agent-stop.sh <<'EOF'
+#!/bin/bash
+# F-P8-T-LOOP: the DEV agent, while being stopped, starts a NEW updater (once).
+[ -e /var/tmp/p8loop.once ] && exit 0
+touch /var/tmp/p8loop.once
+systemctl start --no-block xorgate-updater-rs
+echo "agent-stop started an updater $(date +%s.%N)" >> /var/log/p8sd.log
+EOF
+chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh /root/fake-install-late.sh /root/fake-updater.sh /root/fake-agent-stop.sh
 
 # ------------------------------------------------------------- window helpers
 W=""
@@ -488,6 +496,29 @@ systemctl is-active --quiet xorgate-agent-rs && [ "$(readlink "/proc/$pid/exe")"
 bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
 bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "U1: verify post PASS (incl. started after the restore, live exe sha)" || { bad "U1: verify post"; grep FAIL "$W/post.out"; }
 [ "$([ -d /etc/systemd/system-generators ] && echo present || echo absent)" = "$(sed -n 's/^generators_dir=//p' "$W/bench-id.env")" ] && ok "U1: /etc/systemd/system-generators is as at backup" || bad "U1: generators dir differs from the backup"
+
+echo "== L1: F-P8-T-LOOP, the DEV agent starts a NEW updater while it is being stopped"
+open_window 20261114T000014Z w2 --cap-min 75
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-rs.sh > "$W/ri.out" 2>&1 || bad "L1 install"
+printf '[Service]\nType=oneshot\nExecStart=/usr/bin/sleep 120\nTimeoutStartSec=10min\n' > "$SDIR/xorgate-updater-rs.service"
+printf '[Service]\nExecStop=/root/fake-agent-stop.sh\n' > "$SDIR/xorgate-agent-rs.service.d/30-loop.conf"
+touch /var/tmp/p8loop.once; systemctl daemon-reload; systemctl restart xorgate-agent-rs; rm -f /var/tmp/p8loop.once   # armed only for the restore's stop
+systemctl is-active --quiet xorgate-updater-rs && bad "L1: an updater already runs" || ok "L1: no updater runs before the restore"
+bash "$W/bin/p8-restore.sh" --window "$W" > "$W/restore.out" 2>&1 && ok "L1: the manual restore exit 0" || { bad "L1: restore"; tail -8 "$W/restore.out"; }
+grep -q 'agent-stop started an updater' "$LOG" && grep -q 'updater/agent pass 2: still running: xorgate-updater-rs.service' "$W/restore.log" && grep -qE 'updater/agent pass [0-9]+: all four inactive' "$W/restore.log" \
+  && [ "$(grep -n 'xorgate-updater-rs.service inactive (verified)' "$W/restore.log" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'PROD back:' "$W/restore.log" | head -1 | cut -d: -f1)" ] \
+  && ok "L1: the stopping agent's NEW updater is caught by pass 2; a later pass finds all four inactive, before the first move back" || { bad "L1: loop"; grep -E 'updater/agent|window unit' "$W/restore.log"; }
+systemctl is-active --quiet xorgate-updater-rs && bad "L1: the updater is still active" || ok "L1: the updater is inactive"
+rm -f /var/tmp/p8loop.once
+bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "L1: verify post PASS" || { bad "L1: verify post"; grep FAIL "$W/post.out"; }
+echo "== D1: F-P8-T-DELTEST, a deleted-but-running binary fails the live-exe check"
+cp -p /opt/xorgate-rs/bin/xorgate-rs /opt/xorgate-rs/bin/.xr.new && mv -f /opt/xorgate-rs/bin/.xr.new /opt/xorgate-rs/bin/xorgate-rs
+readlink "/proc/$(systemctl show -p MainPID --value xorgate-agent-rs)/exe" | grep -q ' (deleted)$' && ok "D1: the running agent's exe now reads (deleted)" || bad "D1: setup"
+bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post-del.out" 2>&1; rc=$?
+[ $rc != 0 ] && grep -q '^FAIL xorgate-agent-rs runs a DELETED binary' "$W/post-del.out" && ok "D1: verify post FAILs: the agent runs a DELETED binary" || { bad "D1: not flagged"; grep -E 'FAIL|exe' "$W/post-del.out"; }
+systemctl restart xorgate-agent-rs; wait_active xorgate-agent-rs 30; sleep 1
+bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post-re.out" 2>&1 && ok "D1: after a restart onto the on-disk binary, verify post PASS" || { bad "D1: post after restart"; grep FAIL "$W/post-re.out"; }
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

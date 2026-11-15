@@ -144,15 +144,31 @@ p8_cancel_agent_jobs
 # xorgate-agent-rs`, so the UPDATERS go first (each verified inactive: <= 120 s,
 # then SIGKILL), then any queued agent job is cancelled, then the agents are
 # stopped and verified. Only while the surface is still the test one.
+# F-P8-T-LOOP: an agent being stopped can start a NEW updater (and an updater
+# restarts the agent), so the pass repeats until ONE pass finds all four units
+# inactive (bounded by P8_UNIT_PASSES).
 stop_updaters_agents() {
-  local u
+  local u pass running
   { [ -f "$W/aside.list" ] && [ ! -f "$W/aside.restored" ]; } || return 0
-  for u in xorgate-updater-rs.service xorgate-updater.service; do
-    P8_UNIT_STOP_WAIT_S=${P8_UPDATER_STOP_WAIT_S:-120} p8_stop_unit "$u" || return 1
+  for pass in $(seq "${P8_UNIT_PASSES:-6}"); do
+    running=""
+    for u in xorgate-updater-rs.service xorgate-updater.service xorgate-agent-rs.service xorgate-agent.service; do
+      p8_unit_running "$u" && running="$running $u"
+    done
+    if [ -z "$running" ]; then
+      [ "$pass" = 1 ] || p8_log "updater/agent pass $pass: all four inactive"
+      return 0
+    fi
+    [ "$pass" = 1 ] || p8_log "updater/agent pass $pass: still running:$running"
+    for u in xorgate-updater-rs.service xorgate-updater.service; do
+      P8_UNIT_STOP_WAIT_S=${P8_UPDATER_STOP_WAIT_S:-120} p8_stop_unit "$u" || return 1
+    done
+    p8_cancel_agent_jobs
+    for u in xorgate-agent-rs.service xorgate-agent.service; do p8_stop_unit "$u" || return 1; done
+    p8_cancel_agent_jobs
   done
-  p8_cancel_agent_jobs
-  for u in xorgate-agent-rs.service xorgate-agent.service; do p8_stop_unit "$u" || return 1; done
-  p8_cancel_agent_jobs
+  p8_log "updater/agent: still not all inactive after ${P8_UNIT_PASSES:-6} passes"
+  return 1
 }
 if ! { p8_stop_installers && stop_updaters_agents; }; then
   # Review (bench-tools-r1) survivor: a unit alive after SIGKILL (D state).

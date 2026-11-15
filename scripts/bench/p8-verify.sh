@@ -235,6 +235,8 @@ cmd_post() {
   pk() { sed -n "s/^$1=//p" "$W/post.env" | head -n1; }
   check "$P8_PROD_UNIT active" "$(p8_active "$P8_PROD_UNIT")" active
   pid=$(p8_prop "$P8_PROD_UNIT" MainPID); exe=$(readlink "$P8_ROOT/proc/${pid:-0}/exe" 2>/dev/null || echo none)
+  # F-P8-T-DELTEST: a replaced binary still running shows "<path> (deleted)"
+  case $exe in *" (deleted)") fail "$P8_PROD_UNIT runs a DELETED binary ($exe): the running process predates the restored tree" ;; esac
   check "$P8_PROD_UNIT runs /opt/xorgate-rs/bin/xorgate-rs" "$exe" /opt/xorgate-rs/bin/xorgate-rs
   # W2 brief review MUST-1: the running PROD agent is the restored, certified binary, started by this restore
   check "$P8_PROD_UNIT runs /opt/xorgate-rs/bin/xorgate-rs with the certified sha (the live exe)" \
