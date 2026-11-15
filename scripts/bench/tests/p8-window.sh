@@ -130,6 +130,7 @@ mkbench() {
   printf '#!/bin/sh\n# setclock fixture\n' > "$R/usr/local/bin/xorgate-setclock"; chmod 0755 "$R/usr/local/bin/xorgate-setclock"
   printf '{"timestamp":"%s","status":"connected","gnss_ant_bias":1,"cellular":{"state":"ok","apn_applied":"secret.apn.example"},"recovery":{"connect_fails":0,"radio_cycles_since_ok":0,"resets_24h":0,"last_reset":null}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$R/run/sim7600-lte/telemetry.json"
   touch "$R/var/lib/dpkg/lock-frontend" "$R/var/lib/dpkg/lock"
+  echo 0123456789abcdef0123456789abcdef > "$R/etc/machine-id"; mkdir -p "$R/proc/device-tree"; printf '6a1b2c3d4e5f6071\0' > "$R/proc/device-tree/serial-number"
   echo active > "$SD/active.xorgate-agent-rs"; echo enabled > "$SD/enabled.xorgate-agent-rs"
   echo enabled > "$SD/enabled.sim7600-lte"; echo active > "$SD/active.sim7600-lte"; echo enabled > "$SD/enabled.NetworkManager"
   echo active > "$SD/active.xorgate-drive-blackbox"; echo enabled > "$SD/enabled.xorgate-drive-blackbox"
@@ -522,20 +523,23 @@ vo post --window "$W" | grep -q '^FAIL drive-blackbox not writing' && ok "T12: n
 echo "== (a) p8-align.sh against a mocked DEV API"
 cat > "$TMP/devapi.py" <<'PY'
 import http.server, json, sys
-port, state_f = int(sys.argv[1]), sys.argv[2]
+port, state_f, tok, mid = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 st = {"gets": 0, "patches": [], "cellular": False}
 old = {"id": "11111111-0000-0000-0000-000000000000", "createdAt": "2026-11-14T00:00:00Z", "config": {}}
-new = {"id": "22222222-0000-0000-0000-000000000000", "createdAt": None, "config": {"gnssAntBias": False}, "configRev": 1}
+new = {"id": "22222222-0000-0000-0000-000000000000", "createdAt": None, "config": {"gnssAntBias": False}, "configRev": 1, "serial": mid}
+other = {"id": "33333333-0000-0000-0000-000000000000", "createdAt": "2026-11-15T00:00:00Z", "config": {}, "serial": "someone-else"}
 class H(http.server.BaseHTTPRequestHandler):
     def ok(self):
-        return self.headers.get("Authorization") == "Bearer devtok" and self.headers.get("X-Workspace-Id") == "ws"
+        return self.headers.get("Authorization") == "Bearer " + tok and self.headers.get("X-Workspace-Id") == "ws"
     def send(self, code, body):
         b = json.dumps(body).encode(); self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         if not self.ok(): return self.send(401, {})
         if self.path == "/v1/devices":
             st["gets"] += 1
-            rows = [old] + ([new] if st["gets"] >= 3 else [])
+            mode = open(state_f).read().strip()
+            rows = [old] + ([new] if st["gets"] >= 3 else []) + ([other] if st["gets"] >= 3 and mode == "multi" else [])
+            if st["gets"] == 3 and mode == "notbench": new["serial"] = "not-the-bench"
             if st["gets"] == 3:
                 import time; new["createdAt"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4))
                 if open(state_f).read().strip() == "cellular": new["config"]["cellular"] = {"apn": "x"}
@@ -552,28 +556,74 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
 PY
 echo '{"gnssAntBias": true}' > "$TMP/align.json"
-run_api() { : > "$TMP/apistate.patches"; echo "$1" > "$TMP/apistate"; python3 "$TMP/devapi.py" "$2" "$TMP/apistate" & AP=$!; sleep 1; }
+jwt() { python3 -c 'import base64,json,sys; b=lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("="); print(b({"alg":"none"}) + "." + b({"iss": sys.argv[1]}) + ".sig")' "$1"; }
+DEVTOK=$(jwt https://cognito-idp.us-east-1.amazonaws.com/us-east-1_E6dkPNlZl)
+PRODTOK=$(jwt https://cognito-idp.us-east-1.amazonaws.com/us-east-1_RPLv99S54)
+run_api() { : > "$TMP/apistate.patches"; echo "$1" > "$TMP/apistate"; python3 "$TMP/devapi.py" "$2" "$TMP/apistate" "${3:-$DEVTOK}" "$(cat "$R/etc/machine-id")" & AP=$!; sleep 1; }
 ready w1; cp "$W/seed-settings.json" "$R/var/lib/xorgate/settings.json"
 run p8-modem-sampler.sh run --out "$W/modem-w1.tsv" --baseline "$W/baseline.env" --ticks 2 >/dev/null 2>&1
 run_api ok 18941
-out=$(XG_TOKEN=devtok P8_DEV_API_HOSTS="127.0.0.1:18941" P8_SSH=fakessh P8_RSUDO="sudo -n -E" bash "$B/p8-align.sh" --api http://127.0.0.1:18941 --org org --workspace ws \
+out=$(XG_TOKEN="$DEVTOK" P8_DEV_API_HOSTS="127.0.0.1:18941" P8_SSH=fakessh P8_RSUDO="sudo -n -E" bash "$B/p8-align.sh" --api http://127.0.0.1:18941 --org org --workspace ws \
   --align "$TMP/align.json" --poll 0.2 --timeout 20 --host x --window "$W" --label w1 --f2-wait 0 --out "$TMP/align.env" 2>&1); rc=$?
 kill "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
 [ $rc = 0 ] && ok "align: exit 0 (new device found, aligned, bench dev-settings PASS, F2 summary PASS)" || { bad "align rc=$rc"; printf '%s\n' "$out" | tail -n 12; }
 [ "$(cat "$TMP/apistate.patches")" = '/v1/devices/22222222-0000-0000-0000-000000000000/config {"gnssAntBias": true}' ] && ok "align: exactly ONE PATCH, on the NEW device only, body = align.json (gnssAntBias)" || bad "align PATCHes: $(cat "$TMP/apistate.patches")"
 grep -q '^claim_to_patch_s=[0-9]' "$TMP/align.env" && grep -q '^aligned=yes' "$TMP/align.env" && [ "$(stat -c %a "$TMP/align.env")" = 600 ] && ok "align: claim->PATCH delay recorded (F2), result file 0600" || bad "align result: $(cat "$TMP/align.env")"
-printf '%s' "$out" | grep -q devtok && bad "align printed the token" || ok "align never prints the token"
+printf '%s' "$out" | grep -qF "$DEVTOK" && bad "align printed the token" || ok "align never prints the token"
 printf '%s' "$out" | grep -q 'F2:' && printf '%s' "$out" | grep -q 'bench dev-settings PASS' && ok "align ran the bench dev-settings check and the F2 summary" || bad "align bench part"
 run_api cellular 18942
-out=$(XG_TOKEN=devtok P8_DEV_API_HOSTS="127.0.0.1:18942" bash "$B/p8-align.sh" --api http://127.0.0.1:18942 --org org --workspace ws --align "$TMP/align.json" --poll 0.2 --timeout 20 2>&1); rc=$?
+out=$(XG_TOKEN="$DEVTOK" P8_DEV_API_HOSTS="127.0.0.1:18942" bash "$B/p8-align.sh" --api http://127.0.0.1:18942 --org org --workspace ws --align "$TMP/align.json" --bench-id "$W/bench-id.env" --poll 0.2 --timeout 20 2>&1); rc=$?
 kill "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
 [ $rc = 1 ] && [ ! -s "$TMP/apistate.patches" ] && printf '%s' "$out" | grep -q 'STOP (H10)' && ok "align: a DEV cellular key is a STOP, and nothing is PATCHed" || bad "align cellular: rc=$rc $(cat "$TMP/apistate.patches")"
-out=$(XG_TOKEN=devtok bash "$B/p8-align.sh" --api https://api.xorgate.io --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'PROD API host' && ok "align REFUSES the PROD API host (before any request)" || bad "align PROD: $out"
-out=$(XG_TOKEN=devtok P8_DEV_API_HOSTS="api.xorgate.io" bash "$B/p8-align.sh" --api https://api.xorgate.io --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses PROD even when it is listed as DEV" || bad "align PROD listed: $out"
-out=$(XG_TOKEN=devtok bash "$B/p8-align.sh" --api https://example.com --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses a non-DEV host" || bad "align other host"
-out=$(XG_TOKEN=devtok P8_POOL=us-east-1_RPLv99S54 bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses the PROD Cognito pool" || bad "align PROD pool"
+out=$(XG_TOKEN="$DEVTOK" bash "$B/p8-align.sh" --api https://api.xorgate.io --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'PROD API host' && ok "align REFUSES the PROD API host (before any request)" || bad "align PROD: $out"
+out=$(XG_TOKEN="$DEVTOK" P8_DEV_API_HOSTS="api.xorgate.io" bash "$B/p8-align.sh" --api https://api.xorgate.io --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses PROD even when it is listed as DEV" || bad "align PROD listed: $out"
+out=$(XG_TOKEN="$DEVTOK" bash "$B/p8-align.sh" --api https://example.com --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses a non-DEV host" || bad "align other host"
+out=$(XG_TOKEN="$DEVTOK" P8_POOL=us-east-1_RPLv99S54 bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses the PROD Cognito pool" || bad "align PROD pool"
+for m in multi:18943 notbench:18944; do
+  run_api "${m%%:*}" "${m#*:}"
+  out=$(XG_TOKEN="$DEVTOK" P8_DEV_API_HOSTS="127.0.0.1:${m#*:}" bash "$B/p8-align.sh" --api "http://127.0.0.1:${m#*:}" --org org --workspace ws --align "$TMP/align.json" --bench-id "$W/bench-id.env" --poll 0.2 --timeout 20 2>&1); rc=$?
+  kill "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
+  [ $rc = 1 ] && [ ! -s "$TMP/apistate.patches" ] && ok "align: '${m%%:*}' (two new devices / a serial that is not the bench's) is REFUSED with no PATCH" || bad "align ${m%%:*}: rc=$rc $(printf '%s' "$out" | tail -2)"
+done
+run_api ok 18945 "$PRODTOK"
+out=$(XG_TOKEN="$PRODTOK" P8_DEV_API_HOSTS="127.0.0.1:18945" bash "$B/p8-align.sh" --api http://127.0.0.1:18945 --org org --workspace ws --align "$TMP/align.json" --bench-id "$W/bench-id.env" --poll 0.2 --timeout 5 2>&1); rc=$?
+kill "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
+[ $rc = 2 ] && [ ! -s "$TMP/apistate.patches" ] && printf '%s' "$out" | grep -q 'not a DEV-pool token' && ok "align REFUSES a supplied XG_TOKEN whose iss is the PROD pool (no request)" || bad "align PROD iss: rc=$rc $out"
+out=$(XG_TOKEN=not-a-jwt P8_DEV_API_HOSTS="127.0.0.1:1" bash "$B/p8-align.sh" --api http://127.0.0.1:1 --org org --workspace ws --align "$TMP/align.json" --bench-id "$W/bench-id.env" 2>&1); [ $? = 2 ] && ok "align refuses a token it cannot decode" || bad "align bad jwt"
+out=$(XG_TOKEN="$DEVTOK" P8_DEV_API_HOSTS="127.0.0.1:1" bash "$B/p8-align.sh" --api http://127.0.0.1:1 --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'no bench identity' && ok "align refuses without a bench identity" || bad "align no bench id: $out"
+grep -qE '^serial_sha_machineid=[0-9a-f]{64}$' "$W/bench-id.env" && grep -qE '^serial_sha_dt=[0-9a-f]{64}$' "$W/bench-id.env" && [ "$(stat -c %a "$W/bench-id.env")" = 600 ] \
+  && ! grep -q 0123456789abcdef "$W/bench-id.env" && ok "backup wrote bench-id.env: shas of machine-id + DT serial + hostname only (0600)" || bad "bench-id.env"
 echo '{"gnssAntBias": true, "lteRecovery": {}}' > "$TMP/align2.json"
-out=$(XG_TOKEN=devtok bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align2.json" 2>&1); [ $? = 2 ] && ok "align refuses an align.json with more than gnssAntBias" || bad "align extra keys"
+out=$(XG_TOKEN="$DEVTOK" bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align2.json" 2>&1); [ $? = 2 ] && ok "align refuses an align.json with more than gnssAntBias" || bad "align extra keys"
+
+echo "== cam0 hook policy (mocked: the policy function over a request table)"
+command -v node >/dev/null || { /usr/bin/apt-get update -qq >/dev/null 2>&1; /usr/bin/apt-get install -y -qq nodejs >/dev/null 2>&1; }  # the real apt-get: $STUB has a fake one
+if command -v node >/dev/null; then
+  out=$(P8_CAM0_SELFTEST=1 bash "$B/p8-cam0.sh" 2>&1); rc=$?
+  [ $rc = 0 ] && ! printf '%s' "$out" | grep -q '^FAIL' && printf '%s' "$out" | grep -q '^PASS the only non-GET that passes is POST /v1/live/access' \
+    && printf '%s' "$out" | grep -q '^PASS DELETE https://api.xorgate.io/v1/live/access -> abort' && ok "cam0: only POST /v1/live/access passes; DELETE of it and every other write abort ($(printf '%s' "$out" | grep -c '^PASS') rows)" || { bad "cam0 policy"; printf '%s\n' "$out"; }
+  grep -q 'serviceWorkers: "block"' "$B/p8-cam0.sh" && ok "cam0: service workers blocked" || bad "cam0: no serviceWorkers block"
+else bad "cam0 policy: no node (could not install nodejs)"; fi
+
+echo "== T2 residual: SIGHUP between the disarm and the start arms the failsafe"
+ready w1; fake_js_install; : > "$SD/log"
+P8_TEST_PAUSE_S=6 bash "$W/bin/p8-restore.sh" --window "$W" > "$TMP/hup.out" 2>&1 & rp=$!
+for _ in $(seq 100); do [ ! -e "$R/root/p8-window.active" ] && grep -q 'disarm' "$SD/log" 2>/dev/null && break; [ ! -e "$R/etc/systemd/system/p8-deadman.timer" ] && break; sleep 0.1; done
+sleep 0.5; kill -HUP "$rp"; wait "$rp"; rc=$?
+[ $rc = 1 ] && [ -e "$R/root/p8-window.active" ] && [ -e "$R/etc/systemd/system/p8-deadman-boot.service" ] && grep -q '^OnActiveSec=' "$R/etc/systemd/system/p8-deadman.timer" \
+  && ! grep -q 'systemctl start --no-block xorgate-agent-rs' "$SD/log" && grep -q 'signal between the disarm and the start' "$W/restore.log" \
+  && ok "SIGHUP after the disarm: exit 1, PROD not started, a failsafe dead-man + boot unit re-armed" || { bad "T2 residual: rc=$rc"; tail -3 "$W/restore.log"; }
+run p8-restore.sh --auto --window "$W" >/dev/null 2>&1; grep -q 'systemctl start --no-block xorgate-agent-rs' "$SD/log" && ok "…and that failsafe's --auto restore starts PROD" || bad "T2 residual failsafe restore"
+
+echo "== T8 NIT: no temp file NM could load; a stale one is removed; the fallback keeps mode + owner"
+ready w1; fake_js_install
+echo stale > "$R/etc/NetworkManager/conf.d/.p8new-99-sim7600-unmanaged.conf~"
+printf '# changed\n' > "$R/etc/sudoers.d/010_pi-nopasswd"; chmod 0644 "$R/etc/sudoers.d/010_pi-nopasswd"; chown pi "$R/etc/sudoers.d/010_pi-nopasswd"
+mkdir -p "$TMP/cpstub"; printf '#!/bin/bash\nfor a in "$@"; do [ "$a" = -a ] && exit 1; done\nexec /bin/cp "$@"\n' > "$TMP/cpstub/cp"; chmod 0755 "$TMP/cpstub/cp"
+PATH="$TMP/cpstub:$PATH" run p8-restore.sh --window "$W" >/dev/null 2>&1
+[ "$(stat -c '%a %U' "$R/etc/sudoers.d/010_pi-nopasswd")" = "440 root" ] && grep -q '^# 010_pi-nopasswd' "$R/etc/sudoers.d/010_pi-nopasswd" && ok "the install(1) fallback (cp -a failing) restores content AND mode 0440 + owner root" || bad "fallback mode/owner: $(stat -c '%a %U' "$R/etc/sudoers.d/010_pi-nopasswd")"
+[ ! -e "$R/etc/NetworkManager/conf.d/.p8new-99-sim7600-unmanaged.conf~" ] && ! find "$R" -name '.p8new-*~' | grep -q . && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" && ok "a stale .p8new-*~ temp is removed; none left; verify pre PASS" || { bad "T8 temp cleanup"; cat "$W/verify-pre.out"; }
+grep -q 'p8new' "$W/bin/p8-restore.sh" && ! grep -qE '"\$d\.p8new"' "$W/bin/p8-restore.sh" && ok "temp names start with '.' and end with '~' (NM keyfile/conf.d, sudo, cron, apt, udev, systemd skip them)" || bad "temp naming"
 
 echo "== unlink-check (WP0 §2 method) + run-install (HOME=/root nit) + lint"
 bash "$B/p8-verify.sh" unlink-check > "$TMP/u.out" 2>&1 && grep -q '^PASS install replaces by unlink' "$TMP/u.out" && grep -q 'in place: yes' "$TMP/u.out" && ok "unlink-check: install unlinks, cp is in place" || { bad "unlink-check"; cat "$TMP/u.out"; }

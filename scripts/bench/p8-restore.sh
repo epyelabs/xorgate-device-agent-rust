@@ -171,6 +171,10 @@ if [ -f "$W/pre.manifest" ] && [ -f "$W/backup.tgz" ]; then
     # rename (files/links) or mkdir + reference chmod/chown (dirs). Nothing is
     # removed first, so a power cut never leaves e.g. config.txt (vfat) missing.
     rm -rf "$W/restore-stage"; install -d -m 0700 "$W/restore-stage"
+    # a crash of an earlier run may have left temp files: remove them first
+    awk -F '\t' '$2 == "d" {print $1} $2 == "f" {sub(/\/[^\/]*$/, "", $1); print $1}' "$W/pre.manifest" | sort -u | while IFS= read -r dd; do
+      [ -d "$P8_ROOT$dd" ] && find "$P8_ROOT$dd" -maxdepth 1 -name '.p8new-*~' -delete 2>/dev/null; true
+    done
     if tar --extract --gzip --file "$W/backup.tgz" --numeric-owner --same-permissions --xattrs --acls --no-recursion \
          -C "$W/restore-stage" --null --verbatim-files-from -T "$W/restore.sorted0"; then
       while IFS= read -r -d '' r; do
@@ -181,8 +185,19 @@ if [ -f "$W/pre.manifest" ] && [ -f "$W/backup.tgz" ]; then
           chown --reference="$st" "$d" 2>/dev/null || true; chmod --reference="$st" "$d" 2>/dev/null || true
         else
           if [ -d "$d" ] && [ ! -L "$d" ]; then p8_mvT "$d" "$TD/replaced/$r"; fi
-          cp -a "$st" "$d.p8new" 2>/dev/null || cp -P "$st" "$d.p8new" || { p8_log "cannot stage $r"; rc=1; continue; }
-          mv -f "$d.p8new" "$d" || { p8_log "cannot rename $r into place"; rc=1; }
+          # The temp name starts with "." and ends with "~": NM keyfiles, sudo,
+          # cron, apt, udev and systemd all skip such names (review T8 NIT).
+          t=$(dirname "$d")/.p8new-$(basename "$d")~
+          if ! cp -a "$st" "$t" 2>/dev/null; then
+            if [ -L "$st" ]; then cp -P "$st" "$t" || { p8_log "cannot stage $r"; rc=1; continue; }
+            else
+              # mode and owner kept (cp -a fails e.g. on vfat ownership; there they are mount-fixed)
+              install -m "$(stat -c %a "$st")" -o "$(stat -c %u "$st")" -g "$(stat -c %g "$st")" "$st" "$t" 2>/dev/null \
+                || { case $(stat -f -c %T "$(dirname "$d")" 2>/dev/null) in msdos | vfat) cp "$st" "$t" ;; *) false ;; esac; } \
+                || { p8_log "cannot stage $r with its mode/owner"; rc=1; continue; }
+            fi
+          fi
+          mv -f "$t" "$d" || { p8_log "cannot rename $r into place"; rm -f "$t"; rc=1; }
         fi
       done < "$W/restore.sorted0"
     else p8_log "tar extract failed"; rc=1; fi
@@ -209,9 +224,25 @@ if [ -f "$W/pre.manifest" ] && [ -f "$W/backup.tgz" ]; then
   done < "$W/restore.diff"
 fi
 
+# Review T2: a manual restore that does NOT start PROD re-arms a short --auto
+# dead-man first, so a lost ssh session can never leave 58b51737 down.
+# `failsafe sig` (the HUP/INT/TERM trap between the disarm and the start, T2
+# residual) arms it in EVERY mode: the units are gone by then.
+failsafe() {
+  if { [ "$AUTO" = 0 ] || [ "${1:-}" = sig ]; } && bash "$HERE/p8-deadman.sh" failsafe --window "$W" --label "$LABEL" --in-min "${P8_FAILSAFE_MIN:-10}" >/dev/null 2>&1; then
+    p8_log "NOT GREEN: PROD not started; a FAILSAFE --auto dead-man is armed for +${P8_FAILSAFE_MIN:-10} min (it starts PROD). Fix and re-run, or --force-start"
+  elif [ "$AUTO" = 0 ] || [ "${1:-}" = sig ]; then
+    p8_log "NOT GREEN: PROD not started AND the failsafe dead-man could not be armed: start PROD by hand"
+  fi
+}
+# shellcheck disable=SC2317,SC2329  # invoked by the trap below
+on_sig() { trap - HUP INT TERM; p8_log "signal between the disarm and the start: arming the failsafe"; failsafe sig; exit 1; }
+
 # 7. window artifacts
 rm -f "$P8_H1_CONF"
+trap on_sig HUP INT TERM
 bash "$HERE/p8-deadman.sh" disarm >/dev/null
+p8_test_pause
 systemctl daemon-reload || true
 udevadm control --reload-rules >/dev/null 2>&1 || true
 if [ "$nm_changed" = 1 ]; then p8_log "an NM file changed: reloading NetworkManager"; systemctl reload NetworkManager >/dev/null 2>&1 || true; fi
@@ -223,15 +254,6 @@ p8_redact < "$W/verify-pre.out" | sed 's/^/  /' >&2
 if [ "$vrc" = 0 ]; then p8_log "verify pre: PASS"; else p8_log "verify pre: FAIL"; rc=1; fi
 
 # 9. start PROD
-# Review T2: a manual restore that does NOT start PROD re-arms a short --auto
-# dead-man first, so a lost ssh session can never leave 58b51737 down.
-failsafe() {
-  if [ "$AUTO" = 0 ] && bash "$HERE/p8-deadman.sh" failsafe --window "$W" --label "$LABEL" --in-min "${P8_FAILSAFE_MIN:-10}" >/dev/null 2>&1; then
-    p8_log "NOT GREEN: PROD not started; a FAILSAFE --auto dead-man is armed for +${P8_FAILSAFE_MIN:-10} min (it starts PROD). Fix and re-run, or --force-start"
-  elif [ "$AUTO" = 0 ]; then
-    p8_log "NOT GREEN: PROD not started AND the failsafe dead-man could not be armed: start PROD by hand"
-  fi
-}
 if [ ! -d "$P8_ROOT/etc/xorgate" ]; then
   p8_log "NOT starting $P8_PROD_UNIT: /etc/xorgate is not back"; failsafe; exit 1
 fi
@@ -241,6 +263,7 @@ fi
 p8_cancel_agent_jobs    # F1 again: nothing but our own start may be queued
 echo "$(p8_ts) verify=$([ "$vrc" = 0 ] && echo PASS || echo FAIL)" > "$W/restore.done"
 systemctl start --no-block "$P8_PROD_UNIT" || { p8_log "start --no-block $P8_PROD_UNIT failed"; rc=1; }
+trap - HUP INT TERM
 p8_log "start --no-block $P8_PROD_UNIT queued"
 if [ "$BOOT" = 1 ]; then
   p8_log "boot path: the agent starts when this oneshot exits; run p8-verify.sh post afterwards"

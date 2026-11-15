@@ -76,6 +76,7 @@ p8_lock_nb() {
 }
 # Review T6: the plain suite interrupts a restore after step N (sandbox ONLY:
 # ignored unless P8_ROOT is set, so it can never fire on the bench).
+p8_test_pause() { if [ -n "$P8_ROOT" ] && [ -n "${P8_TEST_PAUSE_S:-}" ]; then sleep "$P8_TEST_PAUSE_S" & wait $!; fi; }
 p8_test_stop() { if [ -n "$P8_ROOT" ] && [ "${P8_TEST_STOP_AFTER:-}" = "$1" ]; then p8_log "TEST: stopping after step $1"; exit 99; fi; }
 p8_log() { printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >&2; [ -z "${P8_LOGFILE:-}" ] || printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >> "$P8_LOGFILE" 2>/dev/null || true; }
 p8_die() { p8_log "FATAL: $*"; exit "${P8_DIE_RC:-1}"; }

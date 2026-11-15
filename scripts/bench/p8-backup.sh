@@ -88,7 +88,7 @@ cmd_pull() {
   mkdir -p "$dest"; chmod 0700 "$P8_PRIVATE" "$dest"
   rsha=$(rsh "sudo -n cat $W/backup.sha256" | cut -c1-64)
   [[ $rsha =~ ^[0-9a-f]{64}$ ]] || { echo "pull: no remote $W/backup.sha256 (run backup first)" >&2; exit 1; }
-  for f in backup.tgz pre.manifest backup.count baseline.env align.json; do
+  for f in backup.tgz pre.manifest backup.count baseline.env align.json bench-id.env; do
     rsh "sudo -n cat $W/$f" > "$dest/$f" || { echo "pull: copying $f failed" >&2; exit 1; }
     chmod 0600 "$dest/$f"
   done
@@ -135,6 +135,20 @@ print("seed: settings.json %s; gnssAntBias=%s cellular=%s lteRecovery=%s (seed k
 PY
 }
 
+# The bench's identity for p8-align.sh (review fix-check): sha256 of the serial
+# candidates a claim from this host can carry: machine-id (what install.sh
+# sends today), the device-tree serial (the PROD row's, WP0 C2), the hostname.
+# Shas only: the values never leave the bench.
+bench_id() {
+  local v
+  {
+    v=$(tr -d '\n' < "$P8_ROOT/etc/machine-id" 2>/dev/null || true); echo "serial_sha_machineid=$([ -n "$v" ] && printf '%s' "$v" | p8_sha_stdin)"
+    v=$(tr -d '\0' < "$P8_ROOT/proc/device-tree/serial-number" 2>/dev/null || true); echo "serial_sha_dt=$([ -n "$v" ] && printf '%s' "$v" | p8_sha_stdin)"
+    v=${P8_HOSTNAME:-$(hostname 2>/dev/null || true)}; echo "hostname_sha=$([ -n "$v" ] && printf '%s' "$v" | p8_sha_stdin)"
+  } > "$W/bench-id.env"
+  chmod 0600 "$W/bench-id.env"
+}
+
 cmd_backup() {
   local n c
   p8_need_root; p8_check_window "$W"
@@ -156,6 +170,7 @@ cmd_backup() {
   echo "$n" > "$W/backup.count"
   p8_sha "$W/backup.tgz" > "$W/backup.sha256"
   chmod 0600 "$W/backup.count" "$W/backup.sha256"
+  bench_id
   cmd_seed
   echo "backup: $(wc -l < "$W/pre.manifest" | tr -d ' ') manifest rows; backup.tgz $n members == manifest (without /var/lib/xorgate-rs), $(du -h "$W/backup.tgz" | cut -f1), sha256 $(cut -c1-12 "$W/backup.sha256")…"
 }

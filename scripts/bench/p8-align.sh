@@ -6,17 +6,20 @@
 #   p8-align.sh --org <DEV org id> --workspace <DEV ws id> --align <align.json>
 #               [--api https://h357muxy3k.execute-api.us-east-1.amazonaws.com]
 #               [--host pi@<bench> --window /root/p8-<ts> [--label w<n>]]
-#               [--poll 2] [--timeout 1800] [--f2-wait 90] [--out <result.env>]
+#               [--bench-id <bench-id.env>] [--poll 2] [--timeout 1800] [--f2-wait 90] [--out <result.env>]
 #
 #  1. snapshot the workspace's device ids, then poll every --poll s for a NEW
-#     device (the claim);
+#     device (the claim). MORE THAN ONE new device = refuse (exit 1, no write);
+#     the new device's serial (or hostname) must match the bench: its sha is
+#     checked against bench-id.env (written by `p8-backup.sh backup`; read with
+#     --bench-id, or over ssh from W) -- anything else = refuse, no write;
 #  2. STOP (exit 1, no write) if that device's config carries `cellular` (H10);
 #  3. PATCH ONLY the align.json keys (WP0 C1: {gnssAntBias}) on that device,
 #     and check the response; print the claim -> PATCH delay (F2);
 #  4. with --host/--window: poll the bench's `p8-verify.sh dev-settings` until it
 #     PASSes (exit 1 = a cellular STOP), then after --f2-wait s print the
 #     sampler summary with --claim-epoch (the bounded bias-off period, F2).
-# Auth: XG_TOKEN (a DEV id token), or XG_USER + XG_PASS (Cognito SRP against
+# Auth: XG_TOKEN (a DEV id token; its `iss` must be the DEV pool), or XG_USER + XG_PASS (Cognito SRP against
 # the DEV pool, through amazon-cognito-identity-js from P8_COGNITO_NODE_PATH,
 # default frontend/xorgate-web/node_modules). Never printed. Nothing else is
 # written: only this one PATCH, on the new device only.
@@ -33,7 +36,7 @@ PROD_HOST=api.xorgate.io
 P8_DEV_API_HOSTS=${P8_DEV_API_HOSTS:-h357muxy3k.execute-api.us-east-1.amazonaws.com api-dev.xorgate.io}
 P8_COGNITO_NODE_PATH=${P8_COGNITO_NODE_PATH:-$(cd "$HERE/../../../.." 2>/dev/null && pwd)/frontend/xorgate-web/node_modules}
 
-API=https://h357muxy3k.execute-api.us-east-1.amazonaws.com; ORG=""; WS=""; ALIGN=""; HOST=""; W=""; LABEL=""
+API=https://h357muxy3k.execute-api.us-east-1.amazonaws.com; ORG=""; WS=""; ALIGN=""; HOST=""; W=""; LABEL=""; BID=""
 POLL=2; TIMEOUT=1800; F2WAIT=90; OUT=""
 while [ $# -gt 0 ]; do
   case $1 in
@@ -44,6 +47,7 @@ while [ $# -gt 0 ]; do
     --host) HOST=$2; shift 2 ;;
     --window) W=$2; shift 2 ;;
     --label) LABEL=$2; shift 2 ;;
+    --bench-id) BID=$2; shift 2 ;;
     --poll) POLL=$2; shift 2 ;;
     --timeout) TIMEOUT=$2; shift 2 ;;
     --f2-wait) F2WAIT=$2; shift 2 ;;
@@ -52,7 +56,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 say() { printf '[align %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
-{ [ -n "$ORG" ] && [ -n "$WS" ] && [ -f "$ALIGN" ]; } || { sed -n '2,24p' "$0"; exit 2; }
+{ [ -n "$ORG" ] && [ -n "$WS" ] && [ -f "$ALIGN" ]; } || { sed -n '2,28p' "$0"; exit 2; }
 
 # ---- DEV-only guards (before any request)
 host=$(printf '%s' "$API" | sed -E 's#^[a-z]+://##; s#/.*$##')
@@ -84,15 +88,35 @@ u.authenticateUser(new AuthenticationDetails({ Username: process.env.XG_USER, Pa
   export XG_TOKEN
 fi
 export XG_TOKEN
+# The token must come from the DEV pool (a supplied XG_TOKEN too).
+python3 -I - "https://cognito-idp.us-east-1.amazonaws.com/${P8_POOL:-$DEV_POOL}" "$PROD_POOL" <<'PY' || { say "REFUSED: the token is not a DEV-pool token"; exit 2; }
+import base64, json, os, sys
+want, prod = sys.argv[1], sys.argv[2]
+try:
+    p = os.environ["XG_TOKEN"].split(".")[1]
+    iss = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))).get("iss", "")
+except Exception:
+    sys.exit(1)
+sys.exit(0 if iss == want and prod not in iss else 1)
+PY
+
+# The bench identity (shas only).
+rsh() { "$P8_SSH" -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$@"; }
+bid=$(mktemp)
+if [ -n "$BID" ]; then cp "$BID" "$bid"
+elif [ -n "$HOST" ] && [ -n "$W" ]; then rsh "$P8_RSUDO cat $W/bench-id.env" > "$bid" 2>/dev/null || true
+fi
+grep -qE '^(serial_sha_machineid|serial_sha_dt|hostname_sha)=[0-9a-f]{64}$' "$bid" || { rm -f "$bid"; say "no bench identity (pass --bench-id W/bench-id.env, or --host + --window)"; exit 2; }
 
 # ---- poll, check, PATCH (python: the token stays in its environment)
 res=$(mktemp)
-trap 'rm -f "$res"' EXIT
+trap 'rm -f "$res" "$bid"' EXIT
 rc=0
-python3 -I - "$API" "$ORG" "$WS" "$ALIGN" "$POLL" "$TIMEOUT" > "$res" <<'PY' || rc=$?
-import calendar, json, os, sys, time, urllib.error, urllib.request
+python3 -I - "$API" "$ORG" "$WS" "$ALIGN" "$POLL" "$TIMEOUT" "$bid" > "$res" <<'PY' || rc=$?
+import calendar, hashlib, json, os, sys, time, urllib.error, urllib.request
 api, org, ws, align_f, poll, timeout = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]), float(sys.argv[6])
 align = json.load(open(align_f))
+bench = {l.split("=", 1)[1].strip() for l in open(sys.argv[7]) if "=" in l and len(l.split("=", 1)[1].strip()) == 64}
 H = {"Authorization": "Bearer " + os.environ["XG_TOKEN"], "X-Organization-Id": org, "X-Workspace-Id": ws, "Content-Type": "application/json"}
 def call(method, path, body=None):
     req = urllib.request.Request(api + "/v1" + path, method=method, headers=H, data=None if body is None else json.dumps(body).encode())
@@ -121,9 +145,9 @@ while time.time() - t0 < timeout:
         continue
     fresh = [i for i in now if i not in before]
     if fresh:
-        new = fresh[0]
         if len(fresh) > 1:
-            log("WARNING: %d new devices; aligning the first only" % len(fresh))
+            log("REFUSED: %d new devices appeared at once: cannot tell which is the bench (no write)" % len(fresh)); print("stop=multiple"); sys.exit(1)
+        new = fresh[0]
         break
 if not new:
     log("no new device within the timeout"); sys.exit(1)
@@ -133,6 +157,10 @@ d = d.get("device", d)
 cfg = d.get("config") or {}
 created = epoch(d.get("createdAt") or "")
 log("new device %s (claim seen %.1fs after createdAt)" % (new, seen - created if created else -1))
+sha = lambda v: hashlib.sha256(v.encode()).hexdigest() if isinstance(v, str) and v else None
+if not ({sha(d.get("serial")), sha(d.get("hostname"))} & bench):
+    log("REFUSED: the new device's serial/hostname does not match the bench (no write)"); print("stop=not-bench"); sys.exit(1)
+log("the new device's serial matches the bench")
 if "cellular" in cfg:
     log("STOP (H10): the DEV document carries a cellular key: NOT patching"); print("stop=cellular"); sys.exit(1)
 r = call("PATCH", "/devices/%s/config" % new, align)
@@ -156,7 +184,6 @@ if [ -n "$OUT" ]; then (umask 077; cp "$res" "$OUT"); fi
 
 # ---- the bench side (optional)
 { [ -n "$HOST" ] && [ -n "$W" ]; } || exit 0
-rsh() { "$P8_SSH" -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$@"; }
 created=$(sed -n 's/^created_epoch=//p' "$res")
 for i in $(seq 60); do
   drc=0; dout=$(rsh "$P8_RSUDO bash $W/bin/p8-verify.sh dev-settings --window $W" 2>&1) || drc=$?
