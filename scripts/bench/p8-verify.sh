@@ -127,7 +127,9 @@ leftovers() { # <strict 0|1>: prints one line per window artifact still present
   local f u
   for f in "$P8_SD"/p8-* "$P8_SD"/*.wants/p8-* "$P8_STAMP" "$P8_MARKER" "$P8_H1_CONF" \
            "$P8_ROOT/opt/xorgate-rs.new" "$P8_ROOT/opt/xorgate-rs.old" "$P8_ROOT"/run/systemd/system/xorgate-* \
-           "$P8_ROOT"/run/systemd/transient/p8-install-*; do
+           "$P8_ROOT"/run/systemd/transient/p8-install-* "$P8_ROOT$P8_GENERATOR" \
+           "$P8_ROOT/run/systemd/generator/$P8_GENERATOR_LINK" "$P8_ROOT/run/systemd/generator.early/$P8_GENERATOR_LINK" \
+           "$P8_ROOT/run/systemd/generator.late/$P8_GENERATOR_LINK"; do
     if [ -e "$f" ] || [ -L "$f" ]; then echo "${f#"$P8_ROOT"}"; fi
   done
   while read -r u _; do

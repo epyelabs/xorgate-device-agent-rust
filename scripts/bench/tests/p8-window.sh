@@ -128,6 +128,7 @@ mkbench() {
   echo k1 > "$R/etc/apt/keyrings/x.gpg"; echo k2 > "$R/usr/share/keyrings/y.gpg"
   cp "$R/boot/firmware/config.txt" "$R/boot/firmware/config.txt.bak-xorgate"
   printf '#!/bin/sh\n# setclock fixture\n' > "$R/usr/local/bin/xorgate-setclock"; chmod 0755 "$R/usr/local/bin/xorgate-setclock"
+  mkdir -p "$R/etc/systemd/system-generators"; printf '#!/bin/sh\nexit 0\n' > "$R/etc/systemd/system-generators/zz-fixture-gen"; chmod 0755 "$R/etc/systemd/system-generators/zz-fixture-gen"
   printf '{"timestamp":"%s","status":"connected","gnss_ant_bias":1,"cellular":{"state":"ok","apn_applied":"secret.apn.example"},"recovery":{"connect_fails":0,"radio_cycles_since_ok":0,"resets_24h":0,"last_reset":null}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$R/run/sim7600-lte/telemetry.json"
   touch "$R/var/lib/dpkg/lock-frontend" "$R/var/lib/dpkg/lock"
   echo 0123456789abcdef0123456789abcdef > "$R/etc/machine-id"; mkdir -p "$R/proc/device-tree"; printf '6a1b2c3d4e5f6071\0' > "$R/proc/device-tree/serial-number"
@@ -421,7 +422,7 @@ GOLD="/etc/xorgate /var/lib/xorgate /var/lib/xorgate-rs-install /var/lib/xorgate
 /etc/NetworkManager/system-connections/MyHomeSSID.nmconnection /etc/systemd/logind.conf.d/10-xorgate-removeipc.conf
 /etc/apt/apt.conf.d/99xorgate-lock-timeout /etc/cron.d/xorgate-fake-hwclock /boot/firmware/config.txt /etc/modules
 /etc/modprobe.d/raspi-blacklist.conf /etc/apt/sources.list /etc/apt/sources.list.d/raspi.list /etc/apt/keyrings/x.gpg
-/usr/share/keyrings/y.gpg /boot/firmware/config.txt.bak-xorgate @groups:pi @enabled:ModemManager.service @enabled:NetworkManager.service
+/usr/share/keyrings/y.gpg /boot/firmware/config.txt.bak-xorgate /etc/systemd/system-generators/zz-fixture-gen @groups:pi @enabled:ModemManager.service @enabled:NetworkManager.service
 @enabled:sim7600-lte.service @enabled:xorgate-agent.service @enabled:xorgate-agent-rs.service @enabled:xorgate-drive-blackbox.service"
 gold_missing() { local p n=0; for p in $GOLD; do awk -F '\t' -v p="$p" '$1 == p {f=1} END {exit !f}' "$1" || { n=$((n + 1)); echo "missing $p" >&2; }; done; echo "$n"; }
 mkbench
@@ -523,7 +524,7 @@ vo post --window "$W" | grep -q '^FAIL drive-blackbox not writing' && ok "T12: n
 echo "== (a) p8-align.sh against a mocked DEV API"
 cat > "$TMP/devapi.py" <<'PY'
 import http.server, json, sys
-port, state_f, tok, mid = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+port, state_f, tok, mid, hn = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 st = {"gets": 0, "patches": [], "cellular": False}
 old = {"id": "11111111-0000-0000-0000-000000000000", "createdAt": "2026-11-14T00:00:00Z", "config": {}}
 new = {"id": "22222222-0000-0000-0000-000000000000", "createdAt": None, "config": {"gnssAntBias": False}, "configRev": 1, "serial": mid}
@@ -540,6 +541,7 @@ class H(http.server.BaseHTTPRequestHandler):
             mode = open(state_f).read().strip()
             rows = [old] + ([new] if st["gets"] >= 3 else []) + ([other] if st["gets"] >= 3 and mode == "multi" else [])
             if st["gets"] == 3 and mode == "notbench": new["serial"] = "not-the-bench"
+            if st["gets"] == 3 and mode == "hostonly": new["serial"] = "not-the-bench"; new["hostname"] = hn
             if st["gets"] == 3:
                 import time; new["createdAt"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4))
                 if open(state_f).read().strip() == "cellular": new["config"]["cellular"] = {"apn": "x"}
@@ -559,7 +561,7 @@ echo '{"gnssAntBias": true}' > "$TMP/align.json"
 jwt() { python3 -c 'import base64,json,sys; b=lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("="); print(b({"alg":"none"}) + "." + b({"iss": sys.argv[1]}) + ".sig")' "$1"; }
 DEVTOK=$(jwt https://cognito-idp.us-east-1.amazonaws.com/us-east-1_E6dkPNlZl)
 PRODTOK=$(jwt https://cognito-idp.us-east-1.amazonaws.com/us-east-1_RPLv99S54)
-run_api() { : > "$TMP/apistate.patches"; echo "$1" > "$TMP/apistate"; python3 "$TMP/devapi.py" "$2" "$TMP/apistate" "${3:-$DEVTOK}" "$(cat "$R/etc/machine-id")" & AP=$!; sleep 1; }
+run_api() { : > "$TMP/apistate.patches"; echo "$1" > "$TMP/apistate"; python3 "$TMP/devapi.py" "$2" "$TMP/apistate" "${3:-$DEVTOK}" "$(cat "$R/etc/machine-id")" "$(hostname)" & AP=$!; sleep 1; }
 ready w1; cp "$W/seed-settings.json" "$R/var/lib/xorgate/settings.json"
 run p8-modem-sampler.sh run --out "$W/modem-w1.tsv" --baseline "$W/baseline.env" --ticks 2 >/dev/null 2>&1
 run_api ok 18941
@@ -579,11 +581,11 @@ out=$(XG_TOKEN="$DEVTOK" bash "$B/p8-align.sh" --api https://api.xorgate.io --or
 out=$(XG_TOKEN="$DEVTOK" P8_DEV_API_HOSTS="api.xorgate.io" bash "$B/p8-align.sh" --api https://api.xorgate.io --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses PROD even when it is listed as DEV" || bad "align PROD listed: $out"
 out=$(XG_TOKEN="$DEVTOK" bash "$B/p8-align.sh" --api https://example.com --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses a non-DEV host" || bad "align other host"
 out=$(XG_TOKEN="$DEVTOK" P8_POOL=us-east-1_RPLv99S54 bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses the PROD Cognito pool" || bad "align PROD pool"
-for m in multi:18943 notbench:18944; do
+for m in multi:18943 notbench:18944 hostonly:18946; do
   run_api "${m%%:*}" "${m#*:}"
   out=$(XG_TOKEN="$DEVTOK" P8_DEV_API_HOSTS="127.0.0.1:${m#*:}" bash "$B/p8-align.sh" --api "http://127.0.0.1:${m#*:}" --org org --workspace ws --align "$TMP/align.json" --bench-id "$W/bench-id.env" --poll 0.2 --timeout 20 2>&1); rc=$?
   kill "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
-  [ $rc = 1 ] && [ ! -s "$TMP/apistate.patches" ] && ok "align: '${m%%:*}' (two new devices / a serial that is not the bench's) is REFUSED with no PATCH" || bad "align ${m%%:*}: rc=$rc $(printf '%s' "$out" | tail -2)"
+  [ $rc = 1 ] && [ ! -s "$TMP/apistate.patches" ] && ok "align: '${m%%:*}' (two new devices / a serial that is not the bench's / a hostname match alone) is REFUSED with no PATCH" || bad "align ${m%%:*}: rc=$rc $(printf '%s' "$out" | tail -2)"
 done
 run_api ok 18945 "$PRODTOK"
 out=$(XG_TOKEN="$PRODTOK" P8_DEV_API_HOSTS="127.0.0.1:18945" bash "$B/p8-align.sh" --api http://127.0.0.1:18945 --org org --workspace ws --align "$TMP/align.json" --bench-id "$W/bench-id.env" --poll 0.2 --timeout 5 2>&1); rc=$?
@@ -595,6 +597,31 @@ grep -qE '^serial_sha_machineid=[0-9a-f]{64}$' "$W/bench-id.env" && grep -qE '^s
   && ! grep -q 0123456789abcdef "$W/bench-id.env" && ok "backup wrote bench-id.env: shas of machine-id + DT serial + hostname only (0600)" || bad "bench-id.env"
 echo '{"gnssAntBias": true, "lteRecovery": {}}' > "$TMP/align2.json"
 out=$(XG_TOKEN="$DEVTOK" bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align2.json" 2>&1); [ $? = 2 ] && ok "align refuses an align.json with more than gnssAntBias" || bad "align extra keys"
+
+echo "== WP-R1 native generator: in the manifest, moved out with the test surface, its /run output removed, a leftover is caught"
+ready w2
+mkdir -p "$R/etc/systemd/system-generators" "$R/run/systemd/generator/multi-user.target.wants"
+printf '#!/bin/sh\n[ -e /opt/xorgate ] && exit 0\n' > "$R/etc/systemd/system-generators/xorgate-agent-rs-native"; chmod 0755 "$R/etc/systemd/system-generators/xorgate-agent-rs-native"
+ln -s /etc/systemd/system/xorgate-agent-rs.service "$R/run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service"
+grep -q $'^absent\t/etc/systemd/system-generators/xorgate-agent-rs-native$' "$W/aside.list" && ok "the generator path is part of the move-aside surface" || bad "generator not in aside.list"
+: > "$SD/log"; run p8-restore.sh --window "$W" >/dev/null 2>&1
+[ ! -e "$R/etc/systemd/system-generators/xorgate-agent-rs-native" ] && [ -e "$W/test-w2/etc/systemd/system-generators/xorgate-agent-rs-native" ] \
+  && [ ! -L "$R/run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service" ] && grep -q 'removed the native generator' "$W/restore.log" \
+  && [ "$(grep -n 'daemon-reload' "$SD/log" | tail -1 | cut -d: -f1)" -gt 0 ] && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" \
+  && ok "restore: the generator went to test-w2, its /run wants link removed, daemon-reload, verify pre PASS" || { bad "generator restore"; cat "$W/verify-pre.out"; }
+[ -e "$R/etc/systemd/system-generators/zz-fixture-gen" ] && ok "an unrelated PROD generator stays" || bad "fixture generator lost"
+ln -s /etc/systemd/system/xorgate-agent-rs.service "$R/run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service"
+vo pre --window "$W" | grep -q '^FAIL no window artifact.*generator' && ok "verify: a leftover generator /run link is caught" || bad "generator leftover not caught"
+rm -f "$R/run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service"
+
+echo "== restore.done only AFTER the start is queued; a re-run never re-extracts over a running PROD"
+ready w1; fake_js_install
+P8_TEST_STOP_AFTER=start run p8-restore.sh --window "$W" >/dev/null 2>&1; [ $? = 99 ] && grep -q 'systemctl start --no-block xorgate-agent-rs' "$SD/log" && [ ! -e "$W/restore.done" ] \
+  && ok "stopped right after the start was queued: no restore.done yet" || bad "stop after start"
+echo '{"live":1}' > "$R/var/lib/xorgate/state.json"      # PROD writes its state
+run p8-restore.sh --auto --window "$W" >/dev/null 2>&1
+grep -q 'PROD found running' "$W/restore.done" && grep -q 'verify=PASS' "$W/restore.done" && [ "$(cat "$R/var/lib/xorgate/state.json")" = '{"live":1}' ] \
+  && ok "the late --auto run records the verdict and never touches the live PROD state" || bad "PROD-running guard: $(cat "$W/restore.done" 2>/dev/null)"
 
 echo "== cam0 hook policy (mocked: the policy function over a request table)"
 command -v node >/dev/null || { /usr/bin/apt-get update -qq >/dev/null 2>&1; /usr/bin/apt-get install -y -qq nodejs >/dev/null 2>&1; }  # the real apt-get: $STUB has a fake one

@@ -159,8 +159,13 @@ printf '[Service]\nType=oneshot\nExecStart=/bin/true\n' > /etc/systemd/system/xo
 printf '[Service]\nEnvironment=DIST=dev\n' > /etc/systemd/system/xorgate-updater-rs.service.d/10-dist.conf
 for f in 020_xorgate-power 021_xorgate-clock 023_xorgate-camrotate 024_xorgate-update-rs; do echo "# rs $f" > "/etc/sudoers.d/$f"; chmod 0440 "/etc/sudoers.d/$f"; done
 printf '#!/bin/sh\nexec /opt/xorgate-rs/bin/xorgate-rs\n' > /usr/local/bin/xorgate-rs; chmod 0755 /usr/local/bin/xorgate-rs
+# WP-R1 (phase-8/provision-rs @ ac3dcae): enablement is a boot GENERATOR, not `systemctl enable`
+mkdir -p /etc/systemd/system-generators
+printf '%s\n' '#!/bin/sh' '[ -e /opt/xorgate ] && exit 0' 'mkdir -p "$1/multi-user.target.wants" || exit 0' \
+  'ln -sf /etc/systemd/system/xorgate-agent-rs.service "$1/multi-user.target.wants/xorgate-agent-rs.service"' > /etc/systemd/system-generators/xorgate-agent-rs-native
+chmod 0755 /etc/systemd/system-generators/xorgate-agent-rs-native
 systemctl daemon-reload
-systemctl enable --now xorgate-agent-rs
+systemctl start xorgate-agent-rs
 echo "install done"
 EOF
 cat > /root/fake-install-dpkg.sh <<'EOF'
@@ -237,6 +242,7 @@ grep -q '^test-js start' "$LOG" && ! grep -q '^prod-js start' "$LOG" && ok "the 
 dev_key=$(sha256sum /etc/xorgate/device.key.pem | cut -c1-64)
 before=$(systemctl show sim7600-lte -p ActiveEnterTimestamp --value)
 bash "$W/bin/p8-restore.sh" --window "$W" > "$W/restore.out" 2>&1 && ok "manual restore exit 0" || { bad "restore"; tail -n 30 "$W/restore.out"; }
+grep -q 'self=p8-restore-20261114T000001Z.service' "$W/restore.log" && grep -q 'running as the transient unit p8-restore-' "$W/restore.out" && ok "the manual restore ran as the transient unit p8-restore-<ts> (ruling)" || bad "manual restore not in a unit"
 grep -q '^DA15 pre: PASS' "$W/verify-pre.out" && ok "verify pre PASS before the start" || { bad "verify pre"; cat "$W/verify-pre.out"; }
 vp=$(epoch "$(grep 'verify pre: PASS' "$W/restore.log" | head -1 | sed 's/^\[p8 \([^]]*\)\].*/\1/')")
 st=$(grep '^prod-rs start' "$LOG" | tail -1 | awk '{print int($3)}')
@@ -275,6 +281,8 @@ echo "== B2: F1 boot path, the TEST native xorgate-agent-rs queued at boot"
 open_window 20261114T000003Z w2 --cap-min 75
 bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-rs.sh > "$W/ri.out" 2>&1 || bad "B2 install: $(cat "$W/ri.out")"
 grep -q '^test-rs start' "$LOG" && ok "B2: the test rust unit ran during the window" || bad "B2: test rs never ran"
+[ -L /run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service ] && [ ! -L "$SDIR/multi-user.target.wants/xorgate-agent-rs.service" ] \
+  && ok "B2: the native install's generator wants the test unit (no /etc wants link, as provision-rs.sh)" || bad "B2: generator did not run"
 boot B2
 wait_active xorgate-agent-rs 120 && ok "B2: rust active after the boot" || bad "B2: not active"
 sleep 3
@@ -283,6 +291,9 @@ since_boot "BOOT B2" | grep -q '^prod-rs start' && [ "$(readlink "/proc/$(system
   && [ "$(sha256sum /opt/xorgate-rs/bin/xorgate-rs | cut -c1-64)" = "$CERT" ] && ok "B2: the PROD binary runs (certified sha)" || bad "B2: wrong binary"
 grep -q 'F1: cancelling queued job [0-9]* (xorgate-agent-rs.service)' "$W/restore.log" && ok "B2: the queued test rust job was cancelled" || bad "B2: no cancel"
 [ ! -e "$SDIR/xorgate-agent-rs.service.d/20-native.conf" ] && [ -e "$W/test-w2/etc/systemd/system/xorgate-agent-rs.service.d/20-native.conf" ] && ok "B2: 20-native.conf went with the test surface" || bad "B2: 20-native.conf"
+[ ! -e /etc/systemd/system-generators/xorgate-agent-rs-native ] && [ -e "$W/test-w2/etc/systemd/system-generators/xorgate-agent-rs-native" ] \
+  && [ ! -L /run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service ] && [ -L "$SDIR/multi-user.target.wants/xorgate-agent-rs.service" ] \
+  && ok "B2: the generator and its /run link are gone; PROD is enabled by its own /etc link again" || bad "B2: generator survived the restore"
 bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "B2: verify post PASS" || { bad "B2: verify post"; grep FAIL "$W/post.out"; }
 
 echo "== B1M: MUTANT, the boot restore without the job cancel"
@@ -314,6 +325,22 @@ wait_grep "$W/restore.log" 'restore done' 150 || bad "T3M: no timer restore"
 wait "$rip" 2>/dev/null
 grep -q '^released' "$W/w3-install.log" && bad "T3M: mutant NOT caught" || ok "T3M: mutant CAUGHT (the installer died holding the lock)"
 prod_back
+
+echo "== P1/P2: the ssh session dies during a MANUAL restore (fix-check probes)"
+open_window 20261114T000007Z w1 --cap-min 60
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w1 -- /root/fake-install-js.sh > "$W/ri.out" 2>&1 || bad "P1 install"
+bash "$W/bin/p8-restore.sh" --window "$W" 2>&1 | true      # P1: the reader is gone at once (a closed ssh channel, no SIGHUP)
+wait_grep "$W/restore.done" verify= 120 && wait_active xorgate-agent-rs 60 && grep -q 'verify=PASS' "$W/restore.done" \
+  && ok "P1: a closed client pipe: the restore unit finished, PROD started, verify PASS" || { bad "P1: PROD not started"; tail -5 "$W/restore.log"; }
+bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+open_window 20261114T000008Z w1 --cap-min 60
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w1 -- /root/fake-install-js.sh > "$W/ri.out" 2>&1 || bad "P2 install"
+script -qefc "bash $W/bin/p8-restore.sh --window $W" /dev/null > /dev/null 2>&1 & sp=$!
+sleep 2; kill -KILL "$sp" 2>/dev/null       # P2: the pty master dies: the client gets SIGHUP + EIO
+wait_grep "$W/restore.done" verify= 120 && wait_active xorgate-agent-rs 60 && grep -q 'verify=PASS' "$W/restore.done" \
+  && ok "P2: a pty hang-up: the restore unit finished, PROD started, verify PASS" || { bad "P2: PROD not started"; tail -5 "$W/restore.log"; }
+bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "P2: verify post PASS" || { bad "P2: verify post"; grep FAIL "$W/post.out"; }
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

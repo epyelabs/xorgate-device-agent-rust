@@ -10,7 +10,7 @@
 #
 #  1. snapshot the workspace's device ids, then poll every --poll s for a NEW
 #     device (the claim). MORE THAN ONE new device = refuse (exit 1, no write);
-#     the new device's serial (or hostname) must match the bench: its sha is
+#     the new device's SERIAL must match the bench (the hostname never counts alone): its sha is
 #     checked against bench-id.env (written by `p8-backup.sh backup`; read with
 #     --bench-id, or over ssh from W) -- anything else = refuse, no write;
 #  2. STOP (exit 1, no write) if that device's config carries `cellular` (H10);
@@ -106,7 +106,7 @@ bid=$(mktemp)
 if [ -n "$BID" ]; then cp "$BID" "$bid"
 elif [ -n "$HOST" ] && [ -n "$W" ]; then rsh "$P8_RSUDO cat $W/bench-id.env" > "$bid" 2>/dev/null || true
 fi
-grep -qE '^(serial_sha_machineid|serial_sha_dt|hostname_sha)=[0-9a-f]{64}$' "$bid" || { rm -f "$bid"; say "no bench identity (pass --bench-id W/bench-id.env, or --host + --window)"; exit 2; }
+grep -qE '^(serial_sha_machineid|serial_sha_dt)=[0-9a-f]{64}$' "$bid" || { rm -f "$bid"; say "no bench identity (pass --bench-id W/bench-id.env, or --host + --window)"; exit 2; }
 
 # ---- poll, check, PATCH (python: the token stays in its environment)
 res=$(mktemp)
@@ -158,9 +158,12 @@ cfg = d.get("config") or {}
 created = epoch(d.get("createdAt") or "")
 log("new device %s (claim seen %.1fs after createdAt)" % (new, seen - created if created else -1))
 sha = lambda v: hashlib.sha256(v.encode()).hexdigest() if isinstance(v, str) and v else None
-if not ({sha(d.get("serial")), sha(d.get("hostname"))} & bench):
-    log("REFUSED: the new device's serial/hostname does not match the bench (no write)"); print("stop=not-bench"); sys.exit(1)
-log("the new device's serial matches the bench")
+# The serial must match (machine-id or DT serial). The hostname never counts
+# on its own: a DEV device can share a default hostname (fix-check NIT).
+serials = {l.split("=", 1)[1].strip() for l in open(sys.argv[7]) if l.startswith("serial_sha_") and len(l.split("=", 1)[1].strip()) == 64}
+if sha(d.get("serial")) not in serials:
+    log("REFUSED: the new device's serial does not match the bench (no write)%s" % (" (its hostname does; that alone never counts)" if sha(d.get("hostname")) in bench else "")); print("stop=not-bench"); sys.exit(1)
+log("the new device's serial matches the bench" + (" (hostname too)" if sha(d.get("hostname")) in bench else ""))
 if "cellular" in cfg:
     log("STOP (H10): the DEV document carries a cellular key: NOT patching"); print("stop=cellular"); sys.exit(1)
 r = call("PATCH", "/devices/%s/config" % new, align)

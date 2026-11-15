@@ -43,7 +43,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=scripts/bench/p8-lib.sh
 . "$HERE/p8-lib.sh"
 
-W=""; LABEL=""; AUTO=0; BOOT=0; FORCE=0; AGAIN=0
+W=""; LABEL=""; AUTO=0; BOOT=0; FORCE=0; AGAIN=0; ORIG_ARGS=("$@")
 while [ $# -gt 0 ]; do
   case $1 in
     --window) W=$2; shift 2 ;;
@@ -56,6 +56,28 @@ while [ $# -gt 0 ]; do
   esac
 done
 p8_need_root
+trap '' PIPE      # a closed caller pipe must never kill a restore (P1)
+# ORCHESTRATOR RULING (T2 residual): a manual restore ALWAYS runs as a
+# transient unit, so an ssh drop (pipe close, SIGHUP, pty hang-up) cannot kill
+# it. This client only starts it, waits, and prints a short status. Sandbox
+# tests (P8_ROOT) run inline.
+if [ -z "${P8_SELF_UNIT:-}" ] && [ -z "$P8_ROOT" ]; then
+  ww=$W; [ -n "$ww" ] || ww=$(p8_marker_get window || true)
+  [ -n "$ww" ] || { echo "restore: no --window and no armed marker: nothing to restore"; exit 0; }
+  ts=${ww##*/p8-}
+  [[ $ts =~ ^[0-9A-Za-z]+$ ]] || p8_die "bad window $ww"
+  u=p8-restore-$ts
+  envs=(--setenv=HOME=/root --setenv="P8_SELF_UNIT=$u.service")
+  for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_CERT_BIN_SHA P8_CERT_VERSION; do
+    [ -z "${!v:-}" ] || envs+=(--setenv="$v=${!v}")
+  done
+  { echo "restore: running as the transient unit $u (log $ww/restore.log)"; } 2>/dev/null || true
+  rrc=0
+  systemd-run --quiet --wait --collect --unit="$u" "${envs[@]}" /bin/bash "$HERE/p8-restore.sh" "${ORIG_ARGS[@]}" || rrc=$?
+  { grep -E 'verify pre: |NOT GREEN|NOT starting|restore done|already finished|FATAL' "$ww/restore.log" 2>/dev/null | tail -n 6
+    echo "restore: unit $u exit $rrc"; } 2>/dev/null || true
+  exit "$rrc"
+fi
 mkdir -p "$(dirname "$P8_LOCK")"
 exec 9>>"$P8_LOCK"
 flock -w 900 9 || p8_die "could not take $P8_LOCK within 15 min"
@@ -85,6 +107,15 @@ if [ -f "$W/restore.done" ]; then
   fi
   [ "$(p8_active "$P8_PROD_UNIT")" != active ] || p8_die "--again refused: $P8_PROD_UNIT is running (its live state would be overwritten)"
   rm -f "$W/restore.done"
+fi
+if [ -f "$W/aside.restored" ] && [ "$(p8_active "$P8_PROD_UNIT")" = active ] && [ "$AGAIN" = 0 ]; then
+  # PROD was started by an earlier run that died before writing restore.done:
+  # never re-extract over its live state. Record that run's own verdict.
+  v=FAIL; grep -q '^DA15 pre: PASS' "$W/verify-pre.out" 2>/dev/null && v=PASS
+  echo "$(p8_ts) verify=$v (PROD found running)" > "$W/restore.done"
+  [ ! -e "$P8_MARKER" ] || bash "$HERE/p8-deadman.sh" disarm >/dev/null
+  p8_log "PROD is already running on the restored surface: recorded verify=$v, nothing else done"
+  [ "$v" = PASS ]; exit $?
 fi
 p8_log "restore start: window=${W#"$P8_ROOT"} label=$LABEL auto=$AUTO boot=$BOOT self=${P8_SELF_UNIT:-shell}"
 rc=0
@@ -139,6 +170,14 @@ if [ -f "$L" ] && [ ! -f "$W/aside.restored" ]; then
   touch "$W/aside.restored"
   systemctl daemon-reload || true
   p8_test_stop 5
+fi
+# A test native install's boot generator went out with the surface (step 4);
+# its /run output must not survive either (the bench is a CONVERTED device).
+if [ ! -e "$P8_ROOT$P8_GENERATOR" ]; then
+  for g in "$P8_ROOT"/run/systemd/generator "$P8_ROOT"/run/systemd/generator.early "$P8_ROOT"/run/systemd/generator.late; do
+    if [ -L "$g/$P8_GENERATOR_LINK" ]; then rm -f "$g/$P8_GENERATOR_LINK"; p8_log "removed the native generator's ${g#"$P8_ROOT"}/$P8_GENERATOR_LINK"; fi
+  done
+  systemctl daemon-reload || true
 fi
 
 # 6. system files against pre.manifest
@@ -236,7 +275,7 @@ failsafe() {
   fi
 }
 # shellcheck disable=SC2317,SC2329  # invoked by the trap below
-on_sig() { trap - HUP INT TERM; p8_log "signal between the disarm and the start: arming the failsafe"; failsafe sig; exit 1; }
+on_sig() { set +e; trap - HUP INT TERM; failsafe sig; p8_log "signal between the disarm and the start: the failsafe was armed first"; exit 1; }
 
 # 7. window artifacts
 rm -f "$P8_H1_CONF"
@@ -261,8 +300,9 @@ if [ "$vrc" != 0 ] && [ "$AUTO" = 0 ] && [ "$FORCE" = 0 ]; then
   p8_log "NOT starting $P8_PROD_UNIT: the pre-start verify failed"; failsafe; exit 1
 fi
 p8_cancel_agent_jobs    # F1 again: nothing but our own start may be queued
-echo "$(p8_ts) verify=$([ "$vrc" = 0 ] && echo PASS || echo FAIL)" > "$W/restore.done"
 systemctl start --no-block "$P8_PROD_UNIT" || { p8_log "start --no-block $P8_PROD_UNIT failed"; rc=1; }
+p8_test_stop start
+echo "$(p8_ts) verify=$([ "$vrc" = 0 ] && echo PASS || echo FAIL)" > "$W/restore.done"   # only AFTER the start is queued
 trap - HUP INT TERM
 p8_log "start --no-block $P8_PROD_UNIT queued"
 if [ "$BOOT" = 1 ]; then

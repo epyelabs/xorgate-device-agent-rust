@@ -41,6 +41,10 @@ P8_ENABLED_UNITS="ModemManager.service NetworkManager.service sim7600-lte.servic
 
 # §7.2.5: the agent surface moved aside (mv -T, one fs). Order matters:
 # /var/lib/xorgate first, so the seed lands within the same second (H10).
+# WP-R1's native installer enables the Rust unit through a boot GENERATOR
+# (provision-rs.sh: no `systemctl enable`); its output lives in /run.
+P8_GENERATOR=/etc/systemd/system-generators/xorgate-agent-rs-native
+P8_GENERATOR_LINK=multi-user.target.wants/xorgate-agent-rs.service
 P8_SURFACE="/var/lib/xorgate
 /etc/xorgate
 /opt/xorgate
@@ -64,7 +68,8 @@ P8_SURFACE="/var/lib/xorgate
 /etc/sudoers.d/023_xorgate-camrotate
 /etc/sudoers.d/024_xorgate-update-rs
 /usr/local/bin/xorgate
-/usr/local/bin/xorgate-rs"
+/usr/local/bin/xorgate-rs
+/etc/systemd/system-generators/xorgate-agent-rs-native"
 
 p8_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # Review T3: the mutating tools share /run/p8.lock with the restore. The
@@ -78,7 +83,12 @@ p8_lock_nb() {
 # ignored unless P8_ROOT is set, so it can never fire on the bench).
 p8_test_pause() { if [ -n "$P8_ROOT" ] && [ -n "${P8_TEST_PAUSE_S:-}" ]; then sleep "$P8_TEST_PAUSE_S" & wait $!; fi; }
 p8_test_stop() { if [ -n "$P8_ROOT" ] && [ "${P8_TEST_STOP_AFTER:-}" = "$1" ]; then p8_log "TEST: stopping after step $1"; exit 99; fi; }
-p8_log() { printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >&2; [ -z "${P8_LOGFILE:-}" ] || printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >> "$P8_LOGFILE" 2>/dev/null || true; }
+# The log file first; a dead stderr (a closed ssh pipe, a hung-up pty) never
+# fails the caller (fix-check 62f6986 P1/P2).
+p8_log() {
+  [ -z "${P8_LOGFILE:-}" ] || printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >> "$P8_LOGFILE" 2>/dev/null || true
+  printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >&2 2>/dev/null || true   # left to right: out -> stderr, printf's own errors -> null
+}
 p8_die() { p8_log "FATAL: $*"; exit "${P8_DIE_RC:-1}"; }
 p8_need_root() { [ "$(id -u)" -eq 0 ] || p8_die "run as root (sudo)"; }
 p8_sha() { sha256sum "$1" | cut -c1-64; }
@@ -139,7 +149,9 @@ GLOBS = ["/etc/systemd/system/xorgate-*", "/etc/systemd/system/sim7600-lte*", "/
          # them on this bench, so any change is a finding. pip state is a
          # `pip freeze` sha in baseline/post (p8-verify.sh), not manifest rows.
          "/etc/apt/sources.list", "/etc/apt/sources.list.d/*", "/etc/apt/keyrings/*", "/usr/share/keyrings/*",
-         "/boot/firmware/config.txt.bak-xorgate"]
+         "/boot/firmware/config.txt.bak-xorgate",
+         # WP-R1's native boot generator (and any other /etc generator)
+         "/etc/systemd/system-generators/*"]
 # M4 volatile list: excluded from equality, checked separately by p8-verify.sh.
 VOL_TREES = ["/var/lib/xorgate-rs/drive-blackbox"]
 def volatile(p):
