@@ -39,7 +39,7 @@ case $cmd in
   list-units) [ ${#args[@]} -gt 0 ] || args=('*'); while read -r l; do u=${l%% *}; for pat in "${args[@]}"; do case $u in $pat) echo "$l"; break ;; esac; done; done < <(cat "$SD/units" 2>/dev/null) ;;
   list-jobs) cat "$SD/jobs" 2>/dev/null; : > "$SD/jobs" ;;
   cancel) echo "${args[0]}" >> "$SD/cancelled" ;;
-  stop) for u in "${args[@]}"; do [ -f "$SD/STOPFAIL.$(n "$u")" ] && continue; echo inactive > "$SD/active.$(n "$u")"; sed -i "/^${u%.service}\(\.service\)\? /d" "$SD/units" 2>/dev/null; done ;;
+  stop) for u in "${args[@]}"; do [ -f "$SD/ON_STOP_ADD.$(n "$u")" ] && { cat "$SD/ON_STOP_ADD.$(n "$u")" >> "$SD/units"; echo active > "$SD/active.xorgate-provision-rs"; rm -f "$SD/ON_STOP_ADD.$(n "$u")"; }; [ -f "$SD/STOPFAIL.$(n "$u")" ] && continue; echo inactive > "$SD/active.$(n "$u")"; sed -i "/^${u%.service}\(\.service\)\? /d" "$SD/units" 2>/dev/null; done ;;
   kill) for u in "${args[@]}"; do [ -f "$SD/KILLFAIL.$(n "$u")" ] && continue; echo inactive > "$SD/active.$(n "$u")"; sed -i "/^${u%.service}\(\.service\)\? /d" "$SD/units" 2>/dev/null; done ;;
   start|restart) for u in "${args[@]}"; do echo active > "$SD/active.$(n "$u")"; done ;;
   enable|disable) for u in "${args[@]}"; do echo "${cmd}d" > "$SD/enabled.$(n "$u")"; [ "$now" = 1 ] && { [ "$cmd" = enable ] && echo active || echo inactive; } > "$SD/active.$(n "$u")"; done; true ;;
@@ -628,24 +628,24 @@ echo "== WP-R1 MUST-2: the sibling provisioner unit is stopped FIRST and verifie
 ready w2; fake_js_install
 printf 'xorgate-provision-rs.service loaded active running native provisioning\np8-install-w2.service loaded active running p8 installer\n' > "$SD/units"
 echo active > "$SD/active.xorgate-provision-rs"; echo active > "$SD/active.p8-install-w2"
-echo "step 3 dev claim" > "$R/var/log/xorgate-provision-rs.log"; mkdir -p "$R/run"; touch "$R/run/xorgate-provision-rs.lock" "$R/run/xorgate-provision-rs.rc"
+echo "step 3 dev claim" > "$R/var/log/xorgate-provision-rs.log"; mkdir -p "$R/run"; touch "$R/run/xorgate-provision-rs.lock" "$R/run/xorgate-provision-rs.rc" "$R/run/xorgate-provision-rs.rc.20261115T1"
 : > "$SD/log"; run p8-restore.sh --window "$W" >/dev/null 2>&1
 lp=$(grep -n 'stopping window unit xorgate-provision-rs.service' "$W/restore.log" | head -1 | cut -d: -f1)
 li=$(grep -n 'stopping window unit p8-install-w2.service' "$W/restore.log" | head -1 | cut -d: -f1)
 lb=$(grep -n 'PROD back:' "$W/restore.log" | head -1 | cut -d: -f1)
 [ -n "$lp" ] && [ -n "$li" ] && [ -n "$lb" ] && [ "$lp" -lt "$li" ] && [ "$li" -lt "$lb" ] && grep -q 'window unit xorgate-provision-rs.service inactive (verified)' "$W/restore.log" \
   && ok "the provisioner is stopped first, then p8-install, both verified inactive, BEFORE the first move back" || bad "MUST-2 order: prov=$lp inst=$li back=$lb"
-[ ! -e "$R/var/log/xorgate-provision-rs.log" ] && [ -e "$W/test-w2/var/log/xorgate-provision-rs.log" ] && [ ! -e "$R/run/xorgate-provision-rs.lock" ] && [ ! -e "$R/run/xorgate-provision-rs.rc" ] \
-  && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" && ok "the provisioner log moved to test-w2; its /run lock + rc removed; verify pre PASS" || { bad "MUST-2 artefacts"; cat "$W/verify-pre.out"; }
+[ ! -e "$R/var/log/xorgate-provision-rs.log" ] && [ -e "$W/test-w2/var/log/xorgate-provision-rs.log" ] && [ ! -e "$R/run/xorgate-provision-rs.lock" ] && [ ! -e "$R/run/xorgate-provision-rs.rc" ] && [ ! -e "$R/run/xorgate-provision-rs.rc.20261115T1" ] \
+  && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" && ok "the provisioner log moved to test-w2; its /run lock + every rc.<id> removed; verify pre PASS" || { bad "MUST-2 artefacts"; cat "$W/verify-pre.out"; }
 ready w2; fake_js_install
 echo "xorgate-provision-rs.service loaded active running native provisioning" > "$SD/units"; echo active > "$SD/active.xorgate-provision-rs"; touch "$SD/STOPFAIL.xorgate-provision-rs"
-: > "$SD/log"; P8_UNIT_STOP_WAIT_S=1 run p8-restore.sh --window "$W" >/dev/null 2>&1
+: > "$SD/log"; P8_UNIT_STOP_WAIT_S=1 P8_KILL_WAIT_S=1 run p8-restore.sh --window "$W" >/dev/null 2>&1
 grep -q 'still running after 1s: SIGKILL' "$W/restore.log" && grep -q 'systemctl kill --signal=SIGKILL xorgate-provision-rs.service' "$SD/log" && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" \
   && ok "a provisioner that ignores the stop is SIGKILLed, verified inactive, then the restore completes" || bad "MUST-2 SIGKILL escalation"
 ready w2; fake_js_install; k=$(sha "$W/aside/etc/xorgate/device.key.pem")
 echo "xorgate-provision-rs.service loaded active running native provisioning" > "$SD/units"; echo active > "$SD/active.xorgate-provision-rs"
 touch "$SD/STOPFAIL.xorgate-provision-rs" "$SD/KILLFAIL.xorgate-provision-rs"
-P8_UNIT_STOP_WAIT_S=1 run p8-restore.sh --window "$W" >/dev/null 2>&1; rc=$?
+P8_UNIT_STOP_WAIT_S=1 P8_KILL_WAIT_S=1 run p8-restore.sh --window "$W" >/dev/null 2>&1; rc=$?
 [ $rc != 0 ] && [ "$(sha "$W/aside/etc/xorgate/device.key.pem")" = "$k" ] && ! grep -q 'PROD back:' "$W/restore.log" && [ -e "$R/root/p8-window.active" ] \
   && grep -q 'moving NOTHING back' "$W/restore.log" && ok "an unkillable provisioner: the restore refuses to move anything back (PROD stays aside, dead-man still armed)" || bad "MUST-2 unkillable: rc=$rc"
 rm -f "$SD/STOPFAIL.xorgate-provision-rs" "$SD/KILLFAIL.xorgate-provision-rs"; : > "$SD/units"
@@ -655,6 +655,38 @@ vo pre --window "$W" | grep -q '^FAIL no window artifact.*xorgate-provision-rs.l
 rm -f "$R/var/log/xorgate-provision-rs.log"; echo "xorgate-provision-rs.service loaded inactive dead native provisioning" > "$SD/units"
 vo pre --window "$W" | grep -q '^FAIL no window artifact.*unit xorgate-provision-rs.service' && ok "verify: a still-loaded xorgate-provision-rs unit is a leftover" || bad "prov unit leftover not caught"
 : > "$SD/units"
+
+echo "== bench-tools-r1 review: re-list until none; the provisioner lock is held; a survivor re-arms then says REBOOT NEEDED"
+ready w2; fake_js_install
+echo "p8-install-w2.service loaded active running p8 installer" > "$SD/units"; echo active > "$SD/active.p8-install-w2"
+echo "xorgate-provision-rs.service loaded active running native provisioning (late)" > "$SD/ON_STOP_ADD.p8-install-w2"
+: > "$SD/log"; run p8-restore.sh --window "$W" >/dev/null 2>&1
+lp=$(grep -n 'stopping window unit xorgate-provision-rs.service' "$W/restore.log" | head -1 | cut -d: -f1); lb=$(grep -n 'PROD back:' "$W/restore.log" | head -1 | cut -d: -f1)
+grep -q 'pass 2: window units appeared after the last pass' "$W/restore.log" && [ -n "$lp" ] && [ -n "$lb" ] && [ "$lp" -lt "$lb" ] && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" \
+  && ok "a provisioner handed off while its client was being stopped is caught by pass 2 and stopped before any move back" || bad "late hand-off: lp=$lp lb=$lb"
+grep -q 'holding /run/xorgate-provision-rs.lock' "$W/restore.log" && [ ! -e "$R/run/xorgate-provision-rs.lock" ] && ok "the restore held the provisioner lock, and released + removed it at exit" || bad "prov lock hold/release"
+ready w2; fake_js_install; mkdir -p "$R/run"
+flock "$R/run/xorgate-provision-rs.lock" sleep 30 & fp=$!; sleep 0.5
+P8_UNIT_PASSES=2 run p8-restore.sh --window "$W" >/dev/null 2>&1; rc=$?; kill "$fp" 2>/dev/null; wait "$fp" 2>/dev/null
+[ $rc != 0 ] && grep -q 'held by a process outside any unit' "$W/restore.log" && ! grep -q 'PROD back:' "$W/restore.log" && ok "a provisioner process outside any unit (holding its lock): nothing moved back" || bad "lock held outside a unit: rc=$rc"
+rm -f "$R/run/xorgate-provision-rs.lock"
+ready w2; fake_js_install
+echo "xorgate-provision-rs.service loaded active running native provisioning" > "$SD/units"; echo active > "$SD/active.xorgate-provision-rs"
+touch "$SD/STOPFAIL.xorgate-provision-rs" "$SD/KILLFAIL.xorgate-provision-rs"
+for i in 1 2 3; do
+  P8_UNIT_STOP_WAIT_S=1 P8_KILL_WAIT_S=1 run p8-restore.sh --auto --window "$W" >/dev/null 2>&1
+  oas=$(sed -n 's/^OnActiveSec=\([0-9]*\)s$/\1/p' "$R/etc/systemd/system/p8-deadman.timer")
+  [ "$(cat "$W/survivor.retries")" = "$i" ] && grep -q "retry $i/3 armed for +5 min" "$W/restore.log" && [ "$oas" -ge 295 ] && [ "$oas" -le 300 ] && [ -e "$R/root/p8-window.active" ] \
+    && ok "survivor --auto run $i: nothing moved back, a +5 min retry re-armed (OnActiveSec=${oas}s), marker kept" || bad "survivor run $i: oas=$oas $(tail -2 "$W/restore.log")"
+done
+P8_UNIT_STOP_WAIT_S=1 P8_KILL_WAIT_S=1 run p8-restore.sh --auto --window "$W" >/dev/null 2>&1
+grep -q 'REBOOT NEEDED, PROD still aside' "$W/restore.log" && [ -e "$W/REBOOT-NEEDED" ] && ! grep -q 'PROD back:' "$W/restore.log" && [ -e "$R/root/p8-window.active" ] \
+  && ok "survivor run 4: 'REBOOT NEEDED, PROD still aside' logged + W/REBOOT-NEEDED; the boot unit stays armed" || bad "survivor REBOOT NEEDED"
+rm -f "$SD/STOPFAIL.xorgate-provision-rs" "$SD/KILLFAIL.xorgate-provision-rs"; : > "$SD/units"
+mkbench; run p8-verify.sh baseline --window "$W" >/dev/null 2>&1; echo inactive > "$SD/active.xorgate-agent-rs"; run p8-backup.sh backup --window "$W" >/dev/null 2>&1
+mkdir -p "$R/run"; touch "$R/run/xorgate-provision-rs.rc.20261115T2"
+vo pre --window "$W" | grep -q '^FAIL no window artifact.*xorgate-provision-rs.rc.20261115T2' && ok "verify: a leftover per-run xorgate-provision-rs.rc.<id> is caught (glob)" || bad "rc.<id> leftover not caught"
+rm -f "$R/run/xorgate-provision-rs.rc.20261115T2"
 
 echo "== cam0 hook policy (mocked: the policy function over a request table)"
 command -v node >/dev/null || { /usr/bin/apt-get update -qq >/dev/null 2>&1; /usr/bin/apt-get install -y -qq nodejs >/dev/null 2>&1; }  # the real apt-get: $STUB has a fake one

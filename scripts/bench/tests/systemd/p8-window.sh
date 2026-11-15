@@ -182,6 +182,10 @@ cat > /root/fake-provision.sh <<'EOF'
 # WP-R1 MUST-2 stand-in: the provisioner that keeps writing the DEV identity
 # into /etc/xorgate and a build into /opt. "ignore" ignores SIGTERM.
 [ "${1:-term}" = ignore ] && trap '' TERM
+# As provision-rs.sh: one run at a time, refused while the lock is held.
+exec 9>/run/xorgate-provision-rs.lock
+flock -n 9 || { echo "refused $(date +%s.%N)" >> /var/tmp/p8prov.refused; exit 3; }
+date +%s.%N > /var/tmp/p8prov.first
 while :; do
   mkdir -p /etc/xorgate /opt/xorgate-rs.new
   head -c 64 /dev/urandom > /etc/xorgate/.dev-key.tmp && mv -f /etc/xorgate/.dev-key.tmp /etc/xorgate/device.key.pem
@@ -201,7 +205,21 @@ while :; do
 done
 echo "provision ended"
 EOF
-chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh
+cat > /root/fake-install-late.sh <<'EOF'
+#!/bin/bash
+# The hand-off comes LATE: the client is mid-apt (holds the dpkg frontend lock
+# for 14 s) when the restore starts and lists the units, and hands off 7 s in,
+# while the restore is still in its F3 dpkg wait.
+python3 -I -c 'import fcntl, time; f = open("/var/lib/dpkg/lock-frontend", "w"); fcntl.lockf(f, fcntl.LOCK_EX); print("locked", flush=True); time.sleep(14); fcntl.lockf(f, fcntl.LOCK_UN); print("released", flush=True)' & hp=$!
+until [ -e /var/tmp/p8m2l.go ]; do sleep 0.1; done; sleep 7
+systemd-run --unit=xorgate-provision-rs --collect --quiet --no-block /bin/bash /root/fake-provision.sh term
+echo "handed off late $(date +%s.%N)"
+wait "$hp"
+while :; do
+  case $(systemctl is-active xorgate-provision-rs 2>/dev/null) in active | activating | deactivating) sleep 1 ;; *) break ;; esac
+done
+EOF
+chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh /root/fake-install-late.sh
 
 # ------------------------------------------------------------- window helpers
 W=""
@@ -411,6 +429,32 @@ grep -q 'xorgate-provision-rs.service still running after 8s: SIGKILL' "$W/resto
 must2_check M2M w2
 bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
 bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "M2M: verify post PASS" || { bad "M2M: verify post"; grep FAIL "$W/post.out"; }
+
+echo "== M2L: a LATE hand-off (after the dpkg wait) is caught; the held lock refuses a provisioner started mid-restore"
+open_window 20261114T000012Z w2 --cap-min 75
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-late.sh > "$W/ri.out" 2>&1 & rip=$!
+wait_grep "$W/w2-install.log" locked 20 || bad "M2L: the client did not take the dpkg lock"
+systemctl is-active --quiet xorgate-provision-rs && bad "M2L: the provisioner started too early" || ok "M2L: no provisioner yet when the restore starts"
+rm -f /var/tmp/p8prov.refused /var/tmp/p8m2l.held /var/tmp/p8prov.first
+touch /var/tmp/p8m2l.go; rs=$(date +%s)
+{ for _ in $(seq 600); do
+    if [ -e "$W/units-stopped.epoch" ]; then
+      systemd-run --unit=xorgate-provision-rs-mid --collect --quiet --no-block /bin/bash /root/fake-provision.sh term
+      sleep 0.5; [ -e /run/xorgate-provision-rs.lock ] && ! flock -n /run/xorgate-provision-rs.lock true && echo held > /var/tmp/p8m2l.held
+      break
+    fi; sleep 0.05
+  done; } & pp=$!
+bash "$W/bin/p8-restore.sh" --window "$W" > "$W/restore.out" 2>&1 && ok "M2L: the manual restore exit 0" || { bad "M2L: restore"; tail -8 "$W/restore.out"; }
+wait "$rip" 2>/dev/null; wait "$pp" 2>/dev/null
+w=$(sed -n 's/.*F3: dpkg locks free (waited \([0-9]*\)s).*/\1/p' "$W/restore.log")
+python3 -I -c 'import sys; sys.exit(0 if float(open(sys.argv[1]).read()) >= float(sys.argv[2]) + 5 else 1)' /var/tmp/p8prov.first "$rs" && [ "${w:-0}" -ge 10 ] \
+  && ok "M2L: the provisioner was handed off ~7 s INTO the restore's dpkg wait (waited ${w}s), after the first unit listing" || bad "M2L: hand-off timing (waited '${w}')"
+must2_check M2L w2
+[ -e /var/tmp/p8m2l.held ] && grep -q refused /var/tmp/p8prov.refused 2>/dev/null && ok "M2L: the restore held the provisioner lock: a provisioner started mid-restore REFUSED" || bad "M2L: the mid-restore provisioner was not refused"
+[ ! -e /run/xorgate-provision-rs.lock ] && ok "M2L: the lock is released and removed at the restore's exit" || bad "M2L: lock left"
+rm -f /var/tmp/p8prov.refused /var/tmp/p8m2l.held /var/tmp/p8m2l.go /var/tmp/p8prov.first
+bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "M2L: verify post PASS" || { bad "M2L: verify post"; grep FAIL "$W/post.out"; }
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

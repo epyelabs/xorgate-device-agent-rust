@@ -129,7 +129,9 @@ leftovers() { # <strict 0|1>: prints one line per window artifact still present
            "$P8_ROOT/opt/xorgate-rs.new" "$P8_ROOT/opt/xorgate-rs.old" "$P8_ROOT"/run/systemd/system/xorgate-* \
            "$P8_ROOT"/run/systemd/transient/p8-install-* "$P8_ROOT$P8_GENERATOR" \
            "$P8_ROOT/run/systemd/generator/$P8_GENERATOR_LINK" "$P8_ROOT/run/systemd/generator.early/$P8_GENERATOR_LINK" \
-           "$P8_ROOT/run/systemd/generator.late/$P8_GENERATOR_LINK" "$P8_PROV_LOG" $P8_PROV_RUN; do
+           "$P8_ROOT/run/systemd/generator.late/$P8_GENERATOR_LINK" "$P8_PROV_LOG" "$P8_PROV_LOCK" "$P8_PROV_RC_GLOB"*; do
+    # the restore's own pre-start verify: the provisioner lock is the one it HOLDS
+    [ "$f" = "$P8_PROV_LOCK" ] && [ -n "${P8_PROV_LOCK_OURS:-}" ] && continue
     if [ -e "$f" ] || [ -L "$f" ]; then echo "${f#"$P8_ROOT"}"; fi
   done
   while read -r u _; do

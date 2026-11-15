@@ -257,7 +257,10 @@ p8_dpkg_locked() {
 # inactive -- SIGKILL after P8_UNIT_STOP_WAIT_S -- before anything moves back.
 P8_PROV_GLOB='xorgate-provision-rs*'
 P8_PROV_LOG=$P8_ROOT/var/log/xorgate-provision-rs.log
-P8_PROV_RUN="$P8_ROOT/run/xorgate-provision-rs.lock $P8_ROOT/run/xorgate-provision-rs.rc"
+# provision-rs.sh's run lock (flock -n 9 on it, refusing when held) and its
+# per-run exit codes /run/xorgate-provision-rs.rc.<run id> (review NIT: a glob).
+P8_PROV_LOCK=$P8_ROOT/run/xorgate-provision-rs.lock
+P8_PROV_RC_GLOB=$P8_ROOT/run/xorgate-provision-rs.rc
 P8_UNIT_STOP_WAIT_S=${P8_UNIT_STOP_WAIT_S:-60}
 p8_units_matching() { systemctl list-units --all --plain --no-legend "$1" 2>/dev/null | awk '!($2 == "not-found" && $3 == "inactive") {print $1}'; }
 p8_unit_running() { case $(p8_active "$1" | head -n1) in active | activating | deactivating | reloading) return 0 ;; esac; return 1; }
@@ -271,7 +274,7 @@ p8_stop_unit() { # <unit>: stopped + verified inactive (0), or still running (1)
     if p8_unit_running "$u"; then
       p8_log "window unit $u still running after ${P8_UNIT_STOP_WAIT_S}s: SIGKILL"
       systemctl kill --signal=SIGKILL "$u" 2>/dev/null || true
-      for _i in $(seq 15); do p8_unit_running "$u" || break; sleep 1; done
+      for _i in $(seq "${P8_KILL_WAIT_S:-15}"); do p8_unit_running "$u" || break; sleep 1; done
     fi
   fi
   if p8_unit_running "$u"; then p8_log "window unit $u is STILL running"; return 1; fi
@@ -283,7 +286,7 @@ p8_stop_unit() { # <unit>: stopped + verified inactive (0), or still running (1)
 # P8_DPKG_WAIT_S; then stop them (provisioner first); then repair. Returns 1
 # when a unit could not be stopped: the caller must then move NOTHING back.
 p8_stop_installers() {
-  local prov inst u waited=0 bad=0 f
+  local prov inst u waited=0 bad=0 pass f
   prov=$(p8_units_matching "$P8_PROV_GLOB"); inst=$(p8_units_matching 'p8-install-*')
   if [ -n "$prov$inst" ]; then
     while p8_dpkg_locked && [ "$waited" -lt "$P8_DPKG_WAIT_S" ]; do
@@ -292,12 +295,36 @@ p8_stop_installers() {
     done
     if p8_dpkg_locked; then p8_log "F3: dpkg lock still held after ${waited}s: stopping the installer anyway"
     else p8_log "F3: dpkg locks free (waited ${waited}s)"; fi
-    for u in $prov $inst; do p8_stop_unit "$u" || bad=1; done
   fi
-  if [ "$bad" = 0 ]; then for f in $P8_PROV_RUN; do rm -f "$f"; done; fi
+  # Review (bench-tools-r1) race: a client may hand off a NEW provisioner after
+  # the first listing (e.g. during the dpkg wait). Re-list until a pass finds
+  # nothing, then HOLD the provisioner's own run lock for the rest of the
+  # restore, so any provisioner started later refuses ("another provision-rs.sh
+  # is running"). The lock is released (and its file removed) at the restore's exit.
+  bad=1
+  for pass in $(seq "${P8_UNIT_PASSES:-6}"); do
+    prov=$(p8_units_matching "$P8_PROV_GLOB"); inst=$(p8_units_matching 'p8-install-*')
+    if [ -z "$prov$inst" ]; then
+      if p8_hold_prov_lock; then bad=0; break; fi
+      p8_log "pass $pass: the provisioner lock is held by a process outside any unit: retrying"; sleep 1; continue
+    fi
+    [ "$pass" = 1 ] || p8_log "pass $pass: window units appeared after the last pass: $(printf '%s %s' "$prov" "$inst" | tr '\n' ' ')"
+    for u in $prov $inst; do p8_stop_unit "$u" || { bad=2; break 2; }; done
+  done
+  [ "$bad" = 0 ] && p8_log "no window unit left after pass $pass; holding ${P8_PROV_LOCK#"$P8_ROOT"}"
+  if [ "$bad" = 0 ]; then for f in "$P8_PROV_RC_GLOB"*; do [ -e "$f" ] && rm -f "$f"; done; fi
   p8_dpkg_repair
-  return "$bad"
+  [ "$bad" = 0 ]
 }
+P8_PROV_LOCK_HELD=
+p8_hold_prov_lock() {
+  [ -z "$P8_PROV_LOCK_HELD" ] || return 0
+  mkdir -p "$(dirname "$P8_PROV_LOCK")"
+  exec 8>>"$P8_PROV_LOCK"
+  flock -n 8 || { exec 8>&-; return 1; }
+  P8_PROV_LOCK_HELD=1
+}
+p8_release_prov_lock() { if [ -n "$P8_PROV_LOCK_HELD" ]; then rm -f "$P8_PROV_LOCK"; exec 8>&-; P8_PROV_LOCK_HELD=; fi; }
 p8_dpkg_repair() {
   local a
   a=$(dpkg --audit 2>/dev/null || true)
