@@ -129,7 +129,9 @@ leftovers() { # <strict 0|1>: prints one line per window artifact still present
            "$P8_ROOT/opt/xorgate-rs.new" "$P8_ROOT/opt/xorgate-rs.old" "$P8_ROOT"/run/systemd/system/xorgate-* \
            "$P8_ROOT"/run/systemd/transient/p8-install-* "$P8_ROOT$P8_GENERATOR" \
            "$P8_ROOT/run/systemd/generator/$P8_GENERATOR_LINK" "$P8_ROOT/run/systemd/generator.early/$P8_GENERATOR_LINK" \
-           "$P8_ROOT/run/systemd/generator.late/$P8_GENERATOR_LINK"; do
+           "$P8_ROOT/run/systemd/generator.late/$P8_GENERATOR_LINK" "$P8_PROV_LOG" "$P8_PROV_LOCK" "$P8_PROV_RC_GLOB"*; do
+    # the restore's own pre-start verify: the provisioner lock is the one it HOLDS
+    [ "$f" = "$P8_PROV_LOCK" ] && [ -n "${P8_PROV_LOCK_OURS:-}" ] && continue
     if [ -e "$f" ] || [ -L "$f" ]; then echo "${f#"$P8_ROOT"}"; fi
   done
   while read -r u _; do
@@ -137,7 +139,7 @@ leftovers() { # <strict 0|1>: prints one line per window artifact still present
     [ "$u" = "${P8_SELF_UNIT:-}" ] && continue
     [ "$1" = 0 ] && [ "$u" = "$P8_SAMPLER_UNIT.service" ] && continue
     echo "unit $u"
-  done < <(systemctl list-units --all --plain --no-legend 'p8-*' 2>/dev/null | awk '$3 != "inactive" || $2 != "not-found" {print $1}')
+  done < <(systemctl list-units --all --plain --no-legend 'p8-*' "$P8_PROV_GLOB" 2>/dev/null | awk '$3 != "inactive" || $2 != "not-found" {print $1}')
 }
 
 cmd_preflight() {
@@ -172,7 +174,7 @@ cmd_pre() {
     fail "manifest differs from pre.manifest in $n rows:"
     printf '%s\n' "$d" | head -n 25 | p8_redact | sed 's/^/       /'
   fi
-  n=$(find "$W/aside" -mindepth 1 ! -type d 2>/dev/null | wc -l | tr -d ' ')
+  n=$({ find "$W/aside" -mindepth 1 ! -type d 2>/dev/null || true; } | wc -l | tr -d ' ')
   check "W/aside holds nothing (every PROD path moved back)" "$n" 0
   d=$(leftovers 0 | tr '\n' ' ')
   check "no window artifact (dead-man units, marker, timer stamp, H1 conf, .new/.old, installer units)" "$d" ""
@@ -181,17 +183,31 @@ cmd_pre() {
   verdict pre
 }
 
-dev_keys_outside() { # prints the number of DEV key/cert copies outside W/test-*
+# W1 attempt 2 false positive: every *.pem counted, incl. the KVS SDK's PUBLIC
+# CA bundle media/cert.pem. Only the DEV device IDENTITY counts: the
+# device.key.pem / device.cert.pem a test install wrote (root-ca.pem is the
+# public AWS root, not identity), minus anything byte-equal to a PROD file.
+dev_keys_outside() { # prints "<DEV identity files known> <copies outside W/test-*>"
   python3 -I - "$W" "$P8_ROOT" <<'PY'
 import glob, hashlib, os, sys
 w, root = sys.argv[1], sys.argv[2]
 def h(p):
     with open(p, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+IDENTITY = {"device.key.pem", "device.cert.pem"}
+prod = set()
+try:
+    for line in open(w + "/pre.manifest"):
+        c = line.rstrip("\n").split("\t")
+        if len(c) == 6 and c[1] == "f":
+            prod.add(c[5])
+except OSError:
+    pass
 keys = set()
 for p in glob.glob(w + "/test-*/**", recursive=True):
-    if os.path.isfile(p) and not os.path.islink(p) and (p.endswith(".pem") or p.endswith(".key")) and "root-ca" not in os.path.basename(p):
+    if os.path.basename(p) in IDENTITY and os.path.isfile(p) and not os.path.islink(p):
         keys.add(h(p))
+keys -= prod
 hits = 0
 for top in ["/etc", "/opt", "/var/lib", "/usr/local", "/home", "/root", "/tmp", "/var/tmp"]:
     for dp, dn, fn in os.walk(root + top):

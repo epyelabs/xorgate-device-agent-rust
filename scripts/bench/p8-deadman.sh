@@ -23,6 +23,9 @@
 #       p8-restore.sh only (review T2): re-arm a short --auto dead-man on a
 #       manual restore that will not start PROD, so a lost ssh session can
 #       never leave 58b51737 down. Skips the "window already ran" guard.
+#   p8-deadman.sh rearm --window W [--in-min 5]
+#       the armed window only: move the timer's deadline to now + N min (keep
+#       the marker and the boot unit); the restore's survivor retry uses it
 #   p8-deadman.sh disarm      remove both units, the marker and the timer stamp
 #                             (p8-restore.sh calls it; never stops the unit it runs in)
 #   p8-deadman.sh status      armed?, deadline, unit states (no contents)
@@ -142,7 +145,9 @@ disarm() {
   rm -f "$TIMER" "$SVC" "$BOOT" "$P8_SD/timers.target.wants/p8-deadman.timer" \
         "$P8_SD/multi-user.target.wants/p8-deadman-boot.service" "$P8_STAMP" "$P8_MARKER"
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl reset-failed p8-deadman.timer >/dev/null 2>&1 || true
+  # a dead-man restore that ended FAILED stays loaded as a failed unit: clear it
+  # (a no-op on the one that may be running this very disarm)
+  systemctl reset-failed p8-deadman.timer p8-deadman.service p8-deadman-boot.service >/dev/null 2>&1 || true
   echo "disarmed: units, marker and timer stamp removed"
 }
 
@@ -156,10 +161,25 @@ status() {
   return 0
 }
 
+rearm() {
+  local w="" m=5 dl
+  while [ $# -gt 0 ]; do case $1 in --window) w=$2; shift 2 ;; --in-min) m=$2; shift 2 ;; *) P8_DIE_RC=2 p8_die "rearm: unknown argument $1" ;; esac; done
+  p8_need_root; p8_check_window "$w"
+  [ "$(p8_marker_get window)" = "${w#"$P8_ROOT"}" ] || P8_DIE_RC=3 p8_die "rearm: $w is not the armed window"
+  { [[ $m =~ ^[0-9]+$ ]] && [ "$m" -ge 1 ]; } || P8_DIE_RC=2 p8_die "rearm: --in-min must be >= 1"
+  dl=$(( $(date -u +%s) + m * 60 ))
+  write_units "$w" "$dl"
+  sed -i "s/^deadline=.*/deadline=$dl/" "$P8_MARKER"
+  systemctl daemon-reload
+  systemctl restart p8-deadman.timer >/dev/null 2>&1 || p8_die "rearm: restart p8-deadman.timer failed"
+  echo "rearmed: window=${w#"$P8_ROOT"} deadline=$(date -u -d "@$dl" '+%Y-%m-%dT%H:%M:%SZ')"
+}
+
 case "${1:-}" in
   arm) shift; arm "$@" ;;
+  rearm) shift; rearm "$@" ;;
   failsafe) shift; FAILSAFE=1 arm "$@" ;;
   disarm) disarm ;;
   status) status ;;
-  *) sed -n '2,34p' "$0"; exit 2 ;;
+  *) sed -n '2,37p' "$0"; exit 2 ;;
 esac

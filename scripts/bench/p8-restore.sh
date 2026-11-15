@@ -68,7 +68,7 @@ if [ -z "${P8_SELF_UNIT:-}" ] && [ -z "$P8_ROOT" ]; then
   [[ $ts =~ ^[0-9A-Za-z]+$ ]] || p8_die "bad window $ww"
   u=p8-restore-$ts
   envs=(--setenv=HOME=/root --setenv="P8_SELF_UNIT=$u.service")
-  for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_CERT_BIN_SHA P8_CERT_VERSION; do
+  for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_UNIT_STOP_WAIT_S P8_SURVIVOR_RETRY_MIN P8_SURVIVOR_RETRIES P8_CERT_BIN_SHA P8_CERT_VERSION; do
     [ -z "${!v:-}" ] || envs+=(--setenv="$v=${!v}")
   done
   # Fix-check ab4420d: NOT --wait (a Ctrl-C on a --wait client stops the
@@ -109,7 +109,7 @@ echo "$LABEL" > "$W/label"
 export P8_LOGFILE=$W/restore.log
 TD=$W/test-$LABEL
 # The unit's result for its detached client (and for the record).
-trap 'echo $? > "$W/restore.rc"' EXIT
+trap 'r=$?; p8_release_prov_lock; echo "$r" > "$W/restore.rc"' EXIT
 if [ -f "$W/restore.done" ]; then
   if [ "$AGAIN" = 0 ]; then
     p8_log "restore already finished ($(cat "$W/restore.done")): nothing to do"
@@ -135,8 +135,30 @@ rc=0
 
 # 1. F1
 p8_cancel_agent_jobs
-# 2. F3 (dpkg lock first, then the installer unit, then the repair)
-p8_stop_installers
+# 2. F3 + MUST-2: dpkg lock first, then EVERY window unit (the provisioner
+#    xorgate-provision-rs first, then p8-install-*), verified inactive, then
+#    the repair. If one survives, NOTHING is moved back.
+if ! p8_stop_installers; then
+  # Review (bench-tools-r1) survivor: a unit alive after SIGKILL (D state).
+  # Never move back under a live writer. Unattended, re-arm a +5 min retry
+  # (up to 3), then say plainly that a reboot is needed.
+  if [ "$AUTO" = 1 ]; then
+    n=$(( $(cat "$W/survivor.retries" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$W/survivor.retries"
+    if [ "$n" -le "${P8_SURVIVOR_RETRIES:-3}" ] && bash "$HERE/p8-deadman.sh" rearm --window "$W" --in-min "${P8_SURVIVOR_RETRY_MIN:-5}" >/dev/null 2>&1; then
+      p8_log "a window unit survived SIGKILL: moving NOTHING back; retry $n/${P8_SURVIVOR_RETRIES:-3} armed for +${P8_SURVIVOR_RETRY_MIN:-5} min"
+    else
+      p8_log "!!!!!!!! REBOOT NEEDED, PROD still aside: a window unit survived SIGKILL through ${P8_SURVIVOR_RETRIES:-3} retries (the boot unit restores on the next boot) !!!!!!!!"
+      echo "$(p8_ts) REBOOT NEEDED, PROD still aside (a window unit survives SIGKILL)" > "$W/REBOOT-NEEDED"
+    fi
+  fi
+  p8_die "a window unit (xorgate-provision-rs / p8-install-*) could not be stopped: moving NOTHING back (see the log)"
+fi
+date +%s.%N > "$W/units-stopped.epoch"
+if [ -e "$P8_PROV_LOG" ]; then   # a window artifact: kept as evidence in the test dir, never left behind
+  install -d -m 0700 "$TD/var/log"
+  dst=$TD/var/log/xorgate-provision-rs.log; [ ! -e "$dst" ] || dst=$dst.$(date +%s)
+  p8_mvT "$P8_PROV_LOG" "$dst"; p8_log "moved the provisioner log to ${dst#"$W/"}"
+fi
 
 # 3-5. the agent surface
 L=$W/aside.list
@@ -301,7 +323,7 @@ if [ "$nm_changed" = 1 ]; then p8_log "an NM file changed: reloading NetworkMana
 
 # 8. verify BEFORE the start (F1: inside the oneshot on the boot path)
 vrc=0
-bash "$HERE/p8-verify.sh" pre --window "$W" > "$W/verify-pre.out" 2>&1 || vrc=$?
+P8_PROV_LOCK_OURS=$P8_PROV_LOCK_HELD bash "$HERE/p8-verify.sh" pre --window "$W" > "$W/verify-pre.out" 2>&1 || vrc=$?
 p8_redact < "$W/verify-pre.out" | sed 's/^/  /' >&2
 if [ "$vrc" = 0 ]; then p8_log "verify pre: PASS"; else p8_log "verify pre: FAIL"; rc=1; fi
 
@@ -316,6 +338,7 @@ p8_cancel_agent_jobs    # F1 again: nothing but our own start may be queued
 systemctl start --no-block "$P8_PROD_UNIT" || { p8_log "start --no-block $P8_PROD_UNIT failed"; rc=1; }
 p8_test_stop start
 echo "$(p8_ts) verify=$([ "$vrc" = 0 ] && echo PASS || echo FAIL)" > "$W/restore.done"   # only AFTER the start is queued
+p8_release_prov_lock   # the moves are over: a provisioner would now refuse on the restored surface anyway
 trap - HUP INT TERM
 p8_log "start --no-block $P8_PROD_UNIT queued"
 if [ "$BOOT" = 1 ]; then
