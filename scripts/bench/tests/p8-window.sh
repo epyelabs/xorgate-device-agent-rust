@@ -67,7 +67,11 @@ echo "apt-get $*" >> "$SD/dpkg.log"; echo 0 > "$SD/audit_n"
 S
 cat > "$STUB/dpkg-query" <<'S'
 #!/usr/bin/env bash
-cat "$SD/dpkg-list" 2>/dev/null; true
+case "$*" in *unattended-upgrades*) cat "$SD/uu" 2>/dev/null ;; *) cat "$SD/dpkg-list" 2>/dev/null ;; esac; true
+S
+cat > "$STUB/apt-config" <<'S'
+#!/usr/bin/env bash
+echo 'APT::Architecture "arm64";'; cat "$SD/aptconf" 2>/dev/null; true
 S
 printf '#!/bin/sh\necho throttled=0x0\n' > "$STUB/vcgencmd"
 printf '#!/bin/sh\nif [ "$1" = route ] && [ "${2:-}" = get ]; then echo "1.1.1.1 via 10.0.0.1 dev wlan0 src 10.0.0.2"; else cat "$SD/routes" 2>/dev/null; fi\n' > "$STUB/ip"
@@ -119,6 +123,11 @@ mkbench() {
   echo ipc > "$R/etc/systemd/logind.conf.d/10-xorgate-removeipc.conf"; echo 'DPkg::Lock::Timeout "60";' > "$R/etc/apt/apt.conf.d/99xorgate-lock-timeout"
   echo cron > "$R/etc/cron.d/xorgate-fake-hwclock"; printf 'dtparam=i2c_arm=on\ndtoverlay=imx290,cam0\n' > "$R/boot/firmware/config.txt"
   echo i2c-dev > "$R/etc/modules"; : > "$R/etc/modprobe.d/raspi-blacklist.conf"
+  mkdir -p "$R/etc/apt/sources.list.d" "$R/etc/apt/keyrings" "$R/usr/share/keyrings"
+  echo "deb bookworm main" > "$R/etc/apt/sources.list"; echo "deb raspi" > "$R/etc/apt/sources.list.d/raspi.list"
+  echo k1 > "$R/etc/apt/keyrings/x.gpg"; echo k2 > "$R/usr/share/keyrings/y.gpg"
+  cp "$R/boot/firmware/config.txt" "$R/boot/firmware/config.txt.bak-xorgate"
+  printf '#!/bin/sh\n# setclock fixture\n' > "$R/usr/local/bin/xorgate-setclock"; chmod 0755 "$R/usr/local/bin/xorgate-setclock"
   printf '{"timestamp":"%s","status":"connected","gnss_ant_bias":1,"cellular":{"state":"ok","apn_applied":"secret.apn.example"},"recovery":{"connect_fails":0,"radio_cycles_since_ok":0,"resets_24h":0,"last_reset":null}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$R/run/sim7600-lte/telemetry.json"
   touch "$R/var/lib/dpkg/lock-frontend" "$R/var/lib/dpkg/lock"
   echo active > "$SD/active.xorgate-agent-rs"; echo enabled > "$SD/enabled.xorgate-agent-rs"
@@ -140,6 +149,8 @@ fake_js_install() {
   printf '# template comment\npi ALL=(root) NOPASSWD: /bin/true\n' > "$R/etc/sudoers.d/022_xorgate-update"; chmod 0440 "$R/etc/sudoers.d/022_xorgate-update"
   echo "# 020" > "$R/etc/sudoers.d/020_xorgate-power"; printf '#!/bin/sh\nexec node\n' > "$R/usr/local/bin/xorgate"
   echo nm2 > "$R/etc/NetworkManager/conf.d/50-test-new.conf"                      # a NEW system file
+  echo ipc2 > "$R/etc/systemd/logind.conf.d/10-xorgate-removeipc.conf"           # T6: logind, apt, cron rewritten
+  echo "deb nodesource" > "$R/etc/apt/sources.list.d/nodesource.list"; echo cron2 > "$R/etc/cron.d/xorgate-fake-hwclock"
   printf 'dtparam=i2c_arm=on\ndtoverlay=imx290,cam0\ndtoverlay=extra\n' > "$R/boot/firmware/config.txt.tmp"; mv "$R/boot/firmware/config.txt.tmp" "$R/boot/firmware/config.txt"
   usermod -aG p8grp pi
   echo enabled > "$SD/enabled.xorgate-agent"; echo active > "$SD/active.xorgate-agent"
@@ -157,6 +168,8 @@ out=$(run p8-deadman.sh arm --window "$W" --cap-min 60 --label w1 2>&1) && ok "a
 cal=$(sed -n 's/^OnCalendar=//p' "$R/etc/systemd/system/p8-deadman.timer")
 dl=$(date -u -d "$cal" +%s 2>/dev/null || echo 0)
 d=$((dl - t0)); [ "$d" -ge 2995 ] && [ "$d" -le 3005 ] && ok "F5: OnCalendar = arm time + 50 min for a 60-min cap ($d s)" || bad "F5: deadline offset $d s (want 3000)"
+oas=$(sed -n 's/^OnActiveSec=\([0-9]*\)s$/\1/p' "$R/etc/systemd/system/p8-deadman.timer")
+[ -n "$oas" ] && [ "$oas" -ge 2995 ] && [ "$oas" -le 3001 ] && ok "T4: OnActiveSec=${oas}s (monotonic) next to OnCalendar" || bad "T4: OnActiveSec '$oas'"
 grep -qx 'Persistent=true' "$R/etc/systemd/system/p8-deadman.timer" && ok "timer Persistent=true (a reboot past the deadline fires at once)" || bad "no Persistent=true"
 grep -qx 'Before=xorgate-agent.service xorgate-agent-rs.service xorgate-updater.service xorgate-updater-rs.service' "$R/etc/systemd/system/p8-deadman-boot.service" \
   && grep -qx 'ConditionPathExists=/root/p8-window.active' "$R/etc/systemd/system/p8-deadman-boot.service" \
@@ -181,6 +194,7 @@ out=$(run p8-verify.sh baseline --window "$W" 2>&1) && ok "baseline exit 0" || b
 grep -q '^boot_id=' "$W/baseline.env" && grep -q '^tele_bias=1$' "$W/baseline.env" && grep -q '^record_state=converted$' "$W/baseline.env" && ok "baseline: boot id (C6), bias, record state" || bad "baseline content"
 grep -q 'secret.apn' "$W/baseline.env" && bad "baseline holds the APN value" || ok "baseline holds the APN as a sha only"
 printf '%s' "$out" | grep -q 'secret' && bad "baseline output printed a secret" || ok "baseline output has no APN"
+printf '%s' "$out" | grep -qE 'apn_sha=[0-9a-f]' && bad "T5: baseline printed an APN sha prefix" || ok "T5: baseline prints 'apn_sha recorded' only"
 out=$(run p8-backup.sh backup --window "$W" 2>&1); [ $? = 3 ] && ok "backup refused while xorgate-agent-rs is active (T0 first)" || bad "backup ran with PROD active: $out"
 echo inactive > "$SD/active.xorgate-agent-rs"
 mkdir -p "$R/etc/systemd/system/p8-x.service.d"; touch "$R/etc/systemd/system/p8-deadman.timer" "$R/etc/apt/apt.conf.d/00p8-no-upgrade"
@@ -398,14 +412,177 @@ P8_CAM0_HOOK=$TMP/hook bash "$B/p8-verify.sh" cam0 >/dev/null 2>&1 && ok "cam0 P
 printf '#!/bin/sh\nexit 1\n' > "$TMP/hook"
 P8_CAM0_HOOK=$TMP/hook bash "$B/p8-verify.sh" cam0 >/dev/null 2>&1 && bad "cam0 passed a failing hook" || ok "cam0 FAIL via a failing hook"
 
+echo "== T6: the manifest path set is pinned (one golden row per tree/glob); a dropped glob goes RED"
+GOLD="/etc/xorgate /var/lib/xorgate /var/lib/xorgate-rs-install /var/lib/xorgate-rs /opt/xorgate /opt/xorgate-rs /opt/xorgate-rs.prev
+/etc/systemd/system/xorgate-agent.service /etc/systemd/system/sim7600-lte.service /etc/systemd/system/multi-user.target.wants/sim7600-lte.service
+/etc/sudoers.d/010_pi-nopasswd /usr/local/bin/xorgate /usr/local/bin/xorgate-rs /usr/local/bin/xorgate-setclock /usr/local/bin/xorgate-camrotate
+/usr/local/bin/sim7600-lte.sh /etc/udev/rules.d/99-sim7600-lte.rules /etc/NetworkManager/conf.d/99-sim7600-unmanaged.conf
+/etc/NetworkManager/system-connections/MyHomeSSID.nmconnection /etc/systemd/logind.conf.d/10-xorgate-removeipc.conf
+/etc/apt/apt.conf.d/99xorgate-lock-timeout /etc/cron.d/xorgate-fake-hwclock /boot/firmware/config.txt /etc/modules
+/etc/modprobe.d/raspi-blacklist.conf /etc/apt/sources.list /etc/apt/sources.list.d/raspi.list /etc/apt/keyrings/x.gpg
+/usr/share/keyrings/y.gpg /boot/firmware/config.txt.bak-xorgate @groups:pi @enabled:ModemManager.service @enabled:NetworkManager.service
+@enabled:sim7600-lte.service @enabled:xorgate-agent.service @enabled:xorgate-agent-rs.service @enabled:xorgate-drive-blackbox.service"
+gold_missing() { local p n=0; for p in $GOLD; do awk -F '\t' -v p="$p" '$1 == p {f=1} END {exit !f}' "$1" || { n=$((n + 1)); echo "missing $p" >&2; }; done; echo "$n"; }
+mkbench
+# shellcheck source=/dev/null
+( . "$W/bin/p8-lib.sh"; p8_manifest "$TMP/gold.m" )
+[ "$(gold_missing "$TMP/gold.m" 2>/dev/null)" = 0 ] && ok "every golden path ($(echo "$GOLD" | wc -w)) is in the manifest" || bad "golden paths: $(gold_missing "$TMP/gold.m" 2>&1 >/dev/null | tr '\n' ' ')"
+cp -r "$W/bin" "$TMP/mbin"; sed -i 's#"/etc/systemd/logind.conf.d/\*",##' "$TMP/mbin/p8-lib.sh"
+grep -q 'logind.conf.d' "$TMP/mbin/p8-lib.sh" && bad "T6 mutant not applied" || true
+# shellcheck source=/dev/null
+( . "$TMP/mbin/p8-lib.sh"; p8_manifest "$TMP/gold-m.m" )
+[ "$(gold_missing "$TMP/gold-m.m" 2>/dev/null)" != 0 ] && ok "T6 mutant (logind glob dropped) CAUGHT by the golden list" || bad "T6 mutant not caught"
+
+ready() { # a fresh sandbox window with the surface aside (label $1)
+  mkbench
+  run p8-verify.sh baseline --window "$W" >/dev/null 2>&1 || bad "ready: baseline"
+  run p8-deadman.sh arm --window "$W" --cap-min 60 --label "${1:-w1}" >/dev/null 2>&1 || bad "ready: arm"
+  echo inactive > "$SD/active.xorgate-agent-rs"
+  run p8-backup.sh backup --window "$W" >/dev/null 2>&1 || bad "ready: backup"
+  sha "$W/backup.tgz" > "$W/pulled.ok"
+  run p8-backup.sh aside --window "$W" >/dev/null 2>&1 || bad "ready: aside"
+  [ -f "$W/aside.done" ] || bad "ready: no aside.done"
+}
+
+echo "== T6: the fake install's logind/apt/cron rewrites come back"
+ready w1; fake_js_install
+run p8-restore.sh --window "$W" >/dev/null 2>&1
+grep -q '^DA15 pre: PASS' "$W/verify-pre.out" && [ "$(cat "$R/etc/systemd/logind.conf.d/10-xorgate-removeipc.conf")" = ipc ] && [ "$(cat "$R/etc/cron.d/xorgate-fake-hwclock")" = cron ] \
+  && [ ! -e "$R/etc/apt/sources.list.d/nodesource.list" ] && ok "logind + cron re-extracted, the new apt source moved out; verify pre PASS" || { bad "T6 logind/apt/cron"; cat "$W/verify-pre.out"; }
+ls "$R/boot/firmware/"*.p8new >/dev/null 2>&1 && bad "T8: a .p8new staging file left" || ok "T8: config.txt put back by rename, no staging file left"
+
+echo "== T1: a finished window can be neither re-armed nor re-installed"
+out=$(run p8-deadman.sh arm --window "$W" --cap-min 60 --label w1 2>&1); [ $? = 3 ] && printf '%s' "$out" | grep -q 'already ran' && ok "T1: arm refuses a window that already ran" || bad "T1 arm: $out"
+printf '#!/bin/bash\necho hi\n' > "$TMP/install.sh"
+out=$(run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" 2>&1); [ $? = 3 ] && ok "T1: run-install refuses a finished window ($(printf '%s' "$out" | grep -o 'not armed\|already restored' | head -1))" || bad "T1 run-install finished: $out"
+ready w1; W1=$W; W=$R/root/p8-20261114T120001Z; install -d -m 0700 "$W" "$W/bin"; install -m 0700 "$B"/p8-*.sh "$W/bin/"; touch "$W/aside.done" "$W/aside.list"
+out=$(run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" 2>&1); [ $? = 3 ] && printf '%s' "$out" | grep -q 'not armed' && ok "T1: run-install refuses a window whose dead-man is not armed (a foreign/stale \$W)" || bad "T1 foreign: $out"
+W=$W1; echo active > "$SD/active.xorgate-agent-rs"
+out=$(run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" 2>&1); [ $? = 3 ] && printf '%s' "$out" | grep -q 'is active' && ok "T1: run-install refuses while PROD runs" || bad "T1 PROD active: $out"
+echo inactive > "$SD/active.xorgate-agent-rs"
+mv "$W/aside/etc/xorgate" "$TMP/xa"; out=$(run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" 2>&1); rc=$?; mv "$TMP/xa" "$W/aside/etc/xorgate"
+[ $rc = 3 ] && ok "T1: run-install refuses when the PROD /etc/xorgate is not aside" || bad "T1 aside check: $out"
+run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" >/dev/null 2>&1 && ok "T1: run-install runs on a live, armed aside" || bad "T1: run-install refused a valid window"
+
+echo "== T3: backup/aside/run-install refuse while /run/p8.lock is held"
+flock "$P8_LOCK" sleep 6 & lp=$!; sleep 1
+out=$(run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" 2>&1); [ $? = 3 ] && printf '%s' "$out" | grep -q 'is held' && ok "T3: run-install refuses under the lock" || bad "T3 run-install: $out"
+out=$(run p8-backup.sh aside --window "$W" 2>&1); [ $? = 3 ] && printf '%s' "$out" | grep -q 'is held' && ok "T3: aside refuses under the lock" || bad "T3 aside: $out"
+out=$(run p8-backup.sh backup --window "$W" 2>&1); [ $? = 3 ] && printf '%s' "$out" | grep -q 'is held' && ok "T3: backup refuses under the lock" || bad "T3 backup: $out"
+wait "$lp"
+
+echo "== T2 + T9: a manual restore whose verify FAILS re-arms a failsafe dead-man; the failsafe starts PROD"
+ready w1; fake_js_install
+echo changed > "$R/var/lib/xorgate-rs/tapes/t1"      # an UNRESTORABLE row: verify pre must FAIL
+: > "$SD/log"
+out=$(run p8-restore.sh --window "$W" 2>&1); rc=$?
+[ $rc = 1 ] && ! grep -q 'systemctl start --no-block xorgate-agent-rs' "$SD/log" && ok "T2: manual restore with a failing verify: exit 1, PROD not started" || bad "T2: rc=$rc"
+oas=$(sed -n 's/^OnActiveSec=\([0-9]*\)s$/\1/p' "$R/etc/systemd/system/p8-deadman.timer" 2>/dev/null)
+[ -e "$R/root/p8-window.active" ] && [ -e "$R/etc/systemd/system/p8-deadman-boot.service" ] && [ -n "$oas" ] && [ "$oas" -ge 595 ] && [ "$oas" -le 600 ] \
+  && grep -q 'FAILSAFE --auto dead-man is armed for +10 min' "$W/restore.log" && ok "T2: a +10 min --auto failsafe dead-man + boot unit re-armed (OnActiveSec=${oas}s)" || bad "T2: failsafe not armed: $(tail -2 "$W/restore.log")"
+grep -q 'label=w1' "$R/root/p8-window.active" && ok "T2: the failsafe keeps the window's label" || bad "T2 label"
+out=$(run p8-restore.sh --auto --window "$W" 2>&1); rc=$?      # what the failsafe timer runs
+grep -q 'systemctl start --no-block xorgate-agent-rs' "$SD/log" && grep -q 'verify=FAIL' "$W/restore.done" && [ ! -e "$R/root/p8-window.active" ] \
+  && ok "T2: the failsafe --auto restore starts PROD (restore.done says verify=FAIL, rc=$rc)" || bad "T2: failsafe restore: $(tail -3 "$W/restore.log")"
+out=$(run p8-restore.sh --window "$W" 2>&1); [ $? = 1 ] && printf '%s' "$out" | grep -q 'NOT PASS' && ok "T9: a no-op restore reports the earlier FAIL (exit 1)" || bad "T9: $out"
+
+echo "== T6: an interrupted restore (after step 4 / after step 5) finishes on the re-run; the stale-restore.done mutant is CAUGHT"
+ready w1; fake_js_install; pk=$(awk -F '\t' '$1 == "/etc/xorgate/device.key.pem" {print $6}' "$W/pre.manifest")
+P8_TEST_STOP_AFTER=4 run p8-restore.sh --window "$W" >/dev/null 2>&1; [ $? = 99 ] && [ ! -e "$W/restore.done" ] && ok "stopped after step 4 (no restore.done)" || bad "stop after 4"
+run p8-restore.sh --window "$W" >/dev/null 2>&1 && [ "$(sha "$R/etc/xorgate/device.key.pem")" = "$pk" ] && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" \
+  && ok "manual re-run after step 4: full restore, verify PASS" || { bad "re-run after 4"; cat "$W/verify-pre.out"; }
+ready w1; fake_js_install; pk=$(awk -F '\t' '$1 == "/etc/xorgate/device.key.pem" {print $6}' "$W/pre.manifest")
+P8_TEST_STOP_AFTER=5 run p8-restore.sh --window "$W" >/dev/null 2>&1; [ $? = 99 ] && [ -e "$W/aside.restored" ] && [ ! -e "$W/restore.done" ] && ok "stopped after step 5 (aside back, no restore.done)" || bad "stop after 5"
+run p8-restore.sh --auto --boot --window "$W" >/dev/null 2>&1; [ "$(sha "$R/etc/xorgate/device.key.pem")" = "$pk" ] && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" && [ ! -e "$R/etc/NetworkManager/conf.d/50-test-new.conf" ] \
+  && ok "--boot re-run after step 5: steps 6+ done, verify PASS" || { bad "re-run after 5"; cat "$W/verify-pre.out"; }
+ready w1; fake_js_install; pk=$(awk -F '\t' '$1 == "/etc/xorgate/device.key.pem" {print $6}' "$W/pre.manifest")
+sed -i 's|^p8_log "restore start: |echo "x verify=PASS" > "$W/restore.done"; p8_log "restore start: |' "$W/bin/p8-restore.sh"
+grep -q 'echo "x verify=PASS" > "$W/restore.done"; p8_log' "$W/bin/p8-restore.sh" || bad "stale-restore.done mutant not applied"
+P8_TEST_STOP_AFTER=4 run p8-restore.sh --window "$W" >/dev/null 2>&1; run p8-restore.sh --window "$W" >/dev/null 2>&1
+[ "$(sha "$R/etc/xorgate/device.key.pem" 2>/dev/null)" != "$pk" ] && ok "T6 mutant (restore.done at restore start) CAUGHT: the re-run would skip a needed restore" || bad "T6 mutant not caught"
+
+echo "== (c) preflight STOP on APT::Periodic keys or unattended-upgrades"
+mkbench
+run p8-verify.sh preflight >/dev/null 2>&1 && ok "preflight PASS on a clean apt config" || bad "preflight clean"
+echo 'APT::Periodic::Update-Package-Lists "1";' > "$SD/aptconf"
+out=$(run p8-verify.sh baseline --window "$W" 2>&1); [ $? = 3 ] && [ ! -e "$W/baseline.env" ] && printf '%s' "$out" | grep -q 'PREFLIGHT STOP' && ok "APT::Periodic key: baseline refused (exit 3), no baseline written" || bad "periodic STOP: $out"
+rm -f "$SD/aptconf"; echo "ii " > "$SD/uu"
+run p8-verify.sh preflight >/dev/null 2>&1; [ $? = 1 ] && ok "unattended-upgrades installed: preflight STOP" || bad "uu STOP"
+rm -f "$SD/uu"
+
+echo "== NITs: cam0 timeout, blackbox growth tolerant of pruning"
+printf '#!/bin/sh\nsleep 10\n' > "$TMP/hook"; chmod 0755 "$TMP/hook"
+out=$(P8_CAM0_TIMEOUT=2 P8_CAM0_HOOK=$TMP/hook bash "$B/p8-verify.sh" cam0 2>&1); printf '%s' "$out" | grep -q 'TIMED OUT' && ok "T11: a hung cam0 hook is cut at P8_CAM0_TIMEOUT (FAIL)" || bad "T11: $out"
+ready w1; run p8-restore.sh --window "$W" >/dev/null 2>&1; echo 1 > "$SD/prop.xorgate-agent-rs.MainPID"
+rm -f "$R/var/lib/xorgate-rs/drive-blackbox/b1.ndjson"; sleep 1.1; echo '{"t":9}' > "$R/var/lib/xorgate-rs/drive-blackbox/b2.ndjson"; touch -d '+2 seconds' "$R/var/lib/xorgate-rs/drive-blackbox/b2.ndjson"
+vo post --window "$W" | grep -q '^PASS drive-blackbox writing' && ok "T12: a pruned old tape + a new tape reads as writing" || bad "T12 prune"
+touch -d '-1 hour' "$R/var/lib/xorgate-rs/drive-blackbox/b2.ndjson"
+vo post --window "$W" | grep -q '^FAIL drive-blackbox not writing' && ok "T12: no new write reads as NOT writing" || bad "T12 stale"
+
+echo "== (a) p8-align.sh against a mocked DEV API"
+cat > "$TMP/devapi.py" <<'PY'
+import http.server, json, sys
+port, state_f = int(sys.argv[1]), sys.argv[2]
+st = {"gets": 0, "patches": [], "cellular": False}
+old = {"id": "11111111-0000-0000-0000-000000000000", "createdAt": "2026-11-14T00:00:00Z", "config": {}}
+new = {"id": "22222222-0000-0000-0000-000000000000", "createdAt": None, "config": {"gnssAntBias": False}, "configRev": 1}
+class H(http.server.BaseHTTPRequestHandler):
+    def ok(self):
+        return self.headers.get("Authorization") == "Bearer devtok" and self.headers.get("X-Workspace-Id") == "ws"
+    def send(self, code, body):
+        b = json.dumps(body).encode(); self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b)
+    def do_GET(self):
+        if not self.ok(): return self.send(401, {})
+        if self.path == "/v1/devices":
+            st["gets"] += 1
+            rows = [old] + ([new] if st["gets"] >= 3 else [])
+            if st["gets"] == 3:
+                import time; new["createdAt"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4))
+                if open(state_f).read().strip() == "cellular": new["config"]["cellular"] = {"apn": "x"}
+            return self.send(200, {"devices": rows})
+        if self.path == "/v1/devices/" + new["id"]: return self.send(200, {"device": new})
+        self.send(404, {})
+    def do_PATCH(self):
+        if not self.ok(): return self.send(401, {})
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        open(state_f + ".patches", "a").write(self.path + " " + json.dumps(body, sort_keys=True) + "\n")
+        new["config"].update(body); new["configRev"] += 1
+        self.send(200, {"device": new})
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+PY
+echo '{"gnssAntBias": true}' > "$TMP/align.json"
+run_api() { : > "$TMP/apistate.patches"; echo "$1" > "$TMP/apistate"; python3 "$TMP/devapi.py" "$2" "$TMP/apistate" & AP=$!; sleep 1; }
+ready w1; cp "$W/seed-settings.json" "$R/var/lib/xorgate/settings.json"
+run p8-modem-sampler.sh run --out "$W/modem-w1.tsv" --baseline "$W/baseline.env" --ticks 2 >/dev/null 2>&1
+run_api ok 18941
+out=$(XG_TOKEN=devtok P8_DEV_API_HOSTS="127.0.0.1:18941" P8_SSH=fakessh P8_RSUDO="sudo -n -E" bash "$B/p8-align.sh" --api http://127.0.0.1:18941 --org org --workspace ws \
+  --align "$TMP/align.json" --poll 0.2 --timeout 20 --host x --window "$W" --label w1 --f2-wait 0 --out "$TMP/align.env" 2>&1); rc=$?
+kill "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
+[ $rc = 0 ] && ok "align: exit 0 (new device found, aligned, bench dev-settings PASS, F2 summary PASS)" || { bad "align rc=$rc"; printf '%s\n' "$out" | tail -n 12; }
+[ "$(cat "$TMP/apistate.patches")" = '/v1/devices/22222222-0000-0000-0000-000000000000/config {"gnssAntBias": true}' ] && ok "align: exactly ONE PATCH, on the NEW device only, body = align.json (gnssAntBias)" || bad "align PATCHes: $(cat "$TMP/apistate.patches")"
+grep -q '^claim_to_patch_s=[0-9]' "$TMP/align.env" && grep -q '^aligned=yes' "$TMP/align.env" && [ "$(stat -c %a "$TMP/align.env")" = 600 ] && ok "align: claim->PATCH delay recorded (F2), result file 0600" || bad "align result: $(cat "$TMP/align.env")"
+printf '%s' "$out" | grep -q devtok && bad "align printed the token" || ok "align never prints the token"
+printf '%s' "$out" | grep -q 'F2:' && printf '%s' "$out" | grep -q 'bench dev-settings PASS' && ok "align ran the bench dev-settings check and the F2 summary" || bad "align bench part"
+run_api cellular 18942
+out=$(XG_TOKEN=devtok P8_DEV_API_HOSTS="127.0.0.1:18942" bash "$B/p8-align.sh" --api http://127.0.0.1:18942 --org org --workspace ws --align "$TMP/align.json" --poll 0.2 --timeout 20 2>&1); rc=$?
+kill "$AP" 2>/dev/null; wait "$AP" 2>/dev/null
+[ $rc = 1 ] && [ ! -s "$TMP/apistate.patches" ] && printf '%s' "$out" | grep -q 'STOP (H10)' && ok "align: a DEV cellular key is a STOP, and nothing is PATCHed" || bad "align cellular: rc=$rc $(cat "$TMP/apistate.patches")"
+out=$(XG_TOKEN=devtok bash "$B/p8-align.sh" --api https://api.xorgate.io --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q 'PROD API host' && ok "align REFUSES the PROD API host (before any request)" || bad "align PROD: $out"
+out=$(XG_TOKEN=devtok P8_DEV_API_HOSTS="api.xorgate.io" bash "$B/p8-align.sh" --api https://api.xorgate.io --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses PROD even when it is listed as DEV" || bad "align PROD listed: $out"
+out=$(XG_TOKEN=devtok bash "$B/p8-align.sh" --api https://example.com --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses a non-DEV host" || bad "align other host"
+out=$(XG_TOKEN=devtok P8_POOL=us-east-1_RPLv99S54 bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align.json" 2>&1); [ $? = 2 ] && ok "align refuses the PROD Cognito pool" || bad "align PROD pool"
+echo '{"gnssAntBias": true, "lteRecovery": {}}' > "$TMP/align2.json"
+out=$(XG_TOKEN=devtok bash "$B/p8-align.sh" --org org --workspace ws --align "$TMP/align2.json" 2>&1); [ $? = 2 ] && ok "align refuses an align.json with more than gnssAntBias" || bad "align extra keys"
+
 echo "== unlink-check (WP0 §2 method) + run-install (HOME=/root nit) + lint"
 bash "$B/p8-verify.sh" unlink-check > "$TMP/u.out" 2>&1 && grep -q '^PASS install replaces by unlink' "$TMP/u.out" && grep -q 'in place: yes' "$TMP/u.out" && ok "unlink-check: install unlinks, cp is in place" || { bad "unlink-check"; cat "$TMP/u.out"; }
-mkbench; touch "$W/aside.done"; printf '#!/bin/bash\necho hi\n' > "$TMP/install.sh"; : > "$SD/systemd-run.log"
+ready w1; printf '#!/bin/bash\necho hi\n' > "$TMP/install.sh"; : > "$SD/systemd-run.log"
 run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" --reprovision >/dev/null 2>&1
 l=$(cat "$SD/systemd-run.log")
 case $l in *--unit=p8-install-w1*--setenv=SUDO_USER=pi*--setenv=HOME=/root*--wait*--collect*StandardOutput=file:/root/p8-20261114T120000Z/w1-install.log*"/bin/bash $TMP/install.sh --reprovision"*) ok "run-install: transient p8-install-w1, SUDO_USER=pi, HOME=/root, output to the window log" ;; *) bad "run-install line: $l" ;; esac
 echo 7 > "$SD/run-rc"; run p8-backup.sh run-install --window "$W" --label w1 -- "$TMP/install.sh" >/dev/null 2>&1; [ $? = 7 ] && ok "run-install returns the installer's exit" || bad "run-install rc"; rm -f "$SD/run-rc"
-command -v shellcheck >/dev/null && { shellcheck -x "$REPO"/scripts/bench/p8-*.sh "$REPO/scripts/bench/tests/p8-window.sh" "$REPO/scripts/bench/tests/systemd/p8-window.sh" > "$TMP/sc" 2>&1 && ok "shellcheck clean (tools + both suites)" || { bad "shellcheck"; cat "$TMP/sc"; }; }
+command -v shellcheck >/dev/null && { (cd "$REPO" && shellcheck -x scripts/bench/p8-*.sh scripts/bench/tests/p8-window.sh scripts/bench/tests/systemd/p8-window.sh) > "$TMP/sc" 2>&1 && ok "shellcheck clean (tools + both suites)" || { bad "shellcheck"; cat "$TMP/sc"; }; }
 for f in "$REPO"/scripts/bench/p8-*.sh "$REPO/scripts/bench/tests/systemd/p8-window.sh"; do bash -n "$f" || bad "bash -n $f"; done
 
 rm -rf "$TMP"

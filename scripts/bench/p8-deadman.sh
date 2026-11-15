@@ -14,7 +14,15 @@
 #                                 agents' queued jobs, verifies inside the
 #                                 oneshot, starts PROD with --no-block)
 #       plus the marker /root/p8-window.active. Refuses when already armed.
+#       Refuses a window that already ran (aside.list, aside.restored or
+#       restore.done present: review T1). The timer carries BOTH the wall-clock
+#       OnCalendar= and a monotonic OnActiveSec= (review T4: this bench has
+#       wall-clock steps), whichever comes first.
 #   p8-deadman.sh arm … --deadline-in-s <s>   TEST ONLY: a short deadline
+#   p8-deadman.sh failsafe --window W --label wN [--in-min 10]
+#       p8-restore.sh only (review T2): re-arm a short --auto dead-man on a
+#       manual restore that will not start PROD, so a lost ssh session can
+#       never leave 58b51737 down. Skips the "window already ran" guard.
 #   p8-deadman.sh disarm      remove both units, the marker and the timer stamp
 #                             (p8-restore.sh calls it; never stops the unit it runs in)
 #   p8-deadman.sh status      armed?, deadline, unit states (no contents)
@@ -29,8 +37,9 @@ SVC=$P8_SD/p8-deadman.service
 BOOT=$P8_SD/p8-deadman-boot.service
 
 write_units() { # <window> <deadline epoch>
-  local w=$1 dl=$2 cal r
+  local w=$1 dl=$2 cal r act
   cal=$(date -u -d "@$dl" '+%Y-%m-%d %H:%M:%S UTC')
+  act=$(( dl - $(date -u +%s) )); [ "$act" -ge 1 ] || act=1
   r=${w#"$P8_ROOT"}/bin/p8-restore.sh
   cat > "$TIMER.tmp" <<EOF
 # Phase 8 bench window dead-man (p8-deadman.sh; removed by p8-restore.sh).
@@ -39,6 +48,7 @@ Description=Phase 8 bench window dead-man (restore 58b51737 at the deadline)
 
 [Timer]
 OnCalendar=$cal
+OnActiveSec=${act}s
 Persistent=true
 AccuracySec=1s
 Unit=p8-deadman.service
@@ -84,13 +94,14 @@ EOF
 }
 
 arm() {
-  local w="" cap="" label=w in_s="" now dl
+  local w="" cap="" label=w in_s="" now dl f
   while [ $# -gt 0 ]; do
     case $1 in
       --window) w=$2; shift 2 ;;
       --cap-min) cap=$2; shift 2 ;;
       --label) label=$2; shift 2 ;;
       --deadline-in-s) in_s=$2; shift 2 ;;
+      --in-min) in_s=$(( $2 * 60 )); shift 2 ;;
       *) P8_DIE_RC=2 p8_die "arm: unknown argument $1" ;;
     esac
   done
@@ -99,6 +110,11 @@ arm() {
   [[ $label =~ ^[a-z0-9-]+$ ]] || P8_DIE_RC=2 p8_die "bad --label $label"
   { [ -x "$w/bin/p8-restore.sh" ] && [ -f "$w/bin/p8-lib.sh" ]; } || p8_die "$w/bin has no p8-restore.sh/p8-lib.sh (run p8-backup.sh stage)"
   [ ! -e "$P8_MARKER" ] || P8_DIE_RC=3 p8_die "already armed ($(p8_marker_get window)): disarm or restore first"
+  if [ "${FAILSAFE:-0}" != 1 ]; then
+    for f in aside.list aside.restored restore.done; do
+      [ ! -e "$w/$f" ] || P8_DIE_RC=3 p8_die "window ${w#"$P8_ROOT"} already ran ($f exists): use a NEW window dir (p8-backup.sh stage)"
+    done
+  fi
   now=$(date -u +%s)
   if [ -n "$in_s" ]; then
     { [[ $in_s =~ ^[0-9]+$ ]] && [ "$in_s" -ge 5 ]; } || P8_DIE_RC=2 p8_die "--deadline-in-s must be >= 5"
@@ -142,7 +158,8 @@ status() {
 
 case "${1:-}" in
   arm) shift; arm "$@" ;;
+  failsafe) shift; FAILSAFE=1 arm "$@" ;;
   disarm) disarm ;;
   status) status ;;
-  *) sed -n '2,24p' "$0"; exit 2 ;;
+  *) sed -n '2,34p' "$0"; exit 2 ;;
 esac

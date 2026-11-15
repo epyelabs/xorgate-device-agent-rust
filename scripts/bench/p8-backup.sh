@@ -138,6 +138,7 @@ PY
 cmd_backup() {
   local n c
   p8_need_root; p8_check_window "$W"
+  p8_lock_nb
   export P8_LOGFILE=$W/backup.log
   for u in $P8_PROD_UNIT $P8_JS_UNIT; do
     [ "$(p8_active "$u")" != active ] || P8_DIE_RC=3 p8_die "$u is active: stop the PROD agent first (§7.2.2, T0)"
@@ -162,6 +163,7 @@ cmd_backup() {
 cmd_aside() {
   local p t0 t1 n=0 a=0 L u
   p8_need_root; p8_check_window "$W"
+  p8_lock_nb
   export P8_LOGFILE=$W/aside.log
   L=$W/aside.list
   if [ ! -f "$W/pre.manifest" ] || [ ! -f "$W/backup.tgz" ] || [ ! -f "$W/seed-settings.json" ]; then P8_DIE_RC=3 p8_die "no backup in $W (run backup)"; fi
@@ -211,19 +213,37 @@ cmd_aside() {
 }
 
 cmd_run_install() {
-  local s rc
+  local s rc f pid
   p8_need_root; p8_check_window "$W"
   [[ $LABEL =~ ^w[0-9]+$ ]] || { echo "--label must be w<n>" >&2; exit 2; }
   [ ${#REST[@]} -ge 1 ] || usage
   s=${REST[0]}
   case $s in /*) ;; *) echo "the installer path must be absolute" >&2; exit 2 ;; esac
   [ -f "$s" ] || { echo "no installer at $s" >&2; exit 2; }
-  [ -f "$W/aside.done" ] || P8_DIE_RC=3 p8_die "the surface is not aside ($W/aside.done missing)"
+  # Review T1/T3: only into THIS window's live aside, with PROD down, under the lock.
+  p8_lock_nb
+  [ "$(p8_marker_get window)" = "${W#"$P8_ROOT"}" ] || P8_DIE_RC=3 p8_die "the dead-man is not armed for $W (a finished or foreign window?)"
+  { [ -f "$W/aside.done" ] && [ -f "$W/aside.list" ]; } || P8_DIE_RC=3 p8_die "the surface is not aside in $W"
+  for f in aside.restored restore.done; do
+    [ ! -e "$W/$f" ] || P8_DIE_RC=3 p8_die "$W already restored ($f): refusing to install over the PROD surface"
+  done
+  [ "$(p8_active "$P8_PROD_UNIT")" != active ] || P8_DIE_RC=3 p8_die "$P8_PROD_UNIT is active: refusing"
+  [ -e "$W/aside/etc/xorgate" ] || P8_DIE_RC=3 p8_die "the PROD /etc/xorgate is not in $W/aside: refusing"
   echo "run-install: p8-install-$LABEL (log $W/$LABEL-install.log, never printed); realism caveat: transient unit, no TTY, SUDO_USER=pi, HOME=/root"
   rc=0
+  # The client runs without fd 9 (the lock); the lock is released once the
+  # unit exists, so a dead-man restore can then take it and stop the unit (F3).
   systemd-run --unit="p8-install-$LABEL" --setenv=SUDO_USER="$P8_SVC_USER" --setenv=HOME=/root \
     --working-directory="$(dirname "$s")" --wait --collect -p TimeoutStopSec=60 \
-    -p "StandardOutput=file:${W#"$P8_ROOT"}/$LABEL-install.log" /bin/bash "$s" "${REST[@]:1}" || rc=$?
+    -p "StandardOutput=file:${W#"$P8_ROOT"}/$LABEL-install.log" /bin/bash "$s" "${REST[@]:1}" 9>&- &
+  pid=$!
+  for _ in $(seq 150); do
+    case $(p8_active "p8-install-$LABEL") in active | activating | deactivating) break ;; esac
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  flock -u 9; exec 9>&-
+  wait "$pid" || rc=$?
   chmod 0600 "$W/$LABEL-install.log" 2>/dev/null || true
   echo "run-install: exit $rc"
   return "$rc"

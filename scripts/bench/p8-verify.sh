@@ -9,6 +9,8 @@
 #                              ip route sha, throttled, ModemManager/JS enablement, unattended-
 #                              upgrades presence, dpkg list sha, telemetry bias + APN-cache sha,
 #                              the conversion record state, the binary sha, the blackbox size
+#   preflight                  STOP (exit 1) when APT::Periodic keys or unattended-upgrades exist
+#                              (baseline runs it and refuses with exit 3)
 #   pre --window W             BEFORE the start (p8-restore.sh runs it): manifest == pre.manifest
 #                              minus the volatile list; no window artifact; W/aside empty; the
 #                              certified binary e46b3359… + build-info 9bd55b9
@@ -84,7 +86,13 @@ print("apn_sha=" + hashlib.sha256((apn if isinstance(apn, str) and apn else "<ab
 print("cell_present=%d" % isinstance(c, dict))
 PY
 }
-bb_bytes() { find "$P8_ROOT/var/lib/xorgate-rs/drive-blackbox" -type f -name '*.ndjson' -printf '%s\n' 2>/dev/null | awk '{s += $1} END {print s + 0}'; }
+# Review T12: "growing" = the newest tape's mtime moved on (a prune of old tapes
+# during the window must not read as "not growing").
+bb_newest() { find "$P8_ROOT/var/lib/xorgate-rs/drive-blackbox" -type f -name '*.ndjson' -printf '%T@\n' 2>/dev/null | sort -n | tail -n1 | cut -d. -f1; }
+pip_sha() { { python3 -m pip freeze --all 2>/dev/null || true; } | LC_ALL=C sort | p8_sha_stdin; }
+# (c) Review asked item 6: apt.systemd.daily acts only with APT::Periodic keys
+# or unattended-upgrades; either one is a STOP (do NOT mask the timer).
+apt_periodic_n() { { apt-config dump 2>/dev/null || true; } | grep -c '^APT::Periodic' || true; }
 dpkg_list() { dpkg-query -W -f '${Package} ${Version} ${db:Status-Abbrev}\n' 2>/dev/null | LC_ALL=C sort; }
 build_version() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$P8_ROOT/opt/xorgate-rs/build-info.json" 2>/dev/null || echo none; }
 bin_sha() { [ -f "$P8_ROOT/opt/xorgate-rs/bin/xorgate-rs" ] && p8_sha "$P8_ROOT/opt/xorgate-rs/bin/xorgate-rs" || echo none; }
@@ -108,7 +116,9 @@ measure() {
   echo "record_state=$(record_state)"
   echo "bin_sha=$(bin_sha)"
   echo "build_version=$(build_version)"
-  echo "bb_bytes=$(bb_bytes)"
+  echo "bb_newest=$(bb_newest)"
+  echo "pip_sha=$(pip_sha)"
+  echo "apt_periodic=$(apt_periodic_n)"
   echo "bb_active=$(p8_active xorgate-drive-blackbox.service | head -n1)"
 }
 
@@ -128,8 +138,16 @@ leftovers() { # <strict 0|1>: prints one line per window artifact still present
   done < <(systemctl list-units --all --plain --no-legend 'p8-*' 2>/dev/null | awk '$3 != "inactive" || $2 != "not-found" {print $1}')
 }
 
+cmd_preflight() {
+  check "no APT::Periodic keys (apt.systemd.daily does nothing)" "$(apt_periodic_n)" 0
+  check "unattended-upgrades not installed" "$(dpkg-query -W -f '${db:Status-Abbrev}' unattended-upgrades 2>/dev/null | grep -q '^ii' && echo installed || echo absent)" absent
+  if [ "$FAILS" = 0 ]; then echo "PREFLIGHT PASS"; else echo "PREFLIGHT STOP"; fi
+  [ "$FAILS" = 0 ]
+}
+
 cmd_baseline() {
   p8_need_root; p8_check_window "$W"
+  cmd_preflight || { echo "baseline refused: PREFLIGHT STOP" >&2; exit 3; }
   [ "$(p8_active "$P8_PROD_UNIT")" = active ] || echo "NOTE: $P8_PROD_UNIT is not active (the baseline belongs before T0)"
   umask 077
   measure > "$W/baseline.env.tmp"; mv -f "$W/baseline.env.tmp" "$W/baseline.env"
@@ -137,7 +155,7 @@ cmd_baseline() {
   dpkg_list > "$W/dpkg.pre"
   echo "baseline: $W/baseline.env"
   grep -E '^(route_dev|throttled|mm_enabled|js_enabled|js_active|uu_installed|uu_timer_enabled|tele_bias|cell_present|record_state|build_version|bb_active)=' "$W/baseline.env" | tr '\n' ' '; echo
-  echo "apn_sha=$(bget apn_sha | cut -c1-8)… dpkg_sha=$(bget dpkg_sha | cut -c1-8)… bin_sha=$(bget bin_sha | cut -c1-16)…"
+  echo "apn_sha recorded; dpkg_sha + pip_sha recorded; bin_sha=$(bget bin_sha | cut -c1-16)…"
 }
 
 cmd_pre() {
@@ -215,7 +233,8 @@ cmd_post() {
   check "conversion record state=converted" "$(pk record_state)" converted
   check "throttled=0x0" "$(pk throttled)" 0x0
   check "xorgate-drive-blackbox active" "$(pk bb_active)" active
-  if [ "$(pk bb_bytes)" -gt "$(bget bb_bytes)" ]; then pass "drive-blackbox tapes growing"; else fail "drive-blackbox tapes not growing ($(bget bb_bytes) -> $(pk bb_bytes) bytes)"; fi
+  if [ "$(pk bb_newest)" -gt "$(bget bb_newest)" ] 2>/dev/null; then pass "drive-blackbox writing (newest tape mtime moved on)"; else fail "drive-blackbox not writing (newest tape mtime did not move)"; fi
+  check "pip freeze unchanged" "$(pk pip_sha)" "$(bget pip_sha)"
   if [ -n "$DPKG_OK" ]; then check "dpkg list == the OK'd list" "$(pk dpkg_sha)" "$(p8_sha_stdin < "$DPKG_OK")"
   else check "dpkg list unchanged (H1)" "$(pk dpkg_sha)" "$(bget dpkg_sha)"; fi
   read -r k n < <(dev_keys_outside)
@@ -331,8 +350,15 @@ cmd_cloud() {
 
 cmd_cam0() {
   if [ -z "${P8_CAM0_HOOK:-}" ]; then echo "PENDING PROD cam0 live (set P8_CAM0_HOOK to the orchestrator's read-only Playwright check)"; return 3; fi
+  local hrc=0
   [ -x "$P8_CAM0_HOOK" ] || { fail "cam0 hook $P8_CAM0_HOOK is not executable"; return 1; }
-  if "$P8_CAM0_HOOK" >/dev/null 2>&1; then pass "PROD cam0 live plays (hook)"; else fail "PROD cam0 live (hook rc $?)"; fi
+  # Review T11: a hard timeout (perl alarm: the Mac has no timeout(1)); fail-closed.
+  perl -e 'alarm shift @ARGV; exec @ARGV or exit 127' "${P8_CAM0_TIMEOUT:-240}" "$P8_CAM0_HOOK" > "${P8_CAM0_OUT:-/dev/null}" 2>&1 || hrc=$?
+  case $hrc in
+    0) pass "PROD cam0 live plays (hook)" ;;
+    142) fail "PROD cam0 live: the hook TIMED OUT after ${P8_CAM0_TIMEOUT:-240}s" ;;
+    *) fail "PROD cam0 live (hook rc $hrc)" ;;
+  esac
   [ "$FAILS" = 0 ]
 }
 
@@ -356,6 +382,7 @@ cmd_da15() {
 
 case $cmd in
   baseline) cmd_baseline ;;
+  preflight) cmd_preflight ;;
   pre) cmd_pre ;;
   post) cmd_post ;;
   dev-settings) cmd_dev_settings ;;
@@ -364,5 +391,5 @@ case $cmd in
   cloud) cmd_cloud ;;
   cam0) cmd_cam0 ;;
   da15) cmd_da15 ;;
-  *) sed -n '2,42p' "$0"; exit 2 ;;
+  *) sed -n '2,44p' "$0"; exit 2 ;;
 esac

@@ -12,6 +12,8 @@
 #     --boot     the boot oneshot (F1): ordered Before= both agents, so the
 #                final start is --no-block and nothing waits on it
 #     --force-start  manual: start PROD although the pre-start verify FAILED
+#     (a manual restore that does not start PROD re-arms a 10-min --auto
+#     FAILSAFE dead-man first: review T2; P8_FAILSAFE_MIN overrides)
 #     --again    re-run a FINISHED restore (refused while PROD runs). Without it,
 #                a finished restore (W/restore.done) is a no-op: a late dead-man
 #                firing must never re-extract over the live PROD agent's state
@@ -77,7 +79,9 @@ if [ -f "$W/restore.done" ]; then
   if [ "$AGAIN" = 0 ]; then
     p8_log "restore already finished ($(cat "$W/restore.done")): nothing to do"
     [ ! -e "$P8_MARKER" ] || bash "$HERE/p8-deadman.sh" disarm >/dev/null
-    exit 0
+    # review T9: a no-op reports the finished restore's own verdict
+    if grep -q 'verify=PASS' "$W/restore.done"; then exit 0; fi
+    p8_log "the finished restore's pre-start verify was NOT PASS: not green (see $W/verify-pre.out)"; exit 1
   fi
   [ "$(p8_active "$P8_PROD_UNIT")" != active ] || p8_die "--again refused: $P8_PROD_UNIT is running (its live state would be overwritten)"
   rm -f "$W/restore.done"
@@ -113,6 +117,7 @@ if [ -f "$L" ] && [ ! -f "$W/aside.restored" ]; then
       p8_mvT "$P8_ROOT$p" "$TD$p"; p8_log "test state out: $p"
     fi
   done <<< "$owned"
+  p8_test_stop 4
   for p in /opt/xorgate-rs.new /opt/xorgate-rs.old; do
     if [ -e "$P8_ROOT$p" ] || [ -L "$P8_ROOT$p" ]; then
       if grep -qxF "$(printf 'moved\t%s' "$p")" "$L"; then continue; fi
@@ -133,6 +138,7 @@ if [ -f "$L" ] && [ ! -f "$W/aside.restored" ]; then
   done <<< "$(awk -F '\t' '$1 == "moving" || $1 == "moved" {print $2}' "$L" | awk '!s[$0]++')"
   touch "$W/aside.restored"
   systemctl daemon-reload || true
+  p8_test_stop 5
 fi
 
 # 6. system files against pre.manifest
@@ -155,16 +161,32 @@ if [ -f "$W/pre.manifest" ] && [ -f "$W/backup.tgz" ]; then
       @*) continue ;;
       /var/lib/xorgate-rs | /var/lib/xorgate-rs/*) p8_log "UNRESTORABLE ($k, not in the tar): $p"; rc=1; continue ;;
     esac
-    if [ "$k" = changed ] && [ -d "$P8_ROOT$p" ] && [ ! -L "$P8_ROOT$p" ]; then :
-    elif [ "$k" = changed ]; then rm -f "$P8_ROOT$p"; fi
     printf '%s\0' "${p#/}" >> "$W/restore.list0"
     p8_log "from the tar ($k): $(printf '%s' "$p" | p8_redact)"
   done < "$W/restore.diff"
   if [ -s "$W/restore.list0" ]; then
     # sorted, so a missing dir is created (with its mode/owner) before its children
     tr '\0' '\n' < "$W/restore.list0" | LC_ALL=C sort | tr '\n' '\0' > "$W/restore.sorted0"
-    tar --extract --gzip --file "$W/backup.tgz" --numeric-owner --same-permissions --xattrs --acls --no-recursion \
-      -C "${P8_ROOT:-/}" --null --verbatim-files-from -T "$W/restore.sorted0" || { p8_log "tar extract failed"; rc=1; }
+    # Review T8: extract into a stage dir, then put each entry in place by
+    # rename (files/links) or mkdir + reference chmod/chown (dirs). Nothing is
+    # removed first, so a power cut never leaves e.g. config.txt (vfat) missing.
+    rm -rf "$W/restore-stage"; install -d -m 0700 "$W/restore-stage"
+    if tar --extract --gzip --file "$W/backup.tgz" --numeric-owner --same-permissions --xattrs --acls --no-recursion \
+         -C "$W/restore-stage" --null --verbatim-files-from -T "$W/restore.sorted0"; then
+      while IFS= read -r -d '' r; do
+        st=$W/restore-stage/$r; d=$P8_ROOT/$r
+        if [ -d "$st" ] && [ ! -L "$st" ]; then
+          if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then p8_mvT "$d" "$TD/replaced/$r"; fi
+          [ -d "$d" ] || mkdir "$d"
+          chown --reference="$st" "$d" 2>/dev/null || true; chmod --reference="$st" "$d" 2>/dev/null || true
+        else
+          if [ -d "$d" ] && [ ! -L "$d" ]; then p8_mvT "$d" "$TD/replaced/$r"; fi
+          cp -a "$st" "$d.p8new" 2>/dev/null || cp -P "$st" "$d.p8new" || { p8_log "cannot stage $r"; rc=1; continue; }
+          mv -f "$d.p8new" "$d" || { p8_log "cannot rename $r into place"; rc=1; }
+        fi
+      done < "$W/restore.sorted0"
+    else p8_log "tar extract failed"; rc=1; fi
+    rm -rf "$W/restore-stage"
   fi
   # pseudo rows: the service user's groups and unit enablement
   while IFS=$'\t' read -r k p; do
@@ -201,14 +223,23 @@ p8_redact < "$W/verify-pre.out" | sed 's/^/  /' >&2
 if [ "$vrc" = 0 ]; then p8_log "verify pre: PASS"; else p8_log "verify pre: FAIL"; rc=1; fi
 
 # 9. start PROD
+# Review T2: a manual restore that does NOT start PROD re-arms a short --auto
+# dead-man first, so a lost ssh session can never leave 58b51737 down.
+failsafe() {
+  if [ "$AUTO" = 0 ] && bash "$HERE/p8-deadman.sh" failsafe --window "$W" --label "$LABEL" --in-min "${P8_FAILSAFE_MIN:-10}" >/dev/null 2>&1; then
+    p8_log "NOT GREEN: PROD not started; a FAILSAFE --auto dead-man is armed for +${P8_FAILSAFE_MIN:-10} min (it starts PROD). Fix and re-run, or --force-start"
+  elif [ "$AUTO" = 0 ]; then
+    p8_log "NOT GREEN: PROD not started AND the failsafe dead-man could not be armed: start PROD by hand"
+  fi
+}
 if [ ! -d "$P8_ROOT/etc/xorgate" ]; then
-  p8_log "NOT starting $P8_PROD_UNIT: /etc/xorgate is not back"; exit 1
+  p8_log "NOT starting $P8_PROD_UNIT: /etc/xorgate is not back"; failsafe; exit 1
 fi
 if [ "$vrc" != 0 ] && [ "$AUTO" = 0 ] && [ "$FORCE" = 0 ]; then
-  p8_log "NOT starting $P8_PROD_UNIT: the pre-start verify failed (fix, re-run, or --force-start)"; exit 1
+  p8_log "NOT starting $P8_PROD_UNIT: the pre-start verify failed"; failsafe; exit 1
 fi
 p8_cancel_agent_jobs    # F1 again: nothing but our own start may be queued
-p8_ts > "$W/restore.done"
+echo "$(p8_ts) verify=$([ "$vrc" = 0 ] && echo PASS || echo FAIL)" > "$W/restore.done"
 systemctl start --no-block "$P8_PROD_UNIT" || { p8_log "start --no-block $P8_PROD_UNIT failed"; rc=1; }
 p8_log "start --no-block $P8_PROD_UNIT queued"
 if [ "$BOOT" = 1 ]; then

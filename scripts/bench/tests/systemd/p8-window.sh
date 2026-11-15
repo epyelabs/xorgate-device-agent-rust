@@ -219,6 +219,9 @@ t=$(date +%s); n=$(systemctl show p8-deadman.timer -p NextElapseUSecRealtime --v
 d=$(( $(date -d "$n" +%s) - t ))
 [ "$d" -ge 2990 ] && [ "$d" -le 3005 ] && ok "F5: the timer elapses at arm + 50 min for a 60-min cap ($d s)" || bad "F5: next elapse in $d s ($n)"
 [ "$(systemctl is-enabled p8-deadman-boot.service)" = enabled ] && ok "the boot unit is enabled" || bad "boot unit not enabled"
+m1=$(systemctl show p8-deadman.timer -p NextElapseUSecMonotonic --value); tm=$(systemctl show p8-deadman.timer -p TimersMonotonic --value)
+systemctl daemon-reload; m2=$(systemctl show p8-deadman.timer -p NextElapseUSecMonotonic --value)
+case $tm in *OnActiveUSec*) [ -n "$m1" ] && [ "$m1" != infinity ] && [ "$m1" = "$m2" ] && ok "T4: a monotonic OnActiveSec elapse ($m1) next to OnCalendar, unchanged by daemon-reload" || bad "T4: monotonic $m1 -> $m2" ;; *) bad "T4: no OnActiveUSec in TimersMonotonic ($tm)" ;; esac
 v=$(systemd-analyze verify "$SDIR/p8-deadman.timer" "$SDIR/p8-deadman.service" "$SDIR/p8-deadman-boot.service" 2>&1 | grep 'p8-deadman' || true)
 [ -z "$v" ] && ok "systemd-analyze verify: the three dead-man units are clean" || bad "systemd-analyze: $v"
 [ "$(cat /var/lib/xorgate/settings.json)" = "$(cat "$W/seed-settings.json")" ] && ok "the seed is in place" || bad "no seed"
@@ -247,6 +250,9 @@ bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
 bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "verify post PASS (DA15 bench rows)" || { bad "verify post"; grep FAIL "$W/post.out"; }
 bash "$W/bin/p8-modem-sampler.sh" summary "$W/modem-w1.tsv" > "$W/sum.out" 2>&1 && ok "sampler: $(grep -o 'samples=[0-9]* bias_off_ticks=[0-9]*' "$W/sum.out"), VERDICT PASS" || { bad "sampler summary"; cat "$W/sum.out"; }
 grep -q bench.apn "$W/modem-w1.tsv" "$W/baseline.env" "$W/post.out" && bad "an APN value was written" || ok "no APN value in the sampler/baseline/verify files"
+out=$(bash "$W/bin/p8-deadman.sh" arm --window "$W" --cap-min 60 --label w1 2>&1); [ $? = 3 ] && [ ! -e /root/p8-window.active ] && ok "T1: the finished window cannot be re-armed" || bad "T1 re-arm: $out"
+out=$(bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w1 -- /root/fake-install-js.sh 2>&1); rc=$?
+[ "$rc" = 3 ] && ! systemctl is-active --quiet xorgate-agent && [ "$(sha256sum /etc/xorgate/device.key.pem | cut -c1-64)" != "$dev_key" ] && ok "T1: the finished window cannot be re-installed over PROD" || bad "T1 re-install: rc=$rc $out"
 
 echo "== B1: F1 boot path, the TEST JS unit enabled at boot"
 open_window 20261114T000002Z w1 --cap-min 60

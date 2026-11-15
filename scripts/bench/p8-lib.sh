@@ -67,6 +67,16 @@ P8_SURFACE="/var/lib/xorgate
 /usr/local/bin/xorgate-rs"
 
 p8_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# Review T3: the mutating tools share /run/p8.lock with the restore. The
+# restore WAITS for it; backup/aside/run-install REFUSE when it is held.
+p8_lock_nb() {
+  mkdir -p "$(dirname "$P8_LOCK")"
+  exec 9>>"$P8_LOCK"
+  flock -n 9 || P8_DIE_RC=3 p8_die "$P8_LOCK is held (a restore or another window step is running): refusing"
+}
+# Review T6: the plain suite interrupts a restore after step N (sandbox ONLY:
+# ignored unless P8_ROOT is set, so it can never fire on the bench).
+p8_test_stop() { if [ -n "$P8_ROOT" ] && [ "${P8_TEST_STOP_AFTER:-}" = "$1" ]; then p8_log "TEST: stopping after step $1"; exit 99; fi; }
 p8_log() { printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >&2; [ -z "${P8_LOGFILE:-}" ] || printf '[p8 %s] %s\n' "$(p8_ts)" "$*" >> "$P8_LOGFILE" 2>/dev/null || true; }
 p8_die() { p8_log "FATAL: $*"; exit "${P8_DIE_RC:-1}"; }
 p8_need_root() { [ "$(id -u)" -eq 0 ] || p8_die "run as root (sudo)"; }
@@ -122,7 +132,13 @@ GLOBS = ["/etc/systemd/system/xorgate-*", "/etc/systemd/system/sim7600-lte*", "/
          "/usr/local/bin/xorgate-camrotate", "/usr/local/bin/sim7600-lte.sh", "/etc/udev/rules.d/99-sim7600-lte.rules",
          "/etc/NetworkManager/conf.d/*", "/etc/NetworkManager/system-connections/*", "/etc/systemd/logind.conf.d/*",
          "/etc/apt/apt.conf.d/*", "/etc/cron.d/xorgate-fake-hwclock", "/boot/firmware/config.txt", "/etc/modules",
-         "/etc/modprobe.d/raspi-blacklist.conf"]
+         "/etc/modprobe.d/raspi-blacklist.conf",
+         # review T10: the installers' apt sources/keyrings (NodeSource) and the
+         # overlay step's `cp -n` backup. Non-volatile: under H1 nothing writes
+         # them on this bench, so any change is a finding. pip state is a
+         # `pip freeze` sha in baseline/post (p8-verify.sh), not manifest rows.
+         "/etc/apt/sources.list", "/etc/apt/sources.list.d/*", "/etc/apt/keyrings/*", "/usr/share/keyrings/*",
+         "/boot/firmware/config.txt.bak-xorgate"]
 # M4 volatile list: excluded from equality, checked separately by p8-verify.sh.
 VOL_TREES = ["/var/lib/xorgate-rs/drive-blackbox"]
 def volatile(p):
