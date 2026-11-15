@@ -1,0 +1,18 @@
+# Vendored from the backend repo (backend/xorgate-core-service, branch
+# js-to-rust/phase-8-dual-agent), byte for byte. Never edit by hand: re-copy
+# from the backend's test/fixtures/install-script/ and move the pins below
+# (scripts/tests/provision-rs-bodies.sh checks them).
+#
+# file                      sha256                                                            backend fixture                                   last changed in
+rust-bootstrap.golden.sh    9084ff6cf02093c515841a079966910dd154b117a059a7f038c8d01f38f0525f  test/fixtures/install-script/rust-prod.golden.sh  fdb7442 (install-script-rs.ts, PROD vars; read at backend 974e422)
+js-install.golden.sh        0360c108b81fece5468a38832399bd665d462ec9e761fa528ab27b0687e2033d  test/fixtures/install-script/js-prod.golden.sh    d2ff881 (the UNMODIFIED install-script.ts @ 1a0c730, PROD vars)
+#
+# rendered from src/assets/install-script-rs.ts sha256 759fe1fa5cdb906f2d527b71cbe88cd564f7a8f3cad1d3480b37ac931395ead8
+# (backend 974e422; it superseded the first bootstrap golden 23aab2ab…, which
+# lacked curl --proto =https).
+#
+# rust-bootstrap.golden.sh is what GET /v1/get/{code} serves for a Rust
+# registration; tools/provision-e2e runs it UNMODIFIED (its PROD hostnames are
+# pointed at the local fake bucket + API through /etc/hosts and a test CA).
+# js-install.golden.sh is the JS installer; the bodies test extracts its
+# heredocs so provision-rs.sh's shared system steps stay JS's bytes.

@@ -1,10 +1,31 @@
 {
-  "generatedBy": "hand-written in Phase 5 WP1 from xorgate_core::update_plan (WRAPPER_BODY, updater_sudoers_body) and phase-5-distribution.md §8 (10-dist.conf); pinned both ways: crates/xorgate-core/tests/install_rs_bodies.rs (== update_plan) and scripts/tests/install-rs-bodies.sh (== scripts/install-rs.sh + scripts/bench/_lib.sh)",
-  "note": "one value per line; the only JSON escapes used are \\n and \\\" (the bash reader refuses any other)",
+  "generatedBy": "hand-written in Phase 5 WP1 from xorgate_core::update_plan (WRAPPER_BODY, updater_sudoers_body) and phase-5-distribution.md §8 (10-dist.conf); extended in Phase 8 WP-R1 with the native provisioner's bodies (scripts/provision-rs.sh). Pinned three ways: crates/xorgate-core/tests/install_rs_bodies.rs (== update_plan), scripts/tests/install-rs-bodies.sh (== scripts/install-rs.sh + scripts/bench/_lib.sh) and scripts/tests/provision-rs-bodies.sh (== scripts/provision-rs.sh, and the shared steps == the JS install.sh golden)",
+  "note": "one value per line; the only JSON escapes used are \\n and \\\" (the bash reader refuses any other); a per-user object holds one line per user, read as <object>.<user>",
   "wrapper": "#!/usr/bin/env bash\nexec env XORGATE_HOME=\"${XORGATE_HOME:-/var/lib/xorgate}\" /opt/xorgate-rs/bin/xorgate-rs \"$@\"\n",
   "updaterSudoers": {
     "pi": "# Installed by xorgate-rs. Allows the agent (running as pi) to start the\n# one-shot self-update unit on a cloud-issued 'update' command, and nothing\n# else. See device-agent-rust crates/xorgate-hal/src/privileged.rs + systemd/xorgate-updater-rs.service.\npi ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater-rs.service\n",
     "operator": "# Installed by xorgate-rs. Allows the agent (running as operator) to start the\n# one-shot self-update unit on a cloud-issued 'update' command, and nothing\n# else. See device-agent-rust crates/xorgate-hal/src/privileged.rs + systemd/xorgate-updater-rs.service.\noperator ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater-rs.service\n"
   },
-  "distDropin": "# Installed by install-rs.sh. agent.env's DEVICE_DIST_VERSION is the JS agent's pin;\n# the Rust updater always follows xorgate-agent-rs-latest (README §6: the cloud update stays latest-only).\n[Service]\nEnvironment=DEVICE_DIST_VERSION=latest\n"
+  "distDropin": "# Installed by install-rs.sh. agent.env's DEVICE_DIST_VERSION is the JS agent's pin;\n# the Rust updater always follows xorgate-agent-rs-latest (README §6: the cloud update stays latest-only).\n[Service]\nEnvironment=DEVICE_DIST_VERSION=latest\n",
+  "clockSudoers": {
+    "pi": "# Installed by xorgate. Allows the agent (running as pi) to apply an\n# offline GPS/NITZ clock step. See device-agent src/agent/clock-step.ts.\npi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-setclock\n",
+    "operator": "# Installed by xorgate. Allows the agent (running as operator) to apply an\n# offline GPS/NITZ clock step. See device-agent src/agent/clock-step.ts.\noperator ALL=(root) NOPASSWD: /usr/local/bin/xorgate-setclock\n"
+  },
+  "camrotateSudoers": {
+    "pi": "# Installed by xorgate. Allows the agent (running as pi) to set the\n# camera overlay's rotation parameter in the boot config, and nothing else.\n# See device-agent src/hardware/boot-config.ts + system/xorgate-camrotate.\npi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camrotate\n",
+    "operator": "# Installed by xorgate. Allows the agent (running as operator) to set the\n# camera overlay's rotation parameter in the boot config, and nothing else.\n# See device-agent src/hardware/boot-config.ts + system/xorgate-camrotate.\noperator ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camrotate\n"
+  },
+  "powerSudoers": {
+    "pi": "# Installed by xorgate. Allows the agent (running as pi) to act on\n# cloud-issued reboot / power-off commands. See device-agent src/agent/commands.ts.\npi ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff\n",
+    "operator": "# Installed by xorgate. Allows the agent (running as operator) to act on\n# cloud-issued reboot / power-off commands. See device-agent src/agent/commands.ts.\noperator ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff\n"
+  },
+  "userDropin": {
+    "pi": "[Service]\nUser=pi\nGroup=pi\n",
+    "operator": "[Service]\nUser=operator\nGroup=operator\n"
+  },
+  "nativeDropin": "# Installed by provision-rs.sh (a native Rust install). If the JS installer\n# later provisions this device, /opt/xorgate appears and this unit no longer\n# starts from the next boot: the JS agent alone runs. Remove the then-inert\n# Rust files with: sudo /opt/xorgate-rs/provision-rs.sh --uninstall\n[Unit]\nConditionPathExists=!/opt/xorgate\n",
+  "nativeDistDropin": "# Installed by provision-rs.sh. The Rust updater always follows\n# xorgate-agent-rs-latest (README §6: the cloud update stays latest-only).\n[Service]\nEnvironment=DEVICE_DIST_VERSION=latest\n",
+  "logindRemoveIpc": "# Installed by xorgate. Bridged camera pipelines publish frames through POSIX\n# shared memory owned by the agent user; logind must not remove it when the\n# last ssh session closes.\n[Login]\nRemoveIPC=no\n",
+  "uplinkPriority": "# Prefer WiFi over the LTE modem (usb0) for the IPv4 default route.\n# WiFi connections get route-metric 50; usb0 is unmanaged by NM and the\n# sim7600-lte daemon installs its default route at metric 100, so WiFi wins\n# whenever it is associated. LTE stays the fallback, used only when WiFi is\n# down or absent. Interface-bound health checks in the SIM7600 manager\n# (ping -I usb0) are unaffected by this.\n[connection-wifi-priority]\nmatch-device=type:wifi\nipv4.route-metric=50\n",
+  "aptLockTimeout": "DPkg::Lock::Timeout \"600\";\n"
 }

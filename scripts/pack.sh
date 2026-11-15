@@ -20,13 +20,17 @@
 #   install-rs.sh            the converter (scripts/install-rs.sh, 0755; Phase 5
 #                            WP1) — the device copy that makes --revert work
 #                            offline and without a working binary
+#   provision-rs.sh          the NATIVE installer (scripts/provision-rs.sh, 0755;
+#                            Phase 8 D1.2): the backend's Rust bootstrap
+#                            extracts and runs this member, so every build
+#                            carries the install layout it was tested with
 #   python/ modem/ media/ system/   ONLY if present in the repo — Phase 0 ships
 #                            what exists; they are vendored in Phase 4/5. The
 #                            JS tarball (device-deploy-dev.yml:98) ships all
 #                            four unconditionally; here a missing dir is not an
 #                            error, a missing REQUIRED entry is.
 # Required entries verified after packing: bin/xorgate-rs, build-info.json,
-# systemd/xorgate-agent-rs.service, install-rs.sh, python/bno085_read.py (Phase 2 WP2: the
+# systemd/xorgate-agent-rs.service, install-rs.sh, provision-rs.sh, python/bno085_read.py (Phase 2 WP2: the
 # IMU collector spawns `python3 <root>/python/bno085_read.py`, vendored
 # byte-identical from the JS repo @ 89b5c64, sha256 7af7a856…; the JS
 # tarball ships python/ too, device-deploy-dev.yml:98).
@@ -67,6 +71,7 @@ fi
 [ -f "$REPO/systemd/xorgate-agent-rs.service" ] || { echo "pack: systemd/xorgate-agent-rs.service missing" >&2; exit 1; }
 [ -f "$REPO/python/bno085_read.py" ] || { echo "pack: python/bno085_read.py missing (the IMU helper)" >&2; exit 1; }
 [ -f "$REPO/scripts/install-rs.sh" ] || { echo "pack: scripts/install-rs.sh missing (the converter)" >&2; exit 1; }
+[ -f "$REPO/scripts/provision-rs.sh" ] || { echo "pack: scripts/provision-rs.sh missing (the native installer)" >&2; exit 1; }
 
 # Tiny JSON field reader (no jq on the bench): first "key": "value" occurrence.
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -n1; }
@@ -83,7 +88,10 @@ install -m 0755 "$BIN" "$STAGE/bin/xorgate-rs"
 cp -R "$REPO/systemd" "$STAGE/systemd"
 # Phase 5 WP1: the converter at the tarball root (= /opt/xorgate-rs/install-rs.sh).
 install -m 0755 "$REPO/scripts/install-rs.sh" "$STAGE/install-rs.sh"
-MEMBERS=(bin build-info.json systemd install-rs.sh)
+# Phase 8 WP-R1: the native installer at the tarball root (the bootstrap runs
+# `tar -xzf <tarball> provision-rs.sh`, a bare member name).
+install -m 0755 "$REPO/scripts/provision-rs.sh" "$STAGE/provision-rs.sh"
+MEMBERS=(bin build-info.json systemd install-rs.sh provision-rs.sh)
 for d in python modem media system; do
   if [ -d "$REPO/$d" ]; then
     cp -R "$REPO/$d" "$STAGE/$d"
@@ -119,7 +127,7 @@ sed -n '1,30p' <<<"$LISTING" >&2
 # Phase 5b WP2 (I9): the OBD helper members the JS deploy asserts
 # (device-deploy-dev.yml @ 09da38d) ride along with the IMU helper.
 for required in bin/xorgate-rs build-info.json systemd/xorgate-agent-rs.service python/bno085_read.py \
-    python/obd_read.py python/obd/session.py python/obd_scan.py install-rs.sh; do
+    python/obd_read.py python/obd/session.py python/obd_scan.py install-rs.sh provision-rs.sh; do
   grep -qx "$required" <<<"$LISTING" || { echo "pack: missing $required in $TARBALL" >&2; exit 1; }
 done
 
