@@ -508,7 +508,7 @@ provision_main() {
   SERIAL_VAL=$(cat /etc/machine-id 2>/dev/null \
     || cat /sys/class/dmi/id/product_uuid 2>/dev/null \
     || echo "$HOSTNAME_VAL")
-  DT_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)
+  DT_MODEL=$(tr -d '\0' 2>/dev/null < /proc/device-tree/model || echo unknown)
   CAM_COUNT=$( { rpicam-hello --list-cameras 2>/dev/null || true; } | grep -cE '^[0-9]+ +:' || true)
   CAM_COUNT="${CAM_COUNT:-0}"
   body=$(jq -n --arg s "$SERIAL_VAL" --arg h "$HOSTNAME_VAL" --arg p "$PLATFORM_VAL" \
@@ -731,7 +731,11 @@ EOF
   # a stale /etc wants link from an older install is removed.
   if [ -L "$SYSD/multi-user.target.wants/$RS_SVC.service" ]; then rm -f "$SYSD/multi-user.target.wants/$RS_SVC.service"; log "  - the /etc wants link replaced by the generator"; fi
   systemctl daemon-reload
-  [ "$(unit_enabled "$RS_SVC")" = generated ] || fail 4 "$RS_SVC is '$(unit_enabled "$RS_SVC")' after daemon-reload, want 'generated' ($GENERATOR)"
+  # The generator's wants link is the enablement (systemctl is-enabled says
+  # "generated", or "enabled-runtime" on systemd 252).
+  [ -L "/run/systemd/generator/multi-user.target.wants/$RS_SVC.service" ] \
+    || fail 4 "the boot generator did not want $RS_SVC after daemon-reload (is-enabled: $(unit_enabled "$RS_SVC")); see $GENERATOR"
+  log "  = wanted at boot by $GENERATOR (is-enabled: $(unit_enabled "$RS_SVC"))"
   if [ "$(unit_active "$RS_SVC")" = active ]; then
     systemctl restart --no-block "$RS_SVC" || fail 4 "systemctl restart $RS_SVC failed"
   else
@@ -829,8 +833,9 @@ main() {
     [ "$n" = 1 ] || usage_error "--uninstall takes no other argument"
     uninstall_main
   fi
-  [ -n "$REG_CODE" ] && [ -n "$API_BASE" ] && [ -n "$FROM" ] && [ -n "$TARBALL" ] \
-    || usage_error "--reg-code, --api-base, --from and --tarball are required"
+  if [ -z "$REG_CODE" ] || [ -z "$API_BASE" ] || [ -z "$FROM" ] || [ -z "$TARBALL" ]; then
+    usage_error "--reg-code, --api-base, --from and --tarball are required"
+  fi
   [[ $REG_CODE =~ ^[A-Za-z0-9_-]{1,64}$ ]] || usage_error "--reg-code: not a registration code"
   case $API_BASE in https://*) ;; *) usage_error "--api-base must be an https:// URL" ;; esac
   case $FROM in https://*) ;; *) usage_error "--from must be an https:// URL" ;; esac
