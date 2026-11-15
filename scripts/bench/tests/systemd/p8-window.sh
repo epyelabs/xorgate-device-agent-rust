@@ -504,7 +504,7 @@ echo "== L1: F-P8-T-LOOP, the DEV agent starts a NEW updater while it is being s
 open_window 20261114T000014Z w2 --cap-min 75
 bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-rs.sh > "$W/ri.out" 2>&1 || bad "L1 install"
 printf '[Service]\nType=simple\nExecStart=/usr/bin/sleep 120\n' > "$SDIR/xorgate-updater-rs.service"
-printf '[Service]\nExecStop=/root/fake-agent-stop.sh\n' > "$SDIR/xorgate-agent-rs.service.d/30-loop.conf"
+printf '[Service]\nExecStop=+/root/fake-agent-stop.sh\n' > "$SDIR/xorgate-agent-rs.service.d/30-loop.conf"   # "+": root (the unit runs as pi, which may not start units)
 touch /var/tmp/p8loop.once; systemctl daemon-reload; systemctl restart xorgate-agent-rs; rm -f /var/tmp/p8loop.once   # armed only for the restore's stop
 systemctl is-active --quiet xorgate-updater-rs && bad "L1: an updater already runs" || ok "L1: no updater runs before the restore"
 bash "$W/bin/p8-restore.sh" --window "$W" > "$W/restore.out" 2>&1 && ok "L1: the manual restore exit 0" || { bad "L1: restore"; tail -8 "$W/restore.out"; }
