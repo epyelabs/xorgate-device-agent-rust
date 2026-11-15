@@ -272,6 +272,16 @@ for sig in INT HUP PIPE; do
   wait 2>/dev/null
 done
 
+echo "== interrupted DURING the claim request: claim state unknown, never 'nothing was claimed' (review N1)"
+reset_device; echo slow > "$E/claim-mode"; boot_bg "$W/bg.out"
+wait_log 'claiming registration code' 60 || bad "N1: the claim never started"
+sleep 2; systemctl kill --signal=INT xorgate-provision-rs
+wait_rc 60; [ "$UNIT_RC" = 5 ] && ok "N1: interrupted mid-claim -> exit 5" || bad "N1: exit '${UNIT_RC}'"
+grep -q 'claim state UNKNOWN' /var/log/xorgate-provision-rs.log && ! grep -q 'nothing was claimed' /var/log/xorgate-provision-rs.log \
+  && ok "N1: says the claim state is unknown, not 'nothing was claimed'" || bad "N1: wording: $(grep -E 'UNKNOWN|nothing was claimed' /var/log/xorgate-provision-rs.log)"
+[ ! -e /opt/xorgate-rs.new ] && [ ! -e /opt/xorgate-rs ] && ok "N1: the staging was swept" || bad "N1: staging left"
+wait 2>/dev/null
+
 reset_device
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

@@ -14,7 +14,8 @@ trusts). Stdlib only.
       POST /v1/device-registrations/<code>/claim
           The claim ASSERTION point: every claim is appended to
           <state>/claims.log as one JSON line {code, body}. The reply follows
-          <state>/claim-mode (default ok): ok | ok-nohw | 409 | 404 | 500.
+          <state>/claim-mode (default ok): ok | ok-nohw | 409 | 404 | 500 | slow
+          (30 s before an ok reply).
           A code may be claimed once (a second claim of it is 404, as the
           backend's pending -> claimed flip).
       GET /ca.pem   the Amazon root CA stand-in (the claim's caUrl).
@@ -104,6 +105,10 @@ class H(http.server.BaseHTTPRequestHandler):
         code = m.group(1)
         append("claims.log", json.dumps({"code": code, "body": body}, sort_keys=True))
         mode = read("claim-mode", "ok")
+        if mode == "slow":   # a claim still in flight when the run is interrupted
+            import time
+            time.sleep(30)
+            mode = "ok"
         used = set(read("used-codes").split())
         if mode == "409":
             return self.send(409, '{"message":"A device with this serial is already registered in the workspace; delete it first to re-provision."}')
