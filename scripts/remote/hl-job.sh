@@ -339,7 +339,7 @@ job_cargo() {
 suite_list() {
   if [ -n "${HL_SUITES:-}" ]; then printf '%s\n' "$HL_SUITES" | tr ' ' '\n' | sed '/^$/d'; return; fi
   (cd "$SRC" && ls scripts/tests/*.sh scripts/bench/tests/*.sh tools/replay/tests/*.sh 2>/dev/null) \
-    | grep -vE '/(_stubs|clippy-ban-probe|unit-ordering|install-rs-systemd)\.sh$'
+    | grep -vE '/(_stubs|clippy-ban-probe|unit-ordering|install-rs-systemd|provision-e2e|provision-rs-systemd)\.sh$'
 }
 job_suites() {
   local img t n rc fails=0
@@ -375,8 +375,15 @@ clock_guard() { python3 -I "$HERE/clock-guard.py" "$@"; }
 job_systemd() {
   local pair name suite pkgs rc fails=0
   mkdir -p "$T/logs/suites"
-  clock_guard "$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh" || { echo "SYSTEMD_DONE fails=REFUSED"; return 1; }
-  for pair in "unit-ordering:systemd" "install-rs-systemd:systemd python3 sudo"; do
+  # Phase 8 WP-R1: the two provision suites source tools/provision-e2e/lib.sh,
+  # which the guard reads too (it is part of what runs privileged).
+  local guarded=("$SRC/scripts/tests/unit-ordering.sh" "$SRC/scripts/tests/install-rs-systemd.sh")
+  [ ! -f "$SRC/scripts/tests/provision-e2e.sh" ] || guarded+=("$SRC/scripts/tests/provision-e2e.sh" "$SRC/scripts/tests/provision-rs-systemd.sh" "$SRC/tools/provision-e2e/lib.sh")
+  clock_guard "${guarded[@]}" || { echo "SYSTEMD_DONE fails=REFUSED"; return 1; }
+  local pairs=("unit-ordering:systemd" "install-rs-systemd:systemd python3 sudo")
+  [ ! -f "$SRC/scripts/tests/provision-e2e.sh" ] || pairs+=("provision-e2e:systemd python3 sudo jq curl openssl ca-certificates"
+    "provision-rs-systemd:systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0")
+  for pair in "${pairs[@]}"; do
     suite=${pair%%:*}; pkgs=${pair#*:}; name=hl_${TAG}_sd-$suite
     # Recipe = each suite's header (systemd 252 as PID 1, privileged, private cgroupns).
     docker run -d --name "$name" --label "xorgate.agent=$TAG" --label xorgate.hl=1 --label "xorgate.hl.job=$(jobl)" \
