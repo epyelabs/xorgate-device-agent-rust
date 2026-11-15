@@ -5,7 +5,8 @@
 #   - xorgate-agent-rs enabled + active; Type=notify really waits for READY=1
 #     from the main pid; WatchdogSec; User=pi from 10-user.conf;
 #   - Conflicts=/After=xorgate-agent.service inert (no such unit);
-#   - 20-native.conf: the start is skipped while /opt/xorgate exists;
+#   - 20-native.conf: the start is skipped while /opt/xorgate exists, and the
+#     boot generator stops wanting the unit (daemon-reload = the next boot);
 #   - xorgate-updater-rs static (never enabled), 10-dist.conf effective, the
 #     024 grant lets pi start exactly that unit and nothing else; visudo -c;
 #   - the cloud update path (pi: sudo -n systemctl start --no-block
@@ -33,7 +34,7 @@ reset_device; echo 3 > "$E/ready-delay"
 cp "$BUCKET/$TGZ" "$W/$TGZ"; cp "$BUCKET/$TGZ.sha256" "$W/"; tar -xzf "$W/$TGZ" -C "$W" provision-rs.sh
 run_prov "$W/provision-rs.sh"
 expect_rc 0 "native provision"
-[ "$(systemctl is-enabled $U)/$(systemctl is-active $U)" = enabled/active ] && ok "$U enabled + active" || bad "$U $(systemctl is-enabled $U)/$(systemctl is-active $U)"
+[ "$(systemctl is-enabled $U)/$(systemctl is-active $U)" = generated/active ] && ok "$U generated (the native generator) + active" || bad "$U $(systemctl is-enabled $U)/$(systemctl is-active $U)"
 [ "$(sp Type $U)/$(sp NotifyAccess $U)/$(sp WatchdogUSec $U)" = notify/main/1min ] && ok "Type=notify, NotifyAccess=main, WatchdogSec=60" || bad "unit: $(sp Type $U)/$(sp NotifyAccess $U)/$(sp WatchdogUSec $U)"
 t0=$(sp ExecMainStartTimestampMonotonic $U); t1=$(sp ActiveEnterTimestampMonotonic $U)
 [ $((t1 - t0)) -ge 2900000 ] && ok "systemd held the unit in 'activating' until READY=1 ($(((t1 - t0) / 1000)) ms)" || bad "active after only $(((t1 - t0) / 1000)) ms: READY not awaited?"
@@ -46,7 +47,12 @@ case $(sp DropInPaths $U) in *10-user.conf*20-native.conf*) ok "drop-ins 10-user
 echo "== 20-native.conf"
 mkdir /opt/xorgate; systemctl restart $U 2>/dev/null; sleep 1
 [ "$(systemctl is-active $U)" = inactive ] && [ "$(sp ConditionResult $U)" = no ] && ok "with /opt/xorgate present the start is skipped (ConditionPathExists=!/opt/xorgate)" || bad "with /opt/xorgate: $(systemctl is-active $U), condition $(sp ConditionResult $U)"
-rmdir /opt/xorgate; systemctl start $U; active_wait $U active 15
+systemctl daemon-reload
+[ "$(systemctl is-enabled $U)" != generated ] && [ ! -e /run/systemd/generator/multi-user.target.wants/$U.service ] \
+  && ok "…and after a daemon-reload (= the next boot) the generator no longer wants it ($(systemctl is-enabled $U))" || bad "generator still wants $U with /opt/xorgate present"
+rmdir /opt/xorgate; systemctl daemon-reload
+[ "$(systemctl is-enabled $U)" = generated ] && ok "the generator wants it again once /opt/xorgate is gone" || bad "generator: $(systemctl is-enabled $U)"
+systemctl start $U; active_wait $U active 15
 [ "$(systemctl is-active $U)" = active ] && [ "$(sp ConditionResult $U)" = yes ] && ok "…and starts again once it is gone" || bad "restart after rmdir"
 
 echo "== the update rail's units and grant"

@@ -58,13 +58,14 @@ for r in "/etc/xorgate d 700 pi:pi" "/etc/xorgate/agent.env f 600 pi:pi" "/etc/x
   "/usr/local/bin/sim7600-lte.sh f 755 root:root" "/etc/systemd/system/sim7600-lte.service f 644 root:root" \
   "/etc/udev/rules.d/99-sim7600-lte.rules f 644 root:root" "/etc/NetworkManager/conf.d/99-sim7600-unmanaged.conf f 644 root:root" \
   "/etc/NetworkManager/conf.d/10-uplink-priority.conf f 644 root:root" "/etc/systemd/logind.conf.d/10-xorgate-removeipc.conf f 644 root:root" \
-  "/etc/apt/apt.conf.d/99xorgate-lock-timeout f 644 root:root" "/etc/systemd/system/multi-user.target.wants/xorgate-agent-rs.service l 777 root:root"; do
+  "/etc/apt/apt.conf.d/99xorgate-lock-timeout f 644 root:root" "/etc/systemd/system-generators/xorgate-agent-rs-native f 755 root:root"; do
   # shellcheck disable=SC2086  # a row is four words
   row $r
 done
 for f in /usr/local/bin/xorgate-s*clock /etc/cron.d/xorgate-*; do row "$f" f "$([ -x "$f" ] && echo 755 || echo 644)" root:root; done
 for p in /opt/xorgate /usr/local/bin/xorgate /etc/sudoers.d/022_xorgate-update /etc/systemd/system/xorgate-agent.service \
-  /etc/systemd/system/xorgate-updater.service /opt/xorgate-rs.new /opt/xorgate-rs.old; do absent "$p"; done
+  /etc/systemd/system/xorgate-updater.service /opt/xorgate-rs.new /opt/xorgate-rs.old /etc/systemd/system/multi-user.target.wants/xorgate-agent-rs.service; do absent "$p"; done
+[ -L /run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service ] && ok "wanted at boot through the generator (no /etc wants link)" || bad "no generated wants link"
 command -v node >/dev/null && bad "node installed" || ok "no node"
 grep -qx DEVICE_DIST_VERSION=latest /etc/xorgate/agent.env && ! grep -q "$VER" /etc/xorgate/agent.env \
   && ok "agent.env: DEVICE_DIST_VERSION=latest literally (the build is $VER, not pinned)" || bad "agent.env DEVICE_DIST_VERSION: $(grep DEVICE_DIST /etc/xorgate/agent.env)"
@@ -74,13 +75,13 @@ grep -qx "DEVICE_DIST_BUCKET_URL=https://$(golden_host DIST_BUCKET_URL)" /etc/xo
   && ok "kvs.json + hardware.json from the claim" || bad "kvs/hardware json"
 grep -qx 'dtoverlay=imx290,cam0' /boot/firmware/config.txt && grep -qx 'dtoverlay=imx290,cam1' /boot/firmware/config.txt && grep -qx camera_auto_detect=0 /boot/firmware/config.txt \
   && grep -q 'REBOOT required' "$OUT" && ok "overlays added + the REBOOT notice" || bad "overlays"
-[ "$(systemctl is-active xorgate-agent-rs)/$(systemctl is-enabled xorgate-agent-rs)" = active/enabled ] && ok "xorgate-agent-rs active + enabled" || bad "agent $(systemctl is-active xorgate-agent-rs)"
+[ "$(systemctl is-active xorgate-agent-rs)/$(systemctl is-enabled xorgate-agent-rs)" = active/generated ] && ok "xorgate-agent-rs active + generated (enabled by the generator)" || bad "agent $(systemctl is-active xorgate-agent-rs)"
 grep -q "rs start .*uid=$(id -u pi) device=dev-abcdefghijkmnpq2 dist=latest kvs=/opt/xorgate-rs/media/xorgate-kvs-webrtc" "$E/agent.log" && ok "the agent runs as pi with the new identity" || bad "agent.log: $(tail -2 "$E/agent.log")"
 [ "$(systemctl is-active sim7600-lte)/$(systemctl is-enabled sim7600-lte)" = active/enabled ] && ok "sim7600-lte enabled + started (the stub daemon)" || bad "sim7600-lte"
 [ "$(wc -l < "$E/nm-reloads")" = 3 ] && ok "NM reloaded 3x on a fresh device (bootstrap 0a, step 7 full conf, step 7b uplink; as JS)" || bad "NM reloads: $(wc -l < "$E/nm-reloads")"
 cmp -s /etc/NetworkManager/conf.d/99-sim7600-unmanaged.conf "$W/tree/modem/99-sim7600-unmanaged.conf" && ok "the bootstrap's minimal NM conf replaced by the tarball's" || bad "NM conf not the tarball copy"
 visudo -c >/dev/null 2>&1 && ok "visudo -c" || bad "visudo -c"
-in=$(id -nG pi); case " $in " in *" i2c "*" dialout "* | *" dialout "*" i2c "*) ok "pi in i2c + dialout" ;; *) bad "pi groups: $in" ;; esac
+in=" $(id -nG pi) "; case $in in *" i2c "*) case $in in *" dialout "*) ok "pi in i2c + dialout" ;; *) bad "pi groups:$in" ;; esac ;; *) bad "pi groups:$in" ;; esac
 grep -q '^modprobe i2c-dev' "$E/calls.log" && ok "modprobe went to the shim (no raspi-config)" || bad "modprobe not called"
 HAPPY_SNAP=$(snap)
 
@@ -127,7 +128,7 @@ grep -q 'libgstreamer-1.0.so.0' "$OUT" && ok "smoke failure: the loader error is
 reset_device; echo update > "$E/apt-fail"; run_boot; expect_rc 1 "apt-get update failure"; nothing_claimed "apt update failure"
 reset_device; d=$(mktemp -d); cp "$BUCKET/$TGZ" "$d/"; printf '%064d  %s\n' 0 "$TGZ" > "$d/$TGZ.sha256"; tar -xzf "$d/$TGZ" -C "$d" provision-rs.sh
 env PATH="$P" SUDO_USER=pi bash "$d/provision-rs.sh" --reg-code c --api-base "$API_TEST" --from "$DIST_TEST" --tarball "$d/$TGZ" > "$OUT" 2>&1; RC=$?
-expect_rc 1 "provision-rs.sh re-checks the sidecar"; nothing_claimed "provisioner sha"; rm -rf "$d"
+rm -rf "$d"; expect_rc 1 "provision-rs.sh re-checks the sidecar"; nothing_claimed "provisioner sha"
 
 echo "== WARN-only steps still provision (as JS)"
 reset_device; echo gstreamer1.0-plugins-bad > "$E/apt-fail"; touch "$E/pip-fail"; run_boot; expect_rc 0 "plugin + pip failures"
@@ -149,6 +150,7 @@ grep -q 'RECOVERY: the registration code is USED' "$OUT" && grep -q 'install.sh 
 echo "== a JS-provisioned device is refused (3), also with --reprovision"
 for a in "" --reprovision; do
   reset_device; mkdir -p /opt/xorgate/dist; printf '[Service]\nExecStart=/bin/true\n' > /etc/systemd/system/xorgate-agent.service
+  install -m 0644 "$W/tree/modem/99-sim7600-unmanaged.conf" /etc/NetworkManager/conf.d/   # a JS device has it: the bootstrap skips 0a
   B=$(snap); run_boot $a; expect_rc 3 "JS device ${a:-(plain)}"
   [ "$(claims)" = 0 ] && [ "$(snap)" = "$B" ] && [ ! -s "$E/apt.log" ] && ok "JS device ${a:-(plain)}: nothing changed, nothing installed, no claim" || bad "JS device ${a:-(plain)} changed something"
   grep -q 'install-rs.sh' "$OUT" && ok "JS device: points at install-rs.sh" || bad "JS device message"
@@ -162,6 +164,7 @@ grep -qx 'User=root' "$RS_UNIT_PATH.d/10-user.conf" && absent /etc/sudoers.d/024
 
 echo "== bench-shaped device: shared files already installed and identical, the modem daemon running"
 reset_device
+mkdir -p /etc/udev/rules.d
 install -m 0755 "$W/tree/modem/sim7600-lte.sh" /usr/local/bin/sim7600-lte.sh
 install -m 0644 "$W/tree/modem/sim7600-lte.service" /etc/systemd/system/sim7600-lte.service
 install -m 0644 "$W/tree/modem/99-sim7600-lte.rules" /etc/udev/rules.d/99-sim7600-lte.rules
@@ -213,7 +216,8 @@ systemctl start xorgate-agent-rs 2>/dev/null; sleep 1
 KEEP=$(snap --no-inode | grep -E ' /(etc/xorgate|usr/local/bin/sim7600|etc/sudoers.d/02[0-3]|etc/udev|etc/NetworkManager|etc/systemd/system/xorgate-agent\.service)')
 env PATH="$P" bash /opt/xorgate-rs/provision-rs.sh --uninstall > "$OUT" 2>&1; RC=$?; expect_rc 0 "--uninstall"
 for p in /opt/xorgate-rs /usr/local/bin/xorgate-rs "$RS_UNIT_PATH" "$RS_UNIT_PATH.d" /etc/systemd/system/xorgate-updater-rs.service \
-  /etc/systemd/system/xorgate-updater-rs.service.d /etc/sudoers.d/024_xorgate-update-rs /etc/systemd/system/multi-user.target.wants/xorgate-agent-rs.service; do absent "$p"; done
+  /etc/systemd/system/xorgate-updater-rs.service.d /etc/sudoers.d/024_xorgate-update-rs /etc/systemd/system/multi-user.target.wants/xorgate-agent-rs.service \
+  /etc/systemd/system-generators/xorgate-agent-rs-native /run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service; do absent "$p"; done
 [ "$(snap --no-inode | grep -E ' /(etc/xorgate|usr/local/bin/sim7600|etc/sudoers.d/02[0-3]|etc/udev|etc/NetworkManager|etc/systemd/system/xorgate-agent\.service)')" = "$KEEP" ] \
   && ok "--uninstall kept /etc/xorgate, the modem/NM/udev assets, 020-023 and the JS unit, byte for byte" || bad "--uninstall touched a kept path"
 [ "$(systemctl is-active xorgate-agent)" = active ] && ok "the JS agent still runs" || bad "JS not active after --uninstall"

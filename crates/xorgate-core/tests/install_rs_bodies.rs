@@ -33,6 +33,7 @@ struct Bodies {
     power_sudoers: BTreeMap<String, String>,
     user_dropin: BTreeMap<String, String>,
     native_dropin: String,
+    native_generator: String,
     native_dist_dropin: String,
     logind_remove_ipc: String,
     uplink_priority: String,
@@ -80,6 +81,7 @@ fn golden_is_bash_readable() {
         g.wrapper.as_str(),
         g.dist_dropin.as_str(),
         g.native_dropin.as_str(),
+        g.native_generator.as_str(),
         g.native_dist_dropin.as_str(),
         g.logind_remove_ipc.as_str(),
         g.uplink_priority.as_str(),
@@ -107,6 +109,7 @@ fn golden_is_bash_readable() {
         "wrapper",
         "distDropin",
         "nativeDropin",
+        "nativeGenerator",
         "nativeDistDropin",
         "logindRemoveIpc",
         "uplinkPriority",
@@ -147,4 +150,9 @@ fn golden_is_bash_readable() {
     assert!(g
         .native_dropin
         .ends_with("[Unit]\nConditionPathExists=!/opt/xorgate\n"));
+    // The boot-time enablement (WP-R1): wanted only while /opt/xorgate is absent.
+    assert!(g.native_generator.starts_with("#!/bin/sh\n"));
+    assert!(g
+        .native_generator
+        .contains("\n[ -e /opt/xorgate ] && exit 0\nmkdir -p \"$1/multi-user.target.wants\""));
 }

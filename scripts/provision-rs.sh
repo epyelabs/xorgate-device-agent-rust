@@ -50,6 +50,7 @@ RS_UNIT_D=$RS_UNIT.d
 UPD_UNIT=$SYSD/xorgate-updater-rs.service
 UPD_UNIT_D=$UPD_UNIT.d
 WRAPPER=/usr/local/bin/xorgate-rs
+GENERATOR=/etc/systemd/system-generators/xorgate-agent-rs-native
 SUDOERS_D=/etc/sudoers.d
 SUDOERS_024=$SUDOERS_D/024_xorgate-update-rs
 STATE_DIR=/var/lib/xorgate
@@ -129,6 +130,25 @@ native_dropin_body() {
     '# Rust files with: sudo /opt/xorgate-rs/provision-rs.sh --uninstall' \
     '[Unit]' \
     'ConditionPathExists=!/opt/xorgate'
+}
+# D1.3 (WP-R1 finding): the boot-time enablement of a NATIVE install. A plain
+# `systemctl enable` cannot let the JS installer win: with both units enabled
+# the boot transaction holds both start jobs, the Rust unit's Conflicts= adds
+# a JS stop job that matters to the anchor while JS's own Wants=-pulled start
+# does not, so systemd drops the JS start; 20-native.conf then skips Rust and
+# NO agent runs. This generator decides before any transaction: it wants the
+# Rust unit only while /opt/xorgate is absent (systemctl is-enabled: generated).
+native_generator_body() {
+  # shellcheck disable=SC2016  # the $1 belongs to the generator, written literally
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '# Installed by provision-rs.sh (a native Rust install). Wants xorgate-agent-rs' \
+    '# at boot only while the JS agent is not installed (/opt/xorgate absent), so' \
+    '# a later JS install wins cleanly from the next boot. Remove with:' \
+    '# sudo /opt/xorgate-rs/provision-rs.sh --uninstall' \
+    '[ -e /opt/xorgate ] && exit 0' \
+    'mkdir -p "$1/multi-user.target.wants" || exit 0' \
+    'ln -sf /etc/systemd/system/xorgate-agent-rs.service "$1/multi-user.target.wants/xorgate-agent-rs.service"'
 }
 # The updater follows xorgate-agent-rs-latest (README §6; agent.env says the same).
 native_dist_dropin_body() {
@@ -298,7 +318,8 @@ put_file() {
   fi
   if [ -L "$dest" ]; then rm -f "$dest"; fi   # never write through a symlink
   if [ -e "$dest" ] && [ ! -f "$dest" ]; then fail "$([ "$PHASE" = claimed ] && echo 4 || echo 1)" "$dest is in the way (not a regular file)"; fi
-  install -m "$mode" -o "${own%%:*}" -g "${own#*:}" "$src" "$dest"
+  install -m "$mode" -o "${own%%:*}" -g "${own#*:}" "$src" "$dest" \
+    || fail "$([ "$PHASE" = claimed ] && echo 4 || echo 1)" "cannot write $dest"
   log "  - $dest written"
   return 0
 }
@@ -306,8 +327,8 @@ put_file() {
 put_body() {
   local dest=$1 mode=$2 own=$3 tmp rc=0
   shift 3
-  tmp=$(mktemp "$PRIV/body.XXXXXX")
-  "$@" > "$tmp"
+  tmp=$(mktemp "$PRIV/body.XXXXXX") || fail "$([ "$PHASE" = claimed ] && echo 4 || echo 1)" "mktemp failed"
+  "$@" > "$tmp" || fail "$([ "$PHASE" = claimed ] && echo 4 || echo 1)" "cannot render the body of $dest"
   put_file "$dest" "$mode" "$own" "$tmp" || rc=$?
   rm -f "$tmp"
   return "$rc"
@@ -328,7 +349,7 @@ put_sudoers() {
 ensure_dir() { # <dir> <mode> <owner:group>: created when absent; an existing dir is left as it is
   if [ -d "$1" ] && [ ! -L "$1" ]; then return 0; fi
   if [ -e "$1" ] || [ -L "$1" ]; then fail "$([ "$PHASE" = claimed ] && echo 4 || echo 1)" "$1 is in the way (not a directory)"; fi
-  install -d -m "$2" -o "${3%%:*}" -g "${3#*:}" "$1"
+  install -d -m "$2" -o "${3%%:*}" -g "${3#*:}" "$1" || fail "$([ "$PHASE" = claimed ] && echo 4 || echo 1)" "cannot create $1"
   log "  - $1/ created"
 }
 in_group() { id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$2"; }
@@ -389,7 +410,7 @@ provision_main() {
   if [ -e "$JS_PREFIX" ] || [ -e "$JS_UNIT" ]; then
     refuse "this device has the JS agent ($JS_PREFIX or $JS_UNIT present). To move it to Rust, convert it with install-rs.sh (docs/convert.md); to re-register it, use the JS installer"
   fi
-  if [ "$REPROVISION" = 0 ] && { [ -e "$CONF_DIR/agent.env" ] || [ -e "$RS_PREFIX" ] || [ -e "$RS_UNIT" ]; }; then
+  if [ "$REPROVISION" = 0 ] && { [ -e "$CONF_DIR/agent.env" ] || [ -e "$RS_PREFIX" ] || [ -e "$RS_UNIT" ] || [ -e "$GENERATOR" ]; }; then
     refuse "this device is already provisioned ($CONF_DIR/agent.env, $RS_PREFIX or $RS_UNIT present). To re-register it, run: sudo bash install.sh --reprovision"
   fi
   [ -f "$TARBALL" ] || fail 1 "no such tarball: $TARBALL"
@@ -550,6 +571,7 @@ provision_main() {
 
   # 5b. The CLI wrapper (update_plan::WRAPPER_BODY). No `xorgate` alias.
   log "installing $WRAPPER"
+  for m in /usr/local/bin "$SYSD" /etc/cron.d /etc/udev/rules.d; do ensure_dir "$m" 0755 root:root; done
   put_body "$WRAPPER" 0755 root:root rs_wrapper_body || true
 
   # 6. The agent unit + drop-ins (10-user.conf as JS; 20-native.conf, D1.3).
@@ -558,6 +580,8 @@ provision_main() {
   ensure_dir "$RS_UNIT_D" 0755 root:root
   put_body "$RS_UNIT_D/10-user.conf" 0644 root:root user_dropin_body "$SVC_USER" "$SVC_GROUP" || true
   put_body "$RS_UNIT_D/20-native.conf" 0644 root:root native_dropin_body || true
+  ensure_dir "${GENERATOR%/*}" 0755 root:root
+  put_body "$GENERATOR" 0755 root:root native_generator_body || true
   for m in "$RS_UNIT_D"/*; do
     case $m in "$RS_UNIT_D/10-user.conf" | "$RS_UNIT_D/20-native.conf") ;; *) [ ! -e "$m" ] || log "  foreign drop-in kept: $m" ;; esac
   done
@@ -703,8 +727,11 @@ EOF
 
   # P9. Enable + start; wait for READY (Type=notify) <= START_WAIT_SECS.
   log "starting $RS_SVC"
+  # Enablement = the generator (not `systemctl enable`, see native_generator_body);
+  # a stale /etc wants link from an older install is removed.
+  if [ -L "$SYSD/multi-user.target.wants/$RS_SVC.service" ]; then rm -f "$SYSD/multi-user.target.wants/$RS_SVC.service"; log "  - the /etc wants link replaced by the generator"; fi
   systemctl daemon-reload
-  if [ "$(unit_enabled "$RS_SVC")" != enabled ]; then systemctl enable "$RS_SVC" 2>/dev/null || fail 4 "systemctl enable $RS_SVC failed"; fi
+  [ "$(unit_enabled "$RS_SVC")" = generated ] || fail 4 "$RS_SVC is '$(unit_enabled "$RS_SVC")' after daemon-reload, want 'generated' ($GENERATOR)"
   if [ "$(unit_active "$RS_SVC")" = active ]; then
     systemctl restart --no-block "$RS_SVC" || fail 4 "systemctl restart $RS_SVC failed"
   else
@@ -761,7 +788,7 @@ uninstall_main() {
     inactive | failed | unknown | "") ;;
     *) systemctl stop "$RS_SVC" 2>/dev/null || warn "systemctl stop $RS_SVC failed"; log "  - $RS_SVC stopped" ;;
   esac
-  for p in "$RS_UNIT_D/10-user.conf" "$RS_UNIT_D/20-native.conf" "$RS_UNIT" "$UPD_UNIT_D/10-dist.conf" "$UPD_UNIT" \
+  for p in "$GENERATOR" "$SYSD/multi-user.target.wants/$RS_SVC.service" "$RS_UNIT_D/10-user.conf" "$RS_UNIT_D/20-native.conf" "$RS_UNIT" "$UPD_UNIT_D/10-dist.conf" "$UPD_UNIT" \
            "$SUDOERS_024" "$WRAPPER"; do
     if [ -e "$p" ] || [ -L "$p" ]; then rm -f "$p"; log "  - $p removed"; fi
   done

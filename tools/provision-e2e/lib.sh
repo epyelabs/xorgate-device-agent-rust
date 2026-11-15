@@ -231,7 +231,7 @@ reset_device() {
     /usr/local/bin/xorgate /usr/local/bin/xorgate-* /usr/local/bin/sim7600-lte.sh \
     /etc/systemd/system/xorgate-* /etc/systemd/system/sim7600-lte.service /etc/systemd/system/multi-user.target.wants/xorgate-* \
     /etc/systemd/system/multi-user.target.wants/sim7600-lte.service /etc/sudoers.d/02*_xorgate-* /etc/cron.d/xorgate-* \
-    /etc/udev/rules.d/99-sim7600-lte.rules /etc/NetworkManager/conf.d/* /etc/systemd/logind.conf.d \
+    /etc/udev/rules.d/99-sim7600-lte.rules /etc/systemd/system-generators/xorgate-* /etc/NetworkManager/conf.d/* /etc/systemd/logind.conf.d \
     /etc/apt/apt.conf.d/99xorgate-* /etc/apt/apt.conf.d/00p8-* /run/xorgate-provision-rs.lock /tmp/tmp.* /tmp/provision-rs.*
   printf 'dtparam=i2c_arm=on\n' > /boot/firmware/config.txt; rm -f /boot/firmware/config.txt.bak-xorgate
   cp "$W/group.base" /etc/group; cp "$W/gshadow.base" /etc/gshadow
@@ -265,7 +265,7 @@ expect_rc() { # <want> <label>
 }
 # The provisioner's surface: one line per path (type mode owner sha inode), for
 # "nothing changed" / "never rewritten" comparisons.
-SURFACE=(/etc/xorgate /opt /usr/local/bin /etc/systemd/system /etc/sudoers.d /etc/cron.d /etc/udev/rules.d
+SURFACE=(/etc/xorgate /opt /usr/local/bin /etc/systemd/system /etc/systemd/system-generators /etc/sudoers.d /etc/cron.d /etc/udev/rules.d
   /etc/NetworkManager/conf.d /etc/systemd/logind.conf.d /etc/apt/apt.conf.d /boot/firmware /var/lib/xorgate)
 snap() { # [--no-inode] -> stdout
   local r

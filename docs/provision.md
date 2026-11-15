@@ -62,7 +62,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 | 4 | download + extract the JS tarball to `/opt/xorgate` | none (bootstrap + P2); `.new` → `/opt/xorgate-rs`. On `--reprovision` the current tree goes to `.old` first, removed once the agent is active |
 | 5 | `npm ci` | none |
 | 5b | `/usr/local/bin/xorgate` wrapper | `/usr/local/bin/xorgate-rs` = `update_plan::WRAPPER_BODY`; no `xorgate` alias (Q-8.7) |
-| 6 | the JS unit + `.d/10-user.conf`; sudoers 020; `daemon-reload`; `enable --now xorgate-agent` | `xorgate-agent-rs.service` from the tarball + `.d/10-user.conf` (the JS body) + **`.d/20-native.conf`** (D1.3); 020 (the JS body, `visudo -cf` first); the start moves to **P9** |
+| 6 | the JS unit + `.d/10-user.conf`; sudoers 020; `daemon-reload`; `enable --now xorgate-agent` | `xorgate-agent-rs.service` from the tarball + `.d/10-user.conf` (the JS body) + **`.d/20-native.conf`** (D1.3) + the **boot generator** (in place of `enable`); 020 (the JS body, `visudo -cf` first); the start moves to **P9** |
 | 6a | `xorgate-setclock` + sudoers 021 + the fake-hwclock cron | the same files from `system/`; **021 = `update_plan::clock_sudoers_body`** (= the JS body) |
 | 6a1 | `xorgate-camrotate` + sudoers 023 | the same; **023 = `update_plan::camrotate_sudoers_body`** (= the JS body) |
 | 6a2 | the JS updater unit + sudoers 022 | `xorgate-updater-rs.service` + `.d/10-dist.conf` + **024** (`update_plan`; none for a root agent). No 022 |
@@ -71,7 +71,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 | 7b | NM uplink-priority conf + reload | same text, cmp-before-write, reload only if it changed |
 | 8 | GStreamer apt; `kvs.json`, `hardware.json`, pipelines dir, the legacy pipeline writer; media checks | `kvs.json`/`hardware.json` the same `jq` projections; a stale `hardware.json` is removed when the new model has none; the pipeline writer verbatim; media checks under `/opt/xorgate-rs/media` |
 | 8b | overlays in `config.txt` (+ `.bak-xorgate`); REBOOT notice | the same lines; `config.txt` is edited only when a line is missing or wrong (JS always rewrites `camera_auto_detect`) |
-| — | — | **P9** `daemon-reload`; `enable`; `start --no-block` (`restart` if active); wait ≤ 90 s for `active` (Type=notify = READY) plus a 3 s re-check, else exit 4 with the journal tail |
+| — | — | **P9** enablement by the **boot generator** `/etc/systemd/system-generators/xorgate-agent-rs-native` (written in step 6; `systemctl is-enabled` = `generated`; see below), not `systemctl enable`; `daemon-reload`; `start --no-block` (`restart` if active); wait ≤ 90 s for `active` (Type=notify = READY) plus a 3 s re-check, else exit 4 with the journal tail |
 
 ## Byte pins (one source)
 
@@ -87,13 +87,17 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 
 - **Rust → Rust (re-register):** register again (agent: Rust), then run line 2 as `sudo bash install.sh --reprovision`. This mints a new identity, swaps the build, restarts the agent and deletes `config-sync.json`. Delete the old device row first, or the claim returns 409.
 - **Rust installer on a JS device:** refused (exit 3). Convert it with `install-rs.sh`, or re-register it with the JS installer.
-- **JS installer on a native Rust device:** its `enable --now xorgate-agent` stops Rust through `Conflicts=`. From the next boot `20-native.conf` (`ConditionPathExists=!/opt/xorgate`) keeps the Rust unit from starting, so JS alone runs. Then remove the inert Rust files:
+- **JS installer on a native Rust device:** its `enable --now xorgate-agent` stops Rust through `Conflicts=`. From the next boot JS alone runs, because a native install never `systemctl enable`s the Rust unit. Its generator wants it only while `/opt/xorgate` is absent.
+  - **Why not plain `enable` + `20-native.conf` (the plan's D1.3):** the real-systemd e2e showed that with both units enabled, the boot transaction holds both start jobs. The Rust unit's `Conflicts=` adds a JS *stop* job that matters to the anchor, while JS's `Wants=`-pulled start does not. systemd therefore drops the JS start, `20-native.conf` then skips Rust, and **no agent runs**.
+  - The generator decides before any transaction. `20-native.conf` stays as the belt for a hand-run start.
+  - A hand-run `systemctl start xorgate-agent-rs` on such a device still stops JS through `Conflicts=` before the condition skips Rust; do not do that.
+- Then remove the inert Rust files:
 
   ```
   sudo /opt/xorgate-rs/provision-rs.sh --uninstall
   ```
 
-  `--uninstall` disables the Rust unit and removes `/opt/xorgate-rs{,.new,.old}`, both Rust units and their drop-ins, the wrapper and 024. It never touches `/etc/xorgate`, `/var/lib/xorgate`, the modem/system assets or 020–023. It refuses (exit 3) when the JS agent is not installed (the device would be left with no agent), and on a device converted by `install-rs.sh` (use its `--revert`).
+  `--uninstall` stops the Rust unit and removes the generator, `/opt/xorgate-rs{,.new,.old}`, both Rust units and their drop-ins, the wrapper and 024. It never touches `/etc/xorgate`, `/var/lib/xorgate`, the modem/system assets or 020–023. It refuses (exit 3) when the JS agent is not installed (the device would be left with no agent), and on a device converted by `install-rs.sh` (use its `--revert`).
 - **Do not run `install-rs.sh` on a JS-over-native device before `--uninstall`.** Its foreign-drop-in rule keeps `20-native.conf`, so the converted Rust unit would not start and the converter would auto-revert.
 
 ## Updates on a native device (D4)

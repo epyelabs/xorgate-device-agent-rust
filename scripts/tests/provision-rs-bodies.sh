@@ -70,6 +70,7 @@ for u in pi operator; do
 done
 same "wrapper (update_plan::WRAPPER_BODY)" "$(golden wrapper; echo X)" "$(rs_wrapper_body; echo X)"
 same "nativeDropin (20-native.conf)" "$(golden nativeDropin; echo X)" "$(native_dropin_body; echo X)"
+same "nativeGenerator (the boot-time enablement)" "$(golden nativeGenerator; echo X)" "$(native_generator_body; echo X)"
 same "nativeDistDropin (10-dist.conf)" "$(golden nativeDistDropin; echo X)" "$(native_dist_dropin_body; echo X)"
 same "logindRemoveIpc" "$(golden logindRemoveIpc; echo X)" "$(logind_body; echo X)"
 same "uplinkPriority" "$(golden uplinkPriority; echo X)" "$(uplink_body; echo X)"
