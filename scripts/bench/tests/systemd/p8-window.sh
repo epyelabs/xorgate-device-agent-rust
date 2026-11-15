@@ -342,5 +342,17 @@ wait_grep "$W/restore.done" verify= 120 && wait_active xorgate-agent-rs 60 && gr
 bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
 bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "P2: verify post PASS" || { bad "P2: verify post"; grep FAIL "$W/post.out"; }
 
+echo "== P3: Ctrl-C (SIGINT) on the manual-restore client mid-restore never stops the restore unit"
+open_window 20261114T000009Z w1 --cap-min 60
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w1 -- /root/fake-install-js.sh > "$W/ri.out" 2>&1 || bad "P3 install"
+{ sleep 2; date +%s > /root/p3-ctrlc.epoch; printf '\003'; sleep 20; } | script -qefc "bash $W/bin/p8-restore.sh --window $W" /dev/null > "$W/p3-client.out" 2>&1 & sp=$!
+wait_grep "$W/restore.done" verify= 120 && wait_active xorgate-agent-rs 60 && grep -q 'verify=PASS' "$W/restore.done" \
+  && ok "P3: after a real ^C on the client's pty the restore unit finished, PROD started, verify PASS" || { bad "P3: PROD not started"; tail -5 "$W/restore.log"; }
+ce=$(cat /root/p3-ctrlc.epoch 2>/dev/null || echo 0)
+[ "$ce" -gt 0 ] && [ "$(stat -c %Y "$W/restore.done")" -ge "$ce" ] && ok "P3: the ^C landed mid-restore (restore.done written after it)" || bad "P3: the ^C was not mid-restore"
+grep -q 'self=p8-restore-20261114T000009Z.service' "$W/restore.log" && [ "$(cat "$W/restore.rc")" = 0 ] && ok "P3: the unit's own exit code recorded (restore.rc 0)" || bad "P3: restore.rc"
+wait "$sp" 2>/dev/null; rm -f /root/p3-ctrlc.epoch
+bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

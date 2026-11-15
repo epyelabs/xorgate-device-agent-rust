@@ -71,11 +71,22 @@ if [ -z "${P8_SELF_UNIT:-}" ] && [ -z "$P8_ROOT" ]; then
   for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_CERT_BIN_SHA P8_CERT_VERSION; do
     [ -z "${!v:-}" ] || envs+=(--setenv="$v=${!v}")
   done
-  { echo "restore: running as the transient unit $u (log $ww/restore.log)"; } 2>/dev/null || true
-  rrc=0
-  systemd-run --quiet --wait --collect --unit="$u" "${envs[@]}" /bin/bash "$HERE/p8-restore.sh" "${ORIG_ARGS[@]}" || rrc=$?
-  { grep -E 'verify pre: |NOT GREEN|NOT starting|restore done|already finished|FATAL' "$ww/restore.log" 2>/dev/null | tail -n 6
-    echo "restore: unit $u exit $rrc"; } 2>/dev/null || true
+  # Fix-check ab4420d: NOT --wait (a Ctrl-C on a --wait client stops the
+  # unit). The unit is started detached; this client only polls it and tails
+  # the log, so interrupting or losing the client never touches the restore.
+  rm -f "$ww/restore.rc"
+  n0=$(wc -l < "$ww/restore.log" 2>/dev/null || echo 0)
+  systemd-run --quiet --no-block --collect --unit="$u" "${envs[@]}" /bin/bash "$HERE/p8-restore.sh" "${ORIG_ARGS[@]}" \
+    || p8_die "could not start the restore unit $u (one already running?)"
+  { echo "restore: running as the transient unit $u (log $ww/restore.log); Ctrl-C here does NOT stop it"; } 2>/dev/null || true
+  for _ in $(seq 3600); do
+    st=$(systemctl is-active "$u" 2>/dev/null || true)
+    n1=$(wc -l < "$ww/restore.log" 2>/dev/null || echo 0)
+    if [ "$n1" -gt "$n0" ]; then { sed -n "$((n0 + 1)),${n1}p" "$ww/restore.log"; } 2>/dev/null || true; n0=$n1; fi
+    case $st in active | activating | deactivating | reloading) sleep 1 ;; *) [ -e "$ww/restore.rc" ] && break; sleep 1 ;; esac
+  done
+  rrc=$(cat "$ww/restore.rc" 2>/dev/null || echo 1)
+  { echo "restore: unit $u exit $rrc"; } 2>/dev/null || true
   exit "$rrc"
 fi
 mkdir -p "$(dirname "$P8_LOCK")"
@@ -97,6 +108,8 @@ p8_check_window "$W"
 echo "$LABEL" > "$W/label"
 export P8_LOGFILE=$W/restore.log
 TD=$W/test-$LABEL
+# The unit's result for its detached client (and for the record).
+trap 'echo $? > "$W/restore.rc"' EXIT
 if [ -f "$W/restore.done" ]; then
   if [ "$AGAIN" = 0 ]; then
     p8_log "restore already finished ($(cat "$W/restore.done")): nothing to do"
