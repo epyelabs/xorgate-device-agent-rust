@@ -145,7 +145,9 @@ disarm() {
   rm -f "$TIMER" "$SVC" "$BOOT" "$P8_SD/timers.target.wants/p8-deadman.timer" \
         "$P8_SD/multi-user.target.wants/p8-deadman-boot.service" "$P8_STAMP" "$P8_MARKER"
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl reset-failed p8-deadman.timer >/dev/null 2>&1 || true
+  # a dead-man restore that ended FAILED stays loaded as a failed unit: clear it
+  # (a no-op on the one that may be running this very disarm)
+  systemctl reset-failed p8-deadman.timer p8-deadman.service p8-deadman-boot.service >/dev/null 2>&1 || true
   echo "disarmed: units, marker and timer stamp removed"
 }
 

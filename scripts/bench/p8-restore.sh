@@ -338,6 +338,7 @@ p8_cancel_agent_jobs    # F1 again: nothing but our own start may be queued
 systemctl start --no-block "$P8_PROD_UNIT" || { p8_log "start --no-block $P8_PROD_UNIT failed"; rc=1; }
 p8_test_stop start
 echo "$(p8_ts) verify=$([ "$vrc" = 0 ] && echo PASS || echo FAIL)" > "$W/restore.done"   # only AFTER the start is queued
+p8_release_prov_lock   # the moves are over: a provisioner would now refuse on the restored surface anyway
 trap - HUP INT TERM
 p8_log "start --no-block $P8_PROD_UNIT queued"
 if [ "$BOOT" = 1 ]; then
