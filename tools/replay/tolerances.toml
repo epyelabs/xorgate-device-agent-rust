@@ -414,10 +414,11 @@ kind = "decisions"
 
   [[rule.row]]
   id = "D85"
-  what = "D85 (phase-1/evidence/accepted-divergences.md; Phase 8 D9, Q-8.3 ACCEPTED by the user): the Rust agent's report marker `effective.agent.runtime: \"rust\"`, appended as the LAST key of the agent block (config_report.rs AGENT_RUNTIME); the JS @09da38d sends no such key, so a JS-vs-Rust report differs by this one key's PRESENCE. Only this path is covered; the agent block's other keys, their order (the key-order check compares only shared keys) and every value stay compared. Rust-vs-Rust: both sides carry `\"rust\"`, compared exactly (an equal pair never reaches this row). The value itself is pinned by the Rust tests, not here"
+  what = "D85 (phase-1/evidence/accepted-divergences.md; Phase 8 D9, Q-8.3 ACCEPTED by the user): the Rust agent's report marker `effective.agent.runtime: \"rust\"`, appended as the LAST key of the agent block (config_report.rs AGENT_RUNTIME); the JS @09da38d sends no such key. PRESENCE-ONLY (review-wp-r2 SHOULD-1; `rust_only_value`, diff.rs cmp): tolerated ONLY on a JS-vs-Rust pair where the JS side lacks the path and the Rust side holds exactly \"rust\". A changed value, a Rust side without the marker, any Rust-vs-Rust or JS-vs-JS difference stays UNTOLERATED. Only this path is covered; the agent block's other keys, their order (the key-order check compares only shared keys) and every value stay compared"
   streams = ["report"]
   paths = ["effective.agent.runtime"]
-  pinned_by = "D85 (accepted-divergences.md); config_report::tests::d85_effective_agent_reports_runtime_rust_last; tests/config_report_fixtures.rs strip_d85 (12 JS-golden agent blocks)"
+  rust_only_value = "rust"
+  pinned_by = "D85 (accepted-divergences.md); config_report::tests::d85_effective_agent_reports_runtime_rust_last; tests/config_report_fixtures.rs strip_d85 (12 JS-golden agent blocks); diff::tests::should_narrowings_host_sign_build_o2_end_snapshot (presence-only arms)"
 
   [[rule.row]]
   id = "cli-banner"
