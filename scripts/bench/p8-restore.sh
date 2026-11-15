@@ -68,7 +68,7 @@ if [ -z "${P8_SELF_UNIT:-}" ] && [ -z "$P8_ROOT" ]; then
   [[ $ts =~ ^[0-9A-Za-z]+$ ]] || p8_die "bad window $ww"
   u=p8-restore-$ts
   envs=(--setenv=HOME=/root --setenv="P8_SELF_UNIT=$u.service")
-  for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_CERT_BIN_SHA P8_CERT_VERSION; do
+  for v in P8_FAILSAFE_MIN P8_DPKG_WAIT_S P8_START_WAIT_S P8_UNIT_STOP_WAIT_S P8_CERT_BIN_SHA P8_CERT_VERSION; do
     [ -z "${!v:-}" ] || envs+=(--setenv="$v=${!v}")
   done
   # Fix-check ab4420d: NOT --wait (a Ctrl-C on a --wait client stops the
@@ -135,8 +135,16 @@ rc=0
 
 # 1. F1
 p8_cancel_agent_jobs
-# 2. F3 (dpkg lock first, then the installer unit, then the repair)
-p8_stop_installers
+# 2. F3 + MUST-2: dpkg lock first, then EVERY window unit (the provisioner
+#    xorgate-provision-rs first, then p8-install-*), verified inactive, then
+#    the repair. If one survives, NOTHING is moved back.
+p8_stop_installers || p8_die "a window unit (xorgate-provision-rs / p8-install-*) could not be stopped: moving NOTHING back (see the log)"
+date +%s.%N > "$W/units-stopped.epoch"
+if [ -e "$P8_PROV_LOG" ]; then   # a window artifact: kept as evidence in the test dir, never left behind
+  install -d -m 0700 "$TD/var/log"
+  dst=$TD/var/log/xorgate-provision-rs.log; [ ! -e "$dst" ] || dst=$dst.$(date +%s)
+  p8_mvT "$P8_PROV_LOG" "$dst"; p8_log "moved the provisioner log to ${dst#"$W/"}"
+fi
 
 # 3-5. the agent surface
 L=$W/aside.list

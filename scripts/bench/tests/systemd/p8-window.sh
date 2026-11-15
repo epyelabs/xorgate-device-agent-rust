@@ -177,7 +177,31 @@ echo "unpacked"
 python3 -I -c 'import fcntl, time; f = open("/var/lib/dpkg/lock-frontend", "w"); fcntl.lockf(f, fcntl.LOCK_EX); print("locked", flush=True); time.sleep(40); fcntl.lockf(f, fcntl.LOCK_UN); print("released", flush=True)'
 sleep 600
 EOF
-chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh
+cat > /root/fake-provision.sh <<'EOF'
+#!/bin/bash
+# WP-R1 MUST-2 stand-in: the provisioner that keeps writing the DEV identity
+# into /etc/xorgate and a build into /opt. "ignore" ignores SIGTERM.
+[ "${1:-term}" = ignore ] && trap '' TERM
+while :; do
+  mkdir -p /etc/xorgate /opt/xorgate-rs.new
+  head -c 64 /dev/urandom > /etc/xorgate/.dev-key.tmp && mv -f /etc/xorgate/.dev-key.tmp /etc/xorgate/device.key.pem
+  date +%s.%N >> /opt/xorgate-rs.new/stamp
+  echo "tick" >> /var/log/xorgate-provision-rs.log
+  date +%s.%N > /var/tmp/p8prov.last
+  sleep 0.2
+done
+EOF
+cat > /root/fake-install-handoff.sh <<'EOF'
+#!/bin/bash
+# provision-rs.sh's hand-off shape: a SIBLING unit, then a polling client.
+systemd-run --unit=xorgate-provision-rs --collect --quiet --no-block /bin/bash /root/fake-provision.sh "${1:-term}"
+echo "handed off"
+while :; do
+  case $(systemctl is-active xorgate-provision-rs 2>/dev/null) in active | activating | deactivating) sleep 1 ;; *) break ;; esac
+done
+echo "provision ended"
+EOF
+chmod 0755 /root/fake-install-js.sh /root/fake-install-rs.sh /root/fake-install-dpkg.sh /root/fake-provision.sh /root/fake-install-handoff.sh
 
 # ------------------------------------------------------------- window helpers
 W=""
@@ -354,6 +378,39 @@ rm -f /root/p3-ctrlc.late
 grep -q 'self=p8-restore-20261114T000009Z.service' "$W/restore.log" && [ "$(cat "$W/restore.rc")" = 0 ] && ok "P3: the unit's own exit code recorded (restore.rc 0)" || bad "P3: restore.rc"
 wait "$sp" 2>/dev/null; rm -f /root/p3-ctrlc.epoch
 bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+
+must2_check() { # <case> <label>: the provisioner stopped BEFORE any move back, the restore exact
+  local c=$1 vl bl pk
+  vl=$(grep -n 'window unit xorgate-provision-rs.service inactive (verified)' "$W/restore.log" | head -1 | cut -d: -f1)
+  bl=$(grep -n 'PROD back:' "$W/restore.log" | head -1 | cut -d: -f1)
+  [ -n "$vl" ] && [ -n "$bl" ] && [ "$vl" -lt "$bl" ] && ok "$c: the provisioner was verified inactive (log line $vl) before the first move back (line $bl)" || bad "$c: order vl=$vl bl=$bl"
+  python3 -I -c 'import sys; sys.exit(0 if float(open(sys.argv[1]).read()) < float(open(sys.argv[2]).read()) else 1)' /var/tmp/p8prov.last "$W/units-stopped.epoch" \
+    && ok "$c: its last write came before the stop was verified" || bad "$c: the provisioner wrote after the stop"
+  systemctl is-active --quiet xorgate-provision-rs && bad "$c: the provisioner unit is still active" || ok "$c: the provisioner unit is inactive"
+  pk=$(awk -F '\t' '$1 == "/etc/xorgate/device.key.pem" {print $6}' "$W/pre.manifest"); sleep 2
+  [ "$(sha256sum /etc/xorgate/device.key.pem | cut -c1-64)" = "$pk" ] && [ ! -e /opt/xorgate-rs.new ] && grep -q '^DA15 pre: PASS' "$W/verify-pre.out" \
+    && [ ! -e /var/log/xorgate-provision-rs.log ] && [ -e "$W/test-$2/var/log/xorgate-provision-rs.log" ] \
+    && ok "$c: the restored state is exact (PROD key, no /opt/xorgate-rs.new, verify pre PASS); the provisioner log is in test-$2" || { bad "$c: restored state"; cat "$W/verify-pre.out"; }
+  rm -f /var/tmp/p8prov.last
+}
+echo "== M2D: WP-R1 MUST-2, the dead-man fires while a SIBLING xorgate-provision-rs keeps writing"
+open_window 20261114T000010Z w2 --deadline-in-s 25
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-handoff.sh > "$W/ri.out" 2>&1 & rip=$!
+wait_grep /var/log/xorgate-provision-rs.log tick 30 && systemctl is-active --quiet xorgate-provision-rs && ok "M2D: the sibling provisioner runs and writes" || bad "M2D: no provisioner"
+wait_grep "$W/restore.log" 'restore done' 150 && wait_active xorgate-agent-rs 60 && ok "M2D: the timer's restore ran and PROD is active" || bad "M2D: no timer restore"
+wait "$rip" 2>/dev/null
+must2_check M2D w2
+grep -q 'verify post: PASS' "$W/restore.log" && ok "M2D: the --auto verify post PASSed (no xorgate-provision-rs leftover)" || { bad "M2D: verify post"; grep FAIL "$W/verify-post.out"; }
+echo "== M2M: WP-R1 MUST-2, a MANUAL restore while the provisioner IGNORES SIGTERM (SIGKILL escalation)"
+open_window 20261114T000011Z w2 --cap-min 75
+bash "$W/bin/p8-backup.sh" run-install --window "$W" --label w2 -- /root/fake-install-handoff.sh ignore > "$W/ri.out" 2>&1 & rip=$!
+wait_grep /var/log/xorgate-provision-rs.log tick 30 || bad "M2M: no provisioner"
+P8_UNIT_STOP_WAIT_S=8 bash "$W/bin/p8-restore.sh" --window "$W" > "$W/restore.out" 2>&1 && ok "M2M: the manual restore exit 0" || { bad "M2M: restore"; tail -8 "$W/restore.out"; }
+wait "$rip" 2>/dev/null
+grep -q 'xorgate-provision-rs.service still running after 8s: SIGKILL' "$W/restore.log" && ok "M2M: the SIGTERM-ignoring provisioner was SIGKILLed" || bad "M2M: no SIGKILL escalation"
+must2_check M2M w2
+bash "$W/bin/p8-modem-sampler.sh" stop >/dev/null
+bash "$W/bin/p8-verify.sh" post --window "$W" > "$W/post.out" 2>&1 && ok "M2M: verify post PASS" || { bad "M2M: verify post"; grep FAIL "$W/post.out"; }
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

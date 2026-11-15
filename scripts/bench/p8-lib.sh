@@ -250,22 +250,53 @@ p8_dpkg_locked() {
   done
   return $held
 }
-# F3: WAIT for the dpkg locks to be free BEFORE stopping the installer unit
-# (stopping its cgroup mid-unpack leaves a half-installed package), bounded by
-# P8_DPKG_WAIT_S; then stop it; then repair if dpkg reports anything.
+# WP-R1 fix-check MUST-2: the native provisioner hands itself off into the
+# SIBLING transient unit xorgate-provision-rs, so stopping p8-install-* alone
+# only detaches its client. Every window unit (the provisioner FIRST: it is
+# the writer) is stopped, its queued jobs cancelled, and it is verified
+# inactive -- SIGKILL after P8_UNIT_STOP_WAIT_S -- before anything moves back.
+P8_PROV_GLOB='xorgate-provision-rs*'
+P8_PROV_LOG=$P8_ROOT/var/log/xorgate-provision-rs.log
+P8_PROV_RUN="$P8_ROOT/run/xorgate-provision-rs.lock $P8_ROOT/run/xorgate-provision-rs.rc"
+P8_UNIT_STOP_WAIT_S=${P8_UNIT_STOP_WAIT_S:-60}
+p8_units_matching() { systemctl list-units --all --plain --no-legend "$1" 2>/dev/null | awk '!($2 == "not-found" && $3 == "inactive") {print $1}'; }
+p8_unit_running() { case $(p8_active "$1" | head -n1) in active | activating | deactivating | reloading) return 0 ;; esac; return 1; }
+p8_stop_unit() { # <unit>: stopped + verified inactive (0), or still running (1)
+  local u=$1 id unit _i
+  while read -r id unit _; do [ "$unit" = "$u" ] && systemctl cancel "$id" 2>/dev/null && p8_log "cancelled queued job $id ($u)"; done < <(systemctl list-jobs --no-legend --plain 2>/dev/null || true)
+  if p8_unit_running "$u"; then
+    p8_log "stopping window unit $u"
+    timeout "$P8_UNIT_STOP_WAIT_S" systemctl stop "$u" 2>/dev/null || true
+    for _i in $(seq "$P8_UNIT_STOP_WAIT_S"); do p8_unit_running "$u" || break; sleep 1; done
+    if p8_unit_running "$u"; then
+      p8_log "window unit $u still running after ${P8_UNIT_STOP_WAIT_S}s: SIGKILL"
+      systemctl kill --signal=SIGKILL "$u" 2>/dev/null || true
+      for _i in $(seq 15); do p8_unit_running "$u" || break; sleep 1; done
+    fi
+  fi
+  if p8_unit_running "$u"; then p8_log "window unit $u is STILL running"; return 1; fi
+  systemctl reset-failed "$u" 2>/dev/null || true
+  p8_log "window unit $u inactive (verified)"
+}
+# F3: WAIT for the dpkg locks to be free BEFORE stopping the window units
+# (stopping a cgroup mid-unpack leaves a half-installed package), bounded by
+# P8_DPKG_WAIT_S; then stop them (provisioner first); then repair. Returns 1
+# when a unit could not be stopped: the caller must then move NOTHING back.
 p8_stop_installers() {
-  local units u waited=0
-  units=$(systemctl list-units --all --plain --no-legend 'p8-install-*' 2>/dev/null | awk '{print $1}')
-  if [ -n "$units" ]; then
+  local prov inst u waited=0 bad=0 f
+  prov=$(p8_units_matching "$P8_PROV_GLOB"); inst=$(p8_units_matching 'p8-install-*')
+  if [ -n "$prov$inst" ]; then
     while p8_dpkg_locked && [ "$waited" -lt "$P8_DPKG_WAIT_S" ]; do
       [ "$waited" = 0 ] && p8_log "F3: a dpkg/apt lock is held: waiting (<= ${P8_DPKG_WAIT_S}s) before stopping the installer"
       sleep 1; waited=$((waited + 1))
     done
     if p8_dpkg_locked; then p8_log "F3: dpkg lock still held after ${waited}s: stopping the installer anyway"
     else p8_log "F3: dpkg locks free (waited ${waited}s)"; fi
-    for u in $units; do p8_log "stopping installer unit $u"; systemctl stop "$u" 2>/dev/null || true; systemctl reset-failed "$u" 2>/dev/null || true; done
+    for u in $prov $inst; do p8_stop_unit "$u" || bad=1; done
   fi
+  if [ "$bad" = 0 ]; then for f in $P8_PROV_RUN; do rm -f "$f"; done; fi
   p8_dpkg_repair
+  return "$bad"
 }
 p8_dpkg_repair() {
   local a
