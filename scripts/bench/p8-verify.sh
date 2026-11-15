@@ -244,8 +244,8 @@ cmd_post() {
   # Fix-check b8d7e44 SHOULD 2: a dead-man that failed, survived or retried is NOT GREEN, even if a later restore fixed it
   check "no W/REBOOT-NEEDED" "$([ -e "$W/REBOOT-NEEDED" ] && echo present || echo absent)" absent
   check "no dead-man survivor retry (W/survivor.retries)" "$(cat "$W/survivor.retries" 2>/dev/null || echo 0)" 0
-  check "no FATAL in a dead-man restore run (restore.log)" "$(awk '/restore start: /{dm = ($0 ~ /self=p8-deadman/)} dm && /FATAL/ {n++} END {print n + 0}' "$W/restore.log" 2>/dev/null)" 0
-  check "every dead-man restore ended rc=0 (restore.rc.log)" "$(awk '/self=p8-deadman/ && !/rc=0$/ {n++} END {print n + 0}' "$W/restore.rc.log" 2>/dev/null)" 0
+  check "no FATAL in a dead-man restore run (restore.log)" "$({ cat "$W/restore.log" 2>/dev/null || true; } | awk '/restore start: /{dm = ($0 ~ /self=p8-deadman/)} dm && /FATAL/ {n++} END {print n + 0}')" 0
+  check "every dead-man restore ended rc=0 (restore.rc.log)" "$({ cat "$W/restore.rc.log" 2>/dev/null || true; } | awk '/self=p8-deadman/ && !/rc=0$/ {n++} END {print n + 0}')" 0
   check "/etc/systemd/system-generators as at backup ($(sed -n 's/^generators_dir=//p' "$W/bench-id.env" 2>/dev/null))" \
     "$([ -d "$P8_ROOT/etc/systemd/system-generators" ] && echo present || echo absent)" "$(sed -n 's/^generators_dir=//p' "$W/bench-id.env" 2>/dev/null || echo unknown)"
   check "certified binary sha256" "$(pk bin_sha)" "$P8_CERT_BIN_SHA"

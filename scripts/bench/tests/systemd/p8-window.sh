@@ -235,7 +235,9 @@ stage() { # <ts> [mutant: cancel|wait]
   W=/root/p8-$1
   install -d -m 0700 "$W" "$W/bin"; install -m 0700 "$B"/p8-*.sh "$W/bin/"
   case ${2:-} in
-    cancel) sed -i '/^p8_cancel_agent_jobs/d' "$W/bin/p8-restore.sh"; ! grep -q '^p8_cancel_agent_jobs' "$W/bin/p8-restore.sh" || bad "cancel mutant not applied" ;;
+    # every cancel layer: the F1 calls AND the per-unit cancel in p8_stop_unit (r2: the updater/agent stop also cancels)
+    cancel) sed -i '/p8_cancel_agent_jobs$/d; /^p8_cancel_agent_jobs /d; /^  p8_cancel_agent_jobs/d' "$W/bin/p8-restore.sh"; sed -i '/\[ "\$unit" = "\$u" \] && systemctl cancel/d' "$W/bin/p8-lib.sh"
+            { ! grep -qE '^ *p8_cancel_agent_jobs' "$W/bin/p8-restore.sh" && ! grep -q '"$unit" = "$u" ] && systemctl cancel' "$W/bin/p8-lib.sh" && bash -n "$W/bin/p8-lib.sh"; } || bad "cancel mutant not applied" ;;
     wait) sed -i 's/^    while p8_dpkg_locked && \[ "\$waited" -lt "\$P8_DPKG_WAIT_S" \]; do$/    while false; do/' "$W/bin/p8-lib.sh"; grep -q '^    while false; do$' "$W/bin/p8-lib.sh" || bad "wait mutant not applied" ;;
   esac
 }
