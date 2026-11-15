@@ -28,13 +28,15 @@ for _ in $(seq 60); do s=$(systemctl is-system-running 2>/dev/null); case $s in 
 e2e_setup
 U=xorgate-agent-rs
 sp() { systemctl show -p "$1" --value "$2"; }
+GEN_LINK=/run/systemd/generator/multi-user.target.wants/xorgate-agent-rs.service
+wanted() { [ -L "$GEN_LINK" ] && case $(systemctl is-enabled "$U") in generated | enabled-runtime) true ;; *) false ;; esac; }
 
 echo "== native provision (I-P8-1), the agent's READY delayed 3 s"
 reset_device; echo 3 > "$E/ready-delay"
 cp "$BUCKET/$TGZ" "$W/$TGZ"; cp "$BUCKET/$TGZ.sha256" "$W/"; tar -xzf "$W/$TGZ" -C "$W" provision-rs.sh
 run_prov "$W/provision-rs.sh"
 expect_rc 0 "native provision"
-[ "$(systemctl is-enabled $U)/$(systemctl is-active $U)" = generated/active ] && ok "$U generated (the native generator) + active" || bad "$U $(systemctl is-enabled $U)/$(systemctl is-active $U)"
+wanted && [ "$(systemctl is-active $U)" = active ] && ok "$U wanted by the native generator ($(systemctl is-enabled $U)) + active" || bad "$U $(systemctl is-enabled $U)/$(systemctl is-active $U)"
 [ "$(sp Type $U)/$(sp NotifyAccess $U)/$(sp WatchdogUSec $U)" = notify/main/1min ] && ok "Type=notify, NotifyAccess=main, WatchdogSec=60" || bad "unit: $(sp Type $U)/$(sp NotifyAccess $U)/$(sp WatchdogUSec $U)"
 t0=$(sp ExecMainStartTimestampMonotonic $U); t1=$(sp ActiveEnterTimestampMonotonic $U)
 [ $((t1 - t0)) -ge 2900000 ] && ok "systemd held the unit in 'activating' until READY=1 ($(((t1 - t0) / 1000)) ms)" || bad "active after only $(((t1 - t0) / 1000)) ms: READY not awaited?"
@@ -48,10 +50,10 @@ echo "== 20-native.conf"
 mkdir /opt/xorgate; systemctl restart $U 2>/dev/null; sleep 1
 [ "$(systemctl is-active $U)" = inactive ] && [ "$(sp ConditionResult $U)" = no ] && ok "with /opt/xorgate present the start is skipped (ConditionPathExists=!/opt/xorgate)" || bad "with /opt/xorgate: $(systemctl is-active $U), condition $(sp ConditionResult $U)"
 systemctl daemon-reload
-[ "$(systemctl is-enabled $U)" != generated ] && [ ! -e /run/systemd/generator/multi-user.target.wants/$U.service ] \
+! wanted && [ ! -e "$GEN_LINK" ] \
   && ok "…and after a daemon-reload (= the next boot) the generator no longer wants it ($(systemctl is-enabled $U))" || bad "generator still wants $U with /opt/xorgate present"
 rmdir /opt/xorgate; systemctl daemon-reload
-[ "$(systemctl is-enabled $U)" = generated ] && ok "the generator wants it again once /opt/xorgate is gone" || bad "generator: $(systemctl is-enabled $U)"
+wanted && ok "the generator wants it again once /opt/xorgate is gone" || bad "generator: $(systemctl is-enabled $U)"
 systemctl start $U; active_wait $U active 15
 [ "$(systemctl is-active $U)" = active ] && [ "$(sp ConditionResult $U)" = yes ] && ok "…and starts again once it is gone" || bad "restart after rmdir"
 

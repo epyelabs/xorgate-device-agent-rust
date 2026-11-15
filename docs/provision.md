@@ -71,7 +71,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 | 7b | NM uplink-priority conf + reload | same text, cmp-before-write, reload only if it changed |
 | 8 | GStreamer apt; `kvs.json`, `hardware.json`, pipelines dir, the legacy pipeline writer; media checks | `kvs.json`/`hardware.json` the same `jq` projections; a stale `hardware.json` is removed when the new model has none; the pipeline writer verbatim; media checks under `/opt/xorgate-rs/media` |
 | 8b | overlays in `config.txt` (+ `.bak-xorgate`); REBOOT notice | the same lines; `config.txt` is edited only when a line is missing or wrong (JS always rewrites `camera_auto_detect`) |
-| — | — | **P9** enablement by the **boot generator** `/etc/systemd/system-generators/xorgate-agent-rs-native` (written in step 6; `systemctl is-enabled` = `generated`; see below), not `systemctl enable`; `daemon-reload`; `start --no-block` (`restart` if active); wait ≤ 90 s for `active` (Type=notify = READY) plus a 3 s re-check, else exit 4 with the journal tail |
+| — | — | **P9** enablement by the **boot generator** `/etc/systemd/system-generators/xorgate-agent-rs-native` (written in step 6; `systemctl is-enabled` = `generated`, or `enabled-runtime` on systemd 252; see below), not `systemctl enable`; `daemon-reload`; `start --no-block` (`restart` if active); wait ≤ 90 s for `active` (Type=notify = READY) plus a 3 s re-check, else exit 4 with the journal tail |
 
 ## Byte pins (one source)
 

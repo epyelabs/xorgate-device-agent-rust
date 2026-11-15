@@ -75,7 +75,7 @@ grep -qx "DEVICE_DIST_BUCKET_URL=https://$(golden_host DIST_BUCKET_URL)" /etc/xo
   && ok "kvs.json + hardware.json from the claim" || bad "kvs/hardware json"
 grep -qx 'dtoverlay=imx290,cam0' /boot/firmware/config.txt && grep -qx 'dtoverlay=imx290,cam1' /boot/firmware/config.txt && grep -qx camera_auto_detect=0 /boot/firmware/config.txt \
   && grep -q 'REBOOT required' "$OUT" && ok "overlays added + the REBOOT notice" || bad "overlays"
-[ "$(systemctl is-active xorgate-agent-rs)/$(systemctl is-enabled xorgate-agent-rs)" = active/generated ] && ok "xorgate-agent-rs active + generated (enabled by the generator)" || bad "agent $(systemctl is-active xorgate-agent-rs)"
+case "$(systemctl is-active xorgate-agent-rs)/$(systemctl is-enabled xorgate-agent-rs)" in active/generated | active/enabled-runtime) true ;; *) false ;; esac && ok "xorgate-agent-rs active + wanted by the generator ($(systemctl is-enabled xorgate-agent-rs))" || bad "agent $(systemctl is-active xorgate-agent-rs)"
 grep -q "rs start .*uid=$(id -u pi) device=dev-abcdefghijkmnpq2 dist=latest kvs=/opt/xorgate-rs/media/xorgate-kvs-webrtc" "$E/agent.log" && ok "the agent runs as pi with the new identity" || bad "agent.log: $(tail -2 "$E/agent.log")"
 [ "$(systemctl is-active sim7600-lte)/$(systemctl is-enabled sim7600-lte)" = active/enabled ] && ok "sim7600-lte enabled + started (the stub daemon)" || bad "sim7600-lte"
 [ "$(wc -l < "$E/nm-reloads")" = 3 ] && ok "NM reloaded 3x on a fresh device (bootstrap 0a, step 7 full conf, step 7b uplink; as JS)" || bad "NM reloads: $(wc -l < "$E/nm-reloads")"
@@ -205,7 +205,7 @@ printf '[Service]\nUser=pi\nGroup=pi\n' > /etc/systemd/system/xorgate-agent.serv
 systemctl daemon-reload; systemctl enable --now xorgate-agent >/dev/null 2>&1
 active_wait xorgate-agent active 10
 [ "$(systemctl is-active xorgate-agent)/$(systemctl is-active xorgate-agent-rs)" = active/inactive ] && ok "JS enable --now stopped Rust (Conflicts=)" || bad "after the JS install: $(systemctl is-active xorgate-agent)/$(systemctl is-active xorgate-agent-rs)"
-[ "$(systemctl is-enabled xorgate-agent-rs)" = enabled ] && ok "(both units enabled, as the JS script leaves them)" || bad "rust not enabled"
+[ "$(systemctl is-enabled xorgate-agent)" = enabled ] && [ -e /etc/systemd/system-generators/xorgate-agent-rs-native ] && ok "(JS enabled; the Rust generator still installed, as the JS script leaves it)" || bad "JS enablement / generator"
 # The next boot: both start jobs in ONE transaction, as at boot.
 systemctl stop xorgate-agent; systemctl start multi-user.target; sleep 3
 [ "$(systemctl is-active xorgate-agent)/$(systemctl is-active xorgate-agent-rs)" = active/inactive ] && ok "next 'boot': JS active, Rust inactive" \
