@@ -44,8 +44,12 @@ expect_rc 0 "happy"
   && ok "one claim, body.agent=rust (+ the JS fields)" || bad "claims: $(cat "$E/claims.log")"
 [ "$(jq -r '.body | keys | join(",")' "$E/claims.log")" = agent,cameras,dtModel,hostname,platform,serial ] && ok "claim body keys = JS's + agent" || bad "claim body keys"
 first_claim=$(grep -n 'POST .*claim' "$E/requests.log" | head -1 | cut -d: -f1)
-grep -q 'claiming registration code' "$OUT" && [ "$(grep -n 'staged xorgate-rs' "$OUT" | cut -d: -f1)" -lt "$(grep -n 'claiming registration code' "$OUT" | cut -d: -f1)" ] \
-  && ok "the smoke-exec passed BEFORE the claim" || bad "order: smoke vs claim"
+PL=/var/log/xorgate-provision-rs.log
+sl=$(grep -n 'staged xorgate-rs' "$PL" | head -1 | cut -d: -f1); cl=$(grep -n 'claiming registration code' "$PL" | head -1 | cut -d: -f1)
+[ -n "$sl" ] && [ -n "$cl" ] && [ "$sl" -lt "$cl" ] && ok "the smoke-exec passed BEFORE the claim (unit log lines $sl < $cl)" \
+  || { bad "order: smoke ($sl) vs claim ($cl)"; grep -nE 'staged|claiming|continuing as' "$PL" "$OUT" | sed 's/^/    | /'; }
+grep -q 'continuing as the transient unit xorgate-provision-rs' "$OUT" && grep -q 'registered device' "$OUT" \
+  && ok "the session printed the hand-off and the unit's log to the end" || bad "the session output lacks the hand-off or the end"
 [ -n "$first_claim" ] && ok "claim seen by the fake API" || bad "no claim request"
 grep -E 'apt-get install .*libgstreamer1.0-0' "$E/apt.log" >/dev/null && ok "NEEDED providers installed (hard call)" || bad "no NEEDED apt call"
 grep -q 'E2E-KEY' "$OUT" && bad "the private key reached the output" || ok "the private key never printed"
