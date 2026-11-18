@@ -418,10 +418,13 @@ disable_modemmanager() {
 #   2. ANOTHER interface holds an IPv4 default (with none, deleting usb0's can
 #      never help: apt has no route either way);
 #   3. usb0 itself does NOT reach the internet: a usb0-bound probe fails
-#      (`ping -I usb0` to 1.1.1.1 / 8.8.8.8, 3 s each, then `curl --interface
-#      usb0` to the dist bucket, 5 s; any HTTP answer counts). A working usb0
-#      is kept even beside another default: the daemon's metric orders them
-#      from step 7 on.
+#      TWICE, 2 s apart (a modem still settling is not judged dead). One
+#      probe = `ping -I usb0` to 1.1.1.1 / 8.8.8.8 (3 s each), then
+#      `curl --interface usb0 http://1.1.1.1/` (5 s; an IP literal, so no DNS
+#      lookup over the other, possibly dead, uplink; any HTTP answer counts,
+#      so a carrier that drops ICMP still passes). A working usb0 is kept
+#      even beside another default: the daemon's metric orders them from
+#      step 7 on.
 # Then IPv6 is turned off on usb0 (`disable_ipv6`, runtime only, exactly what
 # the daemon's ipv6_off_iface does at every connect; LTE is IPv4 by design) so
 # a modem RA cannot re-add the v6 black hole while apt runs (SHOULD-1).
@@ -431,7 +434,8 @@ disable_modemmanager() {
 # can still meet the black hole: docs/provision.md "Fresh image with a SIM7600".
 LTE_IFACE=usb0
 LTE_PROBE_HOSTS="1.1.1.1 8.8.8.8"
-LTE_PROBE_URL=""   # set to --from (the dist bucket) by provision_main
+LTE_PROBE_URL="http://1.1.1.1/"   # fix-check SHOULD-5: an IP literal (DNS-independent)
+LTE_PROBE_RETRY_S=2
 # A SIM7600 is fitted: its RNDIS netdev exists, or a SIMCom USB device
 # (vendor 1e0e) is enumerated.
 sim7600_present() {
@@ -443,18 +447,23 @@ sim7600_present() {
   done
   return 1
 }
-# usb0 reaches the internet (a bound probe; see the rule 3 above).
-lte_iface_works() {
+# usb0 reaches the internet (a bound probe, retried once; see the rule 3 above).
+lte_iface_probe() {
   local h
   if command -v ping >/dev/null 2>&1; then
     for h in $LTE_PROBE_HOSTS; do
       ping -c 1 -W 3 -I "$LTE_IFACE" "$h" >/dev/null 2>&1 && return 0
     done
   fi
-  if [ -n "$LTE_PROBE_URL" ] && command -v curl >/dev/null 2>&1; then
+  if command -v curl >/dev/null 2>&1; then
     curl -q -s -o /dev/null -m 5 --interface "$LTE_IFACE" "$LTE_PROBE_URL" 2>/dev/null && return 0
   fi
   return 1
+}
+lte_iface_works() {
+  lte_iface_probe && return 0
+  sleep "$LTE_PROBE_RETRY_S"
+  lte_iface_probe
 }
 lte_iface_owner() { # -> the live owner of usb0's routes, or nothing
   local d c a st
@@ -698,7 +707,6 @@ provision_main() {
   #      usb0's stale default routes, v4 and v6, removed when nothing live
   #      owns them, another IPv4 uplink exists and usb0 does not work.
   #      Both log only when they act.
-  LTE_PROBE_URL=$FROM
   if sim7600_present; then disable_modemmanager; fi
   clear_stale_lte_defaults
 

@@ -263,6 +263,17 @@ kernel_rows() {
   FAKE_NM=$'eth1:connected\nusb0:unmanaged' prov_clear
   [ "$(usb0_defs)" = 1/1 ] && grep -q 'usb0 default routes kept (usb0 reaches the internet; eth1 is up too)' "$T/prov.out" \
     && pass "N11 eth1 up + a WORKING usb0: kept (the daemon's metric orders them later)" || failc "N11 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
+  # SHOULD-5: a carrier that drops ICMP. The modem ignores echo requests but
+  # serves HTTP on 1.1.1.1:80, so only the IP-literal curl probe sees it.
+  nsenter -t "$MODEM_NS" -n tee /proc/sys/net/ipv4/icmp_echo_ignore_all <<<1 >/dev/null
+  nsenter -t "$MODEM_NS" -n python3 -m http.server --bind 1.1.1.1 80 >/dev/null 2>&1 & HTTPD=$!
+  for _ in $(seq 50); do curl -q -s -o /dev/null -m 1 --interface usb0 http://1.1.1.1/ && break; sleep 0.1; done
+  ! ping -c 1 -W 2 -I usb0 1.1.1.1 >/dev/null 2>&1 && curl -q -s -o /dev/null -m 3 --interface usb0 http://1.1.1.1/ \
+    && pass "N13 setup: usb0 drops ICMP but answers HTTP on 1.1.1.1" || failc "N13 setup: icmp/http state"
+  FAKE_NM=$'eth1:connected\nusb0:unmanaged' prov_clear
+  [ "$(usb0_defs)" = 1/1 ] && grep -q 'usb0 reaches the internet' "$T/prov.out" \
+    && pass "N13 eth1 up + usb0 working but ICMP-blind: the IP-literal HTTP probe keeps it (no DNS used)" || failc "N13 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
+  kill "$HTTPD" 2>/dev/null; wait "$HTTPD" 2>/dev/null
   modem_down
   stale; FAKE_NM=$'eth1:connected\nusb0:unmanaged' prov_clear
   [ "$(usb0_defs)" = 0/0 ] && [ "$(dev_of 1.1.1.1)" = eth1 ] && pass "N12 eth1 up + a DEAD usb0 (no modem answer): deleted, eth1 carries" || failc "N12 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
@@ -272,7 +283,7 @@ kernel_rows() {
 
 if [ "${LTE_ROUTES_NETNS:-}" = 1 ]; then
   if [ "${REQUIRE_DHCLIENT:-0}" = 1 ]; then
-    for t in ping nsenter; do type -P "$t" >/dev/null || failc "kernel rows: $t missing (required with --kernel)"; done
+    for t in ping nsenter curl python3; do type -P "$t" >/dev/null || failc "kernel rows: $t missing (required with --kernel)"; done
   fi
   kernel_rows
   exit $fail

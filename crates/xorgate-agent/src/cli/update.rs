@@ -178,13 +178,30 @@ fn path_str(p: &Path) -> String {
 /// fsync-ed. A running reader of the old file (the bash of `sim7600-lte.sh`)
 /// keeps the old inode, and a crash or ENOSPC never leaves a truncated file.
 /// The previous file (if any) is recorded in `journal` so the rollback can put
-/// it back. The error keeps node's wording (`EROFS: … copyfile 'a' -> 'b'`)
-/// for the rollback line.
+/// it back, but ONLY once the rename has happened (fix-check MUST-3): a
+/// replace that failed before its rename (EROFS, ENOSPC, a blocked temp)
+/// changed nothing, so there is nothing to restore. The error keeps node's
+/// wording (`EROFS: … copyfile 'a' -> 'b'`) for the rollback line.
 fn install_file(from: &Path, to: &Path, mode: u32, journal: &mut Journal) -> Result<(), String> {
     let cf = |e: io::Error| format!("{e}, copyfile '{}' -> '{}'", from.display(), to.display());
     let bytes = fs::read(from).map_err(cf)?;
-    journal.record(to);
-    put_atomic(to, &bytes, mode).map_err(cf)
+    install_bytes(to, &bytes, mode, journal).map_err(cf)
+}
+
+/// [`put_atomic`] with the journal: the snapshot of `to` is taken before the
+/// write and committed once the rename happened (also when only the directory
+/// fsync after it failed: `to` IS replaced then).
+fn install_bytes(to: &Path, bytes: &[u8], mode: u32, journal: &mut Journal) -> io::Result<()> {
+    let prev = journal.snapshot(to);
+    let res = put_atomic_ex(to, bytes, mode);
+    let renamed = match &res {
+        Ok(()) => true,
+        Err((_, renamed)) => *renamed,
+    };
+    if renamed {
+        journal.commit(to, prev);
+    }
+    res.map_err(|(e, _)| e)
 }
 
 /// `to`'s temp sibling: a dot file with a `.xorgate-new` suffix, which every
@@ -201,16 +218,26 @@ fn temp_sibling(to: &Path) -> PathBuf {
 /// Write `bytes` to `to` atomically (temp sibling, mode, fsync, rename, dir
 /// fsync); the temp file is removed on any failure.
 fn put_atomic(to: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    let tmp = temp_sibling(to);
-    let _ = fs::remove_file(&tmp); // a crash leftover
-    let res = write_and_rename(&tmp, to, bytes, mode);
-    if res.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    res
+    put_atomic_ex(to, bytes, mode).map_err(|(e, _)| e)
 }
 
-fn write_and_rename(tmp: &Path, to: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+/// [`put_atomic`], and on an error whether the rename had already happened.
+fn put_atomic_ex(to: &Path, bytes: &[u8], mode: u32) -> Result<(), (io::Error, bool)> {
+    let tmp = temp_sibling(to);
+    let _ = fs::remove_file(&tmp); // a crash leftover
+    if let Err(e) = write_temp(&tmp, bytes, mode).and_then(|()| fs::rename(&tmp, to)) {
+        let _ = fs::remove_file(&tmp);
+        return Err((e, false));
+    }
+    if let Some(dir) = to.parent() {
+        fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| (e, true))?;
+    }
+    Ok(())
+}
+
+fn write_temp(tmp: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let mut f = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -219,13 +246,13 @@ fn write_and_rename(tmp: &Path, to: &Path, bytes: &[u8], mode: u32) -> io::Resul
     f.write_all(bytes)?;
     // fchmod: the final mode exactly, not under the umask.
     f.set_permissions(fs::Permissions::from_mode(mode))?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(tmp, to)?;
-    if let Some(dir) = to.parent() {
-        fs::File::open(dir)?.sync_all()?;
-    }
-    Ok(())
+    f.sync_all()
+}
+
+/// `p` is a regular file holding exactly `bytes` with mode `mode`.
+fn file_is(p: &Path, bytes: &[u8], mode: u32) -> bool {
+    matches!(fs::symlink_metadata(p), Ok(m) if m.is_file() && m.permissions().mode() & 0o7777 == mode)
+        && fs::read(p).is_ok_and(|b| b == bytes)
 }
 
 /// What was at a path before `install` replaced it (review-v011-wp-a MUST-2).
@@ -249,12 +276,13 @@ struct Journal {
 }
 
 impl Journal {
-    /// Snapshot `to` before its first replacement in this run.
-    fn record(&mut self, to: &Path) {
+    /// What `to` holds now, unless it is already journaled in this run (the
+    /// FIRST state is the one a rollback restores).
+    fn snapshot(&self, to: &Path) -> Option<Prev> {
         if self.entries.iter().any(|(p, _)| p == to) {
-            return;
+            return None;
         }
-        let prev = match fs::symlink_metadata(to) {
+        Some(match fs::symlink_metadata(to) {
             Err(_) => Prev::Absent,
             Ok(m) if m.is_file() => match fs::read(to) {
                 Ok(b) => Prev::File(b, m.permissions().mode() & 0o7777),
@@ -265,16 +293,33 @@ impl Journal {
                 Err(_) => Prev::Other,
             },
             Ok(_) => Prev::Other,
-        };
-        self.entries.push((to.to_path_buf(), prev));
+        })
+    }
+
+    /// Keep a snapshot once `to` has really been replaced.
+    fn commit(&mut self, to: &Path, prev: Option<Prev>) {
+        if let Some(prev) = prev {
+            self.entries.push((to.to_path_buf(), prev));
+        }
+    }
+
+    #[cfg(test)]
+    fn record(&mut self, to: &Path) {
+        let prev = self.snapshot(to);
+        self.commit(to, prev);
     }
 
     /// Put every recorded path back, newest first; the failures, if any.
+    /// Idempotent (fix-check MUST-3): a path that already holds its recorded
+    /// state (a file with the same bytes and mode, a link to the same
+    /// target) is left alone, so a re-run restore writes nothing.
     fn restore(&self) -> Vec<String> {
         let mut errs = Vec::new();
         for (path, prev) in self.entries.iter().rev() {
             let r = match prev {
+                Prev::File(bytes, mode) if file_is(path, bytes, *mode) => Ok(()),
                 Prev::File(bytes, mode) => put_atomic(path, bytes, *mode),
+                Prev::Link(target) if fs::read_link(path).is_ok_and(|t| &t == target) => Ok(()),
                 Prev::Absent => match fs::symlink_metadata(path) {
                     Ok(m) if m.is_file() || m.file_type().is_symlink() => fs::remove_file(path),
                     _ => Ok(()),
@@ -585,13 +630,12 @@ async fn install(
     let unit_dest = p.abs(plan::UNIT_DEST);
     install_file(&live.join(plan::UNIT_SRC), &unit_dest, 0o644, journal)?;
     let wrapper = p.abs(plan::WRAPPER);
-    journal.record(&wrapper);
     if fs::symlink_metadata(&wrapper).is_ok_and(|m| m.is_dir()) {
         rm_rf(&wrapper); // a directory in the way (rename cannot replace it)
     }
     // Atomic, like install_file; the rename also replaces a prior symlink
     // (it is never written through).
-    put_atomic(&wrapper, plan::WRAPPER_BODY.as_bytes(), 0o755)
+    install_bytes(&wrapper, plan::WRAPPER_BODY.as_bytes(), 0o755, journal)
         .map_err(|e| format!("{e}, open '{}'", wrapper.display()))?;
 
     // Step 7 (Q1): shared assets only on a Rust-only device.
@@ -1085,6 +1129,83 @@ mod tests {
                 .collect();
             assert!(left.is_empty(), "temp siblings left in {d}");
         }
+        rm_rf(&r.dir);
+    }
+
+    /// fix-check MUST-3: a replace that fails BEFORE its rename (here its
+    /// temp sibling is blocked; EROFS/ENOSPC fail the same way) changes
+    /// nothing, so it is not journaled and the rollback has nothing to do;
+    /// and `restore` of a file that already holds its recorded state is a
+    /// no-op, never an error.
+    #[test]
+    fn restore_after_a_failed_replace_is_not_a_rollback_failure() {
+        let dir = std::env::temp_dir().join(format!("xg-must3-{}", std::process::id()));
+        rm_rf(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("new.service"), dir.join("unit.service"));
+        fs::write(&src, "new\n").unwrap();
+        fs::write(&dest, "old\n").unwrap();
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::create_dir_all(temp_sibling(&dest).join("x")).unwrap(); // the temp is blocked
+        let mut j = Journal::default();
+        assert!(install_file(&src, &dest, 0o644, &mut j).is_err());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "old\n");
+        assert!(
+            j.entries.is_empty(),
+            "a replace that never renamed is not journaled"
+        );
+        assert!(j.restore().is_empty());
+        // (b) idempotent: a File entry whose path already holds those bytes
+        // and that mode is skipped, even where a write would fail.
+        let mut j = Journal::default();
+        j.record(&dest);
+        assert_eq!(j.restore(), Vec::<String>::new());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "old\n");
+        // A link already pointing at its recorded target is skipped too.
+        let link = dir.join("link");
+        std::os::unix::fs::symlink("unit.service", &link).unwrap();
+        fs::create_dir_all(temp_sibling(&link).join("x")).unwrap();
+        let mut j = Journal::default();
+        j.record(&link);
+        assert_eq!(j.restore(), Vec::<String>::new());
+        rm_rf(&dir);
+    }
+
+    /// fix-check MUST-3 / update-e2e `ro-systemd`: an `update()` that fails
+    /// at its FIRST install step (the agent unit cannot be replaced) reports
+    /// "rolled back", never "rollback FAILED", and leaves the unit as it was.
+    #[tokio::test]
+    async fn a_failure_at_the_first_install_step_reports_rolled_back() {
+        let r = rig("first-step");
+        publish(&r, "v2", "xorgate-rs 0.1.1 (v2, dev)", true);
+        fs::write(
+            r.p.abs(plan::AGENT_ENV),
+            "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
+        )
+        .unwrap();
+        let live = r.p.live();
+        fs::create_dir_all(live.join("bin")).unwrap();
+        fs::write(live.join("build-info.json"), "{\"version\":\"v1\"}").unwrap();
+        let unit = r.p.abs(plan::UNIT_DEST);
+        fs::write(&unit, "unit v1\n").unwrap();
+        // The unit's directory refuses the temp file (as EROFS would).
+        fs::create_dir_all(temp_sibling(&unit).join("x")).unwrap();
+        let mut log: Vec<String> = Vec::new();
+        let e = update(&argv(&["--tag", "v2"]), &|_| None, &r.p, &mut log)
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("install step failed, rolled back: "), "{e}");
+        assert!(!e.contains("rollback FAILED"), "{e}");
+        assert!(
+            e.contains("copyfile '") && e.contains("xorgate-agent-rs.service'"),
+            "{e}"
+        );
+        assert_eq!(fs::read_to_string(&unit).unwrap(), "unit v1\n");
+        assert_eq!(
+            fs::read_to_string(live.join("build-info.json")).unwrap(),
+            "{\"version\":\"v1\"}"
+        );
+        assert!(!r.p.backup().exists() && !r.p.staging().exists());
         rm_rf(&r.dir);
     }
 }
