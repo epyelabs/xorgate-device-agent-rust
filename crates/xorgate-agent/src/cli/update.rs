@@ -180,12 +180,7 @@ fn path_str(p: &Path) -> String {
 /// The previous file (if any) is recorded in `journal` so the rollback can put
 /// it back. The error keeps node's wording (`EROFS: … copyfile 'a' -> 'b'`)
 /// for the rollback line.
-fn install_file(
-    from: &Path,
-    to: &Path,
-    mode: u32,
-    journal: &mut Journal,
-) -> Result<(), String> {
+fn install_file(from: &Path, to: &Path, mode: u32, journal: &mut Journal) -> Result<(), String> {
     let cf = |e: io::Error| format!("{e}, copyfile '{}' -> '{}'", from.display(), to.display());
     let bytes = fs::read(from).map_err(cf)?;
     journal.record(to);
@@ -233,41 +228,67 @@ fn write_and_rename(tmp: &Path, to: &Path, bytes: &[u8], mode: u32) -> io::Resul
     Ok(())
 }
 
-/// The files `install` replaced, with what was there before (bytes + mode, or
-/// nothing), so a failed install restores them too (review-v011-wp-a MUST-2;
-/// the TS rollback restored only `/opt`).
+/// What was at a path before `install` replaced it (review-v011-wp-a MUST-2).
+#[derive(Debug, PartialEq)]
+enum Prev {
+    /// Nothing: a file the install created is removed on rollback.
+    Absent,
+    /// A regular file: its bytes and mode are put back (atomically).
+    File(Vec<u8>, u32),
+    /// A symlink (the rename replaced the link itself): re-created.
+    Link(PathBuf),
+    /// Anything else (a directory in the way): never touched on rollback.
+    Other,
+}
+
+/// The files `install` replaced, with what was there before, so a failed
+/// install restores them too (the TS rollback restored only `/opt`).
 #[derive(Default)]
 struct Journal {
-    entries: Vec<(PathBuf, Option<(Vec<u8>, u32)>)>,
+    entries: Vec<(PathBuf, Prev)>,
 }
 
 impl Journal {
-    /// Snapshot `to` before its first replacement in this run. A regular
-    /// file is kept as bytes + mode; anything else (absent, a symlink) is
-    /// recorded as absent and removed on rollback.
+    /// Snapshot `to` before its first replacement in this run.
     fn record(&mut self, to: &Path) {
         if self.entries.iter().any(|(p, _)| p == to) {
             return;
         }
         let prev = match fs::symlink_metadata(to) {
-            Ok(m) if m.is_file() => fs::read(to)
-                .ok()
-                .map(|b| (b, m.permissions().mode() & 0o7777)),
-            _ => None,
+            Err(_) => Prev::Absent,
+            Ok(m) if m.is_file() => match fs::read(to) {
+                Ok(b) => Prev::File(b, m.permissions().mode() & 0o7777),
+                Err(_) => Prev::Other,
+            },
+            Ok(m) if m.file_type().is_symlink() => match fs::read_link(to) {
+                Ok(t) => Prev::Link(t),
+                Err(_) => Prev::Other,
+            },
+            Ok(_) => Prev::Other,
         };
         self.entries.push((to.to_path_buf(), prev));
     }
 
-    /// Put every recorded file back, newest first; the failures, if any.
+    /// Put every recorded path back, newest first; the failures, if any.
     fn restore(&self) -> Vec<String> {
         let mut errs = Vec::new();
         for (path, prev) in self.entries.iter().rev() {
             let r = match prev {
-                Some((bytes, mode)) => put_atomic(path, bytes, *mode),
-                None => match fs::remove_file(path) {
-                    Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+                Prev::File(bytes, mode) => put_atomic(path, bytes, *mode),
+                Prev::Absent => match fs::symlink_metadata(path) {
+                    Ok(m) if m.is_file() || m.file_type().is_symlink() => fs::remove_file(path),
                     _ => Ok(()),
                 },
+                Prev::Link(target) => {
+                    let tmp = temp_sibling(path);
+                    let _ = fs::remove_file(&tmp);
+                    std::os::unix::fs::symlink(target, &tmp)
+                        .and_then(|()| fs::rename(&tmp, path))
+                        .inspect_err(|_| {
+                            let _ = fs::remove_file(&tmp);
+                        })
+                }
+                Prev::Other => Ok(()),
             };
             if let Err(e) = r {
                 errs.push(format!("{}: {e}", path.display()));
@@ -952,7 +973,10 @@ mod tests {
         install_file(&src, &dest, 0o755, &mut j).unwrap();
         let mut old = String::new();
         reader.read_to_string(&mut old).unwrap();
-        assert_eq!(old, "#!/bin/bash\necho OLD\n", "the open fd still reads the old file");
+        assert_eq!(
+            old, "#!/bin/bash\necho OLD\n",
+            "the open fd still reads the old file"
+        );
         assert_eq!(
             fs::read_to_string(&dest).unwrap(),
             "#!/bin/bash\necho NEW, and longer than the old one\n"
@@ -964,7 +988,7 @@ mod tests {
         assert_eq!(j.entries.len(), 1);
         assert_eq!(
             j.entries[0].1,
-            Some((b"#!/bin/bash\necho OLD\n".to_vec(), 0o644))
+            Prev::File(b"#!/bin/bash\necho OLD\n".to_vec(), 0o644)
         );
         // A failed replace (a non-empty directory in the way) removes its
         // temp file and leaves the directory as it was.
@@ -1021,11 +1045,23 @@ mod tests {
             e.starts_with("install step failed, rolled back: ") && e.contains("xorgate-setclock"),
             "{e}"
         );
-        assert!(log.iter().any(|l| l == plan::MODEM_REFRESHED_LOG), "{log:?}");
-        assert_eq!(fs::read_to_string(&daemon).unwrap(), "#!/bin/bash\n# v1 daemon\n");
+        assert!(
+            log.iter().any(|l| l == plan::MODEM_REFRESHED_LOG),
+            "{log:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&daemon).unwrap(),
+            "#!/bin/bash\n# v1 daemon\n"
+        );
         assert_eq!(mode_of(&daemon), 0o755);
-        assert_eq!(fs::read_to_string(r.p.abs(plan::UNIT_DEST)).unwrap(), "unit v1\n");
-        assert_eq!(fs::read_to_string(r.p.abs(plan::WRAPPER)).unwrap(), "wrapper v1\n");
+        assert_eq!(
+            fs::read_to_string(r.p.abs(plan::UNIT_DEST)).unwrap(),
+            "unit v1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(r.p.abs(plan::WRAPPER)).unwrap(),
+            "wrapper v1\n"
+        );
         assert!(
             !r.p.abs("/etc/udev/rules.d/99-sim7600-lte.rules").exists(),
             "a file the failed install created is removed"
@@ -1036,6 +1072,11 @@ mod tests {
             "/opt rolled back"
         );
         assert!(!r.p.backup().exists() && !r.p.staging().exists());
+        assert!(
+            r.p.abs("/usr/local/bin/xorgate-setclock/in-the-way")
+                .is_dir(),
+            "what was in the way is left alone"
+        );
         for d in ["/usr/local/bin", "/etc/systemd/system", "/etc/udev/rules.d"] {
             let left: Vec<_> = fs::read_dir(r.p.abs(d))
                 .unwrap()
