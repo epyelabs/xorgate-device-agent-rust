@@ -2494,7 +2494,7 @@ lte_route_metric() {
 install_lte_default_route() {
     local gw metric out n=0
     metric=$(lte_route_metric)
-    [[ "$metric" == "$LTE_ROUTE_METRIC" ]] \
+    [[ "$LTE_ROUTE_METRIC" =~ ^[0-9]{1,9}$ ]] \
         || warn "SIM7600_ROUTE_METRIC='$LTE_ROUTE_METRIC' is not a route metric; using $metric."
     gw=$(ip -4 route show default dev "$IFACE" 2>/dev/null \
          | awk '$1 == "default" && $2 == "via" {print $3; exit}')
@@ -2553,7 +2553,12 @@ bring_up_interface() {
     ip link set "$IFACE" up 2>/dev/null || true
 
     log "Running dhclient on $IFACE..."
-    timeout 45 dhclient -1 -v "$IFACE" 2>&1 | tee -a /var/log/sim7600-lte.log
+    # IF_METRIC: Debian's dhclient-script installs the default route at this
+    # metric on BOUND and on every RENEW/REBIND that changes the lease, so
+    # LTE never sits at metric 0 above wired/WiFi between our own fix-ups
+    # (v0.1.1, review-v011-wp-a SHOULD-2). install_lte_default_route below
+    # stays as the belt.
+    timeout 45 dhclient -e IF_METRIC="$(lte_route_metric)" -1 -v "$IFACE" 2>&1 | tee -a /var/log/sim7600-lte.log
     local dh_status="${PIPESTATUS[0]}"
     if [[ "$dh_status" -ne 0 ]]; then
         err "dhclient failed on $IFACE (exit $dh_status)."

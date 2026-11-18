@@ -21,7 +21,7 @@
 # Run (systemd must be PID 1; ~3 min), as hl.sh `systemd` does:
 #   docker run -d --name xg-prsd --label xorgate.agent=<tag> --privileged --cgroupns=private \
 #     --tmpfs /run --tmpfs /run/lock -v "$PWD:/src:ro" debian:bookworm \
-#     bash -c 'apt-get update -qq && apt-get install -y -qq systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0 iproute2 >/dev/null && exec /lib/systemd/systemd'
+#     bash -c 'apt-get update -qq && apt-get install -y -qq systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0 iproute2 iputils-ping isc-dhcp-client >/dev/null && exec /lib/systemd/systemd'
 #   docker exec xg-prsd bash /src/scripts/tests/provision-rs-systemd.sh
 #   docker rm -f xg-prsd
 set -uo pipefail

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015,SC2016,SC2031,SC2329  # assertions `a && pass || failc`; literal $VARs in patterns; $! after the stub subshells; stubs called by the sourced scripts
+# shellcheck disable=SC2015,SC2016,SC2030,SC2031,SC2329  # assertions `a && pass || failc`; literal $VARs in patterns; $! after the stub subshells; stubs called by the sourced scripts
 # v0.1.1 F-LTE-METRIC / F-DA21-NET / F-DA21-NM: the LTE default route that
 # modem/sim7600-lte.sh installs, and the stale-usb0 cleanup that
 # scripts/provision-rs.sh runs at P1b.
@@ -12,11 +12,17 @@
 #      holds nothing but lo):
 #      K: the shipped daemon's bring_up_interface() (the dhclient bind, AT,
 #         ping, pkill and sleep stubbed; every `ip` call real);
+#         The dhclient bind is the REAL Debian /sbin/dhclient-script (reason
+#         BOUND / RENEW) with the IF_METRIC the daemon passes (`-e`), when
+#         isc-dhcp-client is installed; else a metric-0 add (what dhclient does
+#         without IF_METRIC).
 #      N: provision-rs.sh's clear_stale_lte_defaults() (the owners stubbed:
-#         systemctl, nmcli, plus a fake `dhclient` process).
-#      They need root, CAP_NET_ADMIN + CAP_SYS_ADMIN and iproute2. Without
-#      them the rows are SKIPPED and the result line says so; with --kernel a
-#      skip is a FAIL.
+#         systemctl, nmcli, plus a fake `dhclient` process). A WORKING usb0 is
+#         a second private namespace (the "modem") that answers 1.1.1.1.
+#      They need root, CAP_NET_ADMIN + CAP_SYS_ADMIN, iproute2, nsenter and
+#      ping. Without them the rows are SKIPPED and the result line says so;
+#      with --kernel a skip is a FAIL, and so is a missing /sbin/dhclient-script
+#      (isc-dhcp-client) or ping (iputils-ping).
 # Regression proof: LTE_DAEMON=<v0.1.0 sim7600-lte.sh> fails S1/S2 and the
 # K rows (the eth1 default is overwritten); LTE_PROV=<v0.1.0 provision-rs.sh>
 # fails the N rows (no clear_stale_lte_defaults).
@@ -25,7 +31,7 @@
 #   - inside provision-rs-systemd.sh's privileged container, with --kernel;
 #   - by hand:
 #     docker run --rm --cap-add NET_ADMIN --cap-add SYS_ADMIN --label xorgate.agent=<tag> -v "$PWD:/src:ro" -w /src \
-#       debian:bookworm bash -c 'apt-get update -qq && apt-get install -y -qq iproute2 >/dev/null && bash scripts/tests/lte-routes.sh --kernel'
+#       debian:bookworm bash -c 'apt-get update -qq && apt-get install -y -qq iproute2 iputils-ping isc-dhcp-client >/dev/null && bash scripts/tests/lte-routes.sh --kernel'
 set -uo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SELF=$REPO/scripts/tests/lte-routes.sh
@@ -54,10 +60,19 @@ kernel_rows() {
   defs() { ip -4 route show default | sed 's/ *$//' | sort; }   # the whole v4 default table
   dev_of() { ip -4 route get "$@" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'; }
 
+  # Debian's dhclient-script, for real, in a clean environment (no DNS
+  # servers: it never writes resolv.conf). <reason> <IF_METRIC> [old ip] [new ip]
+  dhscript() {
+    env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin reason="$1" interface=usb0 IF_METRIC="$2" \
+      old_ip_address="${3:-}" old_subnet_mask="${3:+255.255.255.0}" old_routers="${3:+10.66.0.1}" \
+      new_ip_address="${4:-10.66.0.2}" new_subnet_mask=255.255.255.0 new_network_number=10.66.0.0 \
+      new_broadcast_address=10.66.0.255 new_routers=10.66.0.1 /sbin/dhclient-script
+  }
   # One bring_up_interface() of the daemon under test, in a subshell (its
   # globals, the stubs and SIM7600_ROUTE_METRIC never leak). The dhclient bind
-  # is what dhclient-script does on BOUND: the lease address plus a metric-0
-  # default via the modem's NAT.
+  # runs dhclient-script's BOUND with the `-e IF_METRIC=` the daemon passes
+  # (recorded in $T/dhclient.args), or, without isc-dhcp-client, adds the
+  # lease address plus a metric-0 default (dhclient without IF_METRIC).
   daemon_up() { # [SIM7600_ROUTE_METRIC value]
     (
       if [ $# -gt 0 ]; then export SIM7600_ROUTE_METRIC="$1"; else unset SIM7600_ROUTE_METRIC; fi
@@ -74,7 +89,13 @@ kernel_rows() {
       pkill() { :; }
       sleep() { :; }
       tee() { cat > /dev/null; }
-      timeout() { ip addr add 10.66.0.2/24 dev usb0 && ip route add default via 10.66.0.1 dev usb0; }
+      timeout() {
+        local a m=""
+        printf '%s\n' "$*" > "$T/dhclient.args"
+        for a in "$@"; do case $a in IF_METRIC=*) m=${a#IF_METRIC=} ;; esac; done
+        if [ -x /sbin/dhclient-script ]; then dhscript BOUND "$m"
+        else ip addr add 10.66.0.2/24 dev usb0 && ip route add default via 10.66.0.1 dev usb0; fi
+      }
       bring_up_interface
     ) >> "$T/daemon.log" 2>&1
   }
@@ -118,6 +139,34 @@ kernel_rows() {
   [ "$(defs | tr '\n' '|')" = "default via 10.66.0.1 dev usb0 metric 1000|" ] && grep -q "^WARN SIM7600_ROUTE_METRIC='1e3' is not a route metric; using 1000" "$T/daemon.log" \
     && pass "K7 a malformed override falls back to 1000, with a warning" || failc "K7 defaults: $(defs | tr '\n' '|') log: $(tr '\n' '|' < "$T/daemon.log")"
 
+  # SHOULD-2: the daemon passes its metric to dhclient, so dhclient-script
+  # installs the default at 1000 on BOUND and on a RENEW that changes the
+  # lease (v0.1.0 passed nothing: metric 0 above wired/WiFi until the next
+  # cycle).
+  reset; mk eth1 10.1.0.2/24 && ip route add default via 10.1.0.1 dev eth1 proto dhcp metric 100 && mk usb0 10.66.0.9/24
+  daemon_up
+  grep -q -- '-e IF_METRIC=1000 ' "$T/dhclient.args" && pass "K8 the daemon runs dhclient with -e IF_METRIC=1000 ($(cat "$T/dhclient.args"))" \
+    || failc "K8 dhclient args: $(cat "$T/dhclient.args" 2>/dev/null)"
+  if [ -x /sbin/dhclient-script ]; then
+    m=$(tr ' ' '\n' < "$T/dhclient.args" | sed -n 's/^IF_METRIC=//p')
+    dhscript RENEW "$m" 10.66.0.2 10.66.0.3 >/dev/null 2>&1
+    [ "$(ip -4 route show default dev usb0 | sed 's/ *$//' | tr '\n' '|')" = "default via 10.66.0.1 metric 1000|" ] && [ "$(dev_of 1.1.1.1)" = eth1 ] \
+      && pass "K9 a RENEW with a new lease (the real dhclient-script, IF_METRIC=$m): usb0's default is back at 1000, never 0; eth1 still the uplink" \
+      || failc "K9 after RENEW: $(defs | tr '\n' '|')"
+  else
+    [ "${REQUIRE_DHCLIENT:-0}" = 1 ] && failc "K9 /sbin/dhclient-script missing (isc-dhcp-client): required with --kernel" || echo "SKIP K9 (no /sbin/dhclient-script)"
+  fi
+  # The belt: a metric-0 default (a hand-run dhclient, no IF_METRIC) is
+  # still moved to 1000 by install_lte_default_route.
+  reset; mk eth1 10.1.0.2/24 && ip route add default via 10.1.0.1 dev eth1 proto dhcp metric 100 && mk usb0 10.66.0.2/24 && ip route add default via 10.66.0.1 dev usb0
+  # shellcheck source=modem/sim7600-lte.sh
+  ( source "$DAEMON"; IFACE=usb0; warn() { echo "WARN $*"; }; install_lte_default_route ) > "$T/belt.out" 2>&1
+  [ "$(defs)" = "$want" ] && [ ! -s "$T/belt.out" ] && pass "K10 a metric-0 usb0 default is moved to 1000 (eth1 untouched)" || failc "K10 $(defs | tr '\n' '|') $(cat "$T/belt.out")"
+  reset; mk usb0 10.66.0.9/24
+  daemon_up 0100
+  [ "$(defs | tr '\n' '|')" = "default via 10.66.0.1 dev usb0 metric 100|" ] && ! grep -q '^WARN' "$T/daemon.log" \
+    && pass "K11 a leading-zero override (0100) is metric 100, without a warning" || failc "K11 $(defs | tr '\n' '|') $(grep '^WARN' "$T/daemon.log")"
+
   echo "== N. provision-rs.sh P1b: clear_stale_lte_defaults on a real kernel FIB"
   # The owners are stubbed in the subshell: systemctl (sim7600-lte), nmcli.
   # FAKE_SIM / FAKE_NM select their answers.
@@ -131,8 +180,21 @@ kernel_rows() {
       clear_stale_lte_defaults
     ) > "$T/prov.out" 2>&1
   }
+  MODEM_NS=""
+  modem_down() { [ -z "$MODEM_NS" ] || { kill "$MODEM_NS" 2>/dev/null; wait "$MODEM_NS" 2>/dev/null; MODEM_NS=""; }; }
+  # A WORKING usb0: usb0's peer moves into a second private namespace (the
+  # modem) that owns 10.66.0.1 and answers 1.1.1.1.
+  modem_up() {
+    unshare -n sleep 600 & MODEM_NS=$!
+    sleep 0.3
+    ip link set usb0p netns "$MODEM_NS" \
+      && nsenter -t "$MODEM_NS" -n ip link set lo up \
+      && nsenter -t "$MODEM_NS" -n ip addr add 1.1.1.1/32 dev lo \
+      && nsenter -t "$MODEM_NS" -n ip addr add 10.66.0.1/24 dev usb0p \
+      && nsenter -t "$MODEM_NS" -n ip link set usb0p up
+  }
   stale() { # the DA21 leftovers: eth1 v4 default at 101 + v6; usb0's v4 AND v6 defaults at 100
-    reset
+    modem_down; reset
     mk eth1 10.1.0.2/24 fd00:1::2/64 && ip route add default via 10.1.0.1 dev eth1 proto dhcp metric 101 && ip -6 route add default via fd00:1::1 dev eth1 metric 1024
     mk usb0 10.66.0.9/24 fd00:66::2/64 && ip route add default via 10.66.0.1 dev usb0 proto dhcp metric 100 && ip -6 route add default via fd00:66::1 dev usb0 proto ra metric 100
   }
@@ -143,8 +205,11 @@ kernel_rows() {
   [ "$(usb0_defs)" = 1/1 ] && [ -n "$E1" ] && pass "N0 setup: usb0 has a v4 and a v6 default, eth1 both families" || failc "N0 setup: usb0 $(usb0_defs) eth1 '$E1'"
   prov_clear
   [ "$(usb0_defs)" = 0/0 ] && [ "$(eth1_defs)" = "$E1" ] && pass "N1 no live owner: usb0's v4 AND v6 defaults removed; eth1's untouched" || failc "N1 usb0 $(usb0_defs) eth1 '$(eth1_defs)' out: $(tr '\n' '|' < "$T/prov.out")"
-  grep -q 'removed a stale IPv4 default route on usb0 (no live owner; metric 100)' "$T/prov.out" && grep -q 'removed a stale IPv6 default route on usb0 (no live owner; metric 100)' "$T/prov.out" \
-    && pass "N1 both removals logged" || failc "N1 log: $(tr '\n' '|' < "$T/prov.out")"
+  grep -q 'removed a stale IPv4 default route on usb0 (no live owner, usb0 unreachable, eth1 is up; metric 100)' "$T/prov.out" \
+    && grep -q 'removed a stale IPv6 default route on usb0 (no live owner, usb0 unreachable, eth1 is up; metric 100)' "$T/prov.out" \
+    && pass "N1 eth1 up + a DEAD usb0 (the DA21 shape): both removals logged" || failc "N1 log: $(tr '\n' '|' < "$T/prov.out")"
+  [ "$(cat /proc/sys/net/ipv6/conf/usb0/disable_ipv6 2>/dev/null)" = 1 ] && grep -q 'IPv6 turned off on usb0' "$T/prov.out" \
+    && pass "N1 IPv6 turned off on usb0 (SHOULD-1: an RA cannot re-add the v6 default)" || failc "N1 disable_ipv6=$(cat /proc/sys/net/ipv6/conf/usb0/disable_ipv6 2>/dev/null)"
   [ "$(ip -4 addr show dev usb0 | grep -c 'inet ')" = 1 ] && pass "N1 usb0's address is left alone (routes only)" || failc "N1 usb0 address changed"
   [ "$(dev_of 1.1.1.1)" = eth1 ] && pass "N1 the uplink is eth1 again" || failc "N1 uplink $(dev_of 1.1.1.1)"
 
@@ -165,7 +230,9 @@ kernel_rows() {
   kill "$DH" 2>/dev/null; wait "$DH" 2>/dev/null
 
   stale; FAKE_SIM=active prov_clear
-  [ "$(usb0_defs)" = 1/1 ] && grep -q 'live owner: sim7600-lte.service' "$T/prov.out" && pass "N4 an active sim7600-lte (e.g. --reprovision) owns them: kept" || failc "N4 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
+  [ "$(usb0_defs)" = 1/1 ] && grep -q 'live owner: sim7600-lte.service (active)' "$T/prov.out" && pass "N4 an active sim7600-lte (e.g. --reprovision) owns them: kept" || failc "N4 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
+  FAKE_SIM=activating prov_clear
+  [ "$(usb0_defs)" = 1/1 ] && grep -q 'live owner: sim7600-lte.service (activating)' "$T/prov.out" && pass "N4b sim7600-lte activating (its auto-restart): still the owner, kept" || failc "N4b usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
   FAKE_NM=$'eth1:connected\nusb0:connected' prov_clear
   [ "$(usb0_defs)" = 1/1 ] && grep -q 'live owner: NetworkManager (connected)' "$T/prov.out" && pass "N5 NetworkManager manages usb0 (connected): kept" || failc "N5 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
   FAKE_NM=$'eth1:connected\nusb0:unmanaged' prov_clear
@@ -178,10 +245,34 @@ kernel_rows() {
   prov_clear
   [ "$(defs)" = "$B" ] && [ ! -s "$T/prov.out" ] && pass "N8 usb0 with no default route: nothing done, nothing printed" || failc "N8 out: $(tr '\n' '|' < "$T/prov.out")"
 
-  reset; rm -rf "$T"
+  # MUST-1 (review rows R1/R1b): an LTE-only device. usb0 holds the ONLY v4
+  # (and v6) default, nothing owns it (NM internal DHCP, now unmanaged; no
+  # dhclient; no daemon yet): it is the live uplink the bootstrap just used.
+  lte_only() { modem_down; reset; mk usb0 10.66.0.9/24 fd00:66::2/64 && ip route add default via 10.66.0.1 dev usb0 proto dhcp metric 100 && ip -6 route add default via fd00:66::1 dev usb0 proto ra metric 100; }
+  lte_only; FAKE_NM=$'eth0:unavailable\nusb0:unmanaged' prov_clear
+  [ "$(usb0_defs)" = 1/1 ] && [ "$(dev_of 1.1.1.1)" = usb0 ] && grep -q 'usb0 default routes kept (no other IPv4 uplink' "$T/prov.out" \
+    && [ "$(cat /proc/sys/net/ipv6/conf/usb0/disable_ipv6)" = 0 ] \
+    && pass "N9 (R1) LTE-only, NM usb0:unmanaged: kept (v4 + v6, IPv6 left on), and it says why" || failc "N9 usb0 $(usb0_defs) uplink $(dev_of 1.1.1.1) out: $(tr '\n' '|' < "$T/prov.out")"
+  lte_only; prov_clear
+  [ "$(usb0_defs)" = 1/1 ] && [ "$(dev_of 1.1.1.1)" = usb0 ] && grep -q 'no other IPv4 uplink' "$T/prov.out" \
+    && pass "N10 (R1b) LTE-only, usb0 absent from NM: kept" || failc "N10 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
+  # eth1 up AND usb0 working (the modem answers): kept, whatever the metrics.
+  stale; modem_up || failc "N11 setup: the modem namespace"
+  ping -c 1 -W 3 -I usb0 1.1.1.1 >/dev/null 2>&1 && pass "N11 setup: a usb0-bound ping reaches the modem's 1.1.1.1" || failc "N11 setup: usb0 does not reach 1.1.1.1"
+  FAKE_NM=$'eth1:connected\nusb0:unmanaged' prov_clear
+  [ "$(usb0_defs)" = 1/1 ] && grep -q 'usb0 default routes kept (usb0 reaches the internet; eth1 is up too)' "$T/prov.out" \
+    && pass "N11 eth1 up + a WORKING usb0: kept (the daemon's metric orders them later)" || failc "N11 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
+  modem_down
+  stale; FAKE_NM=$'eth1:connected\nusb0:unmanaged' prov_clear
+  [ "$(usb0_defs)" = 0/0 ] && [ "$(dev_of 1.1.1.1)" = eth1 ] && pass "N12 eth1 up + a DEAD usb0 (no modem answer): deleted, eth1 carries" || failc "N12 usb0 $(usb0_defs) out: $(tr '\n' '|' < "$T/prov.out")"
+
+  modem_down; reset; rm -rf "$T"
 }
 
 if [ "${LTE_ROUTES_NETNS:-}" = 1 ]; then
+  if [ "${REQUIRE_DHCLIENT:-0}" = 1 ]; then
+    for t in ping nsenter; do type -P "$t" >/dev/null || failc "kernel rows: $t missing (required with --kernel)"; done
+  fi
   kernel_rows
   exit $fail
 fi
@@ -210,7 +301,7 @@ fi
 # ---------------------------------------------------------------- the kernel, in a private netns
 KNOTE=""
 if [ "$(id -u)" = 0 ] && command -v ip >/dev/null 2>&1 && command -v unshare >/dev/null 2>&1 && unshare -n true 2>/dev/null; then
-  out=$(unshare -n env LTE_ROUTES_NETNS=1 LTE_DAEMON="$DAEMON" LTE_PROV="$PROV" bash "$SELF" 2>&1); krc=$?
+  out=$(unshare -n env LTE_ROUTES_NETNS=1 REQUIRE_DHCLIENT="$KERNEL_REQUIRED" LTE_DAEMON="$DAEMON" LTE_PROV="$PROV" bash "$SELF" 2>&1); krc=$?
   printf '%s\n' "$out"
   [ "$krc" = 0 ] || fail=1
   grep -q '^PASS K1 ' <<<"$out" && grep -q '^PASS N1 ' <<<"$out" || { [ "$krc" != 0 ] || failc "kernel rows: K1/N1 did not run"; }

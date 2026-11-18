@@ -206,27 +206,40 @@ run_boot; expect_rc 0 "bench-shaped"
 ! grep -q 'udevadm' "$E/calls.log" && ok "bench: udev rules unchanged, no udevadm reload" || bad "bench: udevadm called"
 
 echo "== P1b (F-DA21-NM, v0.1.1): stale usb0 default routes, v4 + v6, removed BEFORE the first apt call"
-stale_usb0() {
+stale_usb0() { # usb0's v4 + v6 defaults; with an argument, also eth1's v4 default (the DA21 shape)
   mkdir -p "$E/net"; : > "$E/net/usb0"
   echo 'default via 192.168.225.1 proto dhcp src 192.168.225.20 metric 100' > "$E/net/route4"
   echo 'default via fe80::1 proto ra metric 100 pref medium' > "$E/net/route6"
+  if [ -n "${1:-}" ]; then echo 'default via 192.168.8.1 dev eth1 proto dhcp src 192.168.8.244 metric 101' > "$E/net/other4"; fi
 }
-reset_device; stale_usb0; run_boot; expect_rc 0 "stale usb0 defaults"
+reset_device; stale_usb0 eth1; run_boot; expect_rc 0 "stale usb0 defaults (eth1 up, usb0 dead)"
 [ ! -s "$E/net/route4" ] && [ ! -s "$E/net/route6" ] && ok "P1b: usb0's v4 and v6 defaults deleted" || bad "P1b: left $(cat "$E/net/route4" "$E/net/route6" 2>/dev/null | tr '\n' '|')"
 d4=$(grep -n '^ip -4 route del default dev usb0$' "$E/apt.log" | head -1 | cut -d: -f1); d6=$(grep -n '^ip -6 route del default dev usb0$' "$E/apt.log" | head -1 | cut -d: -f1)
 a1=$(grep -n '^apt-get ' "$E/apt.log" | head -1 | cut -d: -f1)
 [ -n "$d4" ] && [ -n "$d6" ] && [ -n "$a1" ] && [ "$d4" -lt "$a1" ] && [ "$d6" -lt "$a1" ] \
   && ok "P1b: both deletes ran before the first apt-get (apt.log lines $d4, $d6 < $a1)" || bad "P1b order: del4=$d4 del6=$d6 apt=$a1"
-! grep -E '^ip ' "$E/apt.log" | grep -vE '^ip (link show usb0|-[46] route (show|del) default dev usb0)$' | grep -q . \
-  && ok "P1b: no ip call beyond usb0's link and default routes" || bad "P1b: other ip calls: $(grep '^ip ' "$E/apt.log" | sort -u | tr '\n' '|')"
+! grep -E '^ip ' "$E/apt.log" | grep -vE '^ip (link show usb0|-4 route show default|-[46] route (show|del) default dev usb0)$' | grep -q . \
+  && ok "P1b: no ip call beyond usb0's link and the default routes" || bad "P1b: other ip calls: $(grep '^ip ' "$E/apt.log" | sort -u | tr '\n' '|')"
+p1=$(grep -n '^ping .*-I usb0' "$E/apt.log" | head -1 | cut -d: -f1)
+[ -n "$p1" ] && [ "$p1" -lt "$d4" ] && ok "P1b: a usb0-bound probe ran (and failed) before the deletes" || bad "P1b: probe line $p1, delete $d4"
 grep -q 'removed a stale IPv4 default route on usb0 (no live owner; metric 100)' "$OUT" && grep -q 'removed a stale IPv6 default route on usb0 (no live owner; metric 100)' "$OUT" \
   && ok "P1b: both removals in the session output" || bad "P1b: no removal lines"
-reset_device; stale_usb0; printf 'eth1:connected\nusb0:connected\n' > "$E/nmcli.out"; run_boot; expect_rc 0 "usb0 managed by NM"
+reset_device; stale_usb0 eth1; printf 'eth1:connected\nusb0:connected\n' > "$E/nmcli.out"; run_boot; expect_rc 0 "usb0 managed by NM"
 [ -s "$E/net/route4" ] && [ -s "$E/net/route6" ] && ! grep -q 'route del' "$E/apt.log" && grep -q 'usb0 default routes kept (live owner: NetworkManager (connected))' "$OUT" \
   && ok "P1b: NM manages usb0: its routes are kept, and it says so" || bad "P1b: NM-owned routes touched"
+# MUST-1 (review-v011-wp-a): an LTE-only device. usb0's default is the live
+# uplink the bootstrap just used: never deleted.
+reset_device; stale_usb0; printf 'eth0:unavailable\nusb0:unmanaged\n' > "$E/nmcli.out"; run_boot; expect_rc 0 "LTE-only (usb0 the only default)"
+[ -s "$E/net/route4" ] && [ -s "$E/net/route6" ] && ! grep -q 'route del' "$E/apt.log" && ! grep -q '^ping ' "$E/apt.log" \
+  && grep -q 'usb0 default routes kept (no other IPv4 uplink' "$OUT" \
+  && ok "P1b: LTE-only: usb0's v4 + v6 defaults kept (no probe, no delete), and it says why" || bad "P1b LTE-only: $(grep -E '^(ip|ping) ' "$E/apt.log" | tr '\n' '|')"
+# eth1 up AND usb0 working: kept.
+reset_device; stale_usb0 eth1; : > "$E/net/usb0-live"; run_boot; expect_rc 0 "eth1 up + a working usb0"
+[ -s "$E/net/route4" ] && [ -s "$E/net/route6" ] && ! grep -q 'route del' "$E/apt.log" && grep -q 'usb0 default routes kept (usb0 reaches the internet; eth1 is up too)' "$OUT" \
+  && ok "P1b: eth1 up + a working usb0: kept" || bad "P1b working usb0: $(grep -E '^(ip|ping) ' "$E/apt.log" | tr '\n' '|')"
 reset_device; run_boot; expect_rc 0 "no usb0"
-[ "$(grep -c '^ip ' "$E/apt.log")" = 1 ] && grep -qx 'ip link show usb0' "$E/apt.log" && ! grep -q 'usb0 default routes\|stale IPv' "$OUT" \
-  && ok "P1b: no usb0: one 'ip link show usb0', nothing else, nothing printed" || bad "P1b no usb0: $(grep '^ip ' "$E/apt.log" | tr '\n' '|')"
+[ "$(grep -c '^ip ' "$E/apt.log")" -ge 1 ] && ! grep -E '^(ip|ping) ' "$E/apt.log" | grep -qvx 'ip link show usb0' && ! grep -q 'usb0 default routes\|stale IPv\|ModemManager' "$OUT" \
+  && ok "P1b: no usb0: only 'ip link show usb0' (SIM7600 check + P1b), nothing else, nothing printed" || bad "P1b no usb0: $(grep -E '^(ip|ping) ' "$E/apt.log" | tr '\n' '|')"
 
 echo "== --uninstall refusals + usage"
 reset_device; run_boot; expect_rc 0 "native device (setup)"

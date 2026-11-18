@@ -181,10 +181,10 @@ rm -rf "$FL_DIR"
 echo "== 8. P1b (F-DA21-NM, v0.1.1): ModemManager off, then the stale usb0 defaults, BEFORE the first apt call"
 body=$(sed -n '/^provision_main() {$/,/^}$/p' "$PROV" | grep -vE '^[[:space:]]*#')
 lnum() { grep -nE "$1" <<<"$body" | head -n1 | cut -d: -f1; }
-l_mm=$(lnum '^[[:space:]]*disable_modemmanager$'); l_cl=$(lnum '^[[:space:]]*clear_stale_lte_defaults$')
+l_mm=$(lnum '^[[:space:]]*if sim7600_present; then disable_modemmanager; fi$'); l_cl=$(lnum '^[[:space:]]*clear_stale_lte_defaults$')
 l_apt=$(lnum 'apt-get |apt_hard '); l_pip=$(lnum 'pip install')
 [ -n "$l_mm" ] && [ -n "$l_cl" ] && [ -n "$l_apt" ] && [ -n "$l_pip" ] && [ "$l_mm" -lt "$l_cl" ] && [ "$l_cl" -lt "$l_apt" ] && [ "$l_cl" -lt "$l_pip" ] \
-  && pass "provision_main: disable_modemmanager ($l_mm) < clear_stale_lte_defaults ($l_cl) < the first apt ($l_apt) / pip ($l_pip)" \
+  && pass "provision_main: (SIM7600 present) disable_modemmanager ($l_mm) < clear_stale_lte_defaults ($l_cl) < the first apt ($l_apt) / pip ($l_pip)" \
   || failc "P1b order: mm=$l_mm clear=$l_cl apt=$l_apt pip=$l_pip"
 grep -E 'route (replace|change|flush)' "$PROV" | grep -vE '^[[:space:]]*#' >/dev/null && failc "provision-rs.sh replaces/flushes a route" || pass "provision-rs.sh never replaces, changes or flushes a route"
 dels=$(grep -E 'ip -?[^ ]* *route del' "$PROV" | grep -vE '^[[:space:]]*#' | grep -v 'By hand')

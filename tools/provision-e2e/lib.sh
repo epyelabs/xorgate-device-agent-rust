@@ -12,8 +12,9 @@
 # What is stubbed (on a PATH dir the provisioner sees first): apt-get (a fake
 # dpkg state under $E/apt, with per-case failures), `python3 -m pip`, uname -m
 # (aarch64: the host is x86_64), modprobe and udevadm (never touch the HOST
-# kernel from a privileged container), nmcli, and ip (a model of usb0's default
-# routes for P1b: the provisioner never touches the container's network). The agent binary is a python
+# kernel from a privileged container), nmcli, ip and ping (a model of the
+# default routes and of a usb0-bound probe for P1b: the provisioner never
+# touches the container's network). The agent binary is a python
 # Type=notify stand-in; the modem daemon and the system/ helpers in the test
 # tarball are inert stubs, so no real modem, clock or boot-config tool ever
 # runs (handbook §3a: no clock/RTC tool, never the real agent).
@@ -101,10 +102,11 @@ echo "nmcli $*" >> /var/lib/e2e/calls.log
 if [ "$*" = "-t -f DEVICE,STATE device" ] && [ -f /var/lib/e2e/nmcli.out ]; then cat /var/lib/e2e/nmcli.out; fi
 exit 0
 EOF
-  # v0.1.1 P1b (F-DA21-NM): ip is a MODEL of usb0's default routes only, so the
+  # v0.1.1 P1b (F-DA21-NM): ip is a MODEL of the default routes only, so the
   # provisioner never touches this container's network (the kernel semantics
   # are scripts/tests/lte-routes.sh's, in a private netns). $E/net/usb0 = the
-  # link exists; $E/net/route4 / route6 = one usb0 default per line. Every
+  # link exists; $E/net/route4 / route6 = one usb0 default per line;
+  # $E/net/other4 = the other interfaces' IPv4 defaults (full lines). Every
   # call goes to apt.log, so its order against apt-get is on record.
   cat > "$SHIM/ip" <<'EOF'
 #!/bin/bash
@@ -112,6 +114,9 @@ N=/var/lib/e2e/net
 echo "ip $*" >> /var/lib/e2e/apt.log
 case "$*" in
   "link show usb0") [ -e "$N/usb0" ] ;;
+  "-4 route show default")
+    cat "$N/other4" 2>/dev/null
+    sed 's/^default via \([^ ]*\)/default via \1 dev usb0/' "$N/route4" 2>/dev/null; exit 0 ;;
   "-4 route show default dev usb0") cat "$N/route4" 2>/dev/null; exit 0 ;;
   "-6 route show default dev usb0") cat "$N/route6" 2>/dev/null; exit 0 ;;
   "-4 route del default dev usb0" | "-6 route del default dev usb0")
@@ -120,6 +125,12 @@ case "$*" in
     sed -i 1d "$f" ;;
   *) echo "e2e ip: unmodelled: $*" >&2; exit 1 ;;
 esac
+EOF
+  # ping: recorded in apt.log; a usb0-bound probe answers while $E/net/usb0-live exists.
+  cat > "$SHIM/ping" <<'EOF'
+#!/bin/bash
+echo "ping $*" >> /var/lib/e2e/apt.log
+case " $* " in *" -I usb0 "*) [ -e /var/lib/e2e/net/usb0-live ] ;; *) exit 1 ;; esac
 EOF
   printf '#!/bin/bash\necho reload >> /var/lib/e2e/nm-reloads\n' > "$SHIM/nm-reload"
   chmod 0755 "$SHIM"/*

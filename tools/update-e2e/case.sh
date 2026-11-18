@@ -380,9 +380,10 @@ ro-systemd)
   ;;
 ro-sudoers)
   # Injected failure LATE in the install (the 024 copy, after unit, wrapper
-  # and updater unit were rewritten): /opt rolls back to v1; like the TS
-  # (update.ts:351-356) the rollback restores ONLY /opt — the /etc unit files
-  # rewritten before the failure keep the new build's bytes.
+  # and updater unit were rewritten): /opt rolls back to v1. Since v0.1.1
+  # (review-v011-wp-a MUST-2) the rollback also restores every file the run
+  # replaced (the TS restored ONLY /opt); pinned by the unit test
+  # cli::update::tests::a_failed_install_restores_the_replaced_files_too.
   agent_env
   fake_js
   bootstrap
