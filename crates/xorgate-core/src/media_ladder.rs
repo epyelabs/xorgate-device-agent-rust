@@ -675,7 +675,8 @@ impl MediaLadder {
     ///   the state is `failed`, and [`Self::spawn`] holds it (no timer) until
     ///   the source is up; one line per transition;
     /// - up: a held channel (not disabled, not shed, no handle, no pending
-    ///   restart) starts at once with a fresh ladder.
+    ///   restart) starts at once with a fresh ladder; any other channel is
+    ///   left to its own path (no line).
     ///
     /// Shed / disabled channels only record the flag (they stay `stopped`).
     /// Remembered before the lazy start, like `setDisabledStreams`.
@@ -706,13 +707,11 @@ impl MediaLadder {
             if absent {
                 // Shed / disabled stay `stopped`; a guard park (`no-camera` /
                 // `no-pipeline`) keeps its own truth and slow retry.
-                if self.shed
-                    || self.channels[i].disabled
-                    || matches!(
-                        self.channels[i].state,
-                        ChannelState::NoCamera | ChannelState::NoPipeline
-                    ) && !self.channels[i].has_handle
-                {
+                let guard_parked = matches!(
+                    self.channels[i].state,
+                    ChannelState::NoCamera | ChannelState::NoPipeline
+                ) && !self.channels[i].has_handle;
+                if self.shed || self.channels[i].disabled || guard_parked {
                     continue;
                 }
                 let (st, rt) = (
@@ -734,7 +733,14 @@ impl MediaLadder {
                     ),
                 });
             } else {
-                if self.shed || self.channels[i].disabled {
+                // Only a HELD channel starts: a live master (SIGINTed, not
+                // yet exited) takes the TS path at its exit; a pending
+                // restart (a guard park's slow retry) fires by itself.
+                if self.shed
+                    || self.channels[i].disabled
+                    || self.channels[i].has_handle
+                    || self.channels[i].restart_timer.is_some()
+                {
                     continue;
                 }
                 self.channels[i].quick_failures = 0;
@@ -743,9 +749,7 @@ impl MediaLadder {
                     level: LogLevel::Log,
                     line: format!("[media {name}] capture source up; starting master"),
                 });
-                if !self.channels[i].has_handle && self.channels[i].restart_timer.is_none() {
-                    self.spawn(&name, now, env, &mut out);
-                }
+                self.spawn(&name, now, env, &mut out);
             }
         }
         out

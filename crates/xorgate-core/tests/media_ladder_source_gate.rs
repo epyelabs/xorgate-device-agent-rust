@@ -225,7 +225,7 @@ fn source_up_before_the_held_master_exited_does_not_double_spawn() {
     let fx = l.set_source_absent("cam1", true, 20_000, &w);
     assert_eq!(signals(&fx), ["dev-cam1"]);
     let fx = l.set_source_absent("cam1", false, 20_001, &w);
-    assert!(spawns(&fx).is_empty(), "the handle is still live");
+    assert!(fx.is_empty(), "the handle is still live: no spawn, no line");
     let fx = l.on_exit("dev-cam1", Some(0), 20_002);
     assert_eq!(
         lines(&fx),
@@ -269,6 +269,9 @@ fn before_start_guard_parks_shed_disabled_and_stop() {
     assert_eq!(spawns(&fx), ["dev-cam0"]);
     assert_eq!(state(&l2, "dev-cam1"), "no-camera");
     assert!(l2.set_source_absent("cam1", true, 1_000, &w2).is_empty());
+    assert_eq!(state(&l2, "dev-cam1"), "no-camera");
+    // …and its release says nothing either: the guard's slow retry is pending.
+    assert!(l2.set_source_absent("cam1", false, 2_000, &w2).is_empty());
     assert_eq!(state(&l2, "dev-cam1"), "no-camera");
 
     // Disabled: recorded only.
