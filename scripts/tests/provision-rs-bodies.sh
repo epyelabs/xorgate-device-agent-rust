@@ -15,7 +15,10 @@
 #   5. no JS-only step (node, npm, the JS unit/updater, 022, the `xorgate`
 #      alias) and no modem restart in the provisioner;
 #   6. every numbered step of the JS golden is named in docs/provision.md's
-#      step table (the drift tripwire, D1.6).
+#      step table (the drift tripwire, D1.6);
+#   7. follow_log advances the caller's offset (F-DA21-FOLLOW, v0.1.1);
+#   8. P1b order + route-write limits (F-DA21-NM, v0.1.1; the kernel rows
+#      are scripts/tests/lte-routes.sh).
 # Needs bash 4 + sed/awk/grep:
 #   docker run --rm -v "$PWD:/src:ro" -w /src debian:bookworm bash scripts/tests/provision-rs-bodies.sh
 set -uo pipefail
@@ -99,7 +102,15 @@ same "021 == JS" "$(heredoc 'cat > "$SUDOERS_TMP" <<EOF' EOF 2; echo X)" "$(cloc
 same "023 == JS" "$(heredoc 'cat > "$SUDOERS_TMP" <<EOF' EOF 3; echo X)" "$(camrotate_sudoers_body pi; echo X)"
 heredoc 'cat > "$SUDOERS_TMP" <<EOF' EOF 4 | grep -q 'xorgate-updater.service' && pass "(the 4th JS sudoers heredoc is 022, which the native install replaces with 024)" || failc "JS sudoers heredoc order changed"
 same "logind == JS" "$(heredoc "cat > /etc/systemd/logind.conf.d/10-xorgate-removeipc.conf <<'EOF'" EOF; echo X)" "$(logind_body; echo X)"
-same "uplink == JS" "$(heredoc "cat > /etc/NetworkManager/conf.d/10-uplink-priority.conf <<'NMEOF'" NMEOF; echo X)" "$(uplink_body; echo X)"
+# v0.1.1 F-LTE-METRIC: the Rust sim7600-lte.sh defaults to metric 1000 (the JS
+# copy keeps 100, user decision 2026-11-18), so the uplink comment names 1000.
+# The mapping is that ONE comment line; every other byte stays the JS heredoc's.
+JS_UPLINK=$(heredoc "cat > /etc/NetworkManager/conf.d/10-uplink-priority.conf <<'NMEOF'" NMEOF; echo X)
+OLD_L='# sim7600-lte daemon installs its default route at metric 100, so WiFi wins'
+NEW_L='# sim7600-lte daemon installs its default route at metric 1000, so WiFi wins'
+[ "$(grep -cxF "$OLD_L" <<<"$JS_UPLINK")" = 1 ] && pass "JS uplink heredoc names metric 100 once (the mapped line)" || failc "JS uplink heredoc: the metric-100 line moved"
+same "uplink == JS under the Rust LTE metric (100 -> 1000 in the comment only)" "${JS_UPLINK/"$OLD_L"/"$NEW_L"}" "$(uplink_body; echo X)"
+grep -qE '^LTE_ROUTE_METRIC_DEFAULT=1000$' "$REPO/modem/sim7600-lte.sh" && pass "…and the shipped sim7600-lte.sh defaults to 1000" || failc "modem/sim7600-lte.sh: LTE_ROUTE_METRIC_DEFAULT is not 1000"
 grep -qxF "    echo 'DPkg::Lock::Timeout \"600\";' > /etc/apt/apt.conf.d/99xorgate-lock-timeout" "$JSG" \
   && [ "$(apt_lock_body)" = 'DPkg::Lock::Timeout "600";' ] && pass "apt lock timeout == JS" || failc "apt lock timeout differs from JS"
 fn() { sed -n '/^write_bridged_pipeline() {$/,/^}$/p' "$1"; }
@@ -143,6 +154,42 @@ if [ -f "$DOC" ]; then
     grep -qE "^\| (JS )?$s( |\|)" "$DOC" && pass "JS step $s in the D1.4 table" || failc "JS step $s missing from docs/provision.md's step table"
   done
 else failc "docs/provision.md missing"; fi
+
+echo "== 7. follow_log advances the CALLER's offset (F-DA21-FOLLOW, v0.1.1)"
+# v0.1.0 declared `local n off=${!1}` and the hand-off loop passes `off`, so
+# `printf -v off` set the function's own local and every 1 s poll re-printed
+# the whole run (DA21: 61 791 client lines). Both caller names are pinned:
+# `off` (the real caller, the one that collided) and another one.
+FL_DIR=$(mktemp -d)
+for var in off pos; do
+  PROV_LOG=$FL_DIR/prov-$var.log
+  printf 'line 1\nline 2\n' > "$PROV_LOG"
+  printf -v "$var" '%s' 0
+  got1=$(follow_log "$var"; echo "rc=$?")
+  follow_log "$var" > /dev/null   # in THIS shell: the offset must move
+  printf 'line 3\n' >> "$PROV_LOG"
+  got2=$(follow_log "$var"; echo "rc=$?")
+  follow_log "$var" > /dev/null
+  got3=$(follow_log "$var"; echo "rc=$?")
+  same "follow_log $var: the first poll prints the log so far" "$(printf 'line 1\nline 2\nrc=0')" "$got1"
+  same "follow_log $var: the caller's offset = the log size" "$(stat -c %s "$PROV_LOG" 2>/dev/null || wc -c < "$PROV_LOG" | tr -d ' ')" "${!var}"
+  same "follow_log $var: the next poll prints ONLY what the log gained" "$(printf 'line 3\nrc=0')" "$got2"
+  same "follow_log $var: an idle poll prints nothing" "rc=0" "$got3"
+done
+rm -rf "$FL_DIR"
+
+echo "== 8. P1b (F-DA21-NM, v0.1.1): ModemManager off, then the stale usb0 defaults, BEFORE the first apt call"
+body=$(sed -n '/^provision_main() {$/,/^}$/p' "$PROV" | grep -vE '^[[:space:]]*#')
+lnum() { grep -nE "$1" <<<"$body" | head -n1 | cut -d: -f1; }
+l_mm=$(lnum '^[[:space:]]*if sim7600_present; then disable_modemmanager; fi$'); l_cl=$(lnum '^[[:space:]]*clear_stale_lte_defaults$')
+l_apt=$(lnum 'apt-get |apt_hard '); l_pip=$(lnum 'pip install')
+[ -n "$l_mm" ] && [ -n "$l_cl" ] && [ -n "$l_apt" ] && [ -n "$l_pip" ] && [ "$l_mm" -lt "$l_cl" ] && [ "$l_cl" -lt "$l_apt" ] && [ "$l_cl" -lt "$l_pip" ] \
+  && pass "provision_main: (SIM7600 present) disable_modemmanager ($l_mm) < clear_stale_lte_defaults ($l_cl) < the first apt ($l_apt) / pip ($l_pip)" \
+  || failc "P1b order: mm=$l_mm clear=$l_cl apt=$l_apt pip=$l_pip"
+grep -E 'route (replace|change|flush)' "$PROV" | grep -vE '^[[:space:]]*#' >/dev/null && failc "provision-rs.sh replaces/flushes a route" || pass "provision-rs.sh never replaces, changes or flushes a route"
+dels=$(grep -E 'ip -?[^ ]* *route del' "$PROV" | grep -vE '^[[:space:]]*#' | grep -v 'By hand')
+[ -n "$dels" ] && ! grep -v 'route del default dev "\$LTE_IFACE"' <<<"$dels" >/dev/null && [ "$(grep -c '^LTE_IFACE=usb0$' "$PROV")" = 1 ] \
+  && pass "every route delete is 'default dev \$LTE_IFACE' (usb0)" || failc "a route delete not limited to usb0's defaults: $dels"
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

@@ -16,7 +16,8 @@
 #
 # Order (the D1.4 table; the JS script claims BEFORE it downloads, this one
 # never claims until everything the binary needs is installed and the staged
-# binary has run): P0 preconditions -> 1 apt -> 1b IMU -> 1c GStreamer ->
+# binary has run): P0 preconditions -> P1 hand-off + checksum -> P1b
+# ModemManager off + stale usb0 default routes -> 1 apt -> 1b IMU -> 1c GStreamer ->
 # P2 stage + smoke-exec -> 2 claim -> 3 /etc/xorgate -> 4 swap -> 5b wrapper
 # -> 6 units, sudoers, helpers, updater, logind -> 7 modem -> 7b uplink ->
 # 8 kvs.json, hardware.json, pipelines -> 8b overlays -> P9 enable + start +
@@ -174,12 +175,15 @@ logind_body() {
     '[Login]' \
     'RemoveIPC=no'
 }
-# The JS install.sh NM uplink-priority body.
+# The JS install.sh NM uplink-priority body, with the Rust fork's LTE metric
+# (v0.1.1, F-LTE-METRIC: the Rust sim7600-lte.sh defaults to 1000, above NM's
+# wired 100; the JS copy keeps 100). The settings are byte-equal to JS's; only
+# the comment's number differs (pinned by provision-rs-bodies.sh §3).
 uplink_body() {
   printf '%s\n' \
     '# Prefer WiFi over the LTE modem (usb0) for the IPv4 default route.' \
     '# WiFi connections get route-metric 50; usb0 is unmanaged by NM and the' \
-    '# sim7600-lte daemon installs its default route at metric 100, so WiFi wins' \
+    '# sim7600-lte daemon installs its default route at metric 1000, so WiFi wins' \
     '# whenever it is associated. LTE stays the fallback, used only when WiFi is' \
     '# down or absent. Interface-bound health checks in the SIM7600 manager' \
     '# (ping -I usb0) are unaffected by this.' \
@@ -381,6 +385,138 @@ add_group() { # <user> <group>
 unit_active() { local o; o=$(systemctl is-active "$1" 2>/dev/null) || true; printf '%s' "${o%%$'\n'*}"; }
 unit_enabled() { local o; o=$(systemctl is-enabled "$1" 2>/dev/null) || true; printf '%s' "${o%%$'\n'*}"; }
 
+# ModemManager claims the SIM7600's AT port and fights the sim7600-lte daemon
+# for it (JS step 7). Since v0.1.1 it is also turned off at P1b, before the
+# first download, when a SIM7600 is present (review-v011-wp-a SHOULD-4: a box
+# whose cellular uplink is some other MM-managed modem keeps it until step 7,
+# as before), so it can no longer claim the modem in the middle of the run and
+# strand usb0's routes (F-DA21-NM). Step 7 still turns it off unconditionally.
+disable_modemmanager() {
+  case $(unit_enabled ModemManager.service)/$(unit_active ModemManager.service) in
+    enabled/* | */active | */activating) systemctl disable --now ModemManager.service 2>/dev/null || true; log "  - ModemManager disabled" ;;
+  esac
+}
+
+# F-DA21-NM (v0.1.1). On a fresh Pi OS boot NetworkManager auto-connects the
+# SIM7600's usb0 (RNDIS) and takes the IPv4 AND the IPv6 default at metric
+# 100. When ModemManager then claims the modem, NM drops usb0 from its device
+# list but LEAVES usb0's address and both default routes behind; with no data
+# they are black holes. In DA21 apt and pip stalled on AAAA mirrors for about
+# 4 minutes of the registration code's 15. P1b runs this after ModemManager is
+# off and before the first apt call: it deletes usb0's IPv4 and IPv6 default
+# routes ONLY when all of these hold (review-v011-wp-a MUST-1: on an
+# LTE-only device the usb0 default is the LIVE uplink the bootstrap's
+# download just used, and deleting it would cut the device off):
+#   1. nothing live owns them:
+#      - no running dhclient has usb0 among its arguments (the sim7600-lte
+#        daemon's own, or an ifupdown one);
+#      - sim7600-lte.service is not active, activating or reloading (e.g. a
+#        --reprovision, or the daemon in its auto-restart);
+#      - NetworkManager does not list usb0 as a device it manages (absent, or
+#        `unmanaged`, e.g. after the bootstrap's 0a conf: NM leaves an
+#        unmanaged device's routes alone, so they are nobody's);
+#   2. ANOTHER interface holds an IPv4 default (with none, deleting usb0's can
+#      never help: apt has no route either way);
+#   3. usb0 itself does NOT reach the internet: a usb0-bound probe fails
+#      TWICE, 2 s apart (a modem still settling is not judged dead). One
+#      probe = `ping -I usb0` to 1.1.1.1 / 8.8.8.8 (3 s each), then
+#      `curl --interface usb0 http://1.1.1.1/` (5 s; an IP literal, so no DNS
+#      lookup over the other, possibly dead, uplink; any HTTP answer counts,
+#      so a carrier that drops ICMP still passes). A working usb0 is kept
+#      even beside another default: the daemon's metric orders them from
+#      step 7 on.
+# Then IPv6 is turned off on usb0 (`disable_ipv6`, runtime only, exactly what
+# the daemon's ipv6_off_iface does at every connect; LTE is IPv4 by design) so
+# a modem RA cannot re-add the v6 black hole while apt runs (SHOULD-1).
+# Nothing else is touched: no IPv4 address, no other interface's route (every
+# delete names `dev usb0`, which the kernel matches), no NM reload.
+# The bootstrap's own download (and the console's line 1) run BEFORE this and
+# can still meet the black hole: docs/provision.md "Fresh image with a SIM7600".
+LTE_IFACE=usb0
+LTE_PROBE_HOSTS="1.1.1.1 8.8.8.8"
+LTE_PROBE_URL="http://1.1.1.1/"   # fix-check SHOULD-5: an IP literal (DNS-independent)
+LTE_PROBE_RETRY_S=2
+# A SIM7600 is fitted: its RNDIS netdev exists, or a SIMCom USB device
+# (vendor 1e0e) is enumerated.
+sim7600_present() {
+  local v
+  if command -v ip >/dev/null 2>&1 && ip link show "$LTE_IFACE" >/dev/null 2>&1; then return 0; fi
+  for v in /sys/bus/usb/devices/*/idVendor; do
+    [ -r "$v" ] || continue
+    [ "$(cat "$v" 2>/dev/null)" = 1e0e ] && return 0
+  done
+  return 1
+}
+# usb0 reaches the internet (a bound probe, retried once; see the rule 3 above).
+lte_iface_probe() {
+  local h
+  if command -v ping >/dev/null 2>&1; then
+    for h in $LTE_PROBE_HOSTS; do
+      ping -c 1 -W 3 -I "$LTE_IFACE" "$h" >/dev/null 2>&1 && return 0
+    done
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -q -s -o /dev/null -m 5 --interface "$LTE_IFACE" "$LTE_PROBE_URL" 2>/dev/null && return 0
+  fi
+  return 1
+}
+lte_iface_works() {
+  lte_iface_probe && return 0
+  sleep "$LTE_PROBE_RETRY_S"
+  lte_iface_probe
+}
+lte_iface_owner() { # -> the live owner of usb0's routes, or nothing
+  local d c a st
+  for d in /proc/[0-9]*; do
+    { read -r c < "$d/comm"; } 2>/dev/null || continue
+    [ "$c" = dhclient ] || continue
+    # (the process may exit at any point: a failed read is not an owner)
+    { while IFS= read -r -d '' a; do
+        if [ "$a" = "$LTE_IFACE" ]; then echo "dhclient (pid ${d#/proc/})"; return 0; fi
+      done < "$d/cmdline"; } 2>/dev/null || true
+  done
+  case $(unit_active sim7600-lte.service) in
+    active | activating | reloading) echo "sim7600-lte.service ($(unit_active sim7600-lte.service))"; return 0 ;;
+  esac
+  if command -v nmcli >/dev/null 2>&1; then
+    st=$(nmcli -t -f DEVICE,STATE device 2>/dev/null | awk -F: -v d="$LTE_IFACE" '$1 == d { print $2; exit }') || st=""
+    case $st in "" | unmanaged) ;; *) echo "NetworkManager ($st)"; return 0 ;; esac
+  fi
+  return 0
+}
+clear_stale_lte_defaults() {
+  local fam rt owner other n m v6=0 node
+  command -v ip >/dev/null 2>&1 || return 0
+  ip link show "$LTE_IFACE" >/dev/null 2>&1 || return 0
+  [ -n "$(ip -4 route show default dev "$LTE_IFACE" 2>/dev/null)$(ip -6 route show default dev "$LTE_IFACE" 2>/dev/null)" ] || return 0
+  owner=$(lte_iface_owner)
+  if [ -n "$owner" ]; then log "  = $LTE_IFACE default routes kept (live owner: $owner)"; return 0; fi
+  other=$(ip -4 route show default 2>/dev/null | awk -v d="$LTE_IFACE" '{ for (i = 1; i < NF; i++) if ($i == "dev" && $(i + 1) != d) { print $(i + 1); exit } }') || other=""
+  if [ -z "$other" ]; then log "  = $LTE_IFACE default routes kept (no other IPv4 uplink: $LTE_IFACE may be this device's only one)"; return 0; fi
+  if lte_iface_works; then log "  = $LTE_IFACE default routes kept ($LTE_IFACE reaches the internet; $other is up too)"; return 0; fi
+  for fam in 4 6; do
+    n=0
+    while [ "$n" -lt 16 ]; do
+      rt=$(ip -"$fam" route show default dev "$LTE_IFACE" 2>/dev/null | head -n1) || rt=""
+      [ -n "$rt" ] || break
+      n=$((n + 1))
+      m=$(awk '{ for (i = 1; i < NF; i++) if ($i == "metric") { print $(i + 1); exit } }' <<<"$rt") || m=""
+      if ip -"$fam" route del default dev "$LTE_IFACE" 2>/dev/null; then
+        [ "$fam" = 4 ] || v6=1
+        log "  - removed a stale IPv$fam default route on $LTE_IFACE (no live owner, $LTE_IFACE unreachable, $other is up; metric ${m:-0})"
+      else
+        warn "could not remove the stale IPv$fam default route on $LTE_IFACE; downloads may stall. By hand: sudo ip -$fam route del default dev $LTE_IFACE"
+        break
+      fi
+    done
+  done
+  node=/proc/sys/net/ipv6/conf/$LTE_IFACE/disable_ipv6
+  if [ "$v6" = 1 ] && [ -e "$node" ]; then
+    if { echo 1 > "$node"; } 2>/dev/null; then log "  - IPv6 turned off on $LTE_IFACE (runtime only, as the LTE daemon does), so a modem RA cannot bring the default back"
+    else warn "could not turn IPv6 off on $LTE_IFACE; a modem RA may re-add its IPv6 default"; fi
+  fi
+}
+
 # update_plan::parse_sha256_sidecar: the first `<64 hex>  [*]<basename>` line.
 sidecar_digest() { # <file> <basename>
   local line hex rest
@@ -432,11 +568,16 @@ on_detach() {
   exit "$1"
 }
 follow_log() { # <offset var name>: print what the log gained since the offset; fails if the output is gone
-  local n off=${!1}
-  n=$(stat -c %s "$PROV_LOG" 2>/dev/null || echo 0)
-  if [ "$n" -gt "$off" ]; then
-    tail -c +"$((off + 1))" "$PROV_LOG" | head -c "$((n - off))" || return 1
-    printf -v "$1" '%s' "$n"
+  # F-DA21-FOLLOW (v0.1.1): the locals must not share a name with the
+  # caller's variable. v0.1.0 had `local n off=${!1}` with the caller passing
+  # `off`, so `printf -v "$1"` assigned THIS function's local `off`: the
+  # caller's offset never moved and every poll re-printed the whole run
+  # (61 791 client lines in DA21). Pinned by provision-rs-bodies.sh §7.
+  local __fl_size __fl_from=${!1}
+  __fl_size=$(stat -c %s "$PROV_LOG" 2>/dev/null || echo 0)
+  if [ "$__fl_size" -gt "$__fl_from" ]; then
+    tail -c +"$((__fl_from + 1))" "$PROV_LOG" | head -c "$((__fl_size - __fl_from))" || return 1
+    printf -v "$1" '%s' "$__fl_size"
   fi
   return 0
 }
@@ -458,7 +599,9 @@ handoff_to_unit() {
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   RUN_RC="$PROV_RC.$RUN_ID"
   [ -e "$PROV_LOG" ] || install -m 0600 /dev/null "$PROV_LOG"
-  start=$(stat -c %s "$PROV_LOG"); off=$start
+  start=$(stat -c %s "$PROV_LOG")
+  # shellcheck disable=SC2034  # follow_log reads and advances it by name
+  off=$start
   printf '[xorgate] ===== run %s (%s) =====\n' "$RUN_ID" "$(date -u +%FT%TZ)" >> "$PROV_LOG"
   exec 9>&-   # the unit takes the lock itself
   log "continuing as the transient unit $PROV_UNIT (a dropped ssh session no longer stops it)"
@@ -558,6 +701,14 @@ provision_main() {
   have=$(sha256sum < "$TARBALL" | cut -d' ' -f1)
   [ "$have" = "$want" ] || fail 1 "checksum mismatch for $base (published $want, file $have)"
   log "checksum ok ($base)"
+
+  # P1b. The network before the first download (v0.1.1, F-DA21-NM): with a
+  #      SIM7600 present, ModemManager off (moved up from step 7), then
+  #      usb0's stale default routes, v4 and v6, removed when nothing live
+  #      owns them, another IPv4 uplink exists and usb0 does not work.
+  #      Both log only when they act.
+  if sim7600_present; then disable_modemmanager; fi
+  clear_stale_lte_defaults
 
   # 1. Dependencies (JS step 1; NOT NodeSource/nodejs). An operator's
   #    APT::Get::Upgrade "false" in apt.conf.d (the bench's --no-upgrade window,
@@ -743,9 +894,7 @@ provision_main() {
   log "installing SIM7600 connection manager (LTE + GPS)"
   apt-get install -y -qq isc-dhcp-client usbutils \
     || log "WARN: isc-dhcp-client/usbutils install failed; LTE may not come up"
-  case $(unit_enabled ModemManager.service)/$(unit_active ModemManager.service) in
-    enabled/* | */active | */activating) systemctl disable --now ModemManager.service 2>/dev/null || true; log "  - ModemManager disabled" ;;
-  esac
+  disable_modemmanager   # already off since P1b; kept for the JS step-7 order
   add_group "$SVC_USER" dialout
   if [ -f "$RS_PREFIX/modem/sim7600-lte.sh" ]; then
     local unit_changed=0

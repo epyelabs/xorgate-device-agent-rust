@@ -12,7 +12,9 @@
 # What is stubbed (on a PATH dir the provisioner sees first): apt-get (a fake
 # dpkg state under $E/apt, with per-case failures), `python3 -m pip`, uname -m
 # (aarch64: the host is x86_64), modprobe and udevadm (never touch the HOST
-# kernel from a privileged container), nmcli. The agent binary is a python
+# kernel from a privileged container), nmcli, ip and ping (a model of the
+# default routes and of a usb0-bound probe for P1b: the provisioner never
+# touches the container's network). The agent binary is a python
 # Type=notify stand-in; the modem daemon and the system/ helpers in the test
 # tarball are inert stubs, so no real modem, clock or boot-config tool ever
 # runs (handbook §3a: no clock/RTC tool, never the real agent).
@@ -89,9 +91,47 @@ EOF
 if [ "${1:-}" = -m ]; then echo "${E2E_ARCH:-aarch64}"; exit 0; fi
 exec /usr/bin/uname "$@"
 EOF
-  for t in modprobe udevadm nmcli; do
+  for t in modprobe udevadm; do
     printf '#!/bin/bash\n# e2e: recorded, never run for real (the host kernel/udev).\necho "%s $*" >> /var/lib/e2e/calls.log\nexit 0\n' "$t" > "$SHIM/$t"
   done
+  # nmcli: recorded; `-t -f DEVICE,STATE device` answers $E/nmcli.out when present.
+  cat > "$SHIM/nmcli" <<'EOF'
+#!/bin/bash
+# e2e: recorded, never run for real.
+echo "nmcli $*" >> /var/lib/e2e/calls.log
+if [ "$*" = "-t -f DEVICE,STATE device" ] && [ -f /var/lib/e2e/nmcli.out ]; then cat /var/lib/e2e/nmcli.out; fi
+exit 0
+EOF
+  # v0.1.1 P1b (F-DA21-NM): ip is a MODEL of the default routes only, so the
+  # provisioner never touches this container's network (the kernel semantics
+  # are scripts/tests/lte-routes.sh's, in a private netns). $E/net/usb0 = the
+  # link exists; $E/net/route4 / route6 = one usb0 default per line;
+  # $E/net/other4 = the other interfaces' IPv4 defaults (full lines). Every
+  # call goes to apt.log, so its order against apt-get is on record.
+  cat > "$SHIM/ip" <<'EOF'
+#!/bin/bash
+N=/var/lib/e2e/net
+echo "ip $*" >> /var/lib/e2e/apt.log
+case "$*" in
+  "link show usb0") [ -e "$N/usb0" ] ;;
+  "-4 route show default")
+    cat "$N/other4" 2>/dev/null
+    sed 's/^default via \([^ ]*\)/default via \1 dev usb0/' "$N/route4" 2>/dev/null; exit 0 ;;
+  "-4 route show default dev usb0") cat "$N/route4" 2>/dev/null; exit 0 ;;
+  "-6 route show default dev usb0") cat "$N/route6" 2>/dev/null; exit 0 ;;
+  "-4 route del default dev usb0" | "-6 route del default dev usb0")
+    f=$N/route${1#-}
+    [ -s "$f" ] || { echo "RTNETLINK answers: No such process" >&2; exit 2; }
+    sed -i 1d "$f" ;;
+  *) echo "e2e ip: unmodelled: $*" >&2; exit 1 ;;
+esac
+EOF
+  # ping: recorded in apt.log; a usb0-bound probe answers while $E/net/usb0-live exists.
+  cat > "$SHIM/ping" <<'EOF'
+#!/bin/bash
+echo "ping $*" >> /var/lib/e2e/apt.log
+case " $* " in *" -I usb0 "*) [ -e /var/lib/e2e/net/usb0-live ] ;; *) exit 1 ;; esac
+EOF
   printf '#!/bin/bash\necho reload >> /var/lib/e2e/nm-reloads\n' > "$SHIM/nm-reload"
   chmod 0755 "$SHIM"/*
 }
@@ -241,7 +281,8 @@ reset_device() {
   printf 'dtparam=i2c_arm=on\n' > /boot/firmware/config.txt; rm -f /boot/firmware/config.txt.bak-xorgate
   cp "$W/group.base" /etc/group; cp "$W/gshadow.base" /etc/gshadow
   rm -rf "$E/apt/installed" && mkdir -p "$E/apt/installed"
-  rm -f "$E/apt-fail" "$E/pip-fail" "$E/agent-mode" "$E/claim-mode" "$E/used-codes" "$E/ready-delay"
+  rm -f "$E/apt-fail" "$E/pip-fail" "$E/agent-mode" "$E/claim-mode" "$E/used-codes" "$E/ready-delay" "$E/nmcli.out"
+  rm -rf "$E/net"
   : > "$E/claims.log"; : > "$E/requests.log"; : > "$E/apt.log"; : > "$E/calls.log"; : > "$E/nm-reloads"; : > "$E/agent.log"; : > "$E/modem.log"
   reset_bucket
   systemctl daemon-reload; systemctl reset-failed >/dev/null 2>&1

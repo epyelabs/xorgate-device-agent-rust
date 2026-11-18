@@ -93,7 +93,7 @@ Details: [guide/01-setup.md](guide/01-setup.md), [guide/07-build-package-deploy.
 ## Run
 
 ```
-xorgate-rs -v                 # 0.0.1 (<sha>, <channel>) from <install root>/build-info.json
+xorgate-rs -v                 # 0.1.1 (<sha>, <channel>) from <install root>/build-info.json
 xorgate-rs run                # the worker (reads the agent.env keys from the environment)
 xorgate-rs run --offline      # no AWS: prints each would-be payload to stdout once per second
 XORGATE_LOG=debug xorgate-rs run   # tracing filter (default: info, rumqttc=warn)

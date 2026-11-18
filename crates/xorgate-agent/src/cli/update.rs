@@ -9,7 +9,11 @@
 //! and restart the agent ONLY if it was active (Q5).
 //!
 //! Every decision and text is in `xorgate_core::update_plan`; this module is
-//! the I/O. Subprocesses go through `xorgate_hal::exec::run` with bounded
+//! the I/O. v0.1.1 (review-v011-wp-a MUST-2, a deliberate divergence from
+//! the TS `copyFileSync` in place): every file is installed atomically
+//! (temp sibling + fsync + `rename(2)` + dir fsync, `install_file`), and a
+//! failed install restores the files it replaced, not only `/opt`.
+//! Subprocesses go through `xorgate_hal::exec::run` with bounded
 //! timeouts (`curl` 10 min, `tar` 2 min, smoke 5 s, `visudo` 10 s,
 //! `systemctl` 90 s); tools are found on `PATH` (rule 8) — [`Tools`] lets the
 //! unit tests point them at shims. Nothing here runs `sudo`: the command needs
@@ -167,17 +171,176 @@ fn path_str(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// `copyFileSync(from, to)` + `chmodSync(to, mode)`, the error worded like
-/// node's (`EROFS: … copyfile 'a' -> 'b'`) for the rollback line.
-fn install_file(from: &Path, to: &Path, mode: u32) -> Result<(), String> {
-    fs::copy(from, to)
-        .map_err(|e| format!("{e}, copyfile '{}' -> '{}'", from.display(), to.display()))?;
-    chmod(to, mode)
+/// `copyFileSync(from, to)` + `chmodSync(to, mode)`, made ATOMIC (v0.1.1,
+/// F-UPD-INPLACE, review-v011-wp-a MUST-2; a deliberate divergence from the
+/// TS in-place copy): the bytes go to a temp file in `to`'s directory, which
+/// is chmod-ed, fsync-ed and `rename(2)`-d over `to`, then the directory is
+/// fsync-ed. A running reader of the old file (the bash of `sim7600-lte.sh`)
+/// keeps the old inode, and a crash or ENOSPC never leaves a truncated file.
+/// The previous file (if any) is recorded in `journal` so the rollback can put
+/// it back, but ONLY once the rename has happened (fix-check MUST-3): a
+/// replace that failed before its rename (EROFS, ENOSPC, a blocked temp)
+/// changed nothing, so there is nothing to restore. The error keeps node's
+/// wording (`EROFS: … copyfile 'a' -> 'b'`) for the rollback line.
+fn install_file(from: &Path, to: &Path, mode: u32, journal: &mut Journal) -> Result<(), String> {
+    let cf = |e: io::Error| format!("{e}, copyfile '{}' -> '{}'", from.display(), to.display());
+    let bytes = fs::read(from).map_err(cf)?;
+    install_bytes(to, &bytes, mode, journal).map_err(cf)
 }
 
-fn chmod(p: &Path, mode: u32) -> Result<(), String> {
-    fs::set_permissions(p, fs::Permissions::from_mode(mode))
-        .map_err(|e| format!("{e}, chmod '{}'", p.display()))
+/// [`put_atomic`] with the journal: the snapshot of `to` is taken before the
+/// write and committed once the rename happened (also when only the directory
+/// fsync after it failed: `to` IS replaced then).
+fn install_bytes(to: &Path, bytes: &[u8], mode: u32, journal: &mut Journal) -> io::Result<()> {
+    let prev = journal.snapshot(to);
+    let res = put_atomic_ex(to, bytes, mode);
+    let renamed = match &res {
+        Ok(()) => true,
+        Err((_, renamed)) => *renamed,
+    };
+    if renamed {
+        journal.commit(to, prev);
+    }
+    res.map_err(|(e, _)| e)
+}
+
+/// `to`'s temp sibling: a dot file with a `.xorgate-new` suffix, which every
+/// directory the rail writes ignores (sudoers.d skips names with a `.`,
+/// systemd/udev/NM/cron read only their own suffixes).
+fn temp_sibling(to: &Path) -> PathBuf {
+    let name = to
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    to.with_file_name(format!(".{name}.xorgate-new"))
+}
+
+/// Write `bytes` to `to` atomically (temp sibling, mode, fsync, rename, dir
+/// fsync); the temp file is removed on any failure.
+fn put_atomic(to: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    put_atomic_ex(to, bytes, mode).map_err(|(e, _)| e)
+}
+
+/// [`put_atomic`], and on an error whether the rename had already happened.
+fn put_atomic_ex(to: &Path, bytes: &[u8], mode: u32) -> Result<(), (io::Error, bool)> {
+    let tmp = temp_sibling(to);
+    let _ = fs::remove_file(&tmp); // a crash leftover
+    if let Err(e) = write_temp(&tmp, bytes, mode).and_then(|()| fs::rename(&tmp, to)) {
+        let _ = fs::remove_file(&tmp);
+        return Err((e, false));
+    }
+    if let Some(dir) = to.parent() {
+        fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| (e, true))?;
+    }
+    Ok(())
+}
+
+fn write_temp(tmp: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(tmp)?;
+    f.write_all(bytes)?;
+    // fchmod: the final mode exactly, not under the umask.
+    f.set_permissions(fs::Permissions::from_mode(mode))?;
+    f.sync_all()
+}
+
+/// `p` is a regular file holding exactly `bytes` with mode `mode`.
+fn file_is(p: &Path, bytes: &[u8], mode: u32) -> bool {
+    matches!(fs::symlink_metadata(p), Ok(m) if m.is_file() && m.permissions().mode() & 0o7777 == mode)
+        && fs::read(p).is_ok_and(|b| b == bytes)
+}
+
+/// What was at a path before `install` replaced it (review-v011-wp-a MUST-2).
+#[derive(Debug, PartialEq)]
+enum Prev {
+    /// Nothing: a file the install created is removed on rollback.
+    Absent,
+    /// A regular file: its bytes and mode are put back (atomically).
+    File(Vec<u8>, u32),
+    /// A symlink (the rename replaced the link itself): re-created.
+    Link(PathBuf),
+    /// Anything else (a directory in the way): never touched on rollback.
+    Other,
+}
+
+/// The files `install` replaced, with what was there before, so a failed
+/// install restores them too (the TS rollback restored only `/opt`).
+#[derive(Default)]
+struct Journal {
+    entries: Vec<(PathBuf, Prev)>,
+}
+
+impl Journal {
+    /// What `to` holds now, unless it is already journaled in this run (the
+    /// FIRST state is the one a rollback restores).
+    fn snapshot(&self, to: &Path) -> Option<Prev> {
+        if self.entries.iter().any(|(p, _)| p == to) {
+            return None;
+        }
+        Some(match fs::symlink_metadata(to) {
+            Err(_) => Prev::Absent,
+            Ok(m) if m.is_file() => match fs::read(to) {
+                Ok(b) => Prev::File(b, m.permissions().mode() & 0o7777),
+                Err(_) => Prev::Other,
+            },
+            Ok(m) if m.file_type().is_symlink() => match fs::read_link(to) {
+                Ok(t) => Prev::Link(t),
+                Err(_) => Prev::Other,
+            },
+            Ok(_) => Prev::Other,
+        })
+    }
+
+    /// Keep a snapshot once `to` has really been replaced.
+    fn commit(&mut self, to: &Path, prev: Option<Prev>) {
+        if let Some(prev) = prev {
+            self.entries.push((to.to_path_buf(), prev));
+        }
+    }
+
+    #[cfg(test)]
+    fn record(&mut self, to: &Path) {
+        let prev = self.snapshot(to);
+        self.commit(to, prev);
+    }
+
+    /// Put every recorded path back, newest first; the failures, if any.
+    /// Idempotent (fix-check MUST-3): a path that already holds its recorded
+    /// state (a file with the same bytes and mode, a link to the same
+    /// target) is left alone, so a re-run restore writes nothing.
+    fn restore(&self) -> Vec<String> {
+        let mut errs = Vec::new();
+        for (path, prev) in self.entries.iter().rev() {
+            let r = match prev {
+                Prev::File(bytes, mode) if file_is(path, bytes, *mode) => Ok(()),
+                Prev::File(bytes, mode) => put_atomic(path, bytes, *mode),
+                Prev::Link(target) if fs::read_link(path).is_ok_and(|t| &t == target) => Ok(()),
+                Prev::Absent => match fs::symlink_metadata(path) {
+                    Ok(m) if m.is_file() || m.file_type().is_symlink() => fs::remove_file(path),
+                    _ => Ok(()),
+                },
+                Prev::Link(target) => {
+                    let tmp = temp_sibling(path);
+                    let _ = fs::remove_file(&tmp);
+                    std::os::unix::fs::symlink(target, &tmp)
+                        .and_then(|()| fs::rename(&tmp, path))
+                        .inspect_err(|_| {
+                            let _ = fs::remove_file(&tmp);
+                        })
+                }
+                Prev::Other => Ok(()),
+            };
+            if let Err(e) = r {
+                errs.push(format!("{}: {e}", path.display()));
+            }
+        }
+        errs
+    }
 }
 
 /// `writeFileSync(p, body, { mode })` (mode applies on creation, under umask).
@@ -336,13 +499,23 @@ pub async fn update(
             ));
         }
     }
-    if let Err(e) = install(p, policy, out).await {
-        // Roll back to the previous build (`update.ts:351-356`).
+    let mut journal = Journal::default();
+    if let Err(e) = install(p, policy, out, &mut journal).await {
+        // Roll back to the previous build (`update.ts:351-356`), and (v0.1.1,
+        // MUST-2) every file this install replaced: the unit, the wrapper,
+        // the modem/system assets, the sudoers grants, the updater unit.
+        let restore_errs = journal.restore();
         rm_rf(&live);
         if had_prev {
             if let Err(re) = fs::rename(&backup, &live) {
                 return Err(format!("install step failed, rollback FAILED ({re}): {e}"));
             }
+        }
+        if !restore_errs.is_empty() {
+            return Err(format!(
+                "install step failed, rollback FAILED (restore {}): {e}",
+                restore_errs.join("; ")
+            ));
         }
         return Err(format!("install step failed, rolled back: {e}"));
     }
@@ -442,6 +615,7 @@ async fn install(
     p: &UpdatePaths,
     policy: AssetPolicy,
     out: &mut dyn UpdateLog,
+    journal: &mut Journal,
 ) -> Result<(), String> {
     let (staging, live) = (p.staging(), p.live());
     fs::rename(&staging, &live).map_err(|e| {
@@ -454,11 +628,15 @@ async fn install(
 
     // Step 6: unit + wrapper (`update.ts:299-305`).
     let unit_dest = p.abs(plan::UNIT_DEST);
-    install_file(&live.join(plan::UNIT_SRC), &unit_dest, 0o644)?;
+    install_file(&live.join(plan::UNIT_SRC), &unit_dest, 0o644, journal)?;
     let wrapper = p.abs(plan::WRAPPER);
-    rm_rf(&wrapper); // break any prior symlink before writing
-    write_file(&wrapper, plan::WRAPPER_BODY, 0o755)?;
-    chmod(&wrapper, 0o755)?;
+    if fs::symlink_metadata(&wrapper).is_ok_and(|m| m.is_dir()) {
+        rm_rf(&wrapper); // a directory in the way (rename cannot replace it)
+    }
+    // Atomic, like install_file; the rename also replaces a prior symlink
+    // (it is never written through).
+    install_bytes(&wrapper, plan::WRAPPER_BODY.as_bytes(), 0o755, journal)
+        .map_err(|e| format!("{e}, open '{}'", wrapper.display()))?;
 
     // Step 7 (Q1): shared assets only on a Rust-only device.
     if policy.skip_shared {
@@ -472,7 +650,7 @@ async fn install(
                 if !exists(&from) {
                     continue;
                 }
-                install_file(&from, &p.abs(dest), *mode)?;
+                install_file(&from, &p.abs(dest), *mode, journal)?;
                 refreshed += 1;
             }
             if refreshed > 0 {
@@ -486,11 +664,11 @@ async fn install(
                 if !exists(&from) {
                     continue;
                 }
-                install_file(&from, &p.abs(dest), *mode)?;
+                install_file(&from, &p.abs(dest), *mode, journal)?;
             }
-            install_sudoers(p, SudoersGrant::Clock, out).await?;
+            install_sudoers(p, SudoersGrant::Clock, out, journal).await?;
             if exists(&p.abs(plan::CAMROTATE_BIN)) {
-                install_sudoers(p, SudoersGrant::CamRotate, out).await?;
+                install_sudoers(p, SudoersGrant::CamRotate, out, journal).await?;
             }
         }
     }
@@ -498,8 +676,13 @@ async fn install(
     // `update.ts:341-350`: the remote rail (Rust-only, never shared).
     let updater_unit = live.join(plan::UPDATER_UNIT_SRC);
     if exists(&updater_unit) {
-        install_file(&updater_unit, &p.abs(plan::UPDATER_UNIT_DEST), 0o644)?;
-        install_sudoers(p, SudoersGrant::UpdateRs, out).await?;
+        install_file(
+            &updater_unit,
+            &p.abs(plan::UPDATER_UNIT_DEST),
+            0o644,
+            journal,
+        )?;
+        install_sudoers(p, SudoersGrant::UpdateRs, out, journal).await?;
     }
     Ok(())
 }
@@ -515,13 +698,16 @@ fn service_user(p: &UpdatePaths) -> Option<String> {
 }
 
 /// `install{Clock,CamRotate,Update}Sudoers` (`update.ts:113-205`): the body
-/// goes to a mkdtemp draft (0440), `visudo -cf` must pass, then copy + chmod
-/// 0440; a refusal is a warning, never fatal; the draft dir is always removed.
-/// No sudoers file is ever written without a passing `visudo -cf`.
+/// goes to a mkdtemp draft (0440), `visudo -cf` must pass, then the SAME
+/// bytes are installed atomically (0440; v0.1.1 [`install_file`]); a refusal
+/// is a warning, never fatal; the draft dir is always removed. No sudoers
+/// file is ever written without a passing `visudo -cf`, and the temp sibling
+/// (`.024_….xorgate-new`) is a name `sudo`'s includedir skips.
 async fn install_sudoers(
     p: &UpdatePaths,
     grant: SudoersGrant,
     out: &mut dyn UpdateLog,
+    journal: &mut Journal,
 ) -> Result<(), String> {
     let user = service_user(p);
     let Some(user) = plan::grant_user(user.as_deref()) else {
@@ -542,7 +728,7 @@ async fn install_sudoers(
             return Ok(());
         }
         let dest = p.abs(grant.dest());
-        install_file(&draft, &dest, 0o440)
+        install_file(&draft, &dest, 0o440, journal)
     }
     .await;
     rm_rf(&dir);
@@ -651,6 +837,17 @@ mod tests {
 
     /// A tarball whose `bin/xorgate-rs` is a shell script printing a banner.
     fn publish(r: &Rig, version: &str, banner: &str, with_sidecar: bool) {
+        publish_with(r, version, banner, with_sidecar, &[]);
+    }
+
+    /// [`publish`] plus extra members (`(path, body)`, e.g. `modem/…`).
+    fn publish_with(
+        r: &Rig,
+        version: &str,
+        banner: &str,
+        with_sidecar: bool,
+        extra: &[(&str, &str)],
+    ) {
         let tree = r.dir.join(format!("tree-{version}"));
         for d in ["bin", "systemd"] {
             fs::create_dir_all(tree.join(d)).unwrap();
@@ -667,6 +864,16 @@ mod tests {
             format!("{{\"version\":\"{version}\"}}"),
         )
         .unwrap();
+        let mut members = vec!["bin", "systemd", "build-info.json"];
+        for (path, body) in extra {
+            let f = tree.join(path);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(&f, body).unwrap();
+            let top = path.split('/').next().unwrap();
+            if !members.contains(&top) {
+                members.push(top);
+            }
+        }
         let tb = plan::tarball_name(version);
         let tgz = r.dir.join("bucket").join(&tb);
         let st = std::process::Command::new("tar")
@@ -674,7 +881,7 @@ mod tests {
             .arg(&tgz)
             .arg("-C")
             .arg(&tree)
-            .args(["bin", "systemd", "build-info.json"])
+            .args(&members)
             .status()
             .unwrap();
         assert!(st.success());
@@ -779,6 +986,226 @@ mod tests {
         );
         assert_eq!(fs::read_dir(r.p.abs("/opt")).unwrap().count(), 0);
         assert_eq!(fs::read_dir(&r.p.tmp).unwrap().count(), 0);
+        rm_rf(&r.dir);
+    }
+
+    fn mode_of(p: &Path) -> u32 {
+        fs::metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    fn ino(p: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(p).unwrap().ino()
+    }
+
+    /// v0.1.1 MUST-2 (F-UPD-INPLACE): the destination is REPLACED (a new
+    /// inode), never rewritten: a reader holding the old file (bash running
+    /// sim7600-lte.sh) still reads the old bytes; the mode is exact; no temp
+    /// sibling is left; the journal holds the old bytes + mode.
+    #[test]
+    fn install_file_replaces_atomically_and_an_open_reader_keeps_the_old_bytes() {
+        let dir = std::env::temp_dir().join(format!("xg-atomic-{}", std::process::id()));
+        rm_rf(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("new.sh"), dir.join("sim7600-lte.sh"));
+        fs::write(&src, "#!/bin/bash\necho NEW, and longer than the old one\n").unwrap();
+        fs::write(&dest, "#!/bin/bash\necho OLD\n").unwrap();
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o644)).unwrap();
+        let ino0 = ino(&dest);
+        let mut reader = fs::File::open(&dest).unwrap();
+        let mut j = Journal::default();
+        install_file(&src, &dest, 0o755, &mut j).unwrap();
+        let mut old = String::new();
+        reader.read_to_string(&mut old).unwrap();
+        assert_eq!(
+            old, "#!/bin/bash\necho OLD\n",
+            "the open fd still reads the old file"
+        );
+        assert_eq!(
+            fs::read_to_string(&dest).unwrap(),
+            "#!/bin/bash\necho NEW, and longer than the old one\n"
+        );
+        assert_ne!(ino(&dest), ino0, "a new inode, not an in-place rewrite");
+        assert_eq!(mode_of(&dest), 0o755);
+        assert!(!temp_sibling(&dest).exists(), "no temp sibling left");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        assert_eq!(j.entries.len(), 1);
+        assert_eq!(
+            j.entries[0].1,
+            Prev::File(b"#!/bin/bash\necho OLD\n".to_vec(), 0o644)
+        );
+        // A failed replace (a non-empty directory in the way) removes its
+        // temp file and leaves the directory as it was.
+        let blocker = dir.join("blocked");
+        fs::create_dir_all(blocker.join("x")).unwrap();
+        let e = install_file(&src, &blocker, 0o644, &mut j).unwrap_err();
+        assert!(e.contains("copyfile '") && e.contains("blocked'"), "{e}");
+        assert!(!temp_sibling(&blocker).exists());
+        assert!(blocker.join("x").is_dir());
+        rm_rf(&dir);
+    }
+
+    /// v0.1.1 MUST-2: a failure late in the install restores EVERY file the
+    /// install replaced (the unit, the wrapper, the modem assets), removes the
+    /// ones it created, and rolls /opt back; the TS restored only /opt.
+    #[tokio::test]
+    async fn a_failed_install_restores_the_replaced_files_too() {
+        let r = rig("rollback");
+        publish_with(
+            &r,
+            "v2",
+            "xorgate-rs 0.1.1 (v2, dev)",
+            true,
+            &[
+                ("modem/sim7600-lte.sh", "#!/bin/bash\n# v2 daemon\n"),
+                ("modem/99-sim7600-lte.rules", "# v2 rules\n"),
+                ("system/xorgate-setclock", "#!/bin/sh\n# v2\n"),
+            ],
+        );
+        fs::write(
+            r.p.abs(plan::AGENT_ENV),
+            "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
+        )
+        .unwrap();
+        // The device before: build v1, its unit and wrapper, the v1 daemon.
+        let live = r.p.live();
+        fs::create_dir_all(live.join("bin")).unwrap();
+        fs::write(live.join("build-info.json"), "{\"version\":\"v1\"}").unwrap();
+        fs::write(r.p.abs(plan::UNIT_DEST), "unit v1\n").unwrap();
+        fs::write(r.p.abs(plan::WRAPPER), "wrapper v1\n").unwrap();
+        fs::set_permissions(r.p.abs(plan::WRAPPER), fs::Permissions::from_mode(0o755)).unwrap();
+        let daemon = r.p.abs(plan::MODEM_DAEMON);
+        fs::write(&daemon, "#!/bin/bash\n# v1 daemon\n").unwrap();
+        fs::set_permissions(&daemon, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(r.p.abs("/etc/udev/rules.d")).unwrap();
+        // The injected failure: a non-empty directory where the first system
+        // asset goes (after the unit, the wrapper and the modem assets).
+        fs::create_dir_all(r.p.abs("/usr/local/bin/xorgate-setclock/in-the-way")).unwrap();
+        let mut log: Vec<String> = Vec::new();
+        let e = update(&argv(&["--tag", "v2"]), &|_| None, &r.p, &mut log)
+            .await
+            .unwrap_err();
+        assert!(
+            e.starts_with("install step failed, rolled back: ") && e.contains("xorgate-setclock"),
+            "{e}"
+        );
+        assert!(
+            log.iter().any(|l| l == plan::MODEM_REFRESHED_LOG),
+            "{log:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&daemon).unwrap(),
+            "#!/bin/bash\n# v1 daemon\n"
+        );
+        assert_eq!(mode_of(&daemon), 0o755);
+        assert_eq!(
+            fs::read_to_string(r.p.abs(plan::UNIT_DEST)).unwrap(),
+            "unit v1\n"
+        );
+        assert_eq!(
+            fs::read_to_string(r.p.abs(plan::WRAPPER)).unwrap(),
+            "wrapper v1\n"
+        );
+        assert!(
+            !r.p.abs("/etc/udev/rules.d/99-sim7600-lte.rules").exists(),
+            "a file the failed install created is removed"
+        );
+        assert_eq!(
+            fs::read_to_string(live.join("build-info.json")).unwrap(),
+            "{\"version\":\"v1\"}",
+            "/opt rolled back"
+        );
+        assert!(!r.p.backup().exists() && !r.p.staging().exists());
+        assert!(
+            r.p.abs("/usr/local/bin/xorgate-setclock/in-the-way")
+                .is_dir(),
+            "what was in the way is left alone"
+        );
+        for d in ["/usr/local/bin", "/etc/systemd/system", "/etc/udev/rules.d"] {
+            let left: Vec<_> = fs::read_dir(r.p.abs(d))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".xorgate-new"))
+                .collect();
+            assert!(left.is_empty(), "temp siblings left in {d}");
+        }
+        rm_rf(&r.dir);
+    }
+
+    /// fix-check MUST-3: a replace that fails BEFORE its rename (here its
+    /// temp sibling is blocked; EROFS/ENOSPC fail the same way) changes
+    /// nothing, so it is not journaled and the rollback has nothing to do;
+    /// and `restore` of a file that already holds its recorded state is a
+    /// no-op, never an error.
+    #[test]
+    fn restore_after_a_failed_replace_is_not_a_rollback_failure() {
+        let dir = std::env::temp_dir().join(format!("xg-must3-{}", std::process::id()));
+        rm_rf(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("new.service"), dir.join("unit.service"));
+        fs::write(&src, "new\n").unwrap();
+        fs::write(&dest, "old\n").unwrap();
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::create_dir_all(temp_sibling(&dest).join("x")).unwrap(); // the temp is blocked
+        let mut j = Journal::default();
+        assert!(install_file(&src, &dest, 0o644, &mut j).is_err());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "old\n");
+        assert!(
+            j.entries.is_empty(),
+            "a replace that never renamed is not journaled"
+        );
+        assert!(j.restore().is_empty());
+        // (b) idempotent: a File entry whose path already holds those bytes
+        // and that mode is skipped, even where a write would fail.
+        let mut j = Journal::default();
+        j.record(&dest);
+        assert_eq!(j.restore(), Vec::<String>::new());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "old\n");
+        // A link already pointing at its recorded target is skipped too.
+        let link = dir.join("link");
+        std::os::unix::fs::symlink("unit.service", &link).unwrap();
+        fs::create_dir_all(temp_sibling(&link).join("x")).unwrap();
+        let mut j = Journal::default();
+        j.record(&link);
+        assert_eq!(j.restore(), Vec::<String>::new());
+        rm_rf(&dir);
+    }
+
+    /// fix-check MUST-3 / update-e2e `ro-systemd`: an `update()` that fails
+    /// at its FIRST install step (the agent unit cannot be replaced) reports
+    /// "rolled back", never "rollback FAILED", and leaves the unit as it was.
+    #[tokio::test]
+    async fn a_failure_at_the_first_install_step_reports_rolled_back() {
+        let r = rig("first-step");
+        publish(&r, "v2", "xorgate-rs 0.1.1 (v2, dev)", true);
+        fs::write(
+            r.p.abs(plan::AGENT_ENV),
+            "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
+        )
+        .unwrap();
+        let live = r.p.live();
+        fs::create_dir_all(live.join("bin")).unwrap();
+        fs::write(live.join("build-info.json"), "{\"version\":\"v1\"}").unwrap();
+        let unit = r.p.abs(plan::UNIT_DEST);
+        fs::write(&unit, "unit v1\n").unwrap();
+        // The unit's directory refuses the temp file (as EROFS would).
+        fs::create_dir_all(temp_sibling(&unit).join("x")).unwrap();
+        let mut log: Vec<String> = Vec::new();
+        let e = update(&argv(&["--tag", "v2"]), &|_| None, &r.p, &mut log)
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("install step failed, rolled back: "), "{e}");
+        assert!(!e.contains("rollback FAILED"), "{e}");
+        assert!(
+            e.contains("copyfile '") && e.contains("xorgate-agent-rs.service'"),
+            "{e}"
+        );
+        assert_eq!(fs::read_to_string(&unit).unwrap(), "unit v1\n");
+        assert_eq!(
+            fs::read_to_string(live.join("build-info.json")).unwrap(),
+            "{\"version\":\"v1\"}"
+        );
+        assert!(!r.p.backup().exists() && !r.p.staging().exists());
         rm_rf(&r.dir);
     }
 }

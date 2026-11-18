@@ -386,8 +386,10 @@ job_systemd() {
   # which the guard reads too (it is part of what runs privileged).
   if [ -f "$SRC/scripts/tests/provision-e2e.sh" ]; then
     pairs+=("provision-e2e:systemd python3 sudo jq curl openssl ca-certificates"
-      "provision-rs-systemd:systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0")
+      "provision-rs-systemd:systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0 iproute2 iputils-ping isc-dhcp-client")
     guarded+=("$SRC/scripts/tests/provision-e2e.sh" "$SRC/scripts/tests/provision-rs-systemd.sh" "$SRC/tools/provision-e2e/lib.sh")
+    # v0.1.1: provision-rs-systemd runs lte-routes.sh --kernel (privileged, in a private netns).
+    [ -f "$SRC/scripts/tests/lte-routes.sh" ] && guarded+=("$SRC/scripts/tests/lte-routes.sh")
   fi
   clock_guard "${guarded[@]}" || { echo "SYSTEMD_DONE fails=REFUSED"; return 1; }
   for pair in "${pairs[@]}"; do
