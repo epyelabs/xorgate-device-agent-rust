@@ -223,6 +223,79 @@ pub fn exit_verdict(input: &ExitInput<'_>) -> ExitVerdict {
     }
 }
 
+/// D86 (F-DA21-KVSLOOP, Rust-only): the cap of the start-failure back-off.
+pub const ABSENT_BACKOFF_MAX_MS: u64 = 300_000;
+
+/// D86: the park delay of back-off step `step` (1-based). Step 1 is the
+/// JS park ([`PARKED_RETRY_MS`], 60 s); each later step doubles it, capped
+/// at [`ABSENT_BACKOFF_MAX_MS`]: 60 → 120 → 240 → 300 → 300 … s.
+pub fn absent_backoff_ms(step: u32) -> u64 {
+    let shift = step.saturating_sub(1).min(16);
+    PARKED_RETRY_MS
+        .saturating_mul(1u64 << shift)
+        .min(ABSENT_BACKOFF_MAX_MS)
+}
+
+/// D86: [`exit_verdict`] plus the start-failure back-off the TS lacks.
+///
+/// The TS ladder (kept verbatim for a camera that has never parked) retries a
+/// camera that dies at start twice (2 s, 4 s), parks it for 60 s, then starts
+/// the SAME three-attempt ladder again with fresh counters, forever: an
+/// absent or broken sensor (`Camera.start()` → `Remote I/O error`) costs three
+/// spawns (each with ~20 lines of libcamera/gst stderr) and three KVS master
+/// bounces a minute, ≈150 journal lines a minute (bench 2, 2026-11-18).
+///
+/// `steps` counts the camera's consecutive start-failure parks with no
+/// stable run in between (0 = never parked: the TS ladder). Rules:
+/// - a QUICK exit (not a watchdog stall, not "not found", `ran_ms <
+///   stable_ms`) with `steps == 0` keeps the TS verdict; if that verdict
+///   parks (the 3rd quick failure), `steps` becomes 1;
+/// - a quick exit with `steps >= 1` is a failed PROBE after a park: ONE
+///   attempt per step (no 2 s / 4 s mini-ladder), parked again for
+///   [`absent_backoff_ms`]`(steps + 1)`, one `Warn` line per step;
+/// - an exit after the stable window (the camera worked) resets `steps` to
+///   0 (the stable timer resets it too, in the agent); a stall or a
+///   not-found exit leaves it alone (their own TS ladders decide).
+///
+/// Returns the verdict to apply and the new `steps`. While `steps >= 1`
+/// the capture source is down: the agent holds the camera's KVS master
+/// (`MediaLadder::set_source_absent`) until a probe runs stable.
+pub fn absent_backoff(input: &ExitInput<'_>, v: ExitVerdict, steps: u32) -> (ExitVerdict, u32) {
+    if input.not_found || input.stalled {
+        return (v, steps);
+    }
+    if input.ran_ms >= input.stable_ms {
+        return (v, 0);
+    }
+    if steps == 0 {
+        let parked = v.state == Some(CaptureState::Failed);
+        return (v, u32::from(parked));
+    }
+    let step = steps.saturating_add(1);
+    let restart_ms = absent_backoff_ms(step);
+    let counters = LadderCounters {
+        quick_failures: 0,
+        stall_failures: input.counters.stall_failures,
+        backoff_ms: BASE_BACKOFF_MS,
+    };
+    let event = format!(
+        "video capture {} exited (code {}) at start again; backing off {}s (step {step}; camera absent or broken?)",
+        input.stream_key,
+        code_text(input.exit_code),
+        restart_ms / 1000
+    );
+    (
+        ExitVerdict {
+            state: Some(CaptureState::Failed),
+            counters,
+            level: ActivityLevel::Warn,
+            event,
+            restart_ms,
+        },
+        step,
+    )
+}
+
 /// The watchdog bookkeeping of a `CameraRun` (`video-capture.ts:369-371`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
@@ -444,5 +517,165 @@ mod tests {
             ["shmpipe.12022.    0"]
         );
         assert!(shm_names_to_reap(&names, Some(35)).is_empty());
+    }
+
+    // ---- D86 (F-DA21-KVSLOOP): the start-failure back-off ----
+
+    fn quick(steps_counters: LadderCounters, ran_ms: u64) -> ExitInput<'static> {
+        ExitInput {
+            stream_key: "cam1",
+            exit_code: Some(1),
+            not_found: false,
+            stalled: false,
+            ran_ms,
+            stable_ms: STABLE_MS,
+            ended_session: None,
+            counters: steps_counters,
+        }
+    }
+
+    /// One exit through the TS ladder and the D86 overlay, like the agent.
+    fn step(c: LadderCounters, steps: u32, ran_ms: u64) -> (ExitVerdict, u32) {
+        let i = quick(c, ran_ms);
+        absent_backoff(&i, exit_verdict(&i), steps)
+    }
+
+    #[test]
+    fn d86_backoff_schedule_is_exponential_and_capped_at_5_min() {
+        let got: Vec<u64> = (1..=8).map(absent_backoff_ms).collect();
+        assert_eq!(
+            got,
+            [60_000, 120_000, 240_000, 300_000, 300_000, 300_000, 300_000, 300_000]
+        );
+        assert_eq!(
+            absent_backoff_ms(0),
+            PARKED_RETRY_MS,
+            "step 0 never schedules; clamp"
+        );
+        assert_eq!(
+            absent_backoff_ms(u32::MAX),
+            ABSENT_BACKOFF_MAX_MS,
+            "no overflow"
+        );
+        assert_eq!(
+            absent_backoff_ms(1),
+            PARKED_RETRY_MS,
+            "step 1 = the TS park"
+        );
+    }
+
+    /// An absent sensor (every child dies at start): the TS ladder once
+    /// (2 s, 4 s, park 60 s, its exact lines), then ONE attempt and ONE line
+    /// per back-off step: 120 s, 240 s, 300 s, 300 s.
+    #[test]
+    fn d86_absent_sensor_walks_the_ts_ladder_once_then_one_probe_per_step() {
+        let mut c = LadderCounters::default();
+        let mut steps = 0;
+        let mut delays = Vec::new();
+        let mut lines = Vec::new();
+        for _ in 0..7 {
+            let (v, s) = step(c, steps, 120);
+            c = v.counters;
+            steps = s;
+            delays.push(v.restart_ms);
+            lines.push(v.event.clone());
+            assert_eq!(v.level, ActivityLevel::Warn);
+        }
+        assert_eq!(
+            delays,
+            [2_000, 4_000, 60_000, 120_000, 240_000, 300_000, 300_000]
+        );
+        assert_eq!(steps, 5);
+        // The first three lines are the TS's, byte for byte.
+        assert_eq!(
+            lines[0],
+            "video capture cam1 exited (code 1); retry 1/3 in 2000ms"
+        );
+        assert_eq!(
+            lines[1],
+            "video capture cam1 exited (code 1); retry 2/3 in 4000ms"
+        );
+        assert_eq!(
+            lines[2],
+            "video capture cam1 exited (code 1) before stabilizing 3x; parking for 60s (camera in use? libcamera error?)"
+        );
+        assert_eq!(
+            lines[3],
+            "video capture cam1 exited (code 1) at start again; backing off 120s (step 2; camera absent or broken?)"
+        );
+        assert_eq!(
+            lines[6],
+            "video capture cam1 exited (code 1) at start again; backing off 300s (step 5; camera absent or broken?)"
+        );
+        // Spawns per hour at the cap: 3600 / 300 = 12, vs the TS's 3 per ~66 s ≈ 164.
+    }
+
+    #[test]
+    fn d86_probe_park_state_and_counters() {
+        let c = LadderCounters {
+            quick_failures: 0,
+            stall_failures: 2,
+            backoff_ms: BASE_BACKOFF_MS,
+        };
+        let (v, s) = step(c, 1, 50);
+        assert_eq!(s, 2);
+        assert_eq!(
+            v.state,
+            Some(CaptureState::Failed),
+            "parked = failed, as the TS park"
+        );
+        assert_eq!(
+            v.counters,
+            LadderCounters {
+                quick_failures: 0,
+                stall_failures: 2,
+                backoff_ms: BASE_BACKOFF_MS
+            },
+            "the stall counter is the watchdog's own; untouched"
+        );
+        // A signal death prints `?` like the TS.
+        let mut i = quick(c, 10);
+        i.exit_code = None;
+        let (v, _) = absent_backoff(&i, exit_verdict(&i), 3);
+        assert!(
+            v.event
+                .contains("(code ?) at start again; backing off 300s (step 4;"),
+            "{}",
+            v.event
+        );
+    }
+
+    /// A camera that ran stable resets the back-off (recovery); the TS
+    /// verdict is untouched.
+    #[test]
+    fn d86_a_stable_run_resets_the_steps() {
+        let c = LadderCounters::default();
+        let i = quick(c, STABLE_MS);
+        let v = exit_verdict(&i);
+        let (got, s) = absent_backoff(&i, v.clone(), 4);
+        assert_eq!((got, s), (v, 0));
+    }
+
+    /// Stalls and not-found exits keep their own TS ladders and leave the
+    /// steps alone; a camera that never parked is pure TS.
+    #[test]
+    fn d86_never_parked_stall_and_not_found_are_pure_ts() {
+        for (stalled, not_found) in [(true, false), (false, true)] {
+            let mut i = quick(LadderCounters::default(), 50_000);
+            i.stalled = stalled;
+            i.not_found = not_found;
+            let v = exit_verdict(&i);
+            assert_eq!(absent_backoff(&i, v.clone(), 3), (v, 3));
+        }
+        for q in 0..MAX_QUICK_FAILURES - 1 {
+            let c = LadderCounters {
+                quick_failures: q,
+                stall_failures: 0,
+                backoff_ms: BASE_BACKOFF_MS << q,
+            };
+            let i = quick(c, 100);
+            let v = exit_verdict(&i);
+            assert_eq!(absent_backoff(&i, v.clone(), 0), (v, 0), "q={q}");
+        }
     }
 }

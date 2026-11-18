@@ -53,6 +53,15 @@
 //! successor's run; unobservable for every TS-reachable input). Without hooks (every real device) every path is
 //! byte-for-byte the pre-7e behaviour: `cycle()` finalises the last fragment
 //! and re-enters the normal ladder (the TS without `respawnHoldMs`).
+//!
+//! D86 (F-DA21-KVSLOOP, Rust-only): a camera whose children keep dying at
+//! start (an absent or broken sensor) walks the TS ladder ONCE (2 s, 4 s,
+//! park 60 s), then gets one probe per exponential back-off step (120 s,
+//! 240 s, then every 300 s), one event line per step
+//! (`capture_ladder::absent_backoff`). While it is parked the supervisor
+//! reports the source down (`on_source_absent(key, true)`) so the agent
+//! holds the camera's KVS master; a probe that runs stable (or the camera
+//! retiring) reports it up again. Other cameras are untouched.
 
 pub mod backend;
 pub mod recover;
@@ -69,10 +78,10 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use tracing::error;
 use xorgate_core::capture_ladder::{
-    camera_disabled_event, exit_verdict, is_recording, progress_verdict, spawn_event,
-    stagger_delay_ms, stall_event, stderr_log_line, CaptureState, ExitInput, LadderCounters,
-    Progress, ProgressVerdict, BASE_BACKOFF_MS, SHM_SEGMENT_DIR, STABLE_MS, STALL_MS,
-    SWEEP_POLL_MS,
+    absent_backoff, camera_disabled_event, exit_verdict, is_recording, progress_verdict,
+    spawn_event, stagger_delay_ms, stall_event, stderr_log_line, CaptureState, ExitInput,
+    LadderCounters, Progress, ProgressVerdict, BASE_BACKOFF_MS, SHM_SEGMENT_DIR, STABLE_MS,
+    STALL_MS, SWEEP_POLL_MS,
 };
 use xorgate_core::clock::Clock;
 use xorgate_core::hardware_block::EncoderToken;
@@ -105,6 +114,9 @@ pub const CAPTURE_SOURCE_HEAD_ENV: &str = "XORGATE_CAPTURE_SOURCE_HEAD";
 pub type EventFn = Arc<dyn Fn(ActivityLevel, &str) + Send + Sync>;
 /// `onSpawned(streamKey)`.
 pub type KeyFn = Arc<dyn Fn(&str) + Send + Sync>;
+/// D86: `(streamKey, absent)` — the camera's capture source went down (a
+/// start-failure park) or came up (a stable run, or the camera retired).
+pub type SourceAbsentFn = Arc<dyn Fn(&str, bool) + Send + Sync>;
 /// `onActiveSegment(streamKey, path | null)`.
 pub type ActivePathFn = Arc<dyn Fn(&str, Option<&Path>) + Send + Sync>;
 /// `onSegmentClosed(mp4Path)`.
@@ -175,6 +187,11 @@ pub struct VideoCaptureOpts {
     pub on_status: Option<StatusFn>,
     pub on_event: Option<EventFn>,
     pub on_spawned: Option<KeyFn>,
+    /// D86 (Rust-only): the source-down / source-up edge of a camera, so the
+    /// agent holds its KVS master while the sensor is absent. Called with
+    /// `true` at every start-failure park step and `false` at every stable
+    /// promotion and when the camera retires; the receiver dedups.
+    pub on_source_absent: Option<SourceAbsentFn>,
     /// Wall clock for naming/stamping; its mono half measures every interval
     /// (rotation-free stall window, stable window, P8).
     pub clock: Arc<dyn Clock + Send + Sync>,
@@ -227,6 +244,7 @@ impl VideoCaptureOpts {
             on_status: None,
             on_event: None,
             on_spawned: None,
+            on_source_absent: None,
             clock,
             tape: null_tape(),
             stable_ms: STABLE_MS,
@@ -293,6 +311,9 @@ struct Run {
     /// Monotonic ms at spawn.
     started_at: u64,
     counters: LadderCounters,
+    /// D86: consecutive start-failure parks with no stable run in between
+    /// (`capture_ladder::absent_backoff`); 0 = the TS ladder.
+    absent_steps: u32,
     stable_timer: Option<Timer>,
     restart_timer: Option<Timer>,
     /// fs.watch + its pump task; `watch_gen` guards both sweep sources.
@@ -324,6 +345,7 @@ impl Run {
             manifest: None,
             started_at: 0,
             counters: LadderCounters::default(),
+            absent_steps: 0,
             stable_timer: None,
             restart_timer: None,
             watcher: None,
@@ -382,6 +404,8 @@ enum Fx {
     Closed(PathBuf),
     /// Replay `onEnded(streamKey, clean)`.
     Ended(String, bool),
+    /// D86 `onSourceAbsent(streamKey, absent)`.
+    SourceAbsent(String, bool),
 }
 
 /// A deferred signal (delivered after the callbacks).
@@ -501,6 +525,8 @@ impl VideoCaptureSupervisor {
                 } else {
                     s.final_sweep(&key, run, true, &mut out);
                     g.runs.shift_remove(&key);
+                    // D86: no capture of this camera any more → no hold.
+                    out.fx.push(Fx::SourceAbsent(key.clone(), false));
                 }
                 out.fx
                     .push(Fx::Event(ActivityLevel::Info, camera_disabled_event(&key)));
@@ -790,6 +816,11 @@ impl Shared {
                         f(&key);
                     }
                 }
+                Fx::SourceAbsent(key, absent) => {
+                    if let Some(f) = &o.on_source_absent {
+                        f(&key, absent);
+                    }
+                }
                 Fx::Active(key, path) => {
                     if let Some(f) = &o.on_active_path {
                         f(&key, path.as_deref());
@@ -1045,6 +1076,10 @@ fn fire(s: &Arc<Shared>, key: &str, run_id: u64, slot: Slot, gen: u64) {
                     run.counters.quick_failures = 0;
                     run.counters.backoff_ms = BASE_BACKOFF_MS;
                     out.fx.push(Fx::Status);
+                    // D86: the source is up (a recovered sensor ends the
+                    // back-off and releases its KVS master).
+                    run.absent_steps = 0;
+                    out.fx.push(Fx::SourceAbsent(key.to_string(), false));
                 }
             }
             // A stagger slot or `scheduleRestart` (`:484-487`, `:893-899`).
@@ -1345,6 +1380,8 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
             // Disabled camera: finalised and swept — drop it entirely.
             runs.shift_remove(key);
             out.fx.push(Fx::Status);
+            // D86: no capture of this camera any more → no hold.
+            out.fx.push(Fx::SourceAbsent(key.to_string(), false));
         } else if stopped {
             run.state = CaptureState::Stopped;
             out.fx.push(Fx::Status);
@@ -1360,7 +1397,7 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
             hold_after = Some((run.id, ended.clone()));
         } else {
             let ran_ms = o.clock.mono_ms().saturating_sub(run.started_at);
-            let v = exit_verdict(&ExitInput {
+            let input = ExitInput {
                 stream_key: key,
                 exit_code: done.exit_code,
                 // execa 9 (`reject:false`) resolves a missing binary with
@@ -1372,7 +1409,12 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
                 stable_ms: o.stable_ms,
                 ended_session: ended.as_deref(),
                 counters: run.counters,
-            });
+            };
+            // D86 (F-DA21-KVSLOOP): the TS ladder until the first park, then
+            // one probe per exponential back-off step (60 s → 5 min cap).
+            let prev_steps = run.absent_steps;
+            let (v, steps) = absent_backoff(&input, exit_verdict(&input), prev_steps);
+            run.absent_steps = steps;
             if let Some(st) = v.state {
                 run.state = st;
             }
@@ -1380,6 +1422,13 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
             out.fx.push(Fx::Event(v.level, v.event));
             run.restart_timer = Some(arm(s, counter, v.restart_ms, key, run.id, Slot::Restart));
             out.fx.push(Fx::Status);
+            if steps > 0 {
+                // D86: parked on a start failure — hold the KVS master.
+                out.fx.push(Fx::SourceAbsent(key.to_string(), true));
+            } else if prev_steps > 0 {
+                // It ran stable (an exit racing the stable timer): release.
+                out.fx.push(Fx::SourceAbsent(key.to_string(), false));
+            }
         }
     }
     s.flush(out);

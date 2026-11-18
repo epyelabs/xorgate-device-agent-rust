@@ -204,6 +204,8 @@ pub type ActiveSegmentFn = Arc<dyn Fn(&str, Option<PathBuf>) + Send + Sync>;
 pub type LiveShedFn = Arc<dyn Fn(bool) + Send + Sync>;
 /// `setDisabledCameras(keys)`.
 pub type DisabledCamerasFn = Arc<dyn Fn(&[String]) + Send + Sync>;
+/// D86: `(streamKey, absent)` — a capture source went down / came back up.
+pub type SourceAbsentFn = Arc<dyn Fn(&str, bool) + Send + Sync>;
 /// `onStatus(status)`.
 pub type StatusFn = Arc<dyn Fn(&RecordingStatus) + Send + Sync>;
 /// `clockTrusted: () => boolean` (`manager.ts:190-197` @ 09da38d): the clock
@@ -247,6 +249,8 @@ pub struct CaptureSpec {
     pub on_event: EventFn,
     /// `onSpawned(streamKey)` → bounce that stream's KVS master.
     pub on_spawned: Arc<dyn Fn(&str) + Send + Sync>,
+    /// D86: `(streamKey, absent)` → hold / release that stream's KVS master.
+    pub on_source_absent: SourceAbsentFn,
     /// Replay-mode capture hooks (Phase 7e); `None` = real mode.
     pub replay: Option<Arc<dyn crate::recording::capture::ReplayCaptureHooks>>,
 }
@@ -338,6 +342,9 @@ pub struct VideoOpts {
     pub encoder: Arc<dyn Fn() -> EncoderToken + Send + Sync>,
     /// `onCaptureSpawned(streamKey)` → `MediaSupervisor::restart_channel`.
     pub on_capture_spawned: Arc<dyn Fn(&str) + Send + Sync>,
+    /// D86 (Rust-only): the capture source of a stream went down / came up
+    /// → `MediaSupervisor::set_source_absent`.
+    pub on_capture_source_absent: SourceAbsentFn,
     /// `setLiveShed(shed)` → `MediaSupervisor::set_shed` — called ONLY from
     /// the choke point in `apply_video`.
     pub set_live_shed: Option<LiveShedFn>,
@@ -1317,6 +1324,7 @@ impl Inner {
             })
         };
         let spawned = vo.on_capture_spawned.clone();
+        let source_absent = vo.on_capture_source_absent.clone();
         let capture = self.backend.capture(CaptureSpec {
             device_id: self.device_id.clone(),
             cameras,
@@ -1333,6 +1341,7 @@ impl Inner {
             on_status: self.status_notifier(),
             on_event: self.on_event.clone(),
             on_spawned: Arc::new(move |k: &str| spawned(k)),
+            on_source_absent: source_absent,
             replay: vo.replay.clone(),
         });
         lock(&self.slots).capture = Some(capture.clone());

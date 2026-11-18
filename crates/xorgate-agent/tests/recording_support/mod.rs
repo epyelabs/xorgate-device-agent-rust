@@ -571,6 +571,7 @@ impl Rig {
             on_capture_spawned: Arc::new(move |k: &str| {
                 l3.spawned_callbacks.lock().unwrap().push(k.to_string())
             }),
+            on_capture_source_absent: Arc::new(|_: &str, _: bool| {}),
             set_live_shed: Some(Arc::new(move |s: bool| {
                 l1.live_shed.lock().unwrap().push(s);
                 if let Some(h) = &hook {

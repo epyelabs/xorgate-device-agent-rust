@@ -205,6 +205,14 @@ impl MediaSupervisor {
         self.inner.run(|l, _, _| l.restart_channel(key));
     }
 
+    /// D86 (F-DA21-KVSLOOP, Rust-only): the capture source of `key` is down
+    /// (hold its master) or up again (start it); see
+    /// `MediaLadder::set_source_absent`.
+    pub fn set_source_absent(&self, key: &str, absent: bool) {
+        self.inner
+            .run(|l, now, env| l.set_source_absent(key, absent, now, env));
+    }
+
     /// `setShed(shed)` (`media.ts:300-329`): the ONLY live-parking actuator
     /// (the decision is WP1's choke point).
     pub fn set_shed(&self, shed: bool) {
