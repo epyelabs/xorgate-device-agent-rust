@@ -222,7 +222,8 @@ a1=$(grep -n '^apt-get ' "$E/apt.log" | head -1 | cut -d: -f1)
   && ok "P1b: no ip call beyond usb0's link and the default routes" || bad "P1b: other ip calls: $(grep '^ip ' "$E/apt.log" | sort -u | tr '\n' '|')"
 p1=$(grep -n '^ping .*-I usb0' "$E/apt.log" | head -1 | cut -d: -f1)
 [ -n "$p1" ] && [ "$p1" -lt "$d4" ] && ok "P1b: a usb0-bound probe ran (and failed) before the deletes" || bad "P1b: probe line $p1, delete $d4"
-grep -q 'removed a stale IPv4 default route on usb0 (no live owner; metric 100)' "$OUT" && grep -q 'removed a stale IPv6 default route on usb0 (no live owner; metric 100)' "$OUT" \
+grep -q 'removed a stale IPv4 default route on usb0 (no live owner, usb0 unreachable, eth1 is up; metric 100)' "$OUT" \
+  && grep -q 'removed a stale IPv6 default route on usb0 (no live owner, usb0 unreachable, eth1 is up; metric 100)' "$OUT" \
   && ok "P1b: both removals in the session output" || bad "P1b: no removal lines"
 reset_device; stale_usb0 eth1; printf 'eth1:connected\nusb0:connected\n' > "$E/nmcli.out"; run_boot; expect_rc 0 "usb0 managed by NM"
 [ -s "$E/net/route4" ] && [ -s "$E/net/route6" ] && ! grep -q 'route del' "$E/apt.log" && grep -q 'usb0 default routes kept (live owner: NetworkManager (connected))' "$OUT" \

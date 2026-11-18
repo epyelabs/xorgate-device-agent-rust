@@ -133,6 +133,7 @@ kernel_rows() {
   daemon_up 100
   [ "$(defs | tr '\n' '|')" = "default via 10.1.0.1 dev eth1 proto dhcp metric 100|default via 10.66.0.1 dev usb0 metric 100|" ] && [ "$(dev_of 1.1.1.1)" = eth1 ] \
     && pass "K6 an override EQUAL to eth1's metric (100): appended beside it, eth1 kept and still first" || failc "K6 defaults: $(defs | tr '\n' '|') uplink $(dev_of 1.1.1.1)"
+  ! grep -q 'IF_METRIC' "$T/dhclient.args" && pass "K6b on that tie dhclient gets no IF_METRIC (its EXCL add would fail; the append covers it)" || failc "K6b args: $(cat "$T/dhclient.args")"
 
   reset; mk usb0 10.66.0.9/24
   daemon_up 1e3

@@ -2491,6 +2491,25 @@ lte_route_metric() {
     fi
 }
 
+# dhclient's `-e IF_METRIC=<metric>` (SHOULD-2), or nothing when another
+# interface's default already has that metric: dhclient-script's `ip route
+# add` (NLM_F_EXCL) would then fail with EEXIST and leave usb0 with NO
+# default; without IF_METRIC it adds metric 0 and install_lte_default_route
+# appends the tie beside the other route (an operator override only; the
+# default 1000 never ties with a NetworkManager metric).
+lte_dhclient_metric_env() {
+    local m
+    m=$(lte_route_metric)
+    if ip -4 route show default 2>/dev/null | awk -v d="$IFACE" -v m="$m" '
+        { dev = ""; met = 0
+          for (i = 1; i < NF; i++) { if ($i == "dev") dev = $(i + 1); if ($i == "metric") met = $(i + 1) }
+          if (dev != d && met == m) tie = 1 }
+        END { exit !tie }'; then
+        return 0
+    fi
+    echo "IF_METRIC=$m"
+}
+
 install_lte_default_route() {
     local gw metric out n=0
     metric=$(lte_route_metric)
@@ -2498,7 +2517,10 @@ install_lte_default_route() {
         || warn "SIM7600_ROUTE_METRIC='$LTE_ROUTE_METRIC' is not a route metric; using $metric."
     gw=$(ip -4 route show default dev "$IFACE" 2>/dev/null \
          | awk '$1 == "default" && $2 == "via" {print $3; exit}')
-    [[ -n "$gw" ]] || return 0
+    if [[ -z "$gw" ]]; then
+        warn "no default route via $IFACE after dhclient; LTE carries nothing until the next connect cycle."
+        return 0
+    fi
     while [[ -n "$(ip -4 route show default dev "$IFACE" 2>/dev/null)" ]] && (( n++ < 16 )); do
         ip -4 route del default dev "$IFACE" 2>/dev/null || break
     done
@@ -2558,7 +2580,9 @@ bring_up_interface() {
     # LTE never sits at metric 0 above wired/WiFi between our own fix-ups
     # (v0.1.1, review-v011-wp-a SHOULD-2). install_lte_default_route below
     # stays as the belt.
-    timeout 45 dhclient -e IF_METRIC="$(lte_route_metric)" -1 -v "$IFACE" 2>&1 | tee -a /var/log/sim7600-lte.log
+    local dh_env
+    dh_env=$(lte_dhclient_metric_env)
+    timeout 45 dhclient ${dh_env:+-e "$dh_env"} -1 -v "$IFACE" 2>&1 | tee -a /var/log/sim7600-lte.log
     local dh_status="${PIPESTATUS[0]}"
     if [[ "$dh_status" -ne 0 ]]; then
         err "dhclient failed on $IFACE (exit $dh_status)."
