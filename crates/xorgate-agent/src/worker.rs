@@ -248,9 +248,9 @@ fn build_recording_manager(
         }),
         // D86 (Rust-only): hold / release the master of a camera whose
         // capture parked on a start-failure streak (F-DA21-KVSLOOP).
-        on_capture_source_absent: Arc::new(move |key: &str, absent: bool| {
+        on_capture_source_absent: Arc::new(move |key: &str, absent: bool, seq: u64| {
             if let Some(m) = &m4 {
-                m.set_source_absent(key, absent);
+                m.set_source_absent(key, absent, seq);
             }
         }),
         // `source.setLiveShed?.(shed)` — reached ONLY through the manager's choke point.

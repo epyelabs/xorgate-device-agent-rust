@@ -204,8 +204,9 @@ pub type ActiveSegmentFn = Arc<dyn Fn(&str, Option<PathBuf>) + Send + Sync>;
 pub type LiveShedFn = Arc<dyn Fn(bool) + Send + Sync>;
 /// `setDisabledCameras(keys)`.
 pub type DisabledCamerasFn = Arc<dyn Fn(&[String]) + Send + Sync>;
-/// D86: `(streamKey, absent)` — a capture source went down / came back up.
-pub type SourceAbsentFn = Arc<dyn Fn(&str, bool) + Send + Sync>;
+/// D86: `(streamKey, absent, seq)` — a capture source went down / came back
+/// up (`capture::SourceAbsentFn`; `seq` from `capture::next_source_seq`).
+pub type SourceAbsentFn = crate::recording::capture::SourceAbsentFn;
 /// `onStatus(status)`.
 pub type StatusFn = Arc<dyn Fn(&RecordingStatus) + Send + Sync>;
 /// `clockTrusted: () => boolean` (`manager.ts:190-197` @ 09da38d): the clock
@@ -803,8 +804,11 @@ impl RecordingManager {
         }
         let capture = lock(&inner.slots).capture.take();
         if let Some(c) = capture {
+            let keys = capture_keys(&c);
             c.stop();
             lock(&inner.slots).exiting_capture = Some(c);
+            // D86 (review S2): no capture any more → no held master.
+            inner.release_sources(keys);
         }
         st.video_key.clear();
         st.video_cameras_key.clear();
@@ -925,6 +929,20 @@ impl Inner {
     /// retiring list (pointer identity).
     fn retired(&self, c: &Arc<dyn CaptureApi>) {
         lock(&self.slots).retiring.retain(|x| !Arc::ptr_eq(x, c));
+    }
+
+    /// D86 (review S2): a capture transition ended the capture of `keys`
+    /// (StopAll, a Replace whose new set lacks them, a superseded Replace,
+    /// shutdown) — release any KVS master held for them. The supervisor's
+    /// own edges only cover cameras it retires; `stop()` deliberately sends
+    /// none (a Replace that keeps the key re-decides with its own runs).
+    /// Each release carries a fresh sequence number, so a park edge still in
+    /// flight from the stopped supervisor cannot re-hold it afterwards.
+    fn release_sources(&self, keys: impl IntoIterator<Item = String>) {
+        let Some(vo) = &self.video else { return };
+        for k in keys {
+            (vo.on_capture_source_absent)(&k, false, crate::recording::capture::next_source_seq());
+        }
     }
 
     fn self_weak(&self) -> std::sync::Weak<Inner> {
@@ -1521,6 +1539,11 @@ async fn message_task(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Msg>) {
     }
 }
 
+/// D86: the stream keys a capture supervisor currently runs.
+fn capture_keys(c: &Arc<dyn CaptureApi>) -> Vec<String> {
+    c.status().into_iter().map(|s| s.stream_key).collect()
+}
+
 /// The `videoTransition` chain (`manager.ts:556-593`): strictly in order;
 /// after `stop()` the queued links still run (a `Replace` then finds itself
 /// superseded, as in the TS).
@@ -1539,8 +1562,10 @@ async fn transition_task(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Tran
                 let _ = done.send(());
             }
             Transition::StopAndWait(c) => {
+                let keys = capture_keys(&c);
                 c.stop_and_wait().await;
                 inner.retired(&c);
+                inner.release_sources(keys);
             }
             Transition::SetCameras(c, cams) => c.set_cameras(cams).await,
             Transition::Replace {
@@ -1552,13 +1577,29 @@ async fn transition_task(inner: Arc<Inner>, mut rx: mpsc::UnboundedReceiver<Tran
                 preset,
                 encoder,
             } => {
+                let mut prev_keys = Vec::new();
                 if let Some(p) = prev {
+                    prev_keys = capture_keys(&p);
                     p.stop_and_wait().await;
                     inner.retired(&p);
                 }
                 let st = lock(&inner.state);
                 // Superseded by a newer change while we were stopping.
-                if st.video_key != key || st.video_cameras_key != cameras_key {
+                let superseded = st.video_key != key || st.video_cameras_key != cameras_key;
+                // D86 (review S2): release what the new set does not carry
+                // (everything when superseded: nothing restarts these runs).
+                let kept: HashSet<&str> = if superseded {
+                    HashSet::new()
+                } else {
+                    cameras.iter().map(|c| c.stream_key.as_str()).collect()
+                };
+                inner.release_sources(
+                    prev_keys
+                        .into_iter()
+                        .filter(|k| !kept.contains(k.as_str()))
+                        .collect::<Vec<_>>(),
+                );
+                if superseded {
                     continue;
                 }
                 inner.start_video(&st, cameras, record, preset, encoder);

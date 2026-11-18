@@ -178,8 +178,8 @@ impl MediaControl for crate::media::MediaSupervisor {
     fn set_disabled_streams(&self, keys: &[String]) {
         crate::media::MediaSupervisor::set_disabled_streams(self, keys)
     }
-    fn set_source_absent(&self, key: &str, absent: bool) {
-        crate::media::MediaSupervisor::set_source_absent(self, key, absent)
+    fn set_source_absent(&self, key: &str, absent: bool, seq: u64) {
+        crate::media::MediaSupervisor::set_source_absent(self, key, absent, seq)
     }
 }
 

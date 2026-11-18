@@ -16,7 +16,7 @@
 //! the sensor starts working, and cam0 never disturbed.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,6 +25,7 @@ use xorgate_agent::ctx::AgentClock;
 use xorgate_agent::media::{GuardFn, MasterBackend, MasterProc, MediaConfig, MediaSupervisor};
 use xorgate_agent::recording::capture::*;
 use xorgate_core::capture_ladder::CaptureState;
+use xorgate_core::clock::Clock;
 use xorgate_core::media_ladder::RuntimeDetect;
 use xorgate_core::stream_guard::StreamGuard;
 use xorgate_core::telemetry::ActivityLevel;
@@ -74,8 +75,15 @@ impl CaptureChild for CapChild {
 
 struct CapBackend {
     origin: tokio::time::Instant,
-    /// The cam1 sensor is absent (its children die at start).
+    /// The cam1 sensor is absent (its children die 100 ms after spawn).
     cam1_absent: Arc<AtomicBool>,
+    /// When non-zero (and not absent): a cam1 child dies with exit 1 this
+    /// many ms after spawn (a camera that RUNS, then crashes).
+    cam1_dies_after_ms: Arc<AtomicU64>,
+    /// Added to the capture clock's monotonic time when a cam1 child dies
+    /// (fakes "it ran past the stable window" without the stable timer).
+    cam1_exit_jump_ms: Arc<AtomicU64>,
+    clock_offset: Arc<AtomicU64>,
     spawns: Mutex<Vec<(String, u64)>>,
 }
 
@@ -102,6 +110,7 @@ impl CaptureBackend for CapBackend {
             .lock()
             .unwrap()
             .push((e.key.clone(), ms(self.origin)));
+        let dies = self.cam1_dies_after_ms.load(Ordering::SeqCst);
         if key == "cam1" && self.cam1_absent.load(Ordering::SeqCst) {
             let e2 = e.clone();
             tokio::spawn(async move {
@@ -113,8 +122,31 @@ impl CaptureBackend for CapBackend {
                 ));
                 e2.exit(Some(1));
             });
+        } else if key == "cam1" && dies > 0 {
+            let e2 = e.clone();
+            let (jump, off) = (self.cam1_exit_jump_ms.clone(), self.clock_offset.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(dies)).await;
+                off.fetch_add(jump.load(Ordering::SeqCst), Ordering::SeqCst);
+                e2.exit(Some(1));
+            });
         }
         (Box::new(CapChild(e)), rx)
+    }
+}
+
+/// The tokio-following agent clock plus a jump the test controls.
+struct OffsetClock {
+    inner: AgentClock,
+    offset: Arc<AtomicU64>,
+}
+
+impl Clock for OffsetClock {
+    fn wall_ms(&self) -> i64 {
+        self.inner.wall_ms() + self.offset.load(Ordering::SeqCst) as i64
+    }
+    fn mono_ms(&self) -> u64 {
+        self.inner.mono_ms() + self.offset.load(Ordering::SeqCst)
     }
 }
 
@@ -230,11 +262,16 @@ impl Drop for Home {
 }
 
 type Events = Arc<Mutex<Vec<(u64, ActivityLevel, String)>>>;
+/// Every D86 source edge the capture emitted: (t, key, absent).
+type Edges = Arc<Mutex<Vec<(u64, String, bool)>>>;
 
 struct World {
     origin: tokio::time::Instant,
     _home: Home,
     cam1_absent: Arc<AtomicBool>,
+    cam1_dies_after_ms: Arc<AtomicU64>,
+    cam1_exit_jump_ms: Arc<AtomicU64>,
+    edges: Edges,
     cap_be: Arc<CapBackend>,
     cap: VideoCaptureSupervisor,
     media: MediaSupervisor,
@@ -273,9 +310,15 @@ fn world() -> World {
     );
 
     let cam1_absent = Arc::new(AtomicBool::new(true));
+    let cam1_dies_after_ms = Arc::new(AtomicU64::new(0));
+    let cam1_exit_jump_ms = Arc::new(AtomicU64::new(0));
+    let clock_offset = Arc::new(AtomicU64::new(0));
     let cap_be = Arc::new(CapBackend {
         origin,
         cam1_absent: cam1_absent.clone(),
+        cam1_dies_after_ms: cam1_dies_after_ms.clone(),
+        cam1_exit_jump_ms: cam1_exit_jump_ms.clone(),
+        clock_offset: clock_offset.clone(),
         spawns: Mutex::default(),
     });
     let mut o = VideoCaptureOpts::new(
@@ -297,7 +340,10 @@ fn world() -> World {
         home.0.join("shm"),
         "boot-1",
         Arc::new(|| TimeSource::Ntp),
-        Arc::new(AgentClock::following_tokio(1_760_000_000_000)),
+        Arc::new(OffsetClock {
+            inner: AgentClock::following_tokio(1_760_000_000_000),
+            offset: clock_offset,
+        }),
     );
     o.backend = cap_be.clone();
     o.fs_watch = false;
@@ -310,12 +356,20 @@ fn world() -> World {
     let m1 = media.clone();
     o.on_spawned = Some(Arc::new(move |k: &str| m1.restart_channel(k)));
     let m2 = media.clone();
-    o.on_source_absent = Some(Arc::new(move |k: &str, a: bool| m2.set_source_absent(k, a)));
+    let edges: Edges = Arc::default();
+    let e2 = edges.clone();
+    o.on_source_absent = Some(Arc::new(move |k: &str, a: bool, seq: u64| {
+        e2.lock().unwrap().push((ms(origin), k.to_string(), a));
+        m2.set_source_absent(k, a, seq)
+    }));
     let cap = VideoCaptureSupervisor::new(o);
     World {
         origin,
         _home: home,
         cam1_absent,
+        cam1_dies_after_ms,
+        cam1_exit_jump_ms,
+        edges,
         cap_be,
         cap,
         media,
@@ -428,13 +482,13 @@ async fn absent_sensor_backs_off_holds_its_master_and_recovers() {
             "video capture cam1 exited (code 1); retry 1/3 in 2000ms",
             "video capture cam1 exited (code 1); retry 2/3 in 4000ms",
             "video capture cam1 exited (code 1) before stabilizing 3x; parking for 60s (camera in use? libcamera error?)",
-            "video capture cam1 exited (code 1) at start again; backing off 120s (step 2; camera absent or broken?)",
-            "video capture cam1 exited (code 1) at start again; backing off 240s (step 3; camera absent or broken?)",
-            "video capture cam1 exited (code 1) at start again; backing off 300s (step 4; camera absent or broken?)",
-            "video capture cam1 exited (code 1) at start again; backing off 300s (step 5; camera absent or broken?)",
-            "video capture cam1 exited (code 1) at start again; backing off 300s (step 6; camera absent or broken?)",
-            "video capture cam1 exited (code 1) at start again; backing off 300s (step 7; camera absent or broken?)",
-            "video capture cam1 exited (code 1) at start again; backing off 300s (step 8; camera absent or broken?)",
+            "video capture cam1 failed at start again (code 1, session ?…); backing off 120s (step 2; camera absent or broken?)",
+            "video capture cam1 failed at start again (code 1, session ?…); backing off 240s (step 3; camera absent or broken?)",
+            "video capture cam1 failed at start again (code 1, session ?…); backing off 300s (step 4; camera absent or broken?)",
+            "video capture cam1 failed at start again (code 1, session ?…); backing off 300s (step 5; camera absent or broken?)",
+            "video capture cam1 failed at start again (code 1, session ?…); backing off 300s (step 6; camera absent or broken?)",
+            "video capture cam1 failed at start again (code 1, session ?…); backing off 300s (step 7; camera absent or broken?)",
+            "video capture cam1 failed at start again (code 1, session ?…); backing off 300s (step 8; camera absent or broken?)",
         ]
     );
 
@@ -516,6 +570,118 @@ async fn retiring_a_held_camera_releases_its_master() {
     assert_eq!(master_spawns(&w, "dev-cam1").len(), before + 1, "released");
     assert_eq!(media_state(&w, "cam1"), "starting");
 
+    w.cap.stop();
+    w.media.stop();
+    settle().await;
+}
+
+fn cam1_edges(w: &World) -> Vec<(u64, bool)> {
+    w.edges
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, k, _)| k == "cam1")
+        .map(|(t, _, a)| (*t, *a))
+        .collect()
+}
+
+/// Review S1: a camera that RUNS ~10 s and then crashes is not absent: the
+/// plain TS ladder (2 s, 4 s, park 60 s, repeat), never a gap past 60 s,
+/// never a `true` edge, so its master is never held.
+#[tokio::test(start_paused = true)]
+async fn a_camera_that_runs_10s_then_crashes_keeps_the_ts_ladder_and_its_master() {
+    let w = world();
+    w.cam1_absent.store(false, Ordering::SeqCst);
+    w.cam1_dies_after_ms.store(10_000, Ordering::SeqCst);
+    let _ = w.media.read();
+    w.cap.start();
+    settle().await;
+    run_until(&w, 400_000).await;
+
+    // spawn → +10 s exit → +2 s / +4 s / park 60 s, repeating.
+    let sp = cam1_spawns(&w);
+    assert_eq!(
+        &sp[..7],
+        [0, 12_000, 26_000, 96_000, 108_000, 122_000, 192_000],
+        "{sp:?}"
+    );
+    let gaps: Vec<u64> = sp.windows(2).map(|p| p[1] - p[0]).collect();
+    assert!(
+        gaps.iter().all(|g| *g <= 70_000),
+        "never backed off past 60 s: {gaps:?}"
+    );
+    assert!(
+        cam1_edges(&w).iter().all(|(_, a)| !a),
+        "never reported down: {:?}",
+        cam1_edges(&w)
+    );
+    let ev = w.events.lock().unwrap().clone();
+    assert!(ev.iter().all(|(_, _, m)| !m.contains("at start again")));
+    // The master was bounced by the capture respawns (the TS ladder), never
+    // held: it kept being respawned all along.
+    let m1 = master_spawns(&w, "dev-cam1");
+    assert!(m1.len() > 3 && *m1.last().unwrap() > 200_000, "{m1:?}");
+    w.cap.stop();
+    w.media.stop();
+    settle().await;
+}
+
+/// Review S3 (mutant A, `capture/mod.rs` "an exit racing the stable
+/// timer"): a probe that has run past the stable window when it exits,
+/// before its stable timer fired, releases the held master AT that exit.
+#[tokio::test(start_paused = true)]
+async fn a_stable_exit_racing_the_stable_timer_releases_the_master() {
+    let w = world();
+    let _ = w.media.read();
+    w.cap.start();
+    settle().await;
+    run_until(&w, 10_000).await;
+    assert_eq!(media_state(&w, "cam1"), "failed", "held after the park");
+    let before = master_spawns(&w, "dev-cam1").len();
+
+    // The probe at 66.3 s runs 1 s by tokio time, but the capture clock
+    // jumps 20 s at its exit: ran ≥ 15 s with the stable timer still pending.
+    w.cam1_absent.store(false, Ordering::SeqCst);
+    w.cam1_exit_jump_ms.store(20_000, Ordering::SeqCst);
+    w.cam1_dies_after_ms.store(1_000, Ordering::SeqCst);
+    run_until(&w, 67_500).await;
+    assert_eq!(cam1_spawns(&w)[3], 66_300);
+    assert_eq!(
+        cam1_edges(&w).last(),
+        Some(&(67_300, false)),
+        "released at the exit itself"
+    );
+    let m1 = master_spawns(&w, "dev-cam1");
+    assert_eq!(m1.len(), before + 1, "{m1:?}");
+    assert_eq!(m1.last(), Some(&67_300));
+    w.cap.stop();
+    w.media.stop();
+    settle().await;
+}
+
+/// Review S3 (mutant D, the retiring exit): cam1 is retired while its
+/// probe child is still alive; that child's exit releases the master.
+#[tokio::test(start_paused = true)]
+async fn retiring_a_held_camera_during_a_probe_releases_its_master() {
+    let w = world();
+    let _ = w.media.read();
+    w.cap.start();
+    settle().await;
+    run_until(&w, 66_350).await; // the probe spawned at 66.3 s, dies at 66.4 s
+    assert_eq!(cam1_spawns(&w).last(), Some(&66_300));
+    assert_eq!(media_state(&w, "cam1"), "failed");
+    let before = master_spawns(&w, "dev-cam1").len();
+
+    w.cap
+        .set_cameras(&[CaptureCamera {
+            stream_key: "cam0".into(),
+            camera_name: "/base/i2c@88000/imx290@1a".into(),
+        }])
+        .await;
+    settle().await;
+    assert_eq!(cam1_edges(&w).last().map(|e| e.1), Some(false));
+    assert_eq!(master_spawns(&w, "dev-cam1").len(), before + 1, "released");
+    assert_eq!(media_state(&w, "cam1"), "starting");
     w.cap.stop();
     w.media.stop();
     settle().await;

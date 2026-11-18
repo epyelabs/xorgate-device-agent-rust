@@ -264,7 +264,7 @@ pub trait MediaControl: Send + Sync + 'static {
     /// D86 (Rust-only, no TS counterpart): the capture source of `key` went
     /// down (the capture parked it after a start-failure streak: hold the
     /// master) or came back up (start it). Default: ignored.
-    fn set_source_absent(&self, _key: &str, _absent: bool) {}
+    fn set_source_absent(&self, _key: &str, _absent: bool, _seq: u64) {}
 }
 
 /// The OBD collector as the spine uses it (Phase 5b I4; the TS

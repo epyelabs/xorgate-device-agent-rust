@@ -168,6 +168,9 @@ struct Channel {
     quick_failures: u32,
     stable_timer: Option<u64>,
     restart_timer: Option<u64>,
+    /// D86: held because its capture source is down (state `failed`, a
+    /// 60 s guard re-check timer that never spawns while held). Rust-only.
+    held: bool,
 }
 
 /// What a `read()` did.
@@ -191,6 +194,9 @@ pub struct MediaLadder {
     /// D86: stream keys whose capture source is down (the capture
     /// supervisor's start-failure back-off); their masters are held.
     source_absent: BTreeSet<String>,
+    /// D86: the last edge sequence applied per stream key (an older edge,
+    /// delivered late from another capture task, is ignored).
+    source_seq: std::collections::BTreeMap<String, u64>,
     warned: bool,
     manifest: Option<KvsManifest>,
     /// The `channels` Map, in insertion order, keyed by channel name.
@@ -361,6 +367,7 @@ impl MediaLadder {
                 quick_failures: 0,
                 stable_timer: None,
                 restart_timer: None,
+                held: false,
             };
             // `channels.set(name, …)`: a repeated name replaces the entry in place.
             match self.find(&ch.channel_name) {
@@ -415,17 +422,18 @@ impl MediaLadder {
                 });
             }
             self.channels[i].state = parked;
+            self.channels[i].held = false;
             self.schedule_restart(i, Some(PARKED_RETRY_MS), out);
             return;
         }
         if self.source_absent.contains(&self.channels[i].stream_key) {
-            // D86: no capture source to stream from — hold the master (no
-            // timer: `set_source_absent(…, false)` starts it).
-            self.channels[i].state = ChannelState::Failed;
+            // D86: no capture source to stream from — hold the master.
+            self.hold(i, out);
             return;
         }
         let pipeline = env.resolve_pipeline(&self.channels[i].stream_key);
         let c = &mut self.channels[i];
+        c.held = false;
         c.state = ChannelState::Starting;
         c.started_at = now;
         c.has_handle = true;
@@ -446,6 +454,29 @@ impl MediaLadder {
         let delay = delay_ms.unwrap_or(self.channels[i].backoff_ms);
         let id = self.arm(i, TimerKind::Restart, delay, out);
         self.channels[i].restart_timer = Some(id);
+    }
+
+    /// D86: hold channel `i` (its capture source is down): state `failed`,
+    /// one `capture source down` line the first time, and a
+    /// [`PARKED_RETRY_MS`] restart timer that only re-checks the guard
+    /// (review N2: a guard that turns `no-camera` while held shows as such);
+    /// [`Self::spawn`] holds it again while the source stays down.
+    fn hold(&mut self, i: usize, out: &mut Vec<Effect>) {
+        if !self.channels[i].held {
+            self.channels[i].held = true;
+            out.push(Self::down_line(&self.channels[i].channel_name));
+        }
+        self.channels[i].state = ChannelState::Failed;
+        self.schedule_restart(i, Some(PARKED_RETRY_MS), out);
+    }
+
+    fn down_line(name: &str) -> Effect {
+        Effect::Log {
+            level: LogLevel::Warn,
+            line: format!(
+                "[media {name}] capture source down (camera absent or failing); master held until it is up"
+            ),
+        }
     }
 
     /// A timer armed by an [`Effect::Arm`] fired. Ignored when the ladder
@@ -508,7 +539,7 @@ impl MediaLadder {
         }
         if self.source_absent.contains(&self.channels[i].stream_key) {
             // D86: held until its capture source is up; no restart ladder.
-            self.channels[i].state = ChannelState::Failed;
+            self.hold(i, &mut out);
             return out;
         }
         let code = exit_code.map_or_else(|| "?".to_string(), |c| c.to_string());
@@ -574,6 +605,7 @@ impl MediaLadder {
                 self.clear(st);
                 self.clear(rt);
                 self.channels[i].state = ChannelState::Stopped;
+                self.channels[i].held = false;
                 if self.channels[i].has_handle {
                     out.push(Effect::Signal {
                         channel: self.channels[i].channel_name.clone(),
@@ -637,6 +669,7 @@ impl MediaLadder {
                 self.clear(st);
                 self.clear(rt);
                 self.channels[i].state = ChannelState::Stopped;
+                self.channels[i].held = false;
                 if self.channels[i].has_handle {
                     out.push(Effect::Signal {
                         channel: name.clone(),
@@ -649,9 +682,16 @@ impl MediaLadder {
             } else {
                 self.channels[i].quick_failures = 0;
                 self.channels[i].backoff_ms = BASE_BACKOFF_MS;
+                // D86 (review N1): the TS line, plus why nothing starts when
+                // the capture source is down (the down line follows).
+                let held = self.source_absent.contains(&self.channels[i].stream_key) && !self.shed;
                 out.push(Effect::Log {
                     level: LogLevel::Log,
-                    line: format!("[media {name}] camera re-enabled in settings; starting master"),
+                    line: if held {
+                        format!("[media {name}] camera re-enabled in settings; starting master (held: capture source down)")
+                    } else {
+                        format!("[media {name}] camera re-enabled in settings; starting master")
+                    },
                 });
                 if !self.shed
                     && !self.channels[i].has_handle
@@ -666,24 +706,32 @@ impl MediaLadder {
 
     /// D86 (F-DA21-KVSLOOP, Rust-only): the capture source of `stream_key`
     /// went down (`absent`: the capture supervisor parked the camera after a
-    /// start-failure streak) or came back up (its probe ran stable, or the
-    /// capture run went away). The TS has no such input: its master keeps
-    /// being bounced by every capture respawn and, while viewed, spins on the
-    /// missing socket (≈91% of a core on bench 2).
+    /// start-failure streak) or came back up (a healthy capture run, the
+    /// camera retired, or the recording manager's release after a capture
+    /// transition). The TS has no such input: its master keeps being bounced
+    /// by every capture respawn and, while viewed, spins on the missing
+    /// socket (≈91% of a core on bench 2).
+    ///
+    /// `seq` orders the edges per key: one older than the last applied is
+    /// ignored (they are delivered after the capture lock, from different
+    /// tasks).
     ///
     /// - down: the channel's timers are cleared, a live master is SIGINTed,
-    ///   the state is `failed`, and [`Self::spawn`] holds it (no timer) until
-    ///   the source is up; one line per transition;
-    /// - up: a held channel (not disabled, not shed, no handle, no pending
-    ///   restart) starts at once with a fresh ladder; any other channel is
-    ///   left to its own path (no line).
+    ///   the state is `failed` with one `capture source down` line, and
+    ///   [`Self::spawn`] holds it (a 60 s guard re-check timer, never a
+    ///   spawn) until the source is up;
+    /// - up: a HELD channel (not disabled, not shed, no live handle) starts
+    ///   at once with a fresh ladder; `capture source up; starting master`
+    ///   is printed only when a master actually starts (review N1). A live
+    ///   SIGINTed master takes the TS path at its exit.
     ///
-    /// Shed / disabled channels only record the flag (they stay `stopped`).
+    /// Shed / disabled / guard-parked channels only record the flag.
     /// Remembered before the lazy start, like `setDisabledStreams`.
     pub fn set_source_absent(
         &mut self,
         stream_key: &str,
         absent: bool,
+        seq: u64,
         now: u64,
         env: &dyn SpawnEnv,
     ) -> Vec<Effect> {
@@ -691,6 +739,14 @@ impl MediaLadder {
         if self.stopped {
             return out;
         }
+        if self
+            .source_seq
+            .get(stream_key)
+            .is_some_and(|&last| seq <= last)
+        {
+            return out; // a stale edge overtaken by a newer one
+        }
+        self.source_seq.insert(stream_key.to_string(), seq);
         let changed = if absent {
             self.source_absent.insert(stream_key.to_string())
         } else {
@@ -705,8 +761,6 @@ impl MediaLadder {
             }
             let name = self.channels[i].channel_name.clone();
             if absent {
-                // Shed / disabled stay `stopped`; a guard park (`no-camera` /
-                // `no-pipeline`) keeps its own truth and slow retry.
                 let guard_parked = matches!(
                     self.channels[i].state,
                     ChannelState::NoCamera | ChannelState::NoPipeline
@@ -721,35 +775,35 @@ impl MediaLadder {
                 self.clear(st);
                 self.clear(rt);
                 self.channels[i].state = ChannelState::Failed;
+                self.channels[i].held = true;
+                out.push(Self::down_line(&name));
                 if self.channels[i].has_handle {
-                    out.push(Effect::Signal {
-                        channel: name.clone(),
-                    });
+                    // Its exit holds it (`on_exit`).
+                    out.push(Effect::Signal { channel: name });
+                } else {
+                    self.schedule_restart(i, Some(PARKED_RETRY_MS), &mut out);
                 }
-                out.push(Effect::Log {
-                    level: LogLevel::Warn,
-                    line: format!(
-                        "[media {name}] capture source down (camera absent or failing); master held until it is up"
-                    ),
-                });
             } else {
-                // Only a HELD channel starts: a live master (SIGINTed, not
-                // yet exited) takes the TS path at its exit; a pending
-                // restart (a guard park's slow retry) fires by itself.
-                if self.shed
-                    || self.channels[i].disabled
-                    || self.channels[i].has_handle
-                    || self.channels[i].restart_timer.is_some()
-                {
+                if self.shed || self.channels[i].disabled || !self.channels[i].held {
                     continue;
                 }
+                self.channels[i].held = false;
+                if self.channels[i].has_handle {
+                    continue;
+                }
+                let rt = self.channels[i].restart_timer.take();
+                self.clear(rt);
                 self.channels[i].quick_failures = 0;
                 self.channels[i].backoff_ms = BASE_BACKOFF_MS;
-                out.push(Effect::Log {
-                    level: LogLevel::Log,
-                    line: format!("[media {name}] capture source up; starting master"),
-                });
-                self.spawn(&name, now, env, &mut out);
+                let mut fx = Vec::new();
+                self.spawn(&name, now, env, &mut fx);
+                if fx.iter().any(|e| matches!(e, Effect::Spawn { .. })) {
+                    out.push(Effect::Log {
+                        level: LogLevel::Log,
+                        line: format!("[media {name}] capture source up; starting master"),
+                    });
+                }
+                out.extend(fx);
             }
         }
         out

@@ -1672,3 +1672,178 @@ async fn cycle_video_and_report_fatal() {
     assert_eq!(fatal.try_recv().unwrap(), "EIO: i/o error, write");
     m.stop();
 }
+
+// --- D86 (F-DA21-KVSLOOP) review S2 / S5b --------------------------------------
+
+struct D86World;
+impl xorgate_core::media_ladder::SpawnEnv for D86World {
+    fn guard(&self, _k: &str) -> xorgate_core::stream_guard::StreamGuard {
+        xorgate_core::stream_guard::StreamGuard::Ok
+    }
+    fn resolve_pipeline(&self, k: &str) -> Option<String> {
+        Some(format!("/p/{k}.gst"))
+    }
+}
+
+/// A started media ladder with masters for cam0 and cam1.
+fn d86_ladder() -> Arc<Mutex<xorgate_core::media_ladder::MediaLadder>> {
+    use xorgate_core::kvs_manifest::{KvsChannel, KvsManifest};
+    use xorgate_core::media_ladder::{LadderOpts, MediaLadder, RuntimeDetect};
+    let mut l = MediaLadder::new(LadderOpts::default());
+    assert!(l.read().kick_start);
+    let manifest = KvsManifest {
+        device_id: "dev".into(),
+        region: "us-east-1".into(),
+        credential_endpoint: "c.example".into(),
+        role_alias: "r".into(),
+        channels: ["cam0", "cam1"]
+            .iter()
+            .map(|k| KvsChannel {
+                stream_key: (*k).into(),
+                channel_name: format!("dev-{k}"),
+            })
+            .collect(),
+        upload_bucket: None,
+    };
+    let _ = l.start(
+        &RuntimeDetect {
+            available: true,
+            gstreamer: true,
+            reason: None,
+        },
+        || Some(manifest),
+        0,
+        &D86World,
+    );
+    Arc::new(Mutex::new(l))
+}
+
+/// Hold cam1's master as a capture park would (its SIGINT exit included).
+fn d86_hold_cam1(l: &Arc<Mutex<xorgate_core::media_ladder::MediaLadder>>) {
+    use xorgate_agent::recording::capture::next_source_seq;
+    let mut g = l.lock().unwrap();
+    let _ = g.set_source_absent("cam1", true, next_source_seq(), 6_000, &D86World);
+    let _ = g.on_exit("dev-cam1", Some(0), 6_010);
+    assert_eq!(d86_state(&g), "failed", "held");
+}
+
+fn d86_state(l: &xorgate_core::media_ladder::MediaLadder) -> &'static str {
+    l.state_of("dev-cam1").expect("cam1").as_str()
+}
+
+/// D86 review S2: every capture transition that ends a camera's capture
+/// releases a master held for it — a Replace whose new set lacks the key,
+/// a StopAll, and the shutdown `stop()` — through the manager's own
+/// `on_capture_source_absent(key, false, seq)`, into a real media ladder.
+#[tokio::test(start_paused = true)]
+async fn d86_capture_transitions_release_held_masters() {
+    let ladder = d86_ladder();
+    let mut rig = Rig::new("d86-release");
+    rig.cameras = vec!["cam0".into(), "cam1".into()];
+    let l2 = ladder.clone();
+    let edges = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
+    let e2 = edges.clone();
+    rig.source_absent_hook = Some(Arc::new(move |k: &str, a: bool, seq: u64| {
+        e2.lock().unwrap().push((k.to_string(), a));
+        let _ = l2
+            .lock()
+            .unwrap()
+            .set_source_absent(k, a, seq, 7_000, &D86World);
+    }));
+    let v = |preset: &str, cam0: bool, cam1: bool| {
+        json!({"video": {"enabled": true, "bootDefer": "off", "preset": preset,
+                         "spawnStaggerSecs": 0, "cameras": {"cam0": cam0, "cam1": cam1}}})
+    };
+    rig.save_recording(&v("720p15-1mbps", true, true));
+    let m = rig.build();
+    m.start().await;
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0", "cam1"]);
+
+    // 1. A Replace without cam1 (preset change + cam1 off) releases cam1 only.
+    d86_hold_cam1(&ladder);
+    edges.lock().unwrap().clear();
+    rig.save_recording(&v("720p15-2mbps", true, false));
+    m.reapply().unwrap();
+    m.settled().await;
+    assert_eq!(rig.live_cams(), vec!["cam0"]);
+    assert_eq!(*edges.lock().unwrap(), vec![("cam1".to_string(), false)]);
+    assert_eq!(d86_state(&ladder.lock().unwrap()), "starting", "released");
+
+    // 2. StopAll (every camera off) releases every key it stopped.
+    rig.save_recording(&v("720p15-2mbps", true, true));
+    m.reapply().unwrap();
+    m.settled().await;
+    d86_hold_cam1(&ladder);
+    edges.lock().unwrap().clear();
+    rig.save_recording(&v("720p15-2mbps", false, false));
+    m.reapply().unwrap();
+    m.settled().await;
+    assert!(rig.live_cams().is_empty());
+    let mut got = edges.lock().unwrap().clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![("cam0".to_string(), false), ("cam1".to_string(), false)]
+    );
+    assert_eq!(d86_state(&ladder.lock().unwrap()), "starting", "released");
+
+    // 3. The shutdown stop() releases too.
+    rig.save_recording(&v("720p15-2mbps", true, true));
+    m.reapply().unwrap();
+    m.settled().await;
+    d86_hold_cam1(&ladder);
+    m.stop();
+    assert_eq!(d86_state(&ladder.lock().unwrap()), "starting", "released");
+}
+
+/// D86 review S5b: the PRODUCTION wiring is live — `VideoOpts.
+/// on_capture_source_absent` → `CaptureSpec.on_source_absent` →
+/// `recording::Backend::capture` (`recording/mod.rs`) → the real
+/// `VideoCaptureSupervisor`'s `on_source_absent`. The real gst-launch
+/// backend fails at start here (no libcamerasrc / no gst-launch-1.0 in the
+/// test image), the rig clock is frozen (every exit "at start"), so after
+/// the TS ladder (2 s + 4 s, real time) the camera parks and the manager's
+/// hook receives `(cam1, true)`.
+#[tokio::test]
+async fn d86_production_wiring_reports_a_parked_camera_down() {
+    let edges = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
+    let mut rig = Rig::new("d86-wiring");
+    rig.cameras = vec!["cam1".into()];
+    let e2 = edges.clone();
+    rig.source_absent_hook = Some(Arc::new(move |k: &str, a: bool, _seq: u64| {
+        e2.lock().unwrap().push((k.to_string(), a));
+    }));
+    let probe: xorgate_agent::recording::time_source::ProbeFn =
+        Arc::new(|| Box::pin(async { xorgate_core::session::ProbedTimeSource::Ntp }));
+    rig.backend_override = Some(Arc::new(xorgate_agent::recording::Backend {
+        clock: rig.clock.clone(),
+        tape: xorgate_hal::io::null_tape(),
+        home: Some(rig.home.clone()),
+        time_source: xorgate_agent::recording::time_source::TimeSourceHandle::create(
+            60_000,
+            probe,
+            rig.clock.clone(),
+        ),
+    }));
+    let m = rig.build();
+    m.start().await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    loop {
+        if edges.lock().unwrap().contains(&("cam1".to_string(), true)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no (cam1, true) edge: {:?} / events {:?}",
+            edges.lock().unwrap(),
+            rig.events()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(rig
+        .events()
+        .iter()
+        .any(|e| e.contains("video capture cam1") && e.contains("before stabilizing 3x")));
+    m.stop();
+}
