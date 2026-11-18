@@ -14,11 +14,14 @@
 #     x86_64 build `hl.sh run <tag> build-bins` leaves at
 #     tools/replay/.cache/bin/xorgate-rs; SKIPPED, and said so in the result
 #     line, when absent) and REWRITES NOTHING: every file of the surface keeps
-#     its bytes, mode and owner; the modem daemon is not restarted.
+#     its bytes, mode and owner; the modem daemon is not restarted;
+#   - v0.1.1: scripts/tests/lte-routes.sh --kernel, the LTE default route and
+#     P1b on a REAL kernel FIB in a private network namespace (this container
+#     is privileged; its own network is never touched).
 # Run (systemd must be PID 1; ~3 min), as hl.sh `systemd` does:
 #   docker run -d --name xg-prsd --label xorgate.agent=<tag> --privileged --cgroupns=private \
 #     --tmpfs /run --tmpfs /run/lock -v "$PWD:/src:ro" debian:bookworm \
-#     bash -c 'apt-get update -qq && apt-get install -y -qq systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0 >/dev/null && exec /lib/systemd/systemd'
+#     bash -c 'apt-get update -qq && apt-get install -y -qq systemd python3 sudo jq curl openssl ca-certificates libgstreamer1.0-0 iproute2 >/dev/null && exec /lib/systemd/systemd'
 #   docker exec xg-prsd bash /src/scripts/tests/provision-rs-systemd.sh
 #   docker rm -f xg-prsd
 set -uo pipefail
@@ -94,5 +97,11 @@ else
 fi
 
 reset_device
+
+echo "== v0.1.1: the LTE default route + P1b on a real kernel FIB (scripts/tests/lte-routes.sh --kernel, private netns)"
+LR=$(bash "$SRC/scripts/tests/lte-routes.sh" --kernel 2>&1); lrc=$?
+printf '%s\n' "$LR" | grep -E '^(PASS|FAIL|SKIP)' | sed 's/^/    | /'
+[ "$lrc" = 0 ] && ok "lte-routes.sh --kernel: $(printf '%s\n' "$LR" | grep -c '^PASS') rows pass, kernel rows ran" || bad "lte-routes.sh --kernel (rc $lrc): $(printf '%s\n' "$LR" | grep -E '^(FAIL|SKIP)' | head -3 | tr '\n' '|')"
+
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)$UPD_NOTE"
 exit $fail

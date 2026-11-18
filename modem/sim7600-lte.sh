@@ -148,10 +148,17 @@ CRESET_BUDGET_WINDOW_SECS="${SIM7600_CRESET_BUDGET_WINDOW_SECS:-86400}"
 RADIO_CYCLE_COOLDOWN="${SIM7600_RADIO_CYCLE_COOLDOWN:-300}"   # min secs between AT+CFUN cycles
 MODEM_RESET_COOLDOWN="${SIM7600_MODEM_RESET_COOLDOWN:-1800}"  # min secs between AT+CRESET
 
-# Default-route metric for the LTE uplink. Must stay ABOVE the WiFi metric
-# (50, see 10-uplink-priority.conf) so WiFi wins while associated; dhclient
-# alone would install metric 0 and silently steal the whole uplink.
-LTE_ROUTE_METRIC="${SIM7600_ROUTE_METRIC:-100}"
+# Default-route metric for the LTE uplink. LTE is the FALLBACK, so it must
+# stay ABOVE every NetworkManager default: WiFi (50, see
+# 10-uplink-priority.conf; NM's own default 600) AND wired Ethernet (NM
+# default 100). dhclient alone would install metric 0 and silently steal the
+# whole uplink. Rust fork (v0.1.1, F-LTE-METRIC / F-DA21-NET): was 100, which
+# tied with NM's wired default; the JS copy keeps 100 by decision
+# (2026-11-18). An override (SIM7600_ROUTE_METRIC in a sim7600-lte.service
+# drop-in) still wins; one that is not a non-negative integer falls back to
+# 1000 (see lte_route_metric).
+LTE_ROUTE_METRIC_DEFAULT=1000
+LTE_ROUTE_METRIC="${SIM7600_ROUTE_METRIC:-$LTE_ROUTE_METRIC_DEFAULT}"
 
 # Adaptive CSQ polling intervals (seconds)
 CSQ_INTERVAL_FAST=3          # signal changing rapidly (delta >= CSQ_RAPID_DELTA)
@@ -2458,6 +2465,48 @@ ipv6_off_iface() {
         || warn "could not disable IPv6 on $IFACE — a carrier v6 RA may black-hole dual-stack clients (MQTT connack timeouts)."
 }
 
+# --- LTE default route (Rust fork v0.1.1: F-LTE-METRIC / F-DA21-NET) --------
+# dhclient installs the modem's default route at metric 0, which would
+# out-rank every other uplink. Re-install it at LTE_ROUTE_METRIC so LTE stays
+# the fallback path, touching ONLY $IFACE's own IPv4 defaults:
+#   - each one is deleted with `dev $IFACE`: the kernel matches the nexthop
+#     device on a delete, so another interface's default is never hit;
+#   - the new one goes in with `ip route append`, NEVER `replace`. An IPv4
+#     replace (NLM_F_REPLACE) overwrites the first route with the same
+#     prefix, TOS and METRIC whatever its device (fib_table_insert): that is
+#     how v0.1.0's `replace ... metric 100` overwrote NetworkManager's wired
+#     eth default (also metric 100) and left a wired + LTE device with no
+#     working route. `add` (NLM_F_EXCL) would fail on such a tie; `append`
+#     goes in beside it, so even an operator override equal to another
+#     interface's metric leaves that interface's route in place, and first.
+# The health checks are unaffected by the metric: `ping -I $IFACE`
+# (wan_ping_ok) binds the socket to $IFACE, and the kernel then considers only
+# $IFACE's routes for it.
+lte_route_metric() {
+    # A non-negative integer (at most 9 digits), else the default.
+    if [[ "$LTE_ROUTE_METRIC" =~ ^[0-9]{1,9}$ ]]; then
+        echo "$((10#$LTE_ROUTE_METRIC))"
+    else
+        echo "$LTE_ROUTE_METRIC_DEFAULT"
+    fi
+}
+
+install_lte_default_route() {
+    local gw metric out n=0
+    metric=$(lte_route_metric)
+    [[ "$metric" == "$LTE_ROUTE_METRIC" ]] \
+        || warn "SIM7600_ROUTE_METRIC='$LTE_ROUTE_METRIC' is not a route metric; using $metric."
+    gw=$(ip -4 route show default dev "$IFACE" 2>/dev/null \
+         | awk '$1 == "default" && $2 == "via" {print $3; exit}')
+    [[ -n "$gw" ]] || return 0
+    while [[ -n "$(ip -4 route show default dev "$IFACE" 2>/dev/null)" ]] && (( n++ < 16 )); do
+        ip -4 route del default dev "$IFACE" 2>/dev/null || break
+    done
+    out=$(ip -4 route append default via "$gw" dev "$IFACE" metric "$metric" 2>&1) \
+        || warn "could not install the LTE default route via $gw dev $IFACE metric $metric: $out"
+    return 0
+}
+
 # End-to-end WAN probe ($1 = pings per target, default 2). Success on either
 # target; "down" therefore means BOTH failed. A single host's outage must not
 # read as a dead WAN and walk the recovery ladder — this hardens the gauge
@@ -2513,15 +2562,7 @@ bring_up_interface() {
     log "Interface $IFACE is up."
     ip addr show "$IFACE" | grep "inet " | tee -a /var/log/sim7600-lte.log
 
-    # dhclient installs its default route at metric 0, which would out-rank
-    # WiFi (metric 50) and steal the whole uplink. Re-install it at
-    # LTE_ROUTE_METRIC so LTE stays the fallback path.
-    local gw
-    gw=$(ip route show dev "$IFACE" default 2>/dev/null | awk '{print $3; exit}')
-    if [[ -n "$gw" ]]; then
-        ip route del default via "$gw" dev "$IFACE" 2>/dev/null || true
-        ip route replace default via "$gw" dev "$IFACE" metric "$LTE_ROUTE_METRIC" 2>/dev/null || true
-    fi
+    install_lte_default_route
 
     # Verify END-TO-END connectivity before declaring victory: the DHCP lease
     # is granted by the modem's own NAT and proves nothing about the WAN.

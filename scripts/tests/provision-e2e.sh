@@ -14,7 +14,9 @@
 # (JS alone from the next boot) + --uninstall (+ its refusals), usage errors
 # (the temp dir still removed), and the run surviving its session: SIGINT,
 # SIGHUP and a closed output pipe to the client leave the transient
-# provisioning unit running to the end.
+# provisioning unit running to the end. v0.1.1: the session prints the unit's
+# log once (F-DA21-FOLLOW); P1b removes stale usb0 defaults before apt
+# (F-DA21-NM; the ip shim models usb0's routes only).
 # Run (systemd must be PID 1; ~6 min), as hl.sh `systemd` does:
 #   docker run -d --name xg-pe2e --label xorgate.agent=<tag> --privileged --cgroupns=private \
 #     --tmpfs /run --tmpfs /run/lock -v "$PWD:/src:ro" debian:bookworm \
@@ -50,6 +52,13 @@ sl=$(grep -n 'staged xorgate-rs' "$PL" | head -1 | cut -d: -f1); cl=$(grep -n 'c
   || { bad "order: smoke ($sl) vs claim ($cl)"; grep -nE 'staged|claiming|continuing as' "$PL" "$OUT" | sed 's/^/    | /'; }
 grep -q 'continuing as the transient unit xorgate-provision-rs' "$OUT" && grep -q 'registered device' "$OUT" \
   && ok "the session printed the hand-off and the unit's log to the end" || bad "the session output lacks the hand-off or the end"
+# F-DA21-FOLLOW (v0.1.1): the session prints each unit log line ONCE. v0.1.0's
+# follow_log never advanced the caller's offset, so every 1 s poll re-printed
+# the run from its start (DA21: 61 791 lines, the opening 612 times).
+dup=$(grep -E '^\[xorgate\] (===== run |agent will run as |installing apt dependencies|claimed: device |registered device )' "$OUT" | sort | uniq -d)
+[ "$(grep -c '===== run ' "$OUT")" = 1 ] && [ -z "$dup" ] && [ "$(grep -c '' "$OUT")" -le "$(( $(grep -c '' "$PL") + 10 ))" ] \
+  && ok "the session printed the unit's log once (no line repeated; $(grep -c '' "$OUT") lines for a $(grep -c '' "$PL")-line log)" \
+  || bad "the session re-printed the log: $(grep -c '===== run ' "$OUT") run headers, $(grep -c '' "$OUT") lines; repeated: $(echo "$dup" | head -3 | tr '\n' '|')"
 [ -n "$first_claim" ] && ok "claim seen by the fake API" || bad "no claim request"
 grep -E 'apt-get install .*libgstreamer1.0-0' "$E/apt.log" >/dev/null && ok "NEEDED providers installed (hard call)" || bad "no NEEDED apt call"
 grep -q 'E2E-KEY' "$OUT" && bad "the private key reached the output" || ok "the private key never printed"
@@ -195,6 +204,29 @@ run_boot; expect_rc 0 "bench-shaped"
   && ok "bench: the active modem daemon was never restarted" || bad "bench: modem daemon restarted"
 [ "$(wc -l < "$E/nm-reloads")" = 1 ] && ok "bench: NM reloaded once (only for the new uplink conf; the unmanaged conf skipped by the bootstrap and step 7)" || bad "bench: NM reloads $(wc -l < "$E/nm-reloads")"
 ! grep -q 'udevadm' "$E/calls.log" && ok "bench: udev rules unchanged, no udevadm reload" || bad "bench: udevadm called"
+
+echo "== P1b (F-DA21-NM, v0.1.1): stale usb0 default routes, v4 + v6, removed BEFORE the first apt call"
+stale_usb0() {
+  mkdir -p "$E/net"; : > "$E/net/usb0"
+  echo 'default via 192.168.225.1 proto dhcp src 192.168.225.20 metric 100' > "$E/net/route4"
+  echo 'default via fe80::1 proto ra metric 100 pref medium' > "$E/net/route6"
+}
+reset_device; stale_usb0; run_boot; expect_rc 0 "stale usb0 defaults"
+[ ! -s "$E/net/route4" ] && [ ! -s "$E/net/route6" ] && ok "P1b: usb0's v4 and v6 defaults deleted" || bad "P1b: left $(cat "$E/net/route4" "$E/net/route6" 2>/dev/null | tr '\n' '|')"
+d4=$(grep -n '^ip -4 route del default dev usb0$' "$E/apt.log" | head -1 | cut -d: -f1); d6=$(grep -n '^ip -6 route del default dev usb0$' "$E/apt.log" | head -1 | cut -d: -f1)
+a1=$(grep -n '^apt-get ' "$E/apt.log" | head -1 | cut -d: -f1)
+[ -n "$d4" ] && [ -n "$d6" ] && [ -n "$a1" ] && [ "$d4" -lt "$a1" ] && [ "$d6" -lt "$a1" ] \
+  && ok "P1b: both deletes ran before the first apt-get (apt.log lines $d4, $d6 < $a1)" || bad "P1b order: del4=$d4 del6=$d6 apt=$a1"
+! grep -E '^ip ' "$E/apt.log" | grep -vE '^ip (link show usb0|-[46] route (show|del) default dev usb0)$' | grep -q . \
+  && ok "P1b: no ip call beyond usb0's link and default routes" || bad "P1b: other ip calls: $(grep '^ip ' "$E/apt.log" | sort -u | tr '\n' '|')"
+grep -q 'removed a stale IPv4 default route on usb0 (no live owner; metric 100)' "$OUT" && grep -q 'removed a stale IPv6 default route on usb0 (no live owner; metric 100)' "$OUT" \
+  && ok "P1b: both removals in the session output" || bad "P1b: no removal lines"
+reset_device; stale_usb0; printf 'eth1:connected\nusb0:connected\n' > "$E/nmcli.out"; run_boot; expect_rc 0 "usb0 managed by NM"
+[ -s "$E/net/route4" ] && [ -s "$E/net/route6" ] && ! grep -q 'route del' "$E/apt.log" && grep -q 'usb0 default routes kept (live owner: NetworkManager (connected))' "$OUT" \
+  && ok "P1b: NM manages usb0: its routes are kept, and it says so" || bad "P1b: NM-owned routes touched"
+reset_device; run_boot; expect_rc 0 "no usb0"
+[ "$(grep -c '^ip ' "$E/apt.log")" = 1 ] && grep -qx 'ip link show usb0' "$E/apt.log" && ! grep -q 'usb0 default routes\|stale IPv' "$OUT" \
+  && ok "P1b: no usb0: one 'ip link show usb0', nothing else, nothing printed" || bad "P1b no usb0: $(grep '^ip ' "$E/apt.log" | tr '\n' '|')"
 
 echo "== --uninstall refusals + usage"
 reset_device; run_boot; expect_rc 0 "native device (setup)"
