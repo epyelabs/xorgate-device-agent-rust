@@ -278,9 +278,9 @@ pub struct AbsentState {
 ///   if `ts` parks (the 3rd quick failure) AND all three were start
 ///   failures, `steps` becomes 1 (the park line is the TS's own);
 /// - a START failure while `steps >= 1` is a failed PROBE: ONE attempt per
-///   step (no 2 s / 4 s mini-ladder), parked [`absent_backoff_ms`]`(steps
-///   + 1)`, one `Warn` line per step (with the ended session, like the TS
-///   stable-exit line).
+///   step (no 2 s / 4 s mini-ladder), parked `absent_backoff_ms(steps + 1)`
+///   ([`absent_backoff_ms`]), one `Warn` line per step (with the ended
+///   session, like the TS stable-exit line).
 ///
 /// While `steps >= 1` the capture source is down: the agent holds the
 /// camera's KVS master (`MediaLadder::set_source_absent`).
@@ -616,7 +616,7 @@ mod tests {
             ABSENT_BACKOFF_MAX_MS,
             "no overflow"
         );
-        assert!(START_FAIL_MS < STABLE_MS);
+        const { assert!(START_FAIL_MS < STABLE_MS) };
     }
 
     /// An absent sensor (every child dies at start, 120 ms): the TS ladder
