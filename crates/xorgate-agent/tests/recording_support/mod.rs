@@ -484,6 +484,8 @@ pub struct Rig {
     pub clock_trusted: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// Phase 7e: the replay capture hooks (`None` = real mode).
     pub replay: Option<Arc<dyn xorgate_agent::recording::capture::ReplayCaptureHooks>>,
+    /// D86: `VideoOpts.on_capture_source_absent` (default: a no-op).
+    pub source_absent_hook: Option<xorgate_agent::recording::manager::SourceAbsentFn>,
 }
 
 impl Rig {
@@ -519,6 +521,7 @@ impl Rig {
             upload_override: None,
             clock_trusted: None,
             replay: None,
+            source_absent_hook: None,
         }
     }
 
@@ -571,6 +574,10 @@ impl Rig {
             on_capture_spawned: Arc::new(move |k: &str| {
                 l3.spawned_callbacks.lock().unwrap().push(k.to_string())
             }),
+            on_capture_source_absent: self
+                .source_absent_hook
+                .clone()
+                .unwrap_or_else(|| Arc::new(|_: &str, _: bool, _: u64| {})),
             set_live_shed: Some(Arc::new(move |s: bool| {
                 l1.live_shed.lock().unwrap().push(s);
                 if let Some(h) = &hook {

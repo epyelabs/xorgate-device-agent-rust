@@ -235,7 +235,7 @@ fn build_recording_manager(
 ) -> RecordingManager {
     let cfg = &ctx.env.config;
     let real = cfg.mode == RunMode::Real;
-    let (m1, m2, m3) = (media.clone(), media.clone(), media);
+    let (m1, m2, m3, m4) = (media.clone(), media.clone(), media.clone(), media);
     let video = crate::recording::VideoOpts {
         media_enabled: cfg.media.enabled,
         cameras: policy_sources::cameras_fn(ctx),
@@ -244,6 +244,13 @@ fn build_recording_manager(
         on_capture_spawned: Arc::new(move |key: &str| {
             if let Some(m) = &m1 {
                 m.restart_channel(key);
+            }
+        }),
+        // D86 (Rust-only): hold / release the master of a camera whose
+        // capture parked on a start-failure streak (F-DA21-KVSLOOP).
+        on_capture_source_absent: Arc::new(move |key: &str, absent: bool, seq: u64| {
+            if let Some(m) = &m4 {
+                m.set_source_absent(key, absent, seq);
             }
         }),
         // `source.setLiveShed?.(shed)` — reached ONLY through the manager's choke point.

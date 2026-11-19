@@ -164,6 +164,7 @@ impl manager::RecordingBackend for Backend {
         o.on_status = Some(spec.on_status);
         o.on_event = Some(spec.on_event);
         o.on_spawned = Some(spec.on_spawned);
+        o.on_source_absent = Some(spec.on_source_absent);
         o.replay = spec.replay;
         o.tape = self.tape.clone();
         Arc::new(CaptureAdapter(Arc::new(
