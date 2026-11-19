@@ -804,11 +804,15 @@ impl RecordingManager {
         }
         let capture = lock(&inner.slots).capture.take();
         if let Some(c) = capture {
-            let keys = capture_keys(&c);
             c.stop();
             lock(&inner.slots).exiting_capture = Some(c);
-            // D86 (review S2): no capture any more → no held master.
-            inner.release_sources(keys);
+            // D86 (fix-check S-R1): NO source release here. This stop is the
+            // agent's shutdown (`Shutdown::run` → `recording_stop()`, BEFORE
+            // the media `stop()`), so a release would spawn a KVS master per
+            // held camera just to SIGINT it a moment later. The manager is
+            // installed once per process and `stop()` is terminal; the
+            // releases that matter (StopAll, Replace) are in the transition
+            // chain.
         }
         st.video_key.clear();
         st.video_cameras_key.clear();
@@ -932,8 +936,9 @@ impl Inner {
     }
 
     /// D86 (review S2): a capture transition ended the capture of `keys`
-    /// (StopAll, a Replace whose new set lacks them, a superseded Replace,
-    /// shutdown) — release any KVS master held for them. The supervisor's
+    /// (StopAll, a Replace whose new set lacks them, a superseded Replace;
+    /// NOT the shutdown `stop()`, fix-check S-R1) — release any KVS master
+    /// held for them. The supervisor's
     /// own edges only cover cameras it retires; `stop()` deliberately sends
     /// none (a Replace that keeps the key re-decides with its own runs).
     /// Each release carries a fresh sequence number, so a park edge still in

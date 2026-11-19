@@ -1732,8 +1732,9 @@ fn d86_state(l: &xorgate_core::media_ladder::MediaLadder) -> &'static str {
 }
 
 /// D86 review S2: every capture transition that ends a camera's capture
-/// releases a master held for it — a Replace whose new set lacks the key,
-/// a StopAll, and the shutdown `stop()` — through the manager's own
+/// releases a master held for it — a Replace whose new set lacks the key
+/// and a StopAll — but the shutdown `stop()` does NOT (fix-check S-R1);
+/// through the manager's own
 /// `on_capture_source_absent(key, false, seq)`, into a real media ladder.
 #[tokio::test(start_paused = true)]
 async fn d86_capture_transitions_release_held_masters() {
@@ -1788,13 +1789,22 @@ async fn d86_capture_transitions_release_held_masters() {
     );
     assert_eq!(d86_state(&ladder.lock().unwrap()), "starting", "released");
 
-    // 3. The shutdown stop() releases too.
+    // 3. The shutdown stop() does NOT release (fix-check S-R1): the agent
+    //    stops recording before media, so a release would spawn a master
+    //    per held camera only to SIGINT it at once.
     rig.save_recording(&v("720p15-2mbps", true, true));
     m.reapply().unwrap();
     m.settled().await;
     d86_hold_cam1(&ladder);
+    edges.lock().unwrap().clear();
     m.stop();
-    assert_eq!(d86_state(&ladder.lock().unwrap()), "starting", "released");
+    m.settled().await;
+    assert!(edges.lock().unwrap().is_empty(), "no edge at shutdown");
+    assert_eq!(
+        d86_state(&ladder.lock().unwrap()),
+        "failed",
+        "still held, no spawn"
+    );
 }
 
 /// D86 review S5b: the PRODUCTION wiring is live — `VideoOpts.
