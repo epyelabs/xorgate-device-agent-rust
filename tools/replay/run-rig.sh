@@ -34,7 +34,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-EVIDENCE_ROOT="${EVIDENCE_ROOT:-$(cd "$REPO/../../plans/device-agent-js-to-rust/phase-3/evidence" 2>/dev/null && pwd || echo "$HERE/.cache/evidence")}"
+EVIDENCE_ROOT="${EVIDENCE_ROOT:-$(cd "$REPO/../../plans/done/device-agent-js-to-rust/phase-3/evidence" 2>/dev/null && pwd || echo "$HERE/.cache/evidence")}"
 
 usage() { sed -n '2,33p' "$0"; exit 2; }
 [ $# -ge 1 ] || usage

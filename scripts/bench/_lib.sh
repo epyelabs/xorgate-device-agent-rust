@@ -20,7 +20,7 @@ RS_ROOT=/opt/xorgate-rs
 RS_HOME=/var/lib/xorgate-rs
 RS_ENV=/etc/xorgate/agent-rs-dev.env
 DEV_BACKUP=/etc/xorgate/dev-backup-20260823
-EVIDENCE_LOCAL="${EVIDENCE_LOCAL:-/Users/vynci/vynci/xorgate/plans/device-agent-js-to-rust/phase-0/evidence}"
+EVIDENCE_LOCAL="${EVIDENCE_LOCAL:-/Users/vynci/vynci/xorgate/plans/done/device-agent-js-to-rust/phase-0/evidence}"
 
 # shellcheck disable=SC2029  # remote command words are expanded client-side on purpose
 bench_ssh() { ssh "${BENCH_SSH_OPTS[@]}" "$BENCH" "$@"; }
@@ -43,7 +43,7 @@ INPUTS_DROPIN=$DROPIN_DIR/95-inputs.conf
 EXCLUSIVE_DROPIN=$RUN_DROPIN_DIR/99-exclusive.conf
 TAPE_DROPIN=$RUN_DROPIN_DIR/98-tape.conf
 RS_ETC=$RS_HOME/etc
-EVIDENCE_PHASE2_LOCAL="${EVIDENCE_PHASE2_LOCAL:-/Users/vynci/vynci/xorgate/plans/device-agent-js-to-rust/phase-2/evidence}"
+EVIDENCE_PHASE2_LOCAL="${EVIDENCE_PHASE2_LOCAL:-/Users/vynci/vynci/xorgate/plans/done/device-agent-js-to-rust/phase-2/evidence}"
 
 # Shell functions shared by the Phase 2 remote scripts. Print them in front of
 # a remote heredoc: `{ bench_remote_lib; cat <<'REMOTE' … REMOTE; } | bench_sudo_script`.
