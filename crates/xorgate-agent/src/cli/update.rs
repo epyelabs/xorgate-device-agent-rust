@@ -673,6 +673,20 @@ async fn install(
         }
     }
 
+    // The camera-line owner (Rust-only, never shared, so installed on a
+    // coexisting device too): its allow-list, the helper, then `025` once
+    // the helper is in place.
+    for (src, dest, mode) in plan::RS_SYSTEM_ASSETS {
+        let from = live.join(src);
+        if !exists(&from) {
+            continue;
+        }
+        install_file(&from, &p.abs(dest), *mode, journal)?;
+    }
+    if exists(&p.abs(plan::CAMCFG_BIN)) {
+        install_sudoers(p, SudoersGrant::CamCfg, out, journal).await?;
+    }
+
     // `update.ts:341-350`: the remote rail (Rust-only, never shared).
     let updater_unit = live.join(plan::UPDATER_UNIT_SRC);
     if exists(&updater_unit) {

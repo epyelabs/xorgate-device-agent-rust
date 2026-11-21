@@ -15,6 +15,10 @@
     "pi": "# Installed by xorgate. Allows the agent (running as pi) to set the\n# camera overlay's rotation parameter in the boot config, and nothing else.\n# See device-agent src/hardware/boot-config.ts + system/xorgate-camrotate.\npi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camrotate\n",
     "operator": "# Installed by xorgate. Allows the agent (running as operator) to set the\n# camera overlay's rotation parameter in the boot config, and nothing else.\n# See device-agent src/hardware/boot-config.ts + system/xorgate-camrotate.\noperator ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camrotate\n"
   },
+  "camcfgSudoers": {
+    "pi": "# Installed by xorgate-rs. Allows the agent (running as pi) to change the\n# camera overlay lines of the boot config through the camera-line owner, and\n# nothing else. See device-agent-rust system/xorgate-camcfg + crates/xorgate-core/src/boot_config.rs.\npi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg\n",
+    "operator": "# Installed by xorgate-rs. Allows the agent (running as operator) to change the\n# camera overlay lines of the boot config through the camera-line owner, and\n# nothing else. See device-agent-rust system/xorgate-camcfg + crates/xorgate-core/src/boot_config.rs.\noperator ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg\n"
+  },
   "powerSudoers": {
     "pi": "# Installed by xorgate. Allows the agent (running as pi) to act on\n# cloud-issued reboot / power-off commands. See device-agent src/agent/commands.ts.\npi ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff\n",
     "operator": "# Installed by xorgate. Allows the agent (running as operator) to act on\n# cloud-issued reboot / power-off commands. See device-agent src/agent/commands.ts.\noperator ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff\n"

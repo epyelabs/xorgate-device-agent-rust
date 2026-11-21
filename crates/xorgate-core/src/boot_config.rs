@@ -122,13 +122,14 @@ pub fn overlay_cam_token(connector: &str) -> Option<String> {
 /// The board the agent runs on, as far as the config.txt model filters go.
 /// From `/proc/device-tree/model` ([`board_from_model`]), the same file the
 /// helper reads, so the reader and the writer always agree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Board {
     /// `Raspberry Pi Compute Module 4 Rev …`: `[cm4]` and `[pi4]` apply.
     Cm4,
     /// `Raspberry Pi Compute Module 5 [Lite ]Rev …`: `[cm5]` and `[pi5]` apply.
     Cm5,
     /// Anything else (a Compute Module 4S included), or no model file.
+    #[default]
     Unknown,
 }
 

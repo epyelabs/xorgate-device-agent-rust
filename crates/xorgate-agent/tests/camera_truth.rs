@@ -86,6 +86,7 @@ fn opts(dir: &Path, listing: RunResult, logs: &Logs, boot_config: Option<&str>) 
                 .push((level.as_str().to_string(), msg.to_string()));
         })),
         boot_config: boot_config.map(str::to_string),
+        board: Default::default(),
     }
 }
 

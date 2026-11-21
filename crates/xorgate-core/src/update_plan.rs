@@ -112,6 +112,33 @@ pub const SYSTEM_ASSETS: &[(&str, &str, u32)] = &[
     ),
 ];
 
+/// The camera-line owner and its allow-list (support-other-camera-models
+/// plan, Phase 1): `(src, dest, mode)`. RUST-ONLY, never shared with the JS
+/// agent, so, unlike [`SYSTEM_ASSETS`], they are installed on EVERY device,
+/// a coexisting one included (a device converted in place keeps
+/// `/opt/xorgate`, and the coexistence rule would otherwise keep the helper
+/// off exactly those devices). The allow-list is installed FIRST: the
+/// helper never exists without it.
+///
+/// `system/xorgate-camrotate` stays in [`SYSTEM_ASSETS`], byte-identical: a
+/// device reverted to the JS agent calls it.
+pub const RS_SYSTEM_ASSETS: &[(&str, &str, u32)] = &[
+    (
+        "system/xorgate-camcfg.overlays",
+        "/usr/local/bin/xorgate-camcfg.overlays",
+        0o644,
+    ),
+    (
+        "system/xorgate-camcfg",
+        "/usr/local/bin/xorgate-camcfg",
+        0o755,
+    ),
+];
+
+/// The camera-line owner, whose presence gates sudoers `025` (as
+/// [`CAMROTATE_BIN`] gates `023`).
+pub const CAMCFG_BIN: &str = "/usr/local/bin/xorgate-camcfg";
+
 /// `CLOCK_SUDOERS_DEST` (`update.ts:69`).
 pub const CLOCK_SUDOERS_DEST: &str = "/etc/sudoers.d/021_xorgate-clock";
 /// `CAMROTATE_SUDOERS_DEST` (`update.ts:71`).
@@ -119,6 +146,8 @@ pub const CAMROTATE_SUDOERS_DEST: &str = "/etc/sudoers.d/023_xorgate-camrotate";
 /// The Rust updater's exact-args grant (O3/Q11; replaces `022`'s role,
 /// `update.ts:70`).
 pub const UPDATE_RS_SUDOERS_DEST: &str = "/etc/sudoers.d/024_xorgate-update-rs";
+/// The camera-line owner's grant (Rust-only).
+pub const CAMCFG_SUDOERS_DEST: &str = "/etc/sudoers.d/025_xorgate-camcfg";
 
 /// The argv after `sudo` that the agent runs for a cloud `update` (O3) — the
 /// ONE spelling shared by `xorgate_hal::privileged` and the `024` sudoers
@@ -440,6 +469,24 @@ pub fn camrotate_sudoers_body(user: &str) -> String {
     )
 }
 
+/// `<user> ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg`: the helper
+/// with ANY arguments (a sudoers line cannot constrain argument values; the
+/// helper treats every one as hostile), exactly like the `023` line.
+pub fn camcfg_sudoers_line(user: &str) -> String {
+    format!("{user} ALL=(root) NOPASSWD: {CAMCFG_BIN}")
+}
+
+/// The `025_xorgate-camcfg` body (Rust-only).
+pub fn camcfg_sudoers_body(user: &str) -> String {
+    format!(
+        "# Installed by xorgate-rs. Allows the agent (running as {user}) to change the\n\
+# camera overlay lines of the boot config through the camera-line owner, and\n\
+# nothing else. See device-agent-rust system/xorgate-camcfg + crates/xorgate-core/src/boot_config.rs.\n\
+{}\n",
+        camcfg_sudoers_line(user)
+    )
+}
+
 /// The command half of the `024` grant, generated from [`UPDATE_RS_ARGV`]:
 /// `/usr/bin/systemctl start --no-block xorgate-updater-rs.service`.
 pub fn update_rs_sudoers_command() -> String {
@@ -482,6 +529,8 @@ pub enum SudoersGrant {
     CamRotate,
     /// `024_xorgate-update-rs` (the Rust `installUpdateSudoers`).
     UpdateRs,
+    /// `025_xorgate-camcfg` (Rust-only: the camera-line owner).
+    CamCfg,
 }
 
 impl SudoersGrant {
@@ -491,6 +540,7 @@ impl SudoersGrant {
             Self::Clock => "021_xorgate-clock",
             Self::CamRotate => "023_xorgate-camrotate",
             Self::UpdateRs => "024_xorgate-update-rs",
+            Self::CamCfg => "025_xorgate-camcfg",
         }
     }
 
@@ -499,6 +549,7 @@ impl SudoersGrant {
             Self::Clock => CLOCK_SUDOERS_DEST,
             Self::CamRotate => CAMROTATE_SUDOERS_DEST,
             Self::UpdateRs => UPDATE_RS_SUDOERS_DEST,
+            Self::CamCfg => CAMCFG_SUDOERS_DEST,
         }
     }
 
@@ -507,6 +558,7 @@ impl SudoersGrant {
             Self::Clock => clock_sudoers_body(user),
             Self::CamRotate => camrotate_sudoers_body(user),
             Self::UpdateRs => updater_sudoers_body(user),
+            Self::CamCfg => camcfg_sudoers_body(user),
         }
     }
 
@@ -516,6 +568,7 @@ impl SudoersGrant {
             Self::Clock => "warning: clock sudoers drop-in failed visudo validation; offline clock steps will not work",
             Self::CamRotate => "warning: camrotate sudoers drop-in failed visudo validation; camera rotation will not apply",
             Self::UpdateRs => "warning: update sudoers drop-in failed visudo validation; remote updates will not work",
+            Self::CamCfg => "warning: camcfg sudoers drop-in failed visudo validation; camera line changes will not apply",
         }
     }
 }
@@ -543,8 +596,9 @@ pub const MODEM_REFRESHED_LOG: &str =
 
 /// Q1: with `/opt/xorgate` present nothing shared is touched; without it the
 /// TS rules apply verbatim (modem only when the daemon is installed; system
-/// assets unconditional). The Rust-only `024` grant + updater unit are
-/// installed either way (they are not shared).
+/// assets unconditional). The Rust-only `024` grant + updater unit, and the
+/// camera-line owner ([`RS_SYSTEM_ASSETS`]) + its `025` grant, are installed
+/// either way (they are not shared).
 pub fn asset_policy(js_installed: bool, modem_daemon_present: bool) -> AssetPolicy {
     AssetPolicy {
         skip_shared: js_installed,
@@ -653,6 +707,57 @@ mod tests {
         );
         assert!(updater_sudoers_body("pi").ends_with(&format!("{}\n", updater_sudoers_line("pi"))));
         assert!(updater_sudoers_body("pi").starts_with("# Installed by xorgate-rs. "));
+    }
+
+    /// The `025` grant: one line, the helper with any arguments, for the
+    /// service user only. The argv the agent runs is that helper's path.
+    #[test]
+    fn camcfg_grant_names_the_helper_the_agent_calls() {
+        assert_eq!(
+            camcfg_sudoers_line("pi"),
+            "pi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg"
+        );
+        let body = camcfg_sudoers_body("pi");
+        assert_eq!(
+            body,
+            "# Installed by xorgate-rs. Allows the agent (running as pi) to change the\n\
+# camera overlay lines of the boot config through the camera-line owner, and\n\
+# nothing else. See device-agent-rust system/xorgate-camcfg + crates/xorgate-core/src/boot_config.rs.\n\
+pi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg\n"
+        );
+        // Exactly one line that is not a comment.
+        let grants: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(grants, [camcfg_sudoers_line("pi")]);
+        assert_eq!(CAMCFG_BIN, crate::boot_config::CAMCFG_HELPER);
+        let call = crate::boot_config::camcfg_call(
+            crate::boot_config::CamCfgOp::Remove {
+                port: crate::boot_config::CamPort::Cam0,
+            },
+            crate::camera_catalog::catalog(),
+        )
+        .unwrap();
+        assert_eq!(call.argv()[..3], ["sudo", "-n", CAMCFG_BIN]);
+        assert_eq!(SudoersGrant::CamCfg.file_name(), "025_xorgate-camcfg");
+        assert_eq!(SudoersGrant::CamCfg.dest(), CAMCFG_SUDOERS_DEST);
+        assert_eq!(SudoersGrant::CamCfg.body("pi"), body);
+        // The helper and its allow-list, the allow-list first.
+        assert_eq!(
+            RS_SYSTEM_ASSETS,
+            [
+                (
+                    "system/xorgate-camcfg.overlays",
+                    crate::boot_config::CAMCFG_ALLOW_LIST,
+                    0o644
+                ),
+                ("system/xorgate-camcfg", CAMCFG_BIN, 0o755),
+            ]
+        );
+        // The JS agent's helper is still shipped and installed, unchanged.
+        assert!(SYSTEM_ASSETS.contains(&(
+            "system/xorgate-camrotate",
+            "/usr/local/bin/xorgate-camrotate",
+            0o755
+        )));
     }
 
     #[test]

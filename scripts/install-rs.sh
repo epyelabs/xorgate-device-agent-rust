@@ -16,8 +16,11 @@
 #
 # What it never touches (§4 "Never touched"): /etc/xorgate/** (read only),
 # /opt/xorgate/**, /usr/local/bin/xorgate, the JS unit and its .d/, the JS
-# updater unit, sudoers 020-023, the modem/system/logind/NM/udev/cron assets,
-# and never systemd/bench/* from the tarball (CF67). It never power-cycles the
+# updater unit, sudoers 020-023, the modem/system/logind/NM/udev/cron assets
+# (xorgate-camrotate and xorgate-setclock included: they are the JS agent's),
+# and never systemd/bench/* from the tarball (CF67). The Rust-only camera-line
+# owner (xorgate-camcfg, its overlay allow-list, sudoers 025) is installed by
+# the conversion and removed by --revert --purge. It never power-cycles the
 # device and never restarts the modem daemon.
 set -euo pipefail
 umask 022
@@ -43,6 +46,12 @@ UPD_UNIT=$SYSD/xorgate-updater-rs.service
 UPD_UNIT_D=$UPD_UNIT.d
 DIST_DROPIN=$UPD_UNIT_D/10-dist.conf
 SUDOERS_024=/etc/sudoers.d/024_xorgate-update-rs
+# The camera-line owner (Rust-only, support-other-camera-models plan): the
+# helper the Rust agent calls instead of xorgate-camrotate, its overlay
+# allow-list and its grant (update_plan::RS_SYSTEM_ASSETS / CAMCFG_SUDOERS_DEST).
+CAMCFG_BIN=/usr/local/bin/xorgate-camcfg
+CAMCFG_LIST=/usr/local/bin/xorgate-camcfg.overlays
+SUDOERS_025=/etc/sudoers.d/025_xorgate-camcfg
 REC_DIR=/var/lib/xorgate-rs-install
 REC=$REC_DIR/record
 PRE=$REC_DIR/pre.manifest
@@ -83,6 +92,14 @@ rs_update_sudoers_body() {
     "# else. See device-agent-rust crates/xorgate-hal/src/privileged.rs + systemd/xorgate-updater-rs.service." \
     "$1 ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block xorgate-updater-rs.service"
 }
+# update_plan::camcfg_sudoers_body(<user>) (the camera-line owner's "025").
+rs_camcfg_sudoers_body() {
+  printf '%s\n' \
+    "# Installed by xorgate-rs. Allows the agent (running as $1) to change the" \
+    "# camera overlay lines of the boot config through the camera-line owner, and" \
+    "# nothing else. See device-agent-rust system/xorgate-camcfg + crates/xorgate-core/src/boot_config.rs." \
+    "$1 ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg"
+}
 # §8 / CF63: the updater follows xorgate-agent-rs-latest, never the JS pin.
 rs_dist_dropin_body() {
   printf '%s\n' \
@@ -99,7 +116,9 @@ install-rs.sh: convert a JS-provisioned xorgate device to the Rust agent, and ba
   sudo bash install-rs.sh [--from <bucket-url>] [--tag <ver>] [--tarball <file>] [--reinstall] [-y]
       Convert (default). Installs /opt/xorgate-rs, /usr/local/bin/xorgate-rs,
       xorgate-agent-rs.service (+ a copy of the JS 10-user.conf), xorgate-updater-rs.service
-      (+ 10-dist.conf) and /etc/sudoers.d/024_xorgate-update-rs; disables xorgate-agent;
+      (+ 10-dist.conf), /etc/sudoers.d/024_xorgate-update-rs and the camera-line owner
+      (/usr/local/bin/xorgate-camcfg, its .overlays list, /etc/sudoers.d/025_xorgate-camcfg);
+      disables xorgate-agent;
       enables + starts xorgate-agent-rs (whose Conflicts= stops xorgate-agent).
       Re-running it on a converted device re-verifies and repairs that surface and
       never changes the build.
@@ -301,7 +320,8 @@ key_by_path() { local t; while IFS= read -r t; do mpath "$t"; printf '%s\t%s\n' 
 is_rust_owned() {
   case $1 in
     "$RS_PREFIX" | "$STAGING" | "$BACKUP" | "$WRAPPER" | "$RS_UNIT" | "$RS_UNIT_D" | "$RS_UNIT_D"/* \
-      | "$UPD_UNIT" | "$UPD_UNIT_D" | "$UPD_UNIT_D"/* | "$WANTS/$RS_SVC.service" | "$SUDOERS_024") return 0 ;;
+      | "$UPD_UNIT" | "$UPD_UNIT_D" | "$UPD_UNIT_D"/* | "$WANTS/$RS_SVC.service" | "$SUDOERS_024" \
+      | "$CAMCFG_BIN" | "$CAMCFG_LIST" | "$SUDOERS_025") return 0 ;;
   esac
   return 1
 }
@@ -661,8 +681,8 @@ swap_tree() { # step 4: same-filesystem renames, the previous build kept as .old
 preflight_targets() {
   local p bad=() u
   u=$(service_user_of "$RS_USER_CONF" || service_user_of "$JS_USER_CONF" || true)
-  for p in "$WRAPPER" "$RS_UNIT" "$RS_USER_CONF" "$UPD_UNIT" "$DIST_DROPIN" "$SUDOERS_024"; do
-    if [ "$p" = "$SUDOERS_024" ] && { [ -z "$u" ] || [ "$u" = root ]; }; then continue; fi
+  for p in "$WRAPPER" "$RS_UNIT" "$RS_USER_CONF" "$UPD_UNIT" "$DIST_DROPIN" "$SUDOERS_024" "$CAMCFG_BIN" "$CAMCFG_LIST" "$SUDOERS_025"; do
+    if { [ "$p" = "$SUDOERS_024" ] || [ "$p" = "$SUDOERS_025" ]; } && { [ -z "$u" ] || [ "$u" = root ]; }; then continue; fi
     if [ "$p" = "$RS_USER_CONF" ] && [ ! -f "$JS_USER_CONF" ]; then continue; fi
     if [ -e "$p" ] && [ ! -L "$p" ] && [ ! -f "$p" ]; then bad+=("$p ($(stat -c %F "$p" 2>/dev/null))"); fi
   done
@@ -819,6 +839,33 @@ convert_main() {
     fi
     rm -rf "$t"
   fi
+  # The camera-line owner (Rust-only): its overlay allow-list FIRST (the
+  # helper never exists without it), the helper, then 025 under the same
+  # rules as 024. A build without the helper (older than the plan) installs
+  # none of the three.
+  say "== 7. camera-line owner $CAMCFG_BIN"
+  if [ -f "$RS_PREFIX/system/xorgate-camcfg" ] && [ -f "$RS_PREFIX/system/xorgate-camcfg.overlays" ]; then
+    put_file "$CAMCFG_LIST" 0644 "$RS_PREFIX/system/xorgate-camcfg.overlays" || true
+    put_file "$CAMCFG_BIN" 0755 "$RS_PREFIX/system/xorgate-camcfg" || true
+    if [ -z "$user" ] || [ "$user" = root ]; then
+      say "  = service user '${user:-root}' needs no grant: no $SUDOERS_025"
+    else
+      t=$(mkt -d)
+      rs_camcfg_sudoers_body "$user" > "$t/025_xorgate-camcfg"
+      chmod 0440 "$t/025_xorgate-camcfg"
+      if [ -f "$SUDOERS_025" ] && [ ! -L "$SUDOERS_025" ] && cmp -s "$t/025_xorgate-camcfg" "$SUDOERS_025" \
+         && [ "$(stat -c '%a %u:%g' "$SUDOERS_025")" = "440 0:0" ]; then
+        say "  = $SUDOERS_025 unchanged"
+      elif command -v visudo >/dev/null 2>&1 && visudo -cf "$t/025_xorgate-camcfg" >/dev/null 2>&1; then
+        put_file "$SUDOERS_025" 0440 "$t/025_xorgate-camcfg" || true
+      else
+        say "WARNING: camcfg sudoers drop-in failed visudo validation; camera line changes will not apply"
+      fi
+      rm -rf "$t"
+    fi
+  else
+    say "  = this build ships no camera-line owner (system/xorgate-camcfg): none installed"
+  fi
   maybe_fail_at 7
 
   # ---- step 8: hand over the identity (§4: JS stopped by Conflicts=, disabled) ----
@@ -953,7 +1000,7 @@ revert_main() {
     # shellcheck disable=SC2206  # `installed` is a space-separated path list (I2)
     cands=(${R[installed]})
     if [ "${R[rsPreexisting]}" != yes ]; then
-      cands+=("$WANTS/$RS_SVC.service" "$SUDOERS_024" "$DIST_DROPIN" "$UPD_UNIT" "$RS_USER_CONF" "$RS_UNIT" "$WRAPPER"
+      cands+=("$WANTS/$RS_SVC.service" "$SUDOERS_024" "$SUDOERS_025" "$CAMCFG_BIN" "$CAMCFG_LIST" "$DIST_DROPIN" "$UPD_UNIT" "$RS_USER_CONF" "$RS_UNIT" "$WRAPPER"
               "$BACKUP" "$STAGING" "$RS_PREFIX" "$UPD_UNIT_D" "$RS_UNIT_D")
     fi
     for p in ${cands[@]+"${cands[@]}"}; do

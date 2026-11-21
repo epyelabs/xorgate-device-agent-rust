@@ -57,6 +57,8 @@ for u in pi operator; do
   G=$(golden "updaterSudoers.$u"; echo X) || failc "golden updaterSudoers.$u unreadable"
   same "install-rs.sh rs_update_sudoers_body $u == golden (update_plan::updater_sudoers_body)" "$G" "$(rs_update_sudoers_body "$u"; echo X)"
   same "_lib.sh update_sudoers_body $u == golden (update_plan::updater_sudoers_body)" "$G" "$(update_sudoers_body "$u"; echo X)"
+  C=$(golden "camcfgSudoers.$u"; echo X) || failc "golden camcfgSudoers.$u unreadable"
+  same "install-rs.sh rs_camcfg_sudoers_body $u == golden (update_plan::camcfg_sudoers_body)" "$C" "$(rs_camcfg_sudoers_body "$u"; echo X)"
 done
 
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"

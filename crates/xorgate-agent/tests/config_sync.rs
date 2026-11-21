@@ -981,6 +981,7 @@ async fn camera_report_rides_effective_and_reports_on_change_only() {
             }]),
         }),
         boot_config: Arc::new(|| Some("dtoverlay=imx708,cam0,rotation=180\n".to_string())),
+        board: Arc::new(|| xorgate_core::boot_config::Board::Unknown),
         port_nodes: Arc::new(|_| None),
         pipeline_dir: h.dir.display().to_string(),
         capture: Box::new(move || vec![("cam0".to_string(), c.lock().unwrap().clone())]),

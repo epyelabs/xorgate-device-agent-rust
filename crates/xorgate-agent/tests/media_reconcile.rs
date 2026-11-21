@@ -98,6 +98,7 @@ async fn hardware_block_test_ts_reconcile_hardware_and_the_bench_block() {
                         sink.lock().unwrap().push(json!([level.as_str(), msg]));
                     })),
                     boot_config: None,
+                    board: Default::default(),
                 },
             )
             .await
@@ -165,6 +166,7 @@ fn opts(dir: &Path, listing: RunResult, logs: &Logs) -> ReconcileOpts {
             sink.lock().unwrap().push(json!([level.as_str(), msg]));
         })),
         boot_config: None,
+        board: Default::default(),
     }
 }
 

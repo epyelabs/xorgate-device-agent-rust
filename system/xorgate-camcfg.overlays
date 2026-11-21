@@ -1,0 +1,8 @@
+# Camera overlay names xorgate-camcfg may write. GENERATED from
+# crates/xorgate-core/data/camera-catalog.json (Catalog::helper_allow_list);
+# do not edit by hand. One name per line.
+# catalogVersion 3
+imx290
+imx219
+imx708
+imx335

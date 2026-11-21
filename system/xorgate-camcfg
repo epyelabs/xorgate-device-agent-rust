@@ -1,0 +1,478 @@
+#!/bin/sh
+# Installed by xorgate-rs at /usr/local/bin/xorgate-camcfg (provision-rs.sh,
+# install-rs.sh, `xorgate-rs update`). Invoked by the Rust device agent via
+# `sudo -n` (sudoers drop-in 025_xorgate-camcfg). It is the CAMERA-LINE OWNER:
+# the one writer of the camera `dtoverlay=` lines in the boot config
+# (support-other-camera-models plan; the policy lives in the agent, see
+# crates/xorgate-core/src/boot_config.rs and
+# crates/xorgate-agent/src/ops/camera_mount.rs).
+#
+# The agent runs unprivileged and /boot/firmware is root-owned, so this helper
+# is the entire sudo surface of the feature. EVERY ARGUMENT IS TREATED AS
+# HOSTILE: the sudoers entry cannot constrain argument values, so nothing the
+# caller passes is ever written as given. The helper builds a line itself from
+# checked parts, and it only ever touches camera lines of ONE port.
+#
+#   usage: xorgate-camcfg rotate <cam0|cam1> <overlay> <0|180>
+#          xorgate-camcfg set    <cam0|cam1> <overlay> [param...] rotation=<0|180>
+#          xorgate-camcfg remove <cam0|cam1>
+#
+#   rotate  On the port's ONE camera line, which must name <overlay>, set the
+#           `rotation=` token and change nothing else: every other token is
+#           kept verbatim and in order. An existing token is replaced where it
+#           stands; without one it is appended. <overlay> need not be in the
+#           allow-list (it is never written, only compared).
+#   set     Make the port's camera line
+#             dtoverlay=<overlay>,<port>[,<param>...],rotation=<deg>
+#           Replaces the port's line (the LAST one when several exist; the
+#           others are deleted, so a sensor swap cannot leave two lines on one
+#           port) or, when the port has none, appends it under `[all]`. Also
+#           turns an uncommented `camera_auto_detect=<not 0>` into
+#           `camera_auto_detect=0`. <overlay> must be in the allow-list and
+#           overlays/<overlay>.dtbo must exist.
+#   remove  Delete the port's camera line(s).
+#
+#   exit 0  the file was changed
+#   exit 3  already as asked: nothing written
+#   exit 4  rotate: the port has no camera line
+#   exit 5  refused: config.txt is in a state this helper does not edit (see
+#           "WHAT IT REFUSES"); nothing written
+#   exit 2  bad arguments, or no config.txt / allow-list / overlay file
+#   exit 1  the write itself failed
+#
+# WHICH LINE IS A PORT'S CAMERA LINE
+#   An uncommented `dtoverlay=<name>,...` line (leading whitespace allowed) is
+#   a camera line of a port when:
+#   - <name> is in the allow-list (xorgate-camcfg.overlays, beside this file,
+#     generated from the agent's sensor catalog): with a `cam0` parameter it
+#     is CAM0's; WITHOUT one it is CAM1's, with or without a `cam1` token
+#     (`cam0` is the only real port selector of a camera overlay);
+#   - <name> is NOT in the allow-list: only with an explicit port token,
+#     `cam0` for CAM0, or `cam1` and no `cam0` for CAM1. (`dtoverlay=vc4-kms-v3d`
+#     has no `cam0` either: without a token nothing says the line is a
+#     camera's, so it is nobody's.)
+#
+# WHICH [section] FILTERS APPLY TO THIS BOARD
+#   The board is read from /proc/device-tree/model.
+#   - no header yet, or [all]: applies (and [all] clears every filter)
+#   - [cm4], [pi4]: applies on a Compute Module 4, does not on a Compute
+#     Module 5, unknown on any other board
+#   - [cm5], [pi5]: applies on a Compute Module 5, does not on a Compute
+#     Module 4, unknown on any other board
+#   - anything else ([none], [pi3], [cm4s], [gpio4=1], [EDID=...], [tryboot],
+#     a serial number, ...): unknown, and it stays unknown until the next [all]
+#   A camera line under a filter that does NOT apply is not the port's line:
+#   it is never counted and never touched. A camera line under an UNKNOWN
+#   filter may or may not apply, so the helper refuses to edit the port.
+#
+# WHAT IT REFUSES (exit 5)
+#   - rotate: several camera lines for the port; a line that names another
+#     overlay than the one asked for; a line holding a token outside the
+#     strict charset (it could not be written back unchanged);
+#   - any verb: a camera line of the port under a filter it cannot evaluate;
+#   - a resulting line longer than 98 characters (the firmware's limit).
+#
+# THIS SCRIPT NEVER REBOOTS. A camera line is a device-tree matter, so a
+# change applies on the next boot; deciding when that happens is a human's
+# call (the cloud shows "reboot required"). It never touches a line that is
+# not a camera line of the port it was asked about (`set` also fixes
+# `camera_auto_detect`), keeps one backup of the file as it was before its
+# first edit (config.txt.bak-camcfg, never overwritten) and replaces the file
+# by a rename, never in place.
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+export PATH LC_ALL
+umask 022
+IFS='
+'
+
+usage() {
+  echo "usage: xorgate-camcfg rotate <cam0|cam1> <overlay> <0|180> | set <cam0|cam1> <overlay> [param...] rotation=<0|180> | remove <cam0|cam1>" >&2
+  exit 2
+}
+
+# An overlay or parameter NAME: [a-z0-9][a-z0-9_-]*, at most 32 characters.
+valid_name() {
+  case "$1" in
+    '' | *[!a-z0-9_-]* | [_-]* ) return 1 ;;
+  esac
+  [ "${#1}" -le 32 ]
+}
+# One overlay parameter: a name, optionally `=` and a value of
+# [A-Za-z0-9_.+-], 1 to 32 characters. No comma, space, quote, `#`, `[` or
+# newline can pass: nothing that could start another token, line or section.
+valid_param() {
+  case "$1" in
+    *=* )
+      valid_name "${1%%=*}" || return 1
+      pv=${1#*=}
+      case "$pv" in
+        '' | *[!A-Za-z0-9_.+-]* ) return 1 ;;
+      esac
+      [ "${#pv}" -le 32 ]
+      ;;
+    * ) valid_name "$1" ;;
+  esac
+}
+
+verb="${1:-}"
+port="${2:-}"
+case "$verb" in
+  rotate | set | remove ) ;;
+  * ) usage ;;
+esac
+case "$port" in
+  cam0 | cam1 ) ;;
+  * ) usage ;;
+esac
+
+overlay=""
+deg=""
+params=""
+case "$verb" in
+  rotate )
+    [ "$#" -eq 4 ] || usage
+    overlay="$3"
+    deg="$4"
+    valid_name "$overlay" || usage
+    case "$deg" in
+      0 | 180 ) ;;
+      * ) usage ;;
+    esac
+    ;;
+  set )
+    [ "$#" -ge 4 ] || usage
+    overlay="$3"
+    valid_name "$overlay" || usage
+    shift 3
+    # The LAST argument is the rotation; everything before it is a parameter.
+    while [ "$#" -gt 1 ]; do
+      valid_param "$1" || usage
+      case "$1" in
+        cam0 | cam1 | rotation | rotation=* ) usage ;;   # written by this helper, never taken
+      esac
+      params="$params,$1"
+      shift
+    done
+    case "$1" in
+      rotation=0 ) deg=0 ;;
+      rotation=180 ) deg=180 ;;
+      * ) usage ;;
+    esac
+    ;;
+  remove )
+    [ "$#" -eq 2 ] || usage
+    ;;
+esac
+
+# TEST-ONLY seams (the test suite drives this script against fixture files).
+# They are honoured only when the script was NOT started through sudo: sudo
+# resets the environment and always sets SUDO_UID, so under sudo the real
+# paths are used whatever the caller's environment holds.
+config=""
+list=/usr/local/bin/xorgate-camcfg.overlays
+model=/proc/device-tree/model
+lock=/run/xorgate-camcfg.lock
+seams=0
+if [ -z "${SUDO_UID:-}" ]; then
+  if [ -n "${XORGATE_BOOT_CONFIG:-}" ]; then config=$XORGATE_BOOT_CONFIG; seams=1; fi
+  if [ -n "${XORGATE_CAMCFG_OVERLAYS:-}" ]; then list=$XORGATE_CAMCFG_OVERLAYS; seams=1; fi
+  if [ -n "${XORGATE_CAMCFG_MODEL:-}" ]; then model=$XORGATE_CAMCFG_MODEL; seams=1; fi
+  if [ -n "${XORGATE_CAMCFG_LOCK:-}" ]; then lock=$XORGATE_CAMCFG_LOCK; seams=1; fi
+fi
+if [ -z "$config" ]; then
+  config=/boot/firmware/config.txt
+  [ -f "$config" ] || config=/boot/config.txt
+fi
+if [ ! -f "$config" ] || [ -L "$config" ]; then
+  echo "no config.txt found (looked in /boot/firmware and /boot)" >&2
+  exit 2
+fi
+
+# The allow-list: one overlay name per line, `#` comments. Root-owned and not
+# writable by anyone else, or it is not trusted.
+if [ ! -f "$list" ] || [ -L "$list" ]; then
+  echo "no overlay allow-list at $list: run \`sudo xorgate-rs update\`" >&2
+  exit 2
+fi
+if [ "$seams" = 0 ]; then
+  case "$(stat -c '%u %a' "$list" 2>/dev/null || echo '? ?')" in
+    '0 644' | '0 444' | '0 640' | '0 600' | '0 400' | '0 440' ) ;;
+    * )
+      echo "the overlay allow-list $list is not a root-owned, root-only-writable file" >&2
+      exit 2
+      ;;
+  esac
+fi
+allow=" "
+while IFS= read -r name || [ -n "$name" ]; do
+  case "$name" in
+    '' | '#'* ) continue ;;
+  esac
+  if ! valid_name "$name"; then
+    echo "the overlay allow-list $list holds a bad entry" >&2
+    exit 2
+  fi
+  allow="$allow$name "
+done < "$list"
+
+if [ "$verb" = set ]; then
+  case "$allow" in
+    *" $overlay "* ) ;;
+    * )
+      echo "the overlay $overlay is not in the allow-list $list" >&2
+      exit 2
+      ;;
+  esac
+  dtbo="$(dirname -- "$config")/overlays/$overlay.dtbo"
+  if [ ! -f "$dtbo" ]; then
+    echo "no overlay file $dtbo on this device" >&2
+    exit 2
+  fi
+  target="dtoverlay=$overlay,$port$params,rotation=$deg"
+  if [ "${#target}" -gt 98 ]; then
+    echo "the line would be ${#target} characters; the firmware reads at most 98" >&2
+    exit 2
+  fi
+fi
+
+# The board, for the [section] filters.
+board=unknown
+if [ -r "$model" ]; then
+  case "$(tr -d '\000' < "$model" 2>/dev/null || true)" in
+    "Raspberry Pi Compute Module 4 Rev"* ) board=cm4 ;;
+    "Raspberry Pi Compute Module 5 Rev"* | "Raspberry Pi Compute Module 5 Lite Rev"* ) board=cm5 ;;
+  esac
+fi
+
+# One writer at a time (two reconcile passes may overlap). Best effort: a
+# device without flock(1) runs unlocked, as xorgate-camrotate always did.
+if command -v flock >/dev/null 2>&1; then
+  if ( : > "$lock" ) 2>/dev/null; then
+    exec 9> "$lock"
+    flock -w 15 9 || { echo "another xorgate-camcfg is still running" >&2; exit 1; }
+  fi
+fi
+
+# Does the file end without a newline? (Kept that way unless a line is added.)
+nofinalnl=0
+if [ -s "$config" ] && [ -n "$(tail -c 1 "$config")" ]; then nofinalnl=1; fi
+
+tmp="$config.xorgate-camcfg.$$"
+trap 'rm -f "$tmp" "$tmp.verdict" "$tmp.diff"' EXIT INT TERM
+
+# One awk pass (POSIX awk; the devices run mawk). It reads the whole file,
+# decides, and prints the new file on stdout and ONE verdict line on stderr:
+#   CHANGED <lines printed> <message> | SAME | NOLINE | REFUSED <message>
+# Every line that is not touched is printed byte for byte (a CR included).
+rc=0
+awk -v verb="$verb" -v port="$port" -v overlay="$overlay" -v deg="$deg" \
+    -v params="$params" -v allow="$allow" -v board="$board" -v nofinalnl="$nofinalnl" '
+  function trim(s) {
+    sub(WS_HEAD, "", s); sub(WS_TAIL, "", s)
+    return s
+  }
+  function valid_name(s) {
+    return (length(s) >= 1 && length(s) <= 32 && s ~ /^[a-z0-9][a-z0-9_-]*$/)
+  }
+  function valid_token(s,    i, v) {
+    i = index(s, "=")
+    if (i == 0) return valid_name(s)
+    v = substr(s, i + 1)
+    return (valid_name(substr(s, 1, i - 1)) && length(v) >= 1 && length(v) <= 32 && v ~ /^[A-Za-z0-9_.+-]+$/)
+  }
+  # THE SECTION RULE (see the header of this file).
+  function enter(name,    fam) {
+    if (name == "all") { state = "A"; sticky = 0; return }
+    if (sticky) return
+    fam = ""
+    if (name == "cm4" || name == "pi4") fam = "cm4"
+    else if (name == "cm5" || name == "pi5") fam = "cm5"
+    if (fam == "") { state = "U"; sticky = 1; return }
+    if (board != "cm4" && board != "cm5") { state = "U"; return }
+    state = (fam == board) ? "A" : "N"
+  }
+  function refuse(msg) {
+    if (verdict == "") verdict = "REFUSED " msg
+  }
+  BEGIN {
+    # Space, tab, CR, VT, FF: what may surround a token or a line.
+    ws = "[ \t\r" sprintf("%c", 11) sprintf("%c", 12) "]"
+    WS_HEAD = "^" ws "+"; WS_TAIL = ws "+$"
+    state = "A"; sticky = 0; secname = ""
+    n = 0; nc = 0; verdict = ""
+  }
+  {
+    n++
+    line[n] = $0
+    cr[n] = ($0 ~ /\r$/) ? "\r" : ""
+    t = trim($0)
+    text[n] = t
+    if (substr(t, 1, 1) == "[") {
+      if (t ~ /^\[[^]]*\]$/) secname = substr(t, 2, length(t) - 2)
+      else secname = t
+      enter(secname)
+      next
+    }
+    if (substr(t, 1, 19) == "camera_auto_detect=") {
+      if (substr(t, 20) != "0") autodetect[n] = 1
+      next
+    }
+    if (substr(t, 1, 10) != "dtoverlay=") next
+    ntok = split(substr(t, 11), part, ",")
+    k = 0; has0 = 0; has1 = 0; clean = 1; nrot = 0; rotv = ""
+    for (i = 1; i <= ntok; i++) {
+      x = trim(part[i])
+      if (x == "") continue
+      k++
+      tok[n, k] = x
+      if (k == 1) {
+        if (!valid_name(x)) clean = 0
+        continue
+      }
+      if (x == "cam0") has0 = 1
+      if (x == "cam1") has1 = 1
+      if (substr(x, 1, 9) == "rotation=") {
+        nrot++
+        if (nrot == 1) rotv = substr(x, 10)
+      } else if (!valid_token(x)) clean = 0
+    }
+    if (k == 0) next
+    if (index(allow, " " tok[n, 1] " ") > 0) mine = ((has0 ? "cam0" : "cam1") == port)
+    else mine = (port == "cam0") ? has0 : (has1 && !has0)
+    if (!mine || state == "N") next
+    nc++
+    cand[nc] = n
+    ntoks[n] = k; cscope[n] = state; csec[n] = secname
+    cclean[n] = clean; cnrot[n] = nrot; crot[n] = rotv
+  }
+  END {
+    changed = 0; nadd = 0; msg = ""
+    for (j = 1; j <= nc; j++) {
+      i = cand[j]
+      if (cscope[i] == "U")
+        refuse("a camera line of " port " sits under [" csec[i] "], a section this helper cannot evaluate for this board; edit it by hand")
+    }
+    if (verdict == "" && verb == "rotate") {
+      if (nc == 0) verdict = "NOLINE"
+      else if (nc > 1) refuse(nc " camera lines configure " port "; remove the stale ones first")
+      else {
+        i = cand[1]
+        if (tok[i, 1] != overlay) refuse("the camera line of " port " names " tok[i, 1] ", not " overlay)
+        else if (!cclean[i]) refuse("the camera line of " port " holds characters this helper does not write back")
+        else if (cnrot[i] == 1 && (crot[i] "") == (deg "")) verdict = "SAME"
+        else {
+          out = "dtoverlay=" tok[i, 1]; placed = 0
+          for (k = 2; k <= ntoks[i]; k++) {
+            x = tok[i, k]
+            if (substr(x, 1, 9) == "rotation=") {
+              if (!placed) { out = out ",rotation=" deg; placed = 1 }
+              continue
+            }
+            out = out "," x
+          }
+          if (!placed) out = out ",rotation=" deg
+          if (length(out) > 98) refuse("the line would be " length(out) " characters; the firmware reads at most 98")
+          else { line[i] = out cr[i]; changed = 1; msg = out }
+        }
+      }
+    }
+    if (verdict == "" && verb == "set") {
+      target = "dtoverlay=" overlay "," port params ",rotation=" deg
+      msg = target
+      for (i = 1; i <= n; i++) {
+        if (i in autodetect) { line[i] = "camera_auto_detect=0" cr[i]; changed = 1 }
+      }
+      if (nc == 0) {
+        if (state != "A") add[++nadd] = "[all]"
+        add[++nadd] = target
+        changed = 1
+      } else {
+        for (j = 1; j < nc; j++) { drop[cand[j]] = 1; changed = 1 }
+        i = cand[nc]
+        if (text[i] != target) { line[i] = target cr[i]; changed = 1 }
+      }
+    }
+    if (verdict == "" && verb == "remove") {
+      for (j = 1; j <= nc; j++) { drop[cand[j]] = 1; changed = 1 }
+      msg = "no camera line"
+    }
+    if (verdict == "" && !changed) verdict = "SAME"
+    nout = 0
+    for (i = 1; i <= n; i++) {
+      if (i in drop) continue
+      res[++nout] = line[i]
+    }
+    eol = (n > 0) ? cr[n] : ""
+    for (j = 1; j <= nadd; j++) res[++nout] = add[j] eol
+    for (i = 1; i <= nout; i++)
+      printf "%s%s", res[i], ((i < nout || !nofinalnl || nadd > 0) ? "\n" : "")
+    if (verdict == "") verdict = "CHANGED " nout " " msg
+    print verdict > "/dev/stderr"
+  }
+' "$config" > "$tmp" 2> "$tmp.verdict" || rc=$?
+
+verdict=$(cat "$tmp.verdict" 2>/dev/null || echo "")
+rm -f "$tmp.verdict"
+if [ "$rc" != 0 ]; then
+  echo "could not prepare the new $config (awk exit $rc)" >&2
+  exit 1
+fi
+
+case "$verdict" in
+  SAME )
+    exit 3
+    ;;
+  NOLINE )
+    echo "no camera dtoverlay line for $port in $config" >&2
+    exit 4
+    ;;
+  "REFUSED "* )
+    echo "${verdict#REFUSED } ($config not changed)" >&2
+    exit 5
+    ;;
+  "CHANGED "* ) ;;
+  * )
+    echo "could not prepare the new $config (no verdict)" >&2
+    exit 1
+    ;;
+esac
+rest=${verdict#CHANGED }
+want_lines=${rest%% *}
+what=${rest#* }
+
+# Before the new file replaces the old one, check it is what was meant: the
+# line count awk reported, and that every line that differs from the old file
+# is a camera matter (`dtoverlay=`, `camera_auto_detect=`, the `[all]` this
+# helper adds). Anything else is a bug here, and the old file stays.
+have_lines=$(awk 'END { print NR }' "$tmp")
+if [ "$have_lines" != "$want_lines" ]; then
+  echo "the new $config is incomplete ($have_lines of $want_lines lines); not written" >&2
+  exit 1
+fi
+if command -v diff >/dev/null 2>&1; then
+  diff -a "$config" "$tmp" > "$tmp.diff" 2>/dev/null || true
+  if grep -vE '^([0-9,]+[acd][0-9,]+|---|\\ .*|[<>] [[:space:]]*(dtoverlay=|camera_auto_detect=|\[all\]).*)$' "$tmp.diff" | grep -q .; then
+    echo "the new $config would change a line that is not a camera line; not written" >&2
+    exit 1
+  fi
+  rm -f "$tmp.diff"
+fi
+
+# Keep one backup of the file as it was before this helper first edited it,
+# and never overwrite it: the first edit is the one worth going back to.
+[ -f "$config.bak-camcfg" ] || cp -p "$config" "$config.bak-camcfg" 2>/dev/null || true
+
+# /boot/firmware is FAT on a Pi, where rename is the only ordering primitive
+# available: write a sibling temp file and rename it over the target, so a
+# power cut during the swap leaves either the old file or the new one, never a
+# truncated config.txt on a device that then cannot boot.
+chmod --reference="$config" "$tmp" 2>/dev/null || chmod 755 "$tmp"
+sync "$tmp" 2>/dev/null || true
+mv -f "$tmp" "$config"
+trap - EXIT INT TERM
+sync 2>/dev/null || true
+
+echo "$config: $port: $what (applies on next boot)"
+exit 0

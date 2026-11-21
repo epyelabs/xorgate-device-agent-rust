@@ -68,6 +68,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 | 6 | the JS unit + `.d/10-user.conf`; sudoers 020; `daemon-reload`; `enable --now xorgate-agent` | `xorgate-agent-rs.service` from the tarball + `.d/10-user.conf` (the JS body) + **`.d/20-native.conf`** (D1.3) + the **boot generator** (in place of `enable`); 020 (the JS body, `visudo -cf` first); the start moves to **P9** |
 | 6a | `xorgate-setclock` + sudoers 021 + the fake-hwclock cron | the same files from `system/`; **021 = `update_plan::clock_sudoers_body`** (= the JS body) |
 | 6a1 | `xorgate-camrotate` + sudoers 023 | the same; **023 = `update_plan::camrotate_sudoers_body`** (= the JS body) |
+| — | — | **6a1b** the camera-line owner, Rust-only: `/usr/local/bin/xorgate-camcfg.overlays` (the overlay allow-list, generated from the sensor catalog), then `/usr/local/bin/xorgate-camcfg`, then **025** (`update_plan::camcfg_sudoers_body`; none for a root agent). The Rust agent changes camera lines through this helper and no longer calls `xorgate-camrotate` (which stays installed for a device later given the JS agent) |
 | 6a2 | the JS updater unit + sudoers 022 | `xorgate-updater-rs.service` + `.d/10-dist.conf` + **024** (`update_plan`; none for a root agent). No 022 |
 | 6b | logind `RemoveIPC=no`; `try-restart systemd-logind` | the same body cmp-before-write; `try-restart` only if the file changed |
 | 7 | modem: apt `isc-dhcp-client usbutils` (WARN); ModemManager off; group `dialout`; the daemon, unit, udev rule, NM conf; `enable --now sim7600-lte` | same (ModemManager is already off since P1b), **cmp-before-write**; the daemon is the Rust fork (LTE route metric 1000, see "The LTE route metric"); `udevadm` reload only if the rule changed, NM reload only if its conf changed, `daemon-reload` only if the unit changed; an enabled + active daemon is left alone (never restarted) |
@@ -80,7 +81,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
 
 `fixtures/install_rs/bodies.json` holds every body the provisioner writes:
 
-- the wrapper, 024, 021, 023 — tied to `update_plan` by `crates/xorgate-core/tests/install_rs_bodies.rs`, so the first `xorgate-rs update` rewrites nothing;
+- the wrapper, 024, 025, 021, 023 — tied to `update_plan` by `crates/xorgate-core/tests/install_rs_bodies.rs`, so the first `xorgate-rs update` rewrites nothing;
 - 020, `10-user.conf`, logind, uplink, the apt lock — tied to the JS golden's heredocs by `scripts/tests/provision-rs-bodies.sh`;
 - `20-native.conf`, the native `10-dist.conf`, the boot generator (`nativeGenerator`): pinned to the script by `provision-rs-bodies.sh` and checked for its guards by `install_rs_bodies.rs`. The generator is **not on the update rail**: changing its body later needs a `--reprovision` (or a future update-rail step).
 
@@ -100,7 +101,7 @@ The JS column is `install-script.ts @ 1a0c730` (vendored as `tools/provision-e2e
   sudo /opt/xorgate-rs/provision-rs.sh --uninstall
   ```
 
-  `--uninstall` stops the Rust unit and removes the generator, `/opt/xorgate-rs{,.new,.old}`, both Rust units and their drop-ins, the wrapper and 024. It never touches `/etc/xorgate`, `/var/lib/xorgate`, the modem/system assets or 020–023. It refuses (exit 3) when the JS agent is not installed (the device would be left with no agent), and on a device converted by `install-rs.sh` (use its `--revert`).
+  `--uninstall` stops the Rust unit and removes the generator, `/opt/xorgate-rs{,.new,.old}`, both Rust units and their drop-ins, the wrapper, 024 and the camera-line owner (`xorgate-camcfg`, its allow-list, 025). It never touches `/etc/xorgate`, `/var/lib/xorgate`, the modem/system assets or 020–023. It refuses (exit 3) when the JS agent is not installed (the device would be left with no agent), and on a device converted by `install-rs.sh` (use its `--revert`).
 - **Do not run `install-rs.sh` on a JS-over-native device before `--uninstall`.** Its foreign-drop-in rule keeps `20-native.conf`, so the converted Rust unit would not start and the converter would auto-revert.
 
 ## Stopping the agent from starting at boot (native devices)
